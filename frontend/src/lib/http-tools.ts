@@ -489,16 +489,16 @@ export function customServerDraftProblem(
   }
   const scopes = scopesProblem(draft.httpTools, draft.scopes);
   if (scopes?.kind === "unknown") {
-    return t(
-      `The read/modify choice names endpoints that are not there: ${scopes.names.join(", ")}`,
-      `Die Auswahl Lesen/Ändern nennt Endpunkte, die es nicht gibt: ${scopes.names.join(", ")}`,
-    );
+    return `${t(
+      "The read/modify choice names endpoints that are not there:",
+      "Die Auswahl Lesen/Ändern nennt Endpunkte, die es nicht gibt:",
+    )} ${scopes.names.join(", ")}`;
   }
   if (scopes?.kind === "both") {
-    return t(
-      `An endpoint either reads or modifies, not both: ${scopes.names.join(", ")}`,
-      `Ein Endpunkt liest oder ändert, nicht beides: ${scopes.names.join(", ")}`,
-    );
+    return `${t(
+      "An endpoint either reads or modifies, not both:",
+      "Ein Endpunkt liest oder ändert, nicht beides:",
+    )} ${scopes.names.join(", ")}`;
   }
   return null;
 }

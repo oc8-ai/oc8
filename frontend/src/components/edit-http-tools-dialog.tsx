@@ -34,7 +34,7 @@ export function EditHttpToolsDialog({
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape" && !saving.current) onClose();
+      if (event.key === "Escape" && !event.defaultPrevented && !saving.current) onClose();
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

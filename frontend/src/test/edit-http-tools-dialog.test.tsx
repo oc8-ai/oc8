@@ -248,4 +248,14 @@ describe("Edit endpoints", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Edit endpoints" })).not.toBeInTheDocument();
   });
+
+  it("stays open when an inner element already handled Escape", async () => {
+    grant(["plugin:manage"]);
+    render(<McpConnectionBody connection={connection()} />, { wrapper: wrap([ext]) });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit endpoints" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit endpoints" });
+    dialog.addEventListener("keydown", (e) => e.preventDefault());
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Edit endpoints" })).toBeInTheDocument();
+  });
 });
