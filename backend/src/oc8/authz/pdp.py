@@ -632,6 +632,11 @@ def required_right(tool_name: str, scopes: Mapping[str, Any] | None) -> str:
     """
     if not scopes:
         return "modify"
+    # A tool listed under both rights is the more dangerous one, whatever
+    # order the lists come in.
+    modify = scopes.get("modify")
+    if isinstance(modify, (list, tuple)) and tool_name in modify:
+        return "modify"
     for right in RIGHTS:
         names = scopes.get(right)
         if isinstance(names, (list, tuple)) and tool_name in names:

@@ -5,7 +5,7 @@
 // HTTP API's tools edited after a test are replaced in place through
 // PATCH /mcp/connections/{id}/http-tools) -- no vendor-specific logic
 // anywhere in this file.
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -46,9 +46,9 @@ import {
   httpToolsUpdateBetween,
   loginToConfig,
   metadataToConfig,
+  customServerDraftProblem,
   patchHttpTools,
   postHttpTestCall,
-  toolFields,
   toolToConfig,
   validateHttpTools,
   type CustomServerDraft,
@@ -392,6 +392,7 @@ export function CustomMcpWizard({
 
   const toolProblemText = (problem: HttpToolProblem) => httpToolProblemText(problem, t);
   const [busy, setBusy] = useState(false);
+  const closing = useRef(false);
 
   const installCustomCapa = useInstallCustomCapa();
   const enablePlugin = useEnablePlugin();
@@ -449,11 +450,24 @@ export function CustomMcpWizard({
   // it turned back off -- see the comment by `useDisablePlugin` above for
   // why there's nothing stronger to call.
   async function requestClose() {
-    if (busy) return;
+    if (busy || closing.current) return;
     if (!state.installedPluginId) {
       close();
       return;
     }
+    // Held from the confirm on: a second click (the X, the backdrop, Cancel)
+    // must not ask again or run the disable and the retry twice.
+    closing.current = true;
+    try {
+      await disableAndClose();
+    } finally {
+      closing.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function disableAndClose() {
+    if (!state.installedPluginId) return;
     const ok = await confirm({
       title: "Cancel and leave this capa installed?",
       description: `Testing the connection already installed and enabled "${state.name || "this capa"}" in your workspace -- that's not undone by closing this dialog. You can disable it now so it isn't left running unnoticed, or go back and finish saving it.`,
@@ -461,6 +475,7 @@ export function CustomMcpWizard({
       cancelLabel: "Keep editing",
     });
     if (!ok) return;
+    setBusy(true);
     try {
       await disablePlugin.mutateAsync({
         pluginId: state.installedPluginId,
@@ -739,16 +754,12 @@ export function CustomMcpWizard({
         });
 
   // What a source handed back is checked by the same rules the server and the
-  // hand-written tools use, before it can be tested or saved.
+  // hand-written tools use (base URL, login, tools, read/modify), before it
+  // can be tested or saved.
   function acceptDraft(draft: CustomServerDraft) {
-    if (draft.httpTools.length === 0) {
-      setStepError(t("Choose at least one endpoint.", "Wähle mindestens einen Endpunkt."));
-      return;
-    }
-    const problems = validateHttpTools(draft.httpTools.map(toolFields));
-    const first = problems.findIndex((problem) => problem !== null);
-    if (first >= 0) {
-      setStepError(`${draft.httpTools[first].name || "?"}: ${toolProblemText(problems[first]!)}`);
+    const problem = customServerDraftProblem(draft, t, { withConnection: true });
+    if (problem) {
+      setStepError(problem);
       return;
     }
     update({ draft });

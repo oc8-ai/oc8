@@ -433,3 +433,72 @@ export function useUpdateHttpTools() {
     },
   });
 }
+
+/** The read/modify classification as the server checks it on
+ * `PATCH .../http-tools`: every name a tool, and no tool in both lists
+ * (`UpdateHttpToolsRequest`). Null when it holds. */
+export function scopesProblem(
+  tools: readonly { readonly name: string }[],
+  scopes: ToolScopes,
+): { readonly kind: "unknown" | "both"; readonly names: readonly string[] } | null {
+  const names = new Set(tools.map((tool) => tool.name));
+  const unknown = [...new Set([...scopes.read, ...scopes.modify])].filter((n) => !names.has(n));
+  if (unknown.length > 0) return { kind: "unknown", names: unknown.sort() };
+  const modify = new Set(scopes.modify);
+  const both = [...new Set(scopes.read)].filter((n) => modify.has(n));
+  if (both.length > 0) return { kind: "both", names: both.sort() };
+  return null;
+}
+
+/** Why what a custom server source handed back cannot be used, in the
+ * person's language, or null. `withConnection`: the draft also brings the base
+ * URL and login (the wizard); editing an existing connection uses only its
+ * tools, classification and import metadata. */
+export function customServerDraftProblem(
+  draft: CustomServerDraft,
+  t: (en: string, de?: string) => string,
+  { withConnection }: { withConnection: boolean },
+): string | null {
+  if (withConnection) {
+    if (!/^https?:\/\/\S+$/.test(draft.baseUrl.trim())) {
+      return t(
+        "The API needs a base URL starting with http:// or https://.",
+        "Die API braucht eine Basis-URL, die mit http:// oder https:// beginnt.",
+      );
+    }
+    if (basicUsernameHasColon(draft.login)) {
+      return t(
+        "A Basic username cannot contain a colon.",
+        "Ein Basic-Benutzername darf keinen Doppelpunkt enthalten.",
+      );
+    }
+    if (!loginComplete(draft.login)) {
+      return t(
+        "The login is incomplete: fill in every field and the secret.",
+        "Die Anmeldung ist unvollständig: Fülle alle Felder und das Geheimnis aus.",
+      );
+    }
+  }
+  if (draft.httpTools.length === 0) {
+    return t("Choose at least one endpoint.", "Wähle mindestens einen Endpunkt.");
+  }
+  const problems = validateHttpTools(draft.httpTools.map(toolFields));
+  const first = problems.findIndex((problem) => problem !== null);
+  if (first >= 0) {
+    return `${draft.httpTools[first].name || "?"}: ${httpToolProblemText(problems[first]!, t)}`;
+  }
+  const scopes = scopesProblem(draft.httpTools, draft.scopes);
+  if (scopes?.kind === "unknown") {
+    return t(
+      `The read/modify choice names endpoints that are not there: ${scopes.names.join(", ")}`,
+      `Die Auswahl Lesen/Ändern nennt Endpunkte, die es nicht gibt: ${scopes.names.join(", ")}`,
+    );
+  }
+  if (scopes?.kind === "both") {
+    return t(
+      `An endpoint either reads or modifies, not both: ${scopes.names.join(", ")}`,
+      `Ein Endpunkt liest oder ändert, nicht beides: ${scopes.names.join(", ")}`,
+    );
+  }
+  return null;
+}

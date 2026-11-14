@@ -135,6 +135,44 @@ describe("CustomMcpWizard", () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
+  it("runs the disable once when cancel is clicked again while it is still running", async () => {
+    let finishDisable: () => void = () => {};
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      if (path === "/capas/capa-1/enable") return Promise.resolve({});
+      if (path === "/capas/capa-1/setup") return Promise.resolve({ connectionId: "conn-1" });
+      if (path === "/mcp/connections/conn-1/test") {
+        return Promise.resolve({ id: "conn-1", connected: true, health: { tools: ["ping"] } });
+      }
+      if (path === "/capas/capa-1/disable") {
+        return new Promise((resolve) => {
+          finishDisable = () => resolve({});
+        });
+      }
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    const onOpenChange = vi.fn();
+    render(<CustomMcpWizard open onOpenChange={onOpenChange} />, { wrapper });
+    await installAndTestAStdioServer();
+
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /disable & cancel/i }));
+    await waitFor(() =>
+      expect(postMock.mock.calls.filter(([path]) => path === "/capas/capa-1/disable")).toHaveLength(
+        1,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /close/i }));
+    expect(screen.queryByRole("button", { name: /disable & cancel/i })).not.toBeInTheDocument();
+
+    finishDisable();
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(onOpenChange).toHaveBeenCalledTimes(1);
+    expect(postMock.mock.calls.filter(([path]) => path === "/capas/capa-1/disable")).toHaveLength(
+      1,
+    );
+  });
+
   it("keeps the wizard open, and never closes, when the user chooses to keep editing instead", async () => {
     postMock.mockImplementation((path: string) => {
       if (path === "/capas") {
@@ -860,12 +898,14 @@ describe("CustomMcpWizard", () => {
       fireEvent.click(await screen.findByRole("button", { name: /disable & cancel/i }));
       await waitFor(() => expect(deleteMock).toHaveBeenCalledTimes(2));
       expect(deleteMock).toHaveBeenLastCalledWith("/mcp/connections/conn-1");
+      // Closed (and reset): the first step again, empty.
+      await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(""));
+      // One retry, not a loop.
+      expect(deleteMock).toHaveBeenCalledTimes(2);
     }
 
     it("removes the left department's connection when the wizard is cancelled", async () => {
       await moveThenCancel(false);
-      // Closed (and reset): the first step again, empty.
-      await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue(""));
       expect(toastWarning).toHaveBeenCalledTimes(1);
     });
 
@@ -874,6 +914,7 @@ describe("CustomMcpWizard", () => {
       await waitFor(() => expect(toastWarning).toHaveBeenCalledTimes(2));
       expect(toastWarning.mock.calls[1][0]).toMatch(/could not be removed/);
       expect(toastWarning.mock.calls[1][0]).toMatch(/connections/);
+      expect(deleteMock).toHaveBeenCalledTimes(2);
     });
 
     it("needs a department before going on when the organisation has departments", async () => {

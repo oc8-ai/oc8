@@ -75,6 +75,36 @@ function EditingSource({ mode, existing, onComplete }: CustomServerSourceProps) 
       >
         Save a full URL
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onComplete({
+            baseUrl: "",
+            login: { kind: "none" },
+            httpTools: existing!.httpTools,
+            scopes: { read: ["list_pets"], modify: ["list_pets"] },
+            openapi: existing!.openapi,
+          })
+        }
+      >
+        Save read and modify
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          const draft = {
+            baseUrl: "",
+            login: { kind: "none" as const },
+            httpTools: existing!.httpTools,
+            scopes: { read: [], modify: ["list_pets"] },
+            openapi: existing!.openapi,
+          };
+          onComplete(draft);
+          onComplete(draft);
+        }}
+      >
+        Save twice
+      </button>
     </div>
   );
 }
@@ -186,5 +216,36 @@ describe("Edit endpoints", () => {
       "list_pets: Enter the path below the base URL, starting with /.",
     );
     expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses an endpoint listed as both read and modify, without saving", async () => {
+    grant(["plugin:manage"]);
+    render(<McpConnectionBody connection={connection()} />, { wrapper: wrap([ext]) });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit endpoints" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save read and modify" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "An endpoint either reads or modifies, not both: list_pets",
+    );
+    expect(patchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends one save when the source completes twice", async () => {
+    grant(["plugin:manage"]);
+    patchMock.mockResolvedValue({ ...SNAPSHOT, scopes: { read: [], modify: ["list_pets"] } });
+    render(<McpConnectionBody connection={connection()} />, { wrapper: wrap([ext]) });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit endpoints" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save twice" }));
+    expect(await screen.findByRole("button", { name: "Run test call" })).toBeInTheDocument();
+    expect(patchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("is a modal dialog that closes on Escape", async () => {
+    grant(["plugin:manage"]);
+    render(<McpConnectionBody connection={connection()} />, { wrapper: wrap([ext]) });
+    fireEvent.click(await screen.findByRole("button", { name: "Edit endpoints" }));
+    const dialog = screen.getByRole("dialog", { name: "Edit endpoints" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Edit endpoints" })).not.toBeInTheDocument();
   });
 });

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -532,6 +532,28 @@ async def test_an_edit_does_not_lock_unrelated_connections(app_session: AppSessi
     assert r.status_code == 200, r.text
 
 
+async def _wait_until_blocked_on_a_lock(app_session: AppSessionFactory) -> None:
+    """Until some session of this database waits on a lock (the request under
+    test reached the capa lock the holder keeps), or fail after 10 s.
+    Polled from a fresh session each time: `pg_stat_activity` is a snapshot
+    taken once per transaction."""
+    try:
+        async with asyncio.timeout(10):
+            while True:
+                async with app_session(uuid.uuid4()) as db:
+                    waiting = await db.scalar(
+                        text(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                        )
+                    )
+                if waiting:
+                    return
+                await asyncio.sleep(0.05)
+    except TimeoutError:
+        raise AssertionError("no request ended up waiting on the capa lock") from None
+
+
 async def _edit_under_the_capa_lock(holder: Any, conn_ids: list[uuid.UUID]) -> None:
     """What PATCH .../http-tools writes under the capa lock: the manifest's
     connection and every row, with the edited tools and classification."""
@@ -586,7 +608,7 @@ async def test_an_enable_waits_for_an_edit_and_keeps_it(app_session: AppSessionF
                     headers=_h(tenant),
                 )
             )
-            await asyncio.sleep(0.5)
+            await _wait_until_blocked_on_a_lock(app_session)
             assert not enable.done()
             await holder.commit()
         r = await asyncio.wait_for(enable, timeout=15)
@@ -636,7 +658,7 @@ async def test_a_setup_waits_for_an_edit_and_seeds_the_edited_tools(
                     headers=_h(tenant),
                 )
             )
-            await asyncio.sleep(0.5)
+            await _wait_until_blocked_on_a_lock(app_session)
             assert not setup.done()
             await holder.commit()
         r = await asyncio.wait_for(setup, timeout=15)
@@ -723,6 +745,62 @@ async def test_unclassified_tools_stay_modify(app_session: AppSessionFactory) ->
     row = (await _rows(app_session, tenant))[0]
     assert required_right("get_ticket", row.scopes) == "modify"
     assert required_right("list_tickets", row.scopes) == "read"
+
+
+@pytest.mark.parametrize(
+    ("scopes", "expected"),
+    [
+        # In both lists: modify wins (fail-closed).
+        (
+            {"read": ["list_tickets", "create_ticket"], "modify": ["create_ticket"]},
+            {"read": ["list_tickets"], "modify": ["create_ticket"]},
+        ),
+        # A name that is no tool is dropped: it classifies nothing.
+        (
+            {"read": ["list_tickets", "drop_tickets"], "modify": ["create_ticket", "gone"]},
+            {"read": ["list_tickets"], "modify": ["create_ticket"]},
+        ),
+    ],
+)
+async def test_an_installed_classification_cannot_read_a_modifying_tool(
+    app_session: AppSessionFactory, scopes: dict[str, list[str]], expected: dict[str, list[str]]
+) -> None:
+    """A manifest's read/modify classification is held to the rules
+    PATCH .../http-tools applies, at install: a tool in both lists is modify,
+    and a name that is no tool classifies nothing."""
+    manifest = copy.deepcopy(_MANIFEST)
+    manifest["tool_pack"]["connections"][0]["scopes"] = scopes
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        r = await c.post(
+            "/api/v1/capas", json={"manifest": manifest, "origin": "custom"}, headers=_h(tenant)
+        )
+        assert r.status_code == 201, r.text
+        plugin_id = r.json()["pluginId"]
+        r = await c.post(
+            f"/api/v1/capas/{plugin_id}/enable", json={"grantedPermissions": []}, headers=_h(tenant)
+        )
+        assert r.status_code == 200, r.text
+    row = (await _rows(app_session, tenant))[0]
+    assert row.scopes == expected
+    assert required_right("create_ticket", row.scopes) == "modify"
+    async with app_session(tenant) as db:
+        capa = (
+            await db.execute(select(m.Capa).where(m.Capa.name == "acme_tickets_api"))
+        ).scalar_one()
+        version = await db.get(m.CapaVersion, capa.current_version_id)
+        assert version is not None
+        assert version.manifest["tool_pack"]["connections"][0]["scopes"] == expected
+
+
+def test_a_tool_in_both_lists_requires_modify() -> None:
+    """Whatever wrote the classification, an overlap never reads as read."""
+    scopes = {"read": ["delete_pet"], "modify": ["delete_pet"]}
+    assert required_right("delete_pet", scopes) == "modify"
 
 
 async def test_openapi_omitted_keeps_null_removes(app_session: AppSessionFactory) -> None:

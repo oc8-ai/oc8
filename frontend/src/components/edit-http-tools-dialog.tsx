@@ -1,16 +1,14 @@
 // "Edit endpoints" on an HTTP API connection: the custom server source that
 // can edit it renders its own editor, the result replaces the connection's
 // tools (PATCH /mcp/connections/{id}/http-tools), and one test call confirms it.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, X } from "lucide-react";
 import { HttpTestCallPanel } from "@/components/http-test-call-panel";
 import type { CustomServerSource } from "@/edition/contracts";
 import {
-  httpToolProblemText,
+  customServerDraftProblem,
   postHttpTestCall,
-  toolFields,
   useUpdateHttpTools,
-  validateHttpTools,
   type CustomServerDraft,
   type HttpToolsSnapshot,
 } from "@/lib/http-tools";
@@ -30,22 +28,28 @@ export function EditHttpToolsDialog({
   const [saved, setSaved] = useState<HttpToolsSnapshot | null>(null);
   const [error, setError] = useState<string | null>(null);
   const Source = source.component;
+  // Set synchronously, so a second onComplete (a double click) in the same
+  // tick does not send a second PATCH.
+  const saving = useRef(false);
+
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape" && !saving.current) onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   async function onComplete(draft: CustomServerDraft) {
+    if (saving.current || saved !== null) return;
     setError(null);
-    if (draft.httpTools.length === 0) {
-      setError(t("Choose at least one endpoint.", "Wähle mindestens einen Endpunkt."));
-      return;
-    }
     // The same rules the server applies, so a refusal names the endpoint.
-    const problems = validateHttpTools(draft.httpTools.map(toolFields));
-    const first = problems.findIndex((problem) => problem !== null);
-    if (first >= 0) {
-      setError(
-        `${draft.httpTools[first].name || "?"}: ${httpToolProblemText(problems[first]!, t)}`,
-      );
+    const problem = customServerDraftProblem(draft, t, { withConnection: false });
+    if (problem) {
+      setError(problem);
       return;
     }
+    saving.current = true;
     try {
       setSaved(
         await update.mutateAsync({
@@ -61,12 +65,15 @@ export function EditHttpToolsDialog({
           ? err.message
           : t("Could not save the endpoints.", "Die Endpunkte konnten nicht gespeichert werden."),
       );
+    } finally {
+      saving.current = false;
     }
   }
 
   return (
     <div
       role="dialog"
+      aria-modal="true"
       aria-label={t("Edit endpoints", "Endpunkte bearbeiten")}
       className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-md"
     >
