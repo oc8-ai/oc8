@@ -25,7 +25,6 @@ from oc8.agent.http_tools import (
     HttpLogin,
     HttpToolError,
     HttpToolSession,
-    forget_token,
     oauth2_token,
     resolve_http_login,
 )
@@ -466,15 +465,6 @@ def test_httpx2_request_lines_never_show_a_query_string(
     assert "https://mcp.example.com/mcp" in caplog.text
 
 
-def test_forget_token_drops_the_cache_entry() -> None:
-    login = HttpLogin(
-        kind="oauth2_client_credentials", secret="s", token_url="https://a/t", client_id="c"
-    )
-    ht._TOKENS[ht._token_key(login)] = ("t", 1e12)
-    forget_token(login)
-    assert ht._token_key(login) not in ht._TOKENS
-
-
 # --- fix round 1 ---------------------------------------------------------------
 
 
@@ -610,3 +600,61 @@ async def test_a_basic_username_with_a_colon_is_refused(server: str) -> None:
             await s.call("whoami", {})
     assert caught.value.kind == "auth"
     assert "gets" not in _STATE
+
+
+# --- final review fixes ----------------------------------------------------------
+
+
+@pytest.fixture
+def traced_httpx() -> Iterator[object]:
+    """httpx instrumented the way `setup_observability` does it, into an
+    in-memory exporter."""
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    instrumentor = HTTPXClientInstrumentor()
+    instrumentor.instrument(tracer_provider=provider)
+    try:
+        yield exporter
+    finally:
+        instrumentor.uninstrument()
+        provider.shutdown()
+
+
+def _span_text(exporter: object) -> str:
+    spans = exporter.get_finished_spans()  # type: ignore[attr-defined]
+    return " ".join(f"{s.name} {dict(s.attributes or {})}" for s in spans)
+
+
+async def test_no_login_secret_reaches_a_trace_span(server: str, traced_httpx: object) -> None:
+    # The instrumentation is live: an ordinary httpx call is traced with its URL.
+    import httpx
+
+    async with httpx.AsyncClient() as client:
+        await client.get(f"{server}/whoami?probe=visible")
+    assert "probe=visible" in _span_text(traced_httpx)
+
+    query = HttpLogin(kind="api_key", secret="sk-QUERY-SECRET", location="query", name="api_key")
+    async with HttpToolSession(server, _tools("/whoami"), login=query) as s:
+        await s.call("whoami", {})
+        assert (await s.try_call("whoami", {})).ok
+    async with HttpToolSession(server, _tools("/whoami"), login=_oauth(server)) as s:
+        await s.call("whoami", {})
+    assert _STATE["query"] == {}  # the last call, the OAuth2 one, sent no query key
+    text = _span_text(traced_httpx)
+    assert "sk-QUERY-SECRET" not in text
+    assert "csecret" not in text
+    assert "tok-1" not in text
+
+
+async def test_an_api_key_with_a_scheme_is_redacted_bare_too(server: str) -> None:
+    login = HttpLogin(kind="api_key", secret="Bearer abc123longtoken", name="X-Api-Key")
+    # An API that says "token abc123longtoken expired" echoes the key bare.
+    session = HttpToolSession(server, _tools("/whoami"), login=login)
+    text = ht.redact("token abc123longtoken expired", session._secrets())
+    assert "abc123longtoken" not in text

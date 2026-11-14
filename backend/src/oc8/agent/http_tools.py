@@ -41,6 +41,7 @@ from types import TracebackType
 from typing import Any, Literal
 
 import httpx
+from opentelemetry.instrumentation.utils import suppress_http_instrumentation
 
 from oc8.modelrouter.types import NeutralTool
 from oc8.net.outbound import USER_AGENT, OutboundBlocked, PinnedTransport, guard_outbound_url
@@ -462,21 +463,25 @@ async def send_guarded(
 
     `timeout_s` bounds each network step and the whole call: a server that
     trickles one byte at a time cannot hold a call open past it.
+
+    No trace span is made for these requests: the httpx instrumentation
+    exports the full URL, and a login's key may sit in its query string.
     """
     started = time.monotonic()
     request.headers["Accept-Encoding"] = _ACCEPT_ENCODING
     token = _SENDING_TOOL_CALL.set(True)
     try:
-        async with asyncio.timeout(timeout_s):
-            return await _send_hops(
-                request,
-                started,
-                timeout_s,
-                auth_headers,
-                auth_query,
-                dict(login_query or {}),
-                same_origin_only,
-            )
+        with suppress_http_instrumentation():
+            async with asyncio.timeout(timeout_s):
+                return await _send_hops(
+                    request,
+                    started,
+                    timeout_s,
+                    auth_headers,
+                    auth_query,
+                    dict(login_query or {}),
+                    same_origin_only,
+                )
     except TimeoutError as exc:
         raise HttpToolError(
             "unreachable", f"The API did not answer within {timeout_s:g} seconds."
@@ -720,10 +725,6 @@ def _remember_token(key: _TokenKey, token: str, lifetime_s: float) -> None:
     _TOKENS[key] = (token, now + lifetime_s)
 
 
-def forget_token(login: HttpLogin) -> None:
-    _TOKENS.pop(_token_key(login), None)
-
-
 def _forget_rejected(login: HttpLogin, rejected: str) -> None:
     """Drop the cached token only if it is still the one the API rejected:
     a call that raced ahead may already have fetched a fresh one."""
@@ -784,23 +785,23 @@ async def _fetch_token(login: HttpLogin, *, timeout_s: float) -> tuple[str, floa
     raise HttpToolError("token", f"The token request failed ({status}).", status=status or None)
 
 
-async def _oauth2_token(login: HttpLogin, *, timeout_s: float, force: bool) -> tuple[str, bool]:
+async def _oauth2_token(login: HttpLogin, *, timeout_s: float) -> tuple[str, bool]:
     """The token, and whether it was fetched by this call (not cached)."""
     _check_login(login)
     key = _token_key(login)
     async with _token_lock(key):
         cached = _TOKENS.get(key)
-        if cached is not None and not force and cached[1] > _now():
+        if cached is not None and cached[1] > _now():
             return cached[0], False
         token, lifetime_s = await _fetch_token(login, timeout_s=timeout_s)
         _remember_token(key, token, lifetime_s)
         return token, True
 
 
-async def oauth2_token(login: HttpLogin, *, timeout_s: float, force: bool = False) -> str:
+async def oauth2_token(login: HttpLogin, *, timeout_s: float) -> str:
     """The login's access token: the cached one while it is valid, else one
     fetched now. Simultaneous callers for one login wait for one fetch."""
-    token, _fresh = await _oauth2_token(login, timeout_s=timeout_s, force=force)
+    token, _fresh = await _oauth2_token(login, timeout_s=timeout_s)
     return token
 
 
@@ -856,7 +857,13 @@ class HttpToolSession:
         self._started = False
 
     def _secrets(self) -> list[str]:
-        return [*secret_parts(self._headers.values()), *self._extra_secrets, *self._tokens]
+        # A secret stored with its scheme ("Bearer <token>") comes back bare
+        # from an API that echoes it, so every one is split like a header.
+        return [
+            *secret_parts(self._headers.values()),
+            *secret_parts(self._extra_secrets),
+            *self._tokens,
+        ]
 
     def _auth_header_names(self) -> frozenset[str]:
         names = {name.lower() for name in self._headers}
@@ -891,7 +898,7 @@ class HttpToolSession:
         if login.kind == "basic":
             credentials = _basic_credentials(login.username, login.secret)
             return {"Authorization": f"Basic {credentials}"}, ""
-        token, fresh = await _oauth2_token(login, timeout_s=self._timeout_s, force=False)
+        token, fresh = await _oauth2_token(login, timeout_s=self._timeout_s)
         if token not in self._tokens:
             self._tokens.append(token)
         if not token.isascii():

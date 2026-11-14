@@ -7,7 +7,6 @@ from __future__ import annotations
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-import httpx2
 import pytest
 
 from oc8.agent.http_tools import (
@@ -16,7 +15,7 @@ from oc8.agent.http_tools import (
     HttpToolError,
     HttpToolSession,
 )
-from oc8.agent.mcp_client import McpSession, guard_mcp_request
+from oc8.agent.mcp_client import McpSession
 from oc8.net.outbound import OutboundBlocked
 
 pytestmark = pytest.mark.asyncio
@@ -134,8 +133,3 @@ async def test_remote_mcp_server_url_is_guarded() -> None:
     with pytest.raises(OutboundBlocked):
         async with McpSession("", [], transport="http", server_url="http://169.254.169.254/mcp"):
             pass
-
-
-async def test_remote_mcp_guard_checks_every_hop() -> None:
-    with pytest.raises(OutboundBlocked):
-        await guard_mcp_request(httpx2.Request("GET", "http://10.0.0.5/mcp"))

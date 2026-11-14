@@ -96,12 +96,6 @@ def _safe_env(overrides: dict[str, str] | None) -> dict[str, str]:
     return env
 
 
-async def guard_mcp_request(request: httpx2.Request) -> None:
-    """Refuse `request` unless its address passes the outbound guard
-    (`OutboundBlocked` with the neutral BLOCKED_MESSAGE otherwise)."""
-    await guarded_ip(str(request.url))
-
-
 def _origin2(url: httpx2.URL) -> tuple[str, str, int | None]:
     return (url.scheme, url.host, url.port)
 
