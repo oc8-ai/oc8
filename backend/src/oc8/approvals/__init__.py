@@ -1,7 +1,11 @@
 """Human decisions on an agent's held action, and the one path that records them."""
 
 from oc8.approvals.record_url import record_url_for_connection
-from oc8.approvals.repo import direct_access_owner, owned_by
+from oc8.approvals.repo import (
+    direct_access_owner,
+    load_direct_access_card,
+    member_direct_access_cards,
+)
 from oc8.approvals.service import (
     DERIVE,
     EFFECT_PERMISSIONS,
@@ -32,7 +36,8 @@ __all__ = [
     "decide_approval",
     "direct_access_owner",
     "expire_approval",
-    "owned_by",
+    "load_direct_access_card",
+    "member_direct_access_cards",
     "raise_approval",
     "record_url_for_connection",
 ]

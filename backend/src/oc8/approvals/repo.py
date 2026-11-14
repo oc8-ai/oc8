@@ -229,6 +229,50 @@ async def load_for_actor(
     return row
 
 
+async def member_direct_access_cards(
+    db: AsyncSession, *, member_id: uuid.UUID
+) -> list[ApprovalRequest]:
+    """A member's own direct-access cards, oldest first: the ones the member
+    decides (`decider == "member"`, filed under their id) that are still pending
+    or back a live grant. Never another member's, from any seat."""
+    from oc8.models.direct_access import DirectAccessGrant
+
+    live_grants = select(DirectAccessGrant.approval_id).where(
+        DirectAccessGrant.member_id == member_id,
+        DirectAccessGrant.revoked_at.is_(None),
+    )
+    decided_by_member = (
+        func.coalesce(ApprovalRequest.payload["direct_access"]["decider"].astext, "") == "member"
+    )
+    stmt = (
+        select(ApprovalRequest)
+        .where(
+            owned_by(member_id),
+            decided_by_member,
+            or_(ApprovalRequest.status == "pending", ApprovalRequest.id.in_(live_grants)),
+        )
+        .order_by(ApprovalRequest.created_at)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def load_direct_access_card(
+    db: AsyncSession, approval_id: uuid.UUID, *, member_id: uuid.UUID
+) -> ApprovalRequest | None:
+    """One direct-access card, or None for both "no such row" and "not this
+    member's". An explicit select, never `db.get` (identity-map answer)."""
+    row = (
+        await db.execute(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.id == approval_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if row is None or direct_access_owner(row) != member_id:
+        return None
+    return row
+
+
 async def approved_awaiting_result(
     db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
 ) -> list[ApprovalRequest]:

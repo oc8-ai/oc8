@@ -9,7 +9,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_, select
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.api.deps import DbSession, require_departmental
@@ -21,8 +21,8 @@ from oc8.approvals import (
     NotYourSayAtAll,
     UnknownDecision,
     decide_approval,
-    direct_access_owner,
-    owned_by,
+    load_direct_access_card,
+    member_direct_access_cards,
 )
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
@@ -49,28 +49,7 @@ async def _own_session(db: DbSession, actor: HumanActor, session_id: uuid.UUID) 
 
 @router.get("/chat/direct-access/approvals", response_model=list[ApprovalDTO])
 async def my_direct_access_approvals(db: DbSession, actor: _ChatActor) -> list[ApprovalDTO]:
-    mine = owned_by(actor.member.id)
-    live_grants = select(m.DirectAccessGrant.approval_id).where(
-        m.DirectAccessGrant.member_id == actor.member.id,
-        m.DirectAccessGrant.revoked_at.is_(None),
-    )
-    rows = (
-        (
-            await db.execute(
-                select(m.ApprovalRequest)
-                .where(
-                    mine,
-                    or_(
-                        m.ApprovalRequest.status == "pending",
-                        m.ApprovalRequest.id.in_(live_grants),
-                    ),
-                )
-                .order_by(m.ApprovalRequest.created_at)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    rows = await member_direct_access_cards(db, member_id=actor.member.id)
     grants = {
         g.approval_id: g
         for g in (
@@ -100,8 +79,8 @@ async def decide_direct_access(
     db: DbSession,
     actor: _ChatActor,
 ) -> ApprovalDTO:
-    approval = await db.get(m.ApprovalRequest, approval_id)
-    if approval is None or direct_access_owner(approval) != actor.member.id:
+    approval = await load_direct_access_card(db, approval_id, member_id=actor.member.id)
+    if approval is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "approval not found")
     try:
         result = await decide_approval(
