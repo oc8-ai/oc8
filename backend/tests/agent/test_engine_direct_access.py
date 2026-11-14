@@ -1042,3 +1042,47 @@ async def test_a_granted_copilot_may_not_write_a_record_it_did_not_read(
     assert held == [] and recorder.windows == []
     (entry,) = [e for e in result.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry["result"])
+
+
+async def test_an_approved_write_runs_once_after_the_run_resumes(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leg 2 starts with a fresh ledger: the read happened in leg 1. The person
+    approved this exact call, so read-before-write must not refuse it."""
+    from oc8.agent.harness.calls import call_sig
+
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c3", name="update_record", arguments=dict(_ORDER))),
+            _turn("done"),
+            _turn("done"),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        leg1 = await _run(db, office, agent, run)
+        assert leg1.status == "waiting_for_approval"
+        # Leg 2: the engine is handed the person's verdict for the held call.
+        approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
+        recorder.windows.clear()
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="resume",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided={approved: "approve"},
+        )
+    assert [name for name, _s, _e in recorder.windows] == ["update_record"]
+    assert result.status == "done"

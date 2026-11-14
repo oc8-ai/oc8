@@ -1255,7 +1255,9 @@ async def run_agent(
                     advertised=advertised,
                     direct=call_key is not None and call_key in direct_view.granted,
                 )
-                if gate.effect == "deny":
+                if gate.effect == "deny" and not (
+                    gate.rule == "read_before_write" and verdict == "approve"
+                ):
                     return "refuse", gate.reason or "denied", decision
                 if gate.effect == "ask" and verdict != "approve":
                     return "park", gate.preview or "", decision
@@ -2599,6 +2601,17 @@ async def run_agent(
                                     decision = Decision(
                                         Effect.REQUIRE_APPROVAL, gate_verdict.preview
                                     )
+                            elif (
+                                gate_verdict.effect == "deny"
+                                and gate_verdict.rule == "read_before_write"
+                                and pre_decided
+                                and pre_decided.get(_call_sig(tc)) == "approve"
+                            ):
+                                # A resumed leg starts with a fresh ledger, but
+                                # a held write passed this very gate (the read
+                                # happened) before it was parked, and a person
+                                # then approved exactly this call.
+                                decision = Decision(Effect.ALLOW, "operator approved")
                             elif gate_verdict.effect == "deny":
                                 decision = Decision(Effect.DENY, gate_verdict.reason)
                             tool_span.set_attribute("decision", decision.effect.value)
