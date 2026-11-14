@@ -55,6 +55,17 @@ irreversible_tools = ["mail_send", "mail_reply"]
 read_before_write = true
 entity_lookup_tools = ["mail_search", "calendar_list_events"]
 
+# NEUTRAL SEAM (record_url): Graph returns each file's and message's own link
+# (`webUrl`, `webLink`), so there is no template. A tool result is untrusted
+# text, hence the host allow-list; OneDrive for Business lives on
+# <tenant>-my.sharepoint.com, covered by *.sharepoint.com.
+[connections.record_url]
+native_url_fields = ["webUrl", "webLink"]
+native_url_hosts = [
+    "*.sharepoint.com", "outlook.office365.com", "outlook.office.com",
+    "outlook.live.com", "teams.microsoft.com",
+]
+
 [connections.config.env]
 PYTHONPATH = "/app/capas/microsoft365"
 

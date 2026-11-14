@@ -56,6 +56,10 @@ export function UserTurn({
   // The turn that answered an agent's questions: its one-line summary, not
   // the readable `content` the model reads.
   const answered = answersOf(m);
+  // Only text a member typed keeps its links as written (ruling R23). A
+  // follow-up bubble (and any other turn without a member author) is written
+  // by the copilot from tool input: its links render as plain text, unverified.
+  const memberTyped = m.role === "user" && !!m.authorMemberId;
   return (
     <article
       className="turn-in group flex flex-col items-end gap-1"
@@ -85,7 +89,7 @@ export function UserTurn({
         {answered ? (
           <QuestionSummary questions={answered.questions} answers={answered.answers} />
         ) : (
-          <ChatMarkdown text={m.content} onObjectClick={openObject} />
+          <ChatMarkdown text={m.content} onObjectClick={openObject} memberAuthored={memberTyped} />
         )}
         {m.attachments.length > 0 && (
           <ul className="flex flex-wrap gap-1">

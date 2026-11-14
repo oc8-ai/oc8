@@ -16,12 +16,16 @@ import { usePrefersReducedMotion, useSmoothReveal } from "./smooth-reveal";
 export function StreamingText({
   text,
   streaming,
+  messageId,
   sources,
   onCitation,
   onObjectClick,
 }: {
   text: string;
   streaming: boolean;
+  /** The saved answer, once there is one (see ChatMarkdown): until then its
+   *  links stay text. */
+  messageId?: string;
   sources?: ChatSourceDTO[];
   onCitation?: (n: number) => void;
   onObjectClick?: (href: string) => void;
@@ -37,6 +41,7 @@ export function StreamingText({
         onCitation={onCitation}
         onObjectClick={onObjectClick}
         streaming={streaming}
+        messageId={messageId}
       />
     </div>
   );

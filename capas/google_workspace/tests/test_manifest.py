@@ -172,9 +172,12 @@ def test_every_event_writing_outward_tool_is_scoped_by_the_focus_spec() -> None:
     entities = focus.get("tool_entities") or {}
     outward = set(conn.config.get("outward_tools", []))
     event_writers = {t for t in outward if t.startswith("calendar_") and "invite" not in t}
-    assert set(entities) == event_writers, (
+    assert event_writers <= set(entities), (
         f"outward calendar tools without a focus_spec entity: {event_writers - set(entities)}"
     )
+    # The other entries are the READ tools record links resolve a message by
+    # (`record_url.models`); none of them may be outward.
+    assert not (set(entities) - event_writers) & outward
     # `eventId` first, so an UPDATE keys on the real event; `start` is the
     # fallback for a CREATE, which has no id until the event exists.
     assert focus.get("id_fields") == ["eventId", "start"]

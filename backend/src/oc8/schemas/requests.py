@@ -937,3 +937,9 @@ class SetAgentToolAccessRequest(CamelModel):
     credential_id: uuid.UUID | None = None
     #: Required when the target is the caller's own account.
     confirm_share: bool = False
+
+
+class VerifyRecordLinksRequest(CamelModel):
+    message_id: uuid.UUID
+    #: One chat answer's worth of links; the URL cap matches what `enrich` issues.
+    urls: list[Annotated[str, StringConstraints(max_length=2000)]] = Field(max_length=100)

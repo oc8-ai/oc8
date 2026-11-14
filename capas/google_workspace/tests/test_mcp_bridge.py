@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -10,6 +11,8 @@ from typing import Any
 # sys.path (inside the fixture below) cannot shadow it.
 import mcp.types as types
 import pytest
+
+from oc8.agent.tool_idempotency import REPLAY_NOTE
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -95,3 +98,71 @@ async def test_a_raising_handler_becomes_an_error_result_not_an_exception(
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert result.is_error is True
     assert "403" in _text(result)
+
+
+async def test_bridge_output_is_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    # str(dict) is Python repr (single quotes, True/None): record links parse
+    # the tool output as JSON, so the bridge has to emit real JSON.
+    import json
+
+    from mcp_bridge import __main__ as bridge
+
+    async def _handler(args: dict[str, object]) -> object:
+        return {"a": True, "b": None}
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "gmail_search", _handler)
+    params = types.CallToolRequestParams(name="gmail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert json.loads(_text(result)) == {"a": True, "b": None}
+
+
+async def test_a_string_result_passes_through_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    from mcp_bridge import __main__ as bridge
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return 'Hello "world"\nline two'
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "gmail_search", _handler)
+    params = types.CallToolRequestParams(name="gmail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert _text(result) == 'Hello "world"\nline two'
+
+
+async def test_a_json_looking_string_result_is_quoted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Document text that happens to be JSON must not be parsed as records.
+    import json
+
+    from mcp_bridge import __main__ as bridge
+
+    doc = '[{"id": "1", "webViewLink": "https://drive.google.com/file/d/X/view"}]'
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return doc
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "gmail_search", _handler)
+    params = types.CallToolRequestParams(name="gmail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert json.loads(_text(result)) == doc
+
+
+@pytest.mark.parametrize(
+    ("text", "quoted"),
+    [
+        ('[{"id": "1"}]\n\n' + REPLAY_NOTE, True),
+        (" \u00a0\ufeff[1]", True),
+        ('\ufeff {"a": 1}', True),
+        ("Hello [x]", False),
+    ],
+)
+async def test_a_json_shaped_string_is_quoted_whatever_follows(
+    monkeypatch: pytest.MonkeyPatch, text: str, quoted: bool
+) -> None:
+    from mcp_bridge import __main__ as bridge
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return text
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "gmail_search", _handler)
+    params = types.CallToolRequestParams(name="gmail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert (json.loads(_text(result)) == text) if quoted else (_text(result) == text)

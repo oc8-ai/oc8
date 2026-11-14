@@ -7,6 +7,22 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// ChatMarkdown's record-link check, without a server: in a saved answer no
+// link points at a connected system, so each is an ordinary one.
+vi.mock("@/lib/record-links", async (orig) => ({
+  ...(await orig<typeof import("@/lib/record-links")>()),
+  useVerifiedLinks: (messageId: string | undefined, urls: string[]) => ({
+    data: messageId
+      ? new Map(
+          urls.map((url) => [
+            url,
+            { url, host: new URL(url).hostname, connected: false, issued: false },
+          ]),
+        )
+      : undefined,
+  }),
+}));
+
 vi.mock("@/lib/conversation-api", async (orig) => ({
   ...(await orig<typeof import("@/lib/conversation-api")>()),
   useTurnRun: () => ({ data: undefined }),

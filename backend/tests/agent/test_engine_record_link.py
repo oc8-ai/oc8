@@ -46,7 +46,7 @@ async def test_an_in_process_held_write_gets_a_record_link(
         key="primary", name="things", server_url="", record_url=TEMPLATE
     )
     monkeypatch.setattr(
-        "oc8.approvals.record_url.resolve_tool_pack_connection",
+        "oc8.capas.discovery.resolve_tool_pack_connection",
         lambda plugin, key: manifest_conn,
     )
     recorder = _RecordingServer()

@@ -198,6 +198,7 @@ search_label = "Durchsucht"
 "mail.message" = "Gesprächsverlauf"
 "project.task" = "Aufgabe"
 "project.project" = "Projekt"
+"res.users" = "Benutzer"
 
 [connections.config.focus_spec.verbs]
 create_record = "Erstellt"
@@ -311,6 +312,13 @@ base_url_path = ["env", "ODOO_URL"]
 # approval gets raised about, and a link that works for four models out of six
 # is a link an approver stops trusting. mail.message is the exception and is
 # listed anyway for symmetry -- Odoo resolves it to the record it hangs off.
+# A write's relation arguments link to the records they point at: the
+# approval for a quote names its customer, not just the quote.
+[connections.record_url.related_fields]
+"values.partner_id" = "res.partner"
+"values.user_id" = "res.users"
+"values.opportunity_id" = "crm.lead"
+
 [connections.record_url.models]
 "crm.lead" = "crm.lead"
 "sale.order" = "sale.order"
@@ -321,3 +329,4 @@ base_url_path = ["env", "ODOO_URL"]
 "mail.message" = "mail.message"
 "project.task" = "project.task"
 "project.project" = "project.project"
+"res.users" = "res.users"

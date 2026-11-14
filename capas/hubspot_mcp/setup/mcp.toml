@@ -6,5 +6,9 @@ command = "npx"
 args = ["-y", "@hubspot/mcp-server"]
 department_field = "department"
 
+[env_fields]
+HUBSPOT_PORTAL_ID = "portal_id"
+HUBSPOT_UI_URL = "ui_url"
+
 [secret_env_fields]
 PRIVATE_APP_ACCESS_TOKEN = "private_app_access_token"

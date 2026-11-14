@@ -61,6 +61,5 @@ def test_it_resolves_against_this_packs_own_config() -> None:
 
 def test_an_entity_it_does_not_declare_gets_no_link() -> None:
     conn = _connection()
-    assert (
-        resolve_record_url(conn.record_url, config=conn.config, entity="res.users", ref="1") is None
-    )
+    url = resolve_record_url(conn.record_url, config=conn.config, entity="ir.attachment", ref="1")
+    assert url is None

@@ -106,7 +106,6 @@ from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import raise_approval
-from oc8.approvals.record_url import record_url_for_connection
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -149,6 +148,15 @@ from oc8.realtime.emit import (
     publish_run_token_delta,
     publish_run_tool_call,
 )
+from oc8.records.approvals import note_approved_result
+from oc8.records.links import (
+    LinkContext,
+    enrich_and_remember,
+    link_context,
+    link_for,
+    related_links,
+)
+from oc8.records.registry import link_scope
 from oc8.runtime.approval_resume import pre_decided_map
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
@@ -715,6 +723,30 @@ def _manifest_guardrail_attributes(
     ]
 
 
+async def _link_ctx_for(
+    conn: m.McpConnection | None, db: DbSession, run: m.AgentRun, ctx: dict[str, Any]
+) -> LinkContext | None:
+    """The connection's capa link declaration plus its RESOLVED env: a personal
+    login's base URL lives there, not in the config. None when nothing is
+    declared or the env cannot be had -- links are cosmetic and must never
+    fail a call that already succeeded."""
+    # Declared at all? Resolving the env can mint a token; a connection whose
+    # capa declares no links must not pay for that on every call.
+    declared = link_context(conn)
+    if conn is None or declared is None:
+        return None
+    try:
+        # `ctx` is written back whole after this call: a cleared call to
+        # action must be cleared in it too.
+        env = (await _mcp_env(conn, db, run, ctx=ctx)).env
+    except ConnectionRequired:
+        return None
+    except Exception:
+        logger.warning("record link env for %s could not be resolved", conn.name, exc_info=True)
+        return None
+    return replace(declared, env=env)
+
+
 async def _mcp_env(
     conn: m.McpConnection,
     db: DbSession,
@@ -1088,6 +1120,27 @@ async def _finish_elicitation(
                 return "waiting_for_input", exc.message
             except Exception as exc:
                 output = f"ERROR: {exc}"
+        if not output.startswith("ERROR:"):
+            # Linked like any tool result (the replay record above stays raw),
+            # so the answered call's records carry oc8_url too.
+            output, issued = await enrich_and_remember(
+                db,
+                tenant_id=run.tenant_id,
+                scope=await link_scope(db, run=run),
+                ctx=await _link_ctx_for(conn, db, run, ctx),
+                tool_name=tool,
+                arguments=arguments,
+                output=output,
+            )
+            if issued and held_writes:
+                await note_approved_result(
+                    db,
+                    tenant_id=run.tenant_id,
+                    task_id=run.task_id,
+                    tool_names=(advertised, tool),
+                    arguments=arguments,
+                    urls=issued,
+                )
     ctx.pop("pending_elicitation", None)
     transcript.append(
         _from_message(
@@ -2293,24 +2346,16 @@ async def _dispatch_one_tool(
     focus_spec = cfg.get("focus_spec") if isinstance(cfg.get("focus_spec"), dict) else None
     outward_tools = cfg.get("outward_tools") if isinstance(cfg.get("outward_tools"), list) else None
 
+    async def _link_ctx() -> LinkContext | None:
+        return await _link_ctx_for(conn, db, run, ctx)
+
     async def _record_url() -> str | None:
-        # The form address of the record this call names, so the live log, the
-        # task card and a held approval can open it. Odoo and Jira carry a base
-        # URL in the credential env; a mailbox does not, so mail stays text.
-        if conn is None or conn.name not in ("odoo", "jira"):
-            return None
+        # The address of the record this call names, so the live log, the
+        # task card and a held approval can open it.
         ident = record_identity(tc.name, tc.arguments, focus_spec)
         if ident is None:
             return None
-        from oc8.agent.record_link import record_url_from_env
-
-        try:
-            # `ctx` is written back whole after this call: a cleared call to
-            # action must be cleared in it too.
-            env = (await _mcp_env(conn, db, run, ctx=ctx)).env
-        except ConnectionRequired:
-            return None
-        return record_url_from_env(conn.name, env, ident)
+        return link_for(await _link_ctx(), entity=ident[0], ref=ident[1], args=tc.arguments)
 
     scopes = _manifest_scopes(conn)
     ctx = dict(run.context)
@@ -2433,11 +2478,16 @@ async def _dispatch_one_tool(
         closed_step_timing: dict[str, Any] | None = None
         if step_timings and "_t0" in step_timings[-1]:
             closed_step_timing = finish_step(step_timings[-1])
-        link = await _record_url()
-        # Which record this call is about, resolved from the same pure helper
-        # the containerized gateway's equivalent branch uses -- so a held
-        # write looks identical to an operator whichever runtime raised it.
+        # Which record this call is about, resolved from the same helpers the
+        # containerized gateway's equivalent branch uses -- so a held write
+        # looks identical to an operator whichever runtime raised it.
+        held_ctx = await _link_ctx()
         held_record = record_identity(tc.name, tc.arguments, focus_spec)
+        link = (
+            link_for(held_ctx, entity=held_record[0], ref=held_record[1], args=tc.arguments)
+            if held_record is not None
+            else None
+        )
         ar = await raise_approval(
             db,
             tenant_id=run.tenant_id,
@@ -2453,11 +2503,8 @@ async def _dispatch_one_tool(
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
                 **({"record_url": link} if link else {}),
             },
-            record_url=(
-                record_url_for_connection(conn, entity=held_record[0], ref=held_record[1])
-                if held_record is not None
-                else None
-            ),
+            record_url=link,
+            related_links=related_links(held_ctx, tc.arguments),
         )
         # Record the suspend verdict so the isolated runtime maps the run to
         # waiting_for_approval after the container exits.
@@ -2915,6 +2962,28 @@ async def _dispatch_one_tool(
                     writes=writes,
                     output=output,
                     idempotent=idempotent,
+                )
+        # After the replay record (it stays raw) and before shaping (the fence
+        # wraps the links too); a replay passes here as well, so a resume sees
+        # the same links.
+        if suspend is None and tool_error is None and not output.startswith("ERROR:"):
+            output, issued = await enrich_and_remember(
+                db,
+                tenant_id=run.tenant_id,
+                scope=await link_scope(db, run=run),
+                ctx=await _link_ctx(),
+                tool_name=tc.name,
+                arguments=tc.arguments,
+                output=output,
+            )
+            if issued and writes:
+                await note_approved_result(
+                    db,
+                    tenant_id=run.tenant_id,
+                    task_id=run.task_id,
+                    tool_names=(tc.name,),
+                    arguments=tc.arguments,
+                    urls=issued,
                 )
 
     succeeded = suspend is None and tool_error is None and not output.startswith("ERROR:")

@@ -184,6 +184,9 @@ export function AssistantTurn({
       <StreamingText
         text={holdText ? "" : answer}
         streaming={live || holdText}
+        // Only a saved answer's links are checked and can be clickable: the
+        // streamed text, even once its stream ended, waits for the message.
+        messageId={message?.id}
         sources={sources}
         onObjectClick={openObject}
         onCitation={(n) => {

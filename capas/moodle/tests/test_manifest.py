@@ -71,7 +71,7 @@ def _connection() -> Any:
 def test_the_core_manifest() -> None:
     manifest = _manifest()
     assert (manifest.name, manifest.type, manifest.trust) == ("moodle", "tool_pack", "first_party")
-    assert manifest.version == "1.0.0"
+    assert manifest.version == "1.1.0"
     assert set(manifest.permissions) == {"mcp:connect", "secrets:use"}
 
 

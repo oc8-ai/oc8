@@ -1547,6 +1547,9 @@ msgstr ""
 msgid "Created"
 msgstr ""
 
+msgid "Created record"
+msgstr ""
+
 msgid "Creating…"
 msgstr ""
 

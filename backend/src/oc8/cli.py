@@ -206,6 +206,7 @@ def main() -> None:
             # job has no containers, no agent to free and no evidence on disk.
             from oc8.evidence.sweep import sweep_evidence
             from oc8.knowledge.reconcile import sweep_knowledge_deletions
+            from oc8.records.registry import prune_expired_links
 
             async def _housekeeping() -> None:
                 # BOTH sweeps on the timer, not one at startup and one on a
@@ -237,6 +238,10 @@ def main() -> None:
                 # already wrote, so running it more often than syncs happen
                 # costs two indexed queries per tenant and changes nothing.
                 await sweep_knowledge_deletions()
+                # Fifth sweep, same timer: issued record links past their TTL.
+                # Always on -- an expired row counts for nothing, so deleting
+                # it loses nothing. Indexed, batched deletes per tenant.
+                await prune_expired_links()
                 # No output sweep here: a sandbox runtime syncs its own
                 # /workspace/output while the leg runs
                 # (oc8.runtime.workspace.run_output_sandbox).

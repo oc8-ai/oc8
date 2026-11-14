@@ -10,7 +10,7 @@
 [plugin]
 name = "moodle"
 label = "Moodle"
-version = "1.0.0"
+version = "1.1.0"
 type = "tool_pack"
 trust = "first_party"
 summary = "Connect Moodle — courses, participants, grades, submissions, enrolments and messages"

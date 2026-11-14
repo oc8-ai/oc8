@@ -20,7 +20,7 @@
 [plugin]
 name = "jira_mcp"
 label = "Jira"
-version = "1.1.4"
+version = "1.2.0"
 type = "tool_pack"
 # first_party like odoo_mcp and gitea_mcp: the manifest, the seams and the
 # right classification are ours. The bridge itself is a published, actively

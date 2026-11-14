@@ -22,7 +22,7 @@
 [plugin]
 name = "treg_mcp"
 label = "Treg"
-version = "1.0.0"
+version = "1.0.1"
 type = "tool_pack"
 # first_party: the manifest, the seams and the classification are ours. The
 # server behind it is treg's own hosted, actively maintained MCP endpoint.

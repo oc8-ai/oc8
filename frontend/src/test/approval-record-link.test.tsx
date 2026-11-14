@@ -60,3 +60,30 @@ describe("the approval pane's record link", () => {
     expect(screen.getByText("Nora wants to create a quotation")).toBeInTheDocument();
   });
 });
+
+describe("the approval pane's related and result links", () => {
+  it("links each related record and the record the decision created", () => {
+    renderPane({
+      ...BASE,
+      recordUrl: "https://o.example/odoo/sale.order/42",
+      relatedLinks: [
+        { label: "Kontakt #7", url: "https://o.example/odoo/res.partner/7" },
+        { label: "Sneaky", url: "javascript:alert(1)" },
+      ],
+      resultUrl: "https://o.example/odoo/sale.order/43",
+    });
+    expect(screen.getByRole("link", { name: /Kontakt #7/ })).toHaveAttribute(
+      "href",
+      "https://o.example/odoo/res.partner/7",
+    );
+    const result = screen.getByRole("link", { name: /created record/i });
+    expect(result).toHaveAttribute("href", "https://o.example/odoo/sale.order/43");
+    expect(result).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    expect(screen.queryByRole("link", { name: /Sneaky/ })).toBeNull();
+  });
+
+  it("shows neither when the approval carries none", () => {
+    renderPane({ ...BASE, relatedLinks: [], resultUrl: null });
+    expect(screen.queryByRole("link", { name: /created record|↗/i })).toBeNull();
+  });
+});

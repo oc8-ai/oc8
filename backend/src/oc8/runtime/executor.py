@@ -22,6 +22,8 @@ from oc8.connections.acting import (
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
+from oc8.records.registry import link_scope
+from oc8.records.vetting import vet_answer_links
 from oc8.runtime.adapter import RuntimeAdapter
 from oc8.runtime.agent_status import (
     RunningGuard,
@@ -1062,6 +1064,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             parent_task_id = uuid.UUID(str(parent_raw)) if parent_raw else None
             delegation_depth = int(run.context.get("delegation_depth", 0))
             originating_operator = run.context.get("originating_operator")
+            # Where the answer's record links were issued (`link_scope`); read
+            # here, while `run` is live.
+            links_context = {"chat_session_id": run.context.get("chat_session_id")}
 
             stopped_by_gate = False
             stopped_by_owner_change = False
@@ -1154,6 +1159,19 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         ),
                         task_images_raw=task_images_raw,
                     )
+                # One check for every runtime and every destination: the saved
+                # run output, the chat message, messenger doors and a parent's
+                # wake all read `result.output` after this line (spec §5).
+                # Scoped like the run's tool calls were: by its conversation,
+                # else its task chain (the result's task; the row gets it only
+                # further down). The context was read before the runtime ran:
+                # the isolated runtime's commit expires `run`.
+                result.output = await vet_answer_links(
+                    db,
+                    tenant_id=tenant_id,
+                    scope=await link_scope(db, context=links_context, task_id=result.task_id),
+                    text=result.output,
+                )
             except Exception as exc:  # persist failure, never crash the worker
                 run_error = repr(exc)
 

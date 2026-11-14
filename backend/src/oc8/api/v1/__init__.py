@@ -46,6 +46,7 @@ from oc8.api.v1 import (
     oauth,
     onboarding,
     reconciliation,
+    record_links,
     reports,
     roles,
     run,
@@ -118,3 +119,4 @@ api_router.include_router(credentials.router, tags=["credentials"])
 api_router.include_router(audit.router, tags=["audit"])
 api_router.include_router(backup.router, tags=["backup"])
 api_router.include_router(kpis.router, tags=["kpis"])
+api_router.include_router(record_links.router, tags=["records"])

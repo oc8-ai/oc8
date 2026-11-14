@@ -21,7 +21,7 @@
 [plugin]
 name = "odoo_mcp"
 label = "Odoo"
-version = "1.8.6"
+version = "1.9.0"
 type = "tool_pack"
 trust = "first_party"
 summary = "Connect Odoo — CRM, sales and contacts over the Model Context Protocol"

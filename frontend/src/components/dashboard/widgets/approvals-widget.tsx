@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
@@ -606,6 +606,26 @@ function formatReasonContext(
   }
 }
 
+function isHttpUrl(url: string | null | undefined): url is string {
+  return !!url && (url.startsWith("http://") || url.startsWith("https://"));
+}
+
+/** A link out to a record in a connected system. Only http(s) reaches here:
+ *  the server already refuses anything else, and this is the second guard
+ *  against a `javascript:` URI in an `href`. */
+function RecordLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mr-3 mt-2 inline-flex items-center gap-1.5 text-xs text-primary underline-offset-2 hover:underline"
+    >
+      {children}
+    </a>
+  );
+}
+
 export function ApprovalPane({
   approval,
   mayAct,
@@ -680,17 +700,24 @@ export function ApprovalPane({
               <p className="mt-2 text-sm leading-relaxed text-foreground/90">{approval.detail}</p>
             )
           )}
-          {(approval.recordUrl?.startsWith("http://") ||
-            approval.recordUrl?.startsWith("https://")) && (
-            <a
-              href={approval.recordUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="mt-2 inline-flex items-center gap-1.5 text-xs text-primary underline-offset-2 hover:underline"
-            >
+          {isHttpUrl(approval.recordUrl) && (
+            <RecordLink href={approval.recordUrl}>
               <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
               {t("Open the record", "Datensatz öffnen")}
-            </a>
+            </RecordLink>
+          )}
+          {approval.relatedLinks
+            ?.filter((link) => isHttpUrl(link.url))
+            .map((link) => (
+              <RecordLink key={link.url} href={link.url}>
+                ↗ {link.label}
+              </RecordLink>
+            ))}
+          {isHttpUrl(approval.resultUrl) && (
+            <RecordLink href={approval.resultUrl}>
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {t("Created record", "Angelegter Datensatz")}
+            </RecordLink>
           )}
         </section>
         {approval.actionType === "copilot.agent_builder" && approval.proposalId && (

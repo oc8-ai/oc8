@@ -105,6 +105,60 @@ describe("UserTurn", () => {
     fireEvent.click(screen.getByRole("button", { name: /Edit and resend/ }));
     expect(onEdit).toHaveBeenCalledWith("typo here");
   });
+
+  // Only text a member typed is theirs to link (ruling R23): a follow-up
+  // bubble is written by the copilot, so its links are never clickable.
+  const URL_TEXT = "[the deal](https://odoo.acme.de/odoo/sale.order/42)";
+
+  it("keeps a member's own link clickable", () => {
+    const message = {
+      ...base,
+      id: "u1",
+      role: "user" as const,
+      content: URL_TEXT,
+      authorMemberId: "me",
+      authorName: "Me",
+    };
+    wrap(
+      <UserTurn
+        turn={{ kind: "user", key: "u1", message }}
+        viewerMemberId="me"
+        canEdit={false}
+        onEdit={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("link", { name: /the deal/ })).toHaveAttribute(
+      "href",
+      "https://odoo.acme.de/odoo/sale.order/42",
+    );
+  });
+
+  it("renders a follow-up bubble's link as plain text", () => {
+    const message = { ...base, id: "f1", role: "followup" as const, content: URL_TEXT };
+    wrap(
+      <UserTurn
+        turn={{ kind: "user", key: "f1", message }}
+        viewerMemberId="me"
+        canEdit={false}
+        onEdit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.getByText(/the deal/)).toBeInTheDocument();
+  });
+
+  it("renders a user turn without a member author with plain-text links", () => {
+    const message = { ...base, id: "u2", role: "user" as const, content: URL_TEXT };
+    wrap(
+      <UserTurn
+        turn={{ kind: "user", key: "u2", message }}
+        viewerMemberId="me"
+        canEdit={false}
+        onEdit={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("link")).toBeNull();
+  });
 });
 
 describe("AssistantTurn", () => {

@@ -106,7 +106,7 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import raise_approval, record_url_for_connection
+from oc8.approvals import raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -182,6 +182,16 @@ from oc8.realtime.emit import (
     publish_run_tool_call,
     record_activity,
 )
+from oc8.records.approvals import note_approved_result
+from oc8.records.links import (
+    LinkContext,
+    enrich_and_remember,
+    link_context,
+    link_for,
+    related_links,
+)
+from oc8.records.registry import link_scope
+from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
 from oc8.runtime.run_context import append_tool_call
 from oc8.runtime.step_record import call_state_for, step_timing_dto
@@ -650,39 +660,52 @@ async def run_agent(
             outward_tools = None
             guardrail_attribute_specs = []
 
+        async def _link_ctx(connection_name: str | None) -> LinkContext | None:
+            # The connection that owns the tool, with its RESOLVED env: a
+            # personal login's base URL lives there, not in the config.
+            owner = next((item for item in extra_conns if item.name == connection_name), None)
+            if owner is None and len(extra_conns) == 1:
+                owner = extra_conns[0]
+            # Declared at all? Resolving the env can mint a token; a connection
+            # whose capa declares no links must not pay for that on every call.
+            declared = link_context(owner)
+            if owner is None or declared is None:
+                return None
+            try:
+                if run_row is not None:
+                    env = (await run_mcp_env(db, run=run_row, conn=owner)).env
+                else:
+                    await require_enabled(db, owner)
+                    cfg = owner.config if isinstance(owner.config, dict) else {}
+                    env = await resolve_mcp_env(
+                        db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
+                    )
+            except ConnectionRequired:
+                return None
+            except Exception:
+                # A secret or an OAuth mint that fails here would otherwise
+                # raise into a call that already succeeded; it only costs links.
+                logger.warning(
+                    "record link env for %s could not be resolved", owner.name, exc_info=True
+                )
+                return None
+            return replace(declared, env=env)
+
         async def _record_url(
             name: str,
             arguments: dict[str, Any],
             connection_name: str | None = None,
             spec: dict[str, Any] | None = None,
         ) -> str | None:
-            # Same address the isolated loop stores: an Odoo form URL or a Jira
-            # browse page, built from the connection that owns the tool.
-            owner = next((item for item in extra_conns if item.name == connection_name), None)
-            if owner is None and len(extra_conns) == 1:
-                owner = extra_conns[0]
-            if owner is None or owner.name not in ("odoo", "jira"):
-                return None
+            # The address of the record this call names, from the owning
+            # capa's record_url declaration -- the same one the gateway and the
+            # isolated runtime use.
             ident = record_identity(name, arguments, spec if spec is not None else focus_spec)
             if ident is None:
                 return None
-            if run_row is not None:
-                try:
-                    env = (await run_mcp_env(db, run=run_row, conn=owner)).env
-                except ConnectionRequired:
-                    return None
-            else:
-                try:
-                    await require_enabled(db, owner)
-                except ConnectionRequired:
-                    return None
-                cfg = owner.config if isinstance(owner.config, dict) else {}
-                env = await resolve_mcp_env(
-                    db, tenant_id=tenant_id, cfg=cfg, connection_name=owner.name
-                )
-            from oc8.agent.record_link import record_url_from_env
-
-            return record_url_from_env(owner.name, env, ident)
+            return link_for(
+                await _link_ctx(connection_name), entity=ident[0], ref=ident[1], args=arguments
+            )
 
         resume_task_id: uuid.UUID | None = run_row.task_id if run_row is not None else None
         task = await open_run_task(
@@ -694,6 +717,9 @@ async def run_agent(
             delegation_depth=delegation_depth,
             resume_task_id=resume_task_id,
         )
+        # The conversation (else task chain) this run's record links are issued
+        # in and checked against -- the executor computes the same one.
+        links_scope = await link_scope(db, run=run_row, task_id=task.id)
 
         budget = await check_budget(db, tenant_id=tenant_id, department_id=agent.department_id)
         if budget.hard_exceeded:
@@ -1290,6 +1316,28 @@ async def run_agent(
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
+                        if effect == "run" and not finished.startswith("ERROR:"):
+                            # Linked like any tool result (the replay record
+                            # above stays raw), so the answered call's records
+                            # carry oc8_url too.
+                            finished, held_issued = await enrich_and_remember(
+                                db,
+                                tenant_id=tenant_id,
+                                scope=links_scope,
+                                ctx=await _link_ctx(held_route[0]),
+                                tool_name=held_route[6],
+                                arguments=arguments,
+                                output=finished,
+                            )
+                            if held_issued and held_writes:
+                                await note_approved_result(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    task_id=task.id,
+                                    tool_names=(tool_name, held_route[6]),
+                                    arguments=arguments,
+                                    urls=held_issued,
+                                )
                         messages.append(
                             NeutralMessage(
                                 role="user",
@@ -1888,6 +1936,17 @@ async def run_agent(
                     output_text = result.text
                     if finish_verdict.exhausted_note is not None:
                         output_text = f"{output_text}\n\n{finish_verdict.exhausted_note}"
+                    # The activity log below is written before the executor's
+                    # check sees this text, so it is vetted here too (idempotent).
+                    raw_output = output_text
+                    output_text = await vet_answer_links(
+                        db, tenant_id=tenant_id, scope=links_scope, text=raw_output
+                    )
+                    # Cut first, vet after: cutting a vetted text could shorten an
+                    # issued URL into a different, unissued one.
+                    activity_detail = await vet_answer_links(
+                        db, tenant_id=tenant_id, scope=links_scope, text=raw_output[:500]
+                    )
 
                     task.state = "done"
                     if auto_cfg is not None:
@@ -1914,7 +1973,7 @@ async def run_agent(
                             "warning" if finish_verdict.exhausted_note is not None else "success"
                         ),
                         message=f"{agent.name} completed: {task_text[:80]}",
-                        detail=output_text[:500] or None,
+                        detail=activity_detail or None,
                         cache_hit=cached_result is not None,
                     )
                     await maybe_checkpoint(
@@ -2352,15 +2411,22 @@ async def run_agent(
                                     reason_context=decision.context,
                                 )
                             else:
-                                link = await _record_url(
-                                    auth_tc.name, tc.arguments, call_key, call_focus
-                                )
-                                # Same pure helper + manifest template the
-                                # gateway and the isolated runtime use, so a held
-                                # write carries the same link whichever runtime
-                                # raised it.
+                                # Same declaration-driven helpers the gateway and the
+                                # isolated runtime use, so a held write carries the
+                                # same links whichever runtime raised it.
+                                link_ctx = await _link_ctx(call_key)
                                 held_record = record_identity(
                                     auth_tc.name, tc.arguments, call_focus
+                                )
+                                link = (
+                                    link_for(
+                                        link_ctx,
+                                        entity=held_record[0],
+                                        ref=held_record[1],
+                                        args=tc.arguments,
+                                    )
+                                    if held_record is not None
+                                    else None
                                 )
                                 ar = await raise_approval(
                                     db,
@@ -2381,13 +2447,8 @@ async def run_agent(
                                     },
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
-                                    record_url=(
-                                        record_url_for_connection(
-                                            owner, entity=held_record[0], ref=held_record[1]
-                                        )
-                                        if held_record is not None
-                                        else None
-                                    ),
+                                    record_url=link,
+                                    related_links=related_links(link_ctx, tc.arguments),
                                 )
 
                             from oc8.realtime.bus import get_event_bus
@@ -2854,6 +2915,28 @@ async def run_agent(
                                     output=output,
                                     idempotent=idempotent,
                                 )
+                            # After the replay record (it stays raw) and before
+                            # shaping (the fence wraps the links too); a replay
+                            # passes here as well, so a resume sees the same links.
+                            if tool_error is None and not output.startswith("ERROR:"):
+                                output, issued = await enrich_and_remember(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    scope=links_scope,
+                                    ctx=await _link_ctx(call_key),
+                                    tool_name=auth_tc.name,
+                                    arguments=tc.arguments,
+                                    output=output,
+                                )
+                                if issued and writes:
+                                    await note_approved_result(
+                                        db,
+                                        tenant_id=tenant_id,
+                                        task_id=task.id,
+                                        tool_names=(tc.name, auth_tc.name),
+                                        arguments=tc.arguments,
+                                        urls=issued,
+                                    )
                         succeeded = tool_error is None and not output.startswith("ERROR:")
                         # harness.shape() below prepends a "[step N/max · ...]"
                         # stamp to EVERY shaped result, so the reassigned

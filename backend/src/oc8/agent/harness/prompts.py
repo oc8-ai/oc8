@@ -134,7 +134,10 @@ def render_system_prompt(
         "decisions you requested. At most 12 lines. Report only what tool "
         "results in this run establish; if a detail is not in the run, say "
         "so instead of inventing it. No closing offers (\"if you want I "
-        "can...\")."
+        "can...\").\n"
+        "- When you mention a record from a connected system, link it as "
+        "Markdown with its oc8_url field, e.g. [Quotation S00042](<oc8_url>). "
+        "Never construct or guess a URL yourself."
     )
     return "\n\n".join(parts)
 
