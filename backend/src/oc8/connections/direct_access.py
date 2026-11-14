@@ -123,7 +123,7 @@ async def load_direct_access(
 
 
 async def direct_connections(
-    db: AsyncSession, *, run: m.AgentRun | None, agent: m.Agent, right: str = "read"
+    db: AsyncSession, *, run: m.AgentRun | None, agent: m.Agent, right: str
 ) -> list[m.McpConnection]:
     """The rows a Copilot run opens: one per granted key, resolved for the
     person (§6) from a department granting `right`, never from the Copilot's

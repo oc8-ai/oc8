@@ -1,0 +1,208 @@
+"""The executor's side of a Copilot direct-access park and resume.
+
+* A run parked on `offer_direct_access` whose offer was already decided is
+  woken at once -- and a stale, decided held write of an earlier leg never
+  wakes a run that is now waiting on an undecided offer.
+* A resume after a held write AND an answered offer tells the run both.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import uuid
+from typing import Any
+
+import pytest
+
+from oc8 import models as m
+from oc8.agent.engine import RunResult
+from oc8.constants import ACME_TENANT_ID
+from oc8.runtime.approval_resume import call_signature
+from oc8.runtime.executor import execute_run, requeue_if_already_decided
+from oc8.runtime.queue import RunMessage
+from oc8.runtime.repository import RunRepository
+from oc8.runtime.states import RunState
+from tests.conftest import AppSessionFactory
+
+pytestmark = pytest.mark.asyncio
+
+WRITE = ("update_record", {"id": 7})
+
+
+async def _parked(
+    db: Any,
+    tenant: uuid.UUID,
+    *,
+    context: dict[str, Any],
+    holds: list[tuple[str, str, dict[str, Any]]],
+) -> m.AgentRun:
+    """A run in WAITING_FOR_APPROVAL and its task's approvals, oldest first:
+    (action_type, status, payload)."""
+    dept = m.Department(tenant_id=tenant, name="Sales", frame={})
+    db.add(dept)
+    await db.flush()
+    agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Copilot")
+    db.add(agent)
+    await db.flush()
+    task = m.Task(tenant_id=tenant, department_id=dept.id, title="t", state="waiting_for_approval")
+    db.add(task)
+    await db.flush()
+    run = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=agent.id,
+        task_id=task.id,
+        state=RunState.WAITING_FOR_APPROVAL.value,
+        context=context,
+    )
+    db.add(run)
+    await db.flush()
+    start = dt.datetime.now(dt.UTC)
+    for i, (action_type, status, payload) in enumerate(holds):
+        db.add(
+            m.ApprovalRequest(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                task_id=task.id,
+                action_type=action_type,
+                status=status,
+                title="t",
+                payload={"run_id": str(run.id), **payload}
+                if action_type == "direct_access"
+                else payload,
+                # Each leg raised its hold in its own transaction.
+                created_at=start + dt.timedelta(seconds=i),
+            )
+        )
+        await db.flush()
+    return run
+
+
+def _offer(status: str) -> tuple[str, str, dict[str, Any]]:
+    return (
+        "direct_access",
+        status,
+        {"tool": "offer_direct_access", "arguments": {"connection": "things"}},
+    )
+
+
+def _write(status: str) -> tuple[str, str, dict[str, Any]]:
+    return ("tool_send", status, {"tool": WRITE[0], "arguments": WRITE[1]})
+
+
+def _decided_write() -> dict[str, Any]:
+    return {
+        "sig": call_signature(*WRITE),
+        "tool": WRITE[0],
+        "arguments": WRITE[1],
+        "decision": "approve",
+    }
+
+
+async def test_an_offer_decided_before_the_park_wakes_the_run(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        run = await _parked(
+            db,
+            tenant,
+            context={
+                "task": "x",
+                "resolved_direct_access": {"tool_key": "things", "decision": "approve"},
+            },
+            holds=[_offer("approved")],
+        )
+        assert await requeue_if_already_decided(db, run=run) is True
+        assert run.state == RunState.QUEUED.value
+
+
+async def test_an_undecided_offer_stays_parked_despite_a_stale_decided_write(
+    app_session: AppSessionFactory,
+) -> None:
+    """The earlier leg's held write is decided; THIS park holds the offer."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        run = await _parked(
+            db,
+            tenant,
+            context={"task": "x", "resolved_tool_approvals": [_decided_write()]},
+            holds=[_write("approved"), _offer("pending")],
+        )
+        assert await requeue_if_already_decided(db, run=run) is False
+        assert run.state == RunState.WAITING_FOR_APPROVAL.value
+
+
+async def test_another_runs_decided_offer_does_not_wake_this_run(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        run = await _parked(
+            db,
+            tenant,
+            context={
+                "task": "x",
+                "resolved_direct_access": {"tool_key": "things", "decision": "approve"},
+            },
+            holds=[],
+        )
+        assert run.task_id is not None
+        db.add(
+            m.ApprovalRequest(
+                tenant_id=tenant,
+                agent_id=run.agent_id,
+                task_id=run.task_id,
+                action_type="direct_access",
+                status="approved",
+                title="t",
+                payload={"run_id": str(uuid.uuid4())},
+            )
+        )
+        await db.flush()
+        assert await requeue_if_already_decided(db, run=run) is False
+
+
+class _FnRuntime:
+    def __init__(self, fn: Any) -> None:
+        self._fn = fn
+
+    async def execute(self, db: Any, **kw: Any) -> RunResult:
+        result: RunResult = await self._fn(db, **kw)
+        return result
+
+
+async def test_a_resume_after_a_held_write_and_an_answered_offer_tells_both(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Dev")
+        s.add(agent)
+        await s.flush()
+        created = await RunRepository(s).create(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            context={
+                "task": "find the quotation",
+                "resolved_tool_approvals": [_decided_write()],
+                "resolved_direct_access": {
+                    "tool_key": "things",
+                    "label": "Things",
+                    "decision": "approve",
+                },
+            },
+        )
+        run_id = created.id
+    seen: dict[str, Any] = {}
+
+    async def capturing(db: Any, **kw: Any) -> RunResult:
+        seen.update(kw)
+        return RunResult(task_id=uuid.uuid4(), agent_id=kw["agent"].id, status="done", output="ok")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(capturing),
+    )
+    text = str(seen["task_text"])
+    assert "FREIGEGEBEN" in text and "update_record" in text
+    assert "The person approved reading Things (things)" in text

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import resolve_version
+from oc8.approvals.repo import DIRECT_ACCESS_ACTION
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
     ActingPerson,
@@ -221,8 +222,39 @@ async def requeue_if_already_decided(db: AsyncSession, *, run: m.AgentRun) -> bo
     Together the two leave no window: every decision is either visible here
     already, or the operator's own re-read sees the park it was blocked behind.
     """
-    entries = (run.context or {}).get("resolved_tool_approvals") or []
-    if not entries or run.task_id is None:
+    context = run.context or {}
+    entries = context.get("resolved_tool_approvals") or []
+    if run.task_id is None:
+        return False
+    if entries or isinstance(context.get("resolved_direct_access"), dict):
+        # A Copilot run may be parked on its direct-access offer
+        # (`offer_direct_access`) instead: when the latest hold on the task is
+        # this run's offer, THIS park waits for it -- decided already, the run
+        # must not wait; still pending, an earlier leg's decided write must
+        # not wake it. Another run's offer says nothing about this park.
+        latest = (
+            await db.execute(
+                select(m.ApprovalRequest)
+                .where(
+                    m.ApprovalRequest.task_id == run.task_id,
+                    m.ApprovalRequest.action_type.in_(
+                        ("tool_send", "memory_write", DIRECT_ACCESS_ACTION)
+                    ),
+                )
+                .order_by(m.ApprovalRequest.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if (
+            latest is not None
+            and latest.action_type == DIRECT_ACCESS_ACTION
+            and latest.payload.get("run_id") == str(run.id)
+        ):
+            if latest.status == "pending":
+                return False
+            await RunRepository(db).transition(run, RunState.QUEUED)
+            return True
+    if not entries:
         return False
 
     from oc8.runtime.approval_resume import call_signature
@@ -1058,8 +1090,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 task_text = resume_instruction(approvals)
                 pre_decided = pre_decided_map(approvals)
             resolved_access = run.context.get("resolved_direct_access")
-            if not approvals and isinstance(resolved_access, dict):
+            if isinstance(resolved_access, dict):
                 # A direct-access offer was answered: carry on with the request.
+                # Told after a held write's instruction too, when the same run
+                # had both decided -- else the person's answer would be lost.
                 from oc8.copilot.direct_access import direct_access_resume_text
 
                 task_text = direct_access_resume_text(task_text, resolved_access)

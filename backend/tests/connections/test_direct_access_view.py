@@ -44,7 +44,7 @@ async def test_a_present_member_with_a_grant_sees_the_connection(
         view = await load_direct_access(db, run=run, agent=agent)
         assert view.member_id == office.member_id
         assert [d for d, _p in view.granted["things"]] == [office.department_id]
-        conns = await direct_connections(db, run=run, agent=agent)
+        conns = await direct_connections(db, run=run, agent=agent, right="read")
         assert [c.id for c in conns] == [office.connection_id]
 
 
@@ -120,7 +120,7 @@ async def test_only_a_live_web_turn_of_the_member_is_a_direct_access_run(
         agent = await _copilot(db, office.copilot_id)
         assert direct_access_run(run, agent) is None
         assert await load_direct_access(db, run=run, agent=agent) == NO_DIRECT_ACCESS
-        assert await direct_connections(db, run=run, agent=agent) == []
+        assert await direct_connections(db, run=run, agent=agent, right="read") == []
 
 
 async def test_an_ordinary_agent_is_never_a_direct_access_run(
