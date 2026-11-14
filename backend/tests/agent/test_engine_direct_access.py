@@ -877,3 +877,89 @@ async def test_without_a_grant_the_copilot_cannot_read_a_resource(
         agent = await _copilot(db, office)
         await _run(db, office, agent, await chat_run(db, office))
     assert reads == []
+
+
+async def test_a_granted_read_resource_is_audited_on_behalf_and_counted(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_read_resource(monkeypatch)
+    _patch(
+        monkeypatch,
+        _RecordingServer(delay_s=0),
+        [
+            _turn(
+                "",
+                ToolCall(
+                    id="c1",
+                    name="read_resource",
+                    arguments={"connection": "things", "uri": "order/115"},
+                ),
+            ),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        row = await grant(db, office)
+        agent = await _copilot(db, office)
+        await _run(db, office, agent, await chat_run(db, office))
+        await db.refresh(row)
+    async with app_session(tenant) as db:
+        audited = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "direct_access.call")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert row.actions == 1
+    assert [(a.resource["tool"], a.resource["succeeded"]) for a in audited] == [
+        ("read_resource", True)
+    ]
+    assert audited[0].resource["on_behalf_of"] == str(office.member_id)
+    assert audited[0].resource["connection"] == "things"
+
+
+async def test_a_denied_read_resource_is_not_audited_as_a_direct_call(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub_read_resource(monkeypatch)
+    _patch(
+        monkeypatch,
+        _RecordingServer(delay_s=0),
+        [
+            _turn(
+                "",
+                ToolCall(
+                    id="c1",
+                    name="read_resource",
+                    arguments={"connection": "things", "uri": "order/115"},
+                ),
+            ),
+            _turn("no"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await grant(db, office)
+        agent = await _copilot(
+            db,
+            office,
+            narrowing={"tools": {"things": {"enabled": True, "read": False, "modify": False}}},
+        )
+        await _run(db, office, agent, await chat_run(db, office))
+    async with app_session(tenant) as db:
+        audited = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "direct_access.call")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert audited == []

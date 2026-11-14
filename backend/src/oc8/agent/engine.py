@@ -3230,13 +3230,25 @@ async def run_agent(
                                         urls=issued,
                                     )
                         succeeded = tool_error is None and not output.startswith("ERROR:")
-                        if direct_call and _tool_call_dispatched and run_row is not None:
+                        read_via_grant = (
+                            direct_read_conn is not None and decision.effect is Effect.ALLOW
+                        )
+                        if (
+                            (direct_call or read_via_grant)
+                            and _tool_call_dispatched
+                            and run_row is not None
+                        ):
                             # Audited "on behalf of", counted when it worked;
-                            # a failing call keeps the grant (§9, §11).
+                            # a failing call keeps the grant (§9, §11). The
+                            # Copilot's read_resource counts like a read tool.
                             direct_nudge = await _direct.note_direct_action(
                                 db,
                                 run=run_row,
-                                tool_key=call_key or "",
+                                tool_key=(
+                                    direct_read_conn.name
+                                    if direct_read_conn is not None and not direct_call
+                                    else call_key or ""
+                                ),
                                 tool=auth_tc.name,
                                 succeeded=succeeded,
                             )
