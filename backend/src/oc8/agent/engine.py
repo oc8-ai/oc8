@@ -1294,6 +1294,10 @@ async def run_agent(
                     return "refuse", gate.reason or "denied", decision, False
                 if gate.effect == "ask" and verdict != "approve":
                     return "park", gate.preview or "", decision, True
+                if gate.effect == "ask":
+                    # The approved write runs: its proof is spent, whether or
+                    # not read-before-write needed waiving this leg.
+                    await _consume_waiver(call_key, _call_sig(held))
                 return "run", "", decision, False
 
             steps = 0
@@ -2637,6 +2641,11 @@ async def run_agent(
                             if gate_verdict.effect == "ask":
                                 verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
                                 if verdict == "approve":
+                                    # The approved write runs: spend its proof
+                                    # (if it carries one) even though this leg
+                                    # needed no waiver, so a later leg cannot
+                                    # spend it on a second execution.
+                                    await _consume_waiver(call_key, _call_sig(tc))
                                     decision = Decision(Effect.ALLOW, "operator approved")
                                 elif verdict == "reject":
                                     decision = Decision(

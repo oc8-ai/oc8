@@ -1226,3 +1226,50 @@ async def test_a_pdp_hold_leaves_no_proof_so_the_resumed_write_is_refused(
             },
         )
     assert recorder.windows == []
+
+
+async def test_a_proof_is_spent_when_the_approved_write_runs_after_a_read(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Leg 2 reads the record first, so the approved write needs no waiver. Its
+    proof is spent all the same: leg 3 repeating the write unread is refused."""
+    from oc8.agent.harness.calls import call_sig
+
+    recorder = _RecordingServer(delay_s=0)
+    turns = [
+        _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
+        _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+        # Leg 2: read, then the approved write.
+        _turn("", ToolCall(id="c3", name="get_record", arguments=dict(_ORDER))),
+        _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
+        # Leg 3: the same write, unread.
+        _turn("", ToolCall(id="c5", name="update_record", arguments=dict(_ORDER))),
+        *[_turn("done") for _ in range(8)],
+    ]
+    _patch(monkeypatch, recorder, turns)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
+        leg1 = await _run(db, office, agent, run)
+        assert leg1.status == "waiting_for_approval"
+        from oc8.runtime.approval_resume import resolve_tool_approval
+
+        await resolve_tool_approval(db, approval=await _held(db), decision="approve")
+        await db.refresh(run)
+        for text in ("resume", "resume again"):
+            await run_agent(
+                db,
+                agent=agent,
+                task_text=text,
+                tenant_id=office.tenant,
+                run_id=run.id,
+                pre_decided={approved: "approve"},
+            )
+        await db.refresh(run)
+        assert run.context["waived_read_before_write"] == ["things\n" + approved]
+    assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
