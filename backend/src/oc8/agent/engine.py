@@ -687,16 +687,24 @@ async def run_agent(
             if owner is not None and owner.department_id is not None:
                 allowed = owner.department_id in granting
             elif owner is not None:
-                # An organisation-wide row: only while no granting department
-                # has a row of its own (`direct_connection`'s fallback).
-                expected = await direct_connection(
-                    db,
-                    tenant_id=tenant_id,
-                    tool_key=call_key,
-                    departments=departments,
-                    right=right,
-                )
-                allowed = expected is not None and expected.id == owner.id
+                # An organisation-wide row: allowed when some department that
+                # grants the right would, on its own, run the call on it --
+                # i.e. it has no connected row of its own. The row is already
+                # a candidate, so this never materialises one.
+                allowed = False
+                for department_id, policy in departments:
+                    if not policy.has_right(right):
+                        continue
+                    expected = await direct_connection(
+                        db,
+                        tenant_id=tenant_id,
+                        tool_key=call_key,
+                        departments=[(department_id, policy)],
+                        right=right,
+                    )
+                    if expected is not None and expected.id == owner.id:
+                        allowed = True
+                        break
             else:
                 allowed = False
             if allowed:

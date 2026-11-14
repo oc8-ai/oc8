@@ -517,6 +517,134 @@ async def test_a_seat_lost_in_the_opened_department_refuses_even_a_read(
     assert "through another department" in second["reason"]
 
 
+async def _org_wide_office(db: AsyncSession, tenant: uuid.UUID) -> tuple[DirectOffice, uuid.UUID]:
+    """Sales: read-only, its own row. Ops: read + modify, NO row of its own.
+    A connected organisation-wide (department-less) row exists."""
+    office = await direct_office(db, tenant, policy=READ_ONLY)
+    ops = m.Department(tenant_id=tenant, name="Ops", frame={"tools": {"things": READ_WRITE}})
+    db.add(ops)
+    await db.flush()
+    db.add(
+        m.OrgMemberDepartment(
+            tenant_id=tenant,
+            member_id=office.member_id,
+            department_id=ops.id,
+            seat_role="dept_viewer",
+        )
+    )
+    db.add(
+        m.McpConnection(
+            tenant_id=tenant,
+            department_id=None,
+            name="things",
+            transport="stdio",
+            server_url="stdio://things-org",
+            connected=True,
+            config={"command": "z", "args": []},
+            scopes=SCOPES,
+        )
+    )
+    await db.flush()
+    await grant(db, office)
+    return office, ops.id
+
+
+async def test_an_org_wide_row_opened_for_a_rowless_department_reads_and_holds_writes(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ops grants read + modify but has no row: the key opens on the
+    organisation-wide row. Ops alone would pick that row for a read and for a
+    change, so reads run and the write reaches the person's hold (R17/R23)."""
+    recorder = _RecordingServer(delay_s=0)
+    opened_rows: list[str] = []
+
+    async def _open(*_a: Any, mcp_conn: m.McpConnection, **_kw: Any) -> _StubSession:
+        opened_rows.append(mcp_conn.server_url)
+        return _StubSession(recorder, TOOLS)
+
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="search_records", arguments={"q": "a"})),
+            _turn("", ToolCall(id="c2", name="search_records", arguments={"q": "b"})),
+            _turn("", ToolCall(id="c3", name="update_record", arguments={"id": 7})),
+            _turn("done"),
+        ],
+    )
+    monkeypatch.setattr("oc8.agent.engine._open_mcp_session", _open)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office, _ops = await _org_wide_office(db, tenant)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        result = await _run(db, office, agent, run)
+        held = await _held(db)
+    assert opened_rows == ["stdio://things-org"]
+    assert [name for name, _s, _e in recorder.windows] == ["search_records"] * 2
+    assert result.status == "waiting_for_approval"
+    assert held.payload["direct_access"]["decider"] == "member"
+
+
+async def test_an_org_wide_row_is_refused_a_change_once_the_granting_department_has_its_own(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Strict R17: the read runs on the organisation-wide row (Ops alone picks
+    it). Then Ops -- the only department granting modify -- gets a row of its
+    own: Ops alone no longer picks the organisation-wide row, so a change on it
+    is refused, not held to run there. The next run opens Ops's row."""
+    holder: dict[str, Any] = {}
+
+    class _OpsGetsARow(_RecordingServer):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            out = await super().call(name, arguments)
+            db: AsyncSession = holder["db"]
+            db.add(
+                m.McpConnection(
+                    tenant_id=holder["tenant"],
+                    department_id=holder["ops"],
+                    name="things",
+                    transport="stdio",
+                    server_url="stdio://things-ops",
+                    connected=True,
+                    config={"command": "y", "args": []},
+                    scopes=SCOPES,
+                )
+            )
+            await db.flush()
+            return out
+
+    recorder = _OpsGetsARow(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="search_records", arguments={"q": "a"})),
+            _turn("", ToolCall(id="c2", name="update_record", arguments={"id": 7})),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office, ops = await _org_wide_office(db, tenant)
+        holder.update(db=db, ops=ops, tenant=tenant)
+        agent = await _copilot(db, office)
+        result = await _run(db, office, agent, await chat_run(db, office))
+        held = (
+            (
+                await db.execute(
+                    select(m.ApprovalRequest).where(m.ApprovalRequest.action_type == "tool_send")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(recorder.windows) == 1 and held == []
+    (write,) = [e for e in result.tool_calls if e["tool"] == "update_record"]
+    assert write["state"] == "denied"
+    assert "through another department" in write["reason"]
+
+
 async def test_an_elicited_direct_write_parks_for_the_person(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
