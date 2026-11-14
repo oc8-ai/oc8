@@ -1068,6 +1068,18 @@ class McpConnectionDTO(CamelModel):
     credential_type: str | None = None
 
 
+class HttpTestCallResultDTO(CamelModel):
+    """One test call of an HTTP API tool; `excerpt` never carries a secret."""
+
+    ok: bool
+    status: int | None = None
+    duration_ms: int = 0
+    excerpt: str = ""
+    truncated: bool = False
+    error_class: Literal["auth", "token", "blocked", "unreachable", "http"] | None = None
+    message: str = ""
+
+
 class ConnectionToolNamesDTO(CamelModel):
     names: list[str] = []
     #: Same names split by `authz.pdp.required_right`'s classification, so a

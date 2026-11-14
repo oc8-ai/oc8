@@ -1,6 +1,8 @@
 // Wire types and hooks for HTTP API connections (transport "manual_http"):
 // their logins, their declared tools, the test call and the tools editor.
 
+import { api } from "@/lib/api";
+
 /** The setup field and env name a login's one secret travels under. */
 export const LOGIN_SECRET_FIELD = "auth_secret";
 export const LOGIN_SECRET_ENV = "HTTP_AUTH_SECRET";
@@ -69,4 +71,26 @@ export function loginComplete(login: HttpLoginDraft): boolean {
         login.secret !== ""
       );
   }
+}
+
+/** One test call of one declared tool; `excerpt` never carries a secret. */
+export interface HttpTestCallResult {
+  ok: boolean;
+  status: number | null;
+  durationMs: number;
+  excerpt: string;
+  truncated: boolean;
+  errorClass: "auth" | "token" | "blocked" | "unreachable" | "http" | null;
+  message: string;
+}
+
+export function postHttpTestCall(
+  connectionId: string,
+  tool: string,
+  args: Record<string, unknown>,
+): Promise<HttpTestCallResult> {
+  return api.post<HttpTestCallResult>(`/mcp/connections/${connectionId}/test-call`, {
+    tool,
+    arguments: args,
+  });
 }

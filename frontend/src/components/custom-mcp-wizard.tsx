@@ -21,6 +21,7 @@ import {
 import { toast } from "sonner";
 import { Field } from "@/components/agent-identity-fields";
 import { HttpLoginFields } from "@/components/http-login-fields";
+import { HttpTestCallPanel, type TestableTool } from "@/components/http-test-call-panel";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useConfirm } from "@/hooks/use-confirm";
 import { api } from "@/lib/api";
@@ -38,6 +39,7 @@ import {
   loginComplete,
   loginSecret,
   loginToConfig,
+  postHttpTestCall,
   type HttpLoginDraft,
 } from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
@@ -79,7 +81,7 @@ interface WizardState {
   baseUrl: string;
   login: HttpLoginDraft;
   httpTools: HttpToolDraft[];
-  // test step (stdio/remote_mcp only)
+  // test step (stdio/remote_mcp: tools discovered)
   testedToolNames: string[] | null;
   testError: string | null;
   // the connection a test run is/was against -- known only once
@@ -142,8 +144,8 @@ const HTTP_METHODS: HttpToolDraft["method"][] = ["GET", "POST", "PUT", "PATCH", 
 
 // Tailwind class names can't be built via template literals (e.g. `grid-cols-${n}`)
 // -- they have to appear as static strings for the build to extract them.
-// `steps.length` is 3 for manual_http (the "test" step is filtered out) or 4
-// otherwise, so those are the only two cases this needs to cover.
+// Every server type has four steps today (manual_http's test step makes one
+// real call of a declared tool); 3 stays covered should a type drop one again.
 const STEP_DOT_GRID_COLS: Record<number, string> = {
   3: "grid-cols-3",
   4: "grid-cols-4",
@@ -345,8 +347,7 @@ export function CustomMcpWizard({
   // new backend surface.
   const { confirm, ConfirmDialog } = useConfirm();
 
-  const steps =
-    state.serverType === "manual_http" ? ALL_STEPS.filter((s) => s.key !== "test") : ALL_STEPS;
+  const steps = ALL_STEPS;
   const activeStep = steps[step] ?? steps[0];
   const StepIcon = activeStep.icon;
   const progress = ((step + 1) / steps.length) * 100;
@@ -511,6 +512,39 @@ export function CustomMcpWizard({
         testError: err instanceof Error ? err.message : "Connection test failed.",
         testedToolNames: null,
       });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const toolsForTest: TestableTool[] = state.httpTools
+    .filter((tool) => tool.name.trim() !== "")
+    .map((tool) => {
+      let schema: Record<string, unknown> = {};
+      try {
+        const parsed: unknown = JSON.parse(tool.paramSchema || "{}");
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          schema = parsed as Record<string, unknown>;
+        }
+      } catch {
+        schema = {};
+      }
+      return { name: tool.name, method: tool.method, paramSchema: schema };
+    });
+
+  // The plain HTTP API's test step: install, enable and configure the capa
+  // like the MCP test does, then make one real call of the chosen tool.
+  async function runManualTestCall(tool: string, args: Record<string, unknown>) {
+    setBusy(true);
+    try {
+      const { connectionId } = await installEnableConfigure();
+      if (!connectionId) {
+        throw new Error(
+          t("No connection was created to test.", "Es wurde keine Verbindung zum Testen angelegt."),
+        );
+      }
+      update({ testedConnectionId: connectionId });
+      return await postHttpTestCall(connectionId, tool, args);
     } finally {
       setBusy(false);
     }
@@ -871,7 +905,7 @@ export function CustomMcpWizard({
               </div>
             )}
 
-            {activeStep.key === "test" && (
+            {activeStep.key === "test" && state.serverType !== "manual_http" && (
               <div className="space-y-4">
                 <p className="text-xs text-muted-foreground">
                   This installs and configures the capa now, then pings the server and asks it which
@@ -914,6 +948,10 @@ export function CustomMcpWizard({
                   <McpTestLogDrawer connectionId={state.testedConnectionId} busy={busy} />
                 )}
               </div>
+            )}
+
+            {activeStep.key === "test" && state.serverType === "manual_http" && (
+              <HttpTestCallPanel tools={toolsForTest} run={runManualTestCall} />
             )}
 
             {activeStep.key === "summary" && (

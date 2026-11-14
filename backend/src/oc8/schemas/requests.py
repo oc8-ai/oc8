@@ -442,6 +442,13 @@ class UpdateMcpConnectionRequest(CamelModel):
     secret_env: dict[str, str] | None = None
 
 
+class HttpTestCallRequest(CamelModel):
+    """One real call of one declared tool of an HTTP API connection."""
+
+    tool: str = Field(min_length=1, max_length=64)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunAgentRequest(CamelModel):
     task: str
     mcp_connection_id: uuid.UUID | None = None

@@ -139,3 +139,13 @@ def test_invalid_header_names_are_rejected(name: str) -> None:
 def test_numeric_placeholder_does_not_break_the_template() -> None:
     placed = place_arguments(_tool("GET", "/a/{0}"), {"0": "x"}, protected_headers=_PROTECTED)
     assert placed.path == "/a/x"
+
+
+def test_a_non_ascii_header_value_is_a_classified_error() -> None:
+    # httpx can only send ASCII header values; a model-supplied one must end
+    # in an error class, not a raw codec error (whose repr carries the value).
+    tool = _tool("GET", "/x", param_locations={"X-T": "header"})
+    with pytest.raises(HttpToolError) as caught:
+        place_arguments(tool, {"X-T": "Grüße"}, protected_headers=_PROTECTED)
+    assert caught.value.kind == "http"
+    assert "Grüße" not in str(caught.value)

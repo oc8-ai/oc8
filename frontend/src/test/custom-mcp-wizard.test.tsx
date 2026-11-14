@@ -168,6 +168,7 @@ describe("CustomMcpWizard", () => {
     fireEvent.change(screen.getByLabelText("API key"), { target: { value: "k-1" } });
     fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
     fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 
     await waitFor(() =>
@@ -229,6 +230,47 @@ describe("CustomMcpWizard", () => {
     expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
   });
 
+  it("tests one endpoint of a plain HTTP API with a real call", async () => {
+    postMock.mockImplementation((path: string) => {
+      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
+      if (path === "/capas/capa-1/enable") return Promise.resolve({});
+      if (path === "/capas/capa-1/setup") return Promise.resolve({ connectionId: "conn-1" });
+      if (path === "/mcp/connections/conn-1/test-call") {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          durationMs: 30,
+          excerpt: "[]",
+          truncated: false,
+          errorClass: null,
+          message: "The API answered 200.",
+        });
+      }
+      return Promise.reject(new Error(`unexpected POST ${path}`));
+    });
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+    fireEvent.change(screen.getByPlaceholderText("Tool name"), {
+      target: { value: "list_tickets" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/mcp/connections/conn-1/test-call", {
+        tool: "list_tickets",
+        arguments: {},
+      }),
+    );
+    expect(await screen.findByText("The call worked.")).toBeInTheDocument();
+  });
+
   describe("department", () => {
     const departments = {
       items: [
@@ -276,6 +318,7 @@ describe("CustomMcpWizard", () => {
         target: { value: "https://tickets.acme.test" },
       });
       fireEvent.click(screen.getByRole("button", { name: /add tool/i }));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
       fireEvent.click(screen.getByRole("button", { name: /next/i }));
       fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
 

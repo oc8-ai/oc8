@@ -4,6 +4,7 @@ department makes its tools available to that department's agents."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import uuid
 from datetime import UTC, datetime
 
@@ -11,12 +12,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.agent.http_tools import resolve_http_login
+from oc8.agent.http_tools import HttpToolSession, resolve_http_login
 from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
-from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
+from oc8.authz.permissions import INTEGRATION, MANAGE, PLUGIN, VIEW, perm
 from oc8.capas.discovery import find_plugin
 from oc8.capas.guardrails import GuardrailLibrary
 from oc8.capas.i18n import translations_for
@@ -30,11 +31,16 @@ from oc8.schemas.dto import (
     GuardrailAttributeDTO,
     GuardrailDTO,
     GuardrailPresetDTO,
+    HttpTestCallResultDTO,
     McpConnectionDTO,
     ModelLabelDTO,
     ToolLabelDTO,
 )
-from oc8.schemas.requests import CreateMcpConnectionRequest, UpdateMcpConnectionRequest
+from oc8.schemas.requests import (
+    CreateMcpConnectionRequest,
+    HttpTestCallRequest,
+    UpdateMcpConnectionRequest,
+)
 
 router = APIRouter()
 
@@ -505,3 +511,47 @@ async def test_connection(
         )
     await db.commit()
     return _to_dto(conn)
+
+
+@router.post(
+    "/mcp/connections/{conn_id}/test-call",
+    response_model=HttpTestCallResultDTO,
+    dependencies=[Depends(require_permission(perm(PLUGIN, MANAGE)))],
+)
+async def run_test_call(
+    conn_id: uuid.UUID,
+    body: HttpTestCallRequest,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> HttpTestCallResultDTO:
+    """One real call of one declared tool, for the person setting an HTTP API
+    connection up. Nothing is stored. The answer comes back as an excerpt with
+    the login's secrets removed, and a failure names its class: the login was
+    refused (auth), no token could be fetched (token), the address is not
+    allowed (blocked), nothing answered (unreachable), or the API answered
+    with an error (http). plugin:manage, like editing the tools."""
+    conn = await db.get(m.McpConnection, conn_id)
+    if conn is None or conn.tenant_id != principal.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
+    if conn.transport != "manual_http":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "only an HTTP API connection has declared tools to call"
+        )
+    cfg = conn.config or {}
+    http_tools = [t for t in cfg.get("http_tools", []) if isinstance(t, dict) and t.get("name")]
+    if body.tool not in {str(t["name"]) for t in http_tools}:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "tool not found")
+    env = await _connection_env(db, conn)
+    session = HttpToolSession(
+        conn.server_url,
+        http_tools,
+        headers=resolve_auth_header(cfg, env),
+        login=resolve_http_login(cfg, env),
+        timeout_s=_TEST_TIMEOUT_S,
+    )
+    try:
+        async with session:
+            outcome = await session.try_call(body.tool, body.arguments)
+    except RuntimeError as exc:  # a missing path parameter: the caller's arguments
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    return HttpTestCallResultDTO(**dataclasses.asdict(outcome))

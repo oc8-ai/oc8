@@ -224,6 +224,10 @@ def place_arguments(
         elif where == "header":
             if key.lower() not in blocked_headers and value is not None:
                 name, text = _header_pair(key, value)
+                if not text.isascii():
+                    # httpx sends header values as ASCII; its codec error
+                    # would carry the whole value and no error class.
+                    raise HttpToolError("http", f"Header {name!r} can only carry ASCII text.")
                 headers[name] = text
         elif where == "body":
             body_fields[key] = value
@@ -264,6 +268,23 @@ class HttpResponse:
     text: str
     truncated: bool
     duration_ms: int
+
+
+#: How much of an answer a person sees in a test call.
+TEST_EXCERPT_CHARS = 2000
+
+
+@dataclass(frozen=True)
+class CallOutcome:
+    """One test call, as the person setting a connection up sees it."""
+
+    ok: bool
+    status: int | None
+    duration_ms: int
+    excerpt: str
+    truncated: bool
+    error_class: ErrorClass | None
+    message: str
 
 
 def secret_parts(values: Iterable[str]) -> list[str]:
@@ -946,3 +967,37 @@ class HttpToolSession:
         # not hand it to the model either.
         text = redact(response.text, secrets) or "(no output)"
         return text + TRUNCATION_MARKER if response.truncated else text
+
+    async def try_call(self, name: str, arguments: dict[str, Any]) -> CallOutcome:
+        """`request`, but every failure a person can act on comes back as an
+        outcome instead of an exception: an error class, the status and a
+        short excerpt with every secret removed. Raises only RuntimeError for
+        an unknown tool or a missing path parameter (the caller's input)."""
+        started = time.monotonic()
+        try:
+            response = await self.request(name, arguments)
+        except HttpToolError as exc:
+            return CallOutcome(
+                ok=False,
+                status=exc.status,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                excerpt="",
+                truncated=False,
+                error_class=exc.kind,
+                message=redact(str(exc), self._secrets()),
+            )
+        # Redacted whole, then cut (see `call`).
+        redacted = redact(response.text, self._secrets())
+        excerpt = redacted[:TEST_EXCERPT_CHARS]
+        truncated = response.truncated or len(redacted) > TEST_EXCERPT_CHARS
+        message = f"The API answered {response.status}."
+        if response.status >= 400:
+            kind: ErrorClass = "auth" if response.status in (401, 403) else "http"
+            if kind == "auth":
+                message += " Check the login."
+            return CallOutcome(
+                False, response.status, response.duration_ms, excerpt, truncated, kind, message
+            )
+        return CallOutcome(
+            True, response.status, response.duration_ms, excerpt, truncated, None, message
+        )
