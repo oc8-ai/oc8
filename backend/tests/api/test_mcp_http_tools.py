@@ -870,6 +870,26 @@ def test_the_schema_size_limit_counts_compact_utf8_bytes() -> None:
         HttpToolSpec.model_validate(_tool(paramSchema=_schema_of_bytes(PARAM_SCHEMA_MAX_BYTES + 1)))
 
 
+def test_the_whole_tool_list_has_a_size_limit() -> None:
+    from oc8.schemas.requests import HTTP_TOOLS_MAX_BYTES, UpdateHttpToolsRequest
+
+    schema = _schema_of_bytes(60_000)
+    fits = HTTP_TOOLS_MAX_BYTES // 61_000
+    UpdateHttpToolsRequest.model_validate(
+        {
+            "httpTools": [_tool(name=f"t{i}", paramSchema=schema) for i in range(fits)],
+            "scopes": {"read": [], "modify": []},
+        }
+    )
+    with pytest.raises(ValueError, match="the tools are larger than"):
+        UpdateHttpToolsRequest.model_validate(
+            {
+                "httpTools": [_tool(name=f"t{i}", paramSchema=schema) for i in range(fits + 2)],
+                "scopes": {"read": [], "modify": []},
+            }
+        )
+
+
 def test_a_local_ref_is_accepted() -> None:
     from oc8.schemas.requests import HttpToolSpec
 
@@ -915,6 +935,10 @@ def test_a_local_ref_is_accepted() -> None:
             {"read": [], "modify": []},
         ),
         ([_tool(name=f"t{i}") for i in range(2001)], {"read": [], "modify": []}),
+        (
+            [_tool(name=f"t{i}", paramSchema=_schema_of_bytes(60_000)) for i in range(40)],
+            {"read": [], "modify": []},
+        ),
     ],
 )
 async def test_validation(

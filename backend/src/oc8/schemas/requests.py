@@ -459,6 +459,10 @@ _HTTP_TOOL_NAME = r"^[A-Za-z0-9_-]{1,64}$"
 #: Measured as compact UTF-8 JSON bytes, the way the frontend measures it
 #: (`lib/http-tools.ts`, PARAM_SCHEMA_MAX_BYTES), so both refuse the same schema.
 PARAM_SCHEMA_MAX_BYTES = 64_000
+#: The most one edit of an HTTP API's tools may hold, all tools together
+#: (compact UTF-8 JSON): it is validated whole and written to every
+#: department's connection and to the capa's manifest.
+HTTP_TOOLS_MAX_BYTES = 2_000_000
 _PARAM_SCHEMA_MAX_DEPTH = 32
 
 
@@ -563,6 +567,13 @@ class UpdateHttpToolsRequest(CamelModel):
         both = sorted(set(self.scopes.read) & set(self.scopes.modify))
         if both:
             raise ValueError(f"a tool is either read or modify, not both: {', '.join(both)}")
+        tools = [t.model_dump(mode="json") for t in self.http_tools]
+        size = len(json.dumps(tools, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > HTTP_TOOLS_MAX_BYTES:
+            raise ValueError(
+                f"the tools are larger than {HTTP_TOOLS_MAX_BYTES} bytes together; "
+                "split the API or leave out endpoints"
+            )
         return self
 
 
