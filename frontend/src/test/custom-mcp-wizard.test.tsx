@@ -720,28 +720,6 @@ describe("CustomMcpWizard", () => {
     expect(screen.getByRole("button", { name: /back/i })).toBeEnabled();
   });
 
-  it("tests the same name again after a cancelled wizard, from version 1.0.0", async () => {
-    postMock.mockImplementation((path: string) => {
-      // The server replaces the version the cancelled wizard left behind.
-      if (path === "/capas") return Promise.resolve({ id: "cv-1", pluginId: "capa-1" });
-      if (/^\/capas\/capa-1\/(enable|disable)$/.test(path)) return Promise.resolve({});
-      if (path === "/capas/capa-1/setup") return Promise.resolve({ connectionId: "conn-1" });
-      if (path.endsWith("/test-call")) return Promise.resolve(CALL_WORKED);
-      return Promise.reject(new Error(`unexpected POST ${path}`));
-    });
-    const onOpenChange = vi.fn();
-    render(<CustomMcpWizard open onOpenChange={onOpenChange} />, { wrapper });
-    await testAPlainHttpApi();
-    fireEvent.click(screen.getByRole("button", { name: /close/i }));
-    fireEvent.click(await screen.findByRole("button", { name: /disable & cancel/i }));
-    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-
-    await testAPlainHttpApi();
-    const installs = postMock.mock.calls.filter(([path]) => path === "/capas");
-    expect(installs.map(([, body]) => body.manifest.version)).toEqual(["1.0.0", "1.0.0"]);
-    expect(postMock.mock.calls.filter(([path]) => path === "/capas/capa-1/enable")).toHaveLength(2);
-  });
-
   it("disables a capa left under an earlier name when the wizard is cancelled", async () => {
     let installs = 0;
     let failRenameDisable = true;

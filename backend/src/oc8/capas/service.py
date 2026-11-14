@@ -9,7 +9,7 @@ import uuid
 from typing import Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
-from packaging.version import InvalidVersion, Version
+from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -288,16 +288,7 @@ async def install_plugin(
         )
     ).scalar_one_or_none()
     if dup is not None:
-        if origin != "custom" or not await _replaceable(db, plugin, dup):
-            raise DuplicateVersionError(f"{manifest.name}@{manifest.version} already installed")
-        # A custom capa's versions are numbered by the wizard that installs
-        # them, from 1.0.0 in every session: one a cancelled wizard left
-        # behind is replaced in place (see `_replaceable`).
-        _fill_version(dup, manifest)
-        await db.flush()
-        plugin.current_version_id = dup.id
-        await db.flush()
-        return dup
+        raise DuplicateVersionError(f"{manifest.name}@{manifest.version} already installed")
 
     version = CapaVersion(tenant_id=tenant_id, capa_id=plugin.id, semver=manifest.version)
     _fill_version(version, manifest)
@@ -314,36 +305,6 @@ def _fill_version(version: CapaVersion, manifest: Manifest) -> None:
     version.permissions = list(manifest.permissions)
     version.capabilities = list(manifest.capabilities)
     version.entry_points = dict(manifest.entry_points)
-
-
-async def _replaceable(db: AsyncSession, plugin: Capa, version: CapaVersion) -> bool:
-    """Whether a custom capa's `version` may be replaced by a reinstall of the
-    same version: when the capa is not enabled (a cancelled wizard disabled
-    it), or when `version` is newer than the one it runs on -- left behind
-    by such a wizard, while the one installing now already replaced the
-    older ones. The version an enabled capa runs on, and anything older,
-    stays: a second wizard under a name in use must not take that capa over."""
-    inst = (
-        await db.execute(
-            select(CapaInstallation).where(
-                CapaInstallation.tenant_id == plugin.tenant_id,
-                CapaInstallation.capa_id == plugin.id,
-            )
-        )
-    ).scalar_one_or_none()
-    if inst is None or inst.status != "enabled":
-        return True
-    current = (
-        await db.get(CapaVersion, plugin.current_version_id)
-        if plugin.current_version_id is not None
-        else None
-    )
-    if current is None or current.id == version.id:
-        return False
-    try:
-        return Version(version.semver) > Version(current.semver)
-    except InvalidVersion:
-        return False
 
 
 async def install_with_dependencies(
