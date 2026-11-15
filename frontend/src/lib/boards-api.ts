@@ -180,7 +180,24 @@ export const boardKeys = {
   list: (agentId?: string) => ["boards", agentId ?? "all"] as const,
   one: (id: string) => ["boards", id] as const,
   query: (id: string, query: BoardQuery | null) => ["boards", id, "query", query] as const,
+  /** Set once this client deleted the board. Outside `["boards", ...]` on
+   *  purpose, so removing or invalidating the board's queries leaves it. */
+  deleted: (id: string) => ["boardDeleted", id] as const,
 };
+
+/** Whether this client deleted the board. A tile that is still mounted reads
+ *  it to show "removed" and to stop its board queries: a removed query is not
+ *  told it was removed, so the next render would rebuild and refetch it. */
+export function useBoardDeleted(id: string): boolean {
+  const { data } = useQuery({
+    queryKey: boardKeys.deleted(id),
+    queryFn: () => false,
+    // Never fetched: only `useDeleteBoard` writes it.
+    enabled: false,
+    staleTime: Infinity,
+  });
+  return data === true;
+}
 
 export function useBoards(agentId?: string) {
   return useQuery({
@@ -196,19 +213,21 @@ export function useBoards(agentId?: string) {
 }
 
 export function useBoard(id: string) {
+  const deleted = useBoardDeleted(id);
   return useQuery({
     queryKey: boardKeys.one(id),
     queryFn: () => api.get<Board>(`/boards/${encodeURIComponent(id)}`),
-    enabled: !!id,
+    enabled: !!id && !deleted,
     retry: retryUnlessRefused,
   });
 }
 
 export function useBoardQuery(id: string, query: BoardQuery | null) {
+  const deleted = useBoardDeleted(id);
   return useQuery({
     queryKey: boardKeys.query(id, query),
     queryFn: () => api.post<QueryResult>(`/boards/${encodeURIComponent(id)}/query`, query),
-    enabled: query !== null && !!id,
+    enabled: query !== null && !!id && !deleted,
     retry: retryUnlessRefused,
     // A new filter, page or sort keeps the last answer on screen until the
     // next one arrives, instead of flashing "Loading".
@@ -222,9 +241,12 @@ export function useDeleteBoard() {
     mutationFn: ({ id, records }: { id: string; records: number }) =>
       api.delete(`/boards/${encodeURIComponent(id)}?records=${records}`),
     onSuccess: async (_data, { id }) => {
-      // Drop the deleted board and its queries first: marking them stale would
-      // make a still-mounted tile refetch and flash a 404/410. An answer still
-      // in flight is cancelled, or its arrival would bring the board back.
+      // Mark it deleted first: that re-renders a still-mounted tile as
+      // "removed" with its queries disabled, so no later render refetches it.
+      qc.setQueryData(boardKeys.deleted(id), true);
+      // Then drop the board and its queries: marking them stale would make a
+      // still-mounted tile refetch and flash a 404/410. An answer still in
+      // flight is cancelled, or its arrival would bring the board back.
       await qc.cancelQueries({ queryKey: boardKeys.one(id) });
       qc.removeQueries({ queryKey: boardKeys.one(id) });
       return qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true });

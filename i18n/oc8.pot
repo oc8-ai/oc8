@@ -41,6 +41,12 @@ msgstr ""
 msgid "/summarise this conversation"
 msgstr ""
 
+msgid "1 block"
+msgstr ""
+
+msgid "1 record"
+msgstr ""
+
 msgid "1 unpublished change"
 msgstr ""
 
@@ -63,6 +69,9 @@ msgid "A capa installed under an earlier name could not be disabled. Disable it 
 msgstr ""
 
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
+msgstr ""
+
+msgid "A dashboard can only go to an agent of its own department."
 msgstr ""
 
 msgid "A decision was made."
@@ -461,6 +470,9 @@ msgstr ""
 msgid "Apply"
 msgstr ""
 
+msgid "Apply this change"
+msgstr ""
+
 msgid "Apply this rule to the draft below (doesn't save yet)"
 msgstr ""
 
@@ -540,6 +552,9 @@ msgid "Archived"
 msgstr ""
 
 msgid "Arguments (JSON)"
+msgstr ""
+
+msgid "Artifact blocks are available in Enterprise only."
 msgstr ""
 
 msgid "As first reported"
@@ -867,6 +882,9 @@ msgid "Change password"
 msgstr ""
 
 msgid "Change runtime"
+msgstr ""
+
+msgid "Changed"
 msgstr ""
 
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
@@ -1592,6 +1610,9 @@ msgstr ""
 msgid "Create this agent"
 msgstr ""
 
+msgid "Create this dashboard"
+msgstr ""
+
 msgid "Create user"
 msgstr ""
 
@@ -1665,6 +1686,18 @@ msgid "daily {time}"
 msgstr ""
 
 msgid "Daily role audit — compare actions vs. role scope"
+msgstr ""
+
+msgid "Dashboard"
+msgstr ""
+
+msgid "Dashboard proposal"
+msgstr ""
+
+msgid "Dashboards"
+msgstr ""
+
+msgid "Dashboards can only be proposed by the Copilot."
 msgstr ""
 
 msgid "Data source"
@@ -1755,6 +1788,12 @@ msgid "Delete connection?"
 msgstr ""
 
 msgid "Delete credential?"
+msgstr ""
+
+msgid "Delete dashboard"
+msgstr ""
+
+msgid "Delete dashboard?"
 msgstr ""
 
 msgid "Delete data source?"
@@ -3101,6 +3140,9 @@ msgstr ""
 msgid "Never without approval"
 msgstr ""
 
+msgid "New"
+msgstr ""
+
 msgid "New agent"
 msgstr ""
 
@@ -3180,6 +3222,9 @@ msgid "Next run"
 msgstr ""
 
 msgid "Next step"
+msgstr ""
+
+msgid "No access"
 msgstr ""
 
 msgid "No access token: the token URL refused or did not answer. The API itself was not called."
@@ -3312,6 +3357,9 @@ msgid "No locally authored skills to export."
 msgstr ""
 
 msgid "No login"
+msgstr ""
+
+msgid "No longer updated"
 msgstr ""
 
 msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
@@ -4934,6 +4982,9 @@ msgstr ""
 msgid "That did not work. Please try again."
 msgstr ""
 
+msgid "That earlier version of the dashboard does not exist."
+msgstr ""
+
 msgid "That link did not name an object I can pin, so this is a new chat."
 msgstr ""
 
@@ -4962,6 +5013,9 @@ msgid "The agent is waiting for your input."
 msgstr ""
 
 msgid "The agent isn't reachable right now. Your message wasn't sent – try again in a moment."
+msgstr ""
+
+msgid "The agent that should fill the dashboard no longer exists or is out of reach."
 msgstr ""
 
 msgid "The agent was not created. Try again."
@@ -5031,6 +5085,18 @@ msgid "The connection in the department you moved away from could not be removed
 msgstr ""
 
 msgid "The copilot found nothing in the instructions to restrict here."
+msgstr ""
+
+msgid "The dashboard could not be deleted. Reload and try again."
+msgstr ""
+
+msgid "The dashboard moved to another department meanwhile. Reject this request so it can be requested again."
+msgstr ""
+
+msgid "The dashboard was not saved. Try again."
+msgstr ""
+
+msgid "The dashboard's layout is not valid."
 msgstr ""
 
 msgid "The day somebody should only sign off offers: fork a built-in role, untick everything but four boxes, name it, assign it."
@@ -5300,7 +5366,19 @@ msgstr ""
 msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
 msgstr ""
 
+msgid "This dashboard couldn't be loaded."
+msgstr ""
+
+msgid "This dashboard no longer exists or is out of reach."
+msgstr ""
+
+msgid "This dashboard was already saved."
+msgstr ""
+
 msgid "This dashboard was deleted"
+msgstr ""
+
+msgid "This dashboard was removed."
 msgstr ""
 
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."

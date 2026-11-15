@@ -134,7 +134,7 @@ export function WorkspacePage() {
     setSwitcherOpen(false);
   }
 
-  function addWidget(type: WidgetType) {
+  function addWidget(type: WidgetType, config: Record<string, unknown> = {}) {
     const { defaultSize } = WIDGET_REGISTRY[type];
     setWidgets((prev) => {
       const list = prev ?? [];
@@ -154,7 +154,7 @@ export function WorkspacePage() {
           y: list.length ? Math.max(...list.map((w) => w.y + w.h)) : 0,
           w: defaultSize.w,
           h: defaultSize.h,
-          config: {},
+          config,
         },
       ];
     });

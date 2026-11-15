@@ -12,6 +12,7 @@ export const WIDGET_LABELS: Record<WidgetType, { en: string; de: string }> = {
   budget: { en: "Budget", de: "Budget" },
   activity: { en: "Activity", de: "Aktivität" },
   tasks: { en: "Task Board", de: "Aufgaben-Board" },
+  data_board: { en: "Dashboard", de: "Dashboard" },
 };
 
 /** A widget type's registry name in the current language. */

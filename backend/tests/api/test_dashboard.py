@@ -59,6 +59,31 @@ async def test_put_layout_creates_then_get_returns_the_stored_shape() -> None:
             assert get_r.json()["templateId"] == "focus-chat"
 
 
+async def test_layout_accepts_a_data_board_tile() -> None:
+    """A dashboard tile stores only its board id (and saved filters); the
+    board itself is read through `/boards`, never from the layout."""
+    app = create_app()
+    tile = {
+        "id": "w1",
+        "type": "data_board",
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 10,
+        "config": {"boardId": str(uuid.uuid4()), "filters": {"preset": "year_to_date"}},
+    }
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(subject='board-tile')}"}
+            put_r = await client.put(
+                "/api/v1/dashboard/layout", json={"widgets": [tile]}, headers=headers
+            )
+            assert put_r.status_code == 200, put_r.text
+            get_r = await client.get("/api/v1/dashboard/layout", headers=headers)
+    assert get_r.json()["widgets"] == [tile]
+
+
 async def test_put_layout_fully_replaces_not_merges(app_session: AppSessionFactory) -> None:
     app = create_app()
     first = {

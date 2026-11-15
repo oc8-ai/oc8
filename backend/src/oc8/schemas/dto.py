@@ -2000,7 +2000,9 @@ class WidgetInstanceDTO(CamelModel):
     """
 
     id: str
-    type: Literal["chat", "approvals", "reports", "budget", "activity", "tasks", "needs-me"]
+    type: Literal[
+        "chat", "approvals", "reports", "budget", "activity", "tasks", "needs-me", "data_board"
+    ]
     x: int = Field(ge=0, le=12)
     y: int = Field(ge=0, le=10000)
     w: int = Field(ge=1, le=12)

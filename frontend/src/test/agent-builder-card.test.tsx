@@ -70,6 +70,31 @@ const draft: AgentBuilderDTO = {
   failedReason: null,
   rejectedReason: null,
   agent: null,
+  kind: "agent",
+  board: null,
+};
+
+const boardDraft: AgentBuilderDTO = {
+  ...draft,
+  kind: "board",
+  name: "",
+  roleTitle: "",
+  mission: "",
+  model: null,
+  skills: [],
+  triggers: [],
+  systems: [],
+  limits: [],
+  board: {
+    boardId: null,
+    mode: "create",
+    title: "Umsatz",
+    datasets: [
+      { key: "sales", label: "Sales", grain: "day", fieldCount: 3 },
+      { key: "stock", label: "Stock", grain: "moment", fieldCount: 1 },
+    ],
+    blockCount: 4,
+  },
 };
 
 beforeEach(() => {
@@ -295,6 +320,52 @@ describe("AgentBuilderCard", () => {
   });
 });
 
+describe("AgentBuilderCard for a dashboard", () => {
+  it("renders a board-only proposal without agent fields", () => {
+    m.card = boardDraft;
+    render(<AgentBuilderCard proposalId="p1" />);
+    const section = screen.getByRole("region", { name: "Dashboard" });
+    expect(section).toHaveTextContent("Umsatz");
+    expect(screen.getByText("sales · day · 3 fields")).toBeInTheDocument();
+    expect(screen.getByText("stock · moment · 1 field")).toBeInTheDocument();
+    expect(screen.getByText("4 blocks")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.getByText("Buchhaltung", { selector: "dd" })).toBeInTheDocument();
+    // No agent rows: name, role, mission, model, skills, triggers.
+    expect(screen.queryByText("When it works")).toBeNull();
+    expect(screen.queryByText("Model")).toBeNull();
+    expect(screen.queryByText("Skills")).toBeNull();
+    expect(screen.queryByText("Mission")).toBeNull();
+    expect(screen.queryByText("New agent")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create this agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create this dashboard" }));
+    expect(m.apply).toHaveBeenCalled();
+  });
+
+  it("marks a change to an existing dashboard", () => {
+    m.card = { ...boardDraft, board: { ...boardDraft.board!, mode: "update", boardId: "b1" } };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Changed")).toBeInTheDocument();
+    expect(screen.queryByText("New")).toBeNull();
+  });
+
+  it("shows the dashboard next to the agent an agent proposal creates", () => {
+    m.card = { ...draft, board: boardDraft.board };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Rechnungsprüfer")).toBeInTheDocument();
+    expect(screen.getByText("Every weekday at 7:00 UTC")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Dashboard" })).toHaveTextContent("Umsatz");
+  });
+
+  it("never says the agent was not created for a dashboard refusal", () => {
+    m.card = { ...boardDraft, refusal: "failed" };
+    render(<AgentBuilderCard proposalId="p1" />);
+    const alert = screen.getByRole("alert");
+    expect(alert).not.toHaveTextContent(/agent/i);
+    expect(alert).toHaveTextContent("The dashboard was not saved. Try again.");
+  });
+});
+
 describe("builderRefusalText", () => {
   const t = (en: string) => en;
   const codes = [
@@ -341,6 +412,36 @@ describe("builderRefusalText", () => {
   });
   it("explains a skill that needs a system when proposing", () => {
     expect(builderRefusalText("skill_needs_system", null, t)).toMatch(/skill needs a system/);
+  });
+  it("tells the approver to reject a dashboard that moved departments", () => {
+    const de = (_en: string, de: string) => de;
+    const text = builderRefusalText("department_changed", 0, t, null, "board");
+    expect(text).toMatch(/moved to another department/);
+    expect(text).toMatch(/Reject this request/);
+    expect(builderRefusalText("department_changed", 0, de, null, "board")).toMatch(
+      /Lehne diese Anfrage ab/,
+    );
+  });
+  it("has its own text for every dashboard refusal", () => {
+    const boardCodes = [
+      "department_changed",
+      "board_unknown",
+      "agent_unknown",
+      "agent_other_department",
+      "board_version_unknown",
+      "board_spec_invalid",
+      "artifact_not_available",
+      "board_builder_only",
+    ];
+    const fallback = builderRefusalText("something_else", null, t, null, "board");
+    const texts = boardCodes.map((c) => builderRefusalText(c, null, t, null, "board"));
+    expect(new Set(texts).size).toBe(boardCodes.length);
+    for (const x of texts) expect(x).not.toBe(fallback);
+    // A board code inside a failed step gets its sentence too.
+    expect(builderRefusalText("step_failed", 0, t, "board_spec_invalid", "board")).toMatch(
+      /layout/,
+    );
+    expect(fallback).not.toMatch(/agent/i);
   });
   it("names a concurrent replacement", () => {
     expect(builderRefusalText("superseded_concurrently", null, t)).toBe(

@@ -2,12 +2,13 @@
 // short, compiled lookup table, not a plugin system. A WidgetInstance whose
 // `type` is absent from this table (a future/removed type) is handled by
 // DashboardGrid's own fallback -- this registry itself only ever holds the
-// seven current types.
+// eight current types.
 import {
   Activity,
   CheckCircle2,
   Inbox,
   Kanban,
+  LayoutDashboard,
   MessageSquare,
   PieChart,
   Wallet,
@@ -17,6 +18,7 @@ import { ActivityWidget } from "@/components/dashboard/widgets/activity-widget";
 import { ApprovalsWidget } from "@/components/dashboard/widgets/approvals-widget";
 import { BudgetWidget } from "@/components/dashboard/widgets/budget-widget";
 import { ChatWidget } from "@/components/dashboard/widgets/chat-widget";
+import { DataBoardMenu, DataBoardWidget } from "@/components/dashboard/widgets/data-board-widget";
 import { NeedsMeWidget } from "@/components/dashboard/widgets/needs-me-widget";
 import { ReportsWidget } from "@/components/dashboard/widgets/reports-widget";
 import { TaskBoardWidget } from "@/components/dashboard/widgets/task-board-widget";
@@ -39,8 +41,13 @@ export const WIDGET_REGISTRY: Record<
      * without mounting a widget's (potentially data-fetching) full body. */
     icon: typeof MessageSquare;
     /** Extra edit-mode controls drawn in the frame header next to the remove
-     * button; none of the built-in widgets uses it. */
+     * button. The entry supplies a component that reads what it needs, so
+     * the frame itself never fetches. */
     menu?: (config: Record<string, unknown>) => ReactNode;
+    /** Listed in the picker's generic widgets (default true). A tile that
+     * needs a config to mean anything (a dashboard tile needs its board) is
+     * added from its own picker section instead. */
+    pickable?: boolean;
   }
 > = {
   chat: {
@@ -84,5 +91,13 @@ export const WIDGET_REGISTRY: Record<
     component: TaskBoardWidget,
     defaultSize: { w: 6, h: 10 },
     icon: Kanban,
+  },
+  data_board: {
+    label: (de) => (de ? WIDGET_LABELS["data_board"].de : WIDGET_LABELS["data_board"].en),
+    component: DataBoardWidget,
+    defaultSize: { w: 6, h: 10 },
+    icon: LayoutDashboard,
+    menu: (config) => <DataBoardMenu config={config} />,
+    pickable: false,
   },
 };

@@ -3264,7 +3264,8 @@ export type WidgetType =
   | "budget"
   | "activity"
   | "tasks"
-  | "needs-me";
+  | "needs-me"
+  | "data_board";
 
 export interface WidgetInstance {
   id: string;
