@@ -29,6 +29,10 @@ export interface DataSource {
   // Non-secret connector config only -- a `credential`-typed key holds a
   // credential id, never a resolved secret value.
   config?: Record<string, unknown>;
+  // What the last finished sync left out, by reason (`unsupported_type`,
+  // `too_large`, `url_document`, ...), and the codes it noted for the admin.
+  lastSyncSkipped?: Record<string, number> | null;
+  lastSyncNotes?: string[] | null;
 }
 
 export interface IngestionJob {
@@ -60,15 +64,77 @@ export interface ConnectorCatalogEntry {
         // a `Credential` row's id, submitted in `config` as-is. Rendered as
         // a <CredentialPicker> instead of a raw input.
         credentialType?: string;
+        // Marks the property holding the source's scope: a list of
+        // `{id, label, kind}` picked in a <ScopePicker>, never left empty.
+        "x-oc8-picker"?: boolean;
       }
     >;
     required?: string[];
   };
   requiresOauth?: string | null;
-  // False when a source cannot be set up yet: it signs in somewhere and the
-  // organisation has no active connection of that provider ("oauth:google").
+  // False when a source cannot be set up yet. `missing` says why: the
+  // organisation has no active connection of a provider ("oauth:google"), or
+  // the capa behind it waits for consent to a permission
+  // ("consent:knowledge:write", granted on `capaId`).
   usable?: boolean;
   missing?: string | null;
+  capaId?: string | null;
+}
+
+/** The `missing` prefix of a connector whose capa waits for a permission. */
+export const CONSENT_PREFIX = "consent:";
+
+export interface BrowseEntry {
+  id: string;
+  name: string;
+  isFolder: boolean;
+  size?: number | null;
+  contentType?: string | null;
+  kind?: string | null;
+  note?: string | null;
+}
+
+export interface BrowseListing {
+  entries: BrowseEntry[];
+  truncated: boolean;
+}
+
+// One folder of a connector, listed from a draft config before the source
+// exists (POST /knowledge/connectors/{typeId}/browse). `path` "/" is the root;
+// a child folder is browsed with its entry's id as the path.
+export function useBrowseDraft({
+  typeId,
+  config,
+  path,
+  enabled = true,
+}: {
+  typeId: string;
+  config: Record<string, unknown>;
+  path: string;
+  enabled?: boolean;
+}) {
+  return useQuery({
+    queryKey: ["knowledge", "browse", typeId, config, path] as const,
+    queryFn: () =>
+      api.post<BrowseListing>(`/knowledge/connectors/${typeId}/browse`, { config, path }),
+    enabled: enabled && !!typeId,
+    retry: false,
+    staleTime: 30 * 1000,
+  });
+}
+
+// Grants a permission a capa deferred at enable (POST /capas/{capaId}/grant),
+// e.g. `knowledge:write` before its connectors may feed a knowledge base.
+export function useGrantCapaPermission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ capaId, permission }: { capaId: string; permission: string }) =>
+      api.post<{ pluginId: string; status: string; grantedPermissions: string[] }>(
+        `/capas/${capaId}/grant`,
+        { permission },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["knowledge", "connectors"] }),
+  });
 }
 
 export interface OAuthConnection {

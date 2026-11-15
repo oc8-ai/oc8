@@ -1186,6 +1186,12 @@ export interface DataSource {
   lastSyncStatus?: "ok" | "failed";
   /** Set only while `lastSyncStatus === "failed"`. */
   lastSyncError?: string | null;
+  /** What the last finished sync left out, by reason (`unsupported_type`,
+   * `too_large`, `url_document`, ...); null when it skipped nothing. */
+  lastSyncSkipped?: Record<string, number> | null;
+  /** Codes the last finished sync noted for the admin (`api_key_recommended`,
+   * `scope_emptied`, ...); unknown codes are not shown. */
+  lastSyncNotes?: string[] | null;
   /** Set once the source is deleted (`DELETE /knowledge/sources/{id}`) -- this
    * is IRREVERSIBLE (it reduces the source's `KbChunk`s in the same
    * transaction, §12.5.1), so unlike Skill/Agent/Department there is no

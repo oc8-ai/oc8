@@ -32,7 +32,13 @@ msgstr ""
 msgid "{from}–{to} of {total}"
 msgstr ""
 
+msgid "{label} may write content to knowledge bases"
+msgstr ""
+
 msgid "{n} selected"
+msgstr ""
+
+msgid "{n} skipped: {reasons}"
 msgstr ""
 
 msgid "/do carry out the plan above"
@@ -392,6 +398,9 @@ msgstr ""
 msgid "Allowed origins (optional, comma-separated)"
 msgstr ""
 
+msgid "Allowing…"
+msgstr ""
+
 msgid "Already answered"
 msgstr ""
 
@@ -573,6 +582,9 @@ msgid "Artifact blocks are available in Enterprise only."
 msgstr ""
 
 msgid "As first reported"
+msgstr ""
+
+msgid "Ask an admin to allow this"
 msgstr ""
 
 msgid "Ask an administrator to add you — your queue appears the moment they do."
@@ -2243,6 +2255,9 @@ msgstr ""
 msgid "Every save is kept — nothing is pruned."
 msgstr ""
 
+msgid "Everything"
+msgstr ""
+
 msgid "Execution"
 msgstr ""
 
@@ -2327,6 +2342,9 @@ msgstr ""
 msgid "Fill in provider, model pattern, and valid prices."
 msgstr ""
 
+msgid "Fill in the other required fields first."
+msgstr ""
+
 msgid "Filter"
 msgstr ""
 
@@ -2361,6 +2379,9 @@ msgid "Flows"
 msgstr ""
 
 msgid "Folders"
+msgstr ""
+
+msgid "For Odoo 19 we recommend an API key instead of a password."
 msgstr ""
 
 msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
@@ -2807,6 +2828,9 @@ msgstr ""
 msgid "Line"
 msgstr ""
 
+msgid "link instead of file"
+msgstr ""
+
 msgid "Link your own Telegram or WhatsApp so approvals reach you there. This is separate from a capa's admin setup (bot token) — this step binds YOUR chat."
 msgstr ""
 
@@ -3077,6 +3101,9 @@ msgstr ""
 msgid "More runtimes appear here once installed as plugins."
 msgstr ""
 
+msgid "More than 500 entries – pick a parent folder."
+msgstr ""
+
 msgid "Move holders to"
 msgstr ""
 
@@ -3129,6 +3156,9 @@ msgid "Needs reconnecting"
 msgstr ""
 
 msgid "Needs your decision"
+msgstr ""
+
+msgid "Needs your permission"
 msgstr ""
 
 msgid "never"
@@ -3557,6 +3587,9 @@ msgstr ""
 msgid "Nothing has changed since the running version."
 msgstr ""
 
+msgid "Nothing here."
+msgstr ""
+
 msgid "Nothing in progress right now."
 msgstr ""
 
@@ -3716,6 +3749,9 @@ msgstr ""
 msgid "Organization updated"
 msgstr ""
 
+msgid "other"
+msgstr ""
+
 msgid "Other answer"
 msgstr ""
 
@@ -3813,6 +3849,9 @@ msgid "Pick a preset or define an exact schedule / cron expression."
 msgstr ""
 
 msgid "Pick any already-connected sources to sync into this base once it's created. You can add or remove sources later too."
+msgstr ""
+
+msgid "Pick at least one entry."
 msgstr ""
 
 msgid "Pick at least one model"
@@ -5237,6 +5276,9 @@ msgstr ""
 msgid "The schedule or event is not valid."
 msgstr ""
 
+msgid "The selection was empty at the last sync – its content is hidden and can be restored."
+msgstr ""
+
 msgid "The server cannot be reached. Please check the address."
 msgstr ""
 
@@ -5418,6 +5460,9 @@ msgid "This filter produces too many results. Narrow the date range, choose a co
 msgstr ""
 
 msgid "This folder can't be opened. Go back and pick another."
+msgstr ""
+
+msgid "This folder could not be listed."
 msgstr ""
 
 msgid "This folder is empty."
@@ -5612,6 +5657,9 @@ msgstr ""
 msgid "too big"
 msgstr ""
 
+msgid "too large"
+msgstr ""
+
 msgid "Too many messages are waiting for this run. Wait until it has read them."
 msgstr ""
 
@@ -5700,6 +5748,9 @@ msgid "Unpin"
 msgstr ""
 
 msgid "Unpublished changes"
+msgstr ""
+
+msgid "unsupported file type"
 msgstr ""
 
 msgid "Untested"

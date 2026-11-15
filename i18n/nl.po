@@ -40,6 +40,14 @@ msgid "(requires settings:manage)"
 msgstr "(vereist settings:manage)"
 
 #, fuzzy
+msgid "{label} may write content to knowledge bases"
+msgstr "{label} mag inhoud naar kennisbanken schrijven"
+
+#, fuzzy
+msgid "{n} skipped: {reasons}"
+msgstr "{n} overgeslagen: {reasons}"
+
+#, fuzzy
 msgid "/do carry out the plan above"
 msgstr "/do voer het plan hierboven uit"
 
@@ -468,6 +476,10 @@ msgid "All systems operational"
 msgstr "Alle systemen operationeel"
 
 #, fuzzy
+msgid "Allow"
+msgstr "Toestaan"
+
+#, fuzzy
 msgid "allowed"
 msgstr "toegestaan"
 
@@ -478,6 +490,10 @@ msgstr "Toegestaan"
 #, fuzzy
 msgid "Allowed origins (optional, comma-separated)"
 msgstr "Toegestane origins (optioneel, kommagescheiden)"
+
+#, fuzzy
+msgid "Allowing…"
+msgstr "Toestaan…"
 
 #, fuzzy
 msgid "Already answered"
@@ -710,6 +726,10 @@ msgstr "Gearchiveerd"
 #, fuzzy
 msgid "Arguments (JSON)"
 msgstr "Argumenten (JSON)"
+
+#, fuzzy
+msgid "Ask an admin to allow this"
+msgstr "Vraag een beheerder om dit toe te staan"
 
 #, fuzzy
 msgid "Ask an administrator to add you — your queue appears the moment they do."
@@ -2884,6 +2904,10 @@ msgid "Every save is kept — nothing is pruned."
 msgstr "Elke opslag wordt bewaard — er wordt niets opgeschoond."
 
 #, fuzzy
+msgid "Everything"
+msgstr "Alles"
+
+#, fuzzy
 msgid "Execution"
 msgstr "Uitvoering"
 
@@ -2996,6 +3020,10 @@ msgid "Fill in provider, model pattern, and valid prices."
 msgstr "Vul provider, modelpatroon en geldige prijzen in."
 
 #, fuzzy
+msgid "Fill in the other required fields first."
+msgstr "Vul eerst de andere verplichte velden in."
+
+#, fuzzy
 msgid "Filter"
 msgstr "Filter"
 
@@ -3042,6 +3070,10 @@ msgstr "Flows"
 #, fuzzy
 msgid "Folders"
 msgstr "Mappen"
+
+#, fuzzy
+msgid "For Odoo 19 we recommend an API key instead of a password."
+msgstr "Voor Odoo 19 raden we een API-sleutel aan in plaats van een wachtwoord."
 
 #, fuzzy
 msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
@@ -3628,6 +3660,10 @@ msgid "Line"
 msgstr "Lijn"
 
 #, fuzzy
+msgid "link instead of file"
+msgstr "link in plaats van bestand"
+
+#, fuzzy
 msgid "Link your own Telegram or WhatsApp so approvals reach you there. This is separate from a capa's admin setup (bot token) — this step binds YOUR chat."
 msgstr "Koppel je eigen Telegram of WhatsApp zodat goedkeuringen je daar bereiken. Dit staat los van de beheerinstelling van de Capa (bottoken) — deze stap koppelt JOUW chat."
 
@@ -3988,6 +4024,10 @@ msgid "More runtimes appear here once installed as plugins."
 msgstr "Meer runtimes verschijnen hier zodra je plugins installeert."
 
 #, fuzzy
+msgid "More than 500 entries – pick a parent folder."
+msgstr "Meer dan 500 items – kies een bovenliggende map."
+
+#, fuzzy
 msgid "Move holders to"
 msgstr "Houders verplaatsen naar"
 
@@ -4058,6 +4098,10 @@ msgstr "Opnieuw koppelen nodig"
 #, fuzzy
 msgid "Needs your decision"
 msgstr "Heeft jouw beslissing nodig"
+
+#, fuzzy
+msgid "Needs your permission"
+msgstr "Heeft je toestemming nodig"
 
 #, fuzzy
 msgid "never"
@@ -4592,6 +4636,10 @@ msgid "Nothing has changed since the running version."
 msgstr "Er is niets gewijzigd sinds de draaiende versie."
 
 #, fuzzy
+msgid "Nothing here."
+msgstr "Hier staat niets."
+
+#, fuzzy
 msgid "Nothing in progress right now."
 msgstr "Er is nu niets in uitvoering."
 
@@ -4800,6 +4848,10 @@ msgid "Organization updated"
 msgstr "Organisatie bijgewerkt"
 
 #, fuzzy
+msgid "other"
+msgstr "overig"
+
+#, fuzzy
 msgid "Other answer"
 msgstr "Ander antwoord"
 
@@ -4930,6 +4982,10 @@ msgstr "Kies een preset of definieer een exact schema / cron-expressie."
 #, fuzzy
 msgid "Pick any already-connected sources to sync into this base once it's created. You can add or remove sources later too."
 msgstr "Kies al gekoppelde bronnen om met deze kennisbank te synchroniseren zodra hij is aangemaakt. Je kunt later ook bronnen toevoegen of verwijderen."
+
+#, fuzzy
+msgid "Pick at least one entry."
+msgstr "Kies minstens één item."
 
 #, fuzzy
 msgid "Pick at least one model"
@@ -6784,6 +6840,10 @@ msgid "The schedule or event is not valid."
 msgstr "Het schema of de gebeurtenis is niet geldig."
 
 #, fuzzy
+msgid "The selection was empty at the last sync – its content is hidden and can be restored."
+msgstr "De selectie was leeg bij de laatste synchronisatie – de inhoud is verborgen en kan worden hersteld."
+
+#, fuzzy
 msgid "The server cannot be reached. Please check the address."
 msgstr "De server is niet bereikbaar. Controleer het adres."
 
@@ -6990,6 +7050,10 @@ msgstr "Dit filter geeft te veel resultaten. Beperk het datumbereik, kies een gr
 #, fuzzy
 msgid "This folder can't be opened. Go back and pick another."
 msgstr "Deze map kan niet worden geopend. Ga terug en kies een andere."
+
+#, fuzzy
+msgid "This folder could not be listed."
+msgstr "Deze map kon niet worden weergegeven."
 
 #, fuzzy
 msgid "This folder is empty."
@@ -7244,6 +7308,10 @@ msgid "too big"
 msgstr "te groot"
 
 #, fuzzy
+msgid "too large"
+msgstr "te groot"
+
+#, fuzzy
 msgid "Too many messages are waiting for this run. Wait until it has read them."
 msgstr "Er wachten te veel berichten op de run. Wacht tot ze zijn gelezen."
 
@@ -7366,6 +7434,10 @@ msgstr "Niet-gepubliceerde wijzigingen"
 #, fuzzy
 msgid "Unregistered"
 msgstr "Niet geregistreerd"
+
+#, fuzzy
+msgid "unsupported file type"
+msgstr "bestandstype niet ondersteund"
 
 #, fuzzy
 msgid "Untested"
