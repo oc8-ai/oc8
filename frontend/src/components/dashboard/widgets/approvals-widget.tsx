@@ -40,6 +40,9 @@ import {
 import { builderRefusalCode, builderRefusalText } from "@/lib/agent-builder-api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import type { ComponentProps } from "react";
+import { useWidgetLabel } from "@/components/dashboard/widget-labels";
+import { WidgetTitle } from "@/components/dashboard/widget-title";
 
 // --------------------------------------------------------------------- model
 // Kind, Row, DecidedRow, TENANT_WIDE, approvalRow, clarificationRow,
@@ -117,7 +120,21 @@ type ViewOnlyBecause = "role" | "seat";
 
 // ---------------------------------------------------------------- the widget
 
-export function ApprovalsWidget({
+// Every widget draws its own one-line title; the frame only adds a header in
+// edit mode. The body keeps its own loading/empty/error branches.
+export function ApprovalsWidget(props: ComponentProps<typeof ApprovalsWidgetBody>) {
+  const title = useWidgetLabel("approvals");
+  return (
+    <div className="flex h-full flex-col">
+      <WidgetTitle title={title} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <ApprovalsWidgetBody {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ApprovalsWidgetBody({
   initialSelectedId,
 }: {
   config: Record<string, unknown>;
@@ -295,7 +312,7 @@ export function ApprovalsWidget({
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {loadError && (
-        <div className="flex items-start gap-2 border-b border-[color:var(--status-error)]/40 px-3 py-2 text-xs">
+        <div className="flex items-start gap-2 px-3 py-2 text-xs">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-error)]" />
           <div>
             <div>
@@ -311,7 +328,7 @@ export function ApprovalsWidget({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5">
         <Pill active={kindFilter === "all"} onClick={() => setKindFilter("all")}>
           {t("All", "Alles")}
         </Pill>

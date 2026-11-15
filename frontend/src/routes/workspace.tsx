@@ -4,7 +4,7 @@
 // docs/superpowers/specs/2026-09-07-my-work-widget-dashboard-design.md.
 
 import { createFileRoute } from "@tanstack/react-router";
-import { LayoutTemplate, Save } from "lucide-react";
+import { Check, LayoutTemplate, Pencil, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
@@ -50,6 +50,7 @@ export function WorkspacePage() {
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const { confirm, ConfirmDialog } = useConfirm();
 
   // Set the moment `widgets` is seeded from the server response below, and
@@ -133,7 +134,7 @@ export function WorkspacePage() {
     setSwitcherOpen(false);
   }
 
-  function addWidget(type: WidgetType) {
+  function addWidget(type: WidgetType, config: Record<string, unknown> = {}) {
     const { defaultSize } = WIDGET_REGISTRY[type];
     setWidgets((prev) => {
       const list = prev ?? [];
@@ -153,7 +154,7 @@ export function WorkspacePage() {
           y: list.length ? Math.max(...list.map((w) => w.y + w.h)) : 0,
           w: defaultSize.w,
           h: defaultSize.h,
-          config: {},
+          config,
         },
       ];
     });
@@ -212,26 +213,38 @@ export function WorkspacePage() {
   return (
     <div className="space-y-3">
       <EditionHomeSections />
-      <div className="flex justify-end gap-2">
+      <div className="flex flex-wrap justify-end gap-2">
+        {editing && (
+          <>
+            <button
+              type="button"
+              onClick={() => setSaveOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-2 text-sm transition hover:bg-muted/30"
+            >
+              <Save className="h-4 w-4" />
+              {t("Save as preset", "Als Preset speichern")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSwitcherOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-2 text-sm transition hover:bg-muted/30"
+            >
+              <LayoutTemplate className="h-4 w-4" />
+              {t("Switch layout", "Layout wechseln")}
+            </button>
+            <WidgetPicker onAdd={addWidget} />
+          </>
+        )}
         <button
           type="button"
-          onClick={() => setSaveOpen(true)}
+          onClick={() => setEditing((v) => !v)}
           className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-2 text-sm transition hover:bg-muted/30"
         >
-          <Save className="h-4 w-4" />
-          {t("Save as preset", "Als Preset speichern")}
+          {editing ? <Check className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+          {editing ? t("Done", "Fertig") : t("Edit", "Bearbeiten")}
         </button>
-        <button
-          type="button"
-          onClick={() => setSwitcherOpen(true)}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-panel px-2.5 py-2 text-sm transition hover:bg-muted/30"
-        >
-          <LayoutTemplate className="h-4 w-4" />
-          {t("Switch layout", "Layout wechseln")}
-        </button>
-        <WidgetPicker onAdd={addWidget} />
       </div>
-      <DashboardGrid widgets={widgets} onChange={setWidgets} />
+      <DashboardGrid widgets={widgets} editing={editing} onChange={setWidgets} />
       <Dialog open={switcherOpen} onOpenChange={setSwitcherOpen}>
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">
           <DialogHeader>

@@ -4,7 +4,7 @@
 // with a new one and this one collapses to a line. In an approver's pane it is
 // read-only.
 import { useNavigate, Link } from "@tanstack/react-router";
-import { Bot } from "lucide-react";
+import { Bot, LayoutDashboard } from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import {
   useApplyAgentBuilder,
   useRequestAgentBuilder,
   type AgentBuilderDTO,
+  type BuilderBoardDTO,
   type BuilderTriggerDTO,
 } from "@/lib/agent-builder-api";
 import { describeCron } from "@/lib/describe-cron";
@@ -52,6 +53,44 @@ function decisionText(decision: string, t: Translate): string {
   }
 }
 
+/** What a proposal does to a dashboard: its title, datasets and block count,
+ *  and whether it is new or a change. */
+function BoardSection({ board, t }: { board: BuilderBoardDTO; t: Translate }) {
+  return (
+    <section className="space-y-1 text-sm" aria-label={t("Dashboard", "Dashboard")}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 text-micro">
+          <LayoutDashboard className="size-4 text-primary" aria-hidden />
+          {t("Dashboard", "Dashboard")}
+        </span>
+        <span className="text-micro">
+          {board.mode === "create" ? t("New", "Neu") : t("Changed", "Geändert")}
+        </span>
+      </div>
+      <div className="font-medium">{board.title}</div>
+      {board.datasets.length > 0 && (
+        <ul className="text-xs text-muted-foreground">
+          {board.datasets.map((d) => (
+            <li key={d.key}>
+              {d.fieldCount === 1
+                ? t(`${d.key} · ${d.grain} · 1 field`, `${d.key} · ${d.grain} · 1 Feld`)
+                : t(
+                    `${d.key} · ${d.grain} · ${d.fieldCount} fields`,
+                    `${d.key} · ${d.grain} · ${d.fieldCount} Felder`,
+                  )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="text-xs text-muted-foreground">
+        {board.blockCount === 1
+          ? t("1 block", "1 Block")
+          : t(`${board.blockCount} blocks`, `${board.blockCount} Blöcke`)}
+      </div>
+    </section>
+  );
+}
+
 function StatusLine({ card, t }: { card: AgentBuilderDTO; t: Translate }) {
   const map: Record<string, { dot: string; text: string }> = {
     draft: { dot: "bg-primary", text: t("Proposal", "Vorschlag") },
@@ -59,7 +98,10 @@ function StatusLine({ card, t }: { card: AgentBuilderDTO; t: Translate }) {
       dot: "bg-status-warning",
       text: t("Waiting for approval", "Wartet auf Freigabe"),
     },
-    applied: { dot: "bg-status-running", text: t("Created", "Angelegt") },
+    applied: {
+      dot: "bg-status-running",
+      text: card.kind === "board" ? t("Saved", "Gespeichert") : t("Created", "Angelegt"),
+    },
     rejected: { dot: "bg-status-error", text: t("Rejected", "Abgelehnt") },
     expired: { dot: "bg-status-paused", text: t("Expired", "Abgelaufen") },
   };
@@ -112,6 +154,9 @@ export function AgentBuilderCard({
     );
   }
   const actionsAllowed = !readOnly && !card.readOnly;
+  // A dashboard-only proposal creates no agent: none of the agent rows apply.
+  const isBoard = card.kind === "board";
+  const proposedName = isBoard ? (card.board?.title ?? "") : card.name;
   // A refusal stored on the proposal (read back after a refetch) wins over the
   // mutation's own error; any other failure still gets the generic text.
   const clientError = apply.error ?? request.error;
@@ -132,20 +177,24 @@ export function AgentBuilderCard({
           ? t(`New department: ${card.departmentName}`, `Neue Abteilung: ${card.departmentName}`)
           : card.departmentName,
     },
-    ...(card.model ? [{ label: t("Model", "Modell"), value: card.model.label }] : []),
-    ...(card.skills.length
+    ...(!isBoard && card.model ? [{ label: t("Model", "Modell"), value: card.model.label }] : []),
+    ...(!isBoard && card.skills.length
       ? [{ label: t("Skills", "Skills"), value: card.skills.map((s) => s.label).join(", ") }]
       : []),
-    {
-      label: t("When it works", "Wann er arbeitet"),
-      value: card.triggers.length
-        ? card.triggers.map((tr) => whenText(tr, t)).join(", ")
-        : t("On demand", "Auf Abruf"),
-    },
-    ...(card.systems.length
+    ...(isBoard
+      ? []
+      : [
+          {
+            label: t("When it works", "Wann er arbeitet"),
+            value: card.triggers.length
+              ? card.triggers.map((tr) => whenText(tr, t)).join(", ")
+              : t("On demand", "Auf Abruf"),
+          },
+        ]),
+    ...(!isBoard && card.systems.length
       ? [{ label: t("Connected systems", "Systeme"), value: card.systems.join(", ") }]
       : []),
-    ...(card.limits.length
+    ...(!isBoard && card.limits.length
       ? [
           {
             label: t("Never without approval", "Nie ohne Freigabe"),
@@ -162,19 +211,30 @@ export function AgentBuilderCard({
       {heading && <div className="mb-2 text-micro">{heading}</div>}
       <section
         className="space-y-3 rounded-lg border border-border bg-card p-4"
-        aria-label={t("New agent", "Neuer Agent")}
+        aria-label={
+          isBoard ? t("Dashboard proposal", "Dashboard-Vorschlag") : t("New agent", "Neuer Agent")
+        }
       >
-        <div className="flex items-center justify-between gap-2">
-          <span className="inline-flex items-center gap-2 text-micro">
-            <Bot className="size-4 text-primary" aria-hidden />
-            {t("New agent", "Neuer Agent")}
-          </span>
-          <StatusLine card={card} t={t} />
-        </div>
-        <div>
-          <h3 className="text-base font-semibold">{card.name}</h3>
-          {card.roleTitle && <p className="text-xs text-muted-foreground">{card.roleTitle}</p>}
-        </div>
+        {isBoard ? (
+          <div className="flex justify-end">
+            <StatusLine card={card} t={t} />
+          </div>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-2 text-micro">
+                <Bot className="size-4 text-primary" aria-hidden />
+                {t("New agent", "Neuer Agent")}
+              </span>
+              <StatusLine card={card} t={t} />
+            </div>
+            <div>
+              <h3 className="text-base font-semibold">{card.name}</h3>
+              {card.roleTitle && <p className="text-xs text-muted-foreground">{card.roleTitle}</p>}
+            </div>
+          </>
+        )}
+        {card.board && <BoardSection board={card.board} t={t} />}
         <dl className="grid grid-cols-1 gap-x-3 gap-y-1 text-sm sm:grid-cols-[minmax(0,10rem)_1fr]">
           {rows.map((row) => (
             <div key={row.label} className="contents">
@@ -183,7 +243,7 @@ export function AgentBuilderCard({
             </div>
           ))}
         </dl>
-        {card.mission && (
+        {!isBoard && card.mission && (
           <details className="text-sm">
             <summary className="min-h-9 cursor-pointer text-muted-foreground">
               {t("Mission", "Auftrag")}
@@ -193,7 +253,7 @@ export function AgentBuilderCard({
         )}
         {refusal && card.status === "draft" && (
           <p role="alert" className="text-xs text-status-error">
-            {builderRefusalText(refusal, card.failedStep, t, card.failedReason)}
+            {builderRefusalText(refusal, card.failedStep, t, card.failedReason, card.kind)}
           </p>
         )}
         {card.status === "rejected" && (
@@ -257,8 +317,8 @@ export function AgentBuilderCard({
             onClick={() =>
               onPropose(
                 t(
-                  `/agent Please propose ${card.name} again.`,
-                  `/agent Schlag ${card.name} bitte noch einmal vor.`,
+                  `/agent Please propose ${proposedName} again.`,
+                  `/agent Schlag ${proposedName} bitte noch einmal vor.`,
                 ),
               )
             }
@@ -271,7 +331,11 @@ export function AgentBuilderCard({
             <div className="flex flex-wrap gap-2">
               {card.mayCreate ? (
                 <Button disabled={apply.isPending} onClick={() => apply.mutate()}>
-                  {t("Create this agent", "Anlegen")}
+                  {!isBoard
+                    ? t("Create this agent", "Anlegen")
+                    : card.board?.mode === "update"
+                      ? t("Apply this change", "Änderung übernehmen")
+                      : t("Create this dashboard", "Dashboard anlegen")}
                 </Button>
               ) : (
                 card.mayRequest && (

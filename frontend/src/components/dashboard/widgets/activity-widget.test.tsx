@@ -77,4 +77,11 @@ describe("ActivityWidget", () => {
     render(<ActivityWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
     expect(screen.getAllByTestId("run-step-timeline")).toHaveLength(4);
   });
+
+  it("draws its own title once", () => {
+    vi.spyOn(hooks, "useActivity").mockReturnValue({ data: [], isPending: false } as never);
+    vi.spyOn(hooks, "useRuns").mockReturnValue(noRuns);
+    render(<ActivityWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
+    expect(screen.getAllByText("Activity")).toHaveLength(1);
+  });
 });

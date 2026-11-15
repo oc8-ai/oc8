@@ -4,6 +4,7 @@ from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.models.account import AccountVerificationToken
 from oc8.models.api_keys import ApiKey
 from oc8.models.attachments import FileAttachment
+from oc8.models.boards import DataBoard, DataBoardBatch, DataBoardRecord, DataBoardSpecVersion
 from oc8.models.capas import Capa, CapaInstallation, CapaVersion
 from oc8.models.channels import ApprovalChannelBinding, ChannelPollCursor
 from oc8.models.chat import ChatMessage, ChatProject, ChatSession
@@ -98,6 +99,10 @@ __all__ = [
     "CopilotProposal",
     "Credential",
     "DashboardPreset",
+    "DataBoard",
+    "DataBoardBatch",
+    "DataBoardRecord",
+    "DataBoardSpecVersion",
     "DataSource",
     "Department",
     "DirectAccessGrant",

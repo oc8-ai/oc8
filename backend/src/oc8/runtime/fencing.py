@@ -27,7 +27,13 @@ from typing import Final
 _CONTROL_CHARS: Final = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]+")
 
 #: Every fence tag oc8 wraps text in.
-FENCE_TAGS: Final = ("person_message", "pinned_context", "tool_output", "asked_question")
+FENCE_TAGS: Final = (
+    "person_message",
+    "pinned_context",
+    "tool_output",
+    "asked_question",
+    "board_spec",
+)
 _ASCII_CLOSE: Final = re.compile(
     r"</(?=\s*(?:" + "|".join(FENCE_TAGS) + r"))", re.IGNORECASE | re.ASCII
 )

@@ -194,6 +194,7 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "read_context",
         "search_memory",
         "render_component",
+        "board_write",
         "propose_change",
         "decide_approval",
         "read_reference_file",
@@ -214,6 +215,7 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "enter_agent_mode",
         "builder_options",
         "propose_agent",
+        "propose_board",
         "offer_direct_access",
     }
 
@@ -1151,6 +1153,8 @@ def test_each_control_tool_declares_its_required_arguments(name: str) -> None:
         # The builder's door and its read of the options take no arguments.
         "enter_agent_mode",
         "builder_options",
+        # Exactly one of agentId/boardId, enforced by the handler like ask_user.
+        "propose_board",
     }
     if name not in optional_tools:
         assert schema.parameters["required"]

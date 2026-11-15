@@ -29,10 +29,22 @@ msgstr ""
 msgid "(requires settings:manage)"
 msgstr ""
 
+msgid "{from}–{to} of {total}"
+msgstr ""
+
+msgid "{n} selected"
+msgstr ""
+
 msgid "/do carry out the plan above"
 msgstr ""
 
 msgid "/summarise this conversation"
+msgstr ""
+
+msgid "1 block"
+msgstr ""
+
+msgid "1 record"
 msgstr ""
 
 msgid "1 unpublished change"
@@ -59,7 +71,25 @@ msgstr ""
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr ""
 
+msgid "A dashboard can only go to an agent of its own department."
+msgstr ""
+
+msgid "A dashboard change may only add datasets; an existing dataset can't be removed."
+msgstr ""
+
+msgid "A dashboard change may only add fields; an existing field can't be removed."
+msgstr ""
+
+msgid "A dataset's grain can't change; add a new dataset instead."
+msgstr ""
+
 msgid "A decision was made."
+msgstr ""
+
+msgid "A field's currency can't change; add a new field instead."
+msgstr ""
+
+msgid "A field's type can't change; add a new field instead."
 msgstr ""
 
 msgid "a former member"
@@ -455,6 +485,9 @@ msgstr ""
 msgid "Apply"
 msgstr ""
 
+msgid "Apply this change"
+msgstr ""
+
 msgid "Apply this rule to the draft below (doesn't save yet)"
 msgstr ""
 
@@ -534,6 +567,12 @@ msgid "Archived"
 msgstr ""
 
 msgid "Arguments (JSON)"
+msgstr ""
+
+msgid "Artifact blocks are available in Enterprise only."
+msgstr ""
+
+msgid "As first reported"
 msgstr ""
 
 msgid "Ask an administrator to add you — your queue appears the moment they do."
@@ -657,6 +696,9 @@ msgid "Available"
 msgstr ""
 
 msgid "Available in chat"
+msgstr ""
+
+msgid "Available in Enterprise"
 msgstr ""
 
 msgid "Available in:"
@@ -855,6 +897,9 @@ msgid "Change password"
 msgstr ""
 
 msgid "Change runtime"
+msgstr ""
+
+msgid "Changed"
 msgstr ""
 
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
@@ -1580,6 +1625,9 @@ msgstr ""
 msgid "Create this agent"
 msgstr ""
 
+msgid "Create this dashboard"
+msgstr ""
+
 msgid "Create user"
 msgstr ""
 
@@ -1634,6 +1682,9 @@ msgstr ""
 msgid "Custom MCP capa"
 msgstr ""
 
+msgid "Custom range"
+msgstr ""
+
 msgid "Custom server or API"
 msgstr ""
 
@@ -1652,6 +1703,18 @@ msgstr ""
 msgid "Daily role audit — compare actions vs. role scope"
 msgstr ""
 
+msgid "Dashboard"
+msgstr ""
+
+msgid "Dashboard proposal"
+msgstr ""
+
+msgid "Dashboards"
+msgstr ""
+
+msgid "Dashboards can only be proposed by the Copilot."
+msgstr ""
+
 msgid "Data source"
 msgstr ""
 
@@ -1665,6 +1728,9 @@ msgid "Data Sources"
 msgstr ""
 
 msgid "Data sources (optional)"
+msgstr ""
+
+msgid "Date"
 msgstr ""
 
 msgid "Day"
@@ -1737,6 +1803,12 @@ msgid "Delete connection?"
 msgstr ""
 
 msgid "Delete credential?"
+msgstr ""
+
+msgid "Delete dashboard"
+msgstr ""
+
+msgid "Delete dashboard?"
 msgstr ""
 
 msgid "Delete data source?"
@@ -2666,6 +2738,9 @@ msgstr ""
 msgid "Language switched to"
 msgstr ""
 
+msgid "Last 12 months"
+msgstr ""
+
 msgid "Last 30 days — validation only"
 msgstr ""
 
@@ -2700,6 +2775,9 @@ msgid "Leave empty to set up later"
 msgstr ""
 
 msgid "Leave unassigned"
+msgstr ""
+
+msgid "Legend"
 msgstr ""
 
 msgid "Let the copilot draft this from a rough description"
@@ -3077,6 +3155,9 @@ msgstr ""
 msgid "Never without approval"
 msgstr ""
 
+msgid "New"
+msgstr ""
+
 msgid "New agent"
 msgstr ""
 
@@ -3114,6 +3195,9 @@ msgid "New password (min. 8 characters)"
 msgstr ""
 
 msgid "New project"
+msgstr ""
+
+msgid "New records arrived — check the count and confirm again."
 msgstr ""
 
 msgid "New role"
@@ -3158,6 +3242,9 @@ msgstr ""
 msgid "Next step"
 msgstr ""
 
+msgid "No access"
+msgstr ""
+
 msgid "No access token: the token URL refused or did not answer. The API itself was not called."
 msgstr ""
 
@@ -3200,6 +3287,9 @@ msgstr ""
 msgid "No chunks found."
 msgstr ""
 
+msgid "No comparison"
+msgstr ""
+
 msgid "No connected data sources yet — create one first from the Sources tab, or skip this step."
 msgstr ""
 
@@ -3218,7 +3308,13 @@ msgstr ""
 msgid "No credentials yet."
 msgstr ""
 
+msgid "No data"
+msgstr ""
+
 msgid "No data for this filter."
+msgstr ""
+
+msgid "No data for this period"
 msgstr ""
 
 msgid "No data source you can open matches that."
@@ -3281,6 +3377,9 @@ msgstr ""
 msgid "No login"
 msgstr ""
 
+msgid "No longer updated"
+msgstr ""
+
 msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
 msgstr ""
 
@@ -3306,6 +3405,9 @@ msgid "No new answer was started. Try again."
 msgstr ""
 
 msgid "no note"
+msgstr ""
+
+msgid "No note for this period"
 msgstr ""
 
 msgid "No organisation access yet."
@@ -3378,6 +3480,9 @@ msgid "No usage recorded yet."
 msgstr ""
 
 msgid "No users found. Users appear here after they sign in."
+msgstr ""
+
+msgid "No values in this period"
 msgstr ""
 
 msgid "no version"
@@ -4895,6 +5000,9 @@ msgstr ""
 msgid "That did not work. Please try again."
 msgstr ""
 
+msgid "That earlier version of the dashboard does not exist."
+msgstr ""
+
 msgid "That link did not name an object I can pin, so this is a new chat."
 msgstr ""
 
@@ -4923,6 +5031,9 @@ msgid "The agent is waiting for your input."
 msgstr ""
 
 msgid "The agent isn't reachable right now. Your message wasn't sent – try again in a moment."
+msgstr ""
+
+msgid "The agent that should fill the dashboard no longer exists or is out of reach."
 msgstr ""
 
 msgid "The agent was not created. Try again."
@@ -4992,6 +5103,21 @@ msgid "The connection in the department you moved away from could not be removed
 msgstr ""
 
 msgid "The copilot found nothing in the instructions to restrict here."
+msgstr ""
+
+msgid "The dashboard changed since this proposal. Ask the Copilot to propose the change again from its current version."
+msgstr ""
+
+msgid "The dashboard could not be deleted. Reload and try again."
+msgstr ""
+
+msgid "The dashboard moved to another department meanwhile. Reject this request so it can be requested again."
+msgstr ""
+
+msgid "The dashboard was not saved. Try again."
+msgstr ""
+
+msgid "The dashboard's layout is not valid."
 msgstr ""
 
 msgid "The day somebody should only sign off offers: fork a built-in role, untick everything but four boxes, name it, assign it."
@@ -5225,6 +5351,12 @@ msgstr ""
 msgid "This base already has ingested content, so its embedding model can't change -- old and new chunks would no longer be comparable. Delete and recreate the base to use a different model."
 msgstr ""
 
+msgid "This block can't be shown"
+msgstr ""
+
+msgid "This block couldn't be loaded"
+msgstr ""
+
 msgid "This browser does not support push notifications."
 msgstr ""
 
@@ -5253,6 +5385,24 @@ msgid "This connection is not set up yet. Please contact your administrator."
 msgstr ""
 
 msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr ""
+
+msgid "This dashboard can't be shown."
+msgstr ""
+
+msgid "This dashboard couldn't be loaded."
+msgstr ""
+
+msgid "This dashboard no longer exists or is out of reach."
+msgstr ""
+
+msgid "This dashboard was already saved."
+msgstr ""
+
+msgid "This dashboard was deleted"
+msgstr ""
+
+msgid "This dashboard was removed."
 msgstr ""
 
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
@@ -5307,6 +5457,9 @@ msgid "This model can see images (vision)"
 msgstr ""
 
 msgid "This model may only answer chats, not run on a schedule or an event."
+msgstr ""
+
+msgid "This month"
 msgstr ""
 
 msgid "This proposal has expired."
@@ -5549,9 +5702,6 @@ msgstr ""
 msgid "Unpublished changes"
 msgstr ""
 
-msgid "Unregistered"
-msgstr ""
-
 msgid "Untested"
 msgstr ""
 
@@ -5654,6 +5804,9 @@ msgstr ""
 msgid "value"
 msgstr ""
 
+msgid "Values couldn't be loaded"
+msgstr ""
+
 msgid "Verification failed"
 msgstr ""
 
@@ -5679,6 +5832,12 @@ msgid "via department lead"
 msgstr ""
 
 msgid "Visibility"
+msgstr ""
+
+msgid "vs. previous period"
+msgstr ""
+
+msgid "vs. same period last year"
 msgstr ""
 
 msgid "waiting"
@@ -5864,6 +6023,9 @@ msgstr ""
 msgid "Wrote a file"
 msgstr ""
 
+msgid "Year to date"
+msgstr ""
+
 msgid "Yes, approve"
 msgstr ""
 
@@ -5916,6 +6078,9 @@ msgid "You don't have access to Copilot chat."
 msgstr ""
 
 msgid "You don't have permission to view this content."
+msgstr ""
+
+msgid "You have no access to this dashboard"
 msgstr ""
 
 msgid "You hold no seat in any department."

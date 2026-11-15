@@ -137,6 +137,7 @@ describe("WorkspacePage", () => {
     render(<WorkspacePage />, { wrapper });
     await waitFor(() => screen.getByText("Budget"));
 
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(screen.getByRole("button", { name: /switch layout/i }));
     fireEvent.click(await screen.findByRole("button", { name: "My preset" }));
 
@@ -169,6 +170,7 @@ describe("WorkspacePage", () => {
     render(<WorkspacePage />, { wrapper });
     await waitFor(() => screen.getByText("Budget"));
 
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
     fireEvent.click(screen.getByRole("button", { name: /save as preset/i }));
     fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "My preset" } });
     fireEvent.click(screen.getByRole("button", { name: /^Save$/i }));
@@ -183,5 +185,39 @@ describe("WorkspacePage", () => {
         expect.anything(),
       ),
     );
+  });
+
+  it("hides the toolbar until Edit is clicked, then offers Done", async () => {
+    vi.spyOn(hooks, "useDashboardLayout").mockReturnValue({
+      data: {
+        widgets: [{ id: "w1", type: "budget", x: 0, y: 0, w: 3, h: 6, config: {} }],
+        templateId: null,
+      },
+      isPending: false,
+    } as never);
+    vi.spyOn(hooks, "useSaveDashboardLayout").mockReturnValue({ mutate: vi.fn() } as never);
+    vi.spyOn(hooks, "useBudgetStatus").mockReturnValue({
+      data: undefined,
+      isPending: true,
+    } as never);
+
+    const { WorkspacePage } = await import("./workspace");
+    render(<WorkspacePage />, { wrapper });
+    await waitFor(() => screen.getByText("Budget"));
+    expect(screen.getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /add widget/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /save as preset/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /switch layout/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /remove widget/i })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("button", { name: "Done" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /add widget/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save as preset/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /switch layout/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /remove widget/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("button", { name: /add widget/i })).toBeNull();
   });
 });

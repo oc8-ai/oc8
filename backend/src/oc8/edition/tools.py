@@ -159,6 +159,13 @@ async def edition_tool_entitled(tenant_id: uuid.UUID, tool: EditionTool) -> bool
     return entitlements.has(tool.capability)
 
 
+async def tenant_has_capability(tenant_id: uuid.UUID, capability: Capability) -> bool:
+    """Whether the active edition entitles `tenant_id` to `capability`
+    (Community: never)."""
+    entitlements = await _STATE.get().entitlements(tenant_id)
+    return entitlements.has(capability)
+
+
 async def offered_edition_tools(
     tenant_id: uuid.UUID, *, door: str | None, taken: Collection[str] = ()
 ) -> list[EditionTool]:

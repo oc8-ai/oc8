@@ -16,4 +16,10 @@ describe("ReportsWidget", () => {
     render(<ReportsWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
     expect(screen.getByTestId("reports-widget-scroll")).toBeInTheDocument();
   });
+
+  it("draws its own title once", () => {
+    vi.spyOn(hooks, "useReports").mockReturnValue({ data: [], isPending: false } as never);
+    render(<ReportsWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
+    expect(screen.getAllByText("Reports")).toHaveLength(1);
+  });
 });

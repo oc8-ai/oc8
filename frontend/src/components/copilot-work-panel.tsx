@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { NeedsMeWidget } from "@/components/dashboard/widgets/needs-me-widget";
+import { NeedsMeWidgetBody } from "@/components/dashboard/widgets/needs-me-widget";
 import { RunStepTimeline } from "@/components/run-step-timeline";
 import {
   AlertDialog,
@@ -361,7 +361,7 @@ export function CopilotWorkPanel() {
           </TabsContent>
           <TabsContent value="waiting">
             {profile?.agentId ? (
-              <NeedsMeWidget config={{}} onConfigChange={() => {}} agentId={profile.agentId} />
+              <NeedsMeWidgetBody config={{}} onConfigChange={() => {}} agentId={profile.agentId} />
             ) : (
               <p className="p-3 text-xs text-muted-foreground">{t("Loading…", "Wird geladen…")}</p>
             )}

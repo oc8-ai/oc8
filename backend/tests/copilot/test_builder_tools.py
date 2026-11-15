@@ -617,3 +617,291 @@ async def test_a_flat_proposal_is_checked_as_strictly(
         assert f"({code}" in outcome.output, outcome.output
         assert "hunter2" not in outcome.output and "sk-123456" not in outcome.output
         assert (await db.execute(select(CopilotProposal))).scalars().all() == []
+
+
+# -- dashboards --------------------------------------------------------------------
+
+_BOARD_SPEC: dict[str, Any] = {
+    "datasets": [
+        {
+            "key": "sales",
+            "label": "Sales",
+            "grain": "day",
+            "fields": [{"key": "amount", "label": "Amount", "type": "number"}],
+        }
+    ],
+    "blocks": [{"type": "kpi", "dataset": "sales", "field": "amount"}],
+}
+
+
+async def _producer_and_board(db: Any, office: BuilderOffice) -> tuple[m.Agent, m.DataBoard]:
+    agent = m.Agent(
+        tenant_id=office.tenant,
+        department_id=office.department_id,
+        name="Zahlenwerk",
+        status="idle",
+        definition={},
+        presentation={},
+    )
+    db.add(agent)
+    await db.flush()
+    board = m.DataBoard(
+        tenant_id=office.tenant,
+        department_id=office.department_id,
+        agent_id=agent.id,
+        title="Kassenstand",
+        spec=_BOARD_SPEC,
+    )
+    db.add(board)
+    await db.flush()
+    return agent, board
+
+
+def test_propose_board_is_offered_in_agent_mode_only() -> None:
+    agent_mode = _names(
+        offered_tools(_copilot(), copilot_door="web", chat_mode=MODES["agent"], **COMMON)
+    )
+    assert {"propose_board", "propose_agent", "builder_options"} <= agent_mode
+    for mode_key in (None, "do", "plan", "ask", "summarise"):
+        mode = MODES[mode_key] if mode_key else None
+        names = _names(offered_tools(_copilot(), copilot_door="web", chat_mode=mode, **COMMON))
+        assert "propose_board" not in names, mode_key
+    for door in ("telegram", "followup", None):
+        names = _names(
+            offered_tools(_copilot(), copilot_door=door, chat_mode=MODES["agent"], **COMMON)
+        )
+        assert "propose_board" not in names, door
+
+
+@pytest.mark.parametrize(
+    ("mode_key", "effect"),
+    [("agent", Effect.ALLOW), ("plan", Effect.DENY), ("ask", Effect.DENY)],
+)
+def test_the_pep_agrees_with_the_propose_board_offer(mode_key: str, effect: Effect) -> None:
+    decision = _authorize(
+        _copilot(),
+        ToolCall(id="c", name="propose_board", arguments={}),
+        frame={"tools": {}},
+        tool_policies={},
+        connection_key=None,
+        tool_scopes=None,
+        chat_mode=MODES[mode_key],
+    )
+    assert decision.effect is effect
+
+
+@pytest.mark.asyncio
+async def test_builder_options_lists_editable_boards(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        agent, board = await _producer_and_board(db, office)
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(db, office, run, task, "builder_options")
+        assert outcome is not None and not outcome.output.startswith("ERROR")
+        assert "Agents you may give a dashboard (agentId | name):" in outcome.output
+        assert f"- {agent.id} | Zahlenwerk" in outcome.output
+        assert "Dashboards you may change (boardId | title | agent | version):" in outcome.output
+        assert f"- {board.id} | Kassenstand | Zahlenwerk | 1" in outcome.output
+        assert "Grains: day | week | month | moment" in outcome.output
+        assert "may only add datasets and fields" in outcome.output
+        assert "artifact" not in outcome.output, "Community: no artifact block"
+
+
+@pytest.mark.asyncio
+async def test_builder_options_lists_no_board_the_member_may_not_edit(
+    app_session: AppSessionFactory,
+) -> None:
+    """The employee sees the department, but may not edit its agents."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        agent, board = await _producer_and_board(db, office)
+        run, _task = await _run(db, office, chat_mode="agent")
+        run.context = {
+            **run.context,
+            "chat_session_id": str(office.employee.session_id),
+            "originating_operator": office.employee.subject,
+            "operator_role": "member",
+        }
+        run.task_id = office.employee.task_id
+        await db.flush()
+        employee_task = await db.get(m.Task, office.employee.task_id)
+        assert employee_task is not None
+        outcome = await _call(db, office, run, employee_task, "builder_options")
+        assert outcome is not None and not outcome.output.startswith("ERROR"), outcome.output
+        assert str(agent.id) not in outcome.output and str(board.id) not in outcome.output
+
+
+@pytest.mark.asyncio
+async def test_propose_board_puts_a_board_card_up(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        agent, board = await _producer_and_board(db, office)
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(
+            db,
+            office,
+            run,
+            task,
+            "propose_board",
+            agentId=str(agent.id),
+            title="Neu",
+            spec=_BOARD_SPEC,
+            boardId="",
+        )
+        assert outcome is not None and not outcome.output.startswith("ERROR"), outcome.output
+        assert "dashboard will show" in outcome.output
+        assert (await _stored_steps(db))[0]["type"] == "board.create"
+        await db.refresh(run)
+        assert run.context["builder_proposal_id"]
+
+        change = await _call(
+            db, office, run, task, "propose_board", boardId=str(board.id), title="Kasse"
+        )
+        assert not change.output.startswith("ERROR"), change.output
+        (step,) = await _stored_steps(db)
+        assert step["type"] == "board.update" and step["boardId"] == str(board.id)
+        assert step["title"] == "Kasse"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("arguments", "code"),
+    [
+        ({"title": "x"}, "missing_board_target"),
+        ({"agentId": "AGENT", "restoreVersion": 1}, "missing_board_target"),
+        ({"agentId": "AGENT", "title": "x", "spec": _BOARD_SPEC, "colour": "red"}, None),
+        ({"agentId": "AGENT", "title": "x", "spec": {"datasets": []}}, "board_spec_invalid"),
+        ({"agentId": str(uuid.uuid4()), "title": "x", "spec": _BOARD_SPEC}, "agent_unknown"),
+        ({"boardId": str(uuid.uuid4())}, "board_unknown"),
+    ],
+)
+async def test_a_refused_board_proposal_tells_the_model_why(
+    app_session: AppSessionFactory, arguments: dict[str, Any], code: str | None
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        agent, _board = await _producer_and_board(db, office)
+        args = {k: (str(agent.id) if v == "AGENT" else v) for k, v in arguments.items()}
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(db, office, run, task, "propose_board", **args)
+        assert outcome is not None and outcome.output.startswith("ERROR"), outcome.output
+        expected = code or "board_unknown_field"
+        assert f"({expected}" in outcome.output, outcome.output
+        hint = outcome.output.split("): ", 1)[1]
+        assert hint != "check the operations", "every board code has its own hint"
+        assert (await db.execute(select(CopilotProposal))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_propose_board_needs_agent_mode(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        agent, _board = await _producer_and_board(db, office)
+        run, task = await _run(db, office)
+        outcome = await _call(
+            db, office, run, task, "propose_board", agentId=str(agent.id), title="x"
+        )
+        assert outcome is not None and outcome.output.startswith("ERROR")
+        assert "propose_board works in Agent mode only" in outcome.output
+        assert (await db.execute(select(CopilotProposal))).scalars().all() == []
+
+
+def test_every_board_refusal_code_has_a_hint() -> None:
+    from oc8.copilot.builder_tools import _REFUSALS
+
+    for code in (
+        "board_spec_invalid",
+        "board_builder_only",
+        "board_unknown",
+        "agent_unknown",
+        "agent_other_department",
+        "board_version_unknown",
+        "artifact_not_available",
+        "dataset_removed",
+        "field_removed",
+        "grain_changed",
+        "field_type_changed",
+        "currency_changed",
+        "board_unknown_field",
+        "missing_board_target",
+    ):
+        assert _REFUSALS.get(code), code
+
+
+@pytest.mark.asyncio
+async def test_department_view_alone_does_not_reach_a_board(
+    app_session: AppSessionFactory,
+) -> None:
+    """A member without a seat whose role grants `department:view` neither
+    sees a board in builder_options nor proposes a change to it (§6.8.2:
+    boards follow `agent:view`). No built-in role holds one read without the
+    other, so the flag itself is pinned by
+    `test_board_reach_is_agent_view_not_department_view`."""
+    from oc8.authz.permissions import DEPARTMENT, VIEW, perm
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        agent, board = await _producer_and_board(db, office)
+        reader = await copilot_seat(db, tenant, "reader")
+        member = await db.get(m.OrgMember, reader.member_id)
+        assert member is not None and member.role_id is not None
+        db.add(
+            m.RolePermission(
+                tenant_id=tenant, role_id=member.role_id, permission=perm(DEPARTMENT, VIEW)
+            )
+        )
+        await db.flush()
+        run, _task = await _run(db, office, chat_mode="agent")
+        run.context = {
+            **run.context,
+            "chat_session_id": str(reader.session_id),
+            "originating_operator": reader.subject,
+            "operator_role": "member",
+        }
+        run.task_id = reader.task_id
+        await db.flush()
+        reader_task = await db.get(m.Task, reader.task_id)
+        assert reader_task is not None
+        outcome = await _call(db, office, run, reader_task, "builder_options")
+        assert outcome is not None and not outcome.output.startswith("ERROR"), outcome.output
+        assert str(agent.id) not in outcome.output and str(board.id) not in outcome.output
+        refused = await _call(
+            db, office, run, reader_task, "propose_board", boardId=str(board.id), title="x"
+        )
+        assert refused is not None and "(board_unknown" in refused.output, refused.output
+        assert (await db.execute(select(CopilotProposal))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_builder_options_offers_the_artifact_block_with_canvas(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.edition.tools import use_edition_tools
+    from oc8.licensing.capabilities import ENTERPRISE_CANVAS, Capability
+    from oc8.licensing.contracts import Entitlements
+
+    class _Canvas:
+        def has(self, capability: Capability) -> bool:
+            return capability == ENTERPRISE_CANVAS
+
+        def limit(self, name: str) -> int | None:
+            return None
+
+    async def canvas(_tenant: uuid.UUID) -> Entitlements:
+        return _Canvas()
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        run, task = await _run(db, office, chat_mode="agent")
+        with use_edition_tools([], canvas):
+            outcome = await _call(db, office, run, task, "builder_options")
+        assert outcome is not None
+        assert "| artifact (artifact_ref, datasets)" in outcome.output

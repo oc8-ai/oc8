@@ -134,4 +134,10 @@ describe("NeedsMeWidget", () => {
     render(<NeedsMeWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
     expect(hooks.useRun).not.toHaveBeenCalled();
   });
+
+  it("draws its own title once", () => {
+    mock({});
+    render(<NeedsMeWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
+    expect(screen.getAllByText("Waiting on me")).toHaveLength(1);
+  });
 });

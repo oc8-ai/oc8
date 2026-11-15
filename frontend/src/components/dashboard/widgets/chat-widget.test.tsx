@@ -157,4 +157,9 @@ describe("ChatWidget", () => {
     expect(screen.getByRole("button", { name: "Apply" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
   });
+
+  it("draws its own title once", () => {
+    render(<ChatWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
+    expect(screen.getAllByText("Chat")).toHaveLength(1);
+  });
 });

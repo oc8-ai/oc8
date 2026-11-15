@@ -6,6 +6,12 @@ card, applied by the member or -- through an approval -- by somebody who may
 create agents in that department. One open proposal per chat; a new one
 supersedes the draft. Apply is one savepoint: every step lands, or none does
 and the proposal names the step that refused.
+
+A proposal may also be board-only (`builder_ops.is_board_only`): one
+`board.create` for an existing agent, or one `board.update`. It acts in the
+department its producing agent or board lives in (`target_department`) and is
+applied by whoever may edit that agent there (`may_apply`), or approved like an
+agent proposal.
 """
 
 from __future__ import annotations
@@ -13,7 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Any, Final, Literal
 
 from sqlalchemy import Text, cast, func, literal, select
@@ -23,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request
 from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.repo import visible_agent
 from oc8.agents.versioning import NoChangesToPublish, publish_version
 from oc8.approvals import expire_approval
 from oc8.audit import append_event
@@ -31,12 +38,15 @@ from oc8.authz import pdp
 from oc8.authz.authority import Authority, granted_for_member
 from oc8.authz.permissions import AGENT, DEPARTMENT, MANAGE, perm
 from oc8.authz.scope import DecisionActor, DepartmentScope, HumanActor
+from oc8.boards.lifecycle import lock_live_board
+from oc8.boards.spec import BoardSpecInvalid, parse_board_spec, uses_artifact
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.connections.usable import department_systems
 from oc8.copilot.builder_ops import (
     BuilderInvalid,
     BuilderStep,
     builder_operation_data,
+    is_board_only,
     parse_builder_operations,
     resolve_step,
 )
@@ -45,6 +55,8 @@ from oc8.copilot.capabilities import (
     AgentModelSwitch,
     AgentNarrowingSet,
     AgentSkillAssign,
+    BoardCreate,
+    BoardUpdate,
     DepartmentCreate,
     GuardrailSet,
     InvalidOperation,
@@ -54,10 +66,13 @@ from oc8.copilot.capabilities import (
     apply_operation,
     new_department_frame,
     operation_label,
+    target_revision,
 )
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.redaction import carries_secret_value
 from oc8.departments.repo import visible_department
+from oc8.edition.tools import tenant_has_capability
+from oc8.licensing.capabilities import ENTERPRISE_CANVAS
 from oc8.runtime.fencing import one_line
 
 logger = logging.getLogger(__name__)
@@ -218,6 +233,13 @@ def _texts(operation: Operation) -> list[str]:
         return [text for c in operation.conditions for text in _leaf_texts(c.model_dump())]
     if isinstance(operation, AgentNarrowingSet):
         return list(_leaf_texts(operation.narrowing))
+    if isinstance(operation, BoardCreate | BoardUpdate):
+        # Labels, titles and an artifact block's ref are free text in the spec.
+        return [
+            text
+            for text in (operation.title, operation.description, *_leaf_texts(operation.spec))
+            if text is not None
+        ]
     return []
 
 
@@ -265,6 +287,174 @@ def target_department_id(steps: list[BuilderStep]) -> uuid.UUID | None:
     if new_department(steps) is not None:
         return None
     return create_step(steps).departmentId
+
+
+#: Whether the caller may see a live board's own content, asked with the
+#: board's department: `may_view` there, or `agent:view` tenant-wide (§6.8.2).
+SeesBoard = Callable[[uuid.UUID], bool]
+
+
+async def _live_agent(db: AsyncSession, agent_id: uuid.UUID) -> m.Agent | None:
+    agent = await db.get(m.Agent, agent_id, populate_existing=True)
+    return agent if agent is not None and agent.deleted_at is None else None
+
+
+async def _live_board(db: AsyncSession, board_id: uuid.UUID) -> m.DataBoard | None:
+    """A board neither archived nor removed, freshly read."""
+    board: m.DataBoard | None = await db.scalar(
+        select(m.DataBoard)
+        .where(
+            m.DataBoard.id == board_id,
+            m.DataBoard.deleted_at.is_(None),
+            m.DataBoard.removed_at.is_(None),
+        )
+        .execution_options(populate_existing=True)
+    )
+    return board
+
+
+def board_step(steps: list[BuilderStep]) -> BoardCreate | BoardUpdate | None:
+    """The proposal's first board operation, if it has one."""
+    for step in steps:
+        if isinstance(step.operation, BoardCreate | BoardUpdate):
+            return step.operation
+    return None
+
+
+async def target_department(
+    db: AsyncSession, steps: list[BuilderStep], *, lock: bool = False
+) -> uuid.UUID | None:
+    """Where the proposal acts, read live. A board-only `board.create` acts in
+    its producing agent's department (a board's department is always its
+    agent's, §6.8.5), a board-only `board.update` in the board's; anything else
+    where its agent goes (`target_department_id`).
+
+    `lock` is the apply path's: the board row `FOR UPDATE` (`lock_live_board`,
+    the lock `board_write` and the delete route take, the board before anything
+    else), so the department decided on is the one the change lands in."""
+    if not is_board_only(steps):
+        return target_department_id(steps)
+    operation = steps[0].operation
+    if isinstance(operation, BoardCreate):
+        agent = await _live_agent(db, operation.agentId)
+        if agent is None:
+            raise BuilderInvalid("agent_unknown", 0)
+        return agent.department_id
+    if not isinstance(operation, BoardUpdate):  # pragma: no cover - is_board_only
+        raise BuilderInvalid("invalid", 0)
+    board = (
+        await lock_live_board(db, operation.boardId)
+        if lock
+        else await _live_board(db, operation.boardId)
+    )
+    if board is None or board.deleted_at is not None:
+        raise BuilderInvalid("board_unknown", 0)
+    return board.department_id
+
+
+async def may_apply(
+    db: AsyncSession, authority: Authority, scope: DepartmentScope, steps: list[BuilderStep]
+) -> bool:
+    """Whether the member may apply the proposal themself. A board-only one
+    needs the right to edit its producing agent there (§6.6): the agent-write
+    rule in the agent's department for a new board, in the board's for a
+    change. Raises `BuilderInvalid` when that agent or board is gone."""
+    if is_board_only(steps):
+        return may_create_agent(authority, scope, await target_department(db, steps))
+    return may_create_in(authority, scope, steps)
+
+
+async def _seen_board(
+    db: AsyncSession, operation: BoardCreate | BoardUpdate, sees: SeesBoard | None
+) -> m.DataBoard | None:
+    """The live board a change names, only when the caller may see it: a card
+    outlives the seat it was proposed under, and must not keep showing the
+    board's current content to somebody who lost it. `sees=None` is for
+    callers that checked reach already (`_check_board_reach`)."""
+    if not isinstance(operation, BoardUpdate):
+        return None
+    board = await _live_board(db, operation.boardId)
+    if board is None or (sees is not None and not sees(board.department_id)):
+        return None
+    return board
+
+
+async def board_title(
+    db: AsyncSession, steps: list[BuilderStep], *, sees: SeesBoard | None = None
+) -> str:
+    """The title a board proposal shows: the step's, or for a change that
+    keeps it, the live board's (`_seen_board`). Empty when there is none."""
+    operation = board_step(steps)
+    if operation is None:
+        return ""
+    if operation.title is not None:
+        return operation.title
+    board = await _seen_board(db, operation, sees)
+    return board.title if board is not None else ""
+
+
+async def board_spec(
+    db: AsyncSession, steps: list[BuilderStep], *, sees: SeesBoard | None = None
+) -> dict[str, Any] | None:
+    """The spec a board proposal shows: the step's, or for a change that keeps
+    it, the live board's (`_seen_board`)."""
+    operation = board_step(steps)
+    if operation is None:
+        return None
+    if operation.spec is not None:
+        return operation.spec
+    board = await _seen_board(db, operation, sees)
+    return board.spec if board is not None else None
+
+
+async def _check_board_reach(
+    db: AsyncSession, *, scope: DepartmentScope, tenant_wide: bool, steps: list[BuilderStep]
+) -> None:
+    """Only boards and agents the member may see (§6.8.2). A `board.update` in
+    ANY proposal -- an agent proposal may hand an existing board to its new
+    agent -- names a board in a department the member may view; a board-only
+    `board.create`, and a board-only update's new producer, an agent they may
+    see. Anything else reads as unknown, never as "exists elsewhere"."""
+    board_only = is_board_only(steps)
+    for index, step in enumerate(steps):
+        operation = step.operation
+        if isinstance(operation, BoardUpdate):
+            board = await _live_board(db, operation.boardId)
+            if board is None or not (tenant_wide or scope.may_view(board.department_id)):
+                raise BuilderInvalid("board_unknown", index)
+        if not board_only:
+            continue
+        agent_id = operation.agentId if isinstance(operation, BoardCreate | BoardUpdate) else None
+        if agent_id is not None and (
+            await visible_agent(db, scope=scope, tenant_wide=tenant_wide, agent_id=agent_id) is None
+        ):
+            raise BuilderInvalid("agent_unknown", index)
+
+
+async def _check_board_specs(
+    tenant_id: uuid.UUID, steps: list[BuilderStep], *, board_only: bool
+) -> None:
+    """No credential in a board-only proposal's text (an agent proposal's
+    `check_selections` reads the same), and an artifact block only for a tenant
+    entitled to it (§6.7)."""
+    canvas: bool | None = None
+    for index, step in enumerate(steps):
+        operation = step.operation
+        if not isinstance(operation, BoardCreate | BoardUpdate):
+            continue
+        if board_only and any(carries_secret_value(text) for text in _texts(operation)):
+            raise BuilderInvalid("secret_value", index)
+        if operation.spec is None:
+            continue
+        try:
+            artifact = uses_artifact(parse_board_spec(operation.spec))
+        except BoardSpecInvalid:
+            raise BuilderInvalid("board_spec_invalid", index) from None
+        if artifact:
+            if canvas is None:
+                canvas = await tenant_has_capability(tenant_id, ENTERPRISE_CANVAS)
+            if not canvas:
+                raise BuilderInvalid("artifact_not_available", index)
 
 
 def _planned_department(tenant_id: uuid.UUID, operation: DepartmentCreate) -> m.Department:
@@ -391,31 +581,46 @@ async def create_builder_proposal(
     operations: object,
     now: dt.datetime,
     may_create_departments: bool = False,
+    boards_tenant_wide: bool | None = None,
 ) -> CopilotProposal:
     """Validate and store one builder proposal for `member`'s chat, superseding
     the chat's open draft. A proposal already waiting for approval is not
     replaced: the member waits for the decision (or it expires).
 
     A proposal for a new department only from a member who may create
-    departments (`may_create_departments`, the caller's `may_create_department`)."""
+    departments (`may_create_departments`, the caller's `may_create_department`).
+
+    `boards_tenant_wide` is the boards' own reach (§6.8.2): `agent:view`
+    tenant-wide, `tenant_wide_read(authority, perm(AGENT, VIEW))`, not the
+    departments' `department:view`. None takes `tenant_wide` (test helpers
+    whose member holds both or neither)."""
     steps = parse_builder_operations(operations)
-    create = create_step(steps)
-    planned = new_department(steps)
-    if planned is not None:
-        if not may_create_departments:
-            raise BuilderInvalid("department_create_not_allowed", 0)
-        await _check_new_department_name(db, tenant_id=tenant_id, operation=planned)
-        department = _planned_department(tenant_id, planned)
-    else:
-        # Through the scoped repository, like builder_options lists them (A24):
-        # a department outside the member's reach reads as unknown.
-        visible = await visible_department(
-            db, scope=scope, tenant_wide=tenant_wide, department_id=create.departmentId
-        )
-        if visible is None or not scope.may_view(visible.id):
-            raise BuilderInvalid("department_unknown", 0)
-        department = visible
-    await check_selections(db, tenant_id=tenant_id, department=department, steps=steps)
+    board_only = is_board_only(steps)
+    if not board_only:
+        create = create_step(steps)
+        planned = new_department(steps)
+        if planned is not None:
+            if not may_create_departments:
+                raise BuilderInvalid("department_create_not_allowed", 0)
+            await _check_new_department_name(db, tenant_id=tenant_id, operation=planned)
+            department = _planned_department(tenant_id, planned)
+        else:
+            # Through the scoped repository, like builder_options lists them (A24):
+            # a department outside the member's reach reads as unknown.
+            visible = await visible_department(
+                db, scope=scope, tenant_wide=tenant_wide, department_id=create.departmentId
+            )
+            if visible is None or not scope.may_view(visible.id):
+                raise BuilderInvalid("department_unknown", 0)
+            department = visible
+        await check_selections(db, tenant_id=tenant_id, department=department, steps=steps)
+    await _check_board_reach(
+        db,
+        scope=scope,
+        tenant_wide=tenant_wide if boards_tenant_wide is None else boards_tenant_wide,
+        steps=steps,
+    )
+    await _check_board_specs(tenant_id, steps, board_only=board_only)
     in_session = (
         CopilotProposal.tenant_id == tenant_id,
         CopilotProposal.kind == BUILDER_KIND,
@@ -516,7 +721,7 @@ async def create_builder_proposal(
                 ordinal=ordinal,
                 operation_type=operation_label(step.operation.type),
                 configuration=builder_operation_data(step),
-                target_revision=None,
+                target_revision=await _board_base(db, step.operation),
             )
         )
     await db.flush()
@@ -539,6 +744,48 @@ async def create_builder_proposal(
     for row in [*superseded_rows, *expired_requests]:
         await announce_builder(db, row)
     return proposal
+
+
+async def _board_base(db: AsyncSession, operation: Operation) -> str | None:
+    """The board's `spec_version` a `board.update` is proposed against (its
+    base), kept as the step's `target_revision`; None for any other step, and
+    for a board gone since `_check_board_reach` (apply then says `board_unknown`)."""
+    if not isinstance(operation, BoardUpdate):
+        return None
+    try:
+        return await target_revision(db, operation)
+    except InvalidOperation:
+        return None
+
+
+async def _board_bases(db: AsyncSession, proposal: CopilotProposal) -> dict[int, str | None]:
+    """Each stored step's base, by its index (`_board_base`)."""
+    rows = await db.execute(
+        select(CopilotOperation.ordinal, CopilotOperation.target_revision).where(
+            CopilotOperation.proposal_id == proposal.id
+        )
+    )
+    return {ordinal: revision for ordinal, revision in rows.tuples()}
+
+
+async def _check_board_base(db: AsyncSession, operation: Operation, base: str | None) -> None:
+    """A `board.update` lands only on the version it was proposed against.
+
+    The board row is locked first (`target_revision(lock_for_apply=True)`, the
+    lock `board_write` and the delete route take) and held to commit, so no
+    change lands between this check and the update. A change made since --
+    another proposal's update, a restore -- refuses (`board_changed`): the
+    person proposes again from the current version instead of silently
+    dropping what that change added. A step stored without a base is refused
+    the same way."""
+    if not isinstance(operation, BoardUpdate):
+        return
+    try:
+        current = await target_revision(db, operation, lock_for_apply=True)
+    except InvalidOperation:
+        raise InvalidOperation("board_unknown") from None
+    if base is None or current != base:
+        raise InvalidOperation("board_changed")
 
 
 async def _remember(
@@ -641,11 +888,16 @@ async def apply_builder_proposal(
     principal: Principal | None,
     now: dt.datetime,
     approval_id: uuid.UUID | None = None,
+    decided_department: uuid.UUID | None = None,
 ) -> uuid.UUID:
     """Create the agent and apply every step in one savepoint, in order, with
     the ref mapped to the created id. Single-use. The CALLER has decided that
     `applied_by` may create agents in the proposal's department -- the member
-    on the direct path, the approver on the approval path (spec §3.4)."""
+    on the direct path, the approver on the approval path (spec §3.4).
+
+    `decided_department` is the department that decision was made in, for a
+    board-only proposal: its board or agent may have moved since, so it is read
+    again under the board's lock and must still be there (`department_changed`)."""
     proposal = await lock_builder_proposal(db, proposal_id)
     if proposal is None:
         raise BuilderInvalid("not_found")
@@ -660,6 +912,16 @@ async def apply_builder_proposal(
         steps = await load_steps(db, proposal)
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
+    if is_board_only(steps):
+        return await _apply_board_only(
+            db,
+            proposal=proposal,
+            steps=steps,
+            applied_by=applied_by,
+            principal=principal,
+            approval_id=approval_id,
+            decided_department=decided_department,
+        )
     create = create_step(steps)
     planned = new_department(steps)
     if planned is not None:
@@ -673,6 +935,7 @@ async def apply_builder_proposal(
         if planned is not None:
             await _check_new_department_name(db, tenant_id=proposal.tenant_id, operation=planned)
         await check_selections(db, tenant_id=proposal.tenant_id, department=department, steps=steps)
+        await _check_board_specs(proposal.tenant_id, steps, board_only=False)
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
     agent_ref = steps[_create_index(steps)].ref
@@ -680,7 +943,9 @@ async def apply_builder_proposal(
     # The applier owns any trigger a step creates, as on a plain Copilot
     # proposal (`apply_proposal` passes its actor the same way).
     applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
+    bases = await _board_bases(db, proposal)
     refs: dict[str, uuid.UUID] = {}
+    board_id: uuid.UUID | None = None
     failed_at = 0
     published = False
     try:
@@ -693,6 +958,7 @@ async def apply_builder_proposal(
                     await _publish_new_agent(db, refs[agent_ref], published_by=applied_by_member)
                     published = True
                 failed_at = index
+                await _check_board_base(db, step.operation, bases.get(index))
                 data, ref = resolve_step(builder_operation_data(step), refs)
                 created = await apply_operation(
                     db,
@@ -705,6 +971,10 @@ async def apply_builder_proposal(
                     if created is None:
                         raise InvalidOperation()
                     refs[ref] = created
+                if isinstance(step.operation, BoardCreate):
+                    board_id = created
+                elif isinstance(step.operation, BoardUpdate):
+                    board_id = step.operation.boardId
             if not published:
                 failed_at = _create_index(steps)
                 await _publish_new_agent(db, refs[agent_ref], published_by=applied_by_member)
@@ -728,6 +998,8 @@ async def apply_builder_proposal(
     proposal.revision += 1
     kept = {k: v for k, v in (proposal.result or {}).items() if k not in _REFUSAL_KEYS}
     proposal.result = {**kept, "agentId": str(agent_id)}
+    if board_id is not None:
+        proposal.result["boardId"] = str(board_id)
     await db.flush()
     requested_by_member = await _member_id(
         db, tenant_id=proposal.tenant_id, subject=proposal.created_by
@@ -749,10 +1021,88 @@ async def apply_builder_proposal(
             "applied_by": applied_by,
             "applied_by_member_id": str(applied_by_member) if applied_by_member else None,
             "approval_id": str(approval_id) if approval_id else None,
+            "board_id": str(board_id) if board_id else None,
         },
         principal=principal,
     )
     return agent_id
+
+
+async def _apply_board_only(
+    db: AsyncSession,
+    *,
+    proposal: CopilotProposal,
+    steps: list[BuilderStep],
+    applied_by: str,
+    principal: Principal | None,
+    approval_id: uuid.UUID | None,
+    decided_department: uuid.UUID | None,
+) -> uuid.UUID:
+    """A board-only proposal's one step, in a savepoint, against the board or
+    agent as they are NOW: the caller decided `applied_by` may edit agents in
+    `decided_department`, and the board (locked first, held to commit) or the
+    agent must still be there. Returns the board's id."""
+    try:
+        department_id = await target_department(db, steps, lock=True)
+        if decided_department is not None and department_id != decided_department:
+            raise BuilderInvalid("department_changed", 0)
+        await _check_board_specs(proposal.tenant_id, steps, board_only=True)
+    except BuilderInvalid as refused:
+        raise await _remember(db, proposal, refused) from None
+    step = steps[0]
+    bases = await _board_bases(db, proposal)
+    applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
+    try:
+        async with db.begin_nested():
+            await _check_board_base(db, step.operation, bases.get(0))
+            data, _ref = resolve_step(builder_operation_data(step), {}, board_only=True)
+            created = await apply_operation(
+                db,
+                tenant_id=proposal.tenant_id,
+                data=data,
+                actor_member_id=applied_by_member,
+                publish=False,
+            )
+    except (InvalidOperation, ValueError, SQLAlchemyError) as exc:
+        reason = exc.reason if isinstance(exc, InvalidOperation) else None
+        failed = await _remember(db, proposal, BuilderInvalid("step_failed", 0), reason)
+        raise failed from exc
+    operation = step.operation
+    if isinstance(operation, BoardUpdate):
+        board_id = operation.boardId
+    elif created is not None:
+        board_id = created
+    else:  # pragma: no cover - board.create always returns its id
+        raise await _remember(db, proposal, BuilderInvalid("step_failed", 0))
+    proposal.status = "applied"
+    proposal.applied_by = applied_by
+    proposal.revision += 1
+    kept = {k: v for k, v in (proposal.result or {}).items() if k not in _REFUSAL_KEYS}
+    proposal.result = {**kept, "boardId": str(board_id)}
+    await db.flush()
+    requested_by_member = await _member_id(
+        db, tenant_id=proposal.tenant_id, subject=proposal.created_by
+    )
+    await append_event(
+        db,
+        tenant_id=proposal.tenant_id,
+        actor_type="operator",
+        actor_id=applied_by_member,
+        category="copilot",
+        action="agent_builder.applied",
+        resource={
+            "proposal_id": str(proposal.id),
+            "board_id": str(board_id),
+            "department_id": str(department_id) if department_id else None,
+            "requested_by": proposal.created_by,
+            "requested_by_member_id": str(requested_by_member) if requested_by_member else None,
+            "applied_by": applied_by,
+            "applied_by_member_id": str(applied_by_member) if applied_by_member else None,
+            "approval_id": str(approval_id) if approval_id else None,
+        },
+        principal=principal,
+    )
+    return board_id
 
 
 async def announce_builder(db: AsyncSession, proposal: CopilotProposal) -> None:
@@ -797,6 +1147,7 @@ async def request_builder_approval(
     scope: DepartmentScope,
     tenant_wide: bool,
     now: dt.datetime,
+    boards_tenant_wide: bool | None = None,
 ) -> m.ApprovalRequest:
     """Zur Freigabe senden: one ApprovalRequest in the agent's target
     department, raised by the Copilot (an approval needs an agent; the agent
@@ -815,32 +1166,51 @@ async def request_builder_approval(
     if proposal.status != "draft":
         raise BuilderInvalid("not_open")
     steps = await load_steps(db, proposal)
-    create = create_step(steps)
-    department_id = target_department_id(steps)
-    if department_id is not None:
-        # Still within the requester's reach, through the scoped repository like
-        # at propose time: a seat removed since then cannot file into that queue.
-        department = await visible_department(
-            db, scope=scope, tenant_wide=tenant_wide, department_id=department_id
+    if is_board_only(steps):
+        # The queue of the department the board lives in (or its new agent's),
+        # read live; still within the requester's reach, as at propose time.
+        department_id = await target_department(db, steps)
+        await _check_board_reach(
+            db,
+            scope=scope,
+            tenant_wide=tenant_wide if boards_tenant_wide is None else boards_tenant_wide,
+            steps=steps,
         )
-        if department is None or not scope.may_view(department.id):
-            raise BuilderInvalid("department_unknown", 0)
-    # A new department has no queue yet: the request goes to whoever decides
-    # everywhere (no department), and its approver must be allowed to create
-    # departments (`resolve_builder_approval`).
+        name = one_line(await board_title(db, steps), 120)
+        if isinstance(steps[0].operation, BoardCreate):
+            title, title_de = f"Create dashboard: {name}", f"Dashboard anlegen: {name}"
+        else:
+            title, title_de = f"Change dashboard: {name}", f"Dashboard ändern: {name}"
+        detail = ""
+    else:
+        create = create_step(steps)
+        department_id = target_department_id(steps)
+        if department_id is not None:
+            # Still within the requester's reach, through the scoped repository like
+            # at propose time: a seat removed since then cannot file into that queue.
+            department = await visible_department(
+                db, scope=scope, tenant_wide=tenant_wide, department_id=department_id
+            )
+            if department is None or not scope.may_view(department.id):
+                raise BuilderInvalid("department_unknown", 0)
+        # A new department has no queue yet: the request goes to whoever decides
+        # everywhere (no department), and its approver must be allowed to create
+        # departments (`resolve_builder_approval`).
+        name = one_line(create.name, 120)
+        title, title_de = f"Create agent: {name}", f"Agent anlegen: {name}"
+        detail = one_line(create.roleTitle, 200)
     assistant = await get_or_create_assistant(db, tenant_id=proposal.tenant_id)
-    name = one_line(create.name, 120)
     approval = await raise_approval(
         db,
         tenant_id=proposal.tenant_id,
         agent_id=assistant.id,
         action_type=AGENT_BUILDER_ACTION,
-        title=f"Create agent: {name}",
-        detail=one_line(create.roleTitle, 200),
+        title=title,
+        detail=detail,
         payload={
             "proposal_id": str(proposal.id),
             "requested_by": str(requester.id),
-            "i18n": {"de": {"title": f"Agent anlegen: {name}"}},
+            "i18n": {"de": {"title": title_de}},
         },
         expires_at=proposal.expires_at,
         department_id=department_id,
@@ -955,6 +1325,9 @@ async def resolve_builder_approval(
             principal=actor.principal if isinstance(actor, HumanActor) else None,
             now=now,
             approval_id=approval.id,
+            # A board-only proposal must still be in this queue's department:
+            # this approver's right does not reach one that moved.
+            decided_department=approval.department_id,
         )
     except BuilderInvalid as exc:
         raise EffectRefused(exc.code) from exc

@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WidgetFrame } from "./widget-frame";
+import { WIDGET_REGISTRY } from "./widget-registry";
 import type { WidgetInstance } from "@/lib/hooks";
 
 function makeInstance(overrides: Partial<WidgetInstance> = {}): WidgetInstance {
@@ -23,16 +24,59 @@ vi.mock("@/components/dashboard/widgets/activity-widget", () => ({
 }));
 
 describe("WidgetFrame", () => {
-  it("renders the registered widget's title and a remove button", () => {
-    render(<WidgetFrame instance={makeInstance()} onConfigChange={vi.fn()} onRemove={vi.fn()} />);
-    expect(screen.getByText("Budget")).toBeInTheDocument();
+  it("shows no header, remove button or drag handle outside edit mode", () => {
+    const { container } = render(
+      <WidgetFrame
+        instance={makeInstance()}
+        editing={false}
+        onConfigChange={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
+    expect(container.querySelector(".dashboard-widget-drag-handle")).toBeNull();
+  });
+
+  it("shows the grip and remove button in edit mode, without a second label", () => {
+    const { container } = render(
+      <WidgetFrame instance={makeInstance()} editing onConfigChange={vi.fn()} onRemove={vi.fn()} />,
+    );
     expect(screen.getByRole("button", { name: /remove/i })).toBeInTheDocument();
+    expect(container.querySelector(".dashboard-widget-drag-handle")).not.toBeNull();
+    // The widget's own WidgetTitle is the only "Budget".
+    expect(screen.getAllByText("Budget")).toHaveLength(1);
+  });
+
+  it("renders the registry entry's menu in the edit header only", () => {
+    const original = WIDGET_REGISTRY.budget.menu;
+    WIDGET_REGISTRY.budget.menu = (config) => (
+      <span data-testid="frame-menu">{String(config.k)}</span>
+    );
+    try {
+      const instance = makeInstance({ config: { k: "v" } });
+      const { rerender } = render(
+        <WidgetFrame instance={instance} editing onConfigChange={vi.fn()} onRemove={vi.fn()} />,
+      );
+      expect(screen.getByTestId("frame-menu")).toHaveTextContent("v");
+      rerender(
+        <WidgetFrame
+          instance={instance}
+          editing={false}
+          onConfigChange={vi.fn()}
+          onRemove={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId("frame-menu")).toBeNull();
+    } finally {
+      WIDGET_REGISTRY.budget.menu = original;
+    }
   });
 
   it("shows an unknown-widget fallback for an unregistered type, never throwing", () => {
     render(
       <WidgetFrame
         instance={makeInstance({ type: "future-type" as never })}
+        editing
         onConfigChange={vi.fn()}
         onRemove={vi.fn()}
       />,
@@ -43,7 +87,14 @@ describe("WidgetFrame", () => {
 
   it("calls onRemove when the remove button is clicked", () => {
     const onRemove = vi.fn();
-    render(<WidgetFrame instance={makeInstance()} onConfigChange={vi.fn()} onRemove={onRemove} />);
+    render(
+      <WidgetFrame
+        instance={makeInstance()}
+        editing
+        onConfigChange={vi.fn()}
+        onRemove={onRemove}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /remove/i }));
     expect(onRemove).toHaveBeenCalled();
   });
@@ -52,14 +103,14 @@ describe("WidgetFrame", () => {
     render(
       <WidgetFrame
         instance={makeInstance({ type: "activity" })}
+        editing
         onConfigChange={vi.fn()}
         onRemove={vi.fn()}
       />,
     );
     // The mocked ActivityWidget above throws during render -- the error
     // boundary only swallows the widget's own subtree, so the frame's
-    // chrome (label, remove button) stays mounted around the fallback.
-    expect(screen.getByText("Activity")).toBeInTheDocument();
+    // chrome (remove button) stays mounted around the fallback.
     expect(screen.getByRole("button", { name: /remove/i })).toBeInTheDocument();
     expect(screen.getByText(/could not be displayed/i)).toBeInTheDocument();
   });

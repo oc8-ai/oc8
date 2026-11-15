@@ -9,8 +9,25 @@
 import { useActivity, useRuns } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
 import { RunStepTimeline } from "@/components/run-step-timeline";
+import type { ComponentProps } from "react";
+import { useWidgetLabel } from "@/components/dashboard/widget-labels";
+import { WidgetTitle } from "@/components/dashboard/widget-title";
 
-export function ActivityWidget(_props: {
+// Every widget draws its own one-line title; the frame only adds a header in
+// edit mode. The body keeps its own loading/empty/error branches.
+export function ActivityWidget(props: ComponentProps<typeof ActivityWidgetBody>) {
+  const title = useWidgetLabel("activity");
+  return (
+    <div className="flex h-full flex-col">
+      <WidgetTitle title={title} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <ActivityWidgetBody {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ActivityWidgetBody(_props: {
   config: Record<string, unknown>;
   onConfigChange: (c: Record<string, unknown>) => void;
 }) {

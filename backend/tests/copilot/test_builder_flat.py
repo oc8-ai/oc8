@@ -214,3 +214,48 @@ def test_the_explicit_form_passes_through_untouched() -> None:
     ops = _explicit()
     assert proposal_operations({"operations": ops}) is ops
     assert proposal_operations({"operations": ops, "name": None}) is ops
+
+
+_BOARD_SPEC: dict[str, Any] = {
+    "datasets": [
+        {
+            "key": "sales",
+            "label": "Sales",
+            "grain": "day",
+            "fields": [{"key": "amount", "label": "Amount", "type": "number"}],
+        }
+    ],
+    "blocks": [{"type": "kpi", "dataset": "sales", "field": "amount"}],
+}
+
+
+def test_flat_board_becomes_a_board_create_for_the_new_agent() -> None:
+    board = {"title": "Sales", "description": "Daily sales", "spec": _BOARD_SPEC}
+    ops = flat_operations(_flat(board=board), frame=FRAME)
+    assert ops[:-1] == _explicit()
+    assert ops[-1] == {
+        "type": "board.create",
+        "agentRef": "$new",
+        "title": "Sales",
+        "description": "Daily sales",
+        "spec": _BOARD_SPEC,
+    }
+    stored = _stored(ops)
+    assert stored[-1]["type"] == "board.create" and stored[-1]["agentRef"] == "$new"
+    assert "agentId" not in stored[-1]
+    assert flat_operations(_flat(board=None), frame=FRAME) == _explicit(), "left out: no step"
+
+
+@pytest.mark.parametrize(
+    "board",
+    [
+        {"title": "Sales", "spec": _BOARD_SPEC, "agentId": str(uuid.uuid4())},
+        {"title": "Sales", "spec": _BOARD_SPEC, "type": "board.update"},
+        "Sales",
+    ],
+)
+def test_flat_board_rejects_unknown_keys(board: object) -> None:
+    with pytest.raises(BuilderInvalid) as caught:
+        flat_operations(_flat(board=board), frame=FRAME)
+    assert caught.value.code == "invalid"
+    assert caught.value.step == len(_explicit())

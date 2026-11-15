@@ -13,6 +13,7 @@ from oc8.api.v1 import (
     audit,
     auth,
     backup,
+    boards,
     budgets,
     capas,
     catalog,
@@ -72,6 +73,7 @@ api_router.include_router(onboarding.router, tags=["onboarding"])
 api_router.include_router(agents.router, tags=["agents"])
 api_router.include_router(agents_write.router, tags=["agents"])
 api_router.include_router(agent_tool_access.router, tags=["agents"])
+api_router.include_router(boards.router, tags=["boards"])
 api_router.include_router(catalog.router, tags=["catalog"])
 api_router.include_router(model_prices.router, tags=["catalog"])
 api_router.include_router(reconciliation.router, tags=["catalog"])

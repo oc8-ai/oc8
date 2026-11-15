@@ -124,3 +124,20 @@ async def test_every_table_the_app_may_not_delete_is_excluded_from_the_export(
         "tables the app may not DELETE, yet the restore would try to: "
         f"{sorted(exported_but_undeletable)}"
     )
+
+
+_BOARD_TABLES = {"data_board", "data_board_spec_version", "data_board_batch", "data_board_record"}
+
+
+def test_board_tables_are_exported() -> None:
+    assert _BOARD_TABLES <= exported_tables()
+
+
+async def test_dependency_order_puts_boards_before_records(
+    app_session: AppSessionFactory,
+) -> None:
+    async with app_session(uuid.uuid4()) as s:
+        order = await dependency_order(s, exported_tables())
+    assert order.index("data_board") < order.index("data_board_batch")
+    assert order.index("data_board_batch") < order.index("data_board_record")
+    assert order.index("data_board") < order.index("data_board_spec_version")

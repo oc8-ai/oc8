@@ -46,4 +46,13 @@ describe("BudgetWidget", () => {
     expect(screen.getByText(/0\s*\/\s*0/)).toBeInTheDocument();
     expect(screen.getByText("Hard limit exceeded")).toBeInTheDocument();
   });
+
+  it("draws its own title once", () => {
+    vi.spyOn(hooks, "useBudgetStatus").mockReturnValue({
+      data: undefined,
+      isPending: true,
+    } as never);
+    render(<BudgetWidget config={{}} onConfigChange={vi.fn()} />);
+    expect(screen.getAllByText("Budget")).toHaveLength(1);
+  });
 });

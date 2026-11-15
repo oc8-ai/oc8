@@ -1396,6 +1396,24 @@ class BuilderAgentDTO(CamelModel):
     status: str
 
 
+class BuilderDatasetDTO(CamelModel):
+    key: str
+    label: str
+    grain: str
+    field_count: int
+
+
+class BuilderBoardDTO(CamelModel):
+    """The dashboard a builder proposal creates or changes."""
+
+    #: The board changed, or once applied the board created; None before.
+    board_id: str | None = None
+    mode: Literal["create", "update"]
+    title: str = ""
+    datasets: list[BuilderDatasetDTO] = []
+    block_count: int = 0
+
+
 class AgentBuilderDTO(CamelModel):
     """One "Agent anlegen" card (Copilot Agent Builder §3.3). The mission is
     the member's own content in their own chat: the owner and the approver
@@ -1432,6 +1450,11 @@ class AgentBuilderDTO(CamelModel):
     failed_reason: str | None = None
     rejected_reason: str | None = None
     agent: BuilderAgentDTO | None = None
+    #: "board" for a board-only proposal: no new agent, so `name`, `role_title`
+    #: and `mission` are empty and the department is the board's (or its
+    #: producing agent's).
+    kind: Literal["agent", "board"] = "agent"
+    board: BuilderBoardDTO | None = None
 
 
 class ContextSearchItemDTO(CamelModel):
@@ -1977,11 +2000,13 @@ class WidgetInstanceDTO(CamelModel):
     """
 
     id: str
-    type: Literal["chat", "approvals", "reports", "budget", "activity", "tasks", "needs-me"]
-    x: int
-    y: int
-    w: int
-    h: int
+    type: Literal[
+        "chat", "approvals", "reports", "budget", "activity", "tasks", "needs-me", "data_board"
+    ]
+    x: int = Field(ge=0, le=12)
+    y: int = Field(ge=0, le=10000)
+    w: int = Field(ge=1, le=12)
+    h: int = Field(ge=1, le=1000)
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -2176,3 +2201,27 @@ class AgentIdeaDTO(CamelModel):
     title: LocalizedTextDTO
     subtitle: LocalizedTextDTO
     prompt: LocalizedTextDTO
+
+
+class BoardSummaryDTO(CamelModel):
+    """One dashboard in a list. `stale` = no producing agent any more (banner
+    "no longer updated")."""
+
+    id: str
+    title: str
+    description: str
+    department_id: str
+    agent_id: str | None
+    agent_name: str | None
+    stale: bool
+    record_count: int
+    last_recorded_at: str | None
+    may_delete: bool
+
+
+class DataBoardDTO(BoardSummaryDTO):
+    """A dashboard with its spec. Named `DataBoard...` because `BoardDTO` is the
+    department task board."""
+
+    spec: dict[str, Any]
+    spec_version: int

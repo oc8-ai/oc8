@@ -14,6 +14,8 @@ import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { useT } from "@/lib/i18n";
+import { useWidgetLabel } from "@/components/dashboard/widget-labels";
+import { WidgetTitle } from "@/components/dashboard/widget-title";
 
 // Gated the same way `CopilotDock` gates itself (copilot-dock.tsx) and for
 // the same reason: checked BEFORE `useAssistant()`/`useChatSessions()` ever
@@ -33,14 +35,18 @@ export function ChatWidget({
   onConfigChange: (config: Record<string, unknown>) => void;
 }) {
   const t = useT();
+  const title = useWidgetLabel("chat");
   const can = useCan();
   if (!can("copilot:use")) {
     return (
-      <div className="flex h-full items-center justify-center p-3 text-center text-xs text-muted-foreground">
-        {t(
-          "You don't have access to Copilot chat.",
-          "Du hast keinen Zugriff auf den Copilot-Chat.",
-        )}
+      <div className="flex h-full flex-col">
+        <WidgetTitle title={title} />
+        <div className="flex flex-1 items-center justify-center p-3 text-center text-xs text-muted-foreground">
+          {t(
+            "You don't have access to Copilot chat.",
+            "Du hast keinen Zugriff auf den Copilot-Chat.",
+          )}
+        </div>
       </div>
     );
   }
@@ -56,6 +62,7 @@ function ChatWidgetPanel({
 }) {
   const t = useT();
   const de = t("en", "de") === "de";
+  const title = useWidgetLabel("chat");
   const [draft, setDraft] = useState("");
   const { data: assistant } = useAssistant();
   const assistantAgentId = assistant?.agentId;
@@ -75,22 +82,27 @@ function ChatWidgetPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-1 border-b border-border px-2 py-1">
-        {assistantAgentId && (
-          <button
-            type="button"
-            onClick={() => setSessionId(null)}
-            aria-label={t("New chat", "Neuer Chat")}
-            title={t("New chat", "Neuer Chat")}
-            className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-        )}
-        {assistantAgentId && sessions && sessions.length > 0 && (
-          <SessionPicker sessions={sessions} sessionId={sessionId} onSelect={setSessionId} />
-        )}
-      </div>
+      <WidgetTitle
+        title={title}
+        actions={
+          <>
+            {assistantAgentId && (
+              <button
+                type="button"
+                onClick={() => setSessionId(null)}
+                aria-label={t("New chat", "Neuer Chat")}
+                title={t("New chat", "Neuer Chat")}
+                className="grid size-9 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            )}
+            {assistantAgentId && sessions && sessions.length > 0 && (
+              <SessionPicker sessions={sessions} sessionId={sessionId} onSelect={setSessionId} />
+            )}
+          </>
+        }
+      />
       {liveConnectionStatus === "disconnected" && (
         <div className="flex items-center gap-1.5 border-b border-status-warning/30 bg-status-warning/10 px-3 py-1 text-xs text-status-warning">
           <WifiOff className="h-3.5 w-3.5" />

@@ -1,6 +1,7 @@
 import { createContext, useContext, type ComponentType, type ReactNode } from "react";
 import { useCallerCapabilities } from "@/lib/governance-hooks";
 import type {
+  BoardBlockEntry,
   Capability,
   CustomServerSource,
   EditionBanner,
@@ -41,6 +42,7 @@ export interface FrontendEditionComposition {
   readonly chat: ComposedChat;
   readonly homeSections: readonly EditionHomeSection[];
   readonly customServerSources: readonly CustomServerSource[];
+  readonly boardBlocks: readonly BoardBlockEntry[];
 }
 
 export interface EditionCapabilityGateRule {
@@ -100,6 +102,7 @@ const emptyComposition: FrontendEditionComposition = {
   chat: EMPTY_CHAT,
   homeSections: [],
   customServerSources: [],
+  boardBlocks: [],
 };
 
 const EditionCompositionContext = createContext<FrontendEditionComposition>(emptyComposition);
@@ -135,6 +138,8 @@ export function composeFrontendEdition(
   const homeSections: EditionHomeSection[] = [];
   const customServerSourceIds = new Set<string>();
   const customServerSources: CustomServerSource[] = [];
+  const boardBlockIds = new Set<string>();
+  const boardBlocks: BoardBlockEntry[] = [];
 
   for (const extension of extensions) {
     if (extensionIds.has(extension.id))
@@ -192,6 +197,12 @@ export function composeFrontendEdition(
       customServerSourceIds.add(source.id);
       customServerSources.push(source);
     }
+    for (const entry of extension.boardBlocks ?? []) {
+      if (boardBlockIds.has(entry.id))
+        throw new Error(`Duplicate edition board block: ${entry.id}`);
+      boardBlockIds.add(entry.id);
+      boardBlocks.push(entry);
+    }
   }
 
   return {
@@ -206,6 +217,7 @@ export function composeFrontendEdition(
     chat,
     homeSections,
     customServerSources,
+    boardBlocks,
   };
 }
 
@@ -269,13 +281,19 @@ export function useHasCapability(cap: Capability): boolean {
   return known !== null ? known.includes(cap) : capabilities.has(cap);
 }
 
+/** Whether the caller holds a capability: known capabilities decide; while
+ *  unknown, what a composed extension declares counts. */
+function useHoldsCapability(): (cap: Capability) => boolean {
+  const known = useCallerCapabilities();
+  const { capabilities } = useFrontendEdition();
+  return (cap) => (known !== null ? known.includes(cap) : capabilities.has(cap));
+}
+
 /** The entries of a chat slot whose `needs` the caller all holds. */
 // eslint-disable-next-line react-refresh/only-export-components
 export function useChatSlot<K extends keyof ComposedChat>(slot: K): ComposedChat[K] {
-  const known = useCallerCapabilities();
   const composition = useFrontendEdition();
-  const holds = (cap: Capability) =>
-    known !== null ? known.includes(cap) : composition.capabilities.has(cap);
+  const holds = useHoldsCapability();
   return composition.chat[slot].filter((entry) =>
     (entry.needs ?? []).every(holds),
   ) as ComposedChat[K];
@@ -284,9 +302,15 @@ export function useChatSlot<K extends keyof ComposedChat>(slot: K): ComposedChat
 /** The custom server sources whose `needs` the caller all holds. */
 // eslint-disable-next-line react-refresh/only-export-components
 export function useCustomServerSources(): readonly CustomServerSource[] {
-  const known = useCallerCapabilities();
   const composition = useFrontendEdition();
-  const holds = (cap: Capability) =>
-    known !== null ? known.includes(cap) : composition.capabilities.has(cap);
+  const holds = useHoldsCapability();
   return composition.customServerSources.filter((source) => (source.needs ?? []).every(holds));
+}
+
+/** The dashboard block renderers whose `needs` the caller all holds. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useBoardBlocks(): readonly BoardBlockEntry[] {
+  const composition = useFrontendEdition();
+  const holds = useHoldsCapability();
+  return composition.boardBlocks.filter((entry) => (entry.needs ?? []).every(holds));
 }

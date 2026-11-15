@@ -1417,6 +1417,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # run to a local model and keeps it out of the department cache.
         ctx["contains_restricted"] = preamble.contains_restricted
         ctx["has_knowledge"] = preamble.has_knowledge
+        ctx["produces_board"] = preamble.produces_board
         ctx["has_instruction_files"] = preamble.has_instruction_files
         ctx["copilot_permissions"] = sorted(preamble.copilot_permissions)
         # C3 (a later package) reads this back from run.context so the step
@@ -1480,6 +1481,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     # False keeps a run already in flight (whose ctx predates this) working.
     contains_restricted = bool(ctx.get("contains_restricted", False))
     has_knowledge = bool(ctx.get("has_knowledge", False))
+    produces_board = bool(ctx.get("produces_board", False))
     has_instruction_files = bool(ctx.get("has_instruction_files", False))
     copilot_permissions = frozenset(ctx.get("copilot_permissions", []))
 
@@ -1511,6 +1513,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         active_skills=active_skills,
         mcp_tools=mcp_tools,
         has_knowledge=has_knowledge or has_released_knowledge(ctx),
+        produces_board=produces_board,
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
         has_context=has_readable_context(ctx),

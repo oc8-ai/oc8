@@ -121,9 +121,32 @@ def test_every_exported_table_round_trips_a_fully_populated_row() -> None:
     # self-issued API key are all portable company data, not instance-bound)
     assert len(tables) == 63
     for name in sorted(tables):
-        table = table_by_name(name)
-        row = {col.name: _sample_value(col.type, i) for i, col in enumerate(table.columns)}
-        _assert_round_trips(table, row)
+        _round_trip_populated(name)
+
+
+def _round_trip_populated(name: str) -> None:
+    """One fully populated row of table `name` survives encode and decode."""
+    table = table_by_name(name)
+    row = {col.name: _sample_value(col.type, i) for i, col in enumerate(table.columns)}
+    _assert_round_trips(table, row)
+
+
+#: The dashboards' tables, exported since 0121/0122.
+_BOARD_TABLES = (
+    "data_board",
+    "data_board_spec_version",
+    "data_board_batch",
+    "data_board_record",
+)
+
+
+def test_board_tables_round_trip_a_fully_populated_row() -> None:
+    """The board tables run the same body as the all-tables test above, on
+    their own: that test stops at its pinned table count before the loop."""
+    tables = exported_tables()
+    for name in _BOARD_TABLES:
+        assert name in tables
+        _round_trip_populated(name)
 
 
 def test_embeddings_encode_little_endian_regardless_of_host() -> None:

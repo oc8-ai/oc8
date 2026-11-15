@@ -13,6 +13,12 @@ A builder proposal may only ever touch the agent it creates: a raw `agentId`
 is refused on every step, at validation and again at resolve time, and a ref
 resolves only to an `agent.create` earlier in the same proposal.
 
+A proposal may instead be board-only: exactly one `board.create` (naming its
+producing agent with `agentId`) or `board.update`, and nothing else. The agent
+builder is the one way a board operation reaches a tenant (generic proposals
+refuse them), so its department rule decides whether it applies or waits for
+approval.
+
 When no department fits, the proposal may open with one `department.create`
 carrying its own ref; `agent.create` then names it with `departmentRef`
 instead of a `departmentId`. Whether the member may create departments is the
@@ -43,8 +49,12 @@ REF_TARGETS: Final = frozenset(
         "trigger.create",
         "agent.guardrail.set",
         "agent.narrowing.set",
+        "board.create",
+        "board.update",
     }
 )
+#: A proposal of exactly one of these, and no `agent.create`, is board-only.
+BOARD_ONLY_TYPES: Final = frozenset({"board.create", "board.update"})
 #: What an `agentRef` step is validated with before the agent exists.
 PLACEHOLDER_AGENT_ID: Final = uuid.UUID(int=0)
 #: What an `agent.create` with `departmentRef` is validated with before the
@@ -55,6 +65,7 @@ MAX_BUILDER_STEPS: Final = 24
 _CREATE: Final = "agent.create"
 _NEW_DEPARTMENT: Final = "department.create"
 _REF = re.compile(r"^\$[a-z][a-z0-9_]{0,31}$")
+_REF_KEYS: Final = ("ref", "agentRef", "departmentRef")
 
 
 class BuilderInvalid(ValueError):
@@ -83,6 +94,40 @@ def _is_ref(value: object) -> bool:
     return isinstance(value, str) and _REF.match(value) is not None
 
 
+def _invalid(exc: InvalidOperation, step: int) -> BuilderInvalid:
+    """A step that failed its closed schema. A refused board spec keeps its own
+    fixed code; anything else is `invalid` (both value-free)."""
+    code = "board_spec_invalid" if exc.reason == "board_spec_invalid" else "invalid"
+    return BuilderInvalid(code, step)
+
+
+def _board_only(raw: list[dict[str, Any]]) -> list[BuilderStep] | None:
+    """The one step of a board-only proposal, or None when `raw` is not one."""
+    if len(raw) != 1:
+        return None
+    data = raw[0]
+    kind = data.get("type")
+    if kind not in BOARD_ONLY_TYPES or any(key in data for key in _REF_KEYS):
+        return None
+    if kind == "board.create" and "agentId" not in data:
+        return None
+    try:
+        operation = parse_operations([dict(data)])[0]
+    except InvalidOperation as exc:
+        raise _invalid(exc, 0) from exc
+    return [BuilderStep(operation=operation)]
+
+
+def is_board_only(steps: list[BuilderStep]) -> bool:
+    """Whether a parsed proposal is one board operation and no new agent."""
+    return (
+        len(steps) == 1
+        and steps[0].operation.type in BOARD_ONLY_TYPES
+        and steps[0].agent_ref is None
+        and steps[0].ref is None
+    )
+
+
 def _new_department(
     raw: list[dict[str, Any]],
 ) -> tuple[BuilderStep | None, list[dict[str, Any]]]:
@@ -102,7 +147,7 @@ def _new_department(
     try:
         operation = parse_operations([data])[0]
     except InvalidOperation as exc:
-        raise BuilderInvalid("invalid", 0) from exc
+        raise _invalid(exc, 0) from exc
     return BuilderStep(operation=operation, ref=ref), raw[1:]
 
 
@@ -111,13 +156,17 @@ def parse_builder_operations(raw: object) -> list[BuilderStep]:
     or second, after one `department.create` with its own ref that the agent
     is placed in (`departmentRef`) -- carrying a `ref`; every later step is a
     `REF_TARGETS` type pointing at that ref with `agentRef` and no `agentId`;
-    each step passes its closed schema."""
+    each step passes its closed schema. Without an `agent.create`, only a
+    board-only proposal parses (`BOARD_ONLY_TYPES`)."""
     if not isinstance(raw, list) or not raw or len(raw) > MAX_BUILDER_STEPS:
         raise BuilderInvalid("invalid")
     if not all(isinstance(item, dict) for item in raw):
         raise BuilderInvalid("invalid")
     if not any(item.get("type") == _CREATE for item in raw):
-        raise BuilderInvalid("missing_create")
+        board_only = _board_only(raw)
+        if board_only is None:
+            raise BuilderInvalid("missing_create")
+        return board_only
     department_step, rest = _new_department(raw)
     offset = len(raw) - len(rest)
     declared_anywhere = {item.get("ref") for item in rest if _is_ref(item.get("ref"))}
@@ -164,7 +213,7 @@ def parse_builder_operations(raw: object) -> list[BuilderStep]:
         try:
             operation = parse_operations([data])[0]
         except InvalidOperation as exc:
-            raise BuilderInvalid("invalid", index) from exc
+            raise _invalid(exc, index) from exc
         if kind == _CREATE:
             steps.append(
                 BuilderStep(
@@ -194,14 +243,20 @@ def builder_operation_data(step: BuilderStep) -> dict[str, Any]:
 
 
 def resolve_step(
-    data: Mapping[str, Any], refs: Mapping[str, uuid.UUID]
+    data: Mapping[str, Any], refs: Mapping[str, uuid.UUID], *, board_only: bool = False
 ) -> tuple[dict[str, Any], str | None]:
     """One stored step made applicable: `agentRef` becomes the created agent's
     id. Returns the operation data and the `ref` this step defines (if any).
 
     The stored form never carries an `agentId`, so one found here is refused
-    rather than applied: only a ref already created in this apply resolves."""
+    rather than applied: only a ref already created in this apply resolves.
+    The exception is a board-only proposal's one step (`board_only`), which
+    names an existing board and agent and passes through unchanged."""
     out = dict(data)
+    if board_only:
+        if out.get("type") not in BOARD_ONLY_TYPES or any(key in out for key in _REF_KEYS):
+            raise BuilderInvalid("invalid")
+        return out, None
     ref = out.pop("ref", None)
     agent_ref = out.pop("agentRef", None)
     department_ref = out.pop("departmentRef", None)
@@ -259,8 +314,11 @@ FLAT_FIELDS: Final = frozenset(
         "taskText",
         "systems",
         "limits",
+        "board",
     }
 )
+#: A flat `board`'s own keys: the new agent's dashboard.
+_BOARD_KEYS: Final = frozenset({"title", "description", "spec"})
 #: A flat limit's own keys; `system` is the guardrail's `connectionName`.
 _LIMIT_KEYS: Final = {"system": "connectionName"}
 
@@ -306,8 +364,9 @@ def flat_operations(
     """The ordered builder operations one flat proposal stands for:
     agent.create (ref "$new"), then the model, each skill, the schedule and/or
     event trigger, the systems as one narrowing and each limit as a guardrail,
-    every one with agentRef "$new". `frame` is the chosen department's frame;
-    it only decides which rights a named system keeps."""
+    every one with agentRef "$new", and last the agent's board. `frame` is the
+    chosen department's frame; it only decides which rights a named system
+    keeps."""
     unknown = set(fields) - FLAT_FIELDS
     if unknown:
         raise BuilderInvalid("unknown_field")
@@ -359,6 +418,11 @@ def flat_operations(
             "agent.guardrail.set",
             **{_LIMIT_KEYS.get(str(key), str(key)): value for key, value in limit.items()},
         )
+    board = fields.get("board")
+    if _given(board):
+        if not isinstance(board, Mapping) or set(board) - _BOARD_KEYS:
+            raise BuilderInvalid("invalid", len(ops))
+        follow("board.create", **{str(k): v for k, v in board.items() if v is not None})
     return ops
 
 

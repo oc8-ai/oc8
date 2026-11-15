@@ -42,6 +42,13 @@ _ARGS: dict[str, dict[str, Any]] = {
     "schedule_followup": {"when": "2030-01-01T09:00:00Z", "note": "x"},
     "cancel_followup": {"followup_id": str(uuid.uuid4())},
     "offer_direct_access": {"connection": "things", "purpose": "find the quotation"},
+    "propose_board": {"agentId": str(uuid.uuid4()), "title": "Kennzahlen"},
+    "board_write": {
+        "board": str(uuid.uuid4()),
+        "dataset": "sales",
+        "as_of": "2026-03-01",
+        "values": {"amount": 1},
+    },
 }
 
 _LOCAL = {"stdout": "hi\n", "stderr": "", "exit_code": 0, "timed_out": False}
@@ -58,6 +65,8 @@ _TRACE_TABLES = (
     m.MemoryRecord,
     m.Trigger,
     CopilotProposal,
+    m.DataBoardBatch,
+    m.DataBoardRecord,
 )
 
 
@@ -156,6 +165,75 @@ async def _live(
         assert copilot is not None and offer_task is not None
         offer_run = await chat_run(db, office)
         return copilot, offer_task, offer_run.id, dict(_ARGS[tool])
+
+    if tool == "board_write":
+        # Not the Assistant: it produces no board. A real board and agent, so an
+        # ALLOWed call really writes and a refusal can only come from the decision.
+        from tests.boards.test_board_write_tool import _seed as seed_board
+
+        producer, board, producer_task, producer_run = await seed_board(db, tenant)
+        return (
+            producer,
+            producer_task,
+            producer_run.id,
+            {**_ARGS[tool], "board": str(board.id)},
+        )
+
+    if tool == "propose_board":
+        # The Copilot in its owner's web chat in Agent mode, and a real agent
+        # the owner may give a dashboard: ALLOWed, a card really goes up.
+        from tests.copilot.builder_helpers import builder_office
+
+        builder = await builder_office(db, tenant)
+        producer = m.Agent(
+            tenant_id=tenant,
+            department_id=builder.department_id,
+            name="Zahlenwerk",
+            status="idle",
+            definition={},
+            presentation={},
+        )
+        db.add(producer)
+        await db.flush()
+        board_run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=builder.assistant_id,
+            source="chat",
+            state="running",
+            task_id=builder.admin.task_id,
+            context={
+                "chat_session_id": str(builder.admin.session_id),
+                "door": "web",
+                "originating_operator": builder.admin.subject,
+                "operator_role": "org_admin",
+                "chat_mode": "agent",
+            },
+        )
+        db.add(board_run)
+        await db.flush()
+        copilot = await db.get(m.Agent, builder.assistant_id)
+        board_task = await db.get(m.Task, builder.admin.task_id)
+        assert copilot is not None and board_task is not None
+        return (
+            copilot,
+            board_task,
+            board_run.id,
+            {
+                **_ARGS[tool],
+                "agentId": str(producer.id),
+                "spec": {
+                    "datasets": [
+                        {
+                            "key": "sales",
+                            "label": "Sales",
+                            "grain": "day",
+                            "fields": [{"key": "amount", "label": "Amount", "type": "number"}],
+                        }
+                    ],
+                    "blocks": [{"type": "kpi", "dataset": "sales", "field": "amount"}],
+                },
+            },
+        )
 
     from tests.agents.test_control_tools import (
         _assistant_and_task,

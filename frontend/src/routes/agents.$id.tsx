@@ -78,6 +78,7 @@ import {
   type RunTodoDTO,
   type TriggerDTO,
 } from "@/lib/hooks";
+import { AgentBoardsSection } from "@/components/boards/agent-boards-section";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { CredentialPicker } from "@/components/credential-picker";
 import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
@@ -717,6 +718,7 @@ export function OverviewTab({ agent }: { agent: AgentDetailData }) {
         <p className="text-sm">{agent.lastAction}</p>
         <div className="mt-3 text-xs text-muted-foreground">{agent.lastRun}</div>
       </Panel>
+      <AgentBoardsSection agentId={agent.id} className="md:col-span-3" />
     </div>
   );
 }
