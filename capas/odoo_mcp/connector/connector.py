@@ -221,8 +221,15 @@ def _article_domains(selection: _Selection, live: Domain) -> list[Domain]:
 # ---- small helpers -----------------------------------------------------------
 
 
-def _uri(database: str, model: str, record_id: int) -> str:
-    return f"odoo://{database}/{model}/{record_id}"
+#: The app each ingested model's `source_uri` names.
+_URI_APP = {_DOCUMENT: "documents", _ARTICLE: "knowledge"}
+
+
+def _uri(model: str, record_id: int) -> str:
+    """`odoo://documents/<id>` or `odoo://knowledge/<id>`. The database name
+    stays out: a `source_uri` reaches the model's prompt, audit events and API
+    answers."""
+    return f"odoo://{_URI_APP[model]}/{record_id}"
 
 
 def _content_hash(model: str, record_id: int, write_date: Any) -> str:
@@ -350,7 +357,6 @@ def _entries(
 @dataclass(frozen=True)
 class _Conn:
     client: OdooClient
-    database: str
 
 
 # ---- the connector -----------------------------------------------------------
@@ -423,7 +429,7 @@ class OdooKnowledgeConnector:
             transport=self._transport,
         )
         try:
-            yield _Conn(client=client, database=values["database"])
+            yield _Conn(client=client)
         finally:
             await client.aclose()
 
@@ -473,14 +479,10 @@ class OdooKnowledgeConnector:
         async with self._session(config, auth) as conn:
             files, articles = await self._resolve(conn.client, selection)
         items = [
-            SourceItemMeta(
-                uri=_uri(conn.database, _DOCUMENT, row["id"]), title=_text(row.get("name"))
-            )
+            SourceItemMeta(uri=_uri(_DOCUMENT, row["id"]), title=_text(row.get("name")))
             for row in files
         ] + [
-            SourceItemMeta(
-                uri=_uri(conn.database, _ARTICLE, row["id"]), title=_text(row.get("name"))
-            )
+            SourceItemMeta(uri=_uri(_ARTICLE, row["id"]), title=_text(row.get("name")))
             for row in articles
         ]
         return items[:_DISCOVER_LIMIT]
@@ -494,8 +496,8 @@ class OdooKnowledgeConnector:
         selection = _parse_selection(config)
         async with self._session(config, auth) as conn:
             files, articles = await self._resolve(conn.client, selection)
-        uris = {_uri(conn.database, _DOCUMENT, row["id"]) for row in files}
-        uris |= {_uri(conn.database, _ARTICLE, row["id"]) for row in articles}
+        uris = {_uri(_DOCUMENT, row["id"]) for row in files}
+        uris |= {_uri(_ARTICLE, row["id"]) for row in articles}
         return SourceListing(attestation=Attestation.AUTHORITATIVE, present_uris=frozenset(uris))
 
     async def fetch(
@@ -569,7 +571,7 @@ class OdooKnowledgeConnector:
         if not content.strip():
             return None
         return RawDocument(
-            source_uri=_uri(conn.database, _DOCUMENT, rid),
+            source_uri=_uri(_DOCUMENT, rid),
             title=_text(row.get("name")) or f"Document {rid}",
             content=content,
             content_type=mimetype,
@@ -606,7 +608,7 @@ class OdooKnowledgeConnector:
             report_skip(SKIP_TOO_LARGE)
             return None
         return RawDocument(
-            source_uri=_uri(conn.database, _ARTICLE, rid),
+            source_uri=_uri(_ARTICLE, rid),
             title=_text(row.get("name")) or f"Article {rid}",
             content=body,
             content_type="text/html",

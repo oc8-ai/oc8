@@ -449,8 +449,11 @@ async def _fetch(
     return docs, report.skipped, report.notes
 
 
+_URI_APP = {"documents.document": "documents", "knowledge.article": "knowledge"}
+
+
 def _uri(model: str, rid: int) -> str:
-    return f"odoo://{DB}/{model}/{rid}"
+    return f"odoo://{_URI_APP[model]}/{rid}"
 
 
 def _assert_clean(text: str) -> None:
@@ -598,6 +601,11 @@ async def test_fetch_documents_and_articles(major: int, folder: str) -> None:
     }
     assert skipped == {}
     assert notes == []
+    # The database name stays out of every URI: they reach prompts and audit.
+    assert "odoo://documents/10" in by_uri
+    assert "odoo://knowledge/50" in by_uri
+    for uri in by_uri:
+        _assert_clean(uri)
 
     pdf = by_uri[_uri("documents.document", 10)]
     assert pdf.title == "report.pdf"
