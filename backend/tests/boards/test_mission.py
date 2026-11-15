@@ -99,6 +99,10 @@ async def test_section_names_board_datasets_fields_and_the_tool(
         "complete",
     ):
         assert needle in text, needle
+    # Percent and money units are stated outside the fence, as instructions.
+    instructions = text[text.rindex("</board_spec ") :]
+    assert "percent fields take percent points (12.5 means 12.5%)" in instructions
+    assert "money fields take amounts in the field's currency" in instructions
 
 
 async def test_section_reflects_the_current_spec_version(

@@ -23,66 +23,8 @@ import type {
 import { useLang, useT } from "@/lib/i18n";
 
 import { BlockMessage, BlockStatus } from "./block-status";
-import { formatAsOf, formatCompact, NO_VALUE } from "./board-format";
-
-export interface ChartSeries {
-  /** `s0`, `s1`, ...: safe as a CSS variable name, unlike a group value. */
-  key: string;
-  label: string;
-  field: string;
-  group: string | null;
-}
-
-export type ChartRow = { asOf: string } & Record<string, string | number | null>;
-
-/** Pivot the series points into recharts rows: one series per field, or per
- *  (field, group) when the block is split by a category. */
-export function chartData(
-  result: QueryResult,
-  block: ChartSpec,
-  dataset: DatasetSpec,
-): { rows: ChartRow[]; series: ChartSeries[] } {
-  const label = (key: string) => dataset.fields.find((f) => f.key === key)?.label ?? key;
-  const series: ChartSeries[] = [];
-  const keyOf = new Map<string, string>();
-  const ensure = (field: string, group: string | null): string => {
-    const id = JSON.stringify([field, group]);
-    let key = keyOf.get(id);
-    if (key === undefined) {
-      key = `s${series.length}`;
-      keyOf.set(id, key);
-      const groupLabel = group ?? NO_VALUE;
-      series.push({
-        key,
-        field,
-        group,
-        label: !block.split_by
-          ? label(field)
-          : block.fields.length > 1
-            ? `${label(field)} · ${groupLabel}`
-            : groupLabel,
-      });
-    }
-    return key;
-  };
-  if (!block.split_by) for (const f of block.fields) ensure(f, null);
-
-  const rows: ChartRow[] = [];
-  const rowAt = new Map<string, ChartRow>();
-  for (const point of result.series) {
-    let row = rowAt.get(point.asOf);
-    if (!row) {
-      row = { asOf: point.asOf };
-      rowAt.set(point.asOf, row);
-      rows.push(row);
-    }
-    for (const f of block.fields) {
-      const key = ensure(f, block.split_by ? point.group : null);
-      row[key] = point.values[f] ?? null;
-    }
-  }
-  return { rows, series };
-}
+import { formatAsOf, formatCompact, formatValue } from "./board-format";
+import { chartData } from "./chart-data";
 
 const color = (i: number) => `var(--chart-${(i % 5) + 1})`;
 
@@ -146,6 +88,28 @@ function ChartBody({
     series.map((s, i) => [s.key, { label: s.label, color: color(i) }]),
   );
   const tick = (v: string) => formatAsOf(v, dataset.grain, lang, bucket);
+  // Each value formatted as its field (currency, percent), not as a bare number.
+  const tooltipRow = (value: unknown, name: unknown) => {
+    const i = series.findIndex((s) => s.key === name);
+    const s = series[i];
+    if (!s) return null;
+    const field = dataset.fields.find((f) => f.key === s.field);
+    return (
+      <>
+        <span
+          aria-hidden
+          className="size-2.5 shrink-0 rounded-[2px]"
+          style={{ background: color(i) }}
+        />
+        <div className="flex flex-1 items-center justify-between gap-2 leading-none">
+          <span className="text-muted-foreground">{s.label}</span>
+          <span className="font-mono font-medium tabular-nums text-foreground">
+            {formatValue(value, field, lang)}
+          </span>
+        </div>
+      </>
+    );
+  };
   const axes = (
     <>
       <CartesianGrid vertical={false} />
@@ -162,7 +126,11 @@ function ChartBody({
         width={40}
         tickFormatter={(v: number) => formatCompact(v, lang)}
       />
-      <ChartTooltip content={<ChartTooltipContent labelFormatter={(v) => tick(String(v))} />} />
+      <ChartTooltip
+        content={
+          <ChartTooltipContent labelFormatter={(v) => tick(String(v))} formatter={tooltipRow} />
+        }
+      />
     </>
   );
 

@@ -56,6 +56,21 @@ function validRange(from: string | undefined, to: string | undefined): from is s
   );
 }
 
+/** A custom range with a new start. A start on or after the end moves the
+ *  end to the day after it, so the range never inverts. */
+export function withCustomFrom(state: BoardFilterState, from: string): BoardFilterState {
+  const to = state.to && state.to > from ? state.to : addDays(from, 1);
+  return { ...state, from, to };
+}
+
+/** A custom range with a new last day (inclusive, as a date picker shows it;
+ *  stored exclusive). An end before the start pulls the start back to it. */
+export function withCustomLastDay(state: BoardFilterState, lastDay: string): BoardFilterState {
+  const to = addDays(lastDay, 1);
+  const from = state.from && state.from < to ? state.from : addDays(to, -1);
+  return { ...state, from, to };
+}
+
 export function presetPeriod(state: BoardFilterState, today: Date): Period {
   const y = today.getUTCFullYear();
   const m = today.getUTCMonth();

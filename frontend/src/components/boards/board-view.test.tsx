@@ -6,7 +6,7 @@ import * as boardsApi from "@/lib/boards-api";
 import type { Board, BoardBlock, BoardQuery, QueryResult } from "@/lib/boards-api";
 import { BoardView } from "./board-view";
 import { DEFAULT_FILTERS } from "./board-filters";
-import { chartData } from "./chart-block";
+import { chartData } from "./chart-data";
 
 const today = new Date("2026-11-15T12:00:00Z");
 
@@ -53,7 +53,12 @@ function board(blocks: BoardBlock[]): Board {
   };
 }
 
-type Answer = { data?: QueryResult; error?: unknown; isPending?: boolean };
+type Answer = {
+  data?: QueryResult;
+  error?: unknown;
+  isPending?: boolean;
+  isPlaceholderData?: boolean;
+};
 
 function mockQueries(answer: (q: BoardQuery) => Answer) {
   const spy = vi.spyOn(boardsApi, "useBoardQuery");
@@ -64,6 +69,7 @@ function mockQueries(answer: (q: BoardQuery) => Answer) {
       error: a.error ?? null,
       isPending: a.isPending ?? (!a.data && !a.error),
       isError: !!a.error,
+      isPlaceholderData: a.isPlaceholderData ?? false,
     } as never;
   });
   return spy;
@@ -241,7 +247,14 @@ describe("BoardView", () => {
 
     expect(screen.getByText("north")).toBeInTheDocument();
     expect(screen.getByText(/€\s?42[.,]00/)).toBeInTheDocument();
-    expect(screen.getByText("1–1 of 30")).toBeInTheDocument();
+    expect(screen.getByText("1–1 of 30")).toHaveAttribute("aria-live", "polite");
+    // Newest first until a header is clicked.
+    expect(spy.mock.lastCall?.[1]?.sort).toEqual({ field: "as_of", dir: "desc" });
+    expect(screen.getByRole("columnheader", { name: /Date/ })).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+    expect(screen.getByText("north").closest("tr")?.className ?? "").not.toMatch(/border/);
 
     fireEvent.click(screen.getByRole("button", { name: /Amount/ }));
     expect(spy.mock.lastCall?.[1]?.sort).toEqual({ field: "amount", dir: "asc" });
@@ -287,6 +300,7 @@ describe("BoardView", () => {
     fireEvent.click(screen.getByRole("switch", { name: "As first reported" }));
     expect(onChange).toHaveBeenLastCalledWith({ ...DEFAULT_FILTERS, reported: "first" });
 
+    expect(screen.getByRole("button", { name: "Region: All" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Region/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: "north" }));
     expect(onChange).toHaveBeenLastCalledWith({
@@ -316,5 +330,95 @@ describe("BoardView", () => {
       from: "2025-03-01",
       to: "2025-03-16",
     });
+  });
+
+  it("never lets a custom range invert", () => {
+    mockQueries(() => ({}));
+    const onChange = vi.fn();
+    const filters = {
+      ...DEFAULT_FILTERS,
+      preset: "custom" as const,
+      from: "2025-03-01",
+      to: "2025-04-01",
+    };
+    render(
+      <BoardView
+        board={board([{ type: "filter_bar", width: 12, presets: ["custom"] }])}
+        filters={filters}
+        onFiltersChange={onChange}
+        today={today}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("From"), { target: { value: "2025-05-10" } });
+    expect(onChange).toHaveBeenLastCalledWith({ ...filters, from: "2025-05-10", to: "2025-05-11" });
+    fireEvent.change(screen.getByLabelText("To"), { target: { value: "2025-02-01" } });
+    expect(onChange).toHaveBeenLastCalledWith({ ...filters, from: "2025-02-01", to: "2025-02-02" });
+  });
+
+  it("names the selected categories on the filter trigger", () => {
+    mockQueries(() => ({}));
+    render(
+      <BoardView
+        board={board([
+          {
+            type: "filter_bar",
+            width: 12,
+            category_filters: [{ dataset: "sales", field: "region" }],
+          },
+        ])}
+        filters={{ ...DEFAULT_FILTERS, categories: { region: ["north", "south"] } }}
+        onFiltersChange={vi.fn()}
+        today={today}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Region: 2 selected" })).toBeInTheDocument();
+  });
+
+  it("dims a KPI and hides its change while the next period loads", () => {
+    mockQueries(() => ({
+      isPlaceholderData: true,
+      data: result({
+        totals: [{ group: null, values: { amount: 120 } }],
+        compare: {
+          period: { from: "2026-10-01", to: "2026-11-01" },
+          series: [],
+          totals: [{ group: null, values: { amount: 100 } }],
+          change: [{ group: null, values: { amount: 0.2 } }],
+        },
+      }),
+    }));
+    renderView([{ type: "kpi", dataset: "sales", field: "amount", width: 3 }]);
+    const value = screen.getByText(/€\s?120[.,]00/);
+    expect(value.parentElement).toHaveClass("opacity-50");
+    expect(value.parentElement).toHaveAttribute("aria-busy", "true");
+    expect(screen.queryByText("+20%")).not.toBeInTheDocument();
+  });
+
+  it("labels the page on screen, not the one loading", () => {
+    let placeholder = false;
+    mockQueries(() => ({
+      isPlaceholderData: placeholder,
+      data: result({
+        rows: Array.from({ length: 10 }, (_, i) => ({
+          as_of: "2026-11-02T00:00:00+00:00",
+          amount: i,
+          region: `r${i}`,
+        })),
+        totalRows: 30,
+      }),
+    }));
+    renderView([
+      { type: "table", dataset: "sales", fields: ["amount", "region"], page_size: 10, width: 12 },
+    ]);
+    expect(screen.getByText("1–10 of 30")).toBeInTheDocument();
+    // The next page is loading: page one is still shown, so is its label.
+    placeholder = true;
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(screen.getByText("1–10 of 30")).toBeInTheDocument();
+    // It arrived.
+    placeholder = false;
+    fireEvent.click(screen.getByRole("columnheader", { name: /Amount/ }).querySelector("button")!);
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(screen.getByText("11–20 of 30")).toBeInTheDocument();
   });
 });

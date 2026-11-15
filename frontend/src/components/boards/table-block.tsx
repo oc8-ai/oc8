@@ -29,19 +29,27 @@ export function TableBlock({
   // Paging and sorting belong to the filtered query they were chosen for: a
   // filter change starts again at the first page.
   const baseKey = JSON.stringify(query);
-  const [view, setView] = useState<{ key: string; offset: number; sort: Sort | null }>({
+  // Newest first, as the server sorts by default; the header shows it.
+  const [view, setView] = useState<{ key: string; offset: number; sort: Sort }>({
     key: baseKey,
     offset: 0,
-    sort: null,
+    sort: { field: "as_of", dir: "desc" },
   });
   const current = view.key === baseKey ? view : { key: baseKey, offset: 0, sort: view.sort };
-  const { data, error } = useBoardQuery(
+  const { data, error, isPlaceholderData } = useBoardQuery(
     boardId,
     query ? { ...query, page: { offset: current.offset, limit }, sort: current.sort } : null,
   );
+  // The offset of the rows on screen: while the next page loads, the previous
+  // page stays shown, and the range label must describe it, not the next one.
+  const [shownOffset, setShownOffset] = useState(current.offset);
+  if (data && !isPlaceholderData && shownOffset !== current.offset) {
+    setShownOffset(current.offset);
+  }
+  const rangeOffset = isPlaceholderData ? shownOffset : current.offset;
 
   const toggleSort = (field: string) => {
-    const dir = current.sort?.field === field && current.sort.dir === "asc" ? "desc" : "asc";
+    const dir = current.sort.field === field && current.sort.dir === "asc" ? "desc" : "asc";
     setView({ key: baseKey, offset: 0, sort: { field, dir } });
   };
   const goTo = (offset: number) => setView({ ...current, offset });
@@ -102,7 +110,7 @@ export function TableBlock({
                 </thead>
                 <tbody>
                   {rows.map((row, i) => (
-                    <tr key={i} className="border-t border-border/50">
+                    <tr key={i}>
                       {columns.map((c) => {
                         const field = dataset.fields.find((f) => f.key === c.key);
                         const value = row[c.key];
@@ -129,10 +137,10 @@ export function TableBlock({
               </table>
             </div>
             <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
-              <span className="mr-1 tabular-nums">
+              <span aria-live="polite" className="mr-1 tabular-nums">
                 {t("{from}–{to} of {total}", "{from}–{to} von {total}")
-                  .replace("{from}", String(current.offset + 1))
-                  .replace("{to}", String(current.offset + rows.length))
+                  .replace("{from}", String(rangeOffset + 1))
+                  .replace("{to}", String(rangeOffset + rows.length))
                   .replace("{total}", String(total))}
               </span>
               <button

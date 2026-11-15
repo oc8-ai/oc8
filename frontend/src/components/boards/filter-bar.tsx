@@ -18,6 +18,8 @@ import {
   categoryValues,
   categoryValuesQuery,
   presetPeriod,
+  withCustomFrom,
+  withCustomLastDay,
   type BoardFilterState,
 } from "./board-filters";
 
@@ -115,7 +117,7 @@ export function FilterBar({
               aria-label={t("From", "Von")}
               value={filters.from ?? ""}
               onChange={(e) =>
-                e.target.value && onFiltersChange({ ...filters, from: e.target.value })
+                e.target.value && onFiltersChange(withCustomFrom(filters, e.target.value))
               }
               className={FIELD_CLASS}
             />
@@ -128,7 +130,7 @@ export function FilterBar({
               aria-label={t("To", "Bis")}
               value={filters.to ? addDays(filters.to, -1) : ""}
               onChange={(e) =>
-                e.target.value && onFiltersChange({ ...filters, to: addDays(e.target.value, 1) })
+                e.target.value && onFiltersChange(withCustomLastDay(filters, e.target.value))
               }
               className={FIELD_CLASS}
             />
@@ -215,6 +217,13 @@ function CategoryFilter({
     a.localeCompare(b),
   );
 
+  const valueText =
+    selected.length === 0
+      ? t("All", "Alle")
+      : selected.length === 1
+        ? selected[0]
+        : t("{n} selected", "{n} ausgewählt").replace("{n}", String(selected.length));
+
   const toggle = (value: string, on: boolean) => {
     const next = on ? [...selected, value] : selected.filter((v) => v !== value);
     const categories = { ...filters.categories, [refSpec.field]: next };
@@ -229,14 +238,10 @@ function CategoryFilter({
         <PopoverTrigger asChild>
           <button
             type="button"
-            aria-label={label}
+            aria-label={`${label}: ${valueText}`}
             className={`${FIELD_CLASS} inline-flex items-center gap-1.5 normal-case tracking-normal text-foreground`}
           >
-            {selected.length === 0
-              ? t("All", "Alle")
-              : selected.length === 1
-                ? selected[0]
-                : t("{n} selected", "{n} ausgewählt").replace("{n}", String(selected.length))}
+            {valueText}
             <ChevronDown aria-hidden className="size-3 text-muted-foreground" />
           </button>
         </PopoverTrigger>

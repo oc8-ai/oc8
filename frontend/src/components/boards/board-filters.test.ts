@@ -8,6 +8,8 @@ import {
   chooseBucket,
   DEFAULT_FILTERS,
   presetPeriod,
+  withCustomFrom,
+  withCustomLastDay,
 } from "./board-filters";
 
 const today = new Date("2026-11-15T12:00:00Z");
@@ -267,5 +269,41 @@ describe("categoryValues", () => {
     };
     expect(categoryValues(rows, "team")).toEqual(["dev", "ops"]);
     expect(categoryValues(undefined, "team")).toEqual([]);
+  });
+});
+
+describe("custom range edits", () => {
+  const range = {
+    ...DEFAULT_FILTERS,
+    preset: "custom" as const,
+    from: "2025-03-01",
+    to: "2025-04-01",
+  };
+
+  it("keeps the other end when the range stays valid", () => {
+    expect(withCustomFrom(range, "2025-03-10")).toEqual({ ...range, from: "2025-03-10" });
+    expect(withCustomLastDay(range, "2025-03-20")).toEqual({ ...range, to: "2025-03-21" });
+  });
+
+  it("moves the end past a start set after it", () => {
+    expect(withCustomFrom(range, "2025-05-10")).toEqual({
+      ...range,
+      from: "2025-05-10",
+      to: "2025-05-11",
+    });
+    // A start on the exclusive end is inverted too.
+    expect(withCustomFrom(range, "2025-04-01").to).toBe("2025-04-02");
+  });
+
+  it("pulls the start back to an end set before it", () => {
+    expect(withCustomLastDay(range, "2025-02-01")).toEqual({
+      ...range,
+      from: "2025-02-01",
+      to: "2025-02-02",
+    });
+    for (const s of [withCustomFrom(range, "2026-01-01"), withCustomLastDay(range, "2020-01-01")]) {
+      expect(s.from! < s.to!).toBe(true);
+      expect(presetPeriod(s, today)).toEqual({ from: s.from, to: s.to });
+    }
   });
 });

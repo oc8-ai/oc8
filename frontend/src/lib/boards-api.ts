@@ -189,6 +189,9 @@ export function useBoards(agentId?: string) {
       api.get<BoardSummary[]>(
         agentId ? `/boards?agentId=${encodeURIComponent(agentId)}` : "/boards",
       ),
+    // A list key (`["boards", agentId]`) has the same shape as a board's
+    // (`["boards", id]`); this tag is how a delete finds the lists.
+    meta: { boardList: true },
   });
 }
 
@@ -218,6 +221,13 @@ export function useDeleteBoard() {
   return useMutation({
     mutationFn: ({ id, records }: { id: string; records: number }) =>
       api.delete(`/boards/${encodeURIComponent(id)}?records=${records}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: boardKeys.all }),
+    onSuccess: async (_data, { id }) => {
+      // Drop the deleted board and its queries first: marking them stale would
+      // make a still-mounted tile refetch and flash a 404/410. An answer still
+      // in flight is cancelled, or its arrival would bring the board back.
+      await qc.cancelQueries({ queryKey: boardKeys.one(id) });
+      qc.removeQueries({ queryKey: boardKeys.one(id) });
+      return qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true });
+    },
   });
 }
