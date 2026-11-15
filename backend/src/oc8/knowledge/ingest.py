@@ -28,7 +28,11 @@ from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.base import AuthContext, Connector, RawDocument
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.registry import resolve_connector
-from oc8.knowledge.connectors.report import SyncReport, collect_sync_report
+from oc8.knowledge.connectors.report import (
+    SyncReport,
+    collect_sync_report,
+    resume_sync_report,
+)
 from oc8.knowledge.embedding_policy import require_local_reason, strictest
 from oc8.knowledge.reconcile import observe_listing
 from oc8.knowledge.scope_prune import apply_scope_change
@@ -487,23 +491,25 @@ async def run_source_sync(
 
     if fatal is None and connector is not None:
         # An admin narrowed this source's selection (`cursor["scope_changed"]`).
-        # Pruned here, outside the collector -- what a connector reports skipping
-        # is about this sync's fetch, and a prune is not a skip -- and BEFORE the
+        # Pruned here, after the fetch loop -- the prune is core's, not the
+        # connector's -- with this sync's own collector re-installed so the
+        # `scope_emptied` note lands on this job's notes; and BEFORE the
         # listing observation below: a pruned document is no longer live, so
         # reconcile neither counts it toward its vanish ratio (which would hold
         # the source over the admin's own edit) nor marks it missing.
         # Only after a sync with no connector-level failure; the flag survives
         # anything short of a pruning savepoint that completed.
         try:
-            async with db.begin_nested():
-                pruned = await apply_scope_change(
-                    db,
-                    tenant_id=tenant_id,
-                    data_source=data_source,
-                    connector=connector,
-                    auth=auth,
-                    now=now,
-                )
+            with resume_sync_report(sync_report):
+                async with db.begin_nested():
+                    pruned = await apply_scope_change(
+                        db,
+                        tenant_id=tenant_id,
+                        data_source=data_source,
+                        connector=connector,
+                        auth=auth,
+                        now=now,
+                    )
         except Exception as exc:
             bookkeeping_error = bookkeeping_error or f"scope prune failed: {exc}"
         else:

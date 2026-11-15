@@ -189,8 +189,13 @@ async def tombstone_document(
     reduce_now: bool,
     now: dt.datetime,
     principal: Principal | None = None,
+    originating_operator: str | None = None,
 ) -> Removal | None:
     """Take one document out of retrieval. Returns None if it was not there.
+
+    `originating_operator` is the subject of an admin whose EARLIER edit licensed
+    this removal (a scope prune runs in a sync, long after the request that
+    narrowed the scope): a reducing removal's ledger entry then names them.
 
     `reduce_now` is set by the operator path and by a scope prune
     (`scope_changed`, an admin's deliberate narrowing): the content is
@@ -307,16 +312,21 @@ async def tombstone_document(
             "sha256": sha256,
         }
         by_operator = reason == OPERATOR_DELETE
+        actor_type = "operator"
+        actor_id: uuid.UUID | None = None
         if not by_operator:
             # Only a scope prune reaches here today. Nobody deleted this
             # document by hand, and a ledger entry that says so cannot be taken
-            # back, so the entry names the reason and the system as the actor.
+            # back, so the entry names the reason, and the admin whose edit
+            # licensed it -- or the system, when no admin is on record.
             resource["deleted_reason"] = reason
+            actor_type = "operator" if originating_operator else "system"
+            actor_id = _as_uuid(originating_operator)
         event = await append_event(
             db,
             tenant_id=tenant_id,
-            actor_type="operator" if by_operator else "system",
-            actor_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
             category=CATEGORY,
             action=DOCUMENT_DELETED,
             resource=resource,
@@ -327,6 +337,7 @@ async def tombstone_document(
                 else "the document left its source's selected scope"
             ),
             principal=principal,
+            originating_operator=None if by_operator else originating_operator,
         )
         audit_event = event
 
@@ -334,6 +345,17 @@ async def tombstone_document(
     return Removal(
         documents=1, chunks=len(chunks), sha256=sha256, sources=sources, audit_event=audit_event
     )
+
+
+def _as_uuid(value: str | None) -> uuid.UUID | None:
+    """`audit_event.actor_id` is a uuid column; a subject that is not one is
+    still named, as `responsible_id`."""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
 
 
 async def restore_document(
@@ -383,7 +405,9 @@ async def restore_document(
                 *scope,
                 m.KbChunk.deleted_at.is_not(None),
                 m.KbChunk.reduced_at.is_(None),
-                m.KbChunk.deleted_reason.in_([SOURCE_ABSENT, SUPERSEDED]),
+                # `scope_changed` too: an emptied scope is tombstoned without
+                # reducing precisely so it can be undone.
+                m.KbChunk.deleted_reason.in_([SOURCE_ABSENT, SUPERSEDED, SCOPE_CHANGED]),
             )
         )
     ).all()
@@ -565,9 +589,14 @@ async def reduce_document(
                 # The hash outlives the bytes it names.
                 "sha256": sha256,
                 "connector_type": source.connector_type if source is not None else None,
+                "deleted_reason": reason,
             },
             decision="allow",
-            reason=f"absent from every attested listing of this source since {since}",
+            reason=(
+                f"left this source's selected scope on {since}"
+                if reason == SCOPE_CHANGED
+                else f"absent from every attested listing of this source since {since}"
+            ),
         )
         audit_event = event
 

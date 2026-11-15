@@ -79,3 +79,17 @@ def collect_sync_report() -> Iterator[SyncReport]:
         yield report
     finally:
         _current.reset(token)
+
+
+@contextlib.contextmanager
+def resume_sync_report(report: SyncReport | None) -> Iterator[SyncReport | None]:
+    """Re-install a sync's EXISTING collector for work after its fetch loop.
+
+    `collect_sync_report` would start a fresh one, and what core records after
+    the fetch (a scope prune's note, say) belongs on the same job as the rest.
+    """
+    token = _current.set(report)
+    try:
+        yield report
+    finally:
+        _current.reset(token)

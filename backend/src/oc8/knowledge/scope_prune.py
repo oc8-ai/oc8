@@ -8,8 +8,11 @@ refuses a listing that loses too much at once.
 
 None of that doubt applies here. Narrowing the picker in the edit drawer is the
 customer saying, in so many words, "not these any more". The PATCH that saves it
-sets `cursor["scope_changed"]`, and the next sync prunes at once -- no confirm
-window, no vanish-ratio hold, and whether or not reconciliation is enabled.
+records a `knowledge.source_scope_changed` audit event and sets
+`cursor["scope_changed"] = {"by": <the admin's subject>}`, and the next sync
+prunes at once -- no confirm window, no vanish-ratio hold, and whether or not
+reconciliation is enabled. (A bare `True` flag, written before the flag carried
+its author, is still honoured; its prune is then attributed to the system.)
 
 What it still needs is the one fact reconcile needs too: an AUTHORITATIVE
 listing of what the narrowed source now holds. Without it "absent from this
@@ -17,15 +20,22 @@ listing" means nothing, so every other outcome (`NONE`, `REMOVALS`, an exception
 a timeout) prunes nothing and keeps the flag for the next sync. The flag is
 cleared only in the savepoint that pruned.
 
-An EMPTY authoritative listing prunes everything. The PATCH refuses a picker
-that would select nothing, and the attestation contract requires a connector to
-raise rather than attest an empty set on an error, so empty here means empty.
+A NON-EMPTY listing prunes and REDUCES at once (`reduce_now=True`): the
+de-selected text leaves oc8 in the same transaction, with one
+`knowledge.document_deleted` entry per document naming the admin whose edit
+licensed it and `deleted_reason="scope_changed"`. Waiting for a grace window
+would leave it to the reconcile sweep, which may be switched off, and the edit
+was deliberate.
 
-The prune REDUCES at once (`reduce_now=True`): the de-selected text leaves oc8 in
-the same transaction, with a `knowledge.document_deleted` entry per document
-naming the system and the reason. Waiting for a grace window would leave it to
-the reconcile sweep, which may be switched off, and the edit was deliberate. It
-is not suppressed: re-selecting a document ingests it again, and the cursor
+An EMPTY listing prunes everything, but recoverably (`reduce_now=False`). Every
+create and edit refuses a picker that selects nothing, and the attestation
+contract makes a connector raise rather than attest an empty set on an error --
+yet "everything is gone" is still the one answer a broken credential could fake.
+So the documents leave retrieval at once and keep their text: `restore_document`
+can bring them back, the reconcile sweep reduces them after its grace window,
+and the sync records the `scope_emptied` note so the source shows what happened.
+
+Neither is suppressed: re-selecting a document ingests it again, and the cursor
 eviction below makes sure the hash cursor does not skip it.
 """
 
@@ -41,14 +51,21 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.audit.chain import append_event
+from oc8.auth.principal import Principal
 from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.base import Attestation, AuthContext, SourceListing
-from oc8.knowledge.tombstone import SCOPE_CHANGED, tombstone_document
+from oc8.knowledge.connectors.report import report_note
+from oc8.knowledge.tombstone import CATEGORY, SCOPE_CHANGED, tombstone_document
 
 logger = logging.getLogger(__name__)
 
 #: The cursor key a scope-narrowing edit sets and a successful prune clears.
 FLAG = "scope_changed"
+#: Audit action an admin's scope-changing edit records.
+SCOPE_CHANGED_EVENT = "knowledge.source_scope_changed"
+#: The sync note recorded when a scope change emptied the source.
+SCOPE_EMPTIED_NOTE = "scope_emptied"
 #: The schema marker that makes a config property part of a source's scope.
 PICKER = "x-oc8-picker"
 
@@ -57,33 +74,82 @@ PICKER = "x-oc8-picker"
 _ATTEST_TIMEOUT = 30.0
 
 
-def picker_changed(
-    schema: Mapping[str, Any] | None, before: Mapping[str, Any], after: Mapping[str, Any]
-) -> bool:
-    """Whether a config edit changed any property the schema marks as a picker."""
-    properties = (schema or {}).get("properties") or {}
-    return any(
-        isinstance(spec, Mapping)
-        and spec.get(PICKER) is True
-        and before.get(name) != after.get(name)
-        for name, spec in properties.items()
-    )
-
-
-def empty_pickers(schema: Mapping[str, Any] | None, config: Mapping[str, Any]) -> list[str]:
-    """Picker properties a config leaves missing or empty.
-
-    A source that selects nothing is a source to delete, not to narrow, and it
-    is what lets the sync take an empty AUTHORITATIVE listing at its word.
-    """
+def _pickers(schema: Mapping[str, Any] | None) -> list[str]:
     properties = (schema or {}).get("properties") or {}
     return [
         name
         for name, spec in properties.items()
-        if isinstance(spec, Mapping)
-        and spec.get(PICKER) is True
-        and (config.get(name) is None or config.get(name) == [])
+        if isinstance(spec, Mapping) and spec.get(PICKER) is True
     ]
+
+
+def picker_changes(
+    schema: Mapping[str, Any] | None, before: Mapping[str, Any], after: Mapping[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """The picker properties a config edit changed, as {name: {before, after}}.
+
+    Picker values are selections -- ids and labels -- which is what makes them
+    safe to put in an audit entry; nothing else of the config goes there.
+    """
+    return {
+        name: {"before": before.get(name), "after": after.get(name)}
+        for name in _pickers(schema)
+        if before.get(name) != after.get(name)
+    }
+
+
+def picker_changed(
+    schema: Mapping[str, Any] | None, before: Mapping[str, Any], after: Mapping[str, Any]
+) -> bool:
+    """Whether a config edit changed any property the schema marks as a picker."""
+    return bool(picker_changes(schema, before, after))
+
+
+def empty_pickers(schema: Mapping[str, Any] | None, config: Mapping[str, Any]) -> list[str]:
+    """Picker properties a config leaves missing or empty (any falsy value).
+
+    A source that selects nothing is a source to delete, not to narrow.
+    """
+    return [name for name in _pickers(schema) if not config.get(name)]
+
+
+def scope_flag(principal: Principal) -> dict[str, str]:
+    """The cursor flag value: who narrowed the scope."""
+    return {"by": principal.subject}
+
+
+def _flag_author(flag: Any) -> str | None:
+    """The admin a flag names, or None for a bare `True` from before it did."""
+    if isinstance(flag, Mapping):
+        by = flag.get("by")
+        return str(by) if by else None
+    return None
+
+
+async def record_scope_change(
+    db: AsyncSession,
+    *,
+    principal: Principal,
+    data_source: m.DataSource,
+    changes: dict[str, dict[str, Any]],
+) -> None:
+    """Stage the audit event for an admin's scope-changing edit. flush-only."""
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category=CATEGORY,
+        action=SCOPE_CHANGED_EVENT,
+        resource={
+            "data_source_id": str(data_source.id),
+            "connector_type": data_source.connector_type,
+            "scope": changes,
+        },
+        decision="allow",
+        reason="an operator changed the source's selected scope",
+        principal=principal,
+    )
 
 
 async def _live_documents(
@@ -116,11 +182,14 @@ async def prune_out_of_scope(
     kb_ids: Collection[uuid.UUID],
     present_uris: frozenset[str],
     now: dt.datetime,
+    reduce_now: bool = True,
+    actor: str | None = None,
 ) -> int:
     """Tombstone every live document of this source in these bases whose URI the
     listing does not contain. Returns how many (base, document) pairs it removed.
 
-    flush-only; the caller owns the commit.
+    `actor` is the subject of the admin whose edit licensed the prune; a reducing
+    prune's ledger entries name them. flush-only; the caller owns the commit.
     """
     if not kb_ids:
         return 0
@@ -137,8 +206,9 @@ async def prune_out_of_scope(
             data_source_id=data_source.id,
             source_uri=uri,
             reason=SCOPE_CHANGED,
-            reduce_now=True,
+            reduce_now=reduce_now,
             now=now,
+            originating_operator=actor,
         )
         if removal is not None:
             pruned += removal.documents
@@ -158,20 +228,23 @@ async def apply_scope_change(
 
     Returns the number pruned, or None when the flag is not set or the listing
     cannot license a prune (the flag then stays set). `run_source_sync` calls
-    this only after a sync with no connector-level failure. flush-only.
+    this only after a sync with no connector-level failure, with its sync-report
+    collector installed so the `scope_emptied` note lands on the job. flush-only.
     """
     # Re-read under the row lock, and the CONFIG with it: an edit committed
     # while this sync was fetching set the flag for a selection the in-memory
     # config predates, and attesting the old selection would clear the flag
     # without pruning what the edit took out.
     await db.refresh(data_source, ["cursor", "config"], with_for_update=True)
-    if not (data_source.cursor or {}).get(FLAG):
+    flag = (data_source.cursor or {}).get(FLAG)
+    if not flag:
         return None
 
     listing = await _attest(connector, data_source, auth)
     if listing is None or listing.attestation is not Attestation.AUTHORITATIVE:
         return None
     present = listing.present_uris
+    emptied = not present
 
     # Every base this source feeds, not only the one this sync was queued for:
     # the listing is a claim about the source.
@@ -184,6 +257,8 @@ async def apply_scope_change(
         kb_ids={kb for kb, _ in live},
         present_uris=present,
         now=now,
+        reduce_now=not emptied,
+        actor=_flag_author(flag),
     )
 
     cursor = dict(data_source.cursor or {})
@@ -202,6 +277,14 @@ async def apply_scope_change(
     await db.flush()
     # `tombstone_document` recounts with a set-based UPDATE.
     await db.refresh(data_source, ["doc_count"])
+    if emptied:
+        logger.warning(
+            "knowledge: source %s attested an empty listing after a scope change; "
+            "%d document(s) tombstoned, restorable until the grace window ends",
+            data_source.id,
+            pruned,
+        )
+        report_note(SCOPE_EMPTIED_NOTE)
     return pruned
 
 

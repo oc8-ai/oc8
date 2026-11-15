@@ -31,8 +31,14 @@ from oc8.knowledge.connectors.base import (
     ValidationResult,
 )
 from oc8.knowledge.ingest import run_source_sync
-from oc8.knowledge.scope_prune import prune_out_of_scope
-from oc8.knowledge.tombstone import DOCUMENT_DELETED, SCOPE_CHANGED, restore_document
+from oc8.knowledge.reconcile import sweep_knowledge_deletions
+from oc8.knowledge.scope_prune import SCOPE_CHANGED_EVENT, empty_pickers, prune_out_of_scope
+from oc8.knowledge.tombstone import (
+    DOCUMENT_DELETED,
+    DOCUMENT_REDUCED,
+    SCOPE_CHANGED,
+    restore_document,
+)
 from oc8.main import create_app
 from oc8.models.knowledge import EMBED_DIM
 from tests.audit.helpers import flush_audit
@@ -190,8 +196,11 @@ async def _flag(db: Any, ds: m.DataSource) -> bool:
 # ------------------------------------------------------------------ PATCH
 
 
-def _headers(tenant: uuid.UUID) -> dict[str, str]:
-    token = get_identity_provider().mint(tenant_id=tenant, subject="op", role="org_admin")
+ADMIN = "0b9c1d2e-3f40-4a5b-8c6d-7e8f9a0b1c2d"
+
+
+def _headers(tenant: uuid.UUID, subject: str = "op") -> dict[str, str]:
+    token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role="org_admin")
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -259,7 +268,8 @@ async def test_patch_picker_change_flags_scope(
         flagged = await db.get(m.DataSource, flagged_id)
         plain = await db.get(m.DataSource, plain_id)
         assert flagged is not None and plain is not None
-        assert flagged.cursor["scope_changed"] is True
+        # The flag carries who narrowed the scope, so the prune can name them.
+        assert flagged.cursor["scope_changed"] == {"by": "op"}
         assert flagged.cursor["hashes"] == ["h"], "the rest of the cursor is kept"
         assert flagged.config == {"selection": [1, 2]}
         assert "scope_changed" not in (plain.cursor or {})
@@ -280,7 +290,12 @@ async def test_patch_refuses_an_empty_picker(
 
     app = create_app()
     async with LifespanManager(app), _client(app) as c:
-        for config in ({"selection": []}, {"selection": None}):
+        for config in (
+            {"selection": []},
+            {"selection": None},
+            {"selection": ""},
+            {"selection": {}},
+        ):
             r = await c.patch(
                 f"/api/v1/knowledge/sources/{source_id}",
                 json={"name": "renamed", "config": config},
@@ -295,6 +310,103 @@ async def test_patch_refuses_an_empty_picker(
         assert reloaded.config == {"selection": [1, 2, 3]}
         assert reloaded.name == "src"
         assert not (reloaded.cursor or {}).get("scope_changed")
+
+
+async def test_patch_records_who_changed_the_scope(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(registry._CONNECTORS, STUB, _Connector())
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        ds = await _source(db, tenant)
+        source_id = ds.id
+
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        r = await c.patch(
+            f"/api/v1/knowledge/sources/{source_id}",
+            json={"config": {"selection": [1, 2], "name": "not a picker"}},
+            headers=_headers(tenant, ADMIN),
+        )
+        assert r.status_code == 200, r.text
+        # An edit that leaves the pickers alone records no scope change.
+        r = await c.patch(
+            f"/api/v1/knowledge/sources/{source_id}",
+            json={"config": {"name": "still not a picker"}},
+            headers=_headers(tenant, ADMIN),
+        )
+        assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+        reloaded = await db.get(m.DataSource, source_id)
+        assert reloaded is not None
+        assert reloaded.cursor["scope_changed"] == {"by": ADMIN}
+        await flush_audit(db)
+        events = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action == SCOPE_CHANGED_EVENT,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 1
+        ev = events[0]
+        assert (ev.responsible_type, ev.responsible_id) == ("operator", ADMIN)
+        assert ev.resource["data_source_id"] == str(source_id)
+        # Only the picker properties, before and after.
+        assert ev.resource["scope"] == {"selection": {"before": [1, 2, 3], "after": [1, 2]}}
+
+
+async def test_create_refuses_an_empty_picker(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(registry._CONNECTORS, STUB, _Connector())
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = await _kb(db, tenant)
+        kb_id = kb.id
+
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        for config in ({}, {"selection": []}, {"selection": ""}):
+            r = await c.post(
+                "/api/v1/knowledge/sources",
+                json={"connectorType": STUB, "name": "s", "config": config, "kbId": str(kb_id)},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 400, r.text
+            assert "selection" in r.text
+        r = await c.post(
+            "/api/v1/knowledge/sources",
+            json={
+                "connectorType": STUB,
+                "name": "s",
+                "config": {"selection": [1]},
+                "kbId": str(kb_id),
+            },
+            headers=_headers(tenant),
+        )
+        assert r.status_code == 201, r.text
+
+
+def test_empty_pickers_treats_every_falsy_value_as_empty() -> None:
+    for config in (
+        {},
+        {"selection": None},
+        {"selection": []},
+        {"selection": ""},
+        {"selection": {}},
+    ):
+        assert empty_pickers(_SCHEMA, config) == ["selection"], config
+    for config in ({"selection": [0]}, {"selection": "x"}, {"selection": {"a": 1}}):
+        assert empty_pickers(_SCHEMA, config) == [], config
+    # Only marked properties count.
+    assert empty_pickers(_SCHEMA, {"selection": [1], "name": ""}) == []
 
 
 async def test_patch_keeps_a_cursor_written_since_it_loaded_the_row(
@@ -331,7 +443,7 @@ async def test_patch_keeps_a_cursor_written_since_it_loaded_the_row(
     async with app_session(tenant) as db:
         reloaded = await db.get(m.DataSource, source_id)
         assert reloaded is not None
-        assert reloaded.cursor == {"hashes": ["written-by-a-sync"], "scope_changed": True}
+        assert reloaded.cursor == {"hashes": ["written-by-a-sync"], "scope_changed": {"by": "op"}}
 
 
 # ------------------------------------------------------------------ sync
@@ -524,12 +636,14 @@ async def test_scope_prune_waits_out_removals_and_a_raising_attest(
             assert await _flag(db, ds)
 
 
-async def test_scope_prune_takes_an_empty_listing_at_its_word(
+async def test_an_empty_listing_prunes_everything_but_recoverably(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, reconcile_off: Settings
 ) -> None:
     """PATCH refuses an empty picker, and the attestation contract makes a
-    connector RAISE on a listing error, so an empty AUTHORITATIVE listing after
-    a scope change means the selection really holds nothing now."""
+    connector RAISE on a listing error -- but "everything is gone" is still the
+    one answer an expired credential could fake. So the documents leave
+    retrieval at once and keep their text for the grace window, restorable,
+    and the source says so in its notes."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         kb = await _kb(db, tenant)
@@ -540,8 +654,86 @@ async def test_scope_prune_takes_an_empty_listing_at_its_word(
         job = await run_source_sync(db, tenant_id=tenant, data_source=ds, kb_id=kb.id)
 
         assert job.stats["scope_pruned"] == 2
-        assert all(c.deleted_at is not None for c in (await _chunks(db, kb.id)).values())
+        assert "scope_emptied" in job.stats["notes"]
+        chunks = await _chunks(db, kb.id)
+        assert all(c.deleted_at is not None for c in chunks.values())
+        assert all(c.deleted_reason == SCOPE_CHANGED for c in chunks.values())
+        assert all(c.reduced_at is None and c.content == "body" for c in chunks.values())
         assert not await _flag(db, ds)
+
+        restored = await restore_document(
+            db,
+            tenant_id=tenant,
+            kb_id=kb.id,
+            data_source_id=ds.id,
+            source_uri="test://a",
+            now=T0,
+        )
+        assert restored == 1
+        chunks = await _chunks(db, kb.id)
+        assert chunks["test://a"].deleted_at is None
+        assert chunks["test://a"].content == "body"
+
+
+async def test_a_non_empty_prune_records_no_emptied_note(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, reconcile_off: Settings
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = await _kb(db, tenant)
+        ds = await _source(db, tenant, cursor={"scope_changed": True})
+        await _document(db, tenant, kb_id=kb.id, ds_id=ds.id, uri="test://a")
+        await _document(db, tenant, kb_id=kb.id, ds_id=ds.id, uri="test://b")
+        monkeypatch.setitem(
+            registry._CONNECTORS, STUB, _Connector(listing=_authoritative("test://a"))
+        )
+        job = await run_source_sync(db, tenant_id=tenant, data_source=ds, kb_id=kb.id)
+        assert job.stats["scope_pruned"] == 1
+        assert "scope_emptied" not in job.stats.get("notes", [])
+
+
+async def test_the_sweep_reduces_an_emptied_scope_after_the_grace_window(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, reconcile_on: Settings
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        if await db.get(m.Organization, tenant) is None:
+            db.add(m.Organization(id=tenant, slug=f"t-{tenant.hex[:8]}", name="T"))
+            await db.flush()
+        kb = await _kb(db, tenant)
+        ds = await _source(db, tenant, cursor={"scope_changed": True})
+        kb_id = kb.id
+        await _document(db, tenant, kb_id=kb_id, ds_id=ds.id, uri="test://a")
+        monkeypatch.setitem(registry._CONNECTORS, STUB, _Connector(listing=_authoritative()))
+        job = await run_source_sync(db, tenant_id=tenant, data_source=ds, kb_id=kb_id)
+        assert job.stats["scope_pruned"] == 1
+
+    grace = dt.timedelta(hours=reconcile_on.knowledge_reduce_after_hours)
+    await sweep_knowledge_deletions(now=dt.datetime.now(tz=dt.UTC) + grace / 2)
+    async with app_session(tenant) as db:
+        assert (await _chunks(db, kb_id))["test://a"].reduced_at is None, "inside the window"
+
+    await sweep_knowledge_deletions(now=dt.datetime.now(tz=dt.UTC) + grace + dt.timedelta(hours=1))
+    async with app_session(tenant) as db:
+        chunk = (await _chunks(db, kb_id))["test://a"]
+        assert chunk.reduced_at is not None
+        assert chunk.content == ""
+        await flush_audit(db)
+        reduced = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action == DOCUMENT_REDUCED,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(reduced) == 1
+        assert reduced[0].resource["deleted_reason"] == SCOPE_CHANGED
+        assert "absent from every attested listing" not in (reduced[0].reason or "")
 
 
 async def test_reselecting_a_pruned_document_brings_it_back(
@@ -594,7 +786,7 @@ async def test_reselecting_a_pruned_document_brings_it_back(
         assert live and all(c.content == "document b" for c in live)
 
 
-async def test_a_pruned_document_is_not_restorable(
+async def test_a_reduced_prune_is_not_restorable(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, reconcile_off: Settings
 ) -> None:
     """`restore_document` undoes only an unreduced inference. A reduced
@@ -623,11 +815,52 @@ async def test_a_pruned_document_is_not_restorable(
         assert (await _chunks(db, kb.id))["test://b"].deleted_at is not None
 
 
-async def test_a_reduced_prune_is_recorded_as_the_system_not_an_operator(
+async def _deleted_events(db: Any, tenant: uuid.UUID) -> list[m.AuditEvent]:
+    await flush_audit(db)
+    return list(
+        (
+            await db.execute(
+                select(m.AuditEvent).where(
+                    m.AuditEvent.tenant_id == tenant, m.AuditEvent.action == DOCUMENT_DELETED
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def test_a_reduced_prune_names_the_admin_who_narrowed_the_scope(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, reconcile_off: Settings
 ) -> None:
-    """Destroying content writes a ledger entry, and it must say why: nobody
-    deleted this document by hand, the source's scope no longer covers it."""
+    """Destroying content writes a ledger entry, and it names the admin whose
+    edit licensed it -- the sync only carried it out."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        kb = await _kb(db, tenant)
+        ds = await _source(db, tenant, cursor={"scope_changed": {"by": ADMIN}})
+        await _document(db, tenant, kb_id=kb.id, ds_id=ds.id, uri="test://a")
+        await _document(db, tenant, kb_id=kb.id, ds_id=ds.id, uri="test://b")
+        monkeypatch.setitem(
+            registry._CONNECTORS, STUB, _Connector(listing=_authoritative("test://a"))
+        )
+        await run_source_sync(db, tenant_id=tenant, data_source=ds, kb_id=kb.id)
+
+        events = await _deleted_events(db, tenant)
+        assert len(events) == 1
+        assert events[0].actor_type == "operator"
+        assert str(events[0].actor_id) == ADMIN
+        assert (events[0].responsible_type, events[0].responsible_id) == ("operator", ADMIN)
+        assert events[0].resource["source_uri"] == "test://b"
+        assert events[0].resource["deleted_reason"] == SCOPE_CHANGED
+        assert "scope" in (events[0].reason or "")
+
+
+async def test_a_flag_from_before_attribution_is_recorded_as_the_system(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, reconcile_off: Settings
+) -> None:
+    """A bare `True` flag (written before the flag carried its author) still
+    prunes; the entry then names nobody it cannot prove."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         kb = await _kb(db, tenant)
@@ -639,24 +872,12 @@ async def test_a_reduced_prune_is_recorded_as_the_system_not_an_operator(
         )
         await run_source_sync(db, tenant_id=tenant, data_source=ds, kb_id=kb.id)
 
-        await flush_audit(db)
-        events = (
-            (
-                await db.execute(
-                    select(m.AuditEvent).where(
-                        m.AuditEvent.tenant_id == tenant,
-                        m.AuditEvent.action == DOCUMENT_DELETED,
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
+        events = await _deleted_events(db, tenant)
         assert len(events) == 1
         assert events[0].actor_type == "system"
+        assert events[0].actor_id is None
         assert events[0].resource["source_uri"] == "test://b"
         assert events[0].resource["deleted_reason"] == SCOPE_CHANGED
-        assert "scope" in (events[0].reason or "")
 
 
 async def test_scope_prune_skipped_on_fatal_sync(

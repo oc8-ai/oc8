@@ -48,7 +48,7 @@ from oc8.knowledge.ingest import (
 )
 from oc8.knowledge.retrieval import similar_chunks
 from oc8.knowledge.scope_prune import FLAG as SCOPE_FLAG
-from oc8.knowledge.scope_prune import empty_pickers, picker_changed
+from oc8.knowledge.scope_prune import picker_changes, record_scope_change, scope_flag
 from oc8.knowledge.sources import SourceRejected, validate_source_config
 from oc8.knowledge.tombstone import (
     OPERATOR_DELETE,
@@ -740,10 +740,18 @@ async def update_source(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> DataSourceDTO:
-    """Edit a source's name, classification, or schedule. Not the DELETE below:
-    that one is irreversible by design (§12.5.1 -- an operator DELETE destroys
-    the source's content immediately). This is an ordinary metadata edit, on a
-    row that stays exactly as reachable afterward as before."""
+    """Edit a source's name, classification, schedule or config. Not the DELETE
+    below: that one is irreversible by design (§12.5.1 -- an operator DELETE
+    destroys the source's content immediately).
+
+    `config` is MERGED into the stored config, and the merged result is
+    validated exactly as at creation -- including that no `x-oc8-picker`
+    property is left empty -- before ANY field of the request is applied, so a
+    400 leaves the row untouched. When the edit changes a picker property (the
+    source's selected scope), it records a `knowledge.source_scope_changed`
+    audit event with the picker values before and after, and flags the cursor
+    with who made it; the next sync then drops whatever the new selection
+    leaves out (oc8/knowledge/scope_prune.py)."""
     ds = await _live_source(db, source_id, principal.tenant_id)
     if body.config is not None:
         # Validated BEFORE anything is applied, so a refusal leaves the row
@@ -761,21 +769,16 @@ async def update_source(
             )
         except (ConnectorError, SourceRejected) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-        empty = empty_pickers(connector.config_schema, merged)
-        if empty:
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"select at least one item for {', '.join(empty)}; "
-                "to stop indexing this source entirely, delete it",
-            )
-        if picker_changed(connector.config_schema, before, merged):
+        changes = picker_changes(connector.config_schema, before, merged)
+        if changes:
             # The next sync prunes what the new selection leaves out, at once --
             # see oc8/knowledge/scope_prune.py for why this skips reconcile.
             # Merged into the cursor as it is NOW, under the row lock: the copy
             # loaded with the row may predate a sync's digests, and writing it
             # back would undo them.
             await db.refresh(ds, ["cursor"], with_for_update=True)
-            ds.cursor = {**(ds.cursor or {}), SCOPE_FLAG: True}
+            ds.cursor = {**(ds.cursor or {}), SCOPE_FLAG: scope_flag(principal)}
+            await record_scope_change(db, principal=principal, data_source=ds, changes=changes)
         ds.config = merged
     if body.name is not None:
         ds.name = body.name
