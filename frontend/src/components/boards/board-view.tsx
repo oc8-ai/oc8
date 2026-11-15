@@ -10,14 +10,16 @@ import { KpiBlock } from "./kpi-block";
 import { NoteBlock } from "./note-block";
 import { TableBlock } from "./table-block";
 
-// Static class names, so Tailwind sees each one. On a phone every block is
-// full width; from `md` up a block takes its `width` of 12 columns.
+// Static class names, so Tailwind sees each one. Sized by the board's own
+// width (a container query), not the viewport's: in a narrow dashboard tile or
+// on a phone every block is full width; from 48rem of board up (the old `md`)
+// a block takes its `width` of 12 columns.
 const SPAN: Record<BlockWidth, string> = {
-  3: "md:col-span-3",
-  4: "md:col-span-4",
-  6: "md:col-span-6",
-  8: "md:col-span-8",
-  12: "md:col-span-12",
+  3: "@3xl:col-span-3",
+  4: "@3xl:col-span-4",
+  6: "@3xl:col-span-6",
+  8: "@3xl:col-span-8",
+  12: "@3xl:col-span-12",
 };
 
 /** A dashboard's blocks on a 12-column grid, all reading the same filters. */
@@ -34,16 +36,18 @@ export function BoardView({
 }) {
   const { spec } = board;
   return (
-    <div className="grid min-w-0 grid-cols-12 gap-x-3 gap-y-2">
-      {spec.blocks.map((block, i) => (
-        <div
-          key={i}
-          data-testid="board-block"
-          className={`col-span-12 min-w-0 ${SPAN[block.width ?? 6] ?? SPAN[12]}`}
-        >
-          {renderBlock(block, board, filters, onFiltersChange, today)}
-        </div>
-      ))}
+    <div className="@container min-w-0">
+      <div className="grid min-w-0 grid-cols-12 gap-x-3 gap-y-2">
+        {spec.blocks.map((block, i) => (
+          <div
+            key={i}
+            data-testid="board-block"
+            className={`col-span-12 min-w-0 ${SPAN[block.width ?? 6] ?? SPAN[12]}`}
+          >
+            {renderBlock(block, board, filters, onFiltersChange, today)}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

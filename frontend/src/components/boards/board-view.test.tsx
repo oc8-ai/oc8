@@ -224,7 +224,7 @@ describe("BoardView", () => {
     expect(screen.getByText("This dashboard was deleted")).toBeInTheDocument();
   });
 
-  it("places blocks on a 12-column grid, full width on a phone", () => {
+  it("places blocks on a 12-column grid sized by the board, not the viewport", () => {
     mockQueries(() => ({ data: result({ totals: [{ group: null, values: { amount: 1 } }] }) }));
     renderView([
       { type: "kpi", dataset: "sales", field: "amount", width: 3 },
@@ -232,8 +232,12 @@ describe("BoardView", () => {
     ]);
     const cells = screen.getAllByTestId("board-block");
     expect(cells[0].parentElement).toHaveClass("grid-cols-12");
-    expect(cells[0]).toHaveClass("col-span-12", "md:col-span-3");
-    expect(cells[1]).toHaveClass("col-span-12", "md:col-span-8");
+    // The board is the container its spans query: a narrow tile stacks its
+    // blocks even on a wide screen.
+    expect(cells[0].parentElement?.parentElement).toHaveClass("@container");
+    expect(cells[0]).toHaveClass("col-span-12", "@3xl:col-span-3");
+    expect(cells[1]).toHaveClass("col-span-12", "@3xl:col-span-8");
+    expect(cells[0].className).not.toMatch(/(^|\s)md:/);
   });
 
   it("sorts a table by a header and pages on the server", () => {
