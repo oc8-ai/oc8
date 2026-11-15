@@ -269,3 +269,38 @@ async def test_an_update_is_judged_against_what_was_actually_granted(
         )
         assert updated.status_code == 201, updated.text
     assert await _status(app_session, tenant, "odoo_mcp") == "disabled"
+
+
+def _defer_knowledge_write(manifest: Path) -> None:
+    text = manifest.read_text().replace(
+        'permissions = ["mcp:connect", "secrets:use"]',
+        'permissions = ["mcp:connect", "secrets:use", "knowledge:write"]\n'
+        'deferred_permissions = ["knowledge:write"]',
+        1,
+    )
+    assert "deferred_permissions" in text
+    manifest.write_text(text)
+    invalidate_discovery_cache()
+
+
+async def test_a_deferred_permission_is_neither_offered_nor_granted_by_enable(
+    app_session: AppSessionFactory, odoo_copy: Path
+) -> None:
+    """The UI enables with the permissions these listings hand it; a deferred
+    one must stay out of them, or Enable would grant what only its own
+    consent step may (POST /capas/{id}/grant)."""
+    _defer_knowledge_write(odoo_copy)
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    async with api() as c:
+        r = await c.post(
+            "/api/v1/capas/install-from-disk", json={"pluginId": "odoo_mcp"}, headers=admin
+        )
+        assert r.status_code == 201, r.text
+        listed = (await c.get("/api/v1/connections/integrations", headers=admin)).json()
+        available = (await c.get("/api/v1/capas/available?pageSize=200", headers=admin)).json()
+    odoo = next(row for row in listed if row["name"] == "odoo_mcp")
+    assert sorted(odoo["permissions"]) == ["mcp:connect", "secrets:use"]
+    capa = next(row for row in available["items"] if row["pluginId"] == "odoo_mcp")
+    assert capa["deferredPermissions"] == ["knowledge:write"]
+    assert "knowledge:write" in capa["permissions"]

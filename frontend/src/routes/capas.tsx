@@ -48,6 +48,7 @@ import {
   useMcpConnections,
 } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
+import { enablePermissions } from "@/lib/capa-permissions";
 
 export const Route = createFileRoute("/capas")({
   component: CapasPage,
@@ -315,7 +316,10 @@ export function CapasPage() {
     if (!p.databaseId) return;
     setPending(p.pluginId);
     try {
-      await enable.mutateAsync({ pluginId: p.databaseId, grantedPermissions: p.permissions });
+      await enable.mutateAsync({
+        pluginId: p.databaseId,
+        grantedPermissions: enablePermissions(p),
+      });
       toast.success(t(`Enabled ${p.label || p.name}`, `${p.label || p.name} aktiviert`));
     } catch (err) {
       toast.error(

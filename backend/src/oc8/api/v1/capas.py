@@ -34,6 +34,7 @@ from oc8.capas.lifecycle import (
 )
 from oc8.capas.loader import TRUSTED, LoaderError, import_entry_point
 from oc8.capas.manifest import (
+    DEFERRABLE_PERMISSIONS,
     Manifest,
     ManifestError,
     PluginSetupSpec,
@@ -164,6 +165,9 @@ class DiscoveredPluginDTO(CamelModel):
     #: the UI reads this to NOT treat that one reason as archived.
     disabled_reason: str | None = None
     permissions: list[str] = []
+    #: The subset of `permissions` enabling does not grant: each waits for its
+    #: own consent (`POST /capas/{id}/grant`), so an Enable must leave it out.
+    deferred_permissions: list[str] = []
     capabilities: list[str] = []
     surfaces: list[str] = []
     setup: dict[str, Any] | None = None
@@ -417,6 +421,10 @@ async def list_available(
                 installation_status=installation.status if installation is not None else None,
                 disabled_reason=installation.disabled_reason if installation is not None else None,
                 permissions=list((d.manifest or {}).get("permissions", [])),
+                deferred_permissions=sorted(
+                    set((d.manifest or {}).get("deferred_permissions") or [])
+                    & DEFERRABLE_PERMISSIONS
+                ),
                 capabilities=list((d.manifest or {}).get("capabilities", [])),
                 surfaces=_PLUGIN_SURFACES.get(d.type, []),
                 setup=_resolve_setup_translations((d.manifest or {}).get("setup"), d.i18n),
@@ -464,6 +472,7 @@ async def list_available(
                     installation.disabled_reason if installation is not None else None
                 ),
                 permissions=list(pv.permissions),
+                deferred_permissions=sorted(deferred_permissions(pv)),
                 capabilities=list(pv.capabilities),
                 surfaces=_PLUGIN_SURFACES.get(row.type, []),
                 setup=_resolve_setup_translations(manifest.get("setup"), {}),
