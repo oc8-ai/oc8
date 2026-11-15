@@ -34,6 +34,7 @@ import logging
 import re
 import zlib
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from opentelemetry.instrumentation.utils import suppress_http_instrumentation
@@ -65,17 +66,25 @@ HINT_API_KEY_RECOMMENDED = "api_key_recommended"
 _DOMAIN_METHODS = frozenset({"search", "search_read", "search_count"})
 _MODEL_NAME = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)*$")
 _METHOD_NAME = re.compile(r"^[a-zA-Z][a-zA-Z0-9_]*$")
-#: Odoo's wording when execute_kw is asked for a model it does not have.
-_MISSING_MODEL = re.compile(r"(object|model) .* (doesn't|does not) exist", re.IGNORECASE)
+#: Odoo's wording when execute_kw is asked for a model it does not have; the
+#: model name is captured and must be the one that was asked for.
+_MISSING_MODEL = re.compile(
+    r"(?:object|model) ['\"]?([a-z0-9_.]+)['\"]? (?:doesn't|does not) exist", re.IGNORECASE
+)
+#: The JSON-2 404 that means "no such model or method", as opposed to a 404
+#: for a record that is gone (MissingError).
+_NOT_FOUND_NAMES = frozenset({"", "werkzeug.exceptions.NotFound"})
 
 Protocol = Literal["json2", "jsonrpc"]
 App = Literal["documents", "knowledge"]
 
 logger = logging.getLogger(__name__)
 
-# httpx logs every request URL at INFO ("HTTP Request: POST https://<odoo>/...").
-# The Odoo address is configuration that must not reach a log, so those lines
-# are dropped while this client sends.
+# httpx logs every request URL at INFO ("HTTP Request: POST https://<odoo>/..."),
+# and httpcore logs connection targets at DEBUG. The Odoo address is
+# configuration that must not reach a log, so those lines are dropped while
+# this client sends. A logger filter does not apply to child loggers, so each
+# httpcore logger is named.
 _SENDING: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "oc8_odoo_client_sending", default=False
 )
@@ -86,7 +95,17 @@ class _DropOdooRequestLines(logging.Filter):
         return not _SENDING.get()
 
 
-logging.getLogger("httpx").addFilter(_DropOdooRequestLines())
+_QUIET_LOGGERS = (
+    "httpx",
+    "httpcore",
+    "httpcore.connection",
+    "httpcore.http11",
+    "httpcore.http2",
+    "httpcore.proxy",
+    "httpcore.socks",
+)
+for _name in _QUIET_LOGGERS:
+    logging.getLogger(_name).addFilter(_DropOdooRequestLines())
 
 
 class OdooError(ConnectorError):
@@ -110,8 +129,16 @@ class OdooAppMissing(OdooError):
     default_message = "The Odoo app is not installed."
 
 
+class OdooRecordMissing(OdooError):
+    default_message = "The Odoo record does not exist anymore."
+
+
 class OdooUnreachable(OdooError):
     default_message = "Odoo is not reachable."
+
+
+class _JsonRpcGone(OdooUnreachable):
+    """/jsonrpc answered 404: an Odoo that no longer serves it."""
 
 
 class _Answer:
@@ -150,16 +177,27 @@ def _error_message(body: Any) -> str:
     return message if isinstance(message, str) else ""
 
 
-def _classify(name: str, message: str) -> OdooError | None:
+def _classify(name: str, message: str, model: str) -> OdooError | None:
     """Map an Odoo exception to a connector error. Only the name and a fixed
-    pattern are looked at; nothing of Odoo's text is carried over."""
+    pattern are looked at; nothing of Odoo's text is carried over.
+
+    `OdooAppMissing` here is a best effort: it is raised only when Odoo names
+    the very model that was asked for. Callers that need to know whether an
+    app is installed ask `OdooClient.model_exists` instead.
+    """
     short = name.rsplit(".", 1)[-1]
     if short == "AccessError":
         return OdooAccessDenied()
     if short == "AccessDenied":
         return OdooLoginRefused()
-    if short == "KeyError" or _MISSING_MODEL.search(message):
-        return OdooAppMissing()
+    if short == "MissingError":
+        return OdooRecordMissing()
+    if model:
+        named = _MISSING_MODEL.search(message)
+        if named is not None and named.group(1) == model:
+            return OdooAppMissing()
+        if short == "KeyError" and message.strip().strip("'\"") == model:
+            return OdooAppMissing()
     return None
 
 
@@ -203,6 +241,7 @@ class OdooClient:
         self._login = login
         self._secret = secret
         self._uid: int | None = None
+        self._jsonrpc_served = True
         self.version: tuple[int, int] = (0, 0)
         self.protocol: Protocol = "jsonrpc"
         self.hint: str | None = None
@@ -215,27 +254,27 @@ class OdooClient:
     async def _post(self, path: str, body: Any, headers: dict[str, str] | None = None) -> _Answer:
         """POST one JSON body and read the answer, guarded and bounded.
         Raises OdooUnreachable for a network failure, a timeout or a redirect."""
-        request = self._http.build_request(
-            "POST",
-            f"{self._base_url}{path}",
-            content=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-                "Accept-Encoding": ACCEPT_ENCODING,
-                **(headers or {}),
-            },
-        )
         token = _SENDING.set(True)
         failure: OdooError | None = None
         answer: _Answer | None = None
         try:
             with suppress_http_instrumentation():
                 async with asyncio.timeout(TIMEOUT_SECONDS):
+                    request = self._http.build_request(
+                        "POST",
+                        f"{self._base_url}{path}",
+                        content=json.dumps(body).encode(),
+                        headers={
+                            "Content-Type": "application/json",
+                            "Accept": "application/json",
+                            "Accept-Encoding": ACCEPT_ENCODING,
+                            **(headers or {}),
+                        },
+                    )
                     answer = await self._send(request)
         except OdooError as exc:
             failure = exc
-        except (TimeoutError, httpx.HTTPError) as exc:
+        except (TimeoutError, httpx.HTTPError, httpx.InvalidURL) as exc:
             logger.info("odoo request failed: %s", type(exc).__name__)
             failure = OdooUnreachable()
         finally:
@@ -286,13 +325,16 @@ class OdooClient:
 
     # ---- /jsonrpc ------------------------------------------------------------
 
-    async def _jsonrpc(self, service: str, method: str, args: list[Any]) -> Any:
+    async def _jsonrpc(self, service: str, method: str, args: list[Any], model: str = "") -> Any:
         payload = {
             "jsonrpc": "2.0",
             "method": "call",
             "params": {"service": service, "method": method, "args": args},
         }
         answer = await self._post("/jsonrpc", payload)
+        if answer.status == 404:
+            logger.info("odoo does not serve /jsonrpc")
+            raise _JsonRpcGone()
         if answer.status != 200:
             logger.info("odoo /jsonrpc answered with HTTP %s", answer.status)
             raise OdooUnreachable()
@@ -302,11 +344,21 @@ class OdooClient:
         if body.get("error") is not None:
             name = _error_name(body)
             logger.info("odoo /jsonrpc call failed: %s", name or "unknown error")
-            raise _classify(name, _error_message(body)) or OdooError()
+            raise _classify(name, _error_message(body), model) or OdooError()
         return body.get("result")
 
-    async def _jsonrpc_version(self) -> tuple[int, int]:
-        result = await self._jsonrpc("common", "version", [])
+    async def _read_version(self) -> tuple[int, int]:
+        """`common.version` over /jsonrpc; where /jsonrpc is gone (a later
+        Odoo), the web client's `/web/version`, which answers the same."""
+        try:
+            result = await self._jsonrpc("common", "version", [])
+        except _JsonRpcGone:
+            self._jsonrpc_served = False
+            answer = await self._post(
+                "/web/version", {"jsonrpc": "2.0", "method": "call", "params": {}}
+            )
+            body = answer.body if answer.status == 200 else None
+            result = body.get("result") if isinstance(body, dict) else None
         info = result.get("server_version_info") if isinstance(result, dict) else None
         return _parse_version(info)
 
@@ -331,31 +383,32 @@ class OdooClient:
         )
 
     @staticmethod
-    def _json2_result(answer: _Answer) -> Any:
+    def _json2_result(answer: _Answer, model: str = "") -> Any:
         if answer.status == 200:
             return answer.body
         name = _error_name(answer.body)
         logger.info("odoo JSON-2 call failed: HTTP %s %s", answer.status, name or "")
-        mapped = _classify(name, "") if name else None
+        mapped = _classify(name, _error_message(answer.body), model) if name else None
         if mapped is not None:
             raise mapped
         if answer.status == 401:
             raise OdooLoginRefused()
         if answer.status == 403:
             raise OdooAccessDenied()
-        if answer.status == 404:
+        if answer.status == 404 and name in _NOT_FOUND_NAMES:
             raise OdooAppMissing()
         if answer.status >= 500:
             raise OdooUnreachable()
         raise OdooError()
 
     async def _select_protocol(self) -> None:
-        self.version = await self._jsonrpc_version()
+        self.version = await self._read_version()
         if self.version[0] >= 19:
             # A cheap call any login may make, to see whether JSON-2 takes the secret.
             probe = await self._json2("res.users", "context_get", {})
             if probe.status == 200:
                 self.protocol = "json2"
+                await self._bind_key_to_login(probe.body)
                 return
             if probe.status == 401:
                 self.hint = HINT_API_KEY_RECOMMENDED
@@ -363,6 +416,22 @@ class OdooClient:
                 self._json2_result(probe)
         self.protocol = "jsonrpc"
         await self._jsonrpc_login()
+
+    async def _bind_key_to_login(self, context: Any) -> None:
+        """JSON-2 acts as whoever owns the key, whatever login was stored.
+        Check once over /jsonrpc that the login and the secret belong
+        together, and, when the probe told us its uid, that it is the same
+        user. A later Odoo without /jsonrpc skips the check."""
+        if not self._jsonrpc_served:
+            return
+        try:
+            await self._jsonrpc_login()
+        except _JsonRpcGone:
+            return
+        uid = context.get("uid") if isinstance(context, dict) else None
+        if isinstance(uid, int) and not isinstance(uid, bool) and uid != self._uid:
+            logger.info("odoo API key belongs to another user than the stored login")
+            raise OdooLoginRefused()
 
     # ---- public --------------------------------------------------------------
 
@@ -372,13 +441,16 @@ class OdooClient:
         expects them."""
         if not _MODEL_NAME.match(model) or not _METHOD_NAME.match(method):
             raise OdooError("Not a valid Odoo model or method name.")
+        if method in _DOMAIN_METHODS and "ids" in kwargs and "domain" in kwargs:
+            raise ValueError("pass either ids or domain to a search, not both")
         if self.protocol == "json2":
-            return self._json2_result(await self._json2(model, method, kwargs))
+            return self._json2_result(await self._json2(model, method, kwargs), model)
         args, rest = _jsonrpc_args(method, kwargs)
         return await self._jsonrpc(
             "object",
             "execute_kw",
             [self._database, self._uid, self._secret, model, method, args, rest],
+            model,
         )
 
     async def model_exists(self, model: str) -> bool:
@@ -422,6 +494,9 @@ async def open_client(
     base_url = url.strip().rstrip("/")
     if not base_url or base_url_has_login(base_url):
         raise OdooError("The Odoo address is not valid.")
+    if urlsplit(base_url).scheme.lower() not in ("http", "https"):
+        logger.info("odoo address refused: not an http(s) address")
+        raise OdooUnreachable("The Odoo address is not allowed.")
     if not database or not login or not secret:
         raise OdooError("The Odoo login is incomplete.")
     blocked = False

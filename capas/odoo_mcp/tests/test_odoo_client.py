@@ -37,6 +37,7 @@ from connector.odoo_client import (  # noqa: E402
     OdooAppMissing,
     OdooError,
     OdooLoginRefused,
+    OdooRecordMissing,
     OdooUnreachable,
     open_client,
 )
@@ -85,7 +86,16 @@ class _Streamed(httpx.AsyncByteStream):
         yield self._data
 
 
-def _mock(handler: Any) -> httpx.MockTransport:
+class _Mock(httpx.MockTransport):
+    """Records whether the client closed its transport."""
+
+    closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _mock(handler: Any) -> _Mock:
     def streamed(request: httpx.Request) -> httpx.Response:
         response: httpx.Response = handler(request)
         headers = [(k, v) for k, v in response.headers.items() if k.lower() != "content-length"]
@@ -93,7 +103,7 @@ def _mock(handler: Any) -> httpx.MockTransport:
             response.status_code, headers=headers, stream=_Streamed(response.content)
         )
 
-    return httpx.MockTransport(streamed)
+    return _Mock(streamed)
 
 
 def _rpc_error(name: str, message: str) -> dict[str, Any]:
@@ -119,16 +129,22 @@ class FakeOdoo:
         json2_probe: int | None = None,
         authenticate: Any = UID,
         fail: str | None = None,
+        jsonrpc_missing: bool = False,
+        context_uid: int | None = None,
     ) -> None:
         self.version = version
+        self.jsonrpc_missing = jsonrpc_missing
+        self.context_uid = context_uid
+        self.closed_transport: _Mock | None = None
         self.json2_probe = json2_probe
         self.authenticate = authenticate
         self.fail = fail
         self.requests: list[httpx.Request] = []
         self.models = {"res.partner": [{"id": 1, "name": "Acme"}]}
 
-    def transport(self) -> httpx.MockTransport:
-        return _mock(self.handle)
+    def transport(self) -> _Mock:
+        self.closed_transport = _mock(self.handle)
+        return self.closed_transport
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -137,7 +153,11 @@ class FakeOdoo:
         path = request.url.path
         body = json.loads(request.content or b"{}")
         if path == "/jsonrpc":
+            if self.jsonrpc_missing:
+                return httpx.Response(404, text="Not Found")
             return self._jsonrpc(body)
+        if path == "/web/version":
+            return self._ok({"server_version": "x", "server_version_info": self.version})
         if path.startswith("/json/2/"):
             if self.version[0] < 19:
                 return httpx.Response(404, text="Not Found")
@@ -158,6 +178,12 @@ class FakeOdoo:
         _db, _uid, _pw, model, meth, pos, kw = args
         if self.fail == "access":
             return httpx.Response(200, json=_rpc_error("odoo.exceptions.AccessError", "no"))
+        if self.fail == "record":
+            return httpx.Response(
+                200, json=_rpc_error("odoo.exceptions.MissingError", "Record does not exist")
+            )
+        if self.fail == "keyerror":
+            return httpx.Response(200, json=_rpc_error("builtins.KeyError", "'some_field'"))
         if self.fail == "server":
             return httpx.Response(502, text="Bad Gateway")
         if model not in self.models and model != "res.users":
@@ -168,6 +194,17 @@ class FakeOdoo:
         return self._ok({"model": model, "method": meth, "args": pos, "kwargs": kw})
 
     def _json2(self, model: str, method: str, body: dict[str, Any]) -> httpx.Response:
+        if model == "res.users" and method == "context_get":
+            context: dict[str, Any] = {"lang": "en_US", "tz": "Europe/Berlin"}
+            if self.context_uid is not None:
+                context["uid"] = self.context_uid
+            return httpx.Response(200, json=context)
+        if self.fail in ("401", "403"):
+            return httpx.Response(int(self.fail), json={"message": "no"})
+        if self.fail == "record":
+            return httpx.Response(
+                404, json={"name": "odoo.exceptions.MissingError", "message": "gone"}
+            )
         if self.fail == "access" and model != "res.users":
             return httpx.Response(
                 403, json={"name": "odoo.exceptions.AccessError", "message": f"no {LOGIN}"}
@@ -204,7 +241,13 @@ def _assert_logs_clean(caplog: pytest.LogCaptureFixture) -> None:
 
 
 async def test_errors_derive_from_connector_error() -> None:
-    for cls in (OdooLoginRefused, OdooAccessDenied, OdooAppMissing, OdooUnreachable):
+    for cls in (
+        OdooLoginRefused,
+        OdooAccessDenied,
+        OdooAppMissing,
+        OdooRecordMissing,
+        OdooUnreachable,
+    ):
         assert issubclass(cls, OdooError)
     assert issubclass(OdooError, ConnectorError)
 
@@ -228,8 +271,8 @@ async def test_json2_selected_on_odoo_19() -> None:
     assert last.headers["x-odoo-database"] == DB
     # The pinned connection keeps the real host name for TLS and the Host header.
     assert last.headers["host"] == HOST
-    # JSON-2 needs no /jsonrpc login.
-    assert not any(b"authenticate" in r.content for r in fake.requests)
+    # The key is bound to the login once, over /jsonrpc.
+    assert sum(b"authenticate" in r.content for r in fake.requests) == 1
 
 
 async def test_jsonrpc_selected_on_odoo_18() -> None:
@@ -279,14 +322,136 @@ async def test_json2_404_falls_back_without_hint() -> None:
         await client.aclose()
 
 
-async def test_online_release_version_is_parsed() -> None:
-    fake = FakeOdoo(["saas~18", 3, 0, "final", 0, ""])
+@pytest.mark.parametrize(
+    ("info", "expected"),
+    [
+        (["online~18", 3, 0, "final", 0, ""], (18, 3)),
+        ([18, 0, 0, "final", 0, "e"], (18, 0)),
+        (["18", "0", 0, "final", 0, "+e"], (18, 0)),
+    ],
+)
+async def test_version_shapes_are_parsed(info: list[Any], expected: tuple[int, int]) -> None:
+    fake = FakeOdoo(info)
     client = await _open(fake)
     try:
-        assert client.version == (18, 3)
+        assert client.version == expected
         assert client.protocol == "jsonrpc"
     finally:
         await client.aclose()
+
+
+async def test_json2_key_not_bound_to_login_is_refused() -> None:
+    fake = FakeOdoo([19, 0, 0, "final", 0, ""], authenticate=False)
+    with pytest.raises(OdooLoginRefused):
+        await _open(fake)
+    assert fake.closed_transport is not None and fake.closed_transport.closed
+
+
+async def test_json2_uid_mismatch_is_refused() -> None:
+    fake = FakeOdoo([19, 0, 0, "final", 0, ""], context_uid=UID + 1)
+    with pytest.raises(OdooLoginRefused):
+        await _open(fake)
+
+
+async def test_json2_uid_match_opens() -> None:
+    client = await _open(FakeOdoo([19, 0, 0, "final", 0, ""], context_uid=UID))
+    try:
+        assert client.protocol == "json2"
+    finally:
+        await client.aclose()
+
+
+async def test_json2_opens_when_jsonrpc_is_gone() -> None:
+    """A later Odoo without /jsonrpc: the version comes from /web/version and
+    the login check over /jsonrpc is skipped."""
+    fake = FakeOdoo([20, 0, 0, "final", 0, ""], jsonrpc_missing=True)
+    client = await _open(fake)
+    try:
+        assert client.protocol == "json2"
+        assert client.version == (20, 0)
+        await client.call("res.partner", "search", domain=[])
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize(
+    ("status", "error"), [("401", OdooLoginRefused), ("403", OdooAccessDenied)]
+)
+async def test_json2_auth_failure_after_selection(status: str, error: type[OdooError]) -> None:
+    fake = FakeOdoo([19, 0, 0, "final", 0, ""])
+    client = await _open(fake)
+    fake.fail = status
+    try:
+        with pytest.raises(error):
+            await client.call("res.partner", "search", domain=[])
+    finally:
+        await client.aclose()
+
+
+async def test_json2_probe_server_error_raises_and_closes() -> None:
+    fake = FakeOdoo([19, 0, 0, "final", 0, ""], json2_probe=500)
+    with pytest.raises(OdooUnreachable):
+        await _open(fake)
+    assert fake.closed_transport is not None and fake.closed_transport.closed
+
+
+@pytest.mark.parametrize("version", [[18, 0, 0, "final", 0, ""], [19, 0, 0, "final", 0, ""]])
+async def test_missing_record_is_not_a_missing_app(version: list[Any]) -> None:
+    fake = FakeOdoo(version)
+    client = await _open(fake)
+    fake.fail = "record"
+    try:
+        with pytest.raises(OdooRecordMissing):
+            await client.call("res.partner", "read", ids=[999], fields=["name"])
+    finally:
+        await client.aclose()
+
+
+async def test_other_key_error_is_not_a_missing_app() -> None:
+    fake = FakeOdoo([18, 0, 0, "final", 0, ""])
+    client = await _open(fake)
+    fake.fail = "keyerror"
+    try:
+        with pytest.raises(OdooError) as info:
+            await client.call("res.partner", "search", domain=[])
+    finally:
+        await client.aclose()
+    assert type(info.value) is OdooError
+
+
+async def test_ids_and_domain_together_are_refused() -> None:
+    client = await _open(FakeOdoo([18, 0, 0, "final", 0, ""]))
+    try:
+        with pytest.raises(ValueError):
+            await client.call("res.partner", "search_read", ids=[1], domain=[])
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.parametrize("url", ["ftp://odoo.acme.test", "odoo.acme.test", "file:///etc/x"])
+async def test_non_http_scheme_refused(url: str) -> None:
+    fake = FakeOdoo([19, 0, 0, "final", 0, ""])
+    with pytest.raises(OdooUnreachable) as info:
+        await _open(fake, url=url)
+    assert fake.requests == []
+    _assert_clean(str(info.value))
+
+
+async def test_httpcore_lines_dropped_while_sending(caplog: pytest.LogCaptureFixture) -> None:
+    """httpcore logs the connection target at DEBUG; those lines are dropped too."""
+    caplog.set_level(logging.DEBUG)
+    fake = FakeOdoo([18, 0, 0, "final", 0, ""])
+    original = fake.handle
+
+    def chatty(request: httpx.Request) -> httpx.Response:
+        logging.getLogger("httpcore.connection").debug("connect_tcp host=%s", HOST)
+        logging.getLogger("httpcore.http11").debug("send_request_headers %s", HOST)
+        return original(request)
+
+    fake.handle = chatty  # type: ignore[method-assign]
+    client = await _open(fake)
+    await client.aclose()
+    _assert_logs_clean(caplog)
 
 
 async def test_login_refused(caplog: pytest.LogCaptureFixture) -> None:
