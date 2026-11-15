@@ -1585,6 +1585,9 @@ msgstr "Webhook-URL erstellen"
 msgid "Created"
 msgstr "Angelegt"
 
+msgid "Created record"
+msgstr "Angelegter Datensatz"
+
 msgid "Creating…"
 msgstr "Wird erstellt …"
 
@@ -4926,6 +4929,9 @@ msgstr "Die Argumente müssen ein JSON-Objekt sein."
 
 msgid "The assistant returned no answer. Try again or rephrase."
 msgstr "Der Assistent hat keine Antwort geliefert. Versuch es nochmal oder formuliere anders."
+
+msgid "The base URL contains a login. Logins belong in the login fields, not in the address."
+msgstr "Die Basis-URL enthält eine Anmeldung. Anmeldedaten gehören in die Anmeldefelder, nicht in die Adresse."
 
 msgid "The call could not be made."
 msgstr "Der Aufruf war nicht möglich."

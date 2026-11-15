@@ -4952,6 +4952,9 @@ msgstr ""
 msgid "The assistant returned no answer. Try again or rephrase."
 msgstr ""
 
+msgid "The base URL contains a login. Logins belong in the login fields, not in the address."
+msgstr ""
+
 msgid "The call could not be made."
 msgstr ""
 

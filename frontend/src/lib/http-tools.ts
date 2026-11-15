@@ -450,6 +450,18 @@ export function scopesProblem(
   return null;
 }
 
+/** Whether a base URL carries a username or password (`https://user:pw@host`):
+ * a login there would be sent with every call and shown wherever the address
+ * is, so it belongs in the login fields. */
+export function baseUrlHasLogin(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl.trim());
+    return url.username !== "" || url.password !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** Why what a custom server source handed back cannot be used, in the
  * person's language, or null. `withConnection`: the draft also brings the base
  * URL and login (the wizard); editing an existing connection uses only its
@@ -464,6 +476,12 @@ export function customServerDraftProblem(
       return t(
         "The API needs a base URL starting with http:// or https://.",
         "Die API braucht eine Basis-URL, die mit http:// oder https:// beginnt.",
+      );
+    }
+    if (baseUrlHasLogin(draft.baseUrl)) {
+      return t(
+        "The base URL contains a login. Logins belong in the login fields, not in the address.",
+        "Die Basis-URL enthält eine Anmeldung. Anmeldedaten gehören in die Anmeldefelder, nicht in die Adresse.",
       );
     }
     if (basicUsernameHasColon(draft.login)) {

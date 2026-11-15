@@ -20,6 +20,7 @@ from oc8.capas.manifest import (
     ManifestError,
     PluginSetupSpec,
     SetupFieldSpec,
+    http_api_login_in_base_url,
     parse_manifest,
 )
 from oc8.capas.registry import enabled_capability_registry
@@ -247,6 +248,8 @@ async def install_plugin(
 ) -> CapaVersion:
     manifest = parse_manifest(manifest_data)
     _check_core_compat(manifest.core_compat)
+    if (problem := http_api_login_in_base_url(manifest)) is not None:
+        raise PluginError(problem)
     # Asked of the database, per install: what is enabled right now is the only
     # thing that can satisfy a dependency, and it outlives this process.
     missing = (await enabled_capability_registry(db)).missing(manifest.depends)

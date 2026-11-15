@@ -2112,6 +2112,10 @@ msgid "Created"
 msgstr "Creado"
 
 #, fuzzy
+msgid "Created record"
+msgstr "Registro creado"
+
+#, fuzzy
 msgid "Creating…"
 msgstr "Creando…"
 
@@ -6566,6 +6570,10 @@ msgstr "Los argumentos deben ser un objeto JSON."
 #, fuzzy
 msgid "The assistant returned no answer. Try again or rephrase."
 msgstr "El asistente no devolvió ninguna respuesta. Inténtalo de nuevo o reformula."
+
+#, fuzzy
+msgid "The base URL contains a login. Logins belong in the login fields, not in the address."
+msgstr "La URL base contiene un inicio de sesión. Los datos de acceso van en los campos de inicio de sesión, no en la dirección."
 
 #, fuzzy
 msgid "The call could not be made."

@@ -1030,3 +1030,80 @@ async def test_a_non_custom_plugins_tools_are_not_editable(app_session: AppSessi
             f"/api/v1/mcp/connections/{conn_id}/http-tools", json=_patch_body(), headers=_h(tenant)
         )
     assert r.status_code == 409
+
+
+def _with_base_url(manifest: dict[str, Any], url: str) -> dict[str, Any]:
+    out = copy.deepcopy(manifest)
+    out["tool_pack"]["connections"][0]["server_url"] = url
+    return out
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:secret@tickets.acme.test",
+        "https://user@tickets.acme.test",
+        "https://:secret@tickets.acme.test",
+    ],
+)
+async def test_install_refuses_a_login_inside_the_base_url(url: str) -> None:
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        r = await c.post(
+            "/api/v1/capas",
+            json={"manifest": _with_base_url(_MANIFEST, url), "origin": "custom"},
+            headers=_h(tenant),
+        )
+    assert r.status_code == 400, r.text
+    assert "login fields, not in the address" in r.text
+    assert "secret" not in r.text
+
+
+async def test_install_accepts_an_at_sign_in_the_path() -> None:
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        r = await c.post(
+            "/api/v1/capas",
+            json={
+                "manifest": _with_base_url(_MANIFEST, "https://tickets.acme.test/users/@me"),
+                "origin": "custom",
+            },
+            headers=_h(tenant),
+        )
+    assert r.status_code == 201, r.text
+
+
+async def test_setup_refuses_a_stored_login_inside_the_base_url(
+    app_session: AppSessionFactory,
+) -> None:
+    """A manifest stored before installs refused it is refused at setup, which
+    is where its connection is made."""
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        plugin_id = await _installed(c, tenant)
+        async with app_session(tenant) as db:
+            capa = await db.get(m.Capa, uuid.UUID(plugin_id))
+            assert capa is not None
+            version = await db.get(m.CapaVersion, capa.current_version_id)
+            assert version is not None
+            version.manifest = _with_base_url(
+                version.manifest, "https://user:secret@tickets.acme.test"
+            )
+            await db.commit()
+        r = await c.post(
+            f"/api/v1/capas/{plugin_id}/setup", json={"values": {}}, headers=_h(tenant)
+        )
+    assert r.status_code == 400, r.text
+    assert "login fields, not in the address" in r.text
