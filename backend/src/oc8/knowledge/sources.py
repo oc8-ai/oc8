@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8.knowledge.connectors.base import Connector
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.registry import resolve_connector
+from oc8.knowledge.scope_prune import empty_pickers
 
 
 class SourceRejected(Exception):
@@ -49,6 +50,16 @@ async def validate_source_config(
     `SourceRejected` when the connector itself says no.
     """
     connector = await resolve_connector(db, tenant_id=tenant_id, type_id=connector_type)
+    # Generic, off the `x-oc8-picker` schema marker, and before the connector is
+    # asked anything: a source that selects nothing is a source to delete, and
+    # refusing it everywhere is what lets a sync after a scope change read an
+    # empty authoritative listing as the truth (oc8/knowledge/scope_prune.py).
+    empty = empty_pickers(getattr(connector, "config_schema", None), config)
+    if empty:
+        raise SourceRejected(
+            f"select at least one item for {', '.join(empty)}; "
+            "to stop indexing a source entirely, delete it"
+        )
     # validate() must see the credentials, or a connector that needs any
     # would reject every source at creation time.
     result = await connector.validate(

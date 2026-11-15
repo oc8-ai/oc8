@@ -5,15 +5,18 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import Field
 from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
 from oc8.api.v1._serializers import (
+    browse_listing_to_dto,
     chunk_to_dto,
     datasource_to_dto,
     ingestion_job_to_dto,
@@ -23,12 +26,19 @@ from oc8.api.v1._serializers import (
 )
 from oc8.authz.permissions import KNOWLEDGE, MANAGE, VIEW, perm
 from oc8.caching.department_cache import purge_tenant
+from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
+from oc8.knowledge.browse import BrowseUnsupported, UnknownConnector, browse_draft
 from oc8.knowledge.chunks import linked_source_ids, list_chunks, list_documents
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.fetcher import safe_fetch
-from oc8.knowledge.connectors.registry import available_connectors, resolve_connector
+from oc8.knowledge.connectors.registry import (
+    available_connectors,
+    connector_catalogs,
+    consent_pending_connectors,
+    resolve_connector,
+)
 from oc8.knowledge.embedding_policy import require_local_reason
 from oc8.knowledge.external_index import ExternalIndexRejected, validate_external_index_binding
 from oc8.knowledge.ingest import (
@@ -39,6 +49,8 @@ from oc8.knowledge.ingest import (
     reembed_knowledge_base,
 )
 from oc8.knowledge.retrieval import similar_chunks
+from oc8.knowledge.scope_prune import FLAG as SCOPE_FLAG
+from oc8.knowledge.scope_prune import picker_changes, record_scope_change, scope_flag
 from oc8.knowledge.sources import SourceRejected, validate_source_config
 from oc8.knowledge.tombstone import (
     OPERATOR_DELETE,
@@ -60,6 +72,7 @@ from oc8.modelrouter.router import embedding_local_tag
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     BaseRemovalDTO,
+    BrowseListingDTO,
     DataSourceDTO,
     DocumentRemovalDTO,
     DocumentRestoreDTO,
@@ -104,8 +117,18 @@ class ConnectorCatalogDTO(CamelModel):
     #: somewhere needs an active organisation connection of that provider:
     #: a source feeds shared knowledge, never one person's own account.
     usable: bool = True
-    #: What is missing when it is not usable, e.g. "oauth:google".
+    #: What is missing when it is not usable, e.g. "oauth:google", or
+    #: "consent:knowledge:write" for a capa that defers that permission.
     missing: str | None = None
+    #: The capa to grant the missing consent on (POST /capas/{id}/grant).
+    capa_id: str | None = None
+    #: `label`/`description` in every locale the contributing capa's
+    #: `i18n/*.po` translates them into (capa-i18n design). Empty for a core
+    #: connector; the frontend falls back to the English text.
+    label_translations: dict[str, str] = {}
+    description_translations: dict[str, str] = {}
+    #: config property -> `title`/`description` -> {locale: text}.
+    field_translations: dict[str, dict[str, dict[str, str]]] = {}
 
 
 class VectorIndexCatalogDTO(CamelModel):
@@ -118,9 +141,68 @@ class VectorIndexCatalogDTO(CamelModel):
     credential_type: str
 
 
+class BrowseDraftRequest(CamelModel):
+    #: The draft source config, with the chosen credential. Never stored.
+    config: dict[str, object] = {}
+    path: str = Field("/", max_length=2048)
+
+
 class PreviewIndexRequest(CamelModel):
     query: str = "test"
     limit: int = 5
+
+
+@router.post(
+    "/knowledge/connectors/{type_id}/browse",
+    response_model=BrowseListingDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
+)
+async def browse_connector_draft(
+    type_id: str, body: BrowseDraftRequest, db: DbSession, principal: CurrentPrincipal
+) -> BrowseListingDTO:
+    """List a folder of a connector from a draft config, so the source wizard
+    can offer a picker before the source exists. Stores nothing."""
+    try:
+        listing = await browse_draft(
+            db,
+            tenant_id=principal.tenant_id,
+            connector_type=type_id,
+            config=dict(body.config),
+            path=body.path,
+        )
+    except UnknownConnector as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown connector type") from exc
+    except BrowseUnsupported as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This source can't be browsed.") from exc
+    except ConnectorError as exc:
+        # Already scrubbed by `browse_draft`: it names the failure, never the
+        # connector's own words.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    catalogs = await connector_catalogs(db, tenant_id=principal.tenant_id)
+    return browse_listing_to_dto(listing, catalogs.get(type_id))
+
+
+def _translations(i18n: dict[str, dict[str, str]], text: object) -> dict[str, str]:
+    return translations_for(i18n, text) if isinstance(text, str) and text else {}
+
+
+def _field_translations(
+    schema: object, i18n: dict[str, dict[str, str]]
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Each config property's `title`/`description` in every translated
+    locale, like `capas._resolve_setup_translations` does for a setup form."""
+    if not i18n or not isinstance(schema, dict):
+        return {}
+    properties = schema.get("properties")
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for key, spec in (properties if isinstance(properties, dict) else {}).items():
+        if not isinstance(spec, dict):
+            continue
+        for prop in ("title", "description"):
+            resolved = _translations(i18n, spec.get(prop))
+            if resolved:
+                out.setdefault(str(key), {})[prop] = resolved
+    return out
 
 
 @router.get(
@@ -140,22 +222,44 @@ async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[Co
             )
         ).scalars()
     )
+    # A capa that defers knowledge:write contributes nothing until it is
+    # granted; its connectors are listed as waiting for that consent.
+    pending = {
+        type_id: entry
+        for type_id, entry in (
+            await consent_pending_connectors(db, tenant_id=principal.tenant_id)
+        ).items()
+        if type_id not in connectors
+    }
+    entries = {**connectors, **{t: connector for t, (connector, _, _) in pending.items()}}
+    catalogs = await connector_catalogs(db, tenant_id=principal.tenant_id)
     out: list[ConnectorCatalogDTO] = []
-    for type_id, connector in sorted(connectors.items()):
+    for type_id, connector in sorted(entries.items()):
         # Uploads are created by document upload, not as a configurable source.
         if type_id == "upload":
             continue
         provider = connector.requires_oauth
         missing = f"oauth:{provider}" if provider and provider not in connected else None
+        capa_id: str | None = None
+        if type_id in pending:
+            _, pending_capa, permission = pending[type_id]
+            missing, capa_id = f"consent:{permission}", str(pending_capa)
+        i18n = catalogs.get(type_id, {})
+        label = getattr(connector, "label", None)
+        description = getattr(connector, "description", None)
         out.append(
             ConnectorCatalogDTO(
                 type_id=type_id,
-                label=getattr(connector, "label", None),
-                description=getattr(connector, "description", None),
+                label=label,
+                description=description,
+                label_translations=_translations(i18n, label),
+                description_translations=_translations(i18n, description),
+                field_translations=_field_translations(connector.config_schema, i18n),
                 config_schema=connector.config_schema,
                 requires_oauth=provider,
                 usable=missing is None,
                 missing=missing,
+                capa_id=capa_id,
             )
         )
     return out
@@ -307,9 +411,7 @@ async def list_bases(
     )
     rows, total = await paginate(db, stmt, limit=limit, offset=offset)
     return Page(
-        items=[
-            kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows
-        ],
+        items=[kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows],
         total_count=total,
     )
 
@@ -397,9 +499,7 @@ async def preview_index(
     if kb.credential_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "knowledge base has no credential")
     try:
-        index = await resolve_vector_index(
-            db, tenant_id=principal.tenant_id, type_id=kb.index_type
-        )
+        index = await resolve_vector_index(db, tenant_id=principal.tenant_id, type_id=kb.index_type)
         query_embedding = await get_model_router().embed(
             body.query,
             model=kb.embedding_model,
@@ -591,7 +691,25 @@ async def list_sources(
         default_order=m.DataSource.created_at,
     )
     rows, total = await paginate(db, stmt, limit=limit, offset=offset)
-    return Page(items=[datasource_to_dto(d) for d in rows], total_count=total)
+    # One query for the whole page: each source's most recent FINISHED job, whose
+    # stats say what the last sync left out. Not one lookup per source.
+    last_stats: dict[uuid.UUID, dict[str, Any]] = {}
+    if rows:
+        latest = await db.execute(
+            select(m.IngestionJob.data_source_id, m.IngestionJob.stats)
+            .where(
+                m.IngestionJob.data_source_id.in_([d.id for d in rows]),
+                m.IngestionJob.status.in_(("succeeded", "partial", "failed")),
+            )
+            .distinct(m.IngestionJob.data_source_id)
+            .order_by(
+                m.IngestionJob.data_source_id,
+                m.IngestionJob.created_at.desc(),
+                m.IngestionJob.id.desc(),
+            )
+        )
+        last_stats = {sid: stats for sid, stats in latest.all()}
+    return Page(items=[datasource_to_dto(d, last_stats.get(d.id)) for d in rows], total_count=total)
 
 
 @router.post(
@@ -658,19 +776,52 @@ async def update_source(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> DataSourceDTO:
-    """Edit a source's name, classification, or schedule. Not the DELETE below:
-    that one is irreversible by design (§12.5.1 -- an operator DELETE destroys
-    the source's content immediately). This is an ordinary metadata edit, on a
-    row that stays exactly as reachable afterward as before."""
+    """Edit a source's name, classification, schedule or config. Not the DELETE
+    below: that one is irreversible by design (§12.5.1 -- an operator DELETE
+    destroys the source's content immediately).
+
+    `config` is MERGED into the stored config, and the merged result is
+    validated exactly as at creation -- including that no `x-oc8-picker`
+    property is left empty -- before ANY field of the request is applied, so a
+    400 leaves the row untouched. When the edit changes a picker property (the
+    source's selected scope), it records a `knowledge.source_scope_changed`
+    audit event with the picker values before and after, and flags the cursor
+    with who made it; the next sync then drops whatever the new selection
+    leaves out (oc8/knowledge/scope_prune.py)."""
     ds = await _live_source(db, source_id, principal.tenant_id)
+    if body.config is not None:
+        # Validated BEFORE anything is applied, so a refusal leaves the row
+        # exactly as it was: the edit drawer must not be able to save a config
+        # the connector would have refused at creation.
+        before = dict(ds.config or {})
+        merged = {**before, **body.config}
+        try:
+            connector = await validate_source_config(
+                db,
+                tenant_id=principal.tenant_id,
+                connector_type=ds.connector_type,
+                config=merged,
+                oauth_connection_id=ds.oauth_connection_id,
+            )
+        except (ConnectorError, SourceRejected) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        changes = picker_changes(connector.config_schema, before, merged)
+        if changes:
+            # The next sync prunes what the new selection leaves out, at once --
+            # see oc8/knowledge/scope_prune.py for why this skips reconcile.
+            # Merged into the cursor as it is NOW, under the row lock: the copy
+            # loaded with the row may predate a sync's digests, and writing it
+            # back would undo them.
+            await db.refresh(ds, ["cursor"], with_for_update=True)
+            ds.cursor = {**(ds.cursor or {}), SCOPE_FLAG: scope_flag(principal)}
+            await record_scope_change(db, principal=principal, data_source=ds, changes=changes)
+        ds.config = merged
     if body.name is not None:
         ds.name = body.name
     if body.classification is not None:
         ds.classification = body.classification
     if body.schedule_cron is not None:
         ds.schedule_cron = body.schedule_cron
-    if body.config is not None:
-        ds.config = {**(ds.config or {}), **body.config}
     await db.flush()
     # Build the DTO from the in-memory object, not a post-commit re-fetch: a
     # commit here unbinds the tenant GUC that RLS relies on (see create_source,
@@ -737,8 +888,7 @@ async def sync_source(
     if (kb.index_type or INTERNAL_INDEX_TYPE) != INTERNAL_INDEX_TYPE:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "this knowledge base is connected to an external vector index — "
-            "sync is not supported",
+            "this knowledge base is connected to an external vector index — sync is not supported",
         )
 
     job = m.IngestionJob(

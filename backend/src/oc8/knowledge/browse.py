@@ -25,6 +25,7 @@ Guards applied here, whatever the connector does:
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any
 
@@ -93,6 +94,23 @@ def _too_large(size: int) -> str:
 
 
 async def _call(source: m.DataSource, what: str, coro: Any) -> Any:
+    return await _guarded(
+        coro,
+        what,
+        connector_type=source.connector_type,
+        tenant_id=source.tenant_id,
+        source_id=source.id,
+    )
+
+
+async def _guarded(
+    coro: Any,
+    what: str,
+    *,
+    connector_type: str,
+    tenant_id: uuid.UUID,
+    source_id: uuid.UUID | None,
+) -> Any:
     try:
         return await coro
     except Exception as exc:
@@ -103,10 +121,10 @@ async def _call(source: m.DataSource, what: str, coro: Any) -> Any:
         )
         logger.warning(
             "connector %s failed to %s (source=%s tenant=%s status=%s): %s",
-            source.connector_type,
+            connector_type,
             what,
-            source.id,
-            source.tenant_id,
+            source_id,
+            tenant_id,
             status if isinstance(status, int) else "-",
             type(exc).__name__,
         )
@@ -123,6 +141,43 @@ async def browse_source(db: AsyncSession, *, source: m.DataSource, path: str) ->
         raise BrowseUnsupported(source.connector_type)
     entries: list[BrowseEntry] = await _call(
         source, "list files", browse(dict(source.config or {}), path, _auth(db, source))
+    )
+    return BrowseListing(
+        entries=entries[:MAX_BROWSE_ENTRIES], truncated=len(entries) > MAX_BROWSE_ENTRIES
+    )
+
+
+class UnknownConnector(ConnectorError):
+    """No such connector for this tenant: unknown, not installed or enabled, or
+    waiting for a consent. The caller's reference, not a connector failure."""
+
+
+async def browse_draft(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    connector_type: str,
+    config: dict[str, Any],
+    path: str,
+) -> BrowseListing:
+    """List `path` of a connector from a DRAFT `config`, before a source
+    exists. Nothing is stored; the auth context has no OAuth connection, so
+    only organisation credentials resolve. Same guards as `browse_source`."""
+    path = _check_path(path)
+    try:
+        connector = await resolve_connector(db, tenant_id=tenant_id, type_id=connector_type)
+    except ConnectorError:
+        raise UnknownConnector(connector_type) from None
+    browse = getattr(connector, "browse_selectable", None)
+    if browse is None:
+        raise BrowseUnsupported(connector_type)
+    auth = SourceAuthContext(db, tenant_id=tenant_id, connection_id=None)
+    entries: list[BrowseEntry] = await _guarded(
+        browse(dict(config), path, auth),
+        "list files",
+        connector_type=connector_type,
+        tenant_id=tenant_id,
+        source_id=None,
     )
     return BrowseListing(
         entries=entries[:MAX_BROWSE_ENTRIES], truncated=len(entries) > MAX_BROWSE_ENTRIES

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +11,8 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.versioning import version_meta, version_payload
+from oc8.capas.i18n import translations_for
+from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
@@ -21,6 +23,8 @@ from oc8.schemas.dto import (
     AgentVersionSummaryDTO,
     ApprovalDTO,
     ApprovalOptionDTO,
+    BrowseEntryDTO,
+    BrowseListingDTO,
     ClarificationDTO,
     DataSourceDTO,
     DepartmentDTO,
@@ -580,8 +584,13 @@ def agent_version_to_dto(
     )
 
 
-def datasource_to_dto(d: m.DataSource) -> DataSourceDTO:
+def datasource_to_dto(
+    d: m.DataSource, last_job_stats: dict[str, Any] | None = None
+) -> DataSourceDTO:
     cfg: dict[str, Any] = d.config or {}
+    stats = last_job_stats or {}
+    skipped = stats.get("skipped_by_reason")
+    notes = stats.get("notes")
     return DataSourceDTO(
         id=str(d.id),
         kind=d.connector_type,
@@ -597,6 +606,8 @@ def datasource_to_dto(d: m.DataSource) -> DataSourceDTO:
         reconcile_note=d.reconcile_note,
         last_sync_status=d.last_sync_status,
         last_sync_error=d.last_sync_error,
+        last_sync_skipped=skipped if isinstance(skipped, dict) and skipped else None,
+        last_sync_notes=notes if isinstance(notes, list) and notes else None,
         deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
         config=cfg,
     )
@@ -683,4 +694,29 @@ def kb_to_dto(
         index_type=kb.index_type or "internal",
         index_config=dict(kb.index_config or {}),
         credential_id=str(kb.credential_id) if kb.credential_id else None,
+    )
+
+
+def browse_listing_to_dto(
+    listing: BrowseListing, i18n: Mapping[str, Mapping[str, str]] | None = None
+) -> BrowseListingDTO:
+    """`i18n` is the connector's capa catalogs; only an `app` entry's name is
+    the connector's own text, so only that one is translated."""
+    return BrowseListingDTO(
+        entries=[
+            BrowseEntryDTO(
+                id=e.id,
+                name=e.name,
+                is_folder=e.is_folder,
+                size=e.size,
+                content_type=e.content_type,
+                kind=e.kind,
+                note=e.note,
+                name_translations=(
+                    translations_for(i18n, e.name) if i18n and e.kind == "app" else {}
+                ),
+            )
+            for e in listing.entries
+        ],
+        truncated=listing.truncated,
     )

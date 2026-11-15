@@ -26,12 +26,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.capas.contributions import connectors_for
-from oc8.capas.discovery import find_plugin
+from oc8.capas.discovery import find_plugin, on_disk_deferred_permissions
 from oc8.capas.loader import load_plugin
+from oc8.capas.manifest import DEFERRABLE_PERMISSIONS
 from oc8.knowledge.connectors.base import Connector, ConnectorError
 from oc8.knowledge.connectors.upload import _UPLOAD
 from oc8.knowledge.connectors.website import _WEBSITE
-from oc8.models import Capa, CapaInstallation
+from oc8.models import Capa, CapaInstallation, CapaVersion
 
 _CONNECTORS: dict[str, Connector] = {c.type_id: c for c in (_UPLOAD, _WEBSITE)}
 
@@ -77,20 +78,132 @@ async def enabled_plugin_names(db: AsyncSession, tenant_id: uuid.UUID) -> list[s
     return list(rows)
 
 
+#: The permission a capa's knowledge contributions need. A capa may defer it
+#: (``Manifest.deferred_permissions``); everything it contributes to
+#: knowledge -- connectors, vector indexes -- then waits for the grant.
+KNOWLEDGE_WRITE = "knowledge:write"
+
+
+async def _enabled_plugin_grants(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> list[tuple[str, uuid.UUID, set[str], set[str]]]:
+    """(name, capa id, granted permissions, deferred permissions) of each plugin
+    this tenant has enabled -- the same rows as ``enabled_plugin_names``, read
+    with what the tenant granted and what is deferred.
+
+    Deferred means deferred by the enabled version OR by the manifest on disk:
+    the contributions are loaded from disk, so a tenant still on an older
+    installed version that predates the deferral must not get the newer code
+    without its consent."""
+    rows = await db.execute(
+        select(
+            Capa.name,
+            Capa.id,
+            CapaInstallation.granted_permissions,
+            CapaVersion.manifest["deferred_permissions"],
+        )
+        .join(CapaInstallation, CapaInstallation.capa_id == Capa.id)
+        .outerjoin(CapaVersion, CapaVersion.id == CapaInstallation.version_id)
+        .where(
+            Capa.tenant_id == tenant_id,
+            CapaInstallation.tenant_id == tenant_id,
+            CapaInstallation.status == "enabled",
+        )
+    )
+    return [
+        # Only allow-listed permissions count as deferred, whatever the
+        # stored manifest says (see DEFERRABLE_PERMISSIONS).
+        (
+            name,
+            capa_id,
+            set(granted or []),
+            (set(deferred or []) & DEFERRABLE_PERMISSIONS) | on_disk_deferred_permissions(name),
+        )
+        for name, capa_id, granted, deferred in rows.all()
+    ]
+
+
+async def knowledge_plugin_gate(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> tuple[list[str], list[tuple[str, uuid.UUID]]]:
+    """The one gate for knowledge contributions from enabled plugins.
+
+    Returns (names whose knowledge contributions this tenant may use, and
+    (name, capa id) of those waiting for their deferred ``knowledge:write``).
+    Every registry that resolves a plugin's knowledge contribution -- the
+    connectors here, ``oc8.knowledge.vector_indexes.registry`` -- goes
+    through this, so none of them can skip the consent.
+    """
+    usable: list[str] = []
+    pending: list[tuple[str, uuid.UUID]] = []
+    for name, capa_id, granted, deferred in await _enabled_plugin_grants(db, tenant_id):
+        if KNOWLEDGE_WRITE in deferred and KNOWLEDGE_WRITE not in granted:
+            pending.append((name, capa_id))
+        else:
+            usable.append(name)
+    return usable, pending
+
+
+def load_contributing_plugin(name: str) -> bool:
+    """Whether plugin ``name`` is on disk and loaded, so its contributions can
+    be read. Missing or failing to load is not an error -- it contributes
+    nothing."""
+    discovered = find_plugin(name)
+    return discovered is not None and load_plugin(discovered)
+
+
 async def _plugin_connectors(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, Connector]:
     """Connectors contributed by the plugins THIS tenant may use.
 
     A plugin missing from disk, quarantined, or contributing nothing simply
-    contributes nothing here -- none of those is an error for the caller.
+    contributes nothing here -- none of those is an error for the caller. Nor
+    does a plugin that defers ``knowledge:write`` and has not been granted it.
     """
     out: dict[str, Connector] = {}
-    for name in await enabled_plugin_names(db, tenant_id):
+    usable, _pending = await knowledge_plugin_gate(db, tenant_id)
+    for name in usable:
+        if load_contributing_plugin(name):
+            out.update(connectors_for(name))
+    return out
+
+
+async def consent_pending_connectors(
+    db: AsyncSession, *, tenant_id: uuid.UUID
+) -> dict[str, tuple[Connector, uuid.UUID, str]]:
+    """Connectors an enabled plugin would contribute once its deferred
+    ``knowledge:write`` is granted: type id -> (connector, capa id, permission).
+
+    For the catalog only, so it can offer the consent step. Never resolvable:
+    ``resolve_connector`` does not look here.
+    """
+    out: dict[str, tuple[Connector, uuid.UUID, str]] = {}
+    _usable, pending = await knowledge_plugin_gate(db, tenant_id)
+    for name, capa_id in pending:
+        if not load_contributing_plugin(name):
+            continue
+        for type_id, connector in connectors_for(name).items():
+            out[type_id] = (connector, capa_id, KNOWLEDGE_WRITE)
+    return out
+
+
+async def connector_catalogs(
+    db: AsyncSession, *, tenant_id: uuid.UUID
+) -> dict[str, dict[str, dict[str, str]]]:
+    """type id -> the contributing capa's `i18n/*.po` catalogs
+    (`{locale: {msgid: msgstr}}`), for the connectors of this tenant's usable
+    and consent-pending plugins. Core connectors have none and are absent.
+
+    For presentation only (`oc8.capas.i18n.translations_for`); it resolves
+    nothing and grants nothing.
+    """
+    usable, pending = await knowledge_plugin_gate(db, tenant_id)
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for name in [*usable, *(name for name, _capa_id in pending)]:
         discovered = find_plugin(name)
-        if discovered is None:
+        if discovered is None or not discovered.i18n or not load_plugin(discovered):
             continue
-        if not load_plugin(discovered):
-            continue
-        out.update(connectors_for(name))
+        for type_id in connectors_for(name):
+            out[type_id] = discovered.i18n
     return out
 
 

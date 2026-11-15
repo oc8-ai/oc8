@@ -5,9 +5,10 @@
 // (`keys.sources = ["knowledge", "sources"]`), so the sources list refreshes
 // after create/sync.
 
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { resolveTranslation, useLang, type Lang } from "@/lib/i18n";
 
 const SOURCES_KEY = ["knowledge", "sources"] as const;
 
@@ -29,6 +30,10 @@ export interface DataSource {
   // Non-secret connector config only -- a `credential`-typed key holds a
   // credential id, never a resolved secret value.
   config?: Record<string, unknown>;
+  // What the last finished sync left out, by reason (`unsupported_type`,
+  // `too_large`, `url_document`, ...), and the codes it noted for the admin.
+  lastSyncSkipped?: Record<string, number> | null;
+  lastSyncNotes?: string[] | null;
 }
 
 export interface IngestionJob {
@@ -60,15 +65,125 @@ export interface ConnectorCatalogEntry {
         // a `Credential` row's id, submitted in `config` as-is. Rendered as
         // a <CredentialPicker> instead of a raw input.
         credentialType?: string;
+        // Marks the property holding the source's scope: a list of
+        // `{id, label, kind}` picked in a <ScopePicker>, never left empty.
+        "x-oc8-picker"?: boolean;
       }
     >;
     required?: string[];
   };
   requiresOauth?: string | null;
-  // False when a source cannot be set up yet: it signs in somewhere and the
-  // organisation has no active connection of that provider ("oauth:google").
+  // False when a source cannot be set up yet. `missing` says why: the
+  // organisation has no active connection of a provider ("oauth:google"), or
+  // the capa behind it waits for consent to a permission
+  // ("consent:knowledge:write", granted on `capaId`).
   usable?: boolean;
   missing?: string | null;
+  capaId?: string | null;
+  // `label`/`description` and each config property's `title`/`description`
+  // in every locale the contributing capa's `i18n/*.po` translates them into.
+  // `useKnowledgeConnectors` resolves them for the current language.
+  labelTranslations?: Record<string, string>;
+  descriptionTranslations?: Record<string, string>;
+  fieldTranslations?: Record<string, Record<string, Record<string, string>>>;
+}
+
+/** A catalog entry with its label, description and config field titles in
+ *  `lang`, falling back to the English text the connector declares. */
+export function localizeConnector(entry: ConnectorCatalogEntry, lang: Lang): ConnectorCatalogEntry {
+  const fields = entry.fieldTranslations ?? {};
+  const properties = entry.configSchema?.properties;
+  return {
+    ...entry,
+    label: entry.label
+      ? resolveTranslation(entry.label, entry.labelTranslations, lang)
+      : entry.label,
+    description: entry.description
+      ? resolveTranslation(entry.description, entry.descriptionTranslations, lang)
+      : entry.description,
+    configSchema: properties
+      ? {
+          ...entry.configSchema,
+          properties: Object.fromEntries(
+            Object.entries(properties).map(([key, field]) => [
+              key,
+              {
+                ...field,
+                title: field.title
+                  ? resolveTranslation(field.title, fields[key]?.title, lang)
+                  : field.title,
+                description: field.description
+                  ? resolveTranslation(field.description, fields[key]?.description, lang)
+                  : field.description,
+              },
+            ]),
+          ),
+        }
+      : entry.configSchema,
+  };
+}
+
+/** The `missing` prefix of a connector whose capa waits for a permission. */
+export const CONSENT_PREFIX = "consent:";
+
+export interface BrowseEntry {
+  id: string;
+  name: string;
+  isFolder: boolean;
+  size?: number | null;
+  contentType?: string | null;
+  kind?: string | null;
+  note?: string | null;
+  // An app entry's name in every locale its capa translates it into.
+  nameTranslations?: Record<string, string>;
+}
+
+export interface BrowseListing {
+  entries: BrowseEntry[];
+  truncated: boolean;
+}
+
+// One folder of a connector, listed from a draft config before the source
+// exists (POST /knowledge/connectors/{typeId}/browse). `path` "/" is the root;
+// a child folder is browsed with its entry's id as the path.
+export function useBrowseDraft({
+  typeId,
+  config,
+  path,
+  enabled = true,
+}: {
+  typeId: string;
+  config: Record<string, unknown>;
+  path: string;
+  enabled?: boolean;
+}) {
+  return useQuery({
+    queryKey: ["knowledge", "browse", typeId, config, path] as const,
+    queryFn: () =>
+      api.post<BrowseListing>(`/knowledge/connectors/${typeId}/browse`, { config, path }),
+    enabled: enabled && !!typeId,
+    retry: false,
+    staleTime: 30 * 1000,
+  });
+}
+
+// Grants a permission a capa deferred at enable (POST /capas/{capaId}/grant),
+// e.g. `knowledge:write` before its connectors may feed a knowledge base.
+export function useGrantCapaPermission() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ capaId, permission }: { capaId: string; permission: string }) =>
+      api.post<{ pluginId: string; status: string; grantedPermissions: string[] }>(
+        `/capas/${capaId}/grant`,
+        { permission },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["knowledge", "connectors"] });
+      // Mirrors `useAvailablePlugins`' key in `@/lib/hooks`: the grant
+      // changes the capa's granted permissions there too.
+      qc.invalidateQueries({ queryKey: ["plugins", "available"] });
+    },
+  });
 }
 
 export interface OAuthConnection {
@@ -79,9 +194,15 @@ export interface OAuthConnection {
 }
 
 export function useKnowledgeConnectors() {
+  const { lang } = useLang();
+  const select = useCallback(
+    (entries: ConnectorCatalogEntry[]) => entries.map((entry) => localizeConnector(entry, lang)),
+    [lang],
+  );
   return useQuery({
     queryKey: ["knowledge", "connectors"],
     queryFn: () => api.get<ConnectorCatalogEntry[]>("/knowledge/connectors"),
+    select,
   });
 }
 

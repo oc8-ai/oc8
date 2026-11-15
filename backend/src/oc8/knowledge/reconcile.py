@@ -71,6 +71,7 @@ from oc8.knowledge.connectors.base import Attestation, AuthContext, SourceListin
 from oc8.knowledge.tombstone import (
     CATEGORY,
     RECONCILE_HELD,
+    SCOPE_CHANGED,
     SOURCE_ABSENT,
     SUPERSEDED,
     SUPERSEDED_REDUCED,
@@ -599,7 +600,9 @@ async def _sweep_tenant(
                         # An operator's deletion was reduced in the transaction
                         # that tombstoned it; only an INFERENCE waits out a grace
                         # window, which is what makes it restorable.
-                        m.KbChunk.deleted_reason.in_([SOURCE_ABSENT, SUPERSEDED]),
+                        # `scope_changed` reaches here only unreduced -- an
+                        # emptied scope, kept restorable for this same window.
+                        m.KbChunk.deleted_reason.in_([SOURCE_ABSENT, SUPERSEDED, SCOPE_CHANGED]),
                         m.KbChunk.deleted_at < now - grace,
                     )
                     .group_by(

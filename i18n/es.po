@@ -40,6 +40,14 @@ msgid "(requires settings:manage)"
 msgstr "(requiere settings:manage)"
 
 #, fuzzy
+msgid "{label} may write content to knowledge bases"
+msgstr "{label} puede escribir contenido en las bases de conocimiento"
+
+#, fuzzy
+msgid "{n} skipped: {reasons}"
+msgstr "{n} omitidos: {reasons}"
+
+#, fuzzy
 msgid "/do carry out the plan above"
 msgstr "/do ejecuta el plan anterior"
 
@@ -468,6 +476,10 @@ msgid "All systems operational"
 msgstr "Todos los sistemas funcionan con normalidad"
 
 #, fuzzy
+msgid "Allow"
+msgstr "Permitir"
+
+#, fuzzy
 msgid "allowed"
 msgstr "permitido"
 
@@ -478,6 +490,10 @@ msgstr "Permitido"
 #, fuzzy
 msgid "Allowed origins (optional, comma-separated)"
 msgstr "Orígenes permitidos (opcional, separados por comas)"
+
+#, fuzzy
+msgid "Allowing…"
+msgstr "Permitiendo…"
 
 #, fuzzy
 msgid "Already answered"
@@ -710,6 +726,10 @@ msgstr "Archivado"
 #, fuzzy
 msgid "Arguments (JSON)"
 msgstr "Argumentos (JSON)"
+
+#, fuzzy
+msgid "Ask an admin to allow this"
+msgstr "Pide a una persona administradora que lo permita"
 
 #, fuzzy
 msgid "Ask an administrator to add you — your queue appears the moment they do."
@@ -2884,6 +2904,14 @@ msgid "Every save is kept — nothing is pruned."
 msgstr "Cada guardado se conserva: nada se elimina."
 
 #, fuzzy
+msgid "Everything"
+msgstr "Todo"
+
+#, fuzzy
+msgid "Everything: selected"
+msgstr "Todo: seleccionado"
+
+#, fuzzy
 msgid "Execution"
 msgstr "Ejecución"
 
@@ -2994,6 +3022,10 @@ msgstr "Se pueden adjuntar archivos una vez respondida la pregunta."
 #, fuzzy
 msgid "Fill in provider, model pattern, and valid prices."
 msgstr "Indica el proveedor, el patrón de modelo y precios válidos."
+
+#, fuzzy
+msgid "Fill in the other required fields first."
+msgstr "Rellena primero los demás campos obligatorios."
 
 #, fuzzy
 msgid "Filter"
@@ -3628,6 +3660,10 @@ msgid "Line"
 msgstr "Línea"
 
 #, fuzzy
+msgid "link instead of file"
+msgstr "enlace en lugar de archivo"
+
+#, fuzzy
 msgid "Link your own Telegram or WhatsApp so approvals reach you there. This is separate from a capa's admin setup (bot token) — this step binds YOUR chat."
 msgstr "Vincula tu propio Telegram o WhatsApp para que las aprobaciones te lleguen allí. Esto es independiente de la configuración de administrador de una Capa (token del bot): este paso vincula TU chat."
 
@@ -3988,6 +4024,10 @@ msgid "More runtimes appear here once installed as plugins."
 msgstr "Aquí aparecerán más entornos de ejecución cuando se instalen como plugins."
 
 #, fuzzy
+msgid "More than 500 entries – pick a parent folder."
+msgstr "Más de 500 entradas – elige una carpeta superior."
+
+#, fuzzy
 msgid "Move holders to"
 msgstr "Mover a los titulares a"
 
@@ -4058,6 +4098,10 @@ msgstr "Requiere reconexión"
 #, fuzzy
 msgid "Needs your decision"
 msgstr "Necesita tu decisión"
+
+#, fuzzy
+msgid "Needs your permission"
+msgstr "Necesita tu permiso"
 
 #, fuzzy
 msgid "never"
@@ -4408,6 +4452,10 @@ msgid "No providers configured yet. Start with the wizard."
 msgstr "Aún no hay proveedores configurados. Empieza con el asistente."
 
 #, fuzzy
+msgid "No read access."
+msgstr "Sin acceso de lectura."
+
+#, fuzzy
 msgid "No reason was recorded."
 msgstr "No se registró ningún motivo."
 
@@ -4528,6 +4576,10 @@ msgid "Not available: "
 msgstr "No disponible: "
 
 #, fuzzy
+msgid "Not available."
+msgstr "No disponible."
+
+#, fuzzy
 msgid "Not connected"
 msgstr "No conectado"
 
@@ -4590,6 +4642,10 @@ msgstr "Notas que tu Copilot guarda sobre ti. Solo tú puedes verlas."
 #, fuzzy
 msgid "Nothing has changed since the running version."
 msgstr "No ha cambiado nada desde la versión en ejecución."
+
+#, fuzzy
+msgid "Nothing here."
+msgstr "Aquí no hay nada."
 
 #, fuzzy
 msgid "Nothing in progress right now."
@@ -4800,6 +4856,10 @@ msgid "Organization updated"
 msgstr "Organización actualizada"
 
 #, fuzzy
+msgid "other"
+msgstr "otros"
+
+#, fuzzy
 msgid "Other answer"
 msgstr "Otra respuesta"
 
@@ -4930,6 +4990,10 @@ msgstr "Elige un preajuste o define una programación / expresión cron exacta."
 #, fuzzy
 msgid "Pick any already-connected sources to sync into this base once it's created. You can add or remove sources later too."
 msgstr "Elige las fuentes ya conectadas que quieras sincronizar con esta base cuando se cree. También puedes añadir o quitar fuentes más tarde."
+
+#, fuzzy
+msgid "Pick at least one entry."
+msgstr "Elige al menos una entrada."
 
 #, fuzzy
 msgid "Pick at least one model"
@@ -6784,6 +6848,10 @@ msgid "The schedule or event is not valid."
 msgstr "La programación o el evento no es válido."
 
 #, fuzzy
+msgid "The selection was empty at the last sync – its content is hidden and can be restored."
+msgstr "La selección estaba vacía en la última sincronización – su contenido está oculto y se puede restaurar."
+
+#, fuzzy
 msgid "The server cannot be reached. Please check the address."
 msgstr "No se puede acceder al servidor. Revisa la dirección."
 
@@ -6920,6 +6988,10 @@ msgid "This agent was already created."
 msgstr "Este agente ya se creó."
 
 #, fuzzy
+msgid "This app is not installed."
+msgstr "Esta app no está instalada."
+
+#, fuzzy
 msgid "This archive cannot be restored:"
 msgstr "Este archivo no se puede restaurar:"
 
@@ -6972,6 +7044,10 @@ msgid "This connection's base URL contains a login. Delete this connection and c
 msgstr "La URL base de esta conexión contiene un inicio de sesión. Elimina esta conexión y vuelve a crearla con los datos de acceso en los campos de inicio de sesión."
 
 #, fuzzy
+msgid "This connector can't be allowed from here."
+msgstr "Este conector no se puede permitir desde aquí."
+
+#, fuzzy
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr "Esto elimina todos los agentes, ejecuciones y elementos de conocimiento que tiene ahora esta empresa y los reemplaza por el contenido del archivo subido. No se puede deshacer."
 
@@ -6990,6 +7066,10 @@ msgstr "Este filtro produce demasiados resultados. Acota el rango de fechas, eli
 #, fuzzy
 msgid "This folder can't be opened. Go back and pick another."
 msgstr "No se puede abrir esta carpeta. Vuelve atrás y elige otra."
+
+#, fuzzy
+msgid "This folder could not be listed."
+msgstr "No se pudo listar esta carpeta."
 
 #, fuzzy
 msgid "This folder is empty."
@@ -7244,6 +7324,10 @@ msgid "too big"
 msgstr "demasiado grande"
 
 #, fuzzy
+msgid "too large"
+msgstr "demasiado grande"
+
+#, fuzzy
 msgid "Too many messages are waiting for this run. Wait until it has read them."
 msgstr "Hay demasiados mensajes esperando a esta ejecución. Espera a que los lea."
 
@@ -7364,8 +7448,16 @@ msgid "Unpublished changes"
 msgstr "Cambios sin publicar"
 
 #, fuzzy
+msgid "unreadable"
+msgstr "ilegible"
+
+#, fuzzy
 msgid "Unregistered"
 msgstr "Sin registrar"
+
+#, fuzzy
+msgid "unsupported file type"
+msgstr "tipo de archivo no compatible"
 
 #, fuzzy
 msgid "Untested"
@@ -7590,6 +7682,10 @@ msgstr "advertencia"
 #, fuzzy
 msgid "We could not tell which account you signed in with. Please try again."
 msgstr "No pudimos saber con qué cuenta iniciaste sesión. Inténtalo de nuevo."
+
+#, fuzzy
+msgid "We recommend an API key instead of a password."
+msgstr "Recomendamos una clave API en lugar de una contraseña."
 
 #, fuzzy
 msgid "webhook"

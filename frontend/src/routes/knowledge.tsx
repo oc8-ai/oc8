@@ -44,12 +44,16 @@ import {
   useUnlinkSourceFromBase,
 } from "@/lib/hooks";
 import { CredentialPicker } from "@/components/credential-picker";
+import { ScopePicker, type ScopeItem } from "@/components/knowledge/scope-picker";
 import {
+  CONSENT_PREFIX,
   JOB_TERMINAL_STATUSES,
+  type ConnectorCatalogEntry,
   useCreateSource,
   useDeleteSource,
   useIngestionJob,
   useEmbeddingModels,
+  useGrantCapaPermission,
   useKnowledgeConnectors,
   useKnowledgeVectorIndexes,
   useOAuthConnections,
@@ -58,11 +62,31 @@ import {
 } from "@/lib/knowledge-connector-hooks";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { useMay } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
 
 export const Route = createFileRoute("/knowledge")({
   component: KnowledgePage,
 });
+
+type ConnectorSchema = ConnectorCatalogEntry["configSchema"];
+
+/** The config properties a connector marks as its scope (`x-oc8-picker`). */
+function pickerKeys(schema: ConnectorSchema | undefined): string[] {
+  return Object.entries(schema?.properties ?? {})
+    .filter(([, field]) => field["x-oc8-picker"] === true)
+    .map(([key]) => key);
+}
+
+/** A picker value the backend would refuse: missing, or nothing picked. */
+function isEmptyPick(value: unknown): boolean {
+  return !value || (Array.isArray(value) && value.length === 0);
+}
+
+/** The draft config a <ScopePicker> browses with: everything but the pickers. */
+function withoutPickers(config: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(config).filter(([key]) => !keys.includes(key)));
+}
 
 type Tab = "sources" | "bases";
 
@@ -366,6 +390,8 @@ export function SourcesTab({
                 </p>
               )}
 
+              {!archived && <SyncReport skipped={s.lastSyncSkipped} notes={s.lastSyncNotes} />}
+
               {!archived && (
                 <div className="mt-4 flex items-center gap-2">
                   {s.connected ? (
@@ -491,15 +517,33 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
     ([, field]) => field.credentialType,
   );
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
+  // The scope (`x-oc8-picker` properties), picked again from the connector's
+  // own listing. Only a picker the admin touched is sent: the PATCH merges
+  // config, and a changed scope is audited and pruned on the next sync.
+  const pickers = pickerKeys(connector?.configSchema);
+  const [pickerValues, setPickerValues] = useState<Record<string, ScopeItem[]>>({});
+  const savedPick = (key: string): ScopeItem[] => {
+    const saved = source.config?.[key];
+    return Array.isArray(saved) ? (saved as ScopeItem[]) : [];
+  };
+  // The backend refuses an empty picker on any config PATCH, and a saved
+  // selection that is already empty is just as unsaveable as an emptied one.
+  const pickerEmpty = pickers.some((key) => isEmptyPick(pickerValues[key] ?? savedPick(key)));
+  const browseConfig = withoutPickers({ ...(source.config ?? {}), ...credentialValues }, pickers);
+  // The server's refusal (e.g. an empty picker), kept in the drawer: a toast
+  // fades before anyone acts on it.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleSave = () => {
-    if (!name.trim()) return;
+    if (!name.trim() || pickerEmpty) return;
+    const config = { ...credentialValues, ...pickerValues };
+    setSaveError(null);
     updateSource.mutate(
       {
         sourceId: source.id,
         name: name.trim(),
         classification: sensitivity,
-        ...(Object.keys(credentialValues).length > 0 ? { config: credentialValues } : {}),
+        ...(Object.keys(config).length > 0 ? { config } : {}),
       },
       {
         onSuccess: () => {
@@ -508,12 +552,14 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
           });
           onClose();
         },
-        onError: (e: unknown) =>
-          toast.error(
+        onError: (e: unknown) => {
+          const message =
             e instanceof Error
               ? e.message
-              : t("Could not save changes.", "Änderungen konnten nicht gespeichert werden."),
-          ),
+              : t("Could not save changes.", "Änderungen konnten nicht gespeichert werden.");
+          toast.error(message);
+          setSaveError(message);
+        },
       },
     );
   };
@@ -571,7 +617,7 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
           </button>
           <button
             type="button"
-            disabled={!name.trim() || updateSource.isPending}
+            disabled={!name.trim() || pickerEmpty || updateSource.isPending}
             onClick={handleSave}
             className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
@@ -618,6 +664,38 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
           </div>
         </div>
       ))}
+      {connector &&
+        pickers.map((key) => {
+          const field = connector.configSchema.properties?.[key];
+          return (
+            <div key={key} className="mt-4">
+              <label className="text-xs font-medium text-muted-foreground">
+                {field?.title ?? key.replace(/([A-Z])/g, " $1")}
+              </label>
+              <div className="mt-1">
+                <ScopePicker
+                  typeId={connector.typeId}
+                  config={browseConfig}
+                  value={pickerValues[key] ?? savedPick(key)}
+                  onChange={(next) => {
+                    setPickerValues((cur) => ({ ...cur, [key]: next }));
+                    setSaveError(null);
+                  }}
+                />
+              </div>
+              {isEmptyPick(pickerValues[key] ?? savedPick(key)) && (
+                <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+                  {t("Pick at least one entry.", "Wähle mindestens einen Eintrag aus.")}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      {saveError && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {saveError}
+        </div>
+      )}
       {ConfirmDialog}
     </DetailSheet>
   );
@@ -1332,12 +1410,33 @@ export function SourceWizard({
   const [sensitivity, setSensitivity] = useState<SensitivityLevel>("internal");
 
   const t = useT();
+  const may = useMay();
+  const grantPermission = useGrantCapaPermission();
+  // Connectors whose deferred permission was granted from this wizard: usable
+  // now, even before GET /knowledge/connectors has been fetched again.
+  const [granted, setGranted] = useState<Set<string>>(() => new Set());
+  // The permission a connector's capa still waits for ("knowledge:write"),
+  // or null. Such a connector can be picked, but needs that consent first.
+  const consentPending = (entry: ConnectorCatalogEntry): string | null =>
+    entry.usable === false &&
+    entry.missing?.startsWith(CONSENT_PREFIX) &&
+    !granted.has(entry.typeId)
+      ? entry.missing.slice(CONSENT_PREFIX.length)
+      : null;
   // A connector the organisation has not connected yet is shown, but cannot
   // be picked (`usable` from GET /knowledge/connectors).
+  const selectable = (entry: ConnectorCatalogEntry) =>
+    entry.usable !== false ||
+    granted.has(entry.typeId) ||
+    !!entry.missing?.startsWith(CONSENT_PREFIX);
   const usableConnectors = connectors.filter((entry) => entry.usable !== false);
-  const connector = usableConnectors.find((entry) => entry.typeId === kind) ?? usableConnectors[0];
+  const connector =
+    connectors.filter(selectable).find((entry) => entry.typeId === kind) ?? usableConnectors[0];
+  const pendingPermission = connector ? consentPending(connector) : null;
   const schema = connector?.configSchema;
   const connectorLabel = connector?.label ?? kind.replace(/[-_]/g, " ");
+  const pickers = pickerKeys(schema);
+  const pickerEmpty = pickers.some((key) => isEmptyPick(connectorConfig[key]));
   const createSource = useCreateSource();
   const { data: kbsForCreatePage } = useKnowledgeBases({ pageSize: 200 });
   const kbsForCreate = kbsForCreatePage?.items ?? [];
@@ -1356,11 +1455,42 @@ export function SourceWizard({
   useEffect(() => {
     const usable = connectors.filter((entry) => entry.usable !== false);
     if (!usable.length) return;
-    if (!usable.some((entry) => entry.typeId === kind)) setKind(usable[0].typeId);
+    const stillSelectable = connectors.some(
+      (entry) =>
+        entry.typeId === kind &&
+        (entry.usable !== false || !!entry.missing?.startsWith(CONSENT_PREFIX)),
+    );
+    if (!stillSelectable) setKind(usable[0].typeId);
   }, [connectors, kind]);
 
+  function allow() {
+    if (!connector?.capaId || !pendingPermission) return;
+    const typeId = connector.typeId;
+    setCreateError(null);
+    grantPermission.mutate(
+      { capaId: connector.capaId, permission: pendingPermission },
+      {
+        onSuccess: () => {
+          setGranted((current) => new Set(current).add(typeId));
+          setStep(2);
+        },
+        onError: (err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          toast.error(message);
+          setCreateError(message);
+        },
+      },
+    );
+  }
+
+  // Reset to the connector's defaults when the chosen connector changes --
+  // not when the catalog is merely fetched again (a grant refetches it while
+  // the admin is already filling in step 2).
+  const configFor = useRef<string | null>(null);
+  const connectorTypeId = connector?.typeId ?? null;
   useEffect(() => {
-    if (!schema) return;
+    if (!schema || configFor.current === connectorTypeId) return;
+    configFor.current = connectorTypeId;
     setConnectorConfig(
       Object.fromEntries(
         Object.entries(schema.properties ?? {}).flatMap(([key, field]) =>
@@ -1369,13 +1499,17 @@ export function SourceWizard({
       ),
     );
     setOauthConnectionId("");
-  }, [kind, schema]);
+  }, [connectorTypeId, schema]);
 
   async function finish() {
     if (!connector || !targetKbId) return;
     const required = schema?.required ?? [];
     if (required.some((key) => !String(connectorConfig[key] ?? "").trim())) return;
+    if (pickerEmpty || pendingPermission) return;
     if (connector.requiresOauth && !oauthConnectionId) return;
+    const firstPicked = pickers
+      .flatMap((key) => connectorConfig[key] as ScopeItem[] | undefined)
+      .find(Boolean);
     setCreateError(null);
 
     // A `credential`-kind field's value is already a credential id by the
@@ -1391,6 +1525,7 @@ export function SourceWizard({
             connectorConfig.url ??
             connectorConfig.folderId ??
             connectorConfig.bucket ??
+            firstPicked?.label ??
             "Source",
         )}`,
         config: connectorConfig,
@@ -1441,7 +1576,11 @@ export function SourceWizard({
           )}
           {step < 4 ? (
             <button
-              disabled={(step === 1 && !connector) || (step === 3 && !targetKbId)}
+              disabled={
+                (step === 1 && (!connector || !!pendingPermission)) ||
+                (step === 2 && pickerEmpty) ||
+                (step === 3 && !targetKbId)
+              }
               onClick={() => setStep((s) => s + 1)}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40 hover:brightness-110"
             >
@@ -1453,6 +1592,8 @@ export function SourceWizard({
               disabled={
                 createSource.isPending ||
                 !connector ||
+                !!pendingPermission ||
+                pickerEmpty ||
                 !targetKbId ||
                 (schema?.required ?? []).some(
                   (key) => !String(connectorConfig[key] ?? "").trim(),
@@ -1475,7 +1616,7 @@ export function SourceWizard({
           <div className="grid grid-cols-2 gap-2">
             {connectors.map((entry) => {
               const Icon = KIND_ICON[entry.typeId as DataSourceKind] ?? FileText;
-              if (entry.usable === false) {
+              if (!selectable(entry)) {
                 return (
                   <div
                     key={entry.typeId}
@@ -1528,7 +1669,9 @@ export function SourceWizard({
                       </div>
                     </div>
                     <div className="truncate text-[10px] text-muted-foreground">
-                      {entry.description ?? "Installed connector"}
+                      {consentPending(entry)
+                        ? t("Needs your permission", "Braucht deine Erlaubnis")
+                        : (entry.description ?? "Installed connector")}
                     </div>
                   </div>
                 </button>
@@ -1540,6 +1683,39 @@ export function SourceWizard({
               </p>
             )}
           </div>
+          {connector && pendingPermission && (
+            <div className="space-y-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
+              <p className="font-medium text-foreground">
+                {t(
+                  "{label} may write content to knowledge bases",
+                  "{label} darf Inhalte in Wissensdatenbanken schreiben",
+                ).replace("{label}", connectorLabel)}
+              </p>
+              {!may("plugin:manage") ? (
+                <p className="text-muted-foreground">
+                  {t("Ask an admin to allow this", "Bitte eine Admin-Person, das zu erlauben")}
+                </p>
+              ) : !connector.capaId ? (
+                <p className="text-muted-foreground">
+                  {t(
+                    "This connector can't be allowed from here.",
+                    "Dieser Connector lässt sich hier nicht erlauben.",
+                  )}
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  disabled={grantPermission.isPending}
+                  onClick={allow}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
+                >
+                  {grantPermission.isPending
+                    ? t("Allowing…", "Wird erlaubt …")
+                    : t("Allow", "Erlauben")}
+                </button>
+              )}
+            </div>
+          )}
         </>
       )}
       {step === 2 && (
@@ -1548,6 +1724,7 @@ export function SourceWizard({
             Connect · {connectorLabel}
           </div>
           <DynamicConnectorFields
+            typeId={connector?.typeId ?? ""}
             schema={schema}
             config={connectorConfig}
             onChange={(key, value) => {
@@ -1683,6 +1860,7 @@ export function SourceWizard({
 }
 
 function DynamicConnectorFields({
+  typeId,
   schema,
   config,
   onChange,
@@ -1691,19 +1869,8 @@ function DynamicConnectorFields({
   oauthConnectionId,
   onOAuthConnectionChange,
 }: {
-  schema?: {
-    properties?: Record<
-      string,
-      {
-        type?: string;
-        title?: string;
-        description?: string;
-        minimum?: number;
-        maximum?: number;
-        credentialType?: string;
-      }
-    >;
-  };
+  typeId: string;
+  schema?: ConnectorSchema;
   config: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
   oauthProvider: string | null;
@@ -1713,6 +1880,13 @@ function DynamicConnectorFields({
 }) {
   const t = useT();
   const fields = Object.entries(schema?.properties ?? {});
+  // A scope picker browses with the rest of the draft config, so it waits
+  // until every other required property has a value.
+  const pickers = pickerKeys(schema);
+  const othersFilled = (schema?.required ?? [])
+    .filter((key) => !pickers.includes(key))
+    .every((key) => String(config[key] ?? "").trim());
+  const browseConfig = withoutPickers(config, pickers);
   const connections = oauthConnections.filter(
     (connection) => connection.provider === oauthProvider && connection.status === "active",
   );
@@ -1749,6 +1923,25 @@ function DynamicConnectorFields({
       {fields.map(([key, field]) => {
         const label = field.title ?? key.replace(/([A-Z])/g, " $1");
         const value = config[key];
+        if (field["x-oc8-picker"] === true) {
+          return (
+            <div key={key} className="block text-xs text-muted-foreground">
+              {label}
+              <div className="mt-1">
+                <ScopePicker
+                  typeId={typeId}
+                  config={browseConfig}
+                  value={Array.isArray(value) ? (value as ScopeItem[]) : []}
+                  onChange={(next) => onChange(key, next)}
+                  disabled={!othersFilled}
+                />
+              </div>
+              {field.description && (
+                <span className="mt-1 block text-[11px]">{field.description}</span>
+              )}
+            </div>
+          );
+        }
         if (field.credentialType) {
           return (
             <label key={key} className="block text-xs text-muted-foreground">
@@ -2095,7 +2288,10 @@ export function BaseWizard({
           </div>
           {indexType && (
             <p className="mt-2 text-xs text-muted-foreground">
-              {t("Continue to configure the selected index.", "Weiter, um den Index zu konfigurieren.")}
+              {t(
+                "Continue to configure the selected index.",
+                "Weiter, um den Index zu konfigurieren.",
+              )}
             </p>
           )}
         </div>
@@ -2191,6 +2387,70 @@ export function BaseWizard({
 }
 
 // ============================= Small parts =============================
+
+// Reasons a connector reports for a file it skipped, in the order they are
+// listed; any other reason still counts, under "other".
+const SKIP_REASONS = ["unsupported_type", "too_large", "url_document", "unreadable"] as const;
+
+/** What the last finished sync skipped, by reason, and the notes it left for
+ *  the admin. Renders nothing for a sync that skipped and noted nothing, and
+ *  nothing for a note code it does not know. */
+function SyncReport({
+  skipped,
+  notes,
+}: {
+  skipped?: Record<string, number> | null;
+  notes?: string[] | null;
+}) {
+  const t = useT();
+  const reasonLabel: Record<(typeof SKIP_REASONS)[number], string> = {
+    unsupported_type: t("unsupported file type", "Dateityp nicht unterstützt"),
+    too_large: t("too large", "zu groß"),
+    url_document: t("link instead of file", "Link statt Datei"),
+    unreadable: t("unreadable", "nicht lesbar"),
+  };
+  const noteText: Record<string, string> = {
+    api_key_recommended: t(
+      "We recommend an API key instead of a password.",
+      "Wir empfehlen einen API-Schlüssel statt eines Passworts.",
+    ),
+    scope_emptied: t(
+      "The selection was empty at the last sync – its content is hidden and can be restored.",
+      "Die Auswahl war beim letzten Abgleich leer – die Inhalte sind ausgeblendet und lassen sich wiederherstellen.",
+    ),
+  };
+  const counts = Object.entries(skipped ?? {}).filter(([, n]) => typeof n === "number" && n > 0);
+  const total = counts.reduce((sum, [, n]) => sum + n, 0);
+  const known = new Set<string>(SKIP_REASONS);
+  const other = counts.filter(([reason]) => !known.has(reason)).reduce((sum, [, n]) => sum + n, 0);
+  const parts = [
+    ...SKIP_REASONS.filter((reason) => skipped?.[reason]).map(
+      (reason) => `${reasonLabel[reason]} (${skipped?.[reason]})`,
+    ),
+    ...(other > 0 ? [`${t("other", "sonstige")} (${other})`] : []),
+  ];
+  const shownNotes = (notes ?? []).filter((code) => code in noteText);
+  if (total === 0 && shownNotes.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-1.5 text-xs">
+      {total > 0 && (
+        <p className="text-muted-foreground">
+          {t("{n} skipped: {reasons}", "{n} übersprungen: {reasons}")
+            .replace("{n}", String(total))
+            .replace("{reasons}", parts.join(", "))}
+        </p>
+      )}
+      {shownNotes.map((code) => (
+        <p
+          key={code}
+          className="rounded-md border border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5 px-2.5 py-1.5 text-[color:var(--status-warning)]"
+        >
+          {noteText[code]}
+        </p>
+      ))}
+    </div>
+  );
+}
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (

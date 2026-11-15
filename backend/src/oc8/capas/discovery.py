@@ -27,6 +27,7 @@ from oc8.capas.claude_adapter import (
 )
 from oc8.capas.guardrails import Guardrail, GuardrailLibrary, parse_guardrail_entry
 from oc8.capas.manifest import (
+    DEFERRABLE_PERMISSIONS,
     CredentialTypeSpec,
     GuardrailPreset,
     ManifestError,
@@ -757,6 +758,20 @@ def find_plugin(plugin_id: str, paths: Sequence[str] | None = None) -> Discovere
         if plugin.plugin_id == plugin_id:
             return plugin
     return None
+
+
+def on_disk_deferred_permissions(name: str) -> set[str]:
+    """What the manifest on disk defers for capa ``name`` (allow-listed).
+
+    A capa's code is loaded from disk, while its installed version may be an
+    older one that predates the deferral. The code that would run declares
+    what it needs consent for, so its deferral counts until the tenant updates.
+    """
+    discovered = find_plugin(name)
+    if discovered is None or discovered.manifest is None:
+        return set()
+    declared = set(discovered.manifest.get("deferred_permissions") or [])
+    return declared & DEFERRABLE_PERMISSIONS
 
 
 def resolve_tool_pack_connection(

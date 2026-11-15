@@ -19,7 +19,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.capas.discovery import find_plugin
-from oc8.capas.manifest import Manifest, ManifestError, ToolPackConnection, parse_manifest
+from oc8.capas.manifest import (
+    DEFERRABLE_PERMISSIONS,
+    Manifest,
+    ManifestError,
+    ToolPackConnection,
+    parse_manifest,
+)
 
 #: Providers a person can sign in with to connect their own account.
 PERSONAL_OAUTH_PROVIDERS: Final = frozenset({"microsoft", "google"})
@@ -45,7 +51,8 @@ class InstalledIntegration:
     #: Enabled: its tools exist. A legacy never-enabled install is listed with
     #: False so an admin can make it available with one click.
     available: bool
-    #: What the plugin's current version asks for, granted by that click.
+    #: What the plugin's current version asks for, granted by that click --
+    #: never a deferred permission, which only its own consent step grants.
     permissions: tuple[str, ...] = ()
 
 
@@ -99,12 +106,13 @@ async def installed_integrations(db: AsyncSession) -> list[InstalledIntegration]
             continue
         integration = integration_from_manifest(manifest)
         if integration is not None:
+            deferred = set(manifest.deferred_permissions) & DEFERRABLE_PERMISSIONS
             out.append(
                 InstalledIntegration(
                     integration,
                     capa.id,
                     available=installation is not None and installation.status == "enabled",
-                    permissions=tuple(version.permissions or []),
+                    permissions=tuple(p for p in version.permissions or [] if p not in deferred),
                 )
             )
     return sorted(out, key=lambda item: item.integration.label.lower())

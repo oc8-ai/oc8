@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.capas.discovery import find_plugin
-from oc8.capas.lifecycle import enable_plugin
+from oc8.capas.lifecycle import consent_required, enable_plugin
 from oc8.capas.service import install_plugin
 
 BUILTIN_MODEL_PROVIDER_PLUGINS: tuple[str, ...] = ("opaas_ai_provider",)
@@ -44,5 +44,5 @@ async def seed_builtin_model_providers(db: AsyncSession, *, tenant_id: uuid.UUID
             db,
             tenant_id=tenant_id,
             capa_id=version.capa_id,
-            granted_permissions=list(version.permissions),
+            granted_permissions=consent_required(version),
         )

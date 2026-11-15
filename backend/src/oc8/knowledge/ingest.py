@@ -28,8 +28,14 @@ from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.base import AuthContext, Connector, RawDocument
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.registry import resolve_connector
+from oc8.knowledge.connectors.report import (
+    SyncReport,
+    collect_sync_report,
+    resume_sync_report,
+)
 from oc8.knowledge.embedding_policy import require_local_reason, strictest
 from oc8.knowledge.reconcile import observe_listing
+from oc8.knowledge.scope_prune import apply_scope_change
 from oc8.knowledge.tombstone import (
     SUPERSEDED,
     recompute_freshness,
@@ -396,6 +402,7 @@ async def run_source_sync(
     fatal: str | None = None
     connector: Connector | None = None
     auth: AuthContext | None = None
+    sync_report: SyncReport | None = None
     now = datetime.now(tz=UTC)
 
     try:
@@ -417,23 +424,24 @@ async def run_source_sync(
         suppressed = await suppressed_uris(
             db, tenant_id=tenant_id, kb_id=kb_id, data_source_id=data_source.id
         )
-        async for raw in connector.fetch(data_source.config, data_source.cursor, auth):
-            stats["fetched"] += 1
-            if raw.source_uri in suppressed:
-                stats["suppressed"] += 1
-                continue
-            try:
-                n = await ingest_raw_document(
-                    db, tenant_id=tenant_id, data_source=data_source, kb_id=kb_id, raw=raw
-                )
-            except IngestionError as exc:
-                stats["skipped"] += 1
-                errors.append(str(exc))
-                continue
-            stats["ingested"] += 1
-            stats["chunks"] += n
-            new_hashes.append(raw.content_hash)
-            fetched_hashes[raw.source_uri] = raw.content_hash
+        with collect_sync_report() as sync_report:
+            async for raw in connector.fetch(data_source.config, data_source.cursor, auth):
+                stats["fetched"] += 1
+                if raw.source_uri in suppressed:
+                    stats["suppressed"] += 1
+                    continue
+                try:
+                    n = await ingest_raw_document(
+                        db, tenant_id=tenant_id, data_source=data_source, kb_id=kb_id, raw=raw
+                    )
+                except IngestionError as exc:
+                    stats["skipped"] += 1
+                    errors.append(str(exc))
+                    continue
+                stats["ingested"] += 1
+                stats["chunks"] += n
+                new_hashes.append(raw.content_hash)
+                fetched_hashes[raw.source_uri] = raw.content_hash
     except Exception as exc:  # connector-level failure must not strand the job as "running"
         fatal = str(exc)
 
@@ -480,6 +488,33 @@ async def run_source_sync(
             # so without this the object the caller is holding would keep
             # reporting the count from before this sync.
             await db.refresh(data_source, ["doc_count"])
+
+    if fatal is None and connector is not None:
+        # An admin narrowed this source's selection (`cursor["scope_changed"]`).
+        # Pruned here, after the fetch loop -- the prune is core's, not the
+        # connector's -- with this sync's own collector re-installed so the
+        # `scope_emptied` note lands on this job's notes; and BEFORE the
+        # listing observation below: a pruned document is no longer live, so
+        # reconcile neither counts it toward its vanish ratio (which would hold
+        # the source over the admin's own edit) nor marks it missing.
+        # Only after a sync with no connector-level failure; the flag survives
+        # anything short of a pruning savepoint that completed.
+        try:
+            with resume_sync_report(sync_report):
+                async with db.begin_nested():
+                    pruned = await apply_scope_change(
+                        db,
+                        tenant_id=tenant_id,
+                        data_source=data_source,
+                        connector=connector,
+                        auth=auth,
+                        now=now,
+                    )
+        except Exception as exc:
+            bookkeeping_error = bookkeeping_error or f"scope prune failed: {exc}"
+        else:
+            if pruned is not None:
+                stats["scope_pruned"] = pruned
 
     if connector is not None:
         # AFTER the cursor write-back, where §4.1 put it before it. The
@@ -531,6 +566,14 @@ async def run_source_sync(
         job.status = "succeeded"
     if errors:
         stats["errors"] = errors
+    # What the connector left out, and why. Read from the collector this sync
+    # installed (never from the connector, which is shared by every sync), and
+    # only when there is something to say.
+    if sync_report is not None:
+        if sync_report.skipped:
+            stats["skipped_by_reason"] = dict(sync_report.skipped)
+        if sync_report.notes:
+            stats["notes"] = list(sync_report.notes)
     job.stats = dict(stats)
     # Stamped on the SOURCE, not just the job: `connected` is transport
     # reachability and does not move on a sync failure, so without this the

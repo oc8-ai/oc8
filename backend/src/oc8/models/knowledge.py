@@ -144,8 +144,9 @@ class KbChunk(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     #: NULL means "written before 0045, provenance unknown", and such a row is
     #: never eligible for reconciliation -- unknown is not the same as absent.
     data_source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
-    #: 'operator_delete' | 'source_absent' | 'superseded'. Not cosmetic: it
-    #: decides reduction timing, write-path suppression and cursor eviction.
+    #: 'operator_delete' | 'source_absent' | 'superseded' | 'scope_changed'. Not
+    #: cosmetic: it decides reduction timing, write-path suppression and cursor
+    #: eviction.
     deleted_reason: Mapped[str | None] = mapped_column(Text)
     #: When the content was actually destroyed. Split from `deleted_at` so that a
     #: deletion the system inferred stays recoverable for a grace window.
@@ -159,7 +160,7 @@ class KbChunk(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
         CheckConstraint(
             "(deleted_at IS NULL AND deleted_reason IS NULL) OR "
             "(deleted_at IS NOT NULL AND deleted_reason = ANY "
-            "(ARRAY['operator_delete','source_absent','superseded']))",
+            "(ARRAY['operator_delete','source_absent','superseded','scope_changed']))",
             name="ck_kb_chunk_deleted_reason",
         ),
         # A reduced row that still holds retrievable text is unrepresentable, so

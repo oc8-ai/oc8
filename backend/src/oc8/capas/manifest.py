@@ -37,6 +37,13 @@ CLAUDE_HOOK_PERMISSIONS = {
     "mcp_tool": "hooks:claude:mcp",
 }
 
+#: The only permissions a capa may defer (`Manifest.deferred_permissions`).
+#: Each one gates a single kind of contribution that stays off until it is
+#: granted; a permission off this list is always consented to at enable.
+#: `oc8.capas.lifecycle.deferred_permissions` applies it to stored manifests
+#: too, so a stale or edited row cannot widen it.
+DEFERRABLE_PERMISSIONS: frozenset[str] = frozenset({"knowledge:write"})
+
 
 class ManifestError(ValueError):
     """A manifest failed schema validation."""
@@ -873,6 +880,12 @@ class Manifest(BaseModel):
     # means the UI falls back to a generic icon for `type`.
     icon: str | None = None
     permissions: list[str] = []
+    # The subset of `permissions` a tenant grants later, when it first uses
+    # the contribution that needs it (e.g. `knowledge:write` for a capa's
+    # knowledge connectors) -- not at enable. Enabling, and an update that only
+    # adds a deferred permission, never ask for it; what it gates stays off
+    # until POST /capas/{id}/grant records it.
+    deferred_permissions: list[str] = []
     capabilities: list[str] = []
     provides: list[str] = []
     entry_points: dict[str, str] = {}
@@ -934,6 +947,21 @@ class Manifest(BaseModel):
     claude_hooks: ClaudeHooksSpec | None = None
     #: How this capa was assembled on disk — metadata for UI and debugging.
     source_format: SourceFormat = "oc8"
+
+    @model_validator(mode="after")
+    def _deferred_permissions_are_declared(self) -> Manifest:
+        not_deferrable = sorted(set(self.deferred_permissions) - DEFERRABLE_PERMISSIONS)
+        if not_deferrable:
+            raise ValueError(
+                f"deferred_permissions {not_deferrable} cannot be deferred; "
+                f"only {sorted(DEFERRABLE_PERMISSIONS)} can"
+            )
+        undeclared = sorted(set(self.deferred_permissions) - set(self.permissions))
+        if undeclared:
+            raise ValueError(
+                f"deferred_permissions {undeclared} must also be listed in permissions"
+            )
+        return self
 
 
 def claude_hook_permissions(spec: ClaudeHooksSpec | None) -> list[str]:

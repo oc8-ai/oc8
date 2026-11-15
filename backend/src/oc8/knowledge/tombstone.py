@@ -77,12 +77,12 @@ DOCUMENT_DELETED = "knowledge.document_deleted"  # operator, per document, conte
 SOURCE_DELETED = "knowledge.source_deleted"  # operator, one aggregate event
 BASE_DELETED = "knowledge.base_deleted"  # operator, one aggregate event
 SOURCE_UNLINKED_FROM_BASE = "knowledge.source_unlinked_from_base"  # operator, one aggregate event
-DOCUMENT_REDUCED = "knowledge.document_reduced"  # sweep, per document, source_absent
+DOCUMENT_REDUCED = "knowledge.document_reduced"  # per document; carries deleted_reason
 SUPERSEDED_REDUCED = "knowledge.superseded_reduced"  # sweep, one aggregate event per tick
 DOCUMENT_RESTORED = "knowledge.document_restored"
 RECONCILE_HELD = "knowledge.reconcile_held"
 
-#: The three legal values of `kb_chunk.deleted_reason`. Not cosmetic: the reason
+#: The legal values of `kb_chunk.deleted_reason`. Not cosmetic: the reason
 #: decides reduction timing (immediate or after the grace window), write-path
 #: suppression (§5.3 -- only an operator's deletion stays deleted) and cursor
 #: eviction (§5.6 -- only an absence is forgotten, so the document can come back
@@ -90,6 +90,11 @@ RECONCILE_HELD = "knowledge.reconcile_held"
 OPERATOR_DELETE = "operator_delete"
 SOURCE_ABSENT = "source_absent"
 SUPERSEDED = "superseded"
+#: An admin narrowed the source's selection (`oc8.knowledge.scope_prune`).
+#: Reduced at once like an operator delete, but NOT suppressed: re-selecting the
+#: document brings it back. Licensed by the admin's edit plus one AUTHORITATIVE
+#: listing, not by reconcile's two.
+SCOPE_CHANGED = "scope_changed"
 
 
 @dataclass
@@ -184,10 +189,16 @@ async def tombstone_document(
     reduce_now: bool,
     now: dt.datetime,
     principal: Principal | None = None,
+    originating_operator: str | None = None,
 ) -> Removal | None:
     """Take one document out of retrieval. Returns None if it was not there.
 
-    `reduce_now` is the operator path and nothing else sets it: the content is
+    `originating_operator` is the subject of an admin whose EARLIER edit licensed
+    this removal (a scope prune runs in a sync, long after the request that
+    narrowed the scope): a reducing removal's ledger entry then names them.
+
+    `reduce_now` is set by the operator path and by a scope prune
+    (`scope_changed`, an admin's deliberate narrowing): the content is
     destroyed in this same transaction and one `knowledge.document_deleted`
     entry names the URI, the chunk count and the digest of what it destroyed. An
     inferred deletion (`source_absent`, `superseded`) keeps its content for the
@@ -291,25 +302,42 @@ async def tombstone_document(
         # gone. (The tenant's audit lock is taken when the transaction commits,
         # not here -- see `oc8.audit.chain` -- so the position no longer decides
         # how long that lock is held; the receipt's seq is read after commit.)
+        resource: dict[str, Any] = {
+            "kb_id": str(kb_id),
+            "data_source_id": str(data_source_id) if data_source_id else None,
+            "source_uri": source_uri,
+            "sources": sources,
+            "chunks": len(chunks),
+            "chars": chars,
+            "sha256": sha256,
+        }
+        by_operator = reason == OPERATOR_DELETE
+        actor_type = "operator"
+        actor_id: uuid.UUID | None = None
+        if not by_operator:
+            # Only a scope prune reaches here today. Nobody deleted this
+            # document by hand, and a ledger entry that says so cannot be taken
+            # back, so the entry names the reason, and the admin whose edit
+            # licensed it -- or the system, when no admin is on record.
+            resource["deleted_reason"] = reason
+            actor_type = "operator" if originating_operator else "system"
+            actor_id = _as_uuid(originating_operator)
         event = await append_event(
             db,
             tenant_id=tenant_id,
-            actor_type="operator",
-            actor_id=None,
+            actor_type=actor_type,
+            actor_id=actor_id,
             category=CATEGORY,
             action=DOCUMENT_DELETED,
-            resource={
-                "kb_id": str(kb_id),
-                "data_source_id": str(data_source_id) if data_source_id else None,
-                "source_uri": source_uri,
-                "sources": sources,
-                "chunks": len(chunks),
-                "chars": chars,
-                "sha256": sha256,
-            },
+            resource=resource,
             decision="allow",
-            reason="operator deleted the document",
+            reason=(
+                "operator deleted the document"
+                if by_operator
+                else "the document left its source's selected scope"
+            ),
             principal=principal,
+            originating_operator=None if by_operator else originating_operator,
         )
         audit_event = event
 
@@ -317,6 +345,17 @@ async def tombstone_document(
     return Removal(
         documents=1, chunks=len(chunks), sha256=sha256, sources=sources, audit_event=audit_event
     )
+
+
+def _as_uuid(value: str | None) -> uuid.UUID | None:
+    """`audit_event.actor_id` is a uuid column; a subject that is not one is
+    still named, as `responsible_id`."""
+    if not value:
+        return None
+    try:
+        return uuid.UUID(value)
+    except ValueError:
+        return None
 
 
 async def restore_document(
@@ -366,7 +405,9 @@ async def restore_document(
                 *scope,
                 m.KbChunk.deleted_at.is_not(None),
                 m.KbChunk.reduced_at.is_(None),
-                m.KbChunk.deleted_reason.in_([SOURCE_ABSENT, SUPERSEDED]),
+                # `scope_changed` too: an emptied scope is tombstoned without
+                # reducing precisely so it can be undone.
+                m.KbChunk.deleted_reason.in_([SOURCE_ABSENT, SUPERSEDED, SCOPE_CHANGED]),
             )
         )
     ).all()
@@ -548,9 +589,14 @@ async def reduce_document(
                 # The hash outlives the bytes it names.
                 "sha256": sha256,
                 "connector_type": source.connector_type if source is not None else None,
+                "deleted_reason": reason,
             },
             decision="allow",
-            reason=f"absent from every attested listing of this source since {since}",
+            reason=(
+                f"left this source's selected scope on {since}"
+                if reason == SCOPE_CHANGED
+                else f"absent from every attested listing of this source since {since}"
+            ),
         )
         audit_event = event
 

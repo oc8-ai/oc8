@@ -2508,6 +2508,9 @@ export interface DiscoveredCapa {
   // temporary state right after clicking Update -- see isArchivedInstall.
   disabledReason?: string | null;
   permissions: string[];
+  // The subset of `permissions` Enable must not grant: each waits for its own
+  // consent step (POST /capas/{id}/grant). See `enablePermissions`.
+  deferredPermissions?: string[];
   capabilities: string[];
   surfaces: string[];
   setup?: PluginSetupSpec | null;

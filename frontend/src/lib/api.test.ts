@@ -298,3 +298,22 @@ describe("request() on a 401", () => {
     expect(reloadMock).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("request() on a refusal", () => {
+  it("shows the first message of a validation detail list, not the raw JSON", async () => {
+    stubFetch(() =>
+      json(422, {
+        detail: [
+          { loc: ["body", "values", "selection"], msg: "select at least one item", type: "x" },
+          { loc: ["body"], msg: "second", type: "x" },
+        ],
+      }),
+    );
+    await expect(api.post("/capas/c/setup", {})).rejects.toThrow(/^select at least one item$/);
+  });
+
+  it("keeps a string detail as it is", async () => {
+    stubFetch(() => json(400, { detail: "This source can't be browsed." }));
+    await expect(api.post("/x", {})).rejects.toThrow("This source can't be browsed.");
+  });
+});

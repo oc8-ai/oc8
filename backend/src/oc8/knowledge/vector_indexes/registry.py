@@ -13,26 +13,21 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.capas.contributions import vector_indexes_for
-from oc8.capas.discovery import find_plugin
-from oc8.capas.loader import load_plugin
-from oc8.knowledge.connectors.registry import enabled_plugin_names
+from oc8.knowledge.connectors.registry import knowledge_plugin_gate, load_contributing_plugin
 from oc8.knowledge.vector_indexes.base import VectorIndex, VectorIndexError
 
 #: Stored on ``KnowledgeBase.index_type`` for the built-in ``kb_chunk`` path.
 INTERNAL_INDEX_TYPE = "internal"
 
 
-async def _plugin_vector_indexes(
-    db: AsyncSession, tenant_id: uuid.UUID
-) -> dict[str, VectorIndex]:
+async def _plugin_vector_indexes(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, VectorIndex]:
+    """Indexes from the plugins whose knowledge contributions this tenant may
+    use -- the same gate as connectors, deferred ``knowledge:write`` included."""
     out: dict[str, VectorIndex] = {}
-    for name in await enabled_plugin_names(db, tenant_id):
-        discovered = find_plugin(name)
-        if discovered is None:
-            continue
-        if not load_plugin(discovered):
-            continue
-        out.update(vector_indexes_for(name))
+    usable, _pending = await knowledge_plugin_gate(db, tenant_id)
+    for name in usable:
+        if load_contributing_plugin(name):
+            out.update(vector_indexes_for(name))
     return out
 
 

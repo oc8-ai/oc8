@@ -31,6 +31,12 @@ msgstr "(optional)"
 msgid "(requires settings:manage)"
 msgstr "(benötigt settings:manage)"
 
+msgid "{label} may write content to knowledge bases"
+msgstr "{label} darf Inhalte in Wissensdatenbanken schreiben"
+
+msgid "{n} skipped: {reasons}"
+msgstr "{n} übersprungen: {reasons}"
+
 msgid "/do carry out the plan above"
 msgstr "/do führe den Plan oben aus"
 
@@ -352,6 +358,9 @@ msgstr "Alle Quellen"
 msgid "All systems operational"
 msgstr "Alle Systeme betriebsbereit"
 
+msgid "Allow"
+msgstr "Erlauben"
+
 msgid "allowed"
 msgstr "erlaubt"
 
@@ -360,6 +369,9 @@ msgstr "Erlaubt"
 
 msgid "Allowed origins (optional, comma-separated)"
 msgstr "Erlaubte Origins (optional, komma-getrennt)"
+
+msgid "Allowing…"
+msgstr "Wird erlaubt …"
 
 msgid "Already answered"
 msgstr "Schon beantwortet"
@@ -534,6 +546,9 @@ msgstr "Archiviert"
 
 msgid "Arguments (JSON)"
 msgstr "Argumente (JSON)"
+
+msgid "Ask an admin to allow this"
+msgstr "Bitte eine Admin-Person, das zu erlauben"
 
 msgid "Ask an administrator to add you — your queue appears the moment they do."
 msgstr "Bitte einen Administrator, dich einzutragen — deine Liste erscheint, sobald das geschehen ist."
@@ -2164,6 +2179,12 @@ msgstr "Jede Minute"
 msgid "Every save is kept — nothing is pruned."
 msgstr "Jede Speicherung bleibt erhalten — nichts wird gelöscht."
 
+msgid "Everything"
+msgstr "Alles"
+
+msgid "Everything: selected"
+msgstr "Alles: ausgewählt"
+
 msgid "Execution"
 msgstr "Ausführung"
 
@@ -2247,6 +2268,9 @@ msgstr "Dateien kannst du anhängen, sobald die Frage beantwortet ist."
 
 msgid "Fill in provider, model pattern, and valid prices."
 msgstr "Anbieter, Modell-Muster und gültige Preise eingeben."
+
+msgid "Fill in the other required fields first."
+msgstr "Fülle zuerst die übrigen Pflichtfelder aus."
 
 msgid "Filter"
 msgstr "Filter"
@@ -2722,6 +2746,9 @@ msgstr "Limits"
 msgid "Line"
 msgstr "Linie"
 
+msgid "link instead of file"
+msgstr "Link statt Datei"
+
 msgid "Link your own Telegram or WhatsApp so approvals reach you there. This is separate from a capa's admin setup (bot token) — this step binds YOUR chat."
 msgstr "Verknüpfe dein eigenes Telegram oder WhatsApp, damit Freigaben dort ankommen. Das ist getrennt vom Admin-Setup einer Capa (Bot-Token) — dieser Schritt verknüpft DEIN Chat."
 
@@ -2992,6 +3019,9 @@ msgstr "Weitere Informationen"
 msgid "More runtimes appear here once installed as plugins."
 msgstr "Weitere Runtimes erscheinen hier, sobald sie als Plugins installiert sind."
 
+msgid "More than 500 entries – pick a parent folder."
+msgstr "Mehr als 500 Einträge – wähle einen übergeordneten Ordner."
+
 msgid "Move holders to"
 msgstr "Halter übertragen an"
 
@@ -3045,6 +3075,9 @@ msgstr "Erneut verbinden nötig"
 
 msgid "Needs your decision"
 msgstr "Braucht deine Entscheidung"
+
+msgid "Needs your permission"
+msgstr "Braucht deine Erlaubnis"
 
 msgid "never"
 msgstr "nie"
@@ -3307,6 +3340,9 @@ msgstr "Noch kein Zugang der Organisation."
 msgid "No providers configured yet. Start with the wizard."
 msgstr "Noch keine Anbieter konfiguriert. Mit dem Assistenten starten."
 
+msgid "No read access."
+msgstr "Kein Lesezugriff."
+
 msgid "No reason was recorded."
 msgstr "Es wurde kein Grund festgehalten."
 
@@ -3397,6 +3433,9 @@ msgstr "Nicht erlaubt"
 msgid "Not available: "
 msgstr "Nicht vergebbar: "
 
+msgid "Not available."
+msgstr "Nicht verfügbar."
+
 msgid "Not connected"
 msgstr "Nicht verbunden"
 
@@ -3444,6 +3483,9 @@ msgstr "Notizen, die dein Copilot über dich führt. Nur du siehst sie."
 
 msgid "Nothing has changed since the running version."
 msgstr "Seit der laufenden Version hat sich nichts geändert."
+
+msgid "Nothing here."
+msgstr "Hier ist nichts."
 
 msgid "Nothing in progress right now."
 msgstr "Gerade ist nichts in Arbeit."
@@ -3601,6 +3643,9 @@ msgstr "Organisation"
 msgid "Organization updated"
 msgstr "Organisation aktualisiert"
 
+msgid "other"
+msgstr "sonstige"
+
 msgid "Other answer"
 msgstr "Andere Antwort"
 
@@ -3699,6 +3744,9 @@ msgstr "Wähle einen Preset oder definiere einen exakten Zeitplan / Cron-Ausdruc
 
 msgid "Pick any already-connected sources to sync into this base once it's created. You can add or remove sources later too."
 msgstr "Wähle bereits verbundene Quellen aus, die nach dem Erstellen in diese Basis synct werden. Du kannst Quellen auch später noch hinzufügen oder entfernen."
+
+msgid "Pick at least one entry."
+msgstr "Wähle mindestens einen Eintrag aus."
 
 msgid "Pick at least one model"
 msgstr "Wähle mindestens ein Modell aus"
@@ -5089,6 +5137,9 @@ msgstr "Der Zeitplan ist beendet"
 msgid "The schedule or event is not valid."
 msgstr "Der Zeitplan oder das Ereignis ist ungültig."
 
+msgid "The selection was empty at the last sync – its content is hidden and can be restored."
+msgstr "Die Auswahl war beim letzten Abgleich leer – die Inhalte sind ausgeblendet und lassen sich wiederherstellen."
+
 msgid "The server cannot be reached. Please check the address."
 msgstr "Der Server ist nicht erreichbar. Bitte prüf die Adresse."
 
@@ -5191,6 +5242,9 @@ msgstr "Nur dieser Agent"
 msgid "This agent was already created."
 msgstr "Dieser Agent wurde schon angelegt."
 
+msgid "This app is not installed."
+msgstr "Diese App ist nicht installiert."
+
 msgid "This archive cannot be restored:"
 msgstr "Dieses Archiv kann nicht wiederhergestellt werden:"
 
@@ -5230,6 +5284,9 @@ msgstr "Diese Verbindung ist noch nicht eingerichtet. Bitte wende dich an deinen
 msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
 msgstr "Die Basis-URL dieser Verbindung enthält eine Anmeldung. Lösche diese Verbindung und lege sie mit der Anmeldung in den Anmeldefeldern neu an."
 
+msgid "This connector can't be allowed from here."
+msgstr "Dieser Connector lässt sich hier nicht erlauben."
+
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr "Dies löscht jeden Agenten, jeden Lauf und jeden Wissenseintrag, den dieses Unternehmen derzeit hat, und ersetzt sie durch den Inhalt der hochgeladenen Datei. Dies kann nicht rückgängig gemacht werden."
 
@@ -5244,6 +5301,9 @@ msgstr "Dieser Filter liefert zu viele Ergebnisse. Grenze den Zeitraum ein, wäh
 
 msgid "This folder can't be opened. Go back and pick another."
 msgstr "Dieser Ordner lässt sich nicht öffnen. Geh zurück und wähl einen anderen."
+
+msgid "This folder could not be listed."
+msgstr "Dieser Ordner ließ sich nicht auflisten."
 
 msgid "This folder is empty."
 msgstr "Dieser Ordner ist leer."
@@ -5434,6 +5494,9 @@ msgstr "Token je Skill"
 msgid "too big"
 msgstr "zu groß"
 
+msgid "too large"
+msgstr "zu groß"
+
 msgid "Too many messages are waiting for this run. Wait until it has read them."
 msgstr "Für diesen Lauf warten zu viele Nachrichten. Warte, bis er sie gelesen hat."
 
@@ -5524,8 +5587,14 @@ msgstr "Lösen"
 msgid "Unpublished changes"
 msgstr "Unveröffentlichte Änderungen"
 
+msgid "unreadable"
+msgstr "nicht lesbar"
+
 msgid "Unregistered"
 msgstr "Nicht registriert"
+
+msgid "unsupported file type"
+msgstr "Dateityp nicht unterstützt"
 
 msgid "Untested"
 msgstr "Ungetestet"
@@ -5694,6 +5763,9 @@ msgstr "Warnung"
 
 msgid "We could not tell which account you signed in with. Please try again."
 msgstr "Wir konnten nicht erkennen, mit welchem Konto du dich angemeldet hast. Bitte versuch es erneut."
+
+msgid "We recommend an API key instead of a password."
+msgstr "Wir empfehlen einen API-Schlüssel statt eines Passworts."
 
 msgid "webhook"
 msgstr "Webhook"
