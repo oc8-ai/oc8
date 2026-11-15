@@ -277,6 +277,10 @@ def authorize(
             Effect.DENY,
             "direct access is offered only by the Copilot, to the person in this conversation",
         )
+    if tc.name == "board_write" and core_call:
+        # Belongs to no connection: the dispatch is the gate (the board's
+        # producing agent only; internal data, so no connection approvals, spec 6.4).
+        return Decision(Effect.ALLOW)
     if tc.name in COPILOT_TOOL_NAMES:
         # Belongs to no connection, like propose_change: the dispatch
         # (oc8.copilot.tools) is the gate -- Copilot only, and scoped to the

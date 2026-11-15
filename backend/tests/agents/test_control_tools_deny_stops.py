@@ -42,6 +42,12 @@ _ARGS: dict[str, dict[str, Any]] = {
     "schedule_followup": {"when": "2030-01-01T09:00:00Z", "note": "x"},
     "cancel_followup": {"followup_id": str(uuid.uuid4())},
     "offer_direct_access": {"connection": "things", "purpose": "find the quotation"},
+    "board_write": {
+        "board": str(uuid.uuid4()),
+        "dataset": "sales",
+        "as_of": "2026-03-01",
+        "values": {"amount": 1},
+    },
 }
 
 _LOCAL = {"stdout": "hi\n", "stderr": "", "exit_code": 0, "timed_out": False}
@@ -58,6 +64,8 @@ _TRACE_TABLES = (
     m.MemoryRecord,
     m.Trigger,
     CopilotProposal,
+    m.DataBoardBatch,
+    m.DataBoardRecord,
 )
 
 
@@ -156,6 +164,19 @@ async def _live(
         assert copilot is not None and offer_task is not None
         offer_run = await chat_run(db, office)
         return copilot, offer_task, offer_run.id, dict(_ARGS[tool])
+
+    if tool == "board_write":
+        # Not the Assistant: it produces no board. A real board and agent, so an
+        # ALLOWed call really writes and a refusal can only come from the decision.
+        from tests.boards.test_board_write_tool import _seed as seed_board
+
+        producer, board, producer_task, producer_run = await seed_board(db, tenant)
+        return (
+            producer,
+            producer_task,
+            producer_run.id,
+            {**_ARGS[tool], "board": str(board.id)},
+        )
 
     from tests.agents.test_control_tools import (
         _assistant_and_task,

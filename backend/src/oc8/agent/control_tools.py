@@ -685,6 +685,41 @@ RENDER_COMPONENT = NeutralTool(
     },
 )
 
+BOARD_WRITE = NeutralTool(
+    name="board_write",
+    description=(
+        "Record data for one of your dashboards. Give exactly one of `values` "
+        "(a single record) or `rows` (a list of records). Always report the "
+        "COMPLETE period: the latest write for a dataset and period replaces "
+        "the earlier ones on the dashboard, so a partial write hides the rest. "
+        "Use only the fields the dashboard declares, with their types."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "board": {"type": "string", "description": "The board's id."},
+            "dataset": {"type": "string", "description": "The dataset's key."},
+            "as_of": {
+                "type": "string",
+                "description": "The period, as a date matching the dataset's grain.",
+            },
+            "values": {"type": "object", "description": "One record: field key to value."},
+            "rows": {
+                "type": "array",
+                "items": {"type": "object"},
+                "maxItems": 500,
+                "description": "Several records, each field key to value.",
+            },
+            "note": {
+                "type": "string",
+                "maxLength": 2000,
+                "description": "Optional context for people reading the figures.",
+            },
+        },
+        "required": ["board", "dataset", "as_of"],
+    },
+)
+
 PROPOSE_CHANGE = NeutralTool(
     name="propose_change",
     description=(
@@ -1256,6 +1291,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     FETCH_URL.name: FETCH_URL,
     SEARCH_MEMORY.name: SEARCH_MEMORY,
     RENDER_COMPONENT.name: RENDER_COMPONENT,
+    BOARD_WRITE.name: BOARD_WRITE,
     PROPOSE_CHANGE.name: PROPOSE_CHANGE,
     DECIDE_APPROVAL.name: DECIDE_APPROVAL,
     READ_REFERENCE_FILE.name: READ_REFERENCE_FILE,
@@ -1304,6 +1340,7 @@ def offered_tools(
     has_context: bool = False,
     edition_tools: Sequence[NeutralTool] = (),
     offer_direct_access: bool = False,
+    produces_board: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -1365,6 +1402,9 @@ def offered_tools(
     ]
     if offer_write_output_file:
         offered.append(WRITE_OUTPUT_FILE)
+    # Only a producing agent has a board to write; the writer checks which one.
+    if produces_board and not agent.is_tenant_assistant:
+        offered.append(BOARD_WRITE)
     # Never the tenant Assistant's, on any runtime: its remit is read-only +
     # delegate_task + propose_change + decide_approval (assistant.py), and an
     # unoffered local tool is refused by the shell gate (`_local_refusal`).
@@ -2528,6 +2568,95 @@ async def _execute_edition_tool(
     return ControlOutcome(
         output=fence_data(outcome.output, tag="tool_output"),
         contains_restricted=outcome.contains_restricted,
+    )
+
+
+async def _board_write(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent: m.Agent,
+    task: m.Task,
+    tc: ToolCall,
+    decision: Decision,
+    run_id: uuid.UUID | None,
+    originating_operator: str | None,
+) -> ControlOutcome:
+    """Append one batch to a board the acting agent produces. Messages name keys
+    and limits, never submitted values."""
+    from oc8.boards.records import MAX_BATCH_ROWS, BoardWriteRefused, write_batch
+
+    if decision.effect is not Effect.ALLOW:
+        return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
+    if agent.deleted_at is not None:
+        return ControlOutcome(output="ERROR: this agent is retired and cannot write to a board")
+    args = tc.arguments
+    values, rows = args.get("values"), args.get("rows")
+    if (values is None) == (rows is None):
+        return ControlOutcome(output="ERROR: give exactly one of `values` or `rows`")
+    if isinstance(values, dict):
+        batch_rows: list[dict[str, Any]] = [values]
+    elif values is None and isinstance(rows, list) and all(isinstance(r, dict) for r in rows):
+        batch_rows = list(rows)
+    else:
+        return ControlOutcome(
+            output="ERROR: `values` must be one object and `rows` a list of objects"
+        )
+    if len(batch_rows) > MAX_BATCH_ROWS:
+        return ControlOutcome(
+            output=f"ERROR: at most {MAX_BATCH_ROWS} rows per write; split the data"
+        )
+    note = args.get("note")
+    if note is not None and (not isinstance(note, str) or len(note) > 2000):
+        return ControlOutcome(output="ERROR: `note` must be text of at most 2000 characters")
+    dataset, as_of = args.get("dataset"), args.get("as_of")
+    if not isinstance(dataset, str) or not isinstance(as_of, str):
+        return ControlOutcome(output="ERROR: `dataset` and `as_of` must be text")
+    try:
+        board_id = uuid.UUID(str(args.get("board", "")))
+    except ValueError:
+        return ControlOutcome(output="ERROR: `board` must be the board's id")
+    try:
+        # A savepoint: a refusal releases the board and cap locks at once, and
+        # leaves nothing of the batch behind, without touching the run's own work.
+        async with db.begin_nested():
+            batch = await write_batch(
+                db,
+                tenant_id=tenant_id,
+                agent=agent,
+                board_id=board_id,
+                dataset=dataset,
+                as_of=as_of,
+                rows=batch_rows,
+                note=note or None,
+                run_id=run_id,
+            )
+    except BoardWriteRefused as exc:
+        return ControlOutcome(output=f"ERROR: {exc}")
+    # After the writer: lock order is board row, cap lock, then the audit chain.
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="agent",
+        actor_id=agent.id,
+        category="tool_action",
+        action="board.written",
+        resource={
+            "board_id": str(board_id),
+            "dataset": dataset,
+            "as_of": as_of,
+            "batch_id": str(batch.id),
+            "rows": batch.row_count,
+            "run_id": str(run_id) if run_id else None,
+            "task_id": str(task.id),
+        },
+        originating_operator=originating_operator,
+    )
+    return ControlOutcome(
+        output=(
+            f"Recorded {batch.row_count} row(s) for {dataset} {as_of}. This replaces earlier "
+            "values for that period on the dashboard; always report the complete period."
+        )
     )
 
 
@@ -3816,6 +3945,18 @@ async def execute_control_tool(
                 f"avg response time {result.response_time_ms} ms, "
                 f"avg approval wait {result.approval_wait_ms} ms."
             )
+        )
+
+    if tc.name == BOARD_WRITE.name:
+        return await _board_write(
+            db,
+            tenant_id=tenant_id,
+            agent=agent,
+            task=task,
+            tc=tc,
+            decision=decision,
+            run_id=run_id,
+            originating_operator=originating_operator,
         )
 
     if tc.name == RENDER_COMPONENT.name:

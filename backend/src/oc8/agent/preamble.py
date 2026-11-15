@@ -134,6 +134,9 @@ class RunPreamble:
     #: fetched on demand.
     has_instruction_files: bool = False
     copilot_permissions: frozenset[str] = frozenset()
+    #: Whether the agent produces at least one live board: `board_write` is offered
+    #: to it alone (see oc8.boards.mission).
+    produces_board: bool = False
     #: The tenant's resolved timezone label (resolve_timezone's first return
     #: value) -- read back by engine.py/internal_agent.py after this call so
     #: C3's step stamp (format_step_stamp) uses the SAME resolved zone as A2's
@@ -429,6 +432,12 @@ async def build_run_preamble(
         if block is not None:
             messages.append(NeutralMessage(role="system", content=block))
 
+    from oc8.boards.mission import board_section
+
+    boards_text = await board_section(db, agent=agent)
+    if boards_text is not None:
+        messages.append(NeutralMessage(role="system", content=boards_text))
+
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=tenant_id)
     catalog = catalog_block(assigned_skills)
     if catalog:
@@ -479,5 +488,6 @@ async def build_run_preamble(
         has_knowledge=has_knowledge,
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        produces_board=boards_text is not None,
         tz=tz_label,
     )

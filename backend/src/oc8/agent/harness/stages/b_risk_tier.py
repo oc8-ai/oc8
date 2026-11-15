@@ -38,6 +38,9 @@ _CONTROL_READ: frozenset[str] = frozenset(
         "ask_user",
         # Touches no system: its own approval is the gate, so B5 must not ask again.
         "offer_direct_access",
+        # Touches no connected system (internal board data, spec 6.4): posture
+        # must never ask. The dispatch is the gate.
+        "board_write",
         "todo_write",
         "find_tools",
         "procedure_step_done",

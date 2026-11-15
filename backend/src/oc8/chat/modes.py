@@ -233,6 +233,8 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "cancel_followup",
         # Raises an approval: a read-only turn asks nobody for anything.
         "offer_direct_access",
+        # Writes dashboard data: a read-only turn records nothing.
+        "board_write",
     }
 )
 
