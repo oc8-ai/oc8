@@ -107,6 +107,9 @@ _REFUSALS: dict[str, str] = {
     "agent_unknown": "pick an agent from builder_options that may get a dashboard (agentId)",
     "agent_other_department": "a dashboard can only be handed to an agent of its own department",
     "board_version_unknown": "that version does not exist; leave restoreVersion out",
+    "board_changed": (
+        "the dashboard changed since this proposal; propose again from the current version"
+    ),
     "artifact_not_available": "artifact blocks are not available here; use the other block types",
     "dataset_removed": "a dashboard change may only add datasets; keep every existing one",
     "field_removed": "a dashboard change may only add fields; keep every existing one",

@@ -66,6 +66,7 @@ from oc8.copilot.capabilities import (
     apply_operation,
     new_department_frame,
     operation_label,
+    target_revision,
 )
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.redaction import carries_secret_value
@@ -720,7 +721,7 @@ async def create_builder_proposal(
                 ordinal=ordinal,
                 operation_type=operation_label(step.operation.type),
                 configuration=builder_operation_data(step),
-                target_revision=None,
+                target_revision=await _board_base(db, step.operation),
             )
         )
     await db.flush()
@@ -743,6 +744,48 @@ async def create_builder_proposal(
     for row in [*superseded_rows, *expired_requests]:
         await announce_builder(db, row)
     return proposal
+
+
+async def _board_base(db: AsyncSession, operation: Operation) -> str | None:
+    """The board's `spec_version` a `board.update` is proposed against (its
+    base), kept as the step's `target_revision`; None for any other step, and
+    for a board gone since `_check_board_reach` (apply then says `board_unknown`)."""
+    if not isinstance(operation, BoardUpdate):
+        return None
+    try:
+        return await target_revision(db, operation)
+    except InvalidOperation:
+        return None
+
+
+async def _board_bases(db: AsyncSession, proposal: CopilotProposal) -> dict[int, str | None]:
+    """Each stored step's base, by its index (`_board_base`)."""
+    rows = await db.execute(
+        select(CopilotOperation.ordinal, CopilotOperation.target_revision).where(
+            CopilotOperation.proposal_id == proposal.id
+        )
+    )
+    return {ordinal: revision for ordinal, revision in rows.tuples()}
+
+
+async def _check_board_base(db: AsyncSession, operation: Operation, base: str | None) -> None:
+    """A `board.update` lands only on the version it was proposed against.
+
+    The board row is locked first (`target_revision(lock_for_apply=True)`, the
+    lock `board_write` and the delete route take) and held to commit, so no
+    change lands between this check and the update. A change made since --
+    another proposal's update, a restore -- refuses (`board_changed`): the
+    person proposes again from the current version instead of silently
+    dropping what that change added. A step stored without a base is refused
+    the same way."""
+    if not isinstance(operation, BoardUpdate):
+        return
+    try:
+        current = await target_revision(db, operation, lock_for_apply=True)
+    except InvalidOperation:
+        raise InvalidOperation("board_unknown") from None
+    if base is None or current != base:
+        raise InvalidOperation("board_changed")
 
 
 async def _remember(
@@ -900,6 +943,7 @@ async def apply_builder_proposal(
     # The applier owns any trigger a step creates, as on a plain Copilot
     # proposal (`apply_proposal` passes its actor the same way).
     applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
+    bases = await _board_bases(db, proposal)
     refs: dict[str, uuid.UUID] = {}
     board_id: uuid.UUID | None = None
     failed_at = 0
@@ -914,6 +958,7 @@ async def apply_builder_proposal(
                     await _publish_new_agent(db, refs[agent_ref], published_by=applied_by_member)
                     published = True
                 failed_at = index
+                await _check_board_base(db, step.operation, bases.get(index))
                 data, ref = resolve_step(builder_operation_data(step), refs)
                 created = await apply_operation(
                     db,
@@ -1005,9 +1050,11 @@ async def _apply_board_only(
     except BuilderInvalid as refused:
         raise await _remember(db, proposal, refused) from None
     step = steps[0]
+    bases = await _board_bases(db, proposal)
     applied_by_member = await _member_id(db, tenant_id=proposal.tenant_id, subject=applied_by)
     try:
         async with db.begin_nested():
+            await _check_board_base(db, step.operation, bases.get(0))
             data, _ref = resolve_step(builder_operation_data(step), {}, board_only=True)
             created = await apply_operation(
                 db,

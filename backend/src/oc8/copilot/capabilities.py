@@ -465,8 +465,10 @@ async def target_revision(
     if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall, BoardCreate)):
         return None
     if isinstance(operation, BoardUpdate):
-        # The board row first and nothing else: the same lock `board_write` and
-        # the delete route take, so a view change serializes with writes.
+        # A builder proposal's base (`builder._board_base`, `_check_board_base`);
+        # generic proposals never carry board operations. The board row first
+        # and nothing else: the same lock `board_write` and the delete route
+        # take, so a view change serializes with writes.
         board_statement = select(m.DataBoard.spec_version).where(
             m.DataBoard.id == operation.boardId,
             m.DataBoard.deleted_at.is_(None),

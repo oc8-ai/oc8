@@ -174,6 +174,11 @@ function boardReasonText(code: string, t: Translate): string | null {
         "That earlier version of the dashboard does not exist.",
         "Diese frühere Version des Dashboards gibt es nicht.",
       );
+    case "board_changed":
+      return t(
+        "The dashboard changed since this proposal. Ask the Copilot to propose the change again from its current version.",
+        "Das Dashboard hat sich seit diesem Vorschlag geändert. Bitte den Copilot, die Änderung auf dem aktuellen Stand neu vorzuschlagen.",
+      );
     case "board_spec_invalid":
       return t("The dashboard's layout is not valid.", "Der Aufbau des Dashboards ist ungültig.");
     case "artifact_not_available":

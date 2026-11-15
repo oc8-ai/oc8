@@ -429,6 +429,7 @@ describe("builderRefusalText", () => {
       "agent_unknown",
       "agent_other_department",
       "board_version_unknown",
+      "board_changed",
       "board_spec_invalid",
       "artifact_not_available",
       "board_builder_only",
@@ -442,6 +443,15 @@ describe("builderRefusalText", () => {
       /layout/,
     );
     expect(fallback).not.toMatch(/agent/i);
+  });
+  it("asks to propose again when the dashboard changed since the proposal", () => {
+    const de = (_en: string, de: string) => de;
+    expect(builderRefusalText("step_failed", 0, t, "board_changed", "board")).toMatch(
+      /^Step 1 could not be applied: The dashboard changed since this proposal\..*Nothing was saved\.$/,
+    );
+    expect(builderRefusalText("step_failed", 0, de, "board_changed", "board")).toMatch(
+      /Das Dashboard hat sich seit diesem Vorschlag geändert/,
+    );
   });
   it("says what a dashboard change may not do", () => {
     const de = (_en: string, de: string) => de;

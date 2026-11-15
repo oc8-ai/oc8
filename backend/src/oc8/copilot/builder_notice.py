@@ -15,6 +15,7 @@ module reads no board."""
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import Final
@@ -121,6 +122,16 @@ REASONS: Final[dict[str, str]] = {
     "board_version_unknown": (
         "that earlier version of the dashboard does not exist. Leave restoreVersion out"
     ),
+    "board_changed": (
+        "the dashboard changed since this proposal (another change was applied first). "
+        "Read its current version in builder_options and propose the change again "
+        "from it"
+    ),
+    "department_changed": (
+        "the dashboard or its agent moved to another department after the request was "
+        "sent. The approver rejects this request; propose it again so it goes to the "
+        "right department"
+    ),
     "artifact_not_available": (
         "artifact blocks need the Enterprise edition. Use the other block types"
     ),
@@ -157,7 +168,9 @@ def notice_text(
     code = reason if isinstance(reason, str) else refusal
     why = REASONS.get(code, _UNKNOWN)
     board = is_board_only(steps)
-    name = one_line(board_title, 120) if board else create_step(steps).name
+    # The board's title is person-written: one line, escaped and quoted, like
+    # every label in the boards mission (`boards.mission._text`).
+    name = json.dumps(one_line(board_title, 120)) if board else f"“{create_step(steps).name}”"
     tool, subject = ("propose_board", "dashboard") if board else ("propose_agent", "agent")
     card = subject
     where = ""
@@ -166,7 +179,7 @@ def notice_text(
         where = f" at step {step + 1} ({label})"
     return (
         f"{NOTICE_PREFIX}the person clicked Create on the {card} card for "
-        f"“{name}”, and oc8 refused it{where}: {why}. Nothing was created "
+        f"{name}, and oc8 refused it{where}: {why}. Nothing was created "
         f"(code: {code}). Tell the person in one or two plain sentences, in their "
         f"language, what went wrong. If you can fix it yourself, call {tool} "
         f"once with the corrected {subject} and say what you changed. If only they can "

@@ -5102,6 +5102,9 @@ msgstr ""
 msgid "The copilot found nothing in the instructions to restrict here."
 msgstr ""
 
+msgid "The dashboard changed since this proposal. Ask the Copilot to propose the change again from its current version."
+msgstr ""
+
 msgid "The dashboard could not be deleted. Reload and try again."
 msgstr ""
 
