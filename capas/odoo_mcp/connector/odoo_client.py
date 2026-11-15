@@ -359,7 +359,11 @@ class OdooClient:
             )
             body = answer.body if answer.status == 200 else None
             result = body.get("result") if isinstance(body, dict) else None
-        info = result.get("server_version_info") if isinstance(result, dict) else None
+        info = None
+        if isinstance(result, dict):
+            # /jsonrpc names it `server_version_info`; /web/version may name
+            # it `version_info`.
+            info = result.get("server_version_info") or result.get("version_info")
         return _parse_version(info)
 
     async def _jsonrpc_login(self) -> None:
@@ -494,7 +498,17 @@ async def open_client(
     base_url = url.strip().rstrip("/")
     if not base_url or base_url_has_login(base_url):
         raise OdooError("The Odoo address is not valid.")
-    if urlsplit(base_url).scheme.lower() not in ("http", "https"):
+    malformed = False
+    try:
+        scheme = urlsplit(base_url).scheme.lower()
+    except ValueError:
+        malformed = True
+    if malformed:
+        # Raised outside the except block, so nothing naming the address is
+        # chained to it.
+        logger.info("odoo address refused: not a valid address")
+        raise OdooUnreachable("The Odoo address is not valid.")
+    if scheme not in ("http", "https"):
         logger.info("odoo address refused: not an http(s) address")
         raise OdooUnreachable("The Odoo address is not allowed.")
     if not database or not login or not secret:

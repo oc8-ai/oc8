@@ -629,3 +629,37 @@ async def test_record_url_by_version() -> None:
             assert client.record_url("knowledge", 9) == knowledge
         finally:
             await client.aclose()
+
+
+async def test_malformed_address_is_unreachable_with_a_fixed_message() -> None:
+    """`urlsplit` raises ValueError on e.g. an unclosed IPv6 bracket; that
+    must not escape as a ValueError naming the address."""
+    fake = FakeOdoo([19, 0, 0, "final", 0, ""])
+    with pytest.raises(OdooUnreachable) as info:
+        await _open(fake, url=f"https://[{HOST}")
+    assert fake.requests == []
+    assert str(info.value) == "The Odoo address is not valid."
+    assert info.value.__cause__ is None
+    assert info.value.__context__ is None
+    _assert_clean(str(info.value))
+
+
+class _TopLevelVersionInfo(FakeOdoo):
+    """A later Odoo whose /web/version answers `version_info`, not
+    `server_version_info`."""
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/web/version":
+            self.requests.append(request)
+            return self._ok({"version": "x", "version_info": self.version})
+        return super().handle(request)
+
+
+async def test_web_version_fallback_accepts_version_info() -> None:
+    fake = _TopLevelVersionInfo([20, 0, 0, "final", 0, ""], jsonrpc_missing=True)
+    client = await _open(fake)
+    try:
+        assert client.version == (20, 0)
+        assert client.protocol == "json2"
+    finally:
+        await client.aclose()
