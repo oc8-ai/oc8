@@ -4829,9 +4829,6 @@ msgstr ""
 msgid "Task board"
 msgstr ""
 
-msgid "Task Board"
-msgstr ""
-
 msgid "Task created"
 msgstr ""
 
@@ -5718,9 +5715,6 @@ msgid "Waiting for the next step"
 msgstr ""
 
 msgid "Waiting for you"
-msgstr ""
-
-msgid "Waiting on me"
 msgstr ""
 
 msgid "Waiting on your answer"

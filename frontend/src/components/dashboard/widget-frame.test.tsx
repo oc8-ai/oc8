@@ -1,6 +1,7 @@
 import { render, screen, fireEvent } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { WidgetFrame } from "./widget-frame";
+import { WIDGET_REGISTRY } from "./widget-registry";
 import type { WidgetInstance } from "@/lib/hooks";
 
 function makeInstance(overrides: Partial<WidgetInstance> = {}): WidgetInstance {
@@ -46,22 +47,29 @@ describe("WidgetFrame", () => {
     expect(screen.getAllByText("Budget")).toHaveLength(1);
   });
 
-  it("renders a registry menu in the edit-mode header only", () => {
-    // budget has no menu; frame-level `menu` slot is exercised via the registry entry.
-    const { rerender } = render(
-      <WidgetFrame instance={makeInstance()} editing onConfigChange={vi.fn()} onRemove={vi.fn()} />,
+  it("renders the registry entry's menu in the edit header only", () => {
+    const original = WIDGET_REGISTRY.budget.menu;
+    WIDGET_REGISTRY.budget.menu = (config) => (
+      <span data-testid="frame-menu">{String(config.k)}</span>
     );
-    expect(screen.queryByTestId("frame-menu")).toBeNull();
-    rerender(
-      <WidgetFrame
-        instance={makeInstance()}
-        editing
-        menu={<span data-testid="frame-menu" />}
-        onConfigChange={vi.fn()}
-        onRemove={vi.fn()}
-      />,
-    );
-    expect(screen.getByTestId("frame-menu")).toBeInTheDocument();
+    try {
+      const instance = makeInstance({ config: { k: "v" } });
+      const { rerender } = render(
+        <WidgetFrame instance={instance} editing onConfigChange={vi.fn()} onRemove={vi.fn()} />,
+      );
+      expect(screen.getByTestId("frame-menu")).toHaveTextContent("v");
+      rerender(
+        <WidgetFrame
+          instance={instance}
+          editing={false}
+          onConfigChange={vi.fn()}
+          onRemove={vi.fn()}
+        />,
+      );
+      expect(screen.queryByTestId("frame-menu")).toBeNull();
+    } finally {
+      WIDGET_REGISTRY.budget.menu = original;
+    }
   });
 
   it("shows an unknown-widget fallback for an unregistered type, never throwing", () => {

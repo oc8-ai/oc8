@@ -33,14 +33,11 @@ class WidgetErrorBoundary extends Component<{ children: ReactNode }, { hasError:
 export function WidgetFrame({
   instance,
   editing,
-  menu,
   onConfigChange,
   onRemove,
 }: {
   instance: WidgetInstance;
   editing: boolean;
-  /** Extra edit-mode controls next to the remove button. */
-  menu?: ReactNode;
   onConfigChange: (config: Record<string, unknown>) => void;
   onRemove: () => void;
 }) {
@@ -56,7 +53,6 @@ export function WidgetFrame({
         <div className="dashboard-widget-drag-handle flex shrink-0 cursor-move items-center gap-1.5 border-b border-border px-2 py-1">
           <GripVertical className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="flex-1" />
-          {menu}
           {entry?.menu?.(instance.config)}
           <button
             type="button"

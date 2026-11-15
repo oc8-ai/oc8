@@ -14,6 +14,7 @@ import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { useT } from "@/lib/i18n";
+import { useWidgetLabel } from "@/components/dashboard/widget-labels";
 import { WidgetTitle } from "@/components/dashboard/widget-title";
 
 // Gated the same way `CopilotDock` gates itself (copilot-dock.tsx) and for
@@ -34,11 +35,12 @@ export function ChatWidget({
   onConfigChange: (config: Record<string, unknown>) => void;
 }) {
   const t = useT();
+  const title = useWidgetLabel("chat");
   const can = useCan();
   if (!can("copilot:use")) {
     return (
       <div className="flex h-full flex-col">
-        <WidgetTitle title={t("Chat", "Chat")} />
+        <WidgetTitle title={title} />
         <div className="flex flex-1 items-center justify-center p-3 text-center text-xs text-muted-foreground">
           {t(
             "You don't have access to Copilot chat.",
@@ -60,6 +62,7 @@ function ChatWidgetPanel({
 }) {
   const t = useT();
   const de = t("en", "de") === "de";
+  const title = useWidgetLabel("chat");
   const [draft, setDraft] = useState("");
   const { data: assistant } = useAssistant();
   const assistantAgentId = assistant?.agentId;
@@ -80,7 +83,7 @@ function ChatWidgetPanel({
   return (
     <div className="flex h-full flex-col">
       <WidgetTitle
-        title={t("Chat", "Chat")}
+        title={title}
         actions={
           <>
             {assistantAgentId && (

@@ -11,6 +11,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { useCreateTask, useDepartments, useTaskBoard, type TaskBoardRow } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import { useWidgetLabel } from "@/components/dashboard/widget-labels";
 import { WidgetTitle } from "@/components/dashboard/widget-title";
 import { cn } from "@/lib/utils";
 
@@ -47,6 +48,7 @@ export function TaskBoardWidget(_props: {
   onConfigChange: (config: Record<string, unknown>) => void;
 }) {
   const t = useT();
+  const title = useWidgetLabel("tasks");
   const boardQuery = useTaskBoard();
   const rows = useMemo(() => boardQuery.data ?? [], [boardQuery.data]);
   const [creating, setCreating] = useState(false);
@@ -64,7 +66,7 @@ export function TaskBoardWidget(_props: {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <WidgetTitle
-        title={t("Task Board", "Aufgaben-Board")}
+        title={title}
         actions={
           <>
             <span className="text-xs text-muted-foreground">

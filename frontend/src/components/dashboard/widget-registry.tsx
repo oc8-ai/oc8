@@ -20,6 +20,7 @@ import { ChatWidget } from "@/components/dashboard/widgets/chat-widget";
 import { NeedsMeWidget } from "@/components/dashboard/widgets/needs-me-widget";
 import { ReportsWidget } from "@/components/dashboard/widgets/reports-widget";
 import { TaskBoardWidget } from "@/components/dashboard/widgets/task-board-widget";
+import { WIDGET_LABELS } from "@/components/dashboard/widget-labels";
 import type { WidgetType } from "@/lib/hooks";
 
 type WidgetComponentProps = {
@@ -43,43 +44,43 @@ export const WIDGET_REGISTRY: Record<
   }
 > = {
   chat: {
-    label: (de) => (de ? "Chat" : "Chat"),
+    label: (de) => (de ? WIDGET_LABELS["chat"].de : WIDGET_LABELS["chat"].en),
     component: ChatWidget,
     defaultSize: { w: 6, h: 12 },
     icon: MessageSquare,
   },
   approvals: {
-    label: (de) => (de ? "Freigaben" : "Approvals"),
+    label: (de) => (de ? WIDGET_LABELS["approvals"].de : WIDGET_LABELS["approvals"].en),
     component: ApprovalsWidget,
     defaultSize: { w: 4, h: 10 },
     icon: CheckCircle2,
   },
   "needs-me": {
-    label: (de) => (de ? "Wartet auf mich" : "Waiting on me"),
+    label: (de) => (de ? WIDGET_LABELS["needs-me"].de : WIDGET_LABELS["needs-me"].en),
     component: NeedsMeWidget,
     defaultSize: { w: 4, h: 12 },
     icon: Inbox,
   },
   reports: {
-    label: (de) => (de ? "Reports" : "Reports"),
+    label: (de) => (de ? WIDGET_LABELS["reports"].de : WIDGET_LABELS["reports"].en),
     component: ReportsWidget,
     defaultSize: { w: 4, h: 8 },
     icon: PieChart,
   },
   budget: {
-    label: (de) => (de ? "Budget" : "Budget"),
+    label: (de) => (de ? WIDGET_LABELS["budget"].de : WIDGET_LABELS["budget"].en),
     component: BudgetWidget,
     defaultSize: { w: 3, h: 6 },
     icon: Wallet,
   },
   activity: {
-    label: (de) => (de ? "Aktivität" : "Activity"),
+    label: (de) => (de ? WIDGET_LABELS["activity"].de : WIDGET_LABELS["activity"].en),
     component: ActivityWidget,
     defaultSize: { w: 3, h: 8 },
     icon: Activity,
   },
   tasks: {
-    label: (de) => (de ? "Aufgaben-Board" : "Task Board"),
+    label: (de) => (de ? WIDGET_LABELS["tasks"].de : WIDGET_LABELS["tasks"].en),
     component: TaskBoardWidget,
     defaultSize: { w: 6, h: 10 },
     icon: Kanban,

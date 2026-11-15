@@ -81,7 +81,16 @@ vi.mock("@/components/run-step-timeline", () => ({
 }));
 
 vi.mock("@/components/dashboard/widgets/needs-me-widget", () => ({
-  NeedsMeWidget: ({ agentId }: { agentId?: string }) => <div data-testid="needs-me">{agentId}</div>,
+  // The dashboard tile (wrapper) adds a title; the bare body does not.
+  NeedsMeWidget: ({ agentId }: { agentId?: string }) => (
+    <div data-testid="needs-me">
+      <span>Waiting on me</span>
+      {agentId}
+    </div>
+  ),
+  NeedsMeWidgetBody: ({ agentId }: { agentId?: string }) => (
+    <div data-testid="needs-me">{agentId}</div>
+  ),
 }));
 
 import { CopilotPersonaHeader } from "@/components/copilot-persona";
@@ -174,6 +183,8 @@ describe("CopilotWorkPanel", () => {
     wrap(<CopilotWorkPanel />);
     openTab(/waiting/i);
     expect(screen.getByTestId("needs-me")).toHaveTextContent("agent-1");
+    // Only the dashboard tile carries the "Waiting on me" title.
+    expect(screen.queryByText("Waiting on me")).toBeNull();
   });
 
   it("notes tab deletes a note", () => {

@@ -18,6 +18,7 @@ import { useT } from "@/lib/i18n";
 import { RunStepTimeline } from "@/components/run-step-timeline";
 import { cn } from "@/lib/utils";
 import type { ComponentProps } from "react";
+import { useWidgetLabel } from "@/components/dashboard/widget-labels";
 import { WidgetTitle } from "@/components/dashboard/widget-title";
 
 type Kind = "approval" | "clarification" | "parked";
@@ -40,10 +41,10 @@ const PARKED_STATES = "waiting_for_approval,waiting_for_input";
 // Every widget draws its own one-line title; the frame only adds a header in
 // edit mode. The body keeps its own loading/empty/error branches.
 export function NeedsMeWidget(props: ComponentProps<typeof NeedsMeWidgetBody>) {
-  const t = useT();
+  const title = useWidgetLabel("needs-me");
   return (
     <div className="flex h-full flex-col">
-      <WidgetTitle title={t("Waiting on me", "Wartet auf mich")} />
+      <WidgetTitle title={title} />
       <div className="min-h-0 flex-1 overflow-hidden">
         <NeedsMeWidgetBody {...props} />
       </div>
@@ -51,7 +52,7 @@ export function NeedsMeWidget(props: ComponentProps<typeof NeedsMeWidgetBody>) {
   );
 }
 
-function NeedsMeWidgetBody({
+export function NeedsMeWidgetBody({
   agentId,
 }: {
   config: Record<string, unknown>;
