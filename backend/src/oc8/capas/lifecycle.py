@@ -108,6 +108,11 @@ async def _installation(
     return inst
 
 
+def deferred_permissions(version: CapaVersion) -> set[str]:
+    """The permissions this version lets a tenant grant after enabling."""
+    return set((version.manifest or {}).get("deferred_permissions") or [])
+
+
 async def _current_version(db: AsyncSession, plugin: Capa) -> CapaVersion | None:
     if plugin.current_version_id is None:
         return None
@@ -201,7 +206,9 @@ async def enable_plugin(
     version = await _current_version(db, plugin)
     if version is None:
         raise PluginError("plugin has no current version")
-    required = set(version.permissions)
+    # A deferred permission is granted later (grant_deferred_permission), so
+    # enabling never waits on it.
+    required = set(version.permissions) - deferred_permissions(version)
     if not required.issubset(set(granted_permissions)):
         raise ConsentError(f"missing consent for: {sorted(required - set(granted_permissions))}")
     inst = await _installation(db, tenant_id, capa_id)
@@ -241,6 +248,49 @@ async def enable_plugin(
         await forget_plugin_runtime(tenant_id, capa_id)
         raise
     return inst
+
+
+class NotDeferredError(PluginError):
+    """The permission is not one the capa's current version defers."""
+
+
+class NotEnabledError(PluginError):
+    """A deferred permission is granted on an enabled installation only."""
+
+
+async def grant_deferred_permission(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    capa_id: uuid.UUID,
+    permission: str,
+) -> CapaInstallation:
+    """Grant one permission the capa deferred at enable. Idempotent.
+
+    Goes through ``enable_plugin`` with the widened grant, so hooks are
+    re-registered with it and the grant is recorded exactly as an enable is.
+    """
+    plugin = await db.get(Capa, capa_id)
+    if plugin is None:
+        raise PluginError("plugin not found")
+    version = await _current_version(db, plugin)
+    if version is None:
+        raise PluginError("plugin has no current version")
+    if permission not in deferred_permissions(version):
+        raise NotDeferredError(f"{permission!r} is not a deferred permission of this capa")
+    inst = (
+        await db.execute(select(CapaInstallation).where(CapaInstallation.capa_id == capa_id))
+    ).scalar_one_or_none()
+    if inst is None or inst.status != "enabled":
+        raise NotEnabledError("a deferred permission is granted on an enabled capa only")
+    if permission in inst.granted_permissions:
+        return inst
+    return await enable_plugin(
+        db,
+        tenant_id=tenant_id,
+        capa_id=capa_id,
+        granted_permissions=[*inst.granted_permissions, permission],
+    )
 
 
 async def forget_plugin_runtime(tenant_id: uuid.UUID, capa_id: uuid.UUID) -> None:

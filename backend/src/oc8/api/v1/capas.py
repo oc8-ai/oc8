@@ -22,10 +22,14 @@ from oc8.capas.discovery import discover_plugins, find_plugin
 from oc8.capas.i18n import translations_for
 from oc8.capas.lifecycle import (
     ConsentError,
+    NotDeferredError,
+    NotEnabledError,
     QuarantinedError,
+    deferred_permissions,
     disable_plugin,
     enable_plugin,
     forget_plugin_runtime,
+    grant_deferred_permission,
 )
 from oc8.capas.loader import TRUSTED, LoaderError, import_entry_point
 from oc8.capas.manifest import (
@@ -237,6 +241,10 @@ class InstallFromDiskRequest(CamelModel):
 
 class EnableRequest(CamelModel):
     granted_permissions: list[str] = []
+
+
+class GrantRequest(CamelModel):
+    permission: str
 
 
 class DisableRequest(CamelModel):
@@ -1144,14 +1152,17 @@ async def install_from_disk(
     # of an enabled plugin is re-enabled only when it asks for no permission
     # beyond those already granted; anything new keeps the explicit consent
     # step. A deliberately disabled or quarantined plugin stays as it is.
-    required = set(version.permissions)
+    # Deferred permissions are never asked for here: they are granted later
+    # (POST /capas/{id}/grant), and one already granted is kept.
+    deferred = deferred_permissions(version)
+    required = set(version.permissions) - deferred
     fresh = was_status in (None, "installed")
     if body.enable and (fresh or (was_status == "enabled" and required <= granted_before)):
         await enable_plugin(
             db,
             tenant_id=principal.tenant_id,
             capa_id=version.capa_id,
-            granted_permissions=sorted(required),
+            granted_permissions=sorted(required | (granted_before & deferred)),
         )
     plugin = await db.get(m.Capa, version.capa_id)
     assert plugin is not None
@@ -1453,6 +1464,36 @@ async def enable(
     except ConsentError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except QuarantinedError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except PluginError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return InstallationDTO(
+        plugin_id=str(inst.capa_id),
+        status=inst.status,
+        granted_permissions=list(inst.granted_permissions),
+        failure_count=inst.failure_count,
+    )
+
+
+@router.post(
+    "/capas/{capa_id}/grant",
+    response_model=InstallationDTO,
+    dependencies=[Depends(require_permission(perm(PLUGIN, MANAGE)))],
+)
+async def grant(
+    capa_id: uuid.UUID, body: GrantRequest, db: DbSession, principal: CurrentPrincipal
+) -> InstallationDTO:
+    """Grant a permission the capa deferred at enable, e.g. `knowledge:write`
+    the first time its knowledge connectors are used."""
+    # Same lock order as enable: the grant re-enables with the widened consent.
+    await _lock_capa(db, principal.tenant_id, capa_id)
+    try:
+        inst = await grant_deferred_permission(
+            db, tenant_id=principal.tenant_id, capa_id=capa_id, permission=body.permission
+        )
+    except NotDeferredError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except NotEnabledError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc

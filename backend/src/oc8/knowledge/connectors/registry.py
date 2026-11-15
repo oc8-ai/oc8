@@ -31,7 +31,7 @@ from oc8.capas.loader import load_plugin
 from oc8.knowledge.connectors.base import Connector, ConnectorError
 from oc8.knowledge.connectors.upload import _UPLOAD
 from oc8.knowledge.connectors.website import _WEBSITE
-from oc8.models import Capa, CapaInstallation
+from oc8.models import Capa, CapaInstallation, CapaVersion
 
 _CONNECTORS: dict[str, Connector] = {c.type_id: c for c in (_UPLOAD, _WEBSITE)}
 
@@ -77,20 +77,77 @@ async def enabled_plugin_names(db: AsyncSession, tenant_id: uuid.UUID) -> list[s
     return list(rows)
 
 
+#: The permission a capa's knowledge connectors need. A capa may defer it
+#: (``Manifest.deferred_permissions``); its connectors then wait for the grant.
+KNOWLEDGE_WRITE = "knowledge:write"
+
+
+async def _enabled_plugin_grants(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> list[tuple[str, uuid.UUID, set[str], set[str]]]:
+    """(name, capa id, granted permissions, deferred permissions) of each plugin
+    this tenant has enabled -- the same rows as ``enabled_plugin_names``, read
+    with what the enabled version defers and what the tenant granted."""
+    rows = await db.execute(
+        select(
+            Capa.name,
+            Capa.id,
+            CapaInstallation.granted_permissions,
+            CapaVersion.manifest["deferred_permissions"],
+        )
+        .join(CapaInstallation, CapaInstallation.capa_id == Capa.id)
+        .outerjoin(CapaVersion, CapaVersion.id == CapaInstallation.version_id)
+        .where(
+            Capa.tenant_id == tenant_id,
+            CapaInstallation.tenant_id == tenant_id,
+            CapaInstallation.status == "enabled",
+        )
+    )
+    return [
+        (name, capa_id, set(granted or []), set(deferred or []))
+        for name, capa_id, granted, deferred in rows.all()
+    ]
+
+
+def _loaded_connectors(name: str) -> dict[str, Connector]:
+    """What plugin ``name`` contributes, or nothing when it is missing from
+    disk, fails to load or contributes no connector -- never an error."""
+    discovered = find_plugin(name)
+    if discovered is None or not load_plugin(discovered):
+        return {}
+    return connectors_for(name)
+
+
 async def _plugin_connectors(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, Connector]:
     """Connectors contributed by the plugins THIS tenant may use.
 
     A plugin missing from disk, quarantined, or contributing nothing simply
-    contributes nothing here -- none of those is an error for the caller.
+    contributes nothing here -- none of those is an error for the caller. Nor
+    does a plugin that defers ``knowledge:write`` and has not been granted it.
     """
     out: dict[str, Connector] = {}
-    for name in await enabled_plugin_names(db, tenant_id):
-        discovered = find_plugin(name)
-        if discovered is None:
+    for name, _capa_id, granted, deferred in await _enabled_plugin_grants(db, tenant_id):
+        if KNOWLEDGE_WRITE in deferred and KNOWLEDGE_WRITE not in granted:
             continue
-        if not load_plugin(discovered):
+        out.update(_loaded_connectors(name))
+    return out
+
+
+async def consent_pending_connectors(
+    db: AsyncSession, *, tenant_id: uuid.UUID
+) -> dict[str, tuple[Connector, uuid.UUID, str]]:
+    """Connectors an enabled plugin would contribute once its deferred
+    ``knowledge:write`` is granted: type id -> (connector, capa id, permission).
+
+    For the catalog only, so it can offer the consent step. Never resolvable:
+    ``resolve_connector`` does not look here.
+    """
+    out: dict[str, tuple[Connector, uuid.UUID, str]] = {}
+    for name, capa_id, granted, deferred in await _enabled_plugin_grants(db, tenant_id):
+        if KNOWLEDGE_WRITE not in deferred or KNOWLEDGE_WRITE in granted:
             continue
-        out.update(connectors_for(name))
+        for type_id, connector in _loaded_connectors(name).items():
+            out[type_id] = (connector, capa_id, KNOWLEDGE_WRITE)
     return out
 
 

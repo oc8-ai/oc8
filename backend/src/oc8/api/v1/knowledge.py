@@ -28,7 +28,11 @@ from oc8.knowledge.chunks import linked_source_ids, list_chunks, list_documents
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.fetcher import safe_fetch
-from oc8.knowledge.connectors.registry import available_connectors, resolve_connector
+from oc8.knowledge.connectors.registry import (
+    available_connectors,
+    consent_pending_connectors,
+    resolve_connector,
+)
 from oc8.knowledge.embedding_policy import require_local_reason
 from oc8.knowledge.external_index import ExternalIndexRejected, validate_external_index_binding
 from oc8.knowledge.ingest import (
@@ -104,8 +108,11 @@ class ConnectorCatalogDTO(CamelModel):
     #: somewhere needs an active organisation connection of that provider:
     #: a source feeds shared knowledge, never one person's own account.
     usable: bool = True
-    #: What is missing when it is not usable, e.g. "oauth:google".
+    #: What is missing when it is not usable, e.g. "oauth:google", or
+    #: "consent:knowledge:write" for a capa that defers that permission.
     missing: str | None = None
+    #: The capa to grant the missing consent on (POST /capas/{id}/grant).
+    capa_id: str | None = None
 
 
 class VectorIndexCatalogDTO(CamelModel):
@@ -140,13 +147,27 @@ async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[Co
             )
         ).scalars()
     )
+    # A capa that defers knowledge:write contributes nothing until it is
+    # granted; its connectors are listed as waiting for that consent.
+    pending = {
+        type_id: entry
+        for type_id, entry in (
+            await consent_pending_connectors(db, tenant_id=principal.tenant_id)
+        ).items()
+        if type_id not in connectors
+    }
+    entries = {**connectors, **{t: connector for t, (connector, _, _) in pending.items()}}
     out: list[ConnectorCatalogDTO] = []
-    for type_id, connector in sorted(connectors.items()):
+    for type_id, connector in sorted(entries.items()):
         # Uploads are created by document upload, not as a configurable source.
         if type_id == "upload":
             continue
         provider = connector.requires_oauth
         missing = f"oauth:{provider}" if provider and provider not in connected else None
+        capa_id: str | None = None
+        if type_id in pending:
+            _, pending_capa, permission = pending[type_id]
+            missing, capa_id = f"consent:{permission}", str(pending_capa)
         out.append(
             ConnectorCatalogDTO(
                 type_id=type_id,
@@ -156,6 +177,7 @@ async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[Co
                 requires_oauth=provider,
                 usable=missing is None,
                 missing=missing,
+                capa_id=capa_id,
             )
         )
     return out
