@@ -48,7 +48,7 @@ from oc8.knowledge.ingest import (
 )
 from oc8.knowledge.retrieval import similar_chunks
 from oc8.knowledge.scope_prune import FLAG as SCOPE_FLAG
-from oc8.knowledge.scope_prune import picker_changed
+from oc8.knowledge.scope_prune import empty_pickers, picker_changed
 from oc8.knowledge.sources import SourceRejected, validate_source_config
 from oc8.knowledge.tombstone import (
     OPERATOR_DELETE,
@@ -761,9 +761,20 @@ async def update_source(
             )
         except (ConnectorError, SourceRejected) as exc:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        empty = empty_pickers(connector.config_schema, merged)
+        if empty:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"select at least one item for {', '.join(empty)}; "
+                "to stop indexing this source entirely, delete it",
+            )
         if picker_changed(connector.config_schema, before, merged):
             # The next sync prunes what the new selection leaves out, at once --
             # see oc8/knowledge/scope_prune.py for why this skips reconcile.
+            # Merged into the cursor as it is NOW, under the row lock: the copy
+            # loaded with the row may predate a sync's digests, and writing it
+            # back would undo them.
+            await db.refresh(ds, ["cursor"], with_for_update=True)
             ds.cursor = {**(ds.cursor or {}), SCOPE_FLAG: True}
         ds.config = merged
     if body.name is not None:

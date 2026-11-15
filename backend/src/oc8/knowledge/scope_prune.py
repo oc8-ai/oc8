@@ -14,13 +14,19 @@ window, no vanish-ratio hold, and whether or not reconciliation is enabled.
 What it still needs is the one fact reconcile needs too: an AUTHORITATIVE
 listing of what the narrowed source now holds. Without it "absent from this
 listing" means nothing, so every other outcome (`NONE`, `REMOVALS`, an exception,
-a timeout, an empty listing) prunes nothing and keeps the flag for the next sync.
-The flag is cleared only in the savepoint that pruned.
+a timeout) prunes nothing and keeps the flag for the next sync. The flag is
+cleared only in the savepoint that pruned.
 
-The prune is an INFERENCE (`reduce_now=False`): the content leaves retrieval now
-and stays in the row. The reconcile sweep reduces only `source_absent` and
-`superseded`, so a `scope_changed` tombstone keeps its text until the source or
-its base is deleted (both reduce every unreduced row of their scope).
+An EMPTY authoritative listing prunes everything. The PATCH refuses a picker
+that would select nothing, and the attestation contract requires a connector to
+raise rather than attest an empty set on an error, so empty here means empty.
+
+The prune REDUCES at once (`reduce_now=True`): the de-selected text leaves oc8 in
+the same transaction, with a `knowledge.document_deleted` entry per document
+naming the system and the reason. Waiting for a grace window would leave it to
+the reconcile sweep, which may be switched off, and the edit was deliberate. It
+is not suppressed: re-selecting a document ingests it again, and the cursor
+eviction below makes sure the hash cursor does not skip it.
 """
 
 from __future__ import annotations
@@ -62,6 +68,22 @@ def picker_changed(
         and before.get(name) != after.get(name)
         for name, spec in properties.items()
     )
+
+
+def empty_pickers(schema: Mapping[str, Any] | None, config: Mapping[str, Any]) -> list[str]:
+    """Picker properties a config leaves missing or empty.
+
+    A source that selects nothing is a source to delete, not to narrow, and it
+    is what lets the sync take an empty AUTHORITATIVE listing at its word.
+    """
+    properties = (schema or {}).get("properties") or {}
+    return [
+        name
+        for name, spec in properties.items()
+        if isinstance(spec, Mapping)
+        and spec.get(PICKER) is True
+        and (config.get(name) is None or config.get(name) == [])
+    ]
 
 
 async def _live_documents(
@@ -115,7 +137,7 @@ async def prune_out_of_scope(
             data_source_id=data_source.id,
             source_uri=uri,
             reason=SCOPE_CHANGED,
-            reduce_now=False,
+            reduce_now=True,
             now=now,
         )
         if removal is not None:
@@ -150,16 +172,6 @@ async def apply_scope_change(
     if listing is None or listing.attestation is not Attestation.AUTHORITATIVE:
         return None
     present = listing.present_uris
-    if not present:
-        # A narrowing always leaves something selected, and an expired
-        # credential answering AUTHORITATIVE with nothing is exactly the wire
-        # shape of "everything was de-selected". The source's own DELETE is the
-        # route for really emptying it.
-        logger.warning(
-            "knowledge: source %s attested an empty listing after a scope change; nothing pruned",
-            data_source.id,
-        )
-        return None
 
     # Every base this source feeds, not only the one this sync was queued for:
     # the listing is a claim about the source.

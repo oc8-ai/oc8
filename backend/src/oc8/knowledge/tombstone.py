@@ -90,9 +90,10 @@ RECONCILE_HELD = "knowledge.reconcile_held"
 OPERATOR_DELETE = "operator_delete"
 SOURCE_ABSENT = "source_absent"
 SUPERSEDED = "superseded"
-#: An admin narrowed the source's selection (`oc8.knowledge.scope_prune`). Not
-#: reduced at once and not suppressed, so re-selecting the document brings it
-#: back; licensed by the admin's edit rather than by two attested listings.
+#: An admin narrowed the source's selection (`oc8.knowledge.scope_prune`).
+#: Reduced at once like an operator delete, but NOT suppressed: re-selecting the
+#: document brings it back. Licensed by the admin's edit plus one AUTHORITATIVE
+#: listing, not by reconcile's two.
 SCOPE_CHANGED = "scope_changed"
 
 
@@ -191,7 +192,8 @@ async def tombstone_document(
 ) -> Removal | None:
     """Take one document out of retrieval. Returns None if it was not there.
 
-    `reduce_now` is the operator path and nothing else sets it: the content is
+    `reduce_now` is set by the operator path and by a scope prune
+    (`scope_changed`, an admin's deliberate narrowing): the content is
     destroyed in this same transaction and one `knowledge.document_deleted`
     entry names the URI, the chunk count and the digest of what it destroyed. An
     inferred deletion (`source_absent`, `superseded`) keeps its content for the
@@ -295,24 +297,35 @@ async def tombstone_document(
         # gone. (The tenant's audit lock is taken when the transaction commits,
         # not here -- see `oc8.audit.chain` -- so the position no longer decides
         # how long that lock is held; the receipt's seq is read after commit.)
+        resource: dict[str, Any] = {
+            "kb_id": str(kb_id),
+            "data_source_id": str(data_source_id) if data_source_id else None,
+            "source_uri": source_uri,
+            "sources": sources,
+            "chunks": len(chunks),
+            "chars": chars,
+            "sha256": sha256,
+        }
+        by_operator = reason == OPERATOR_DELETE
+        if not by_operator:
+            # Only a scope prune reaches here today. Nobody deleted this
+            # document by hand, and a ledger entry that says so cannot be taken
+            # back, so the entry names the reason and the system as the actor.
+            resource["deleted_reason"] = reason
         event = await append_event(
             db,
             tenant_id=tenant_id,
-            actor_type="operator",
+            actor_type="operator" if by_operator else "system",
             actor_id=None,
             category=CATEGORY,
             action=DOCUMENT_DELETED,
-            resource={
-                "kb_id": str(kb_id),
-                "data_source_id": str(data_source_id) if data_source_id else None,
-                "source_uri": source_uri,
-                "sources": sources,
-                "chunks": len(chunks),
-                "chars": chars,
-                "sha256": sha256,
-            },
+            resource=resource,
             decision="allow",
-            reason="operator deleted the document",
+            reason=(
+                "operator deleted the document"
+                if by_operator
+                else "the document left its source's selected scope"
+            ),
             principal=principal,
         )
         audit_event = event
