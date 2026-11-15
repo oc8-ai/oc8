@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 
+import type { BoardQuery, QueryResult } from "@/lib/boards-api";
 import type { ChatMessageDTO } from "@/lib/hooks-chat";
 import type { CustomServerDraft, HttpToolsSnapshot } from "@/lib/http-tools";
 
@@ -42,6 +43,8 @@ export interface FrontendEditionExtension {
   /** Extra ways to describe a plain HTTP API in the custom server wizard,
    *  shown above "describe them by hand", in extension order. */
   readonly customServerSources?: readonly CustomServerSource[];
+  /** Renders a dashboard's `artifact` blocks, which core only stands in for. */
+  readonly boardBlocks?: readonly BoardBlockEntry[];
 }
 
 export type Capability = string;
@@ -191,4 +194,20 @@ export interface CustomServerSource {
    * create wizard renders no footer, and the source calls `onBack` and
    * `onComplete` itself. */
   readonly ownsFooter?: boolean;
+}
+
+export interface BoardBlockSlotProps {
+  readonly boardId: string;
+  /** The block as stored on the board. Untrusted data: never render it as markup. */
+  readonly block: Readonly<Record<string, unknown>>;
+  /** The board's generic query API (`POST /boards/{boardId}/query`). */
+  readonly query: (q: BoardQuery) => Promise<QueryResult>;
+}
+
+/** Draws an `artifact` block of a dashboard. */
+export interface BoardBlockEntry {
+  readonly id: string;
+  /** Capabilities the caller must all hold for the entry to render. */
+  readonly needs?: readonly Capability[];
+  readonly component: ComponentType<BoardBlockSlotProps>;
 }

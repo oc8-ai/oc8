@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@/lib/governance-hooks", () => ({ useCallerCapabilities: () => null }));
+
 import { ApiError } from "@/lib/api";
 import * as boardsApi from "@/lib/boards-api";
 import type { Board, BoardBlock, BoardQuery, QueryResult } from "@/lib/boards-api";

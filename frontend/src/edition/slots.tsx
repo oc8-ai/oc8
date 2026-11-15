@@ -1,8 +1,13 @@
-import { Component, createContext, useContext, useState, type ReactNode } from "react";
+import { Component, createContext, useCallback, useContext, useState, type ReactNode } from "react";
 
+import { BlockMessage } from "@/components/boards/block-status";
+import { WidgetTitle } from "@/components/dashboard/widget-title";
+import { api } from "@/lib/api";
+import type { BoardQuery, QueryResult } from "@/lib/boards-api";
 import type { ChatMessageDTO } from "@/lib/hooks-chat";
+import { useT } from "@/lib/i18n";
 
-import { useChatSlot, useFrontendEdition, type ComposedChat } from "./composition";
+import { useBoardBlocks, useChatSlot, useFrontendEdition, type ComposedChat } from "./composition";
 import type { EditionSidebarSlotProps } from "./contracts";
 
 /** Part types core renders itself; an extension never gets them. */
@@ -250,5 +255,42 @@ export function EditionHomeSections() {
         <Section key={id} />
       ))}
     </>
+  );
+}
+
+/** The neutral stand-in for an `artifact` block: what Community shows, and
+ *  what an edition's renderer falls back to when it fails. */
+function ArtifactBlockPlaceholder({ block }: { block: Readonly<Record<string, unknown>> }) {
+  const t = useT();
+  return (
+    <div className="flex h-full flex-col">
+      {typeof block.title === "string" && block.title ? <WidgetTitle title={block.title} /> : null}
+      <BlockMessage>{t("Available in Enterprise", "In Enterprise verfügbar")}</BlockMessage>
+    </div>
+  );
+}
+
+/** A dashboard's `artifact` block: the edition's renderer when one is
+ *  available to the caller, otherwise the placeholder. `block` is untrusted
+ *  data, handed over read-only. */
+export function EditionBoardBlock({
+  boardId,
+  block,
+}: {
+  boardId: string;
+  block: Record<string, unknown>;
+}) {
+  const entry = useBoardBlocks()[0];
+  const query = useCallback(
+    (q: BoardQuery) => api.post<QueryResult>(`/boards/${encodeURIComponent(boardId)}/query`, q),
+    [boardId],
+  );
+  const placeholder = <ArtifactBlockPlaceholder block={block} />;
+  if (!entry) return placeholder;
+  const Block = entry.component;
+  return (
+    <SlotBoundary id={entry.id} fallback={placeholder} resetKey={boardId}>
+      <Block boardId={boardId} block={block} query={query} />
+    </SlotBoundary>
   );
 }

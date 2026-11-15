@@ -1,10 +1,8 @@
 import type { ReactNode } from "react";
 
-import { WidgetTitle } from "@/components/dashboard/widget-title";
-import type { ArtifactBlock, Board, BoardBlock, BlockWidth } from "@/lib/boards-api";
-import { useT } from "@/lib/i18n";
+import { EditionBoardBlock } from "@/edition/slots";
+import type { Board, BoardBlock, BlockWidth } from "@/lib/boards-api";
 
-import { BlockMessage } from "./block-status";
 import { blockQuery, type BoardFilterState } from "./board-filters";
 import { ChartBlock } from "./chart-block";
 import { FilterBar } from "./filter-bar";
@@ -21,18 +19,6 @@ const SPAN: Record<BlockWidth, string> = {
   8: "md:col-span-8",
   12: "md:col-span-12",
 };
-
-/** The neutral stand-in for an `artifact` block, which core never renders
- *  itself. The edition slot replaces this one component. */
-export function ArtifactBlockPlaceholder({ block }: { block: ArtifactBlock }) {
-  const t = useT();
-  return (
-    <div className="flex h-full flex-col">
-      {block.title ? <WidgetTitle title={block.title} /> : null}
-      <BlockMessage>{t("Available in Enterprise", "Verfügbar in Enterprise")}</BlockMessage>
-    </div>
-  );
-}
 
 /** A dashboard's blocks on a 12-column grid, all reading the same filters. */
 export function BoardView({
@@ -82,7 +68,8 @@ function renderBlock(
       />
     );
   }
-  if (block.type === "artifact") return <ArtifactBlockPlaceholder block={block} />;
+  if (block.type === "artifact")
+    return <EditionBoardBlock boardId={board.id} block={{ ...block }} />;
 
   const dataset = spec.datasets.find((d) => d.key === block.dataset);
   if (!dataset) return null;
