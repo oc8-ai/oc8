@@ -380,6 +380,12 @@ class InvalidOperation(ValueError):
         self.reason = reason
 
 
+def _names_a_board_operation(raw: object) -> bool:
+    return isinstance(raw, list) and any(
+        isinstance(item, dict) and item.get("type") in BOARD_OPERATION_TYPES for item in raw
+    )
+
+
 def parse_operations(raw: object) -> list[Operation]:
     try:
         operations = _OPERATIONS.validate_python(raw)
@@ -390,6 +396,10 @@ def parse_operations(raw: object) -> list[Operation]:
         ):
             # Not chained: the validation error carries the submitted spec.
             raise InvalidOperation(_BOARD_SPEC_ERROR) from None
+        if _names_a_board_operation(raw):
+            # Nor for any other refused board field: its validation error
+            # carries the submitted title, description or spec too.
+            raise InvalidOperation() from None
         raise InvalidOperation() from exc
     except (TypeError, ValueError) as exc:
         raise InvalidOperation() from exc
@@ -1195,6 +1205,17 @@ async def _apply_board_update(
         board.title = operation.title
     if operation.description is not None:
         board.description = operation.description
+    # Fixed names only, never the values.
+    changed = [
+        name
+        for name, given in (
+            ("title", operation.title is not None),
+            ("description", operation.description is not None),
+            ("spec", new_spec is not None),
+            ("agent", operation.agentId is not None),
+        )
+        if given
+    ]
     await db.flush()
     await append_event(
         db,
@@ -1203,7 +1224,11 @@ async def _apply_board_update(
         actor_id=actor_member_id,
         category="copilot",
         action="board.updated",
-        resource={"board_id": str(board.id), "spec_version": board.spec_version},
+        resource={
+            "board_id": str(board.id),
+            "spec_version": board.spec_version,
+            "changed": changed,
+        },
     )
 
 

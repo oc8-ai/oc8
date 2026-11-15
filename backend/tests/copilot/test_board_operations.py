@@ -33,6 +33,7 @@ from oc8.copilot.proposals import ProposalRejected, apply_proposal, create_propo
 from oc8.edition.tools import tenant_has_capability, use_edition_tools
 from oc8.licensing.capabilities import ENTERPRISE_CANVAS, Capability
 from oc8.licensing.contracts import Entitlements
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 _SPEC: dict[str, Any] = {
@@ -253,6 +254,27 @@ def test_spec_errors_carry_no_submitted_text(spec: object) -> None:
         assert _MARKER not in str(exc), type(exc).__name__
 
 
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"type": "board.create", "agentId": "AGENT", "title": "t" * 300 + _MARKER, "spec": _SPEC},
+        {"type": "board.create", "agentId": "AGENT", "title": _MARKER, "spec": _SPEC, "x": 1},
+        {"type": "board.update", "boardId": "BOARD", "description": "d" * 3000 + _MARKER},
+        {"type": "board.update", "boardId": _MARKER},
+    ],
+    ids=["long-title", "extra-key", "long-description", "bad-id"],
+)
+def test_no_board_field_error_is_chained(operation: dict[str, Any]) -> None:
+    """Not only a spec: any refused board field's validation error carries the
+    submitted input, so it never reaches the `InvalidOperation`'s chain."""
+    data = {k: (str(uuid.uuid4()) if v in ("AGENT", "BOARD") else v) for k, v in operation.items()}
+    with pytest.raises(InvalidOperation) as caught:
+        parse_operations([data])
+    assert caught.value.__cause__ is None
+    assert caught.value.__suppress_context__ is True
+    assert all(_MARKER not in repr(exc) and _MARKER not in str(exc) for exc in _chain(caught.value))
+
+
 def test_spec_and_restore_version_are_exclusive() -> None:
     with pytest.raises(InvalidOperation):
         parse_operations(
@@ -344,6 +366,21 @@ async def test_board_update_changes_title_and_description(app_session: AppSessio
     await _update(app_session, s, title="Umsatz", description="Täglich")
     board = await _board(app_session, s)
     assert (board.title, board.description, board.spec_version) == ("Umsatz", "Täglich", 1)
+
+
+@pytest.mark.asyncio
+async def test_board_updated_audit_names_what_changed(app_session: AppSessionFactory) -> None:
+    """Fixed field names only, never the values."""
+    s = await _seed(app_session)
+    await _update(app_session, s, title="Cash " + _MARKER, spec=_with_cost(_SPEC))
+    async with app_session(s.tenant) as db:
+        await flush_audit(db)
+        event = (
+            await db.execute(select(m.AuditEvent).where(m.AuditEvent.action == "board.updated"))
+        ).scalar_one()
+    assert event.resource["changed"] == ["title", "spec"]
+    assert event.resource["spec_version"] == 2
+    assert _MARKER not in repr(event.resource)
 
 
 @pytest.mark.asyncio

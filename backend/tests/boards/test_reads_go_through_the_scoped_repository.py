@@ -43,7 +43,9 @@ ALLOWED: dict[str, str] = {
     ),
     "copilot/builder.py": (
         "applies a builder proposal's board after may_view/may_create_agent or the "
-        "approval funnel decided reach"
+        "approval funnel decided reach; at propose time reads a named board only to "
+        "refuse one outside the member's may_view departments as board_unknown, and "
+        "reads its department and title for the card, the approval and the notice"
     ),
     "copilot/builder_tools.py": (
         "builder tools read the board a proposal names, behind the proposal's owner "

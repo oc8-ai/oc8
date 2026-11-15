@@ -161,12 +161,16 @@ AGENT = ChatMode(
         "failing part, fix the schedule, pick another department or name) and "
         "say what you changed, or, if only the person can fix it, say exactly "
         "what to do and on which page. Never propose the same agent unchanged. "
+        "Dashboards: when the person wants to keep an eye on figures over time, "
+        "give the agent a dashboard it fills -- for a new agent add board (title "
+        "and spec) to propose_agent; for an existing agent, or to change a "
+        "dashboard builder_options lists, call propose_board. "
         "Every other tool that would change anything is withheld."
     ),
     allows_tools=True,
     allows_writes=False,
     sticky=True,
-    permitted_writes=frozenset({"ask_user", "propose_agent"}),
+    permitted_writes=frozenset({"ask_user", "propose_agent", "propose_board"}),
     assistant_only=True,
 )
 
@@ -220,6 +224,7 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "write_output_file",
         "propose_change",
         "propose_agent",
+        "propose_board",
         "enter_agent_mode",
         "decide_approval",
         "request_decision",

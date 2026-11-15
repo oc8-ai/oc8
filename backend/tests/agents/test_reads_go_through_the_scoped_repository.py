@@ -89,7 +89,9 @@ ALLOWED: dict[str, str] = {
     "copilot/builder.py": (
         "apply re-reads the department a proposal names after may_view/may_create_agent "
         "or the approval funnel decided reach, and reloads the agent it just created in "
-        "the same transaction to raise its hire request"
+        "the same transaction to raise its hire request; a board-only proposal reads its "
+        "board's producing agent live for that agent's department (target_department), "
+        "after propose checked the agent through visible_agent"
     ),
     "api/v1/copilot_builder.py": (
         "the builder card reads the department and created agent a proposal names "

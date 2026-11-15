@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from typing import Annotated, Final
+from typing import Annotated, Final, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,20 +30,24 @@ from oc8.copilot.builder import (
     BUILDER_KIND,
     announce_builder,
     apply_builder_proposal,
+    board_spec,
+    board_step,
+    board_title,
     create_step,
     expire_if_due,
     load_steps,
-    may_create_in,
+    may_apply,
     new_department,
     request_builder_approval,
-    target_department_id,
+    target_department,
 )
 from oc8.copilot.builder_notice import tell_copilot_best_effort
-from oc8.copilot.builder_ops import BuilderInvalid, BuilderStep
+from oc8.copilot.builder_ops import BuilderInvalid, BuilderStep, is_board_only
 from oc8.copilot.capabilities import (
     AgentModelSwitch,
     AgentNarrowingSet,
     AgentSkillAssign,
+    BoardUpdate,
     GuardrailSet,
     MissionSet,
     TriggerCreate,
@@ -55,7 +59,9 @@ from oc8.schemas.dto import (
     AgentBuilderDTO,
     AgentIdeaDTO,
     BuilderAgentDTO,
+    BuilderBoardDTO,
     BuilderChoiceDTO,
+    BuilderDatasetDTO,
     BuilderLimitDTO,
     BuilderTriggerDTO,
     LocalizedTextDTO,
@@ -115,6 +121,52 @@ async def _load(
     return proposal, owner, steps
 
 
+async def _target(db: AsyncSession, steps: list[BuilderStep]) -> tuple[uuid.UUID | None, bool]:
+    """Where the proposal acts, and whether that is still known: a board-only
+    proposal whose board or agent is gone has no department any more -- the
+    card still reads, and nobody may apply it."""
+    try:
+        return await target_department(db, steps), True
+    except BuilderInvalid:
+        return None, False
+
+
+async def _board_dto(
+    db: AsyncSession, proposal: CopilotProposal, steps: list[BuilderStep]
+) -> BuilderBoardDTO | None:
+    """The board a proposal creates or changes, as the card shows it."""
+    operation = board_step(steps)
+    if operation is None:
+        return None
+    result = proposal.result or {}
+    if isinstance(operation, BoardUpdate):
+        mode: Literal["create", "update"] = "update"
+        board_id: str | None = str(operation.boardId)
+    else:
+        mode = "create"
+        applied = result.get("boardId")
+        board_id = applied if isinstance(applied, str) else None
+    spec = await board_spec(db, steps) or {}
+    datasets = spec.get("datasets") if isinstance(spec.get("datasets"), list) else []
+    blocks = spec.get("blocks") if isinstance(spec.get("blocks"), list) else []
+    return BuilderBoardDTO(
+        board_id=board_id,
+        mode=mode,
+        title=await board_title(db, steps),
+        datasets=[
+            BuilderDatasetDTO(
+                key=str(ds.get("key", "")),
+                label=str(ds.get("label", "")),
+                grain=str(ds.get("grain", "")),
+                field_count=len(ds.get("fields") or []),
+            )
+            for ds in datasets or []
+            if isinstance(ds, dict)
+        ],
+        block_count=len(blocks or []),
+    )
+
+
 def _was_submitted(proposal: CopilotProposal) -> bool:
     return (
         isinstance((proposal.result or {}).get("approvalId"), str) and proposal.status in _SUBMITTED
@@ -130,6 +182,10 @@ async def builder_dto(
     read_only: bool,
     show_mission: bool,
 ) -> AgentBuilderDTO:
+    if is_board_only(steps):
+        return await _board_only_dto(
+            db, proposal, steps, may_create=may_create, read_only=read_only
+        )
     create = create_step(steps)
     planned = new_department(steps)
     result = proposal.result or {}
@@ -220,6 +276,47 @@ async def builder_dto(
         failed_reason=failed_reason if isinstance(failed_reason, str) else None,
         rejected_reason=rejected_reason if isinstance(rejected_reason, str) else None,
         agent=agent_dto,
+        kind="agent",
+        board=await _board_dto(db, proposal, steps),
+    )
+
+
+async def _board_only_dto(
+    db: AsyncSession,
+    proposal: CopilotProposal,
+    steps: list[BuilderStep],
+    *,
+    may_create: bool,
+    read_only: bool,
+) -> AgentBuilderDTO:
+    """A board-only card: no agent of its own, the board's department."""
+    department_id, _known = await _target(db, steps)
+    department = await db.get(m.Department, department_id) if department_id else None
+    result = proposal.result or {}
+    refusal = result.get("refusal")
+    failed_step = result.get("failedStep")
+    failed_reason = result.get("failedReason")
+    rejected_reason = result.get("rejectedReason")
+    is_draft = proposal.status == "draft"
+    return AgentBuilderDTO(
+        id=str(proposal.id),
+        status=proposal.status,
+        session_id=str(proposal.session_id) if proposal.session_id else None,
+        department_id=str(department_id) if department_id else None,
+        department_name=department.name if department is not None else "",
+        name="",
+        role_title="",
+        mission="",
+        expires_at=proposal.expires_at.isoformat() if proposal.expires_at else None,
+        may_create=may_create and is_draft and not read_only,
+        may_request=is_draft and not read_only,
+        read_only=read_only,
+        refusal=refusal if isinstance(refusal, str) else None,
+        failed_step=failed_step if isinstance(failed_step, int) else None,
+        failed_reason=failed_reason if isinstance(failed_reason, str) else None,
+        rejected_reason=rejected_reason if isinstance(rejected_reason, str) else None,
+        kind="board",
+        board=await _board_dto(db, proposal, steps),
     )
 
 
@@ -228,14 +325,15 @@ async def get_builder(
     request: Request, proposal_id: uuid.UUID, db: DbSession, actor: _Actor
 ) -> AgentBuilderDTO:
     proposal, owner, steps = await _load(db, actor, proposal_id)
-    # None for a new department: only who reads and decides everywhere.
-    department_id = target_department_id(steps)
+    # None for a new department: only who reads and decides everywhere. For a
+    # board-only proposal, the board's (or its agent's) department, read live.
+    department_id, known = await _target(db, steps)
     # A draft, a superseded one, one never sent: the member's alone. Once it is
     # in a queue, whoever may view that department reads it (Ruling A4).
     if not owner and not (_was_submitted(proposal) and actor.scope.may_view(department_id)):
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
     authority = await authority_for_principal(request, db, actor.principal)
-    may_create = may_create_in(authority, actor.scope, steps)
+    may_create = known and await may_apply(db, authority, actor.scope, steps)
     # The approver is whoever the approvals funnel would let decide it.
     approver = actor.scope.may_decide(department_id) and may_create
     dto = await builder_dto(
@@ -260,9 +358,18 @@ async def apply_builder(
     if not owner:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
     authority = await authority_for_principal(request, db, actor.principal)
-    if not may_create_in(authority, actor.scope, steps):
+    # Read before applying: a refusal commits, and the notice that follows
+    # names the board by this title (`builder_notice` reads no board).
+    title = await board_title(db, steps) if is_board_only(steps) else ""
+    try:
+        allowed = await may_apply(db, authority, actor.scope, steps)
+    except BuilderInvalid as exc:
+        # The board or its agent is gone: nothing to apply.
+        await db.commit()
+        raise _refused(exc) from None
+    if not allowed:
         await db.commit()  # keep a lazy expiry
-        if target_department_id(steps) is None:
+        if not is_board_only(steps) and await target_department(db, steps) is None:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"requires {perm(DEPARTMENT, MANAGE)} and {perm(AGENT, MANAGE)}",
@@ -291,6 +398,7 @@ async def apply_builder(
             steps=steps,
             member=actor.member,
             operator_role=actor.principal.role,
+            board_title=title,
         )
         raise _refused(exc) from None
     await announce_builder(db, proposal)
@@ -322,11 +430,12 @@ async def request_builder(
     except BuilderInvalid as exc:
         await db.commit()
         raise _refused(exc) from None
+    _department_id, known = await _target(db, steps)
     dto = await builder_dto(
         db,
         proposal,
         steps,
-        may_create=may_create_in(authority, actor.scope, steps),
+        may_create=known and await may_apply(db, authority, actor.scope, steps),
         read_only=False,
         show_mission=True,
     )

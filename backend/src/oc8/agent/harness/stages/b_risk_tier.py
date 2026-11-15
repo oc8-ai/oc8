@@ -30,6 +30,7 @@ _CONTROL_WRITE: frozenset[str] = frozenset(
         "run_program",
         "propose_change",
         "propose_agent",
+        "propose_board",
         "decide_approval",
     }
 )

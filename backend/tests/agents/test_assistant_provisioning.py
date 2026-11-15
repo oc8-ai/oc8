@@ -197,6 +197,37 @@ async def test_existing_assistant_gets_the_current_mission(
         assert "responsibility_open" in _MISSION and "schedule_followup" in _MISSION
 
 
+async def test_copilot_mission_suggests_a_dashboard_for_recurring_overviews() -> None:
+    """The Copilot offers a dashboard on its own when someone wants the same
+    figures again and again -- in one sentence outside Agent mode, as a
+    proposal inside it."""
+    from oc8.agent.assistant import _MISSION
+
+    assert "Dashboard" in _MISSION
+    assert "wiederkehrende Übersicht" in _MISSION
+    assert "dieselben Zahlen erneut" in _MISSION
+    assert "über Zeit im Blick behalten" in _MISSION
+    assert "in einem Satz an und baust nichts ungefragt" in _MISSION
+    assert "propose_board" in _MISSION and "propose_agent" in _MISSION
+
+
+async def test_an_assistant_on_the_previous_mission_gets_the_dashboard_paragraph(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import _LEGACY_MISSIONS, _MISSION
+
+    previous = _LEGACY_MISSIONS[-1]
+    assert "propose_board" not in previous and _MISSION.startswith(previous)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        agent.mission = previous
+        agent.definition = {}
+        await db.flush()
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == _MISSION
+
+
 async def test_a_manual_mission_edit_survives_later_calls(
     app_session: AppSessionFactory,
 ) -> None:

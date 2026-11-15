@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import select
@@ -20,13 +21,16 @@ from oc8.agent.control_tools import (
     BUILDER_OPTIONS,
     BUILDER_TOOL_NAMES,
     ENTER_AGENT_MODE,
+    PROPOSE_BOARD,
     ControlOutcome,
     _acting_token_role,
     _resolve_agent_actor,
 )
+from oc8.agents.repo import visible_agents
 from oc8.authz.authority import Authority, authority_for_member, tenant_wide_read
 from oc8.authz.permissions import DEPARTMENT, VIEW, perm
 from oc8.authz.scope import AgentActor
+from oc8.boards.repo import visible_boards
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.chat.modes import AGENT, mode_directive, mode_from_context, mode_refusal
 from oc8.connections.usable import department_systems
@@ -46,9 +50,16 @@ from oc8.copilot.capabilities import new_department_frame
 from oc8.copilot.door import door_of
 from oc8.copilot.tools import uuid_or_none
 from oc8.departments.repo import visible_departments
+from oc8.edition.tools import tenant_has_capability
+from oc8.licensing.capabilities import ENTERPRISE_CANVAS
 from oc8.modelrouter import ToolCall
 from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.run_context import merge_context
+
+#: What propose_board takes; anything else is refused, never dropped.
+_BOARD_FIELDS: frozenset[str] = frozenset(
+    {"agentId", "boardId", "title", "description", "spec", "restoreVersion"}
+)
 
 #: What the model is told for each refusal code -- value-free, actionable.
 _REFUSALS: dict[str, str] = {
@@ -86,13 +97,30 @@ _REFUSALS: dict[str, str] = {
         "the previous proposal is waiting for approval; tell the person to wait "
         "for the decision before changing it"
     ),
+    "board_spec_invalid": (
+        "the dashboard spec does not match the catalogue builder_options gives; "
+        "check the datasets, fields, blocks and the keys they name"
+    ),
+    "board_builder_only": "dashboards are proposed with propose_agent or propose_board",
+    "board_unknown": "pick a dashboard from builder_options (boardId)",
+    "agent_unknown": "pick an agent from builder_options that may get a dashboard (agentId)",
+    "agent_other_department": "a dashboard can only be handed to an agent of its own department",
+    "board_version_unknown": "that version does not exist; leave restoreVersion out",
+    "artifact_not_available": "artifact blocks are not available here; use the other block types",
+    "dataset_removed": "a dashboard change may only add datasets; keep every existing one",
+    "field_removed": "a dashboard change may only add fields; keep every existing one",
+    "grain_changed": "keep every dataset's grain; add a new dataset instead",
+    "field_type_changed": "keep every field's type; add a new field instead",
+    "currency_changed": "keep every field's currency; add a new field instead",
+    "board_unknown_field": "use only these fields: " + ", ".join(sorted(_BOARD_FIELDS)),
+    "missing_board_target": "pass agentId to create a dashboard or boardId to change one",
 }
 
 #: Losing the open-proposal race to a concurrent call is not the model's fault.
 _RETRY = (
     "ERROR: this conversation's proposal was being changed at the same moment "
     "(saved, created or sent for approval), so nothing was saved. Call "
-    "propose_agent again with the same operations; if that reports "
+    "propose_agent or propose_board again with the same arguments; if that reports "
     "awaiting_approval, tell the person to wait for the decision."
 )
 
@@ -103,6 +131,76 @@ def _refusal(exc: BuilderInvalid) -> str:
     where = f" at step {exc.step}" if exc.step is not None else ""
     hint = _REFUSALS.get(exc.code, "check the operations")
     return f"ERROR: proposal refused ({exc.code}{where}): {hint}"
+
+
+def board_operations(arguments: object) -> list[dict[str, Any]]:
+    """The one board operation a propose_board call stands for: a change when
+    it names `boardId` (an `agentId` alongside hands the board to that agent),
+    else a new board for `agentId`. Unvalidated -- `parse_builder_operations`
+    judges it, exactly as for a board step of propose_agent."""
+    if not isinstance(arguments, Mapping):
+        raise BuilderInvalid("invalid")
+    if set(arguments) - _BOARD_FIELDS:
+        raise BuilderInvalid("board_unknown_field")
+    # Small models send null or "" for a field they mean to leave out.
+    given = {k: v for k, v in arguments.items() if v not in (None, "", [], {})}
+    if "boardId" in given:
+        return [{"type": "board.update", **given}]
+    if "agentId" not in given or "restoreVersion" in given:
+        raise BuilderInvalid("missing_board_target")
+    return [{"type": "board.create", **given}]
+
+
+#: The dashboard catalogue the model writes a spec from (spec §6.1); the
+#: artifact block only for a tenant entitled to it (§6.7).
+_CATALOGUE = (
+    "Dashboard spec: {datasets: [{key, label, grain, fields: [{key, label, type, "
+    "currency?}]}], blocks: [{type, title?, width?, ...}]}. Keys are lower_snake_case. "
+    "Grains: day | week | month | moment. Field types: number | money (needs a "
+    "three-letter currency) | percent | text | category | date. Blocks: kpi "
+    "(dataset, field) | line, bar, area (dataset, fields, split_by?) | table "
+    "(dataset, fields) | filter_bar (at most one, width 12) | note (dataset)"
+)
+_ARTIFACT_BLOCK = " | artifact (artifact_ref, datasets)"
+_ADDITIVE = (
+    "Width is 3, 4, 6, 8 or 12. A change (board.update, propose_board with "
+    "boardId) may only add datasets and fields: never remove one or change its "
+    "grain, type or currency."
+)
+
+
+async def _board_lines(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    actor: AgentActor,
+    authority: Authority,
+) -> list[str]:
+    """The agents the member may give a dashboard and the dashboards they may
+    change -- exactly where they may edit the producing agent (§6.6) -- and
+    the spec catalogue."""
+    tenant_wide = _reads_every_department(authority)
+    agents, _total = await visible_agents(db, scope=actor.scope, tenant_wide=tenant_wide)
+    names: dict[uuid.UUID | None, str] = {a.id: a.name for a in agents}
+    lines = ["Agents you may give a dashboard (agentId | name):"]
+    lines.extend(
+        f"- {a.id} | {one_line(a.name, 80)}"
+        for a in sorted(agents, key=lambda a: a.name.lower())
+        if may_create_agent(authority, actor.scope, a.department_id)
+    )
+    boards = await visible_boards(
+        db, scope=actor.scope, tenant_wide=tenant_wide, tenant_id=tenant_id
+    )
+    lines.append("Dashboards you may change (boardId | title | agent | version):")
+    lines.extend(
+        f"- {b.id} | {one_line(b.title, 80)} | {one_line(names.get(b.agent_id, '-'), 80)} "
+        f"| {b.spec_version}"
+        for b in boards
+        if may_create_agent(authority, actor.scope, b.department_id)
+    )
+    artifact = await tenant_has_capability(tenant_id, ENTERPRISE_CANVAS)
+    lines.append(_CATALOGUE + (_ARTIFACT_BLOCK if artifact else "") + ". " + _ADDITIVE)
+    return lines
 
 
 def _reads_every_department(authority: Authority) -> bool:
@@ -202,6 +300,7 @@ async def builder_options_text(
     )
     lines.append("Skills (skillVersionId | name):")
     lines.extend(f"- {s.current_version_id} | {one_line(s.name, 80)}" for s in skills)
+    lines.extend(await _board_lines(db, tenant_id=tenant_id, actor=actor, authority=authority))
     return fence("\n".join(lines), tag="builder_options")
 
 
@@ -272,20 +371,24 @@ async def execute_builder_tool(
             )
         )
 
-    # propose_agent
+    # propose_agent, propose_board
     if context.get("chat_mode") != AGENT.key:
         return ControlOutcome(
-            output="ERROR: propose_agent works in Agent mode only; call enter_agent_mode first"
+            output=f"ERROR: {tc.name} works in Agent mode only; call enter_agent_mode first"
         )
     authority = await authority_for_member(db, actor.member, token_role=token_role)
+    board = tc.name == PROPOSE_BOARD.name
     try:
-        operations = proposal_operations(
-            tc.arguments,
-            # A new department gets the default frame (`department.create`).
-            frame=new_department_frame()
-            if flat_new_department(tc.arguments)
-            else await _department_frame(db, tenant_id, flat_department_id(tc.arguments)),
-        )
+        if board:
+            operations: object = board_operations(tc.arguments)
+        else:
+            operations = proposal_operations(
+                tc.arguments,
+                # A new department gets the default frame (`department.create`).
+                frame=new_department_frame()
+                if flat_new_department(tc.arguments)
+                else await _department_frame(db, tenant_id, flat_department_id(tc.arguments)),
+            )
         # A savepoint: a refused proposal leaves nothing behind -- neither the
         # draft it would have superseded nor a lost race's half (Task 4).
         async with db.begin_nested():
@@ -308,6 +411,7 @@ async def execute_builder_tool(
         output=(
             f"Proposal {proposal.id} is shown to the person as a card. Nothing is "
             "created until they confirm it there. Say in one or two sentences what "
-            "the agent will do; do not repeat the card."
+            f"the {'dashboard will show' if board else 'agent will do'}; do not "
+            "repeat the card."
         )
     )

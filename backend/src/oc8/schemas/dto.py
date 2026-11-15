@@ -1396,6 +1396,24 @@ class BuilderAgentDTO(CamelModel):
     status: str
 
 
+class BuilderDatasetDTO(CamelModel):
+    key: str
+    label: str
+    grain: str
+    field_count: int
+
+
+class BuilderBoardDTO(CamelModel):
+    """The dashboard a builder proposal creates or changes."""
+
+    #: The board changed, or once applied the board created; None before.
+    board_id: str | None = None
+    mode: Literal["create", "update"]
+    title: str = ""
+    datasets: list[BuilderDatasetDTO] = []
+    block_count: int = 0
+
+
 class AgentBuilderDTO(CamelModel):
     """One "Agent anlegen" card (Copilot Agent Builder §3.3). The mission is
     the member's own content in their own chat: the owner and the approver
@@ -1432,6 +1450,11 @@ class AgentBuilderDTO(CamelModel):
     failed_reason: str | None = None
     rejected_reason: str | None = None
     agent: BuilderAgentDTO | None = None
+    #: "board" for a board-only proposal: no new agent, so `name`, `role_title`
+    #: and `mission` are empty and the department is the board's (or its
+    #: producing agent's).
+    kind: Literal["agent", "board"] = "agent"
+    board: BuilderBoardDTO | None = None
 
 
 class ContextSearchItemDTO(CamelModel):

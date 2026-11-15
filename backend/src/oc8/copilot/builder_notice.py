@@ -8,8 +8,10 @@ do and where. Bounded: one notice per distinct refusal of a proposal -- the
 same refusal clicked again does not start another turn, and a notice never
 applies anything, so it cannot loop.
 
-Only fixed codes, step labels and the agent's name (already on the card in
-this chat) go into the notice; no other submitted text."""
+Only fixed codes, step labels and the agent's name or the board's title
+(already on the card in this chat) go into the notice; no other submitted
+text. A board's title is resolved by the caller (`builder.board_title`): this
+module reads no board."""
 
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.copilot.builder import create_step
-from oc8.copilot.builder_ops import BuilderStep
+from oc8.copilot.builder_ops import BuilderStep, is_board_only
 from oc8.copilot.models import CopilotProposal
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,8 @@ STEP_LABELS: Final[dict[str, str]] = {
     "trigger.create": "create the schedule or event trigger",
     "agent.narrowing.set": "give the agent its systems",
     "agent.guardrail.set": "set a limit",
+    "board.create": "create the dashboard",
+    "board.update": "change the dashboard",
 }
 
 #: Why, for the Copilot: what broke and what fixes it. Keyed by the step's
@@ -98,6 +102,32 @@ REASONS: Final[dict[str, str]] = {
         "department's id from builder_options instead"
     ),
     "secret_value": ("a text contains a credential. Remove it; logins are set up on /connections"),
+    "board_spec_invalid": (
+        "the dashboard's layout is not valid. Check its datasets, fields and blocks "
+        "against the catalogue builder_options gives"
+    ),
+    "board_unknown": (
+        "the dashboard no longer exists or is out of reach. Pick one from builder_options"
+    ),
+    "agent_unknown": (
+        "the agent that fills the dashboard no longer exists or is out of reach. Pick "
+        "one from builder_options"
+    ),
+    "agent_other_department": (
+        "a dashboard can only be handed to an agent of its own department. Pick "
+        "one of that department's agents"
+    ),
+    "board_version_unknown": (
+        "that earlier version of the dashboard does not exist. Leave restoreVersion out"
+    ),
+    "artifact_not_available": (
+        "artifact blocks need the Enterprise edition. Use the other block types"
+    ),
+    "dataset_removed": "a dashboard change may only add datasets. Keep every existing one",
+    "field_removed": "a dashboard change may only add fields. Keep every existing one",
+    "grain_changed": "a dataset's grain cannot change. Keep it, or add a new dataset",
+    "field_type_changed": "a field's type cannot change. Keep it, or add a new field",
+    "currency_changed": "a field's currency cannot change. Keep it, or add a new field",
 }
 _UNKNOWN: Final = (
     "oc8 refused it without saying why. Check the proposal against builder_options "
@@ -109,9 +139,12 @@ def refusal_signature(result: dict[str, object]) -> str:
     return ":".join(str(result.get(key)) for key in ("refusal", "failedStep", "failedReason"))
 
 
-def notice_text(proposal: CopilotProposal, steps: list[BuilderStep]) -> str | None:
+def notice_text(
+    proposal: CopilotProposal, steps: list[BuilderStep], *, board_title: str = ""
+) -> str | None:
     """The notice for the proposal's stored refusal, or None when there is
-    nothing the Copilot could explain (no refusal, or one about state)."""
+    nothing the Copilot could explain (no refusal, or one about state).
+    `board_title` names a board-only proposal's board."""
     from oc8.chat.service import NOTICE_PREFIX
 
     result = proposal.result or {}
@@ -122,19 +155,22 @@ def notice_text(proposal: CopilotProposal, steps: list[BuilderStep]) -> str | No
     reason = result.get("failedReason")
     code = reason if isinstance(reason, str) else refusal
     why = REASONS.get(code, _UNKNOWN)
-    name = create_step(steps).name
+    board = is_board_only(steps)
+    name = board_title if board else create_step(steps).name
+    tool, subject = ("propose_board", "dashboard") if board else ("propose_agent", "agent")
+    card = subject
     where = ""
     if isinstance(step, int) and 0 <= step < len(steps):
         label = STEP_LABELS.get(steps[step].operation.type, steps[step].operation.type)
         where = f" at step {step + 1} ({label})"
     return (
-        f"{NOTICE_PREFIX}the person clicked Create on the agent card for "
+        f"{NOTICE_PREFIX}the person clicked Create on the {card} card for "
         f"“{name}”, and oc8 refused it{where}: {why}. Nothing was created "
         f"(code: {code}). Tell the person in one or two plain sentences, in their "
-        "language, what went wrong. If you can fix it yourself, call propose_agent "
-        "once with the corrected agent and say what you changed. If only they can "
+        f"language, what went wrong. If you can fix it yourself, call {tool} "
+        f"once with the corrected {subject} and say what you changed. If only they can "
         "fix it, say exactly what to do and on which page. Do not propose the same "
-        "agent unchanged."
+        f"{subject} unchanged."
     )
 
 
@@ -145,13 +181,14 @@ async def tell_copilot(
     steps: list[BuilderStep],
     member: m.OrgMember,
     operator_role: str | None,
+    board_title: str = "",
 ) -> bool:
     """Start the Copilot's one notice turn for `proposal`'s refusal in its
     chat, acting for `member` (the chat's owner, who clicked). Returns whether
     a turn was started. COMMITS (through `send_message`)."""
     from oc8.chat.service import send_message
 
-    message = notice_text(proposal, steps)
+    message = notice_text(proposal, steps, board_title=board_title)
     if message is None or proposal.session_id is None:
         return False
     result = dict(proposal.result or {})
@@ -184,6 +221,7 @@ async def tell_copilot_best_effort(
     steps: list[BuilderStep],
     member: m.OrgMember,
     operator_role: str | None,
+    board_title: str = "",
 ) -> None:
     """`tell_copilot` after the refusal was committed: never lets the notice
     turn the person's refusal into an error."""
@@ -194,7 +232,12 @@ async def tell_copilot_best_effort(
         proposal = await db.get(CopilotProposal, proposal_id, populate_existing=True)
         if proposal is not None:
             await tell_copilot(
-                db, proposal=proposal, steps=steps, member=member, operator_role=operator_role
+                db,
+                proposal=proposal,
+                steps=steps,
+                member=member,
+                operator_role=operator_role,
+                board_title=board_title,
             )
     except Exception:
         logger.exception("agent builder: could not tell the Copilot about refusal %s", proposal_id)
