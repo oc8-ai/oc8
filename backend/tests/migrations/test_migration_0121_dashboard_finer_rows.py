@@ -86,3 +86,34 @@ def test_downgrade_halves_again(pg_url: str) -> None:
         command.upgrade(cfg, "head")
     assert layout == [{"id": "a", "type": "chat", "x": 0, "y": 3, "w": 6, "h": 6, "config": {}}]
     assert preset == [{"id": "c", "type": "tasks", "x": 0, "y": 5, "w": 6, "h": 1, "config": {}}]
+
+
+def test_odd_stored_values_are_left_unchanged_and_never_abort(pg_url: str) -> None:
+    tenant = uuid.uuid4()
+    dsn = pg_url.replace("+psycopg", "")
+    cfg = _cfg()
+    odd: list[dict[str, Any]] = [
+        {"id": "n", "type": "chat", "x": 0, "y": None, "w": 6, "h": 6, "config": {}},
+        {"id": "big", "type": "chat", "x": 0, "y": 2147483647, "w": 6, "h": 6, "config": {}},
+        {"id": "frac", "type": "chat", "x": 0, "y": 1.5, "w": 6, "h": 2, "config": {}},
+        {"id": "ok", "type": "chat", "x": 0, "y": 1, "w": 6, "h": 2, "config": {}},
+    ]
+    command.downgrade(cfg, "0120")
+    try:
+        _insert(dsn, tenant, odd, [])
+        with psycopg.connect(dsn) as conn:
+            conn.execute(
+                "INSERT INTO dashboard_preset (id, tenant_id, member_id, name, widgets) "
+                "VALUES (%s, %s, %s, 'o', '{}'::jsonb)",
+                (uuid.uuid4(), tenant, uuid.uuid4()),
+            )
+    finally:
+        command.upgrade(cfg, "head")
+    layout, _ = _read(dsn, tenant)
+    assert layout[:3] == odd[:3]
+    assert (layout[3]["y"], layout[3]["h"]) == (2, 4)
+    with psycopg.connect(dsn) as conn:
+        obj = conn.execute(
+            "SELECT widgets FROM dashboard_preset WHERE tenant_id = %s AND name = 'o'", (tenant,)
+        ).fetchone()
+    assert obj is not None and obj[0] == {}

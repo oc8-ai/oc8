@@ -22,13 +22,19 @@ depends_on: str | Sequence[str] | None = None
 _TABLES = ("member_dashboard_layout", "dashboard_preset")
 
 
-def _rescale(y_expr: str, h_expr: str) -> None:
+def _rescale(y_expr: str, h_expr: str, guard: str) -> None:
+    """Rescale only elements whose y and h are whole numbers inside the bounds
+    in `guard`; anything else (null, text, fractional, out of range) is left
+    unchanged, so one odd stored value can never abort the migration."""
     for table in _TABLES:
         op.execute(f"""
             UPDATE {table} SET widgets = (
               SELECT coalesce(jsonb_agg(
                        CASE WHEN jsonb_typeof(w->'y') = 'number'
                                  AND jsonb_typeof(w->'h') = 'number'
+                                 AND (w->>'y')::numeric = trunc((w->>'y')::numeric)
+                                 AND (w->>'h')::numeric = trunc((w->>'h')::numeric)
+                                 AND {guard}
                             THEN w || jsonb_build_object('y', {y_expr}, 'h', {h_expr})
                             ELSE w END
                        ORDER BY ord), '[]'::jsonb)
@@ -39,9 +45,18 @@ def _rescale(y_expr: str, h_expr: str) -> None:
 
 def upgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
-    _rescale("(w->>'y')::int * 2", "(w->>'h')::int * 2")
+    # Results stay within the API bounds (y <= 10000, h <= 1000).
+    _rescale(
+        "(w->>'y')::numeric * 2",
+        "(w->>'h')::numeric * 2",
+        "(w->>'y')::numeric BETWEEN 0 AND 5000 AND (w->>'h')::numeric BETWEEN 1 AND 500",
+    )
 
 
 def downgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
-    _rescale("(w->>'y')::int / 2", "greatest(1, (w->>'h')::int / 2)")
+    _rescale(
+        "((w->>'y')::numeric / 2)::int",
+        "greatest(1, ((w->>'h')::numeric / 2)::int)",
+        "(w->>'y')::numeric BETWEEN 0 AND 10000 AND (w->>'h')::numeric BETWEEN 1 AND 1000",
+    )

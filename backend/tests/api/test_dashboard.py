@@ -219,6 +219,29 @@ async def test_templates_use_forty_pixel_rows() -> None:
     assert box(by_id["overview"]["budget"]) == {"x": 0, "y": 10, "w": 6, "h": 6}
 
 
+@pytest.mark.parametrize(
+    "patch",
+    [{"y": 10001}, {"h": 1001}, {"h": 0}, {"x": 13}, {"x": -1}, {"w": 0}, {"w": 13}, {"y": -1}],
+)
+async def test_out_of_range_widget_positions_are_refused(patch: dict[str, int]) -> None:
+    widget = {"id": "w1", "type": "chat", "x": 0, "y": 0, "w": 6, "h": 6, "config": {}} | patch
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(subject='bounds-writer')}"}
+            put_r = await client.put(
+                "/api/v1/dashboard/layout", json={"widgets": [widget]}, headers=headers
+            )
+            post_r = await client.post(
+                "/api/v1/dashboard/presets",
+                json={"name": "x", "scope": "personal", "widgets": [widget]},
+                headers=headers,
+            )
+    assert put_r.status_code == 422, put_r.text
+    assert post_r.status_code == 422, post_r.text
+
+
 def _preset_body(name: str = "My layout", scope: str = "personal") -> dict:
     return {
         "name": name,
