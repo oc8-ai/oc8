@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.versioning import version_meta, version_payload
+from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
@@ -21,6 +22,8 @@ from oc8.schemas.dto import (
     AgentVersionSummaryDTO,
     ApprovalDTO,
     ApprovalOptionDTO,
+    BrowseEntryDTO,
+    BrowseListingDTO,
     ClarificationDTO,
     DataSourceDTO,
     DepartmentDTO,
@@ -683,4 +686,22 @@ def kb_to_dto(
         index_type=kb.index_type or "internal",
         index_config=dict(kb.index_config or {}),
         credential_id=str(kb.credential_id) if kb.credential_id else None,
+    )
+
+
+def browse_listing_to_dto(listing: BrowseListing) -> BrowseListingDTO:
+    return BrowseListingDTO(
+        entries=[
+            BrowseEntryDTO(
+                id=e.id,
+                name=e.name,
+                is_folder=e.is_folder,
+                size=e.size,
+                content_type=e.content_type,
+                kind=e.kind,
+                note=e.note,
+            )
+            for e in listing.entries
+        ],
+        truncated=listing.truncated,
     )

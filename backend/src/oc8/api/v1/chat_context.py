@@ -22,6 +22,7 @@ from oc8.api.v1._chat_common import (
     session_detail,
     session_owned_by_caller,
 )
+from oc8.api.v1._serializers import browse_listing_to_dto
 from oc8.audit import append_event
 from oc8.authz.permissions import AGENT, COPILOT_USE, KNOWLEDGE, VIEW, perm
 from oc8.authz.scope import HumanActor
@@ -39,7 +40,6 @@ from oc8.knowledge.browse import BrowseUnsupported, InvalidReference, browse_sou
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.runtime.clarification import SECRET_REFUSAL
 from oc8.schemas.dto import (
-    BrowseEntryDTO,
     BrowseListingDTO,
     ChatProjectDTO,
     ChatSessionDTO,
@@ -307,18 +307,4 @@ async def browse(
         # Already scrubbed by `browse`: it names the failure, never the
         # connector's own words.
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(exc)) from exc
-    return BrowseListingDTO(
-        entries=[
-            BrowseEntryDTO(
-                id=e.id,
-                name=e.name,
-                is_folder=e.is_folder,
-                size=e.size,
-                content_type=e.content_type,
-                kind=e.kind,
-                note=e.note,
-            )
-            for e in listing.entries
-        ],
-        truncated=listing.truncated,
-    )
+    return browse_listing_to_dto(listing)

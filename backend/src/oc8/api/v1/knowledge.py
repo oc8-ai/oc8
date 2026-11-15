@@ -15,6 +15,7 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
 from oc8.api.v1._serializers import (
+    browse_listing_to_dto,
     chunk_to_dto,
     datasource_to_dto,
     ingestion_job_to_dto,
@@ -66,7 +67,6 @@ from oc8.modelrouter.router import embedding_local_tag
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     BaseRemovalDTO,
-    BrowseEntryDTO,
     BrowseListingDTO,
     DataSourceDTO,
     DocumentRemovalDTO,
@@ -166,21 +166,7 @@ async def browse_connector_draft(
         # Already scrubbed by `browse_draft`: it names the failure, never the
         # connector's own words.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return BrowseListingDTO(
-        entries=[
-            BrowseEntryDTO(
-                id=e.id,
-                name=e.name,
-                is_folder=e.is_folder,
-                size=e.size,
-                content_type=e.content_type,
-                kind=e.kind,
-                note=e.note,
-            )
-            for e in listing.entries
-        ],
-        truncated=listing.truncated,
-    )
+    return browse_listing_to_dto(listing)
 
 
 @router.get(

@@ -56,11 +56,21 @@ class Leaky(Selectable):
 
 
 class UsesCredential(Selectable):
+    """Reads the credential named in the config. A refusal is recorded and
+    re-raised; a successful read leaks the secret into an entry name."""
+
+    def __init__(self) -> None:
+        self.refused = False
+
     async def browse_selectable(
         self, config: dict[str, Any], path: str, auth: Any
     ) -> list[BrowseEntry]:
-        await auth.credential(config["credentialId"], "api_key")
-        raise AssertionError("a personal credential must not be readable")
+        try:
+            secret = await auth.credential(config["credentialId"], "api_key")
+        except ConnectorError:
+            self.refused = True
+            raise
+        return [BrowseEntry(id="x", name=secret, is_folder=False)]
 
 
 @pytest.fixture
@@ -147,7 +157,7 @@ async def test_browse_draft_unknown_type_is_404() -> None:
 async def test_browse_draft_scrubs_connector_errors() -> None:
     r = await _post(uuid.uuid4(), Leaky())
     assert r.status_code == 400
-    assert "secret" not in r.text and "pw" not in r.text
+    assert r.json()["detail"] == "the source could not list files (ConnectorError)"
 
 
 async def test_browse_draft_caps_entries() -> None:
@@ -185,10 +195,10 @@ async def test_browse_draft_personal_credential_unusable(
             owner_member_id=member.id,
         )
         cred_id = str(cred.id)
-    r = await _post(
-        tenant, UsesCredential(), body={"config": {"credentialId": cred_id}, "path": "/"}
-    )
+    connector = UsesCredential()
+    r = await _post(tenant, connector, body={"config": {"credentialId": cred_id}, "path": "/"})
     assert r.status_code == 400
+    assert connector.refused
     assert "PERSONAL_SECRET_VALUE" not in r.text
 
 
