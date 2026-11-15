@@ -3,6 +3,9 @@ import { cn } from "@/lib/utils";
 import type { WidgetInstance } from "@/lib/hooks";
 
 const GRID_COLUMNS = 12;
+// Stored rows are 40 px tall (half of the old 80 px unit), so halve them to
+// keep the sketch proportioned as it was.
+const ROW_UNITS_PER_OLD_ROW = 2;
 
 /** A small proportional sketch of a widget arrangement -- one rectangle per
  * tile, positioned/sized from its grid coordinates, with the widget type's
@@ -21,7 +24,7 @@ export function LayoutPreview({
   return (
     <div
       className={cn("relative w-full overflow-hidden rounded-md border bg-muted/40", className)}
-      style={{ aspectRatio: `${GRID_COLUMNS} / ${Math.max(rows, 4)}` }}
+      style={{ aspectRatio: `${GRID_COLUMNS} / ${Math.max(rows / ROW_UNITS_PER_OLD_ROW, 4)}` }}
     >
       {widgets.map((widget) => {
         const Icon = WIDGET_REGISTRY[widget.type as keyof typeof WIDGET_REGISTRY]?.icon;

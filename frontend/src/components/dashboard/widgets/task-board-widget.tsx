@@ -11,6 +11,7 @@ import {
 import { ApiError } from "@/lib/api";
 import { useCreateTask, useDepartments, useTaskBoard, type TaskBoardRow } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import { WidgetTitle } from "@/components/dashboard/widget-title";
 import { cn } from "@/lib/utils";
 
 // Same four columns as the department detail page's own board
@@ -62,21 +63,26 @@ export function TaskBoardWidget(_props: {
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <span className="text-xs text-muted-foreground">
-          {rows.length} {t("tasks", "Aufgaben")}
-        </span>
-        <button
-          type="button"
-          onClick={() => setCreating(true)}
-          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition hover:brightness-110 glow-teal"
-        >
-          <Plus className="h-3.5 w-3.5" /> {t("New task", "Neue Aufgabe")}
-        </button>
-      </div>
+      <WidgetTitle
+        title={t("Task Board", "Aufgaben-Board")}
+        actions={
+          <>
+            <span className="text-xs text-muted-foreground">
+              {rows.length} {t("tasks", "Aufgaben")}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCreating(true)}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-2.5 py-1 text-xs font-medium text-primary-foreground transition hover:brightness-110 glow-teal"
+            >
+              <Plus className="h-3.5 w-3.5" /> {t("New task", "Neue Aufgabe")}
+            </button>
+          </>
+        }
+      />
 
       {boardQuery.error && (
-        <div className="flex items-start gap-2 border-b border-[color:var(--status-error)]/40 px-3 py-2 text-xs">
+        <div className="flex items-start gap-2 px-3 py-2 text-xs">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-error)]" />
           <div>
             <div>
@@ -114,11 +120,10 @@ export function TaskBoardWidget(_props: {
               return (
                 <div
                   key={col.id}
+                  data-column={col.id}
                   className={cn(
-                    "flex min-h-[140px] flex-col rounded-lg border bg-panel/60 p-2",
-                    isWaiting
-                      ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5"
-                      : "border-border",
+                    "flex min-h-[140px] flex-col rounded-lg p-2",
+                    isWaiting ? "bg-[color:var(--status-warning)]/5" : "bg-muted/30",
                   )}
                 >
                   <div className="mb-1.5 flex items-center justify-between">

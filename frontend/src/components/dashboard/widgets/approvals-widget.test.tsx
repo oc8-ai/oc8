@@ -256,4 +256,22 @@ describe("ApprovalsWidget", () => {
     render(<ApprovalsWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
     expect(screen.getByText("network unreachable")).toBeInTheDocument();
   });
+
+  it("draws its own title as the first line", () => {
+    vi.spyOn(hooks, "useApprovals").mockReturnValue({ data: [], isPending: false } as never);
+    vi.spyOn(hooks, "useClarifications").mockReturnValue({ data: [], isPending: false } as never);
+    vi.spyOn(hooks, "useStanding").mockReturnValue({
+      seats: [],
+      decidesEverywhere: true,
+      unrestricted: false,
+      unassigned: false,
+      pending: false,
+    } as never);
+    vi.spyOn(hooks, "useDecideApproval").mockReturnValue({ isPending: false } as never);
+    vi.spyOn(hooks, "useAnswerClarification").mockReturnValue({ isPending: false } as never);
+    render(<ApprovalsWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
+    // The filter pill row also says "Approvals"; the title is the non-button one.
+    const titles = screen.getAllByText("Approvals").filter((el) => !el.closest("button"));
+    expect(titles).toHaveLength(1);
+  });
 });

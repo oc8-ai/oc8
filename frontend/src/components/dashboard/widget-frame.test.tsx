@@ -23,16 +23,52 @@ vi.mock("@/components/dashboard/widgets/activity-widget", () => ({
 }));
 
 describe("WidgetFrame", () => {
-  it("renders the registered widget's title and a remove button", () => {
-    render(<WidgetFrame instance={makeInstance()} onConfigChange={vi.fn()} onRemove={vi.fn()} />);
-    expect(screen.getByText("Budget")).toBeInTheDocument();
+  it("shows no header, remove button or drag handle outside edit mode", () => {
+    const { container } = render(
+      <WidgetFrame
+        instance={makeInstance()}
+        editing={false}
+        onConfigChange={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /remove/i })).toBeNull();
+    expect(container.querySelector(".dashboard-widget-drag-handle")).toBeNull();
+  });
+
+  it("shows the grip and remove button in edit mode, without a second label", () => {
+    const { container } = render(
+      <WidgetFrame instance={makeInstance()} editing onConfigChange={vi.fn()} onRemove={vi.fn()} />,
+    );
     expect(screen.getByRole("button", { name: /remove/i })).toBeInTheDocument();
+    expect(container.querySelector(".dashboard-widget-drag-handle")).not.toBeNull();
+    // The widget's own WidgetTitle is the only "Budget".
+    expect(screen.getAllByText("Budget")).toHaveLength(1);
+  });
+
+  it("renders a registry menu in the edit-mode header only", () => {
+    // budget has no menu; frame-level `menu` slot is exercised via the registry entry.
+    const { rerender } = render(
+      <WidgetFrame instance={makeInstance()} editing onConfigChange={vi.fn()} onRemove={vi.fn()} />,
+    );
+    expect(screen.queryByTestId("frame-menu")).toBeNull();
+    rerender(
+      <WidgetFrame
+        instance={makeInstance()}
+        editing
+        menu={<span data-testid="frame-menu" />}
+        onConfigChange={vi.fn()}
+        onRemove={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("frame-menu")).toBeInTheDocument();
   });
 
   it("shows an unknown-widget fallback for an unregistered type, never throwing", () => {
     render(
       <WidgetFrame
         instance={makeInstance({ type: "future-type" as never })}
+        editing
         onConfigChange={vi.fn()}
         onRemove={vi.fn()}
       />,
@@ -43,7 +79,14 @@ describe("WidgetFrame", () => {
 
   it("calls onRemove when the remove button is clicked", () => {
     const onRemove = vi.fn();
-    render(<WidgetFrame instance={makeInstance()} onConfigChange={vi.fn()} onRemove={onRemove} />);
+    render(
+      <WidgetFrame
+        instance={makeInstance()}
+        editing
+        onConfigChange={vi.fn()}
+        onRemove={onRemove}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: /remove/i }));
     expect(onRemove).toHaveBeenCalled();
   });
@@ -52,14 +95,14 @@ describe("WidgetFrame", () => {
     render(
       <WidgetFrame
         instance={makeInstance({ type: "activity" })}
+        editing
         onConfigChange={vi.fn()}
         onRemove={vi.fn()}
       />,
     );
     // The mocked ActivityWidget above throws during render -- the error
     // boundary only swallows the widget's own subtree, so the frame's
-    // chrome (label, remove button) stays mounted around the fallback.
-    expect(screen.getByText("Activity")).toBeInTheDocument();
+    // chrome (remove button) stays mounted around the fallback.
     expect(screen.getByRole("button", { name: /remove/i })).toBeInTheDocument();
     expect(screen.getByText(/could not be displayed/i)).toBeInTheDocument();
   });

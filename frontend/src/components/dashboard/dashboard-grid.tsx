@@ -17,9 +17,11 @@ const GridLayout = WidthProvider(ReactGridLayout);
 
 export function DashboardGrid({
   widgets,
+  editing,
   onChange,
 }: {
   widgets: WidgetInstance[];
+  editing: boolean;
   onChange: (widgets: WidgetInstance[]) => void;
 }) {
   const layout: Layout = widgets.map((w) => ({ i: w.id, x: w.x, y: w.y, w: w.w, h: w.h }));
@@ -45,7 +47,10 @@ export function DashboardGrid({
   return (
     <GridLayout
       cols={12}
-      rowHeight={80}
+      rowHeight={40}
+      containerPadding={[0, 0]}
+      isDraggable={editing}
+      isResizable={editing}
       layout={layout}
       onLayoutChange={handleLayoutChange}
       draggableHandle=".dashboard-widget-drag-handle"
@@ -55,6 +60,7 @@ export function DashboardGrid({
         <div key={w.id}>
           <WidgetFrame
             instance={w}
+            editing={editing}
             onConfigChange={(config) => updateConfig(w.id, config)}
             onRemove={() => remove(w.id)}
           />
