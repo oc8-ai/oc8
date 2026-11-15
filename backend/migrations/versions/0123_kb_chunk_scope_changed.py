@@ -4,8 +4,8 @@
 prune a scope-narrowing edit triggers (`oc8.knowledge.scope_prune`) needs its
 own value there. Widening a CHECK only admits rows; nothing existing changes.
 
-Revision ID: 0121
-Revises: 0120
+Revision ID: 0123
+Revises: 0122
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0121"
-down_revision: str | None = "0120"
+revision: str = "0123"
+down_revision: str | None = "0122"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
