@@ -273,6 +273,10 @@ class Settings(BaseSettings):
     """Most archive members (files and directories) one saved run state may
     hold. More than that and the save is refused."""
 
+    board_record_cap_per_tenant: int = 1_000_000
+    """Most data-board records one tenant may store across all boards. A write that would
+    pass it is refused; boards keep history, so this is the bound on storage."""
+
     # Shared secret, das die eigenen service-to-service Tenant-Provisioning-
     # Route(n) dieser Instanz in `Authorization: Bearer <token>` erwarten.
     # Wird von oc8-enterprises admin/tenants-Router befüllt (Community definiert
