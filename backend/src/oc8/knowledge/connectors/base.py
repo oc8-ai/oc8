@@ -172,6 +172,11 @@ class BrowseEntry:
     is_folder: bool
     size: int | None = None
     content_type: str | None = None
+    #: What the entry is, for connectors with more than files and folders
+    #: (e.g. "workspace", "article"). Opaque to core; the picker shows it.
+    kind: str | None = None
+    #: A short hint shown beside the name, e.g. why an entry cannot be picked.
+    note: str | None = None
 
 
 @dataclass(frozen=True)
@@ -228,3 +233,15 @@ class BrowsingConnector(Protocol):
     async def in_scope(
         self, config: dict[str, Any], file_id: str, auth: AuthContext | None = None
     ) -> bool: ...
+
+
+class SelectableBrowsingConnector(Protocol):
+    """OPTIONAL, resolved by `getattr`: browse the connector from a DRAFT
+    `config`, before any source exists, so the source wizard can let the user
+    pick what to ingest. `auth` is built without an OAuth connection, and only
+    organisation credentials resolve through it. Treat `path` as untrusted
+    input, like `BrowsingConnector.browse`."""
+
+    async def browse_selectable(
+        self, config: dict[str, Any], path: str, auth: AuthContext | None = None
+    ) -> list[BrowseEntry]: ...

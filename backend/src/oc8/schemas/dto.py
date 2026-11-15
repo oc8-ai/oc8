@@ -1475,6 +1475,8 @@ class BrowseEntryDTO(CamelModel):
     is_folder: bool
     size: int | None = None
     content_type: str | None = None
+    kind: str | None = None
+    note: str | None = None
 
 
 class BrowseListingDTO(CamelModel):

@@ -315,6 +315,8 @@ async def browse(
                 is_folder=e.is_folder,
                 size=e.size,
                 content_type=e.content_type,
+                kind=e.kind,
+                note=e.note,
             )
             for e in listing.entries
         ],

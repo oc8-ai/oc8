@@ -8,6 +8,7 @@ import uuid
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import Field
 from sqlalchemy import select
 
 from oc8 import models as m
@@ -24,6 +25,7 @@ from oc8.api.v1._serializers import (
 from oc8.authz.permissions import KNOWLEDGE, MANAGE, VIEW, perm
 from oc8.caching.department_cache import purge_tenant
 from oc8.config import get_settings
+from oc8.knowledge.browse import BrowseUnsupported, UnknownConnector, browse_draft
 from oc8.knowledge.chunks import linked_source_ids, list_chunks, list_documents
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.context import SourceAuthContext
@@ -64,6 +66,8 @@ from oc8.modelrouter.router import embedding_local_tag
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     BaseRemovalDTO,
+    BrowseEntryDTO,
+    BrowseListingDTO,
     DataSourceDTO,
     DocumentRemovalDTO,
     DocumentRestoreDTO,
@@ -125,9 +129,58 @@ class VectorIndexCatalogDTO(CamelModel):
     credential_type: str
 
 
+class BrowseDraftRequest(CamelModel):
+    #: The draft source config, with the chosen credential. Never stored.
+    config: dict[str, object] = {}
+    path: str = Field("/", max_length=2048)
+
+
 class PreviewIndexRequest(CamelModel):
     query: str = "test"
     limit: int = 5
+
+
+@router.post(
+    "/knowledge/connectors/{type_id}/browse",
+    response_model=BrowseListingDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
+)
+async def browse_connector_draft(
+    type_id: str, body: BrowseDraftRequest, db: DbSession, principal: CurrentPrincipal
+) -> BrowseListingDTO:
+    """List a folder of a connector from a draft config, so the source wizard
+    can offer a picker before the source exists. Stores nothing."""
+    try:
+        listing = await browse_draft(
+            db,
+            tenant_id=principal.tenant_id,
+            connector_type=type_id,
+            config=dict(body.config),
+            path=body.path,
+        )
+    except UnknownConnector as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown connector type") from exc
+    except BrowseUnsupported as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This source can't be browsed.") from exc
+    except ConnectorError as exc:
+        # Already scrubbed by `browse_draft`: it names the failure, never the
+        # connector's own words.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return BrowseListingDTO(
+        entries=[
+            BrowseEntryDTO(
+                id=e.id,
+                name=e.name,
+                is_folder=e.is_folder,
+                size=e.size,
+                content_type=e.content_type,
+                kind=e.kind,
+                note=e.note,
+            )
+            for e in listing.entries
+        ],
+        truncated=listing.truncated,
+    )
 
 
 @router.get(
