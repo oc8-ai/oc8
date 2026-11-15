@@ -95,6 +95,7 @@ from oc8.agent.harness.step_timing import (
     note_usage,
     start_step,
 )
+from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import has_oauth_ref
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -617,6 +618,7 @@ async def _discover_connection_tools(
                 server_url=conn.server_url or "",
                 headers=headers,
                 http_tools=list(cfg.get("http_tools", [])),
+                login=resolve_http_login(cfg, env),
                 reusable=reusable,
             )
             if conn.transport == "manual_http":
@@ -1083,6 +1085,7 @@ async def _finish_elicitation(
                     server_url=conn.server_url or "",
                     headers=headers,
                     http_tools=list(cfg.get("http_tools", [])),
+                    login=resolve_http_login(cfg, env),
                     reusable=launch.reusable,
                 )
                 await record_for(
@@ -2192,6 +2195,7 @@ async def _precompute_leading_reads(
                     server_url=conn.server_url or "",
                     headers=headers,
                     http_tools=list(cfg.get("http_tools", [])),
+                    login=resolve_http_login(cfg, env),
                     reusable=launch.reusable,
                 )
                 error = None
@@ -2920,6 +2924,7 @@ async def _dispatch_one_tool(
                         server_url=conn.server_url or "",
                         headers=headers,
                         http_tools=list(cfg.get("http_tools", [])),
+                        login=resolve_http_login(cfg, env),
                         reusable=launch.reusable,
                     )
                 except ElicitationNeeded as exc:

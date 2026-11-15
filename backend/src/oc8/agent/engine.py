@@ -92,6 +92,7 @@ from oc8.agent.harness.step_timing import (
     note_usage,
     start_step,
 )
+from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -499,6 +500,7 @@ async def _open_mcp_session(
             transport="manual_http",
             server_url=mcp_conn.server_url,
             http_tools=list(cfg.get("http_tools", [])),
+            login=resolve_http_login(cfg, env),
             headers=headers,
         )
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)

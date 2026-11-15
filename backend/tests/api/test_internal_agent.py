@@ -1402,7 +1402,10 @@ def echo_http_server(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_step_and_tool_reach_a_real_remote_mcp_server_over_http(
-    app_session: object, monkeypatch: pytest.MonkeyPatch, echo_http_server: str
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    echo_http_server: str,
+    allow_loopback_outbound: None,
 ) -> None:
     """This endpoint's two `McpSession(command, args, env=env)` call sites --
     preamble tool-schema discovery (`/step`) and tool-call execution

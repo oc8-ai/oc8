@@ -8,7 +8,6 @@ import logging
 import os
 import re
 import tempfile
-import urllib.parse
 from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from importlib.metadata import version as _pkg_version
@@ -16,14 +15,15 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
-import httpx
 import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
+from oc8.agent.http_tools import BLOCKED_MESSAGE, HttpLogin, HttpToolSession, guarded_ip
 from oc8.modelrouter.types import NeutralTool
-from oc8.net.outbound import USER_AGENT
+from oc8.net.outbound import USER_AGENT, OutboundBlocked
 
 if TYPE_CHECKING:
     from typing import TextIO
@@ -94,6 +94,66 @@ def _safe_env(overrides: dict[str, str] | None) -> dict[str, str]:
         else _SITECUSTOMIZE_DIR
     )
     return env
+
+
+def _origin2(url: httpx2.URL) -> tuple[str, str, int | None]:
+    return (url.scheme, url.host, url.port)
+
+
+class _GuardedMcpTransport(httpx2.AsyncBaseTransport):
+    """The transport of a remote MCP server's client. The SDK speaks httpx2
+    and follows redirects itself; every request it sends, each redirect hop
+    included, comes through here, so each one is
+
+    - checked by the outbound guard and connected to exactly the address
+      that was checked (the URL host is swapped for that IP; the Host header
+      and the TLS server name stay the real name, so certificates are still
+      verified against it): no second DNS answer at connect time;
+    - stripped of the connection's own headers (a custom API-key header
+      httpx2 would carry along; it drops only `Authorization`) when it goes
+      to another origin than the configured server.
+    """
+
+    def __init__(self, server_url: str, own_headers: frozenset[str]) -> None:
+        self._origin = _origin2(httpx2.URL(server_url))
+        self._own_headers = own_headers
+        self._inner = httpx2.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        ip = await guarded_ip(str(request.url))
+        url = request.url
+        headers = httpx2.Headers(request.headers)
+        if _origin2(url) != self._origin:
+            for name in self._own_headers:
+                headers.pop(name, None)
+        headers["Host"] = url.host if url.port is None else f"{url.host}:{url.port}"
+        pinned = httpx2.Request(
+            request.method,
+            url.copy_with(host=ip),
+            headers=headers,
+            stream=request.stream,
+            extensions={**request.extensions, "sni_hostname": url.host},
+        )
+        return await self._inner.handle_async_request(pinned)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _blocked_in(exc: BaseException) -> OutboundBlocked | None:
+    """The `OutboundBlocked` inside `exc`: the SDK runs the transport in a
+    task group, so a refused hop arrives wrapped in an exception group."""
+    if isinstance(exc, OutboundBlocked):
+        return exc
+    if isinstance(exc, BaseExceptionGroup):
+        for inner in exc.exceptions:
+            found = _blocked_in(inner)
+            if found is not None:
+                return found
+    cause = exc.__cause__ or exc.__context__
+    if isinstance(cause, OutboundBlocked):
+        return cause
+    return None
 
 
 def _read_timeout(seconds: float) -> Any:
@@ -330,12 +390,26 @@ class McpSession:
             if self._on_step is not None:
                 await self._on_step("spawn")
             if self._transport == "http":
-                # Create an HTTP client with configured headers and timeout,
-                # then pass it to the streamable-HTTP transport.
+                # Refuse a blocked server before anything is opened; the
+                # transport then checks and pins every request, redirect
+                # hops included. The client is otherwise what the SDK's
+                # `create_mcp_http_client` builds (redirects on, its
+                # default timeouts when none is set).
+                await guarded_ip(self._server_url)
                 http_client = await self._stack.enter_async_context(
-                    create_mcp_http_client(
+                    httpx2.AsyncClient(
                         headers=self._headers or None,
-                        timeout=httpx2.Timeout(self._timeout_s) if self._timeout_s else None,
+                        timeout=(
+                            httpx2.Timeout(self._timeout_s)
+                            if self._timeout_s
+                            else httpx2.Timeout(
+                                MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT
+                            )
+                        ),
+                        follow_redirects=True,
+                        transport=_GuardedMcpTransport(
+                            self._server_url, frozenset(k.lower() for k in self._headers)
+                        ),
                     )
                 )
                 read, write = await self._stack.enter_async_context(
@@ -375,11 +449,22 @@ class McpSession:
             # subprocess and session are already pushed onto the stack, and
             # __aexit__ is never called when __aenter__ raises. Without this,
             # that child process leaks for as long as it keeps running.
-            await self._stack.aclose()
+            try:
+                await self._stack.aclose()
+            except BaseException as close_exc:
+                # A refused remote MCP hop surfaces here, wrapped in the SDK's
+                # task-group error: hand the caller the plain refusal.
+                if self._transport == "http" and _blocked_in(close_exc) is not None:
+                    self._errlog.close()
+                    raise OutboundBlocked(BLOCKED_MESSAGE) from close_exc
+                raise
             reason = self._errlog.last_meaningful_line() if self._transport == "stdio" else ""
             if self._transport == "stdio":
                 self._errlog.tee_to_log(connection=self._params.command)  # type: ignore[union-attr]
             self._errlog.close()
+            blocked = _blocked_in(exc) if self._transport == "http" else None
+            if blocked is not None and blocked is not exc:
+                raise OutboundBlocked(BLOCKED_MESSAGE) from exc
             if reason and isinstance(exc, Exception):
                 raise McpServerStartupError(f"{exc or type(exc).__name__}: {reason}") from exc
             raise
@@ -457,86 +542,6 @@ class McpSession:
         return "\n".join(parts) if parts else "(no output)"
 
 
-class HttpToolSession:
-    """A drop-in substitute for `McpSession` over a plain REST API with no
-    MCP support at all: tools are declared manually in the connection's
-    config (`transport="manual_http"`) rather than discovered via a
-    handshake, so `__aenter__` performs no network I/O."""
-
-    def __init__(
-        self,
-        base_url: str,
-        http_tools: list[dict[str, Any]],
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_s: float | None = None,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._http_tools = {str(t["name"]): t for t in http_tools}
-        self._headers = dict(headers or {})
-        self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
-        self._client: httpx.AsyncClient | None = None
-        self.tools: list[NeutralTool] = []
-
-    async def __aenter__(self) -> HttpToolSession:
-        self._client = httpx.AsyncClient(timeout=self._timeout_s)
-        self.tools = [
-            NeutralTool(
-                name=str(t["name"]),
-                description=str(t.get("description", "")),
-                parameters=t.get("param_schema") or {"type": "object", "properties": {}},
-            )
-            for t in self._http_tools.values()
-        ]
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-
-    async def call(self, name: str, arguments: dict[str, Any]) -> str:
-        if self._client is None:
-            raise RuntimeError("HTTP tool session not started")
-        tool = self._http_tools.get(name)
-        if tool is None:
-            raise RuntimeError(f"unknown tool {name!r}")
-        url_template = str(tool.get("url_template", ""))
-        placeholders = set(re.findall(r"\{(\w+)\}", url_template))
-        try:
-            # Quoted so a model-supplied value (e.g. containing `../`, `?` or
-            # `#`) can't escape the path segment it was meant to fill or
-            # rewrite the query/URL structure.
-            url = self._base_url + url_template.format(
-                **{k: urllib.parse.quote(str(arguments[k]), safe="") for k in placeholders}
-            )
-        except KeyError as exc:
-            raise RuntimeError(f"missing required parameter {exc}") from exc
-        # Placeholders already consumed by the URL template are not also sent
-        # as a query param or body field.
-        remaining = {k: v for k, v in arguments.items() if k not in placeholders}
-        method = str(tool.get("method", "GET")).upper()
-        try:
-            if method in ("GET", "DELETE"):
-                resp = await self._client.request(
-                    method, url, headers=self._headers, params=remaining
-                )
-            else:
-                resp = await self._client.request(
-                    method, url, headers=self._headers, json=remaining
-                )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"{exc.response.status_code}: {exc.response.text[:500]}") from exc
-        except httpx.HTTPError as exc:
-            raise RuntimeError(str(exc)) from exc
-        return resp.text or "(no output)"
-
-
 def resolve_auth_header(cfg: dict[str, Any], env: dict[str, str]) -> dict[str, str]:
     """The single optional auth header a remote-MCP or manual-HTTP connection
     may declare (`cfg["auth_header_name"]`), resolved to its live value out
@@ -557,6 +562,7 @@ async def open_tool_session(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
     on_step: Callable[[str], Awaitable[None]] | None = None,
@@ -576,7 +582,7 @@ async def open_tool_session(
     not the three that precede it."""
     if transport == "manual_http":
         return HttpToolSession(
-            server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s
+            server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s, login=login
         )
     if transport == "http":
         return McpSession(

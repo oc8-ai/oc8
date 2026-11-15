@@ -7,6 +7,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -142,6 +144,19 @@ def create_app(
         """`enqueue_run` refuses an organisation that may not run; every API
         route that starts a run answers the same way without its own check."""
         return JSONResponse(status_code=403, content={"detail": "tenant_inactive"})
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_failed(request: Request, exc: RequestValidationError) -> Response:
+        """FastAPI's own 422, unless a deeply nested body cannot even be echoed
+        back: then the same errors without their `input`, never a 500."""
+        try:
+            return await request_validation_exception_handler(request, exc)
+        except RecursionError:
+            errors = [
+                {k: v for k, v in error.items() if k not in ("input", "ctx")}
+                for error in exc.errors()
+            ]
+            return JSONResponse(status_code=422, content={"detail": errors})
 
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:

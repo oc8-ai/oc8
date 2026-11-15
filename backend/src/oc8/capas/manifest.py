@@ -504,6 +504,40 @@ class ToolPackConnection(BaseModel):
     model_labels: dict[str, str] = {}
 
     @model_validator(mode="after")
+    def _http_api_classification(self) -> ToolPackConnection:
+        """An HTTP API's read/modify classification, held at install (and at
+        every later parse) to the rules `PATCH /mcp/connections/{id}/http-tools`
+        enforces -- normalised fail-closed rather than refused, so a stored
+        manifest always still parses: a tool in both lists is `modify`, and a
+        name that is no declared tool is dropped (it classifies nothing; an
+        unlisted tool is `modify` anyway)."""
+        if self.transport != "manual_http" or not isinstance(self.scopes, dict):
+            return self
+        tools = self.config.get("http_tools")
+        known = (
+            {t["name"] for t in tools if isinstance(t, dict) and isinstance(t.get("name"), str)}
+            if isinstance(tools, list)
+            else None
+        )
+
+        def names(key: str) -> list[str]:
+            value = self.scopes.get(key)
+            listed = value if isinstance(value, list) else []
+            out: list[str] = []
+            for name in listed:
+                if isinstance(name, str) and name not in out and (known is None or name in known):
+                    out.append(name)
+            return out
+
+        modify = names("modify")
+        read = [name for name in names("read") if name not in modify]
+        if "read" in self.scopes or read:
+            self.scopes["read"] = read
+        if "modify" in self.scopes or modify:
+            self.scopes["modify"] = modify
+        return self
+
+    @model_validator(mode="after")
     def _validate_guardrail_presets(self) -> ToolPackConnection:
         keys = [p.key for p in self.guardrail_presets]
         seen: set[str] = set()

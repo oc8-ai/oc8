@@ -1,6 +1,6 @@
 {
   "name": "@oc8/community-frontend",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "oc8 Community Edition — frontend UI for agent orchestration",
   "private": true,
   "license": "LGPL-3.0-or-later",
@@ -70,6 +70,7 @@
     "@tanstack/react-query": "^5.101.1",
     "@tanstack/react-router": "^1.170.16",
     "@tanstack/react-start": "^1.168.26",
+    "@tanstack/react-virtual": "^3.14.26",
     "@tanstack/router-plugin": "^1.168.18",
     "blobatar": "^2.7.0",
     "class-variance-authority": "^0.7.1",

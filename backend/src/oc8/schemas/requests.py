@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import uuid
+from collections import Counter
 from typing import Annotated, Any, Literal
 
+import jsonschema
 from pydantic import (
     AwareDatetime,
     ConfigDict,
@@ -12,6 +15,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from oc8.chat.context.manifest import MAX_MESSAGE_REFS, MAX_PINNED_REFS
@@ -440,6 +444,137 @@ class UpdateMcpConnectionRequest(CamelModel):
     scopes: list[str] | None = None
     env: dict[str, str] | None = None
     secret_env: dict[str, str] | None = None
+
+
+class HttpTestCallRequest(CamelModel):
+    """One real call of one declared tool of an HTTP API connection."""
+
+    tool: str = Field(min_length=1, max_length=64)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+_HTTP_TOOL_NAME = r"^[A-Za-z0-9_-]{1,64}$"
+#: Bounds on one tool's parameter schema, checked before it is walked by the
+#: JSON Schema meta-validator (which recurses) or forwarded to a model.
+#: Measured as compact UTF-8 JSON bytes, the way the frontend measures it
+#: (`lib/http-tools.ts`, PARAM_SCHEMA_MAX_BYTES), so both refuse the same schema.
+PARAM_SCHEMA_MAX_BYTES = 64_000
+#: The most one edit of an HTTP API's tools may hold, all tools together
+#: (compact UTF-8 JSON): it is validated whole and written to every
+#: department's connection and to the capa's manifest.
+HTTP_TOOLS_MAX_BYTES = 2_000_000
+_PARAM_SCHEMA_MAX_DEPTH = 32
+
+
+def _schema_shape_problem(value: Any) -> str | None:
+    """Why a parameter schema is too deep or refers outside itself, or None.
+
+    Walked iteratively, so a hostile nesting cannot exhaust the stack here.
+    Only a local `$ref` ("#/...") is allowed: a remote one would be handed to
+    model providers as part of the tool's input schema."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _PARAM_SCHEMA_MAX_DEPTH:
+            return f"param_schema is nested deeper than {_PARAM_SCHEMA_MAX_DEPTH} levels"
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if ref is not None and not (isinstance(ref, str) and ref.startswith("#")):
+                return "param_schema may only use a local $ref (starting with '#')"
+            stack.extend((child, depth + 1) for child in node.values())
+        elif isinstance(node, list):
+            stack.extend((child, depth + 1) for child in node)
+    return None
+
+
+class HttpToolSpec(CamelModel):
+    """One endpoint of an HTTP API connection, as the tools editor saves it."""
+
+    name: str = Field(pattern=_HTTP_TOOL_NAME)
+    description: str = Field(default="", max_length=4000)
+    method: Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+    url_template: str = Field(min_length=1, max_length=2000)
+    param_schema: dict[str, Any] = Field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+    param_locations: dict[str, Literal["path", "query", "header", "body"]] = Field(
+        default_factory=dict
+    )
+    body_param: str | None = Field(default=None, max_length=200)
+    #: A label the editor groups endpoints by (e.g. an API's tag).
+    group: str = Field(default="", max_length=120)
+
+    @field_validator("url_template")
+    @classmethod
+    def _a_path_below_the_base_url(cls, value: str) -> str:
+        if not value.startswith("/") or value.startswith("//") or "://" in value:
+            raise ValueError("url_template must be a path below the base URL, starting with '/'")
+        return value
+
+    @field_validator("param_schema")
+    @classmethod
+    def _an_object_json_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        problem = _schema_shape_problem(value)
+        if problem:
+            raise ValueError(problem)
+        size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > PARAM_SCHEMA_MAX_BYTES:
+            raise ValueError(f"param_schema is larger than {PARAM_SCHEMA_MAX_BYTES} bytes")
+        try:
+            jsonschema.validators.validator_for(value).check_schema(value)
+        except jsonschema.SchemaError as exc:
+            raise ValueError(f"param_schema is not a valid JSON Schema: {exc.message}") from exc
+        except RecursionError as exc:
+            raise ValueError("param_schema is nested too deeply") from exc
+        if value.get("type", "object") != "object":
+            raise ValueError("param_schema must describe an object (type: object)")
+        return value
+
+
+class HttpToolScopesSpec(CamelModel):
+    read: list[str] = Field(default_factory=list)
+    modify: list[str] = Field(default_factory=list)
+
+
+class ImportMetadataSpec(CamelModel):
+    """Where a connection's tools were imported from, for re-reading later."""
+
+    source_url: str | None = Field(default=None, max_length=2000)
+    fingerprint: str = Field(max_length=128)
+    imported_at: str = Field(max_length=64)
+    title: str = Field(default="", max_length=300)
+    version: str = Field(default="", max_length=100)
+
+
+class UpdateHttpToolsRequest(CamelModel):
+    """Replace an HTTP API connection's tools and their read/modify
+    classification. A tool in neither list stays `modify` (fail-closed).
+    `openapi` omitted keeps the stored import metadata; null removes it."""
+
+    http_tools: list[HttpToolSpec] = Field(max_length=2000)
+    scopes: HttpToolScopesSpec
+    openapi: ImportMetadataSpec | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> UpdateHttpToolsRequest:
+        counts = Counter(t.name for t in self.http_tools)
+        dupes = sorted(name for name, n in counts.items() if n > 1)
+        if dupes:
+            raise ValueError(f"tool names must be unique: {', '.join(dupes)}")
+        unknown = sorted((set(self.scopes.read) | set(self.scopes.modify)) - set(counts))
+        if unknown:
+            raise ValueError(f"scopes name unknown tools: {', '.join(unknown)}")
+        both = sorted(set(self.scopes.read) & set(self.scopes.modify))
+        if both:
+            raise ValueError(f"a tool is either read or modify, not both: {', '.join(both)}")
+        tools = [t.model_dump(mode="json") for t in self.http_tools]
+        size = len(json.dumps(tools, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > HTTP_TOOLS_MAX_BYTES:
+            raise ValueError(
+                f"the tools are larger than {HTTP_TOOLS_MAX_BYTES} bytes together; "
+                "split the API or leave out endpoints"
+            )
+        return self
 
 
 class RunAgentRequest(CamelModel):

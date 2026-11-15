@@ -1,8 +1,11 @@
 // Wizard for registering a tenant-owned MCP server (local/stdio or
-// remote/URL) or a plain HTTP API (manually described tools) as a real capa.
-// Installed through the existing POST /capas -> enable -> setup pipeline --
-// no new backend endpoints, no vendor-specific logic anywhere in this file.
-import { useState } from "react";
+// remote/URL) or a plain HTTP API (tools described by hand, or by a custom
+// server source an edition registers) as a real capa.
+// Installed through the existing POST /capas -> enable -> setup pipeline (an
+// HTTP API's tools edited after a test are replaced in place through
+// PATCH /mcp/connections/{id}/http-tools) -- no vendor-specific logic
+// anywhere in this file.
+import { useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -11,6 +14,7 @@ import {
   FlaskConical,
   Globe,
   Link2,
+  Pencil,
   Plus,
   PlugZap,
   Terminal,
@@ -20,7 +24,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { Field } from "@/components/agent-identity-fields";
+import { HttpLoginFields } from "@/components/http-login-fields";
+import { HttpTestCallPanel, type TestableTool } from "@/components/http-test-call-panel";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
+import { useCustomServerSources } from "@/edition/composition";
 import { useConfirm } from "@/hooks/use-confirm";
 import { api } from "@/lib/api";
 import {
@@ -30,6 +37,25 @@ import {
   useInstallCustomCapa,
   useTestMcpConnectionById,
 } from "@/lib/hooks";
+import {
+  LOGIN_SECRET_ENV,
+  LOGIN_SECRET_FIELD,
+  NO_LOGIN,
+  loginComplete,
+  loginSecret,
+  httpToolsUpdateBetween,
+  loginToConfig,
+  metadataToConfig,
+  customServerDraftProblem,
+  patchHttpTools,
+  postHttpTestCall,
+  toolToConfig,
+  validateHttpTools,
+  type CustomServerDraft,
+  httpToolProblemText,
+  type HttpToolProblem,
+  type HttpLoginDraft,
+} from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -67,8 +93,13 @@ interface WizardState {
   authHeaderValue: string;
   // manual_http
   baseUrl: string;
+  login: HttpLoginDraft;
   httpTools: HttpToolDraft[];
-  // test step (stdio/remote_mcp only)
+  // The custom server source chosen to describe the endpoints (null: by
+  // hand), and what it handed back.
+  sourceId: string | null;
+  draft: CustomServerDraft | null;
+  // test step (stdio/remote_mcp: tools discovered)
   testedToolNames: string[] | null;
   testError: string | null;
   // the connection a test run is/was against -- known only once
@@ -79,6 +110,21 @@ interface WizardState {
   // the capa id from a successful useInstallCustomCapa call, so step 4's Save
   // does not re-install if step 3 already installed it (e.g. to run a test).
   installedPluginId: string | null;
+  // What that install was made from, so an edit after a test (Back, change a
+  // tool, the URL or the login) reaches the connection instead of being
+  // silently lost: the manifest it was built from, how many versions this
+  // wizard installed, the connection its setup returned and the setup values
+  // that connection was last configured with.
+  installedManifest: Record<string, unknown> | null;
+  installedRevision: number;
+  installedConnectionId: string | null;
+  installedSetupKey: string | null;
+  // Capas installed under earlier names whose disabling has not succeeded
+  // yet; the next install, test or save tries again.
+  replacedPluginIds: string[];
+  // Connections of a department the person moved away from whose removal
+  // failed; the next test or save tries again.
+  pendingConnectionDeletes: string[];
 }
 
 const INITIAL_STATE: WizardState = {
@@ -93,11 +139,20 @@ const INITIAL_STATE: WizardState = {
   authHeaderName: "Authorization",
   authHeaderValue: "",
   baseUrl: "",
+  login: NO_LOGIN,
   httpTools: [],
+  sourceId: null,
+  draft: null,
   testedToolNames: null,
   testError: null,
   testedConnectionId: null,
   installedPluginId: null,
+  installedManifest: null,
+  installedRevision: 0,
+  installedConnectionId: null,
+  installedSetupKey: null,
+  replacedPluginIds: [],
+  pendingConnectionDeletes: [],
 };
 
 const SERVER_TYPES: Array<{
@@ -130,8 +185,8 @@ const HTTP_METHODS: HttpToolDraft["method"][] = ["GET", "POST", "PUT", "PATCH", 
 
 // Tailwind class names can't be built via template literals (e.g. `grid-cols-${n}`)
 // -- they have to appear as static strings for the build to extract them.
-// `steps.length` is 3 for manual_http (the "test" step is filtered out) or 4
-// otherwise, so those are the only two cases this needs to cover.
+// Every server type has four steps today (manual_http's test step makes one
+// real call of a declared tool); 3 stays covered should a type drop one again.
 const STEP_DOT_GRID_COLS: Record<number, string> = {
   3: "grid-cols-3",
   4: "grid-cols-4",
@@ -167,6 +222,15 @@ const ALL_STEPS: Array<{ key: StepKey; title: string; subtitle: string; icon: ty
 // later too.
 const DEPARTMENT_FIELD = "department";
 
+/** What a source handed back, when the endpoints come from one. */
+function draftOf(state: WizardState): CustomServerDraft | null {
+  return state.sourceId ? state.draft : null;
+}
+
+function loginOf(state: WizardState): HttpLoginDraft {
+  return draftOf(state)?.login ?? state.login;
+}
+
 async function buildManifest(
   state: WizardState,
   departmentRequired: boolean,
@@ -194,29 +258,38 @@ async function buildManifest(
         plainEnv[row.key] = row.value;
       }
     }
-  } else {
-    // remote_mcp and manual_http both use one optional auth header.
+  } else if (state.serverType === "remote_mcp") {
     if (state.authHeaderName && state.authHeaderValue) {
       fields.push({ key: "auth_header_value", label: state.authHeaderName, kind: "password" });
       secretEnvFields[state.authHeaderName] = "auth_header_value";
     }
+  } else if (loginOf(state).kind !== "none") {
+    fields.push({ key: LOGIN_SECRET_FIELD, label: "Secret", kind: "password" });
+    secretEnvFields[LOGIN_SECRET_ENV] = LOGIN_SECRET_FIELD;
   }
 
+  const draft = draftOf(state);
   const connectionConfig: Record<string, unknown> =
     state.serverType === "stdio"
       ? {}
       : state.serverType === "remote_mcp"
         ? { auth_header_name: state.authHeaderName || undefined }
-        : {
-            auth_header_name: state.authHeaderName || undefined,
-            http_tools: state.httpTools.map((t) => ({
-              name: t.name,
-              description: t.description,
-              method: t.method,
-              url_template: t.urlTemplate,
-              param_schema: JSON.parse(t.paramSchema || "{}"),
-            })),
-          };
+        : draft
+          ? {
+              ...(loginToConfig(draft.login) ? { auth: loginToConfig(draft.login) } : {}),
+              http_tools: draft.httpTools.map(toolToConfig),
+              ...(draft.openapi ? { openapi: metadataToConfig(draft.openapi) } : {}),
+            }
+          : {
+              ...(loginToConfig(state.login) ? { auth: loginToConfig(state.login) } : {}),
+              http_tools: state.httpTools.map((t) => ({
+                name: t.name,
+                description: t.description,
+                method: t.method,
+                url_template: t.urlTemplate,
+                param_schema: JSON.parse(t.paramSchema || "{}"),
+              })),
+            };
 
   const transport =
     state.serverType === "stdio"
@@ -240,8 +313,11 @@ async function buildManifest(
               ? ""
               : state.serverType === "remote_mcp"
                 ? state.serverUrl
-                : state.baseUrl,
+                : (draft?.baseUrl ?? state.baseUrl),
           transport,
+          ...(draft
+            ? { scopes: { read: [...draft.scopes.read], modify: [...draft.scopes.modify] } }
+            : {}),
           config: connectionConfig,
         },
       ],
@@ -272,10 +348,22 @@ function buildSetupValues(state: WizardState, departmentId: string): Record<stri
     for (const row of state.envRows) {
       if (row.secret && row.key) values[`env_${row.key}`] = row.value;
     }
-  } else if (state.authHeaderName && state.authHeaderValue) {
-    values.auth_header_value = state.authHeaderValue;
+  } else if (state.serverType === "remote_mcp") {
+    if (state.authHeaderName && state.authHeaderValue)
+      values.auth_header_value = state.authHeaderValue;
+  } else if (loginSecret(loginOf(state))) {
+    values[LOGIN_SECRET_FIELD] = loginSecret(loginOf(state));
   }
   return values;
+}
+
+/** A refusal saying the connection an edit targets is not there any more. */
+function connectionGone(err: unknown): boolean {
+  const status =
+    typeof err === "object" && err !== null && "status" in err
+      ? (err as { status: unknown }).status
+      : null;
+  return status === 404 || status === 409;
 }
 
 export function CustomMcpWizard({
@@ -308,7 +396,12 @@ export function CustomMcpWizard({
       : "";
   const departmentName = departments.find((d) => d.id === departmentId)?.name ?? null;
   const [stepError, setStepError] = useState<string | null>(null);
+  // What is wrong with each tool, shown under it after a refused Next.
+  const [toolProblems, setToolProblems] = useState<Array<HttpToolProblem | null>>([]);
+
+  const toolProblemText = (problem: HttpToolProblem) => httpToolProblemText(problem, t);
   const [busy, setBusy] = useState(false);
+  const closing = useRef(false);
 
   const installCustomCapa = useInstallCustomCapa();
   const enablePlugin = useEnablePlugin();
@@ -328,9 +421,20 @@ export function CustomMcpWizard({
   // new backend surface.
   const { confirm, ConfirmDialog } = useConfirm();
 
-  const steps =
-    state.serverType === "manual_http" ? ALL_STEPS.filter((s) => s.key !== "test") : ALL_STEPS;
+  const steps = ALL_STEPS;
   const activeStep = steps[step] ?? steps[0];
+  const sources = useCustomServerSources();
+  const activeSource =
+    state.serverType === "manual_http" && state.sourceId
+      ? (sources.find((s) => s.id === state.sourceId) ?? null)
+      : null;
+  // The source renders its own step (and its own "continue") in a wider dialog.
+  const sourceStepActive = activeSource !== null && activeStep.key === "connection";
+  // A source that is no longer offered (the caller lacks its capability) does
+  // not describe the endpoints: what was typed by hand does.
+  const described: WizardState = activeSource ? state : { ...state, sourceId: null };
+  const byHandStepActive =
+    activeStep.key === "connection" && state.serverType === "manual_http" && !activeSource;
   const StepIcon = activeStep.icon;
   const progress = ((step + 1) / steps.length) * 100;
 
@@ -355,11 +459,24 @@ export function CustomMcpWizard({
   // it turned back off -- see the comment by `useDisablePlugin` above for
   // why there's nothing stronger to call.
   async function requestClose() {
-    if (busy) return;
+    if (busy || closing.current) return;
     if (!state.installedPluginId) {
       close();
       return;
     }
+    // Held from the confirm on: a second click (the X, the backdrop, Cancel)
+    // must not ask again or run the disable and the retry twice.
+    closing.current = true;
+    try {
+      await disableAndClose();
+    } finally {
+      closing.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function disableAndClose() {
+    if (!state.installedPluginId) return;
     const ok = await confirm({
       title: "Cancel and leave this capa installed?",
       description: `Testing the connection already installed and enabled "${state.name || "this capa"}" in your workspace -- that's not undone by closing this dialog. You can disable it now so it isn't left running unnoticed, or go back and finish saving it.`,
@@ -367,6 +484,7 @@ export function CustomMcpWizard({
       cancelLabel: "Keep editing",
     });
     if (!ok) return;
+    setBusy(true);
     try {
       await disablePlugin.mutateAsync({
         pluginId: state.installedPluginId,
@@ -379,7 +497,57 @@ export function CustomMcpWizard({
           : "Could not disable this capa -- it's still enabled; disable it from the Capas page.",
       );
     } finally {
+      await disableReplacedOnce();
+      await removePendingConnectionsOnce();
       close();
+    }
+  }
+
+  // A capa installed under an earlier name whose disabling failed is
+  // otherwise retried on the next test or save; closing means there is
+  // none, so try once more and say so if it is still enabled.
+  async function disableReplacedOnce() {
+    let failed = false;
+    for (const id of state.replacedPluginIds) {
+      if (id === state.installedPluginId) continue;
+      try {
+        await disablePlugin.mutateAsync({
+          pluginId: id,
+          reason: "Replaced in the custom MCP wizard after a rename",
+        });
+      } catch {
+        failed = true;
+      }
+    }
+    if (failed) {
+      toast.warning(
+        t(
+          "A capa installed under an earlier name could not be disabled. Disable it on the Capas page.",
+          "Eine Capa, die unter einem früheren Namen installiert wurde, konnte nicht deaktiviert werden. Deaktiviere sie auf der Seite Capas.",
+        ),
+      );
+    }
+  }
+
+  // A connection left in a department the person moved away from, whose
+  // removal failed, is otherwise retried on the next test or save; closing
+  // means there is none, so try once more and say so if it still stays.
+  async function removePendingConnectionsOnce() {
+    const failed: string[] = [];
+    for (const id of state.pendingConnectionDeletes) {
+      try {
+        await api.delete(`/mcp/connections/${id}`);
+      } catch {
+        failed.push(id);
+      }
+    }
+    if (failed.length > 0) {
+      toast.warning(
+        t(
+          "The connection in the department you moved away from could not be removed. Delete it from the connections list.",
+          "Die Verbindung in der Abteilung, aus der du gewechselt bist, konnte nicht entfernt werden. Lösche sie in der Liste der Verbindungen.",
+        ),
+      );
     }
   }
 
@@ -399,7 +567,12 @@ export function CustomMcpWizard({
       if (state.serverType === "stdio") return state.command.trim().length > 0;
       if (state.serverType === "remote_mcp") return state.serverUrl.trim().length > 0;
       if (state.serverType === "manual_http") {
-        return state.baseUrl.trim().length > 0 && state.httpTools.length > 0;
+        if (activeSource) return state.draft !== null;
+        return (
+          state.baseUrl.trim().length > 0 &&
+          state.httpTools.length > 0 &&
+          loginComplete(state.login)
+        );
       }
       return false;
     }
@@ -410,17 +583,12 @@ export function CustomMcpWizard({
 
   function handleNext() {
     if (activeStep.key === "connection" && state.serverType === "manual_http") {
-      for (const tool of state.httpTools) {
-        if (!tool.paramSchema.trim()) continue;
-        try {
-          JSON.parse(tool.paramSchema);
-        } catch {
-          setStepError(
-            `Invalid JSON in the parameter schema for "${tool.name || "unnamed tool"}".`,
-          );
-          return;
-        }
+      const problems = validateHttpTools(state.httpTools);
+      if (problems.some((problem) => problem !== null)) {
+        setToolProblems(problems);
+        return;
       }
+      setToolProblems([]);
     }
     if (!canProceed) return;
     setStepError(null);
@@ -445,23 +613,139 @@ export function CustomMcpWizard({
   // hook into a dynamic-argument shape (see capa-setup-dialog.tsx for the
   // same enable-then-configure-then-test sequence via hooks, for the case
   // where the plugin id is already known up front).
+  //
+  // When the manifest changed since this wizard installed it (the person went
+  // Back after a test and edited something), an edit of the HTTP API's tools
+  // alone replaces them on the installed connection and in its manifest
+  // (PATCH .../http-tools), with no new install. Anything else -- the name,
+  // the URL, the login -- is installed again as a new version, and the
+  // connection the old one set up is removed first: enabling only refreshes a
+  // connection's declared seams, so the new URL and login reach a connection
+  // only when it is made afresh.
   async function installEnableConfigure(): Promise<{
     pluginId: string;
     connectionId: string | null;
   }> {
+    const manifest = await buildManifest(described, departments.length > 0);
+    const values = buildSetupValues(described, departmentId);
+    const setupKey = JSON.stringify(values);
     let pluginId = state.installedPluginId;
-    if (!pluginId) {
-      const manifest = await buildManifest(state, departments.length > 0);
-      const installed = await installCustomCapa.mutateAsync({ manifest });
+    let revision = state.installedRevision;
+    // Tracked locally from here on: `update` only reaches `state` after this run.
+    let installedConnectionId = state.installedConnectionId;
+    const changed =
+      state.installedManifest !== null &&
+      JSON.stringify(manifest) !== JSON.stringify(state.installedManifest);
+    const toolsOnly =
+      pluginId && changed && installedConnectionId && state.installedManifest
+        ? httpToolsUpdateBetween(state.installedManifest, manifest)
+        : null;
+
+    // Removes connections left behind in a department the person moved away
+    // from. One that cannot be removed now stays queued for the next test or
+    // save -- the setup that replaced it already worked -- with a warning.
+    async function removeLeftConnections(extra: string[]): Promise<void> {
+      const queued = [...state.pendingConnectionDeletes, ...extra].filter(
+        (id, i, all) => id !== installedConnectionId && all.indexOf(id) === i,
+      );
+      const failed: string[] = [];
+      for (const id of queued) {
+        try {
+          await api.delete(`/mcp/connections/${id}`);
+        } catch {
+          failed.push(id);
+        }
+      }
+      update({ pendingConnectionDeletes: failed });
+      if (failed.length > 0) {
+        toast.warning(
+          t(
+            "The connection in the department you moved away from could not be removed yet. It is tried again on the next test or save.",
+            "Die Verbindung in der Abteilung, aus der du gewechselt bist, konnte noch nicht entfernt werden. Beim nächsten Test oder Speichern wird es erneut versucht.",
+          ),
+        );
+      }
+    }
+
+    // Setup makes one connection per department, so a changed department
+    // yields a new connection; the one the first department had -- with the
+    // login -- must not stay reachable to that department's agents.
+    async function setUp(id: string): Promise<string | null> {
+      const result = await api.post<{ connectionId: string | null }>(`/capas/${id}/setup`, {
+        values,
+      });
+      const before = installedConnectionId;
+      installedConnectionId = result.connectionId;
+      update({ installedConnectionId: result.connectionId, installedSetupKey: setupKey });
+      await removeLeftConnections(before && before !== result.connectionId ? [before] : []);
+      return result.connectionId;
+    }
+
+    if (pluginId && toolsOnly && installedConnectionId) {
+      const connectionId = installedConnectionId;
+      let patched = true;
+      try {
+        await patchHttpTools(connectionId, toolsOnly);
+      } catch (err) {
+        // The connection was deleted (404) or no longer belongs to this
+        // capa's manifest (409): install again, as for any other change.
+        if (!connectionGone(err)) throw err;
+        patched = false;
+        installedConnectionId = null;
+        update({ installedConnectionId: null });
+      }
+      if (patched) {
+        update({ installedManifest: manifest });
+        // A changed secret or department travels through setup, as always.
+        if (setupKey === state.installedSetupKey) {
+          await removeLeftConnections([]);
+          return { pluginId, connectionId };
+        }
+        return { pluginId, connectionId: await setUp(pluginId) };
+      }
+    }
+
+    let pending = state.replacedPluginIds;
+    if (!pluginId || changed) {
+      if (pluginId && installedConnectionId) {
+        await api.delete(`/mcp/connections/${installedConnectionId}`);
+        installedConnectionId = null;
+        update({ installedConnectionId: null });
+      }
+      const previous = pluginId;
+      revision = previous ? revision + 1 : 0;
+      const installed = await installCustomCapa.mutateAsync({
+        manifest: { ...manifest, version: `1.0.${revision}` },
+      });
       pluginId = installed.pluginId;
-      update({ installedPluginId: pluginId });
+      // A new name is a new capa: the one installed under the old name must
+      // not stay enabled behind the person's back.
+      if (previous && previous !== pluginId && !pending.includes(previous)) {
+        pending = [...pending, previous];
+      }
+      // Recorded before anything else can fail, so a retry does not install
+      // this same version again.
+      update({
+        installedPluginId: pluginId,
+        installedManifest: manifest,
+        installedRevision: revision,
+        replacedPluginIds: pending,
+      });
+    }
+    // Renamed back to an earlier name: that capa is the current one again.
+    const current = pluginId;
+    pending = pending.filter((id) => id !== current);
+    update({ replacedPluginIds: pending });
+    for (const replaced of pending) {
+      await disablePlugin.mutateAsync({
+        pluginId: replaced,
+        reason: "Replaced in the custom MCP wizard after a rename",
+      });
+      pending = pending.filter((id) => id !== replaced);
+      update({ replacedPluginIds: pending });
     }
     await enablePlugin.mutateAsync({ pluginId, grantedPermissions: [] });
-    const values = buildSetupValues(state, departmentId);
-    const result = await api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, {
-      values,
-    });
-    return { pluginId, connectionId: result.connectionId };
+    return { pluginId, connectionId: await setUp(pluginId) };
   }
 
   async function runTest() {
@@ -490,6 +774,60 @@ export function CustomMcpWizard({
         testError: err instanceof Error ? err.message : "Connection test failed.",
         testedToolNames: null,
       });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const sourceDraft = draftOf(described);
+  const toolsForTest: TestableTool[] = sourceDraft
+    ? sourceDraft.httpTools.map((tool) => ({
+        name: tool.name,
+        method: tool.method,
+        paramSchema: tool.paramSchema,
+      }))
+    : state.httpTools
+        .filter((tool) => tool.name.trim() !== "")
+        .map((tool) => {
+          let schema: Record<string, unknown> = {};
+          try {
+            const parsed: unknown = JSON.parse(tool.paramSchema || "{}");
+            if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+              schema = parsed as Record<string, unknown>;
+            }
+          } catch {
+            schema = {};
+          }
+          return { name: tool.name, method: tool.method, paramSchema: schema };
+        });
+
+  // What a source handed back is checked by the same rules the server and the
+  // hand-written tools use (base URL, login, tools, read/modify), before it
+  // can be tested or saved.
+  function acceptDraft(draft: CustomServerDraft) {
+    const problem = customServerDraftProblem(draft, t, { withConnection: true });
+    if (problem) {
+      setStepError(problem);
+      return;
+    }
+    update({ draft });
+    setStepError(null);
+    setStep((s) => Math.min(s + 1, steps.length - 1));
+  }
+
+  // The plain HTTP API's test step: install, enable and configure the capa
+  // like the MCP test does, then make one real call of the chosen tool.
+  async function runManualTestCall(tool: string, args: Record<string, unknown>) {
+    setBusy(true);
+    try {
+      const { connectionId } = await installEnableConfigure();
+      if (!connectionId) {
+        throw new Error(
+          t("No connection was created to test.", "Es wurde keine Verbindung zum Testen angelegt."),
+        );
+      }
+      update({ testedConnectionId: connectionId });
+      return await postHttpTestCall(connectionId, tool, args);
     } finally {
       setBusy(false);
     }
@@ -535,12 +873,14 @@ export function CustomMcpWizard({
   }
 
   function updateHttpTool(index: number, patch: Partial<HttpToolDraft>) {
+    setToolProblems((problems) => problems.map((p, i) => (i === index ? null : p)));
     update({
       httpTools: state.httpTools.map((tool, i) => (i === index ? { ...tool, ...patch } : tool)),
     });
   }
 
   function removeHttpTool(index: number) {
+    setToolProblems([]);
     update({ httpTools: state.httpTools.filter((_, i) => i !== index) });
   }
 
@@ -555,7 +895,12 @@ export function CustomMcpWizard({
           if (e.target === e.currentTarget) void requestClose();
         }}
       >
-        <div className="w-full max-w-3xl overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl animate-in fade-in zoom-in-95 duration-200">
+        <div
+          className={cn(
+            "w-full overflow-hidden rounded-2xl border border-border bg-panel shadow-2xl animate-in fade-in zoom-in-95 duration-200",
+            sourceStepActive ? "max-w-6xl" : "max-w-3xl",
+          )}
+        >
           {/* Header */}
           <header className="relative border-b border-border px-6 pb-5 pt-6">
             <div className="flex items-start justify-between gap-4">
@@ -628,7 +973,10 @@ export function CustomMcpWizard({
           {/* Body */}
           <div
             key={step}
-            className="max-h-[62vh] space-y-4 overflow-y-auto px-6 py-6 animate-in fade-in slide-in-from-right-2 duration-300"
+            className={cn(
+              "space-y-4 overflow-y-auto px-6 py-6 animate-in fade-in slide-in-from-right-2 duration-300",
+              sourceStepActive ? "max-h-[78vh]" : "max-h-[62vh]",
+            )}
           >
             {activeStep.key === "type" && (
               <div className="space-y-4">
@@ -707,6 +1055,64 @@ export function CustomMcpWizard({
                     })}
                   </div>
                 </Field>
+                {state.serverType === "manual_http" && sources.length > 0 && (
+                  <div
+                    role="group"
+                    aria-label={t(
+                      "How do you describe the endpoints?",
+                      "Wie beschreibst du die Endpunkte?",
+                    )}
+                  >
+                    <div className="mb-1.5 text-xs uppercase tracking-wider text-muted-foreground">
+                      {t("How do you describe the endpoints?", "Wie beschreibst du die Endpunkte?")}
+                    </div>
+                    <div className="space-y-2">
+                      {[
+                        ...sources.map((s) => ({
+                          id: s.id as string | null,
+                          title: t(s.label.en, s.label.de),
+                          description: t(s.description.en, s.description.de),
+                          Icon: s.icon,
+                        })),
+                        {
+                          id: null,
+                          title: t("Describe them by hand", "Von Hand beschreiben"),
+                          description: t(
+                            "Add each endpoint yourself: method, path and parameters.",
+                            "Trage jeden Endpunkt selbst ein: Methode, Pfad und Parameter.",
+                          ),
+                          Icon: Pencil,
+                        },
+                      ].map(({ id, title, description, Icon }) => (
+                        <button
+                          key={id ?? "by-hand"}
+                          type="button"
+                          aria-pressed={state.sourceId === id}
+                          onClick={() =>
+                            update({
+                              sourceId: id,
+                              draft: id === state.sourceId ? state.draft : null,
+                            })
+                          }
+                          className={cn(
+                            "flex w-full items-start gap-3 rounded-xl border-2 p-3 text-left transition",
+                            state.sourceId === id
+                              ? "border-primary bg-primary/5"
+                              : "border-border bg-background/30 hover:border-primary/40",
+                          )}
+                        >
+                          <Icon className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                          <span>
+                            <span className="block text-sm font-medium">{title}</span>
+                            <span className="block text-[11px] text-muted-foreground">
+                              {description}
+                            </span>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -750,7 +1156,27 @@ export function CustomMcpWizard({
               </div>
             )}
 
-            {activeStep.key === "connection" && state.serverType === "manual_http" && (
+            {sourceStepActive && activeSource && (
+              <div className="space-y-4">
+                <activeSource.component
+                  mode="create"
+                  initialDraft={state.draft}
+                  existing={null}
+                  onComplete={acceptDraft}
+                  onCancel={() => {
+                    setStepError(null);
+                    setStep(0);
+                  }}
+                />
+                {stepError && (
+                  <p role="alert" className="text-xs text-[color:var(--status-error)]">
+                    {stepError}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {byHandStepActive && (
               <div className="space-y-4">
                 <Field label="Base URL">
                   <input
@@ -760,7 +1186,7 @@ export function CustomMcpWizard({
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
                   />
                 </Field>
-                <AuthHeaderFields state={state} onChange={update} />
+                <HttpLoginFields value={state.login} onChange={(login) => update({ login })} />
                 <div>
                   <div className="mb-2 flex items-center justify-between">
                     <span className="text-xs uppercase tracking-wider text-muted-foreground">
@@ -840,6 +1266,11 @@ export function CustomMcpWizard({
                           rows={3}
                           className="w-full rounded-md border border-border bg-background/40 px-3 py-1.5 font-mono text-xs outline-none focus:border-primary/50"
                         />
+                        {toolProblems[i] && (
+                          <p role="alert" className="text-xs text-[color:var(--status-error)]">
+                            {toolProblemText(toolProblems[i])}
+                          </p>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -850,7 +1281,7 @@ export function CustomMcpWizard({
               </div>
             )}
 
-            {activeStep.key === "test" && (
+            {activeStep.key === "test" && state.serverType !== "manual_http" && (
               <div className="space-y-4">
                 <p className="text-xs text-muted-foreground">
                   This installs and configures the capa now, then pings the server and asks it which
@@ -895,15 +1326,20 @@ export function CustomMcpWizard({
               </div>
             )}
 
+            {activeStep.key === "test" && state.serverType === "manual_http" && (
+              <HttpTestCallPanel tools={toolsForTest} run={runManualTestCall} />
+            )}
+
             {activeStep.key === "summary" && (
-              <SummaryCard state={state} departmentName={departmentName} />
+              <SummaryCard state={described} departmentName={departmentName} />
             )}
           </div>
 
           <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
             <button
               onClick={handleBack}
-              className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground"
+              disabled={busy}
+              className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
             >
               {step === 0 ? (
                 "Cancel"
@@ -913,7 +1349,7 @@ export function CustomMcpWizard({
                 </>
               )}
             </button>
-            {!isLastStep ? (
+            {sourceStepActive ? null : !isLastStep ? (
               <button
                 onClick={handleNext}
                 disabled={!canProceed}
@@ -1067,14 +1503,18 @@ function SummaryCard({
   const typeLabel = state.serverType ? SERVER_TYPE_LABELS[state.serverType] : "—";
   const toolOrEndpointCount =
     state.serverType === "manual_http"
-      ? state.httpTools.length
+      ? (draftOf(state)?.httpTools.length ?? state.httpTools.length)
       : (state.testedToolNames?.length ?? null);
   const secretCount =
     state.serverType === "stdio"
       ? state.envRows.filter((r) => r.secret && r.key).length
-      : state.authHeaderName && state.authHeaderValue
-        ? 1
-        : 0;
+      : state.serverType === "manual_http"
+        ? loginSecret(loginOf(state))
+          ? 1
+          : 0
+        : state.authHeaderName && state.authHeaderValue
+          ? 1
+          : 0;
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-primary/40 bg-gradient-to-b from-primary/10 via-panel to-panel p-5 shadow-[0_0_0_1px_var(--primary)]/10">

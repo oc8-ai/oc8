@@ -23,7 +23,7 @@ from tests.conftest import AppSessionFactory
 from oc8.auth import get_identity_provider
 from oc8.main import create_app
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("allow_loopback_outbound")]
 
 
 @pytest.fixture(autouse=True)

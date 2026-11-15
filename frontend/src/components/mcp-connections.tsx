@@ -2,11 +2,22 @@
 // Distinct from the mock integration catalog on the same page: this panel only
 // ever shows what the backend actually reported — an untested connection reads
 // "untested", never a fake "connected".
-import { ChevronDown, ChevronRight, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Server,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { EditHttpToolsDialog } from "@/components/edit-http-tools-dialog";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
+import { useCustomServerSources } from "@/edition/composition";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   useCreateMcpConnection,
@@ -18,6 +29,7 @@ import {
   type McpConnection,
 } from "@/lib/hooks";
 import { useMay } from "@/lib/governance-hooks";
+import { useHttpTools } from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -314,6 +326,17 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
   // dominates the page's scroll height before the reader even reaches the
   // Capas below it.
   const [toolsOpen, setToolsOpen] = useState(false);
+  // Offered only when a custom server source can edit this connection: core
+  // has no editor of its own for these endpoints. Editing rewrites the
+  // plugin's manifest, hence plugin:manage.
+  const editors = useCustomServerSources().filter((s) => s.canEdit);
+  const may = useMay();
+  const mayEditTools =
+    connection.transport === "manual_http" && editors.length > 0 && may("plugin:manage");
+  const { data: httpTools } = useHttpTools(mayEditTools ? connection.id : null);
+  const editor =
+    mayEditTools && httpTools ? editors.find((s) => s.canEdit?.(httpTools)) : undefined;
+  const [editingTools, setEditingTools] = useState(false);
   const status = healthStatusOf(connection);
   const tools = Array.isArray(connection.health?.tools)
     ? (connection.health.tools as unknown[]).filter((x): x is string => typeof x === "string")
@@ -345,9 +368,26 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
   return (
     <div>
       {ConfirmDialog}
+      {editingTools && editor && httpTools && (
+        <EditHttpToolsDialog
+          source={editor}
+          snapshot={httpTools}
+          onClose={() => setEditingTools(false)}
+        />
+      )}
       <div className="flex items-center justify-between">
         <HealthBadge status={status} />
         <div className="flex items-center gap-1.5">
+          {editor && (
+            <button
+              type="button"
+              onClick={() => setEditingTools(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <Pencil className="h-3 w-3" />
+              {t("Edit endpoints", "Endpunkte bearbeiten")}
+            </button>
+          )}
           <button
             type="button"
             onClick={onDelete}

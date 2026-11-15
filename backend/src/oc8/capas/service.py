@@ -254,11 +254,18 @@ async def install_plugin(
         raise DependencyError(f"unmet capabilities: {missing}")
 
     effective_trust = trust_level or manifest.trust
+    if origin == "custom" and find_plugin(manifest.name) is not None:
+        # A connection is classified by the shipped plugin of its capa's name
+        # (`resolve_tool_pack_connection`), so a custom capa under that name
+        # would be judged by someone else's manifest.
+        raise PluginError(f"{manifest.name!r} is the name of a shipped capa; choose another name")
     plugin = (
         await db.execute(
             select(Capa).where(Capa.tenant_id == tenant_id, Capa.name == manifest.name)
         )
     ).scalar_one_or_none()
+    if plugin is not None and (origin == "custom") != (plugin.origin == "custom"):
+        raise PluginError(f"{manifest.name!r} is already installed from elsewhere")
     if plugin is None:
         plugin = Capa(
             tenant_id=tenant_id,
@@ -283,21 +290,21 @@ async def install_plugin(
     if dup is not None:
         raise DuplicateVersionError(f"{manifest.name}@{manifest.version} already installed")
 
-    version = CapaVersion(
-        tenant_id=tenant_id,
-        capa_id=plugin.id,
-        semver=manifest.version,
-        manifest=manifest.model_dump(mode="json"),
-        artifact_hash=_artifact_hash(manifest),
-        permissions=list(manifest.permissions),
-        capabilities=list(manifest.capabilities),
-        entry_points=dict(manifest.entry_points),
-    )
+    version = CapaVersion(tenant_id=tenant_id, capa_id=plugin.id, semver=manifest.version)
+    _fill_version(version, manifest)
     db.add(version)
     await db.flush()
     plugin.current_version_id = version.id
     await db.flush()
     return version
+
+
+def _fill_version(version: CapaVersion, manifest: Manifest) -> None:
+    version.manifest = manifest.model_dump(mode="json")
+    version.artifact_hash = _artifact_hash(manifest)
+    version.permissions = list(manifest.permissions)
+    version.capabilities = list(manifest.capabilities)
+    version.entry_points = dict(manifest.entry_points)
 
 
 async def install_with_dependencies(
