@@ -157,6 +157,9 @@ class FakeOdoo:
                 return httpx.Response(404, text="Not Found")
             return self._jsonrpc(body)
         if path == "/web/version":
+            # An http (GET) route on a real Odoo 19: a JSON-RPC POST gets a 400 page.
+            return httpx.Response(400, text="<html>Bad Request</html>")
+        if path == "/web/webclient/version_info":
             return self._ok({"server_version": "x", "server_version_info": self.version})
         if path.startswith("/json/2/"):
             if self.version[0] < 19:
@@ -362,7 +365,7 @@ async def test_json2_uid_match_opens() -> None:
 
 
 async def test_json2_opens_when_jsonrpc_is_gone() -> None:
-    """A later Odoo without /jsonrpc: the version comes from /web/version and
+    """A later Odoo without /jsonrpc: the version comes from the web client and
     the login check over /jsonrpc is skipped."""
     fake = FakeOdoo([20, 0, 0, "final", 0, ""], jsonrpc_missing=True)
     client = await _open(fake)
@@ -645,11 +648,11 @@ async def test_malformed_address_is_unreachable_with_a_fixed_message() -> None:
 
 
 class _TopLevelVersionInfo(FakeOdoo):
-    """A later Odoo whose /web/version answers `version_info`, not
+    """A later Odoo whose version_info route answers `version_info`, not
     `server_version_info`."""
 
     def handle(self, request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/web/version":
+        if request.url.path == "/web/webclient/version_info":
             self.requests.append(request)
             return self._ok({"version": "x", "version_info": self.version})
         return super().handle(request)

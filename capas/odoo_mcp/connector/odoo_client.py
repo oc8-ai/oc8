@@ -349,20 +349,23 @@ class OdooClient:
 
     async def _read_version(self) -> tuple[int, int]:
         """`common.version` over /jsonrpc; where /jsonrpc is gone (a later
-        Odoo), the web client's `/web/version`, which answers the same."""
+        Odoo), the web client's JSON-RPC route `/web/webclient/version_info`,
+        which answers the same. (`/web/version` is a GET-only http route and
+        answers a JSON-RPC POST with a 400 page.)"""
         try:
             result = await self._jsonrpc("common", "version", [])
         except _JsonRpcGone:
             self._jsonrpc_served = False
             answer = await self._post(
-                "/web/version", {"jsonrpc": "2.0", "method": "call", "params": {}}
+                "/web/webclient/version_info",
+                {"jsonrpc": "2.0", "method": "call", "params": {}},
             )
             body = answer.body if answer.status == 200 else None
             result = body.get("result") if isinstance(body, dict) else None
         info = None
         if isinstance(result, dict):
-            # /jsonrpc names it `server_version_info`; /web/version may name
-            # it `version_info`.
+            # Both routes name it `server_version_info`; accept `version_info`
+            # too, the name `/web/version` uses.
             info = result.get("server_version_info") or result.get("version_info")
         return _parse_version(info)
 
