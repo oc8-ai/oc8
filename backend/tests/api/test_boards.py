@@ -177,12 +177,48 @@ async def test_losing_the_seat_hides_the_board_on_the_next_request(
             seat.revoked_at = dt.datetime.now(dt.UTC)
         gone = await c.get(f"/api/v1/boards/{o.finance_board}", headers=h)
         lst = await c.get("/api/v1/boards", headers=h)
-    # A member with no seat left is refused at the gate (403) or sees nothing (404):
-    # either way the board is not served.
     # No seat left and no tenant-wide agent:view: refused at the gate, and the
     # per-request scope means the very next request already sees it.
     assert gone.status_code == 403 and "Revenue" not in gone.text
     assert lst.status_code == 403
+
+
+async def test_revoking_one_of_two_seats_hides_only_that_departments_board(
+    app_session: AppSessionFactory,
+) -> None:
+    o = await _office(app_session)
+    h = _headers(o.tenant, "fin-member", "member")
+    async with app_session(o.tenant) as db:
+        member_id = (
+            await db.execute(
+                select(m.OrgMemberDepartment.member_id).where(m.OrgMemberDepartment.id == o.seat)
+            )
+        ).scalar_one()
+        sales_seat = m.OrgMemberDepartment(
+            tenant_id=o.tenant,
+            member_id=member_id,
+            department_id=o.sales,
+            seat_role=SEAT_VIEWER,
+        )
+        db.add(sales_seat)
+        await db.flush()
+        sales_seat_id = sales_seat.id
+    async with _http() as c:
+        assert (await c.get(f"/api/v1/boards/{o.sales_board}", headers=h)).status_code == 200
+        async with app_session(o.tenant) as db:
+            row = (
+                await db.execute(
+                    select(m.OrgMemberDepartment).where(m.OrgMemberDepartment.id == sales_seat_id)
+                )
+            ).scalar_one()
+            row.revoked_at = dt.datetime.now(dt.UTC)
+        gone = await c.get(f"/api/v1/boards/{o.sales_board}", headers=h)
+        lst = await c.get("/api/v1/boards", headers=h)
+        fin = await c.get(f"/api/v1/boards/{o.finance_board}", headers=h)
+    assert gone.status_code == 404, gone.text
+    assert "Pipeline" not in gone.text
+    assert [b["id"] for b in lst.json()] == [str(o.finance_board)]
+    assert fin.status_code == 200, fin.text
 
 
 async def test_tenant_wide_agent_view_sees_all_boards(app_session: AppSessionFactory) -> None:

@@ -8,6 +8,7 @@ a sentence saying why it may see every department's.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 
 from tests.agents.test_reads_go_through_the_scoped_repository import _loads
@@ -58,8 +59,26 @@ ALLOWED: dict[str, str] = {
 }
 
 
-def _boards_loads(source: str) -> list[tuple[int, str]]:
-    return _loads(source, guarded=GUARDED, guarded_tables=GUARDED_TABLES)
+def _aliases(source: str, *, filename: str = "<test>") -> list[tuple[int, str]]:
+    """`b = m.DataBoardBatch`: binding a guarded model to a name, which `_loads` cannot
+    follow into a later `select(b)`."""
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(ast.parse(source, filename=filename)):
+        if not isinstance(node, ast.Assign | ast.AnnAssign) or node.value is None:
+            continue
+        value = node.value
+        if isinstance(value, ast.Name) and value.id in GUARDED:
+            found.append((node.lineno, value.id))
+        elif isinstance(value, ast.Attribute) and value.attr in GUARDED:
+            found.append((node.lineno, value.attr))
+    return found
+
+
+def _boards_loads(source: str, *, filename: str = "<test>") -> list[tuple[int, str]]:
+    return sorted(
+        _loads(source, filename=filename, guarded=GUARDED, guarded_tables=GUARDED_TABLES)
+        + _aliases(source, filename=filename)
+    )
 
 
 def test_the_sweep_sees_board_loads() -> None:
@@ -69,18 +88,15 @@ def test_the_sweep_sees_board_loads() -> None:
         (1, "data_board"),
         (1, "data_board_batch"),
     ]
+    assert _boards_loads("b = m.DataBoardBatch") == [(1, "DataBoardBatch")]
+    assert _boards_loads("b: type = DataBoard") == [(1, "DataBoard")]
     assert _boards_loads("select(m.Agent)") == []
     assert _loads("select(m.DataBoard)") == []  # the agents sets do not guard boards
 
 
 def test_the_sweep_is_reading_the_real_tree() -> None:
     known = SRC / "boards" / "mission.py"
-    loaded = {
-        model
-        for _line, model in _loads(
-            known.read_text(), guarded=GUARDED, guarded_tables=GUARDED_TABLES
-        )
-    }
+    loaded = {model for _line, model in _boards_loads(known.read_text())}
     assert loaded & GUARDED, "boards/mission.py loads board rows and the sweep no longer sees it"
 
 
@@ -92,9 +108,7 @@ def test_no_module_loads_a_board_outside_the_scoped_repository() -> None:
         rel = path.relative_to(SRC).as_posix()
         if rel in ALLOWED:
             continue
-        for line, model in _loads(
-            path.read_text(), filename=str(path), guarded=GUARDED, guarded_tables=GUARDED_TABLES
-        ):
+        for line, model in _boards_loads(path.read_text(), filename=str(path)):
             offenders.append(f"src/oc8/{rel}:{line} loads {model}")
     assert not offenders, (
         "these load a board without going through boards.repo, so they see every "
