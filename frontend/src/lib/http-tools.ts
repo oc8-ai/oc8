@@ -520,3 +520,67 @@ export function customServerDraftProblem(
   }
   return null;
 }
+
+// --- the test call: which endpoint first, and with which arguments ---------
+
+export interface TestableTool {
+  name: string;
+  method: string;
+  paramSchema: Record<string, unknown>;
+}
+
+function isRead(tool: TestableTool): boolean {
+  return ["GET", "HEAD"].includes(tool.method.toUpperCase());
+}
+
+/** Read endpoints (GET, HEAD) first, the order within each group kept: the
+ * safest calls are the first offered. */
+export function orderTestTools<T extends TestableTool>(tools: readonly T[]): T[] {
+  return [...tools.filter(isRead), ...tools.filter((t) => !isRead(t))];
+}
+
+/** The first read endpoint is the safest first call; without one, the first. */
+export function defaultTestTool(tools: readonly TestableTool[]): string {
+  return orderTestTools(tools)[0]?.name ?? "";
+}
+
+function placeholder(schema: unknown): unknown {
+  const s =
+    schema !== null && typeof schema === "object" ? (schema as Record<string, unknown>) : {};
+  if (Array.isArray(s.enum) && s.enum.length > 0) return s.enum[0];
+  const type = Array.isArray(s.type) ? s.type.find((x) => x !== "null") : s.type;
+  switch (type) {
+    case "number":
+    case "integer":
+      return 0;
+    case "boolean":
+      return false;
+    case "array":
+      return [];
+    case "object":
+      return {};
+    default:
+      return "";
+  }
+}
+
+/** The arguments a call of this schema cannot do without, each with an
+ * empty value of its type (the first value of an enum). Optional ones are
+ * left out: the person adds what they want to try. */
+export function exampleArguments(paramSchema: Record<string, unknown>): Record<string, unknown> {
+  const required = Array.isArray(paramSchema.required) ? paramSchema.required : [];
+  const properties =
+    paramSchema.properties !== null && typeof paramSchema.properties === "object"
+      ? (paramSchema.properties as Record<string, unknown>)
+      : {};
+  const out: Record<string, unknown> = {};
+  for (const name of required) {
+    if (typeof name === "string") out[name] = placeholder(properties[name]);
+  }
+  return out;
+}
+
+export function exampleText(tool: TestableTool | undefined): string {
+  const args = tool ? exampleArguments(tool.paramSchema) : {};
+  return Object.keys(args).length === 0 ? "{}" : JSON.stringify(args, null, 2);
+}

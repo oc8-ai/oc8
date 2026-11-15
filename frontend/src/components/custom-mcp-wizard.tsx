@@ -25,7 +25,7 @@ import {
 import { toast } from "sonner";
 import { Field } from "@/components/agent-identity-fields";
 import { HttpLoginFields } from "@/components/http-login-fields";
-import { HttpTestCallPanel, type TestableTool } from "@/components/http-test-call-panel";
+import { HttpTestCallPanel } from "@/components/http-test-call-panel";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useCustomServerSources } from "@/edition/composition";
 import { useConfirm } from "@/hooks/use-confirm";
@@ -48,6 +48,7 @@ import {
   metadataToConfig,
   baseUrlHasLogin,
   customServerDraftProblem,
+  type TestableTool,
   patchHttpTools,
   postHttpTestCall,
   toolToConfig,

@@ -3,26 +3,15 @@
 // server wizard and by the endpoints editor.
 import { useState } from "react";
 import { FlaskConical } from "lucide-react";
-import type { HttpTestCallResult } from "@/lib/http-tools";
+import {
+  defaultTestTool,
+  exampleText,
+  orderTestTools,
+  type HttpTestCallResult,
+  type TestableTool,
+} from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-
-export interface TestableTool {
-  name: string;
-  method: string;
-  paramSchema: Record<string, unknown>;
-}
-
-function needsArguments(tool: TestableTool): boolean {
-  const required = tool.paramSchema.required;
-  return Array.isArray(required) && required.length > 0;
-}
-
-/** A GET endpoint that needs no arguments is the safest first call. */
-export function defaultTestTool(tools: readonly TestableTool[]): string {
-  const read = tools.filter((t) => t.method.toUpperCase() === "GET");
-  return (read.find((t) => !needsArguments(t)) ?? read[0] ?? tools[0])?.name ?? "";
-}
 
 export function HttpTestCallPanel({
   tools,
@@ -32,8 +21,12 @@ export function HttpTestCallPanel({
   run: (tool: string, args: Record<string, unknown>) => Promise<HttpTestCallResult>;
 }) {
   const t = useT();
+  const ordered = orderTestTools(tools);
   const [tool, setTool] = useState(() => defaultTestTool(tools));
-  const [argsText, setArgsText] = useState("{}");
+  // What the person typed, per endpoint; an endpoint not in here shows its
+  // prefilled example, so switching endpoints never loses an edit.
+  const [edited, setEdited] = useState<Record<string, string>>({});
+  const argsText = edited[tool] ?? exampleText(tools.find((x) => x.name === tool));
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<HttpTestCallResult | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -121,7 +114,7 @@ export function HttpTestCallPanel({
             onChange={(e) => setTool(e.target.value)}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground"
           >
-            {tools.map((x) => (
+            {ordered.map((x) => (
               <option key={x.name} value={x.name}>
                 {x.method.toUpperCase()} · {x.name}
               </option>
@@ -133,7 +126,10 @@ export function HttpTestCallPanel({
           <textarea
             aria-label={t("Arguments (JSON)", "Argumente (JSON)")}
             value={argsText}
-            onChange={(e) => setArgsText(e.target.value)}
+            onChange={(e) => {
+              const text = e.target.value;
+              setEdited((prev) => ({ ...prev, [tool]: text }));
+            }}
             rows={3}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-xs text-foreground"
           />
