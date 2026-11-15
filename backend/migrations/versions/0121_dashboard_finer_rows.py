@@ -25,17 +25,19 @@ _TABLES = ("member_dashboard_layout", "dashboard_preset")
 def _rescale(y_expr: str, h_expr: str, guard: str) -> None:
     """Rescale only elements whose y and h are whole numbers inside the bounds
     in `guard`; anything else (null, text, fractional, out of range) is left
-    unchanged, so one odd stored value can never abort the migration."""
+    unchanged, so one odd stored value can never abort the migration. The type check is the
+    outer CASE so no cast runs on a non-number (AND operand order is not guaranteed)."""
     for table in _TABLES:
         op.execute(f"""
             UPDATE {table} SET widgets = (
               SELECT coalesce(jsonb_agg(
                        CASE WHEN jsonb_typeof(w->'y') = 'number'
                                  AND jsonb_typeof(w->'h') = 'number'
-                                 AND (w->>'y')::numeric = trunc((w->>'y')::numeric)
-                                 AND (w->>'h')::numeric = trunc((w->>'h')::numeric)
-                                 AND {guard}
-                            THEN w || jsonb_build_object('y', {y_expr}, 'h', {h_expr})
+                            THEN CASE WHEN (w->>'y')::numeric = trunc((w->>'y')::numeric)
+                                           AND (w->>'h')::numeric = trunc((w->>'h')::numeric)
+                                           AND {guard}
+                                      THEN w || jsonb_build_object('y', {y_expr}, 'h', {h_expr})
+                                      ELSE w END
                             ELSE w END
                        ORDER BY ord), '[]'::jsonb)
               FROM jsonb_array_elements(widgets) WITH ORDINALITY AS t(w, ord))

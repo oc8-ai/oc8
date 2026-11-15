@@ -96,6 +96,8 @@ def test_odd_stored_values_are_left_unchanged_and_never_abort(pg_url: str) -> No
         {"id": "n", "type": "chat", "x": 0, "y": None, "w": 6, "h": 6, "config": {}},
         {"id": "big", "type": "chat", "x": 0, "y": 2147483647, "w": 6, "h": 6, "config": {}},
         {"id": "frac", "type": "chat", "x": 0, "y": 1.5, "w": 6, "h": 2, "config": {}},
+        {"id": "sy", "type": "chat", "x": 0, "y": "abc", "w": 6, "h": 2, "config": {}},
+        {"id": "sh", "type": "chat", "x": 0, "y": 2, "w": 6, "h": "x", "config": {}},
         {"id": "ok", "type": "chat", "x": 0, "y": 1, "w": 6, "h": 2, "config": {}},
     ]
     command.downgrade(cfg, "0120")
@@ -110,8 +112,8 @@ def test_odd_stored_values_are_left_unchanged_and_never_abort(pg_url: str) -> No
     finally:
         command.upgrade(cfg, "head")
     layout, _ = _read(dsn, tenant)
-    assert layout[:3] == odd[:3]
-    assert (layout[3]["y"], layout[3]["h"]) == (2, 4)
+    assert layout[:5] == odd[:5]
+    assert (layout[5]["y"], layout[5]["h"]) == (2, 4)
     with psycopg.connect(dsn) as conn:
         obj = conn.execute(
             "SELECT widgets FROM dashboard_preset WHERE tenant_id = %s AND name = 'o'", (tenant,)
