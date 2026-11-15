@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.versioning import version_meta, version_payload
+from oc8.capas.i18n import translations_for
 from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
@@ -696,7 +697,11 @@ def kb_to_dto(
     )
 
 
-def browse_listing_to_dto(listing: BrowseListing) -> BrowseListingDTO:
+def browse_listing_to_dto(
+    listing: BrowseListing, i18n: Mapping[str, Mapping[str, str]] | None = None
+) -> BrowseListingDTO:
+    """`i18n` is the connector's capa catalogs; only an `app` entry's name is
+    the connector's own text, so only that one is translated."""
     return BrowseListingDTO(
         entries=[
             BrowseEntryDTO(
@@ -707,6 +712,9 @@ def browse_listing_to_dto(listing: BrowseListing) -> BrowseListingDTO:
                 content_type=e.content_type,
                 kind=e.kind,
                 note=e.note,
+                name_translations=(
+                    translations_for(i18n, e.name) if i18n and e.kind == "app" else {}
+                ),
             )
             for e in listing.entries
         ],

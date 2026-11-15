@@ -1483,6 +1483,9 @@ class BrowseEntryDTO(CamelModel):
     content_type: str | None = None
     kind: str | None = None
     note: str | None = None
+    #: An app entry's name in every locale its capa's `i18n/*.po` translates
+    #: it into. Empty for any other entry: a folder's name is the user's own.
+    name_translations: dict[str, str] = {}
 
 
 class BrowseListingDTO(CamelModel):

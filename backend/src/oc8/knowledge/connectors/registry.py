@@ -176,6 +176,27 @@ async def consent_pending_connectors(
     return out
 
 
+async def connector_catalogs(
+    db: AsyncSession, *, tenant_id: uuid.UUID
+) -> dict[str, dict[str, dict[str, str]]]:
+    """type id -> the contributing capa's `i18n/*.po` catalogs
+    (`{locale: {msgid: msgstr}}`), for the connectors of this tenant's usable
+    and consent-pending plugins. Core connectors have none and are absent.
+
+    For presentation only (`oc8.capas.i18n.translations_for`); it resolves
+    nothing and grants nothing.
+    """
+    usable, pending = await knowledge_plugin_gate(db, tenant_id)
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for name in [*usable, *(name for name, _capa_id in pending)]:
+        discovered = find_plugin(name)
+        if discovered is None or not discovered.i18n or not load_plugin(discovered):
+            continue
+        for type_id in connectors_for(name):
+            out[type_id] = discovered.i18n
+    return out
+
+
 async def resolve_connector(db: AsyncSession, *, tenant_id: uuid.UUID, type_id: str) -> Connector:
     """The tenant-scoped lookup. Core connectors first (no DB work); otherwise
     only what this tenant's enabled plugins contribute."""

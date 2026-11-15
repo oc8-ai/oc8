@@ -26,6 +26,7 @@ from oc8.api.v1._serializers import (
 )
 from oc8.authz.permissions import KNOWLEDGE, MANAGE, VIEW, perm
 from oc8.caching.department_cache import purge_tenant
+from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
 from oc8.knowledge.browse import BrowseUnsupported, UnknownConnector, browse_draft
 from oc8.knowledge.chunks import linked_source_ids, list_chunks, list_documents
@@ -34,6 +35,7 @@ from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.fetcher import safe_fetch
 from oc8.knowledge.connectors.registry import (
     available_connectors,
+    connector_catalogs,
     consent_pending_connectors,
     resolve_connector,
 )
@@ -120,6 +122,13 @@ class ConnectorCatalogDTO(CamelModel):
     missing: str | None = None
     #: The capa to grant the missing consent on (POST /capas/{id}/grant).
     capa_id: str | None = None
+    #: `label`/`description` in every locale the contributing capa's
+    #: `i18n/*.po` translates them into (capa-i18n design). Empty for a core
+    #: connector; the frontend falls back to the English text.
+    label_translations: dict[str, str] = {}
+    description_translations: dict[str, str] = {}
+    #: config property -> `title`/`description` -> {locale: text}.
+    field_translations: dict[str, dict[str, dict[str, str]]] = {}
 
 
 class VectorIndexCatalogDTO(CamelModel):
@@ -169,7 +178,31 @@ async def browse_connector_draft(
         # Already scrubbed by `browse_draft`: it names the failure, never the
         # connector's own words.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    return browse_listing_to_dto(listing)
+    catalogs = await connector_catalogs(db, tenant_id=principal.tenant_id)
+    return browse_listing_to_dto(listing, catalogs.get(type_id))
+
+
+def _translations(i18n: dict[str, dict[str, str]], text: object) -> dict[str, str]:
+    return translations_for(i18n, text) if isinstance(text, str) and text else {}
+
+
+def _field_translations(
+    schema: object, i18n: dict[str, dict[str, str]]
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Each config property's `title`/`description` in every translated
+    locale, like `capas._resolve_setup_translations` does for a setup form."""
+    if not i18n or not isinstance(schema, dict):
+        return {}
+    properties = schema.get("properties")
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for key, spec in (properties if isinstance(properties, dict) else {}).items():
+        if not isinstance(spec, dict):
+            continue
+        for prop in ("title", "description"):
+            resolved = _translations(i18n, spec.get(prop))
+            if resolved:
+                out.setdefault(str(key), {})[prop] = resolved
+    return out
 
 
 @router.get(
@@ -199,6 +232,7 @@ async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[Co
         if type_id not in connectors
     }
     entries = {**connectors, **{t: connector for t, (connector, _, _) in pending.items()}}
+    catalogs = await connector_catalogs(db, tenant_id=principal.tenant_id)
     out: list[ConnectorCatalogDTO] = []
     for type_id, connector in sorted(entries.items()):
         # Uploads are created by document upload, not as a configurable source.
@@ -210,11 +244,17 @@ async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[Co
         if type_id in pending:
             _, pending_capa, permission = pending[type_id]
             missing, capa_id = f"consent:{permission}", str(pending_capa)
+        i18n = catalogs.get(type_id, {})
+        label = getattr(connector, "label", None)
+        description = getattr(connector, "description", None)
         out.append(
             ConnectorCatalogDTO(
                 type_id=type_id,
-                label=getattr(connector, "label", None),
-                description=getattr(connector, "description", None),
+                label=label,
+                description=description,
+                label_translations=_translations(i18n, label),
+                description_translations=_translations(i18n, description),
+                field_translations=_field_translations(connector.config_schema, i18n),
                 config_schema=connector.config_schema,
                 requires_oauth=provider,
                 usable=missing is None,
@@ -371,9 +411,7 @@ async def list_bases(
     )
     rows, total = await paginate(db, stmt, limit=limit, offset=offset)
     return Page(
-        items=[
-            kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows
-        ],
+        items=[kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows],
         total_count=total,
     )
 
@@ -461,9 +499,7 @@ async def preview_index(
     if kb.credential_id is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "knowledge base has no credential")
     try:
-        index = await resolve_vector_index(
-            db, tenant_id=principal.tenant_id, type_id=kb.index_type
-        )
+        index = await resolve_vector_index(db, tenant_id=principal.tenant_id, type_id=kb.index_type)
         query_embedding = await get_model_router().embed(
             body.query,
             model=kb.embedding_model,
@@ -852,8 +888,7 @@ async def sync_source(
     if (kb.index_type or INTERNAL_INDEX_TYPE) != INTERNAL_INDEX_TYPE:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "this knowledge base is connected to an external vector index — "
-            "sync is not supported",
+            "this knowledge base is connected to an external vector index — sync is not supported",
         )
 
     job = m.IngestionJob(

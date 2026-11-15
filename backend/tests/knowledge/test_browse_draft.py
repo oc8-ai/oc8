@@ -115,6 +115,7 @@ async def test_browse_draft_lists_entries_with_kind_and_note() -> None:
             "contentType": None,
             "kind": "workspace",
             "note": None,
+            "nameTranslations": {},
         },
         {
             "id": "a1",
@@ -124,6 +125,7 @@ async def test_browse_draft_lists_entries_with_kind_and_note() -> None:
             "contentType": None,
             "kind": "article",
             "note": "12 pages",
+            "nameTranslations": {},
         },
     ]
 
