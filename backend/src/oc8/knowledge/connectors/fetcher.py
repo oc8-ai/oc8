@@ -1,4 +1,13 @@
+"""The guarded fetch for URLs a person typed in: pages and archives.
+
+A refusal is a `FetchError` (a `ConnectorError`, so existing callers keep
+catching it) whose subclass and `code` say why, so a caller never has to
+read the message: `blocked`, `unreachable`, `too_large` or `timeout`.
+"""
+
 from __future__ import annotations
+
+from typing import ClassVar, Literal
 
 import httpx
 
@@ -14,6 +23,53 @@ from oc8.net.outbound import (
 
 _is_blocked_ip = is_blocked_ip
 
+FetchErrorCode = Literal["blocked", "unreachable", "too_large", "timeout"]
+
+
+class FetchError(ConnectorError):
+    """A guarded fetch was refused or failed. `code` names why."""
+
+    code: ClassVar[FetchErrorCode]
+
+
+class FetchBlocked(FetchError):
+    """The URL (or a redirect hop) is not a public http(s) address."""
+
+    code = "blocked"
+
+
+class FetchUnreachable(FetchError):
+    """Network or TLS failure, too many redirects, an undecodable body, or (for
+    `safe_fetch_bytes`) an HTTP error status, which is then `status_code`."""
+
+    code = "unreachable"
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class FetchTooLarge(FetchError):
+    """The body grew past `max_bytes` (aborted mid-stream)."""
+
+    code = "too_large"
+
+
+class FetchTimeout(FetchError):
+    """A network step took longer than `timeout`."""
+
+    code = "timeout"
+
+
+def _as_fetch_error(url: str, exc: httpx.HTTPError) -> FetchError:
+    if isinstance(exc, httpx.TimeoutException):
+        return FetchTimeout(f"timed out fetching {url!r}: {exc}")
+    if isinstance(exc, httpx.HTTPStatusError):
+        return FetchUnreachable(
+            f"could not fetch {url!r}: {exc}", status_code=exc.response.status_code
+        )
+    return FetchUnreachable(f"could not fetch {url!r}: {exc}")
+
 
 def _resolve_ips(host: str) -> list[str]:
     return outbound.resolve_ips(host)
@@ -24,7 +80,7 @@ def _guard(url: str) -> str | None:
     try:
         return guard_outbound_url(url, resolver=_resolve_ips)
     except OutboundBlocked as exc:
-        raise ConnectorError(str(exc)) from exc
+        raise FetchBlocked(str(exc)) from exc
 
 
 async def safe_fetch_bytes(
@@ -46,7 +102,7 @@ async def safe_fetch_bytes(
             url, max_bytes=max_bytes, max_redirects=max_redirects, timeout=timeout
         )
     except httpx.HTTPError as exc:
-        raise ConnectorError(f"could not fetch {url!r}: {exc}") from exc
+        raise _as_fetch_error(url, exc) from exc
 
 
 async def _fetch_bytes(
@@ -78,12 +134,12 @@ async def _fetch_bytes(
                 async for chunk in resp.aiter_bytes():
                     buffer.extend(chunk)
                     if len(buffer) > max_bytes:
-                        raise ConnectorError(
+                        raise FetchTooLarge(
                             f"archive at {current!r} exceeded max_bytes={max_bytes} "
                             "(aborted mid-stream)"
                         )
                 return bytes(buffer)
-    raise ConnectorError(f"too many redirects for {url!r}")
+    raise FetchUnreachable(f"too many redirects for {url!r}")
 
 
 async def safe_fetch(
@@ -100,7 +156,7 @@ async def safe_fetch(
             url, max_bytes=max_bytes, max_redirects=max_redirects, timeout=timeout
         )
     except httpx.HTTPError as exc:
-        raise ConnectorError(f"could not fetch {url!r}: {exc}") from exc
+        raise _as_fetch_error(url, exc) from exc
 
 
 async def _fetch_text(
@@ -131,10 +187,10 @@ async def _fetch_text(
                 async for chunk in resp.aiter_bytes():
                     buffer.extend(chunk)
                     if len(buffer) > max_bytes:
-                        raise ConnectorError(
+                        raise FetchTooLarge(
                             f"response for {current!r} exceeded max_bytes={max_bytes} "
                             "(aborted mid-stream)"
                         )
                 ctype = resp.headers.get("content-type", "text/html").split(";")[0].strip()
                 return bytes(buffer).decode(resp.encoding or "utf-8", errors="replace"), ctype
-    raise ConnectorError(f"too many redirects for {url!r}")
+    raise FetchUnreachable(f"too many redirects for {url!r}")
