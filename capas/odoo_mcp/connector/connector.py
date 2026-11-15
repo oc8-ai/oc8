@@ -24,7 +24,8 @@ What a sync takes:
 
 * Documents files whose mimetype core can extract text from, up to 5 MiB.
   URL documents, other types and larger files are skipped and counted.
-* Knowledge articles (not in the trash) as `text/html`, bodies up to 5 MiB.
+* Knowledge articles (not in the trash, not templates) as `text/html`, bodies
+  up to 5 MiB.
 * `content_hash` is built from the model, the id and `write_date`, so an
   unchanged record is not downloaded again.
 
@@ -210,8 +211,8 @@ def _folder_scope(selection: _Selection, major: int) -> tuple[str, list[Domain]]
     return model, [[("id", "child_of", f), *base] for f in sorted(folders)]
 
 
-def _article_domains(selection: _Selection) -> list[Domain]:
-    live: Domain = [("to_delete", "=", False)]
+def _article_domains(selection: _Selection, live: Domain) -> list[Domain]:
+    """One domain per selected item; `live` is `_live_articles`."""
     if selection.knowledge_all:
         return [live]
     return [[("id", "child_of", a), *live] for a in sorted(selection.articles)]
@@ -292,6 +293,19 @@ async def _any_match(client: OdooClient, model: str, record_id: int, domains: li
         if await _count(client, model, [("id", "=", record_id), *domain]) > 0:
             return True
     return False
+
+
+async def _live_articles(client: OdooClient) -> Domain:
+    """Articles that are content: not in the trash, and not templates. From
+    Odoo 18 on, templates are knowledge.article records (`is_template`);
+    Odoo 17 has no such field, and an unknown field in a domain fails."""
+    live: Domain = [("to_delete", "=", False)]
+    has_templates = await _count(
+        client, "ir.model.fields", [("model", "=", _ARTICLE), ("name", "=", "is_template")]
+    )
+    if has_templates:
+        live.append(("is_template", "=", False))
+    return live
 
 
 async def _require_app(client: OdooClient, model: str) -> None:
@@ -431,7 +445,8 @@ class OdooKnowledgeConnector:
                         files.setdefault(rid, row)
         if selection.uses_knowledge:
             await _require_app(client, _ARTICLE)
-            for domain in _article_domains(selection):
+            live = await _live_articles(client)
+            for domain in _article_domains(selection, live):
                 for row in await _search_all(client, _ARTICLE, domain, _ARTICLE_FIELDS):
                     rid = _record_id(row)
                     if rid is not None:
@@ -667,7 +682,7 @@ class OdooKnowledgeConnector:
             await client.call(
                 _ARTICLE,
                 "search_read",
-                domain=[("parent_id", "=", parent or False), ("to_delete", "=", False)],
+                domain=[("parent_id", "=", parent or False), *await _live_articles(client)],
                 fields=["name"],
                 limit=_BROWSE_LIMIT,
                 order="name",
@@ -697,7 +712,8 @@ class OdooKnowledgeConnector:
                 raise ConnectorError(_NOT_IN_SCOPE)
             model, rid = _parse_item(path)
             if model == _ARTICLE:
-                if not await _any_match(client, _ARTICLE, rid, _article_domains(selection)):
+                domains = _article_domains(selection, await _live_articles(client))
+                if not await _any_match(client, _ARTICLE, rid, domains):
                     raise ConnectorError(_NOT_IN_SCOPE)
                 own = _as_list(await client.call(_ARTICLE, "read", ids=[rid], fields=["name"]))
                 itself = _entries(own, _ARTICLE, kind="article", is_folder=False)
@@ -738,7 +754,10 @@ class OdooKnowledgeConnector:
                 await client.call(
                     _ARTICLE,
                     "search_read",
-                    domain=[("id", "in", sorted(selection.articles)), ("to_delete", "=", False)],
+                    domain=[
+                        ("id", "in", sorted(selection.articles)),
+                        *await _live_articles(client),
+                    ],
                     fields=["name"],
                     order="name",
                 )
@@ -797,7 +816,7 @@ class OdooKnowledgeConnector:
         if model == _DOCUMENT:
             domains = _file_domains(selection, client.version[0])
         elif model == _ARTICLE:
-            domains = _article_domains(selection)
+            domains = _article_domains(selection, await _live_articles(client))
         else:
             return False
         return await _any_match(client, model, rid, domains)

@@ -216,6 +216,13 @@ class KnowledgeOdoo:
             52: self._article(52, "Old", None, "<p>Gone.</p>", to_delete=True),
             53: self._article(53, "Policies", None, "<p>Rules.</p>"),
         }
+        if major >= 18:
+            # Article templates are knowledge.article records from Odoo 18 on
+            # (`is_template`); seen live on Odoo 19. Odoo 17 has no such field.
+            for article in self.records["knowledge.article"].values():
+                article["is_template"] = False
+            template = self._article(54, "Meeting notes template", None, "<p>Agenda</p>")
+            self.records["knowledge.article"][54] = {**template, "is_template": True}
 
     @staticmethod
     def _article(
@@ -316,6 +323,11 @@ class KnowledgeOdoo:
             assert method == "search_count"
             [[_field, _op, wanted]] = kw["domain"]
             return 1 if self._installed(wanted) else 0
+        if model == "ir.model.fields":
+            assert method == "search_count"
+            terms = {f: v for f, _op, v in kw["domain"]}
+            rows = self.records.get(terms["model"], {}).values()
+            return 1 if any(terms["name"] in row for row in rows) else 0
         if not self._installed(model):
             raise _Fail("werkzeug.exceptions.NotFound", model, 404)
         if model in self.denied:
@@ -373,7 +385,11 @@ class KnowledgeOdoo:
         return out
 
     def _matches(self, model: str, row: dict[str, Any], domain: list[Any]) -> bool:
+        known = {k for r in self.records[model].values() for k in r}
         for field, op, value in domain:
+            if field not in known:
+                # What a live Odoo 19 answers for an unknown field in a domain.
+                raise _Fail("builtins.ValueError", f"Invalid field {field!r}", 500)
             have = row.get(field)
             if op == "=":
                 ok = (not have) if value is False else have == value
@@ -996,3 +1012,25 @@ async def test_no_secret_in_any_error(caplog: pytest.LogCaptureFixture) -> None:
         _assert_clean(message)
     for record in caplog.records:
         _assert_clean(record.getMessage())
+
+
+@pytest.mark.parametrize("major", [17, 19])
+async def test_article_templates_are_not_knowledge(major: int) -> None:
+    """Odoo 18+ keeps article templates as knowledge.article records; they are
+    not content. Odoo 17 has no `is_template` field, and the connector must
+    not put one in a domain there."""
+    fake = KnowledgeOdoo(major)
+    connector = fake.connector()
+    docs, _, _ = await _fetch(connector, _config(ALL_KNOWLEDGE))
+    assert {d.title for d in docs} == {"Handbook", "Onboarding", "Policies"}
+    listing = await connector.attest_listing(_config(ALL_KNOWLEDGE), _Auth())
+    assert _uri("knowledge.article", 54) not in listing.present_uris
+    roots = await connector.browse_selectable(_config(), "app:knowledge", _Auth())
+    assert [e.name for e in roots] == ["Handbook", "Policies"]
+    chat = await connector.browse(_config(ALL_KNOWLEDGE), "app:knowledge", _Auth())
+    assert [e.name for e in chat] == ["Handbook", "Policies"]
+    if major >= 18:
+        assert (
+            await connector.in_scope(_config(ALL_KNOWLEDGE), "knowledge.article:54", _Auth())
+            is False
+        )
