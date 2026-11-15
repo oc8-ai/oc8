@@ -11,9 +11,12 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.api.deps import authorize_agent_write
+from oc8.api.v1 import boards as boards_api
 from oc8.auth import get_identity_provider
 from oc8.authz.permissions import SEAT_VIEWER
 from oc8.authz.scope import subject_uuid_for
@@ -320,6 +323,40 @@ async def test_delete_requires_the_confirmed_record_count(
             )
         ).scalar_one()
         assert other == 2  # the other department's board is untouched
+
+
+@pytest.mark.parametrize("column", ["deleted_at", "removed_at"])
+async def test_delete_of_a_board_archived_or_removed_meanwhile_is_404(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, column: str
+) -> None:
+    """The board is archived with its department (or removed) after the route
+    read it but before it locks it: the lock reads it again, finds nothing live,
+    and answers a value-free 404 -- nothing is deleted."""
+    o = await _office(app_session)
+
+    async def racing(request: Any, db: AsyncSession, *args: Any, **kwargs: Any) -> None:
+        await authorize_agent_write(request, db, *args, **kwargs)
+        await db.execute(
+            update(m.DataBoard)
+            .where(m.DataBoard.id == o.finance_board)
+            .values({column: dt.datetime.now(dt.UTC)})
+        )
+
+    monkeypatch.setattr(boards_api, "authorize_agent_write", racing)
+    h = _headers(o.tenant, "boss", "org_admin")
+    async with _http() as c:
+        r = await c.delete(f"/api/v1/boards/{o.finance_board}", params={"records": 2}, headers=h)
+    assert r.status_code == 404, r.text
+    assert r.json() == {"detail": "board not found"}
+    async with app_session(o.tenant) as db:
+        n = (
+            await db.execute(
+                select(func.count())
+                .select_from(m.DataBoardRecord)
+                .where(m.DataBoardRecord.board_id == o.finance_board)
+            )
+        ).scalar_one()
+        assert n == 2
 
 
 async def test_delete_needs_agent_manage_in_the_department(

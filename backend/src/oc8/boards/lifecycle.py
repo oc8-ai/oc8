@@ -46,16 +46,25 @@ async def restore_department_boards(db: AsyncSession, *, department_id: uuid.UUI
     return int(result.rowcount or 0)  # type: ignore[attr-defined]
 
 
-async def lock_live_board(db: AsyncSession, board_id: uuid.UUID) -> m.DataBoard | None:
+async def lock_live_board(
+    db: AsyncSession, board_id: uuid.UUID, *, archived: bool = True
+) -> m.DataBoard | None:
     """Re-select a board `FOR UPDATE` where it is not removed, or `None`.
 
     `board_write` takes the same lock, so a delete that holds it serializes against
     concurrent writers: the count the person confirmed cannot move, and a later
     writer sees the board removed. Call it before counting.
+
+    `archived=False` also answers `None` for a board archived with its department
+    (the delete route: an archive racing it must not let it delete the board).
+    The other callers read `deleted_at` themselves and keep the default.
     """
+    conditions = [m.DataBoard.id == board_id, m.DataBoard.removed_at.is_(None)]
+    if not archived:
+        conditions.append(m.DataBoard.deleted_at.is_(None))
     stmt = (
         select(m.DataBoard)
-        .where(m.DataBoard.id == board_id, m.DataBoard.removed_at.is_(None))
+        .where(*conditions)
         .with_for_update()
         .execution_options(populate_existing=True)
     )

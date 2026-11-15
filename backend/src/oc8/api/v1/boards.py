@@ -165,8 +165,9 @@ async def delete_board(
     if board is None or board.removed_at is not None:
         raise not_found
     await authorize_agent_write(request, db, actor, board.department_id, not_found=not_found)
-    # Lock before counting: writers serialize against this delete.
-    locked = await lock_live_board(db, board.id)
+    # Lock before counting: writers serialize against this delete. Read again
+    # under the lock: removed or archived since the read above is not found.
+    locked = await lock_live_board(db, board.id, archived=False)
     if locked is None:
         raise not_found
     board = locked
