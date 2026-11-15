@@ -574,3 +574,128 @@ msgstr "{model_label}"
 
 msgid "{model_label} {id}"
 msgstr "{model_label} {id}"
+
+# The odoo_knowledge connector (Odoo Documents and Knowledge as a knowledge source).
+
+msgid "Connect Odoo — CRM, sales and contacts over the Model Context Protocol, and Odoo Documents and Knowledge as a knowledge source"
+msgstr "Odoo verbinden — CRM, Vertrieb und Kontakte über das Model Context Protocol, und Odoo Dokumente und Wissen als Wissensquelle"
+
+msgid "Odoo (Documents & Knowledge)"
+msgstr "Odoo (Dokumente & Wissen)"
+
+msgid "Files from Odoo Documents and articles from Odoo Knowledge"
+msgstr "Dateien aus Odoo Dokumente und Artikel aus Odoo Wissen"
+
+msgid "Odoo login"
+msgstr "Odoo-Zugang"
+
+msgid "Folders and articles"
+msgstr "Ordner und Artikel"
+
+msgid "What this source reads from Odoo. A folder includes its subfolders and an article its subarticles."
+msgstr "Was diese Quelle aus Odoo liest. Ein Ordner schließt seine Unterordner ein, ein Artikel seine Unterartikel."
+
+msgid "Name"
+msgstr "Name"
+
+msgid "Documents"
+msgstr "Dokumente"
+
+msgid "Knowledge"
+msgstr "Wissen"
+
+msgid "Odoo app missing"
+msgstr "Odoo-App fehlt"
+
+msgid "No read access"
+msgstr "Kein Lesezugriff"
+
+msgid "For Odoo 19 we recommend an API key instead of a password."
+msgstr "Für Odoo 19 empfehlen wir einen API-Schlüssel statt eines Passworts."
+
+msgid "URL document"
+msgstr "URL-Dokument"
+
+msgid "unreadable"
+msgstr "nicht lesbar"
+
+msgid "Choose at least one Odoo folder or article."
+msgstr "Wähle mindestens einen Odoo-Ordner oder -Artikel aus."
+
+msgid "The Odoo selection is not valid."
+msgstr "Die Odoo-Auswahl ist ungültig."
+
+msgid "This is not a valid Odoo folder or article."
+msgstr "Das ist kein gültiger Odoo-Ordner oder -Artikel."
+
+msgid "This Odoo record is not part of the source."
+msgstr "Dieser Odoo-Datensatz gehört nicht zu dieser Quelle."
+
+msgid "No credential is available for this source."
+msgstr "Für diese Quelle ist kein Zugang verfügbar."
+
+msgid "Choose an Odoo login."
+msgstr "Wähle einen Odoo-Zugang aus."
+
+msgid "The Odoo login could not be read."
+msgstr "Der Odoo-Zugang ließ sich nicht lesen."
+
+msgid "Odoo sent a file that cannot be decoded."
+msgstr "Odoo hat eine Datei geschickt, die sich nicht lesen lässt."
+
+msgid "Odoo answered in an unexpected shape."
+msgstr "Odoo hat in einer unerwarteten Form geantwortet."
+
+msgid "This Odoo file type cannot be opened."
+msgstr "Dieser Odoo-Dateityp lässt sich nicht öffnen."
+
+msgid "The Odoo file could not be read."
+msgstr "Die Odoo-Datei ließ sich nicht lesen."
+
+msgid "Odoo refused the request."
+msgstr "Odoo hat die Anfrage abgelehnt."
+
+msgid "Odoo refused the login."
+msgstr "Odoo hat die Anmeldung abgelehnt."
+
+msgid "The Odoo login has no access to this."
+msgstr "Der Odoo-Zugang hat darauf keinen Zugriff."
+
+msgid "The Odoo app is not installed."
+msgstr "Die Odoo-App ist nicht installiert."
+
+msgid "The Odoo record does not exist anymore."
+msgstr "Den Odoo-Datensatz gibt es nicht mehr."
+
+msgid "Odoo is not reachable."
+msgstr "Odoo ist nicht erreichbar."
+
+msgid "The Odoo address is not valid."
+msgstr "Die Odoo-Adresse ist ungültig."
+
+msgid "The Odoo address is not allowed."
+msgstr "Die Odoo-Adresse ist nicht erlaubt."
+
+msgid "The Odoo login is incomplete."
+msgstr "Der Odoo-Zugang ist unvollständig."
+
+msgid "Odoo did not report its version."
+msgstr "Odoo hat seine Version nicht genannt."
+
+msgid "Odoo did not answer with JSON-RPC."
+msgstr "Odoo hat nicht mit JSON-RPC geantwortet."
+
+msgid "The Odoo answer is too large."
+msgstr "Die Antwort von Odoo ist zu groß."
+
+msgid "The Odoo answer cannot be decoded."
+msgstr "Die Antwort von Odoo lässt sich nicht lesen."
+
+msgid "The Odoo answer ended early."
+msgstr "Die Antwort von Odoo brach vorzeitig ab."
+
+msgid "Odoo answered in an unsupported encoding."
+msgstr "Odoo hat in einer nicht unterstützten Kodierung geantwortet."
+
+msgid "Not a valid Odoo model or method name."
+msgstr "Kein gültiger Odoo-Modell- oder Methodenname."

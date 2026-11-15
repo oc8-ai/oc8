@@ -93,10 +93,13 @@ def _bump(manifest: Path, *, extra_permission: str | None = None) -> None:
     text = manifest.read_text()
     text = re.sub(r'^version = "[^"]+"', 'version = "9.9.9"', text, count=1, flags=re.M)
     if extra_permission is not None:
-        text = text.replace(
-            'permissions = ["mcp:connect", "secrets:use"]',
-            f'permissions = ["mcp:connect", "secrets:use", "{extra_permission}"]',
-            1,
+        # Anchored, so `deferred_permissions = [...]` is left alone.
+        text = re.sub(
+            r"^permissions = \[",
+            f'permissions = ["{extra_permission}", ',
+            text,
+            count=1,
+            flags=re.M,
         )
     assert "9.9.9" in text and (extra_permission is None or extra_permission in text)
     manifest.write_text(text)
