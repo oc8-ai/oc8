@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import calendar
 import datetime as dt
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 from sqlalchemy import ColumnElement, Numeric, Select, Text, cast, func, null, select
@@ -21,6 +21,15 @@ from oc8.schemas.base import CamelModel
 
 MAX_PERIOD_DAYS = 7320
 _KEY_ECHO_MAX = 40
+#: Filter bounds: keys per query, values per key, characters per value.
+MAX_FILTER_KEYS = 10
+MAX_FILTER_VALUES = 200
+MAX_FILTER_VALUE_LENGTH = 200
+
+_FilterValues = Annotated[
+    list[Annotated[str, Field(max_length=MAX_FILTER_VALUE_LENGTH)]],
+    Field(max_length=MAX_FILTER_VALUES),
+]
 
 
 class QueryInvalid(ValueError):
@@ -60,7 +69,7 @@ class BoardQuery(CamelModel):
     fields: list[str] = Field(min_length=1, max_length=20)
     period: Period
     compare: Literal["none", "previous_period", "same_period_last_year"] = "none"
-    filters: dict[str, list[str]] = Field(default_factory=dict)
+    filters: dict[str, _FilterValues] = Field(default_factory=dict, max_length=MAX_FILTER_KEYS)
     group_by: str | None = None
     mode: Literal["aggregate", "rows"] = "aggregate"
     reported: Literal["latest", "first"] = "latest"
@@ -113,6 +122,15 @@ def _minus_months(d: dt.date, months: int) -> dt.date:
 
 
 def compare_period(period: Period, kind: str) -> Period:
+    """The period `kind` compares `period` with. One that would start before the
+    first representable date (`date.min`) is `invalid_period`, never a crash."""
+    try:
+        return _compare_period(period, kind)
+    except (ValueError, OverflowError):
+        raise QueryInvalid("invalid_period") from None
+
+
+def _compare_period(period: Period, kind: str) -> Period:
     if kind == "same_period_last_year":
         return Period(from_=_minus_years(period.from_, 1), to=_minus_years(period.to, 1))
     if period.from_.day == 1 and period.to.day == 1:

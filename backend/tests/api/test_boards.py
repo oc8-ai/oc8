@@ -273,6 +273,37 @@ async def test_bad_query_is_422_with_code(app_session: AppSessionFactory) -> Non
     assert r.json()["detail"] == "board_query:unknown_field"
 
 
+async def test_a_compare_before_the_first_date_is_422_invalid_period(
+    app_session: AppSessionFactory,
+) -> None:
+    o = await _office(app_session)
+    async with _http() as c:
+        r = await c.post(
+            f"/api/v1/boards/{o.finance_board}/query",
+            json={
+                **_QUERY,
+                "period": {"from": "0001-01-01", "to": "0001-02-01"},
+                "compare": "same_period_last_year",
+            },
+            headers=_headers(o.tenant, "boss", "org_admin"),
+        )
+    assert r.status_code == 422, r.text
+    assert r.json() == {"detail": "board_query:invalid_period"}
+
+
+async def test_unbounded_filters_are_422(app_session: AppSessionFactory) -> None:
+    o = await _office(app_session)
+    async with _http() as c:
+        r = await c.post(
+            f"/api/v1/boards/{o.finance_board}/query",
+            json={**_QUERY, "filters": {f"k{i}": ["v"] for i in range(11)}},
+            headers=_headers(o.tenant, "boss", "org_admin"),
+        )
+    # Refused by the body's bounds, before the query reads the board.
+    assert r.status_code == 422, r.text
+    assert [e["type"] for e in r.json()["detail"]] == ["too_long"]
+
+
 async def test_archived_producer_marks_the_board_stale(app_session: AppSessionFactory) -> None:
     o = await _office(app_session)
     async with app_session(o.tenant) as db:

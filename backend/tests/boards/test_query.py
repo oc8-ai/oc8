@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import oc8.models as m
@@ -334,3 +335,52 @@ def test_period_validation() -> None:
         }
     )
     assert parsed.group_by == "region"
+
+
+@pytest.mark.parametrize(
+    ("period", "kind"),
+    [
+        (("0001-01-01", "0001-02-01"), "same_period_last_year"),
+        (("0001-03-01", "0002-03-01"), "same_period_last_year"),
+        (("0001-01-01", "0001-02-01"), "previous_period"),
+        (("0001-01-02", "0001-01-09"), "previous_period"),
+    ],
+)
+def test_a_compare_period_before_the_first_date_is_invalid(
+    period: tuple[str, str], kind: str
+) -> None:
+    with pytest.raises(QueryInvalid) as exc:
+        compare_period(P(*period), kind)
+    assert exc.value.code == "invalid_period"
+    assert str(exc.value) == "invalid_period"
+
+
+def test_a_compare_period_at_the_last_date_still_works() -> None:
+    assert compare_period(P("9999-01-01", "9999-12-31"), "same_period_last_year") == P(
+        "9998-01-01", "9998-12-31"
+    )
+
+
+def _filtered(filters: object) -> BoardQuery:
+    return BoardQuery.model_validate(
+        {
+            "dataset": "sales",
+            "fields": ["amount"],
+            "period": {"from": "2026-03-01", "to": "2026-04-01"},
+            "filters": filters,
+        }
+    )
+
+
+def test_filters_are_bounded() -> None:
+    at_limit = {f"k{i}": ["v" * 200] * 200 for i in range(10)}
+    assert len(_filtered(at_limit).filters) == 10
+    for over in (
+        {f"k{i}": ["v"] for i in range(11)},
+        {"region": ["v"] * 201},
+        {"region": ["v" * 201]},
+    ):
+        with pytest.raises(ValidationError) as exc:
+            _filtered(over)
+        # The messages name the limit, never the submitted values.
+        assert all("vvvv" not in error["msg"] for error in exc.value.errors())
