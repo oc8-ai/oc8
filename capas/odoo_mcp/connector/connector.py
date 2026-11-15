@@ -24,6 +24,8 @@ What a sync takes:
 
 * Documents files whose mimetype core can extract text from, up to 5 MiB.
   URL documents, other types and larger files are skipped and counted.
+  Shortcuts (Odoo 18+) are left out; the file they point at counts in its own
+  folder.
 * Knowledge articles (not in the trash, not templates) as `text/html`, bodies
   up to 5 MiB.
 * `content_hash` is built from the model, the id and `write_date`, so an
@@ -189,14 +191,14 @@ def _parse_selection(config: dict[str, Any]) -> _Selection:
 Domain = list[tuple[str, str, Any]]
 
 
-def _file_domains(selection: _Selection, major: int) -> list[Domain]:
+def _file_domains(selection: _Selection, major: int, live: Domain) -> list[Domain]:
     """One `documents.document` domain per selected item, for the files it
-    covers. A folder id of the other Odoo generation matches nothing."""
-    not_folder: Domain = [("type", "!=", "folder")]
+    covers; `live` is `_live_files`. A folder id of the other Odoo generation
+    matches nothing."""
     if selection.documents_all:
-        return [not_folder]
+        return [list(live)]
     folders = selection.folders_17 if major < 18 else selection.folders
-    return [[("folder_id", "child_of", f), *not_folder] for f in sorted(folders)]
+    return [[("folder_id", "child_of", f), *live] for f in sorted(folders)]
 
 
 def _folder_scope(selection: _Selection, major: int) -> tuple[str, list[Domain]]:
@@ -312,6 +314,22 @@ async def _live_articles(client: OdooClient) -> Domain:
     )
     if has_templates:
         live.append(("is_template", "=", False))
+    return live
+
+
+async def _live_files(client: OdooClient) -> Domain:
+    """Documents that are files: not folders, and not shortcuts. From Odoo 18
+    on a shortcut (`shortcut_document_id`) points at a file that may sit in a
+    folder outside the selection; Odoo 17 has no such field, and an unknown
+    field in a domain fails."""
+    live: Domain = [("type", "!=", "folder")]
+    has_shortcuts = await _count(
+        client,
+        "ir.model.fields",
+        [("model", "=", _DOCUMENT), ("name", "=", "shortcut_document_id")],
+    )
+    if has_shortcuts:
+        live.append(("shortcut_document_id", "=", False))
     return live
 
 
@@ -444,7 +462,8 @@ class OdooKnowledgeConnector:
         articles: dict[int, dict[str, Any]] = {}
         if selection.uses_documents:
             await _require_app(client, _DOCUMENT)
-            for domain in _file_domains(selection, client.version[0]):
+            live_files = await _live_files(client)
+            for domain in _file_domains(selection, client.version[0], live_files):
                 for row in await _search_all(client, _DOCUMENT, domain, _DOC_FIELDS):
                     rid = _record_id(row)
                     if rid is not None and row.get("type") != "folder":
@@ -816,7 +835,7 @@ class OdooKnowledgeConnector:
     @staticmethod
     async def _covers(client: OdooClient, selection: _Selection, model: str, rid: int) -> bool:
         if model == _DOCUMENT:
-            domains = _file_domains(selection, client.version[0])
+            domains = _file_domains(selection, client.version[0], await _live_files(client))
         elif model == _ARTICLE:
             domains = _article_domains(selection, await _live_articles(client))
         else:

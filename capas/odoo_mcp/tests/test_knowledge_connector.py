@@ -210,6 +210,9 @@ class KnowledgeOdoo:
                 for f in folders.values()
             }
             self.records = {"documents.document": {**as_documents, **files}}
+            # Odoo 18+ has file shortcuts: a document pointing at another one.
+            for document in self.records["documents.document"].values():
+                document["shortcut_document_id"] = False
         self.records["knowledge.article"] = {
             50: self._article(50, "Handbook", None, "<p>Welcome to Acme.</p>"),
             51: self._article(51, "Onboarding", 50, "<p>Day one.</p>"),
@@ -1042,3 +1045,22 @@ async def test_article_templates_are_not_knowledge(major: int) -> None:
             await connector.in_scope(_config(ALL_KNOWLEDGE), "knowledge.article:54", _Auth())
             is False
         )
+
+
+@pytest.mark.parametrize("major", [17, 19])
+async def test_shortcut_documents_are_not_ingested(major: int) -> None:
+    """A shortcut (Odoo 18+) in a ticked folder points at a file that may live
+    in an unticked one; only the file itself is content. Odoo 17 has no
+    `shortcut_document_id`, and the connector must not put one in a domain."""
+    fake = KnowledgeOdoo(major)
+    if major >= 18:
+        # A shortcut in HR (3) to q1.txt (11), which lives in Invoices (2).
+        fake.add_file(30, "q1.txt", 3, "text/plain", TXT, shortcut_document_id=11)
+    connector = fake.connector()
+    config = _config(("documents.document:3" if major >= 18 else "documents.folder:3", "folder"))
+    docs, _, _ = await _fetch(connector, config)
+    assert [d.source_uri for d in docs] == [_uri("documents.document", 12)]
+    listing = await connector.attest_listing(config, _Auth())
+    assert listing.present_uris == frozenset({_uri("documents.document", 12)})
+    if major >= 18:
+        assert await connector.in_scope(config, "documents.document:30", _Auth()) is False
