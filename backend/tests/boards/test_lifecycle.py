@@ -21,6 +21,7 @@ from oc8.auth import Principal, get_identity_provider
 from oc8.authz.scope import scope_for_principal
 from oc8.boards.lifecycle import (
     archive_department_boards,
+    lock_live_board,
     remove_board,
     restore_department_boards,
 )
@@ -283,3 +284,35 @@ async def test_constraints_of_the_board_tables(app_session: AppSessionFactory) -
             ]
         )
         await db.flush()
+
+
+async def test_remove_board_refuses_a_board_already_removed(
+    app_session: AppSessionFactory,
+) -> None:
+    s = await _seed(app_session)
+    async with app_session(s.tenant) as db:
+        board = (await db.execute(select(m.DataBoard))).scalar_one()
+        await remove_board(db, board, now=_NOW)
+        with pytest.raises(ValueError, match="board_already_removed"):
+            await remove_board(db, board, now=_NOW + dt.timedelta(hours=1))
+        assert board.removed_at == _NOW
+
+
+async def test_lock_live_board_blocks_a_concurrent_writer(
+    app_session: AppSessionFactory,
+) -> None:
+    s = await _seed(app_session)
+    async with app_session(s.tenant) as db:
+        locked = await lock_live_board(db, s.board)
+        assert locked is not None
+        # Another transaction, as board_write does, cannot take the row while we hold it.
+        with pytest.raises(DBAPIError, match="could not obtain lock"):
+            async with app_session(s.tenant) as other:
+                await other.execute(
+                    text("SELECT id FROM data_board WHERE id = :i FOR UPDATE NOWAIT"),
+                    {"i": s.board},
+                )
+    async with app_session(s.tenant) as db:
+        board = (await db.execute(select(m.DataBoard))).scalar_one()
+        await remove_board(db, board, now=_NOW)
+        assert await lock_live_board(db, s.board) is None

@@ -26,7 +26,11 @@ from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.boards.lifecycle import count_board_records, remove_board
+from oc8.boards.lifecycle import (
+    count_board_records,
+    lock_live_board,
+    remove_board,
+)
 from oc8.boards.query import BoardQuery, QueryInvalid, QueryResult, run_query
 from oc8.boards.repo import may_delete_board, visible_board, visible_boards
 from oc8.schemas.dto import BoardSummaryDTO, DataBoardDTO
@@ -161,6 +165,11 @@ async def delete_board(
     if board is None or board.removed_at is not None:
         raise not_found
     await authorize_agent_write(request, db, actor, board.department_id, not_found=not_found)
+    # Lock before counting: writers serialize against this delete.
+    locked = await lock_live_board(db, board.id)
+    if locked is None:
+        raise not_found
+    board = locked
     if await count_board_records(db, board.id) != records:
         raise HTTPException(409, "board_records_changed")
     department_id = board.department_id
