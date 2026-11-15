@@ -23,11 +23,17 @@ class BoundedDecoder(Protocol):
     @property
     def unconsumed_tail(self) -> bytes: ...
 
+    #: Whether the encoded stream reached its own end (a gzip trailer, the
+    #: final deflate block). False after the last chunk: the body was cut.
+    @property
+    def eof(self) -> bool: ...
+
     def decompress(self, data: bytes, max_length: int) -> bytes: ...
 
 
 class _Identity:
     unconsumed_tail = b""
+    eof = True
 
     def decompress(self, data: bytes, max_length: int) -> bytes:
         self.unconsumed_tail = data[max_length:]
@@ -45,6 +51,10 @@ class _Deflate:
     @property
     def unconsumed_tail(self) -> bytes:
         return bytes(self._inner.unconsumed_tail)
+
+    @property
+    def eof(self) -> bool:
+        return bool(self._inner.eof)
 
     def decompress(self, data: bytes, max_length: int) -> bytes:
         if not self._started:
@@ -64,13 +74,19 @@ class _Gzip:
     def unconsumed_tail(self) -> bytes:
         return bytes(self._inner.unconsumed_tail)
 
+    @property
+    def eof(self) -> bool:
+        return bool(self._inner.eof)
+
     def decompress(self, data: bytes, max_length: int) -> bytes:
         return bytes(self._inner.decompress(data, max_length))
 
 
 def content_decoder(content_encoding: str) -> BoundedDecoder:
     """A decoder for a Content-Encoding header value, or
-    `UnsupportedContentEncoding`. A decode failure raises `zlib.error`."""
+    `UnsupportedContentEncoding`. A decode failure raises `zlib.error`; a
+    stream that stops before its end leaves `eof` False. Data after the end
+    (a second gzip member, trailing bytes) is ignored, as httpx does."""
     encodings = [e.strip().lower() for e in content_encoding.split(",") if e.strip()]
     encodings = [e for e in encodings if e != "identity"]
     if not encodings:

@@ -51,7 +51,13 @@ from oc8.net.decoding import (
     content_decoder,
     decode_step,
 )
-from oc8.net.outbound import USER_AGENT, OutboundBlocked, PinnedTransport, guard_outbound_url
+from oc8.net.outbound import (
+    USER_AGENT,
+    OutboundBlocked,
+    PinnedTransport,
+    guard_outbound_url,
+    url_origin,
+)
 
 #: The same allowance as `mcp_client.MCP_REQUEST_TIMEOUT_SECONDS` (not
 #: imported from there: `mcp_client` imports this module).
@@ -342,8 +348,7 @@ async def _checked_ip(url: str) -> str:
         raise HttpToolError("blocked", BLOCKED_MESSAGE) from exc
 
 
-def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
-    return (url.scheme, url.host, url.port)
+_origin = url_origin
 
 
 def _without_auth(
@@ -388,18 +393,24 @@ def _decoder(content_encoding: str) -> BoundedDecoder:
 async def _read_capped(response: httpx.Response) -> tuple[str, bool]:
     """At most MAX_RESPONSE_BYTES of the decoded body. The raw bytes are
     decoded here, never more than what still fits per step (`max_length`),
-    so a small compressed body cannot inflate to many MB in memory."""
+    so a small compressed body cannot inflate to many MB in memory. A
+    compressed body that stops before its end is refused, not handed on in
+    part; one cut at the cap is `truncated`, as before."""
     decoder = _decoder(response.headers.get("content-encoding", ""))
     buffer = bytearray()
     truncated = False
+    received = False
     try:
         async for chunk in response.aiter_raw():
+            received = received or bool(chunk)
             out, truncated = decode_step(decoder, chunk, MAX_RESPONSE_BYTES - len(buffer))
             buffer.extend(out)
             if truncated:
                 break
     except zlib.error as exc:
         raise HttpToolError("http", "The API answered with a body that cannot be decoded.") from exc
+    if received and not truncated and not decoder.eof:
+        raise HttpToolError("http", "The API answered with a body that ended early.")
     return bytes(buffer).decode(response.encoding or "utf-8", errors="replace"), truncated
 
 

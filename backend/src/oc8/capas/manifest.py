@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Literal
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 
 logger = logging.getLogger(__name__)
 
@@ -949,23 +950,6 @@ def claude_hook_permissions(spec: ClaudeHooksSpec | None) -> list[str]:
                     seen.add(perm)
                     out.append(perm)
     return out
-
-
-#: Why an HTTP API's base URL with a username or password in it is refused.
-LOGIN_IN_BASE_URL = (
-    "The base URL contains a login. Logins belong in the login fields, not in the address."
-)
-
-
-def base_url_has_login(url: str) -> bool:
-    """Whether `url` carries a username or password (`https://user:pw@host`).
-    httpx would send it as Basic auth on every call, and the address is shown
-    and logged where a secret must not be."""
-    try:
-        parts = urlsplit(url.strip())
-    except ValueError:
-        return False
-    return bool(parts.username) or bool(parts.password)
 
 
 def http_api_login_in_base_url(manifest: Manifest) -> str | None:

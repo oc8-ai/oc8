@@ -246,3 +246,167 @@ async def test_caller_headers_are_sent_and_encodings_are_only_the_decodable_ones
 async def test_caller_headers_cannot_set_the_host(fetch: Callable[..., object]) -> None:
     with pytest.raises(ValueError, match="Host"):
         await fetch("https://www.example.test/", headers={"Host": "169.254.169.254"})  # type: ignore[misc]
+
+
+def _deflate(data: bytes, *, raw: bool) -> bytes:
+    import zlib
+
+    packer = zlib.compressobj(9, zlib.DEFLATED, -zlib.MAX_WBITS if raw else zlib.MAX_WBITS)
+    return packer.compress(data) + packer.flush()
+
+
+def _encoded(body: bytes, encoding: str) -> Callable[[httpx.Request], httpx.Response]:
+    return lambda request: httpx.Response(
+        200, stream=httpx.ByteStream(body), headers={"content-encoding": encoding}
+    )
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+@pytest.mark.parametrize("raw", [True, False])
+async def test_a_deflate_bomb_is_too_large(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object], raw: bool
+) -> None:
+    _serve(monkeypatch, _encoded(_deflate(b"\0" * 32_000_000, raw=raw), "deflate"))
+    with pytest.raises(FetchTooLarge):
+        await fetch("https://www.example.test/", max_bytes=1_000_000)  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+@pytest.mark.parametrize("raw", [True, False])
+async def test_a_small_deflate_body_is_inflated(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object], raw: bool
+) -> None:
+    _serve(monkeypatch, _encoded(_deflate(b"{}", raw=raw), "deflate"))
+    got = await fetch("https://www.example.test/")  # type: ignore[misc]
+    assert (got if isinstance(got, bytes) else got[0].encode()) == b"{}"  # type: ignore[index]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_a_gzip_chain_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    import gzip
+
+    _serve(monkeypatch, _encoded(gzip.compress(gzip.compress(b"{}")), "gzip, gzip"))
+    with pytest.raises(FetchUnreachable):
+        await fetch("https://www.example.test/")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_a_multi_member_gzip_yields_the_first_member_only(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    import gzip
+
+    body = gzip.compress(b"{}") + gzip.compress(b"\0" * 32_000_000)
+    _serve(monkeypatch, _encoded(body, "gzip"))
+    got = await fetch("https://www.example.test/", max_bytes=1_000_000)  # type: ignore[misc]
+    assert (got if isinstance(got, bytes) else got[0].encode()) == b"{}"  # type: ignore[index]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+@pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+async def test_a_truncated_compressed_body_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object], encoding: str
+) -> None:
+    import gzip
+
+    whole = (
+        gzip.compress(b'{"openapi": "3.1.0"}' * 50)
+        if encoding == "gzip"
+        else (_deflate(b'{"openapi": "3.1.0"}' * 50, raw=False))
+    )
+    _serve(monkeypatch, _encoded(whole[: len(whole) // 2], encoding))
+    with pytest.raises(FetchUnreachable, match="ended early"):
+        await fetch("https://www.example.test/")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_an_empty_body_with_an_encoding_is_empty(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    _serve(monkeypatch, _encoded(b"", "gzip"))
+    got = await fetch("https://www.example.test/")  # type: ignore[misc]
+    assert (got if isinstance(got, bytes) else got[0].encode()) == b""  # type: ignore[index]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+@pytest.mark.parametrize("name", ["Authorization", "cookie", "Proxy-Authorization", "HOST"])
+async def test_credential_and_host_headers_are_refused(
+    fetch: Callable[..., object], name: str
+) -> None:
+    with pytest.raises(ValueError, match=name.lower()):
+        await fetch("https://www.example.test/", headers={name: "x"})  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+@pytest.mark.parametrize("value", ["br", "gzip, br", "zstd", "*"])
+async def test_an_accept_encoding_that_cannot_be_decoded_is_refused(
+    fetch: Callable[..., object], value: str
+) -> None:
+    with pytest.raises(ValueError, match="Accept-Encoding"):
+        await fetch("https://www.example.test/", headers={"Accept-Encoding": value})  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+@pytest.mark.parametrize("value", ["gzip", "deflate", "identity", "GZIP, deflate;q=0.5"])
+async def test_a_decodable_accept_encoding_is_sent(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object], value: str
+) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers["accept-encoding"])
+        return httpx.Response(200, content=b"{}")
+
+    _serve(monkeypatch, handler)
+    await fetch("https://www.example.test/", headers={"Accept-Encoding": value})  # type: ignore[misc]
+    assert seen == [value]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_a_cross_origin_redirect_drops_caller_headers(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    """Redirects are followed by hand, so httpx's own stripping never runs:
+    beyond the first origin only the content-negotiation headers go along,
+    and a later hop back to the first origin does not get the rest again."""
+    seen: list[tuple[str, httpx.Headers]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers))
+        hops = {
+            "https://api.example.test/spec": "/spec2",
+            "https://api.example.test/spec2": "https://cdn.example.test/spec",
+            "https://cdn.example.test/spec": "https://api.example.test/spec3",
+        }
+        target = hops.get(str(request.url))
+        if target:
+            return httpx.Response(302, headers={"location": target})
+        return httpx.Response(200, content=b"{}")
+
+    _serve(monkeypatch, handler)
+    await fetch(  # type: ignore[misc]
+        "https://api.example.test/spec",
+        headers={
+            "Accept": "application/json",
+            "Accept-Language": "de",
+            "Accept-Encoding": "gzip",
+            "X-Api-Key": "k-secret",
+        },
+    )
+    urls = [url for url, _ in seen]
+    assert urls == [
+        "https://api.example.test/spec",
+        "https://api.example.test/spec2",
+        "https://cdn.example.test/spec",
+        "https://api.example.test/spec3",
+    ]
+    for _url, headers in seen[:2]:
+        assert headers["x-api-key"] == "k-secret"
+    for _url, headers in seen[2:]:
+        assert "x-api-key" not in headers
+        assert headers["accept"] == "application/json"
+        assert headers["accept-language"] == "de"
+        assert headers["accept-encoding"] == "gzip"
+        assert headers["user-agent"].startswith("oc8/")

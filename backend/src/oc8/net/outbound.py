@@ -15,7 +15,7 @@ import logging
 import socket
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit
 
 import httpx
 
@@ -100,6 +100,29 @@ def _ip_allowed(ip: str, host: str, nets: list[Any], hosts: set[str]) -> bool:
     addr = _parse(ip)
     assert addr is not None
     return any(addr in net for net in nets if net.version == addr.version)
+
+
+def url_origin(url: httpx.URL) -> tuple[str, str, int | None]:
+    """What "the same origin" means when a redirect is followed by hand:
+    scheme, host and port."""
+    return (url.scheme, url.host, url.port)
+
+
+#: Why an address with a username or password in it is refused.
+LOGIN_IN_BASE_URL = (
+    "The base URL contains a login. Logins belong in the login fields, not in the address."
+)
+
+
+def base_url_has_login(url: str) -> bool:
+    """Whether `url` carries a username or password (`https://user:pw@host`).
+    httpx would send it as Basic auth on every call, and the address is shown
+    and logged where a secret must not be."""
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return False
+    return bool(parts.username) or bool(parts.password)
 
 
 class OutboundBlocked(ValueError):

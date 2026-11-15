@@ -68,6 +68,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, _BOMB, {"Content-Encoding": "gzip"})
         elif path == "/gzip-small":
             self._send(200, gzip.compress(b'{"ok": true}'), {"Content-Encoding": "gzip"})
+        elif path == "/gzip-truncated":
+            self._send(
+                200, gzip.compress(b'{"ok": true, "more": "x"}')[:-12], {"Content-Encoding": "gzip"}
+            )
         elif path == "/brotli":
             self._send(200, b"\x0b\x02\x80ok\x03", {"Content-Encoding": "br"})
         elif path == "/trickle":
@@ -333,3 +337,11 @@ async def test_httpx_does_not_log_a_tool_call_url(
         await session.call("t", {"api_key": _KEY})
     assert not [r for r in caplog.records if r.name == "httpx"]
     assert _KEY not in caplog.text
+
+
+async def test_a_truncated_gzip_body_is_refused_not_returned_partly(server: str) -> None:
+    async with HttpToolSession(server, [_tool("/gzip-truncated")]) as session:
+        with pytest.raises(HttpToolError) as caught:
+            await session.call("t", {})
+    assert caught.value.kind == "http"
+    assert "ended early" in str(caught.value)
