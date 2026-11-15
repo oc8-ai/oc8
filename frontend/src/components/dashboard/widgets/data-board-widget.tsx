@@ -96,7 +96,12 @@ export function DataBoardWidget({
           {t("No longer updated", "Wird nicht mehr aktualisiert")}
         </p>
       )}
-      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-3 pb-3">
+      {/* No side padding: each block pads itself (px-3) like the title, so
+          block titles line up with the tile's. */}
+      <div
+        data-testid="board-body"
+        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto pb-3"
+      >
         <BoardView
           board={board}
           filters={filtersOf(config)}

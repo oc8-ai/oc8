@@ -97,6 +97,12 @@ describe("DataBoardWidget", () => {
     expect(screen.queryByText("No longer updated")).toBeNull();
   });
 
+  it("adds no side padding of its own, so block titles line up with the tile's", () => {
+    mockBoard({ data: board() });
+    render(wrap(<DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />));
+    expect(screen.getByTestId("board-body").className).not.toMatch(/(^|\s)(px|pl|pr)-/);
+  });
+
   it("stores filter changes in the tile config", () => {
     mockBoard({
       data: board({
