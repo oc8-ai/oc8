@@ -7,7 +7,7 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -87,7 +87,9 @@ async def _seed(
     )
     run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running")
     db.add_all([board, task, run])
-    await db.flush()
+    # The tool writes in its own transaction, so what it reads must be committed.
+    await db.commit()
+    await db.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
     return agent, board, task, run
 
 
@@ -136,7 +138,6 @@ async def test_writes_a_batch_and_audits(app_session: AppSessionFactory) -> None
                 "rows": [{"amount": 1, "region": "n"}, {"amount": 2, "region": "s"}],
             },
         )
-        await flush_audit(db)
         assert outcome.output.startswith("Recorded 2 row"), outcome.output
         batch = (await db.execute(select(m.DataBoardBatch))).scalar_one()
         assert batch.run_id == seeded[3].id
@@ -283,3 +284,34 @@ def test_pep_allows_board_write_without_a_connection() -> None:
 
 def test_board_write_is_read_tier() -> None:
     assert classify_tier("board_write", scopes=None, config=None, annotations=None) == "read"
+
+
+async def test_the_write_is_its_own_transaction(app_session: AppSessionFactory) -> None:
+    """Committed on its own: the locks are free right after the call, and the
+    batch survives the run's transaction rolling back."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        seeded = await _seed(db, tenant)
+        outcome = await _call(
+            db,
+            tenant,
+            seeded,
+            {
+                "board": str(seeded[1].id),
+                "dataset": "sales",
+                "as_of": "2026-03-01",
+                "values": {"amount": 5},
+            },
+        )
+        assert outcome.output.startswith("Recorded 1 row"), outcome.output
+        # The cap lock is not held by the still-open outer transaction.
+        async with app_session(tenant) as other:
+            free = await other.scalar(
+                text("SELECT pg_try_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"board-cap:{tenant}"},
+            )
+            assert free is True
+        await db.rollback()
+    async with app_session(tenant) as check:
+        assert await _count(check, m.DataBoardBatch) == 1
+        assert await _count(check, m.DataBoardRecord) == 1

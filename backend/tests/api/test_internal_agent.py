@@ -3821,3 +3821,62 @@ async def test_a_held_call_that_asks_again_suspends_for_the_operator(
         row = await db.get(m.AgentRun, run_id)
         assert row is not None
         assert row.context["pending_elicitation"]["question"] == "And which warehouse?"
+
+
+@pytest.mark.asyncio
+async def test_step_persists_and_reoffers_board_write_across_calls(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """produces_board is decided by the first step's preamble and must survive
+    through run.context into every later step of the isolated runtime."""
+    import copy
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8 import models as m
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+    from tests.boards.test_mission import SPEC
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        db.add(
+            m.DataBoard(
+                tenant_id=tenant,
+                department_id=agent.department_id,
+                agent_id=agent.id,
+                title="Revenue",
+                spec=copy.deepcopy(SPEC),
+            )
+        )
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    seen: list[list[str]] = []
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        seen.append([t.name for t in kw["tools"]])
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            headers = {"Authorization": f"Bearer {_agent_token(tenant, agent_id, run_id)}"}
+            for _ in range(2):
+                r = await c.post(f"/api/v1/internal/agent/{run_id}/step", headers=headers)
+                assert r.status_code == 200, r.text
+
+    assert len(seen) == 2
+    assert "board_write" in seen[0]
+    assert "board_write" in seen[1]
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None and row.context["produces_board"] is True

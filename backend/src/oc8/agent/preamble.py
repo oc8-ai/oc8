@@ -434,7 +434,7 @@ async def build_run_preamble(
 
     from oc8.boards.mission import board_section
 
-    boards_text = await board_section(db, agent=agent)
+    boards_text = None if agent.is_tenant_assistant else await board_section(db, agent=agent)
     if boards_text is not None:
         messages.append(NeutralMessage(role="system", content=boards_text))
 

@@ -13,6 +13,7 @@ from typing import Any
 
 from oc8 import models as m
 from oc8.agent.control_tools import (
+    BOARD_WRITE,
     BUILDER_TOOL_NAMES,
     CONTROL_TOOL_NAMES,
     COPILOT_TOOL_NAMES,
@@ -277,7 +278,7 @@ def authorize(
             Effect.DENY,
             "direct access is offered only by the Copilot, to the person in this conversation",
         )
-    if tc.name == "board_write" and core_call:
+    if tc.name == BOARD_WRITE.name and core_call:
         # Belongs to no connection: the dispatch is the gate (the board's
         # producing agent only; internal data, so no connection approvals, spec 6.4).
         return Decision(Effect.ALLOW)

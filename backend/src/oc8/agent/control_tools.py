@@ -2616,12 +2616,17 @@ async def _board_write(
         board_id = uuid.UUID(str(args.get("board", "")))
     except ValueError:
         return ControlOutcome(output="ERROR: `board` must be the board's id")
+    # Its OWN short transaction, not the run's: the board row lock and the tenant-wide
+    # cap lock last until commit, and the run's transaction spans every later model
+    # call. Committed here, a batch the agent was told "Recorded" stays recorded
+    # even if the run later fails; a refusal rolls this transaction back and
+    # writes nothing.
+    from oc8.db.session import tenant_session
+
     try:
-        # A savepoint: a refusal releases the board and cap locks at once, and
-        # leaves nothing of the batch behind, without touching the run's own work.
-        async with db.begin_nested():
+        async with tenant_session(tenant_id) as short:
             batch = await write_batch(
-                db,
+                short,
                 tenant_id=tenant_id,
                 agent=agent,
                 board_id=board_id,
@@ -2631,27 +2636,28 @@ async def _board_write(
                 note=note or None,
                 run_id=run_id,
             )
+            # After the writer: lock order is board row, cap lock, then the audit
+            # chain (taken at this transaction's commit).
+            await append_event(
+                short,
+                tenant_id=tenant_id,
+                actor_type="agent",
+                actor_id=agent.id,
+                category="tool_action",
+                action="board.written",
+                resource={
+                    "board_id": str(board_id),
+                    "dataset": dataset,
+                    "as_of": as_of,
+                    "batch_id": str(batch.id),
+                    "rows": batch.row_count,
+                    "run_id": str(run_id) if run_id else None,
+                    "task_id": str(task.id),
+                },
+                originating_operator=originating_operator,
+            )
     except BoardWriteRefused as exc:
         return ControlOutcome(output=f"ERROR: {exc}")
-    # After the writer: lock order is board row, cap lock, then the audit chain.
-    await append_event(
-        db,
-        tenant_id=tenant_id,
-        actor_type="agent",
-        actor_id=agent.id,
-        category="tool_action",
-        action="board.written",
-        resource={
-            "board_id": str(board_id),
-            "dataset": dataset,
-            "as_of": as_of,
-            "batch_id": str(batch.id),
-            "rows": batch.row_count,
-            "run_id": str(run_id) if run_id else None,
-            "task_id": str(task.id),
-        },
-        originating_operator=originating_operator,
-    )
     return ControlOutcome(
         output=(
             f"Recorded {batch.row_count} row(s) for {dataset} {as_of}. This replaces earlier "
