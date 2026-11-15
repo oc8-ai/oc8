@@ -29,6 +29,12 @@ msgstr ""
 msgid "(requires settings:manage)"
 msgstr ""
 
+msgid "{from}–{to} of {total}"
+msgstr ""
+
+msgid "{n} selected"
+msgstr ""
+
 msgid "/do carry out the plan above"
 msgstr ""
 
@@ -536,6 +542,9 @@ msgstr ""
 msgid "Arguments (JSON)"
 msgstr ""
 
+msgid "As first reported"
+msgstr ""
+
 msgid "Ask an administrator to add you — your queue appears the moment they do."
 msgstr ""
 
@@ -657,6 +666,9 @@ msgid "Available"
 msgstr ""
 
 msgid "Available in chat"
+msgstr ""
+
+msgid "Available in Enterprise"
 msgstr ""
 
 msgid "Available in:"
@@ -1634,6 +1646,9 @@ msgstr ""
 msgid "Custom MCP capa"
 msgstr ""
 
+msgid "Custom range"
+msgstr ""
+
 msgid "Custom server or API"
 msgstr ""
 
@@ -1665,6 +1680,9 @@ msgid "Data Sources"
 msgstr ""
 
 msgid "Data sources (optional)"
+msgstr ""
+
+msgid "Date"
 msgstr ""
 
 msgid "Day"
@@ -2666,6 +2684,9 @@ msgstr ""
 msgid "Language switched to"
 msgstr ""
 
+msgid "Last 12 months"
+msgstr ""
+
 msgid "Last 30 days — validation only"
 msgstr ""
 
@@ -2700,6 +2721,9 @@ msgid "Leave empty to set up later"
 msgstr ""
 
 msgid "Leave unassigned"
+msgstr ""
+
+msgid "Legend"
 msgstr ""
 
 msgid "Let the copilot draft this from a rough description"
@@ -3200,6 +3224,9 @@ msgstr ""
 msgid "No chunks found."
 msgstr ""
 
+msgid "No comparison"
+msgstr ""
+
 msgid "No connected data sources yet — create one first from the Sources tab, or skip this step."
 msgstr ""
 
@@ -3218,7 +3245,13 @@ msgstr ""
 msgid "No credentials yet."
 msgstr ""
 
+msgid "No data"
+msgstr ""
+
 msgid "No data for this filter."
+msgstr ""
+
+msgid "No data for this period"
 msgstr ""
 
 msgid "No data source you can open matches that."
@@ -3308,6 +3341,9 @@ msgstr ""
 msgid "no note"
 msgstr ""
 
+msgid "No note for this period"
+msgstr ""
+
 msgid "No organisation access yet."
 msgstr ""
 
@@ -3378,6 +3414,9 @@ msgid "No usage recorded yet."
 msgstr ""
 
 msgid "No users found. Users appear here after they sign in."
+msgstr ""
+
+msgid "No values in this period"
 msgstr ""
 
 msgid "no version"
@@ -5225,6 +5264,12 @@ msgstr ""
 msgid "This base already has ingested content, so its embedding model can't change -- old and new chunks would no longer be comparable. Delete and recreate the base to use a different model."
 msgstr ""
 
+msgid "This block can't be shown"
+msgstr ""
+
+msgid "This block couldn't be loaded"
+msgstr ""
+
 msgid "This browser does not support push notifications."
 msgstr ""
 
@@ -5253,6 +5298,9 @@ msgid "This connection is not set up yet. Please contact your administrator."
 msgstr ""
 
 msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr ""
+
+msgid "This dashboard was deleted"
 msgstr ""
 
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
@@ -5307,6 +5355,9 @@ msgid "This model can see images (vision)"
 msgstr ""
 
 msgid "This model may only answer chats, not run on a schedule or an event."
+msgstr ""
+
+msgid "This month"
 msgstr ""
 
 msgid "This proposal has expired."
@@ -5651,6 +5702,9 @@ msgstr ""
 msgid "value"
 msgstr ""
 
+msgid "Values couldn't be loaded"
+msgstr ""
+
 msgid "Verification failed"
 msgstr ""
 
@@ -5676,6 +5730,12 @@ msgid "via department lead"
 msgstr ""
 
 msgid "Visibility"
+msgstr ""
+
+msgid "vs. previous period"
+msgstr ""
+
+msgid "vs. same period last year"
 msgstr ""
 
 msgid "waiting"
@@ -5861,6 +5921,9 @@ msgstr ""
 msgid "Wrote a file"
 msgstr ""
 
+msgid "Year to date"
+msgstr ""
+
 msgid "Yes, approve"
 msgstr ""
 
@@ -5913,6 +5976,9 @@ msgid "You don't have access to Copilot chat."
 msgstr ""
 
 msgid "You don't have permission to view this content."
+msgstr ""
+
+msgid "You have no access to this dashboard"
 msgstr ""
 
 msgid "You hold no seat in any department."
