@@ -573,6 +573,12 @@ class DataSourceDTO(CamelModel):
     last_sync_status: str | None = None
     #: Set only while `last_sync_status == "failed"`.
     last_sync_error: str | None = None
+    #: Documents the last finished sync left out, by reason (`unsupported_type`,
+    #: `too_large`, `url_document`, or whatever the connector reported). Null
+    #: when nothing was skipped or the source has not synced yet.
+    last_sync_skipped: dict[str, int] | None = None
+    #: Note codes the last finished sync recorded (e.g. `api_key_recommended`).
+    last_sync_notes: list[str] | None = None
     deleted_at: str | None = None
     #: Non-secret connector config only (e.g. `bucket`, `prefix`, and a
     #: `credential`-typed property's CREDENTIAL ID -- never a resolved

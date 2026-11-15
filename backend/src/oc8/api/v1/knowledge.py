@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -652,7 +653,25 @@ async def list_sources(
         default_order=m.DataSource.created_at,
     )
     rows, total = await paginate(db, stmt, limit=limit, offset=offset)
-    return Page(items=[datasource_to_dto(d) for d in rows], total_count=total)
+    # One query for the whole page: each source's most recent FINISHED job, whose
+    # stats say what the last sync left out. Not one lookup per source.
+    last_stats: dict[uuid.UUID, dict[str, Any]] = {}
+    if rows:
+        latest = await db.execute(
+            select(m.IngestionJob.data_source_id, m.IngestionJob.stats)
+            .where(
+                m.IngestionJob.data_source_id.in_([d.id for d in rows]),
+                m.IngestionJob.status.in_(("succeeded", "partial", "failed")),
+            )
+            .distinct(m.IngestionJob.data_source_id)
+            .order_by(
+                m.IngestionJob.data_source_id,
+                m.IngestionJob.created_at.desc(),
+                m.IngestionJob.id.desc(),
+            )
+        )
+        last_stats = {sid: stats for sid, stats in latest.all()}
+    return Page(items=[datasource_to_dto(d, last_stats.get(d.id)) for d in rows], total_count=total)
 
 
 @router.post(

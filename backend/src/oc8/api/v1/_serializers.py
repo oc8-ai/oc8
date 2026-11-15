@@ -583,8 +583,13 @@ def agent_version_to_dto(
     )
 
 
-def datasource_to_dto(d: m.DataSource) -> DataSourceDTO:
+def datasource_to_dto(
+    d: m.DataSource, last_job_stats: dict[str, Any] | None = None
+) -> DataSourceDTO:
     cfg: dict[str, Any] = d.config or {}
+    stats = last_job_stats or {}
+    skipped = stats.get("skipped_by_reason")
+    notes = stats.get("notes")
     return DataSourceDTO(
         id=str(d.id),
         kind=d.connector_type,
@@ -600,6 +605,8 @@ def datasource_to_dto(d: m.DataSource) -> DataSourceDTO:
         reconcile_note=d.reconcile_note,
         last_sync_status=d.last_sync_status,
         last_sync_error=d.last_sync_error,
+        last_sync_skipped=skipped if isinstance(skipped, dict) and skipped else None,
+        last_sync_notes=notes if isinstance(notes, list) and notes else None,
         deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
         config=cfg,
     )
