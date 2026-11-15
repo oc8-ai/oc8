@@ -41,14 +41,24 @@ async def _installation(app_session: AppSessionFactory, tenant: uuid.UUID) -> m.
 
 
 def test_manifest_rejects_deferred_permission_not_in_permissions() -> None:
-    with pytest.raises(ManifestError, match="deferred_permissions"):
+    with pytest.raises(ManifestError, match="must also be listed in permissions"):
         parse_manifest(
-            {"name": "x", "version": "1.0.0", "permissions": ["a"], "deferred_permissions": ["b"]}
+            {
+                "name": "x",
+                "version": "1.0.0",
+                "permissions": ["a"],
+                "deferred_permissions": ["knowledge:write"],
+            }
         )
     ok = parse_manifest(
-        {"name": "x", "version": "1.0.0", "permissions": ["a", "b"], "deferred_permissions": ["b"]}
+        {
+            "name": "x",
+            "version": "1.0.0",
+            "permissions": ["a", "knowledge:write"],
+            "deferred_permissions": ["knowledge:write"],
+        }
     )
-    assert ok.deferred_permissions == ["b"]
+    assert ok.deferred_permissions == ["knowledge:write"]
 
 
 async def _install(client, admin) -> str:  # type: ignore[no-untyped-def]
@@ -147,3 +157,73 @@ async def test_grant_deferred_permission(app_session: AppSessionFactory, capas_r
             f"/api/v1/capas/{capa_id}/grant", json={"permission": "knowledge:write"}, headers=admin
         )
         assert conflict.status_code == 409, conflict.text
+
+
+def test_manifest_rejects_non_deferrable_permission() -> None:
+    """Only permissions on the allow-list can be deferred: a capa must not be
+    able to defer the consent its ordinary contributions run under."""
+    with pytest.raises(ManifestError, match="deferred"):
+        parse_manifest(
+            {
+                "name": "x",
+                "version": "1.0.0",
+                "permissions": ["mcp:connect"],
+                "deferred_permissions": ["mcp:connect"],
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_stored_manifest_cannot_defer_a_permission_off_the_allow_list(
+    app_session: AppSessionFactory,
+) -> None:
+    """A stale or tampered stored manifest that claims `mcp:connect` deferred
+    still leaves enabling waiting for `mcp:connect`."""
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from oc8.capas.lifecycle import ConsentError, enable_plugin
+    from oc8.capas.service import install_plugin
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        version = await install_plugin(
+            db,
+            tenant_id=tenant,
+            manifest_data={"name": "tampered", "version": "1.0.0", "permissions": BASE},
+        )
+        version.manifest = {**version.manifest, "deferred_permissions": ["mcp:connect"]}
+        flag_modified(version, "manifest")
+        await db.flush()
+        with pytest.raises(ConsentError, match="mcp:connect"):
+            await enable_plugin(
+                db, tenant_id=tenant, capa_id=version.capa_id, granted_permissions=["secrets:use"]
+            )
+
+
+@pytest.mark.asyncio
+async def test_setting_up_a_never_enabled_capa_does_not_grant_a_deferred_permission(
+    app_session: AppSessionFactory, capas_root: Path
+) -> None:
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    write_capa(
+        capas_root,
+        permissions=[*BASE, "knowledge:write"],
+        deferred=["knowledge:write"],
+        setup=True,
+    )
+    async with api() as c:
+        r = await c.post(
+            "/api/v1/capas/install-from-disk",
+            json={"pluginId": NAME, "enable": False},
+            headers=admin,
+        )
+        assert r.status_code == 201, r.text
+        capa_id = r.json()["pluginId"]
+        s = await c.post(
+            f"/api/v1/capas/{capa_id}/setup", json={"values": {"label": "x"}}, headers=admin
+        )
+        assert s.status_code == 200, s.text
+    inst = await _installation(app_session, tenant)
+    assert inst.status == "enabled"
+    assert sorted(inst.granted_permissions) == sorted(BASE)

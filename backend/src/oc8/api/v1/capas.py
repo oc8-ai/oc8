@@ -25,6 +25,7 @@ from oc8.capas.lifecycle import (
     NotDeferredError,
     NotEnabledError,
     QuarantinedError,
+    consent_required,
     deferred_permissions,
     disable_plugin,
     enable_plugin,
@@ -529,7 +530,7 @@ async def configure_plugin(
         db,
         tenant_id=principal.tenant_id,
         capa_id=plugin.id,
-        granted_permissions=list(version.permissions),
+        granted_permissions=consent_required(version),
     )
     try:
         return await _apply_plugin_setup(plugin, version, installation, body, db, principal)

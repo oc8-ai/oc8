@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8.capas.contributions import connectors_for
 from oc8.capas.discovery import find_plugin
 from oc8.capas.loader import load_plugin
+from oc8.capas.manifest import DEFERRABLE_PERMISSIONS
 from oc8.knowledge.connectors.base import Connector, ConnectorError
 from oc8.knowledge.connectors.upload import _UPLOAD
 from oc8.knowledge.connectors.website import _WEBSITE
@@ -77,8 +78,9 @@ async def enabled_plugin_names(db: AsyncSession, tenant_id: uuid.UUID) -> list[s
     return list(rows)
 
 
-#: The permission a capa's knowledge connectors need. A capa may defer it
-#: (``Manifest.deferred_permissions``); its connectors then wait for the grant.
+#: The permission a capa's knowledge contributions need. A capa may defer it
+#: (``Manifest.deferred_permissions``); everything it contributes to
+#: knowledge -- connectors, vector indexes -- then waits for the grant.
 KNOWLEDGE_WRITE = "knowledge:write"
 
 
@@ -104,18 +106,40 @@ async def _enabled_plugin_grants(
         )
     )
     return [
-        (name, capa_id, set(granted or []), set(deferred or []))
+        # Only allow-listed permissions count as deferred, whatever the
+        # stored manifest says (see DEFERRABLE_PERMISSIONS).
+        (name, capa_id, set(granted or []), set(deferred or []) & DEFERRABLE_PERMISSIONS)
         for name, capa_id, granted, deferred in rows.all()
     ]
 
 
-def _loaded_connectors(name: str) -> dict[str, Connector]:
-    """What plugin ``name`` contributes, or nothing when it is missing from
-    disk, fails to load or contributes no connector -- never an error."""
+async def knowledge_plugin_gate(
+    db: AsyncSession, tenant_id: uuid.UUID
+) -> tuple[list[str], list[tuple[str, uuid.UUID]]]:
+    """The one gate for knowledge contributions from enabled plugins.
+
+    Returns (names whose knowledge contributions this tenant may use, and
+    (name, capa id) of those waiting for their deferred ``knowledge:write``).
+    Every registry that resolves a plugin's knowledge contribution -- the
+    connectors here, ``oc8.knowledge.vector_indexes.registry`` -- goes
+    through this, so none of them can skip the consent.
+    """
+    usable: list[str] = []
+    pending: list[tuple[str, uuid.UUID]] = []
+    for name, capa_id, granted, deferred in await _enabled_plugin_grants(db, tenant_id):
+        if KNOWLEDGE_WRITE in deferred and KNOWLEDGE_WRITE not in granted:
+            pending.append((name, capa_id))
+        else:
+            usable.append(name)
+    return usable, pending
+
+
+def load_contributing_plugin(name: str) -> bool:
+    """Whether plugin ``name`` is on disk and loaded, so its contributions can
+    be read. Missing or failing to load is not an error -- it contributes
+    nothing."""
     discovered = find_plugin(name)
-    if discovered is None or not load_plugin(discovered):
-        return {}
-    return connectors_for(name)
+    return discovered is not None and load_plugin(discovered)
 
 
 async def _plugin_connectors(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, Connector]:
@@ -126,10 +150,10 @@ async def _plugin_connectors(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str
     does a plugin that defers ``knowledge:write`` and has not been granted it.
     """
     out: dict[str, Connector] = {}
-    for name, _capa_id, granted, deferred in await _enabled_plugin_grants(db, tenant_id):
-        if KNOWLEDGE_WRITE in deferred and KNOWLEDGE_WRITE not in granted:
-            continue
-        out.update(_loaded_connectors(name))
+    usable, _pending = await knowledge_plugin_gate(db, tenant_id)
+    for name in usable:
+        if load_contributing_plugin(name):
+            out.update(connectors_for(name))
     return out
 
 
@@ -143,10 +167,11 @@ async def consent_pending_connectors(
     ``resolve_connector`` does not look here.
     """
     out: dict[str, tuple[Connector, uuid.UUID, str]] = {}
-    for name, capa_id, granted, deferred in await _enabled_plugin_grants(db, tenant_id):
-        if KNOWLEDGE_WRITE not in deferred or KNOWLEDGE_WRITE in granted:
+    _usable, pending = await knowledge_plugin_gate(db, tenant_id)
+    for name, capa_id in pending:
+        if not load_contributing_plugin(name):
             continue
-        for type_id, connector in _loaded_connectors(name).items():
+        for type_id, connector in connectors_for(name).items():
             out[type_id] = (connector, capa_id, KNOWLEDGE_WRITE)
     return out
 

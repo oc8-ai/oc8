@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.capas.discovery import find_plugin
+from oc8.capas.manifest import DEFERRABLE_PERMISSIONS
 from oc8.capas.materialise import materialise_plugin_data
 from oc8.capas.service import PluginError
 from oc8.capas.claude_hooks import register_claude_hooks_for_capa, unregister_claude_hooks_for_capa
@@ -109,8 +110,20 @@ async def _installation(
 
 
 def deferred_permissions(version: CapaVersion) -> set[str]:
-    """The permissions this version lets a tenant grant after enabling."""
-    return set((version.manifest or {}).get("deferred_permissions") or [])
+    """The permissions this version lets a tenant grant after enabling.
+
+    Re-checked against ``DEFERRABLE_PERMISSIONS`` here, not only when the
+    manifest is parsed: the stored row is what enable reads, and a stale or
+    edited one must not turn an ordinary permission into one nobody consents to.
+    """
+    declared = set((version.manifest or {}).get("deferred_permissions") or [])
+    return declared & DEFERRABLE_PERMISSIONS
+
+
+def consent_required(version: CapaVersion) -> list[str]:
+    """What enabling this version must be granted: its permissions minus the
+    deferred ones. What an enable on the operator's behalf passes."""
+    return sorted(set(version.permissions) - deferred_permissions(version))
 
 
 async def _current_version(db: AsyncSession, plugin: Capa) -> CapaVersion | None:
@@ -285,6 +298,9 @@ async def grant_deferred_permission(
         raise NotEnabledError("a deferred permission is granted on an enabled capa only")
     if permission in inst.granted_permissions:
         return inst
+    # A full re-enable, on purpose: hooks re-register with the widened grant,
+    # and like any re-enable it resets `failure_count` and `enabled_at` and
+    # re-runs the (idempotent) materialise step.
     return await enable_plugin(
         db,
         tenant_id=tenant_id,

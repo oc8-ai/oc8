@@ -37,6 +37,13 @@ CLAUDE_HOOK_PERMISSIONS = {
     "mcp_tool": "hooks:claude:mcp",
 }
 
+#: The only permissions a capa may defer (`Manifest.deferred_permissions`).
+#: Each one gates a single kind of contribution that stays off until it is
+#: granted; a permission off this list is always consented to at enable.
+#: `oc8.capas.lifecycle.deferred_permissions` applies it to stored manifests
+#: too, so a stale or edited row cannot widen it.
+DEFERRABLE_PERMISSIONS: frozenset[str] = frozenset({"knowledge:write"})
+
 
 class ManifestError(ValueError):
     """A manifest failed schema validation."""
@@ -943,6 +950,12 @@ class Manifest(BaseModel):
 
     @model_validator(mode="after")
     def _deferred_permissions_are_declared(self) -> Manifest:
+        not_deferrable = sorted(set(self.deferred_permissions) - DEFERRABLE_PERMISSIONS)
+        if not_deferrable:
+            raise ValueError(
+                f"deferred_permissions {not_deferrable} cannot be deferred; "
+                f"only {sorted(DEFERRABLE_PERMISSIONS)} can"
+            )
         undeclared = sorted(set(self.deferred_permissions) - set(self.permissions))
         if undeclared:
             raise ValueError(

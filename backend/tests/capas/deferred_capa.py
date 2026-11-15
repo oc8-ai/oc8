@@ -17,6 +17,7 @@ from oc8.capas.discovery import invalidate_discovery_cache
 
 NAME = "deferred_demo"
 TYPE_ID = "deferred_demo"
+INDEX_TYPE_ID = "deferred_demo_index"
 
 _CONNECTOR = """
 from __future__ import annotations
@@ -44,8 +45,23 @@ class DeferredDemoConnector:
             yield None
 
 
+class DeferredDemoIndex:
+    type_id = "deferred_demo_index"
+    label = "Deferred demo index"
+    description = "A vector index behind a deferred permission"
+    config_schema: dict[str, Any] = {"type": "object", "properties": {}}
+    credential_type = "deferred_demo_api"
+
+    async def validate(self, config, auth, *, credential_id):
+        return None
+
+    async def search(self, config, auth, *, credential_id, **kwargs):
+        return []
+
+
 def register(contrib: Any) -> None:
     contrib.add_connector(DeferredDemoConnector())
+    contrib.add_vector_index(DeferredDemoIndex())
 """
 
 
@@ -55,6 +71,7 @@ def write_capa(
     version: str = "1.0.0",
     permissions: list[str],
     deferred: list[str] | None = None,
+    setup: bool = False,
 ) -> None:
     folder = root / NAME
     (folder / "connector").mkdir(parents=True, exist_ok=True)
@@ -73,6 +90,12 @@ def write_capa(
     if deferred is not None:
         lines.append("deferred_permissions = [" + ", ".join(f'"{p}"' for p in deferred) + "]")
     lines += ["", "[plugin.entry_points]", 'connectors = "connector.connector:register"', ""]
+    if setup:
+        # A setup form with no `mcp` block: setting it up only stores values.
+        (folder / "setup").mkdir(exist_ok=True)
+        (folder / "setup" / "fields.toml").write_text(
+            'title = "Set up"\n\n[[fields]]\nkey = "label"\nlabel = "Label"\nrequired = false\n'
+        )
     (folder / "plugin.toml").write_text("\n".join(lines))
     invalidate_discovery_cache()
 
