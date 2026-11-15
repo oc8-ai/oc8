@@ -604,21 +604,6 @@ msgstr "Dokumente"
 msgid "Knowledge"
 msgstr "Wissen"
 
-msgid "Odoo app missing"
-msgstr "Odoo-App fehlt"
-
-msgid "No read access"
-msgstr "Kein Lesezugriff"
-
-msgid "For Odoo 19 we recommend an API key instead of a password."
-msgstr "Für Odoo 19 empfehlen wir einen API-Schlüssel statt eines Passworts."
-
-msgid "URL document"
-msgstr "URL-Dokument"
-
-msgid "unreadable"
-msgstr "nicht lesbar"
-
 msgid "Choose at least one Odoo folder or article."
 msgstr "Wähle mindestens einen Odoo-Ordner oder -Artikel aus."
 
