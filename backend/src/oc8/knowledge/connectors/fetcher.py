@@ -7,12 +7,20 @@ read the message: `blocked`, `unreachable`, `too_large` or `timeout`.
 
 from __future__ import annotations
 
+import zlib
+from collections.abc import Mapping
 from typing import ClassVar, Literal
 
 import httpx
 
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.net import outbound
+from oc8.net.decoding import (
+    ACCEPT_ENCODING,
+    UnsupportedContentEncoding,
+    content_decoder,
+    decode_step,
+)
 from oc8.net.outbound import (
     USER_AGENT,
     OutboundBlocked,
@@ -83,12 +91,27 @@ def _guard(url: str) -> str | None:
         raise FetchBlocked(str(exc)) from exc
 
 
+def _request_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
+    """oc8's User-Agent and the encodings decoded here, then the caller's
+    headers on top. The caller may not set Host: the guard checked the URL's
+    host, and the connection is pinned to its address."""
+    merged = {"User-Agent": USER_AGENT, "Accept-Encoding": ACCEPT_ENCODING}
+    for name, value in (headers or {}).items():
+        if name.strip().lower() == "host":
+            raise ValueError("a fetch may not set the Host header")
+        for key in [k for k in merged if k.lower() == name.strip().lower()]:
+            del merged[key]
+        merged[name] = value
+    return merged
+
+
 async def safe_fetch_bytes(
     url: str,
     *,
     max_bytes: int = 20_000_000,
     max_redirects: int = 5,
     timeout: float = 30.0,  # noqa: ASYNC109 -- mirrors safe_fetch's public kwarg
+    headers: Mapping[str, str] | None = None,
 ) -> bytes:
     """The same guard, for content that is not text.
 
@@ -96,29 +119,48 @@ async def safe_fetch_bytes(
     ceilings -- but not its own guard: every redirect hop is re-checked against
     the same block-list, because a public host that answers with a redirect to
     169.254.169.254 is the whole reason the guard exists.
+
+    `headers` are sent on every hop (an `Accept`, an `Accept-Encoding`); an
+    encoding other than gzip or deflate in the answer is `FetchUnreachable`.
+    An HTTP error status is `FetchUnreachable` with its `status_code`.
     """
+    request_headers = _request_headers(headers)
     try:
-        return await _fetch_bytes(
-            url, max_bytes=max_bytes, max_redirects=max_redirects, timeout=timeout
+        body, _ = await _fetch(
+            url,
+            max_bytes=max_bytes,
+            max_redirects=max_redirects,
+            timeout=timeout,
+            headers=request_headers,
+            raise_for_status=True,
+            what="archive at",
         )
     except httpx.HTTPError as exc:
         raise _as_fetch_error(url, exc) from exc
+    return body
 
 
-async def _fetch_bytes(
+async def _fetch(
     url: str,
     *,
     max_bytes: int,
     max_redirects: int,
     timeout: float,  # noqa: ASYNC109
-) -> bytes:
+    headers: dict[str, str],
+    raise_for_status: bool,
+    what: str,
+) -> tuple[bytes, httpx.Response]:
+    """GET `url`, guarding and pinning each redirect hop, and read at most
+    `max_bytes` of the decoded body. The raw bytes are decoded here in steps
+    that never yield more than what still fits, so a small compressed body
+    cannot inflate past the budget in memory."""
     current = url
     for _ in range(max_redirects + 1):
         ip = _guard(current)
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=timeout,
-            headers={"User-Agent": USER_AGENT},
+            headers=headers,
             transport=PinnedTransport(ip) if ip else None,
         ) as client:
             async with client.stream("GET", current) as resp:
@@ -129,16 +171,30 @@ async def _fetch_bytes(
                         else resp.headers["location"]
                     )
                     continue
-                resp.raise_for_status()
+                if raise_for_status:
+                    resp.raise_for_status()
+                encoding = resp.headers.get("content-encoding", "")
+                try:
+                    decoder = content_decoder(encoding)
+                except UnsupportedContentEncoding:
+                    raise FetchUnreachable(
+                        f"{current!r} answered with an unsupported content encoding ({encoding})"
+                    ) from None
                 buffer = bytearray()
-                async for chunk in resp.aiter_bytes():
-                    buffer.extend(chunk)
-                    if len(buffer) > max_bytes:
-                        raise FetchTooLarge(
-                            f"archive at {current!r} exceeded max_bytes={max_bytes} "
-                            "(aborted mid-stream)"
-                        )
-                return bytes(buffer)
+                try:
+                    async for chunk in resp.aiter_raw():
+                        out, overflow = decode_step(decoder, chunk, max_bytes - len(buffer))
+                        buffer.extend(out)
+                        if overflow:
+                            raise FetchTooLarge(
+                                f"{what} {current!r} exceeded max_bytes={max_bytes} "
+                                "(aborted mid-stream)"
+                            )
+                except zlib.error as exc:
+                    raise FetchUnreachable(
+                        f"{current!r} answered with a body that cannot be decoded"
+                    ) from exc
+                return bytes(buffer), resp
     raise FetchUnreachable(f"too many redirects for {url!r}")
 
 
@@ -148,49 +204,23 @@ async def safe_fetch(
     max_bytes: int = 5_000_000,
     max_redirects: int = 3,
     timeout: float = 10.0,  # noqa: ASYNC109 -- public kwarg per the connector interface, not a cancel scope
+    headers: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Fetch a page; a network or TLS failure is a ConnectorError, so a caller
-    that skips unreachable pages (a website sync) does not abort instead."""
+    that skips unreachable pages (a website sync) does not abort instead.
+    `headers` as for `safe_fetch_bytes`; an HTTP error status is not raised."""
+    request_headers = _request_headers(headers)
     try:
-        return await _fetch_text(
-            url, max_bytes=max_bytes, max_redirects=max_redirects, timeout=timeout
+        body, resp = await _fetch(
+            url,
+            max_bytes=max_bytes,
+            max_redirects=max_redirects,
+            timeout=timeout,
+            headers=request_headers,
+            raise_for_status=False,
+            what="response for",
         )
     except httpx.HTTPError as exc:
         raise _as_fetch_error(url, exc) from exc
-
-
-async def _fetch_text(
-    url: str,
-    *,
-    max_bytes: int,
-    max_redirects: int,
-    timeout: float,  # noqa: ASYNC109
-) -> tuple[str, str]:
-    current = url
-    for _ in range(max_redirects + 1):
-        ip = _guard(current)
-        async with httpx.AsyncClient(
-            follow_redirects=False,
-            timeout=timeout,
-            headers={"User-Agent": USER_AGENT},
-            transport=PinnedTransport(ip) if ip else None,
-        ) as client:
-            async with client.stream("GET", current) as resp:
-                if resp.is_redirect and resp.has_redirect_location:
-                    current = (
-                        str(resp.next_request.url)
-                        if resp.next_request
-                        else resp.headers["location"]
-                    )
-                    continue
-                buffer = bytearray()
-                async for chunk in resp.aiter_bytes():
-                    buffer.extend(chunk)
-                    if len(buffer) > max_bytes:
-                        raise FetchTooLarge(
-                            f"response for {current!r} exceeded max_bytes={max_bytes} "
-                            "(aborted mid-stream)"
-                        )
-                ctype = resp.headers.get("content-type", "text/html").split(";")[0].strip()
-                return bytes(buffer).decode(resp.encoding or "utf-8", errors="replace"), ctype
-    raise FetchUnreachable(f"too many redirects for {url!r}")
+    ctype = resp.headers.get("content-type", "text/html").split(";")[0].strip()
+    return body.decode(resp.encoding or "utf-8", errors="replace"), ctype

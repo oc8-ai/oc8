@@ -25,11 +25,22 @@ _FETCHES = [f.safe_fetch, f.safe_fetch_bytes]
 def _serve(
     monkeypatch: pytest.MonkeyPatch, handler: Callable[[httpx.Request], httpx.Response]
 ) -> None:
+    """Answer every fetch from `handler`, with a body not yet read, as a real
+    connection's is: the fetch reads the raw bytes to decode them in bounded
+    steps, and an `httpx.Response(content=...)` arrives already consumed."""
     monkeypatch.setattr(f, "_guard", lambda url: None)
     real_async_client = httpx.AsyncClient
 
+    def streamed(request: httpx.Request) -> httpx.Response:
+        resp = handler(request)
+        if not resp.is_stream_consumed:
+            return resp
+        return httpx.Response(
+            resp.status_code, headers=resp.headers, stream=httpx.ByteStream(resp.content)
+        )
+
     def client_factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
-        kwargs["transport"] = httpx.MockTransport(handler)
+        kwargs["transport"] = httpx.MockTransport(streamed)
         return real_async_client(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(httpx, "AsyncClient", client_factory)
@@ -122,3 +133,116 @@ async def test_an_error_status_on_bytes_is_unreachable_with_its_status(
     with pytest.raises(FetchUnreachable) as exc:
         await f.safe_fetch_bytes("https://www.example.test/spec.json")
     assert exc.value.status_code == 404
+
+
+def _gzip_bomb(size: int) -> bytes:
+    import zlib
+
+    packer = zlib.compressobj(9, zlib.DEFLATED, zlib.MAX_WBITS | 16)
+    return packer.compress(b"\0" * size) + packer.flush()
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_a_gzip_bomb_never_inflates_past_the_budget(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    """64 MB of zeros gzip to ~64 KB, one chunk. Inflating it whole before
+    the size check is what the bound prevents: no decompress call may hand
+    back more than the remaining budget (+1 byte to notice the overflow)."""
+    import zlib
+
+    bomb = _gzip_bomb(64 * 1024 * 1024)
+    assert len(bomb) < 100_000
+    biggest = 0
+    real = zlib.decompressobj
+
+    class Spy:
+        def __init__(self, *args: object) -> None:
+            self._inner = real(*args)  # type: ignore[arg-type]
+
+        @property
+        def unconsumed_tail(self) -> bytes:
+            return bytes(self._inner.unconsumed_tail)
+
+        def decompress(self, data: bytes, max_length: int = 0) -> bytes:
+            nonlocal biggest
+            out = bytes(self._inner.decompress(data, max_length))
+            biggest = max(biggest, len(out))
+            return out
+
+        def flush(self) -> bytes:
+            return bytes(self._inner.flush())
+
+    monkeypatch.setattr(zlib, "decompressobj", Spy)
+    _serve(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, stream=httpx.ByteStream(bomb), headers={"content-encoding": "gzip"}
+        ),
+    )
+    with pytest.raises(FetchTooLarge):
+        await fetch("https://www.example.test/", max_bytes=1_000_000)  # type: ignore[misc]
+    assert 0 < biggest <= 1_000_001
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_a_gzip_body_within_the_budget_is_inflated(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    import zlib
+
+    packer = zlib.compressobj(9, zlib.DEFLATED, zlib.MAX_WBITS | 16)
+    body = packer.compress(b'{"openapi": "3.1.0"}') + packer.flush()
+    _serve(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200,
+            stream=httpx.ByteStream(body),
+            headers={"content-encoding": "gzip", "content-type": "application/json"},
+        ),
+    )
+    got = await fetch("https://www.example.test/")  # type: ignore[misc]
+    text = got if isinstance(got, bytes) else got[0].encode()  # type: ignore[index]
+    assert text == b'{"openapi": "3.1.0"}'
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_an_unsupported_encoding_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    _serve(
+        monkeypatch,
+        lambda request: httpx.Response(
+            200, stream=httpx.ByteStream(b"??"), headers={"content-encoding": "br"}
+        ),
+    )
+    with pytest.raises(FetchUnreachable):
+        await fetch("https://www.example.test/")  # type: ignore[misc]
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_caller_headers_are_sent_and_encodings_are_only_the_decodable_ones(
+    monkeypatch: pytest.MonkeyPatch, fetch: Callable[..., object]
+) -> None:
+    seen: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers)
+        return httpx.Response(200, content=b"{}")
+
+    _serve(monkeypatch, handler)
+    await fetch(  # type: ignore[misc]
+        "https://www.example.test/",
+        headers={"Accept": "application/json", "Accept-Encoding": "identity"},
+    )
+    await fetch("https://www.example.test/")  # type: ignore[misc]
+    assert seen[0]["accept"] == "application/json"
+    assert seen[0]["accept-encoding"] == "identity"
+    assert seen[0]["user-agent"].startswith("oc8/")
+    assert seen[1]["accept-encoding"] == "gzip, deflate"
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+async def test_caller_headers_cannot_set_the_host(fetch: Callable[..., object]) -> None:
+    with pytest.raises(ValueError, match="Host"):
+        await fetch("https://www.example.test/", headers={"Host": "169.254.169.254"})  # type: ignore[misc]
