@@ -357,6 +357,7 @@ async def test_patch_records_who_changed_the_scope(
         assert len(events) == 1
         ev = events[0]
         assert (ev.responsible_type, ev.responsible_id) == ("operator", ADMIN)
+        assert str(ev.actor_id) == ADMIN
         assert ev.resource["data_source_id"] == str(source_id)
         # Only the picker properties, before and after.
         assert ev.resource["scope"] == {"selection": {"before": [1, 2, 3], "after": [1, 2]}}

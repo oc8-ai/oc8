@@ -56,7 +56,7 @@ from oc8.auth.principal import Principal
 from oc8.knowledge.chunks import live_chunks
 from oc8.knowledge.connectors.base import Attestation, AuthContext, SourceListing
 from oc8.knowledge.connectors.report import report_note
-from oc8.knowledge.tombstone import CATEGORY, SCOPE_CHANGED, tombstone_document
+from oc8.knowledge.tombstone import CATEGORY, SCOPE_CHANGED, _as_uuid, tombstone_document
 
 logger = logging.getLogger(__name__)
 
@@ -98,13 +98,6 @@ def picker_changes(
     }
 
 
-def picker_changed(
-    schema: Mapping[str, Any] | None, before: Mapping[str, Any], after: Mapping[str, Any]
-) -> bool:
-    """Whether a config edit changed any property the schema marks as a picker."""
-    return bool(picker_changes(schema, before, after))
-
-
 def empty_pickers(schema: Mapping[str, Any] | None, config: Mapping[str, Any]) -> list[str]:
     """Picker properties a config leaves missing or empty (any falsy value).
 
@@ -138,7 +131,7 @@ async def record_scope_change(
         db,
         tenant_id=principal.tenant_id,
         actor_type="operator",
-        actor_id=None,
+        actor_id=_as_uuid(principal.subject),
         category=CATEGORY,
         action=SCOPE_CHANGED_EVENT,
         resource={
