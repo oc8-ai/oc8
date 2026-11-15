@@ -52,9 +52,11 @@ from oc8.net.decoding import (
     decode_step,
 )
 from oc8.net.outbound import (
+    LOGIN_IN_BASE_URL,
     USER_AGENT,
     OutboundBlocked,
     PinnedTransport,
+    base_url_has_login,
     guard_outbound_url,
     url_origin,
 )
@@ -800,7 +802,12 @@ class HttpToolSession:
         form no header shows verbatim (a password inside a Basic credential,
         a fetched access token); they are redacted like the header values.
         `login`'s own secrets (and every access token it fetches) are added
-        to them here."""
+        to them here.
+
+        A base URL with a username or password in it is refused (`blocked`):
+        httpx would send it as Basic auth on every call, past the login."""
+        if base_url_has_login(base_url):
+            raise HttpToolError("blocked", LOGIN_IN_BASE_URL)
         self._base_url = base_url.rstrip("/")
         self._login = login
         self._extra_secrets = [str(v) for v in secrets if v] + login_secrets(login)

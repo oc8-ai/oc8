@@ -46,6 +46,7 @@ import {
   httpToolsUpdateBetween,
   loginToConfig,
   metadataToConfig,
+  baseUrlHasLogin,
   customServerDraftProblem,
   patchHttpTools,
   postHttpTestCall,
@@ -570,6 +571,7 @@ export function CustomMcpWizard({
         if (activeSource) return state.draft !== null;
         return (
           state.baseUrl.trim().length > 0 &&
+          !baseUrlHasLogin(state.baseUrl) &&
           state.httpTools.length > 0 &&
           loginComplete(state.login)
         );
@@ -1186,6 +1188,14 @@ export function CustomMcpWizard({
                     placeholder="https://api.example.com"
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
                   />
+                  {baseUrlHasLogin(state.baseUrl) && (
+                    <p role="alert" className="mt-1 text-xs text-[color:var(--status-error)]">
+                      {t(
+                        "The base URL contains a login. Logins belong in the login fields, not in the address.",
+                        "Die Basis-URL enthält eine Anmeldung. Anmeldedaten gehören in die Anmeldefelder, nicht in die Adresse.",
+                      )}
+                    </p>
+                  )}
                 </Field>
                 <HttpLoginFields value={state.login} onChange={(login) => update({ login })} />
                 <div>

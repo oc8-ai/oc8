@@ -345,3 +345,14 @@ async def test_a_truncated_gzip_body_is_refused_not_returned_partly(server: str)
             await session.call("t", {})
     assert caught.value.kind == "http"
     assert "ended early" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "base_url", ["https://user:pw@api.example.test", "https://user@api.example.test"]
+)
+async def test_a_session_refuses_a_login_inside_the_base_url(base_url: str) -> None:
+    with pytest.raises(HttpToolError) as caught:
+        HttpToolSession(base_url, [_tool("/x")])
+    assert caught.value.kind == "blocked"
+    assert "login fields" in str(caught.value)
+    assert "pw" not in str(caught.value)

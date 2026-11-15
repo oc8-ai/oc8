@@ -26,6 +26,7 @@ from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
 from oc8.capas.service import _artifact_hash
 from oc8.connections.usable import needs_department
+from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
     ConnectionToolLabelsDTO,
@@ -347,6 +348,10 @@ async def create_connection(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> McpConnectionDTO:
+    # Checked here, not on the request model: a validation error echoes the
+    # input, and that input is the address with the password in it.
+    if body.transport == "manual_http" and base_url_has_login(body.server_url):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, LOGIN_IN_BASE_URL)
     conn = m.McpConnection(
         id=uuid.uuid4(),
         tenant_id=principal.tenant_id,

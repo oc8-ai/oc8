@@ -1107,3 +1107,33 @@ async def test_setup_refuses_a_stored_login_inside_the_base_url(
         )
     assert r.status_code == 400, r.text
     assert "login fields, not in the address" in r.text
+
+
+@pytest.mark.parametrize(
+    ("transport", "url", "status"),
+    [
+        ("manual_http", "https://user:secret@tickets.acme.test", 422),
+        ("manual_http", "https://user@tickets.acme.test", 422),
+        ("manual_http", "https://tickets.acme.test/users/@me", 201),
+    ],
+)
+async def test_creating_a_connection_refuses_a_login_inside_the_base_url(
+    transport: str, url: str, status: int
+) -> None:
+    """`POST /mcp/connections` takes any transport, so an HTTP API row made
+    there is held to the same rule as an installed one."""
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with (
+        LifespanManager(app),
+        AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c,
+    ):
+        r = await c.post(
+            "/api/v1/mcp/connections",
+            json={"name": "acme", "transport": transport, "serverUrl": url},
+            headers=_h(tenant),
+        )
+    assert r.status_code == status, r.text
+    if status == 422:
+        assert "login fields, not in the address" in r.text
+        assert "secret" not in r.text
