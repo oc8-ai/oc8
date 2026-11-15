@@ -8,6 +8,7 @@ concurrent sync, so any per-sync state kept on it would leak between them.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import uuid
 from typing import Any
@@ -162,6 +163,9 @@ async def test_list_sources_exposes_last_sync_skipped(app_session: AppSessionFac
                 kb_id=kb.id,
                 status="succeeded",
                 stats={"skipped_by_reason": {"too_large": 9}},
+                # Older than the sync below: both rows are written in one
+                # transaction, so `now()` would tie and the order fall to the id.
+                created_at=dt.datetime.now(tz=dt.UTC) - dt.timedelta(hours=1),
             )
         )
         await db.flush()
