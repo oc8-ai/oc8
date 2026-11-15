@@ -2908,6 +2908,10 @@ msgid "Everything"
 msgstr "Tout"
 
 #, fuzzy
+msgid "Everything: selected"
+msgstr "Tout : sélectionné"
+
+#, fuzzy
 msgid "Execution"
 msgstr "Exécution"
 
@@ -3070,10 +3074,6 @@ msgstr "Flux"
 #, fuzzy
 msgid "Folders"
 msgstr "Dossiers"
-
-#, fuzzy
-msgid "For Odoo 19 we recommend an API key instead of a password."
-msgstr "Pour Odoo 19, nous recommandons une clé API plutôt qu'un mot de passe."
 
 #, fuzzy
 msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
@@ -7032,6 +7032,10 @@ msgid "This connection's base URL contains a login. Delete this connection and c
 msgstr "L'URL de base de cette connexion contient un identifiant. Supprimez cette connexion et recréez-la avec l'identifiant dans les champs de connexion."
 
 #, fuzzy
+msgid "This connector can't be allowed from here."
+msgstr "Ce connecteur ne peut pas être autorisé ici."
+
+#, fuzzy
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr "Cela supprime tous les agents, exécutions et éléments de connaissance actuels de l'entreprise et les remplace par le contenu du fichier téléversé. Cette action est irréversible."
 
@@ -7662,6 +7666,10 @@ msgstr "avertissement"
 #, fuzzy
 msgid "We could not tell which account you signed in with. Please try again."
 msgstr "Nous n'avons pas pu déterminer avec quel compte vous vous êtes connecté. Veuillez réessayer."
+
+#, fuzzy
+msgid "We recommend an API key instead of a password."
+msgstr "Nous recommandons une clé API plutôt qu'un mot de passe."
 
 #, fuzzy
 msgid "webhook"

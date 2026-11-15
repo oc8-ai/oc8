@@ -2258,6 +2258,9 @@ msgstr ""
 msgid "Everything"
 msgstr ""
 
+msgid "Everything: selected"
+msgstr ""
+
 msgid "Execution"
 msgstr ""
 
@@ -2379,9 +2382,6 @@ msgid "Flows"
 msgstr ""
 
 msgid "Folders"
-msgstr ""
-
-msgid "For Odoo 19 we recommend an API key instead of a password."
 msgstr ""
 
 msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
@@ -5429,6 +5429,9 @@ msgstr ""
 msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
 msgstr ""
 
+msgid "This connector can't be allowed from here."
+msgstr ""
+
 msgid "This dashboard can't be shown."
 msgstr ""
 
@@ -5937,6 +5940,9 @@ msgid "warning"
 msgstr ""
 
 msgid "We could not tell which account you signed in with. Please try again."
+msgstr ""
+
+msgid "We recommend an API key instead of a password."
 msgstr ""
 
 msgid "webhook"

@@ -133,7 +133,12 @@ export function useGrantCapaPermission() {
         `/capas/${capaId}/grant`,
         { permission },
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["knowledge", "connectors"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["knowledge", "connectors"] });
+      // Mirrors `useAvailablePlugins`' key in `@/lib/hooks`: the grant
+      // changes the capa's granted permissions there too.
+      qc.invalidateQueries({ queryKey: ["plugins", "available"] });
+    },
   });
 }
 

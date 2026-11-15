@@ -268,6 +268,12 @@ async function toError(res: Response): Promise<Error> {
   } catch {
     detail = res.statusText;
   }
+  // A validation refusal's `detail` is a list of `{loc, msg}`: its first
+  // message reads better than the list as JSON.
+  if (Array.isArray(detail)) {
+    const first = detail[0] as { msg?: unknown } | undefined;
+    if (typeof first?.msg === "string") detail = first.msg;
+  }
   return new ApiError(
     typeof detail === "string" ? detail : JSON.stringify(detail),
     res.status,

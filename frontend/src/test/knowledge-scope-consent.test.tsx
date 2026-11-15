@@ -158,6 +158,32 @@ describe("SourceWizard: a connector waiting for consent", () => {
     expect(screen.getByText(/Connect · Demo Docs/)).toBeInTheDocument();
   });
 
+  it("keeps the wizard on the consent step and shows why when the grant fails", () => {
+    grantMock.mockImplementation((_vars: unknown, opts: { onError?: (e: Error) => void }) =>
+      opts.onError?.(new Error("a deferred permission is granted on an enabled capa only")),
+    );
+    wrap(<SourceWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Demo Docs/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Erlauben" }));
+
+    expect(
+      screen.getByText("a deferred permission is granted on an enabled capa only"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Connect · Demo Docs/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^continue$/i })).toBeDisabled();
+  });
+
+  it("tells an admin neutrally when the connector names no capa to allow", () => {
+    connectors = [WEBSITE, { ...PENDING, capaId: null }];
+    wrap(<SourceWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: /Demo Docs/ }));
+    expect(
+      screen.getByText("Dieser Connector lässt sich hier nicht erlauben."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Bitte eine Admin-Person/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Erlauben" })).not.toBeInTheDocument();
+  });
+
   it("asks someone without that right to get an admin to allow it", () => {
     mayManagePlugins = false;
     wrap(<SourceWizard onClose={vi.fn()} onCreate={vi.fn()} />);
@@ -261,6 +287,14 @@ describe("SourceEditDrawer: the source's scope", () => {
     );
   });
 
+  it("blocks saving a source whose saved selection is empty, before anything is touched", async () => {
+    renderSources([{ ...source, config: { credential: "cred-1" } } as DataSource]);
+    fireEvent.click(screen.getByTitle("Konfigurieren"));
+    await screen.findByRole("checkbox", { name: "Contracts" });
+    expect(screen.getByText("Wähle mindestens einen Eintrag aus.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Speichern" })).toBeDisabled();
+  });
+
   it("does not let an empty selection be saved", async () => {
     renderSources([source]);
     fireEvent.click(screen.getByTitle("Konfigurieren"));
@@ -317,7 +351,7 @@ describe("Source card: what the last sync skipped and noted", () => {
   it("renders a known note and nothing for an unknown one, in German", () => {
     const { container } = renderSources([synced]);
     expect(
-      screen.getByText("Für Odoo 19 empfehlen wir einen API-Schlüssel statt eines Passworts."),
+      screen.getByText("Wir empfehlen einen API-Schlüssel statt eines Passworts."),
     ).toBeInTheDocument();
     expect(container.textContent).not.toContain("something_new");
   });
@@ -325,9 +359,7 @@ describe("Source card: what the last sync skipped and noted", () => {
   it("renders a known note in English", () => {
     lang = "en";
     renderSources([synced]);
-    expect(
-      screen.getByText("For Odoo 19 we recommend an API key instead of a password."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("We recommend an API key instead of a password.")).toBeInTheDocument();
   });
 
   it("says when an emptied selection hid the source's content", () => {

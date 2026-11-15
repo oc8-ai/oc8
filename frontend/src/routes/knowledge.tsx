@@ -526,7 +526,9 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
     const saved = source.config?.[key];
     return Array.isArray(saved) ? (saved as ScopeItem[]) : [];
   };
-  const pickerEmpty = Object.values(pickerValues).some(isEmptyPick);
+  // The backend refuses an empty picker on any config PATCH, and a saved
+  // selection that is already empty is just as unsaveable as an emptied one.
+  const pickerEmpty = pickers.some((key) => isEmptyPick(pickerValues[key] ?? savedPick(key)));
   const browseConfig = withoutPickers({ ...(source.config ?? {}), ...credentialValues }, pickers);
   // The server's refusal (e.g. an empty picker), kept in the drawer: a toast
   // fades before anyone acts on it.
@@ -1689,7 +1691,18 @@ export function SourceWizard({
                   "{label} darf Inhalte in Wissensdatenbanken schreiben",
                 ).replace("{label}", connectorLabel)}
               </p>
-              {may("plugin:manage") && connector.capaId ? (
+              {!may("plugin:manage") ? (
+                <p className="text-muted-foreground">
+                  {t("Ask an admin to allow this", "Bitte eine Admin-Person, das zu erlauben")}
+                </p>
+              ) : !connector.capaId ? (
+                <p className="text-muted-foreground">
+                  {t(
+                    "This connector can't be allowed from here.",
+                    "Dieser Connector lässt sich hier nicht erlauben.",
+                  )}
+                </p>
+              ) : (
                 <button
                   type="button"
                   disabled={grantPermission.isPending}
@@ -1700,10 +1713,6 @@ export function SourceWizard({
                     ? t("Allowing…", "Wird erlaubt …")
                     : t("Allow", "Erlauben")}
                 </button>
-              ) : (
-                <p className="text-muted-foreground">
-                  {t("Ask an admin to allow this", "Bitte eine Admin-Person, das zu erlauben")}
-                </p>
               )}
             </div>
           )}
@@ -2401,8 +2410,8 @@ function SyncReport({
   };
   const noteText: Record<string, string> = {
     api_key_recommended: t(
-      "For Odoo 19 we recommend an API key instead of a password.",
-      "Für Odoo 19 empfehlen wir einen API-Schlüssel statt eines Passworts.",
+      "We recommend an API key instead of a password.",
+      "Wir empfehlen einen API-Schlüssel statt eines Passworts.",
     ),
     scope_emptied: t(
       "The selection was empty at the last sync – its content is hidden and can be restored.",

@@ -10,7 +10,7 @@
 //   clears and disables every other tick inside that app.
 // - An entry with a `note` (e.g. an app that is not installed) shows the note
 //   instead of children and cannot be ticked.
-import { ChevronDown, ChevronRight, FileText, Folder, Layers } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FileText, Folder, Layers } from "lucide-react";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useT } from "@/lib/i18n";
 import { useBrowseDraft, type BrowseEntry } from "@/lib/knowledge-connector-hooks";
@@ -39,6 +39,35 @@ interface PickerCtx {
 
 const Ctx = createContext<PickerCtx | null>(null);
 
+/** How long the draft config must stay unchanged before it is browsed again. */
+export const BROWSE_SETTLE_MS = 400;
+
+/** `value`, once it has stopped changing for `ms` -- compared by content, so a
+ *  new object with the same fields is no change. While not `live` (the picker
+ *  is disabled and browses nothing) it follows `value` at once, so the first
+ *  browse after enabling uses the config that enabled it. */
+function useSettled<T>(value: T, ms: number, live: boolean): T {
+  const key = JSON.stringify(value);
+  const settled = useRef({ key, value });
+  const latest = useRef(value);
+  latest.current = value;
+  const [, rerender] = useState(0);
+  // Until the first live render (that one included), follow `value` at once.
+  // Idempotent for a given render, so safe to do during it.
+  const wasLive = useRef(false);
+  if (!live || !wasLive.current) settled.current = { key, value };
+  wasLive.current = live;
+  useEffect(() => {
+    if (!live || key === settled.current.key) return;
+    const id = setTimeout(() => {
+      settled.current = { key, value: latest.current };
+      rerender((n) => n + 1);
+    }, ms);
+    return () => clearTimeout(id);
+  }, [key, ms, live]);
+  return settled.current.value;
+}
+
 function usePicker(): PickerCtx {
   const ctx = useContext(Ctx);
   if (!ctx) throw new Error("ScopePicker context missing");
@@ -62,6 +91,9 @@ export function ScopePicker({
 }) {
   const t = useT();
   const owners = useRef(new Map<string, string>()).current;
+  // Typing into another field changes the config on every keystroke; browse
+  // only once it settles.
+  const browseConfig = useSettled(config, BROWSE_SETTLE_MS, !disabled);
   const allApps = new Set(value.filter((v) => v.kind === ALL_KIND).map((v) => v.id));
 
   const toggle = (item: ScopeItem, on: boolean) => {
@@ -91,7 +123,9 @@ export function ScopePicker({
   }
 
   return (
-    <Ctx.Provider value={{ typeId, config, value, allApps, owners, toggle, toggleAll }}>
+    <Ctx.Provider
+      value={{ typeId, config: browseConfig, value, allApps, owners, toggle, toggleAll }}
+    >
       <div className="max-h-72 overflow-y-auto rounded-md border border-border bg-background/40 p-2 text-sm text-foreground">
         <Level path="/" appId={null} depth={0} />
       </div>
@@ -223,6 +257,12 @@ function Node({
           </button>
         ) : (
           <span className="truncate">{entry.name}</span>
+        )}
+        {allTicked && (
+          <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+            <Check className="h-3 w-3" aria-hidden />
+            {t("Everything: selected", "Alles: ausgewählt")}
+          </span>
         )}
       </div>
       {open && (
