@@ -69,6 +69,7 @@ EXEMPT: dict[str, str] = {
     "record_link.host": "lowercased host of record_link.url, used for host-level lookups -- structural/identifier column, not customer free text, design spec §6c",
     "record_link.canon": "record_link.url decoded to where it leads (records.registry.canonical), answering the same exact-match membership checks -- classified like record_link.url, design spec §6a",
     "record_link.scope": "the conversation a link was issued in ('chat:<session uuid>' / 'task:<task uuid>'), an identifier the registry filters by -- structural/identifier column, not customer free text, design spec §6c",
+    "direct_access_grant.tool_key": "the connection's tool key (the same identifier as mcp_connection.name / a frame's tools key) a conversation may use -- structural/identifier column, not customer free text, design spec §6c",
     "approval_request.record_url": "a deep link to the record an approval is about (the customer system's own URL plus a record id) -- classified like the other URL-shaped column, mcp_connection.server_url: content column to encrypt as-is, not yet migrated, design spec §6a",
     "audit_chain_checkpoint.status": "audit ledger structural field; must stay diffable and independently verifiable, design spec §6c",
     "audit_chain_checkpoint.break_kind": "audit ledger structural field; must stay diffable and independently verifiable, design spec §6c",

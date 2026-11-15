@@ -26,10 +26,11 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.approvals.repo import department_after_person, direct_access_owner, is_member_owned
 from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
-from oc8.authz.scope import DecisionActor, HumanActor
+from oc8.authz.scope import AgentActor, DecisionActor, HumanActor
 from oc8.realtime.emit import publish_after_commit, record_activity
 
 Verdict = Literal["approve", "reject"]
@@ -159,6 +160,11 @@ EFFECT_PERMISSIONS: Final[dict[str, str | None]] = {
     "tool_send": None,
     "decision": None,
     "memory_write": None,
+    # Writes one `direct_access_grant` for the decider's OWN conversation -- read
+    # access the decider already holds through a seat (`member_may_use`,
+    # re-checked when the grant is written). Who may decide is narrower than a
+    # seat: only that conversation's member (`direct_access_owner`).
+    "direct_access": None,
 }
 
 
@@ -255,6 +261,7 @@ async def raise_approval(
     reason_context: dict[str, Any] | None = None,
     record_url: str | None = None,
     related_links: list[dict[str, str]] | None = None,
+    announce_to_member: uuid.UUID | None = None,
 ) -> m.ApprovalRequest:
     """Create a request for a human, and tell the people who can answer it.
 
@@ -286,6 +293,9 @@ async def raise_approval(
     (`oc8.records.links.related_links`), resolved by the caller for the same
     reason.
 
+    `announce_to_member` makes the announcement that member's alone (see the
+    branch below); None is every other approval's behaviour.
+
     `department_id` defaults to `DERIVE`, which reads it off the agent. It is
     pinned here, at the moment the question is asked, rather than joined through
     `Agent` at read time: moving an agent between departments must not drag its
@@ -316,7 +326,27 @@ async def raise_approval(
     )
     db.add(approval)
     await db.flush()
-    await _announce(db, approval)
+    if announce_to_member is not None:
+        # A member-owned card (copilot direct access): its title and detail name
+        # the person and their private purpose. Neither the tenant-wide event,
+        # a push to every subscriber nor the department's messenger fan-out may
+        # carry it -- only that member's own sockets hear of it.
+        from oc8.realtime.bus import get_event_bus
+
+        await get_event_bus().publish_member_event(
+            tenant_id,
+            [announce_to_member],
+            "approval.created",
+            {
+                "approval_id": str(approval.id),
+                "agent_id": str(agent_id),
+                "title": approval.title,
+                "detail": approval.detail,
+            },
+            source=f"oc8/approval/{approval.id}",
+        )
+    else:
+        await _announce(db, approval)
     return approval
 
 
@@ -480,6 +510,85 @@ async def _abandon_unresumable(db: AsyncSession, *, approval: m.ApprovalRequest)
     )
 
 
+#: Payload keys a department stage never inherits from the person's card.
+_PER_CARD_KEYS: Final = frozenset({"channel_handles"})
+
+
+async def _raise_department_stage(db: AsyncSession, approval: m.ApprovalRequest) -> None:
+    """The second card of a department-held direct write, raised once its
+    person approved the first: the same call, decided by the holding
+    department's approvers in the ordinary way (`may_decide`). It carries the
+    run it resumes, the conversation (deleting the chat expires it), the
+    read-before-write proof the person's card carried, and the person's card
+    it follows (`member_approval_id`) -- which is what tells the person's
+    listing that their card now waits for the department."""
+    department_id = department_after_person(approval)
+    if department_id is None:
+        # Never tenant-wide: a stage with no department would be a card only
+        # the unrestricted see. The caller checked; fail loudly if it did not.
+        raise ValueError("a department stage needs the holding department")
+    live = (
+        await db.execute(
+            select(m.Department.id).where(
+                m.Department.id == department_id,
+                m.Department.tenant_id == approval.tenant_id,
+                m.Department.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if live is None:
+        # The holding department was archived between the two stages: its
+        # queue is one nobody sees, and parking the run there would wait for
+        # ever. Refused like any effect that can no longer be applied: the
+        # caller rolls back, the person's card stays pending (they can still
+        # reject it).
+        raise EffectRefused("direct_access_department_gone")
+    payload = {k: v for k, v in (approval.payload or {}).items() if k not in _PER_CARD_KEYS}
+    payload["direct_access"] = {
+        **payload["direct_access"],
+        "decider": "department",
+        "member_approval_id": str(approval.id),
+    }
+    reason = dict(approval.reason_context or {})
+    code = reason.pop("code", None)
+    stage = await raise_approval(
+        db,
+        tenant_id=approval.tenant_id,
+        agent_id=approval.agent_id,
+        task_id=approval.task_id,
+        action_type="tool_send",
+        title=approval.title,
+        detail=approval.detail or "",
+        amount_text=approval.amount_text,
+        payload=payload,
+        department_id=department_id,
+        reason_code=code if isinstance(code, str) else None,
+        reason_context=reason if isinstance(code, str) else None,
+        record_url=approval.record_url,
+        related_links=list(approval.related_links or []),
+    )
+    tenant_id, stage_id = stage.tenant_id, stage.id
+    event = {
+        "approval_id": str(stage.id),
+        "action_type": stage.action_type,
+        "status": stage.status,
+        "title": stage.title,
+        "detail": stage.detail,
+    }
+
+    async def _publish() -> None:
+        try:
+            from oc8.realtime.bus import get_event_bus
+
+            await get_event_bus().publish_event(
+                tenant_id, "approval.created", event, source=f"oc8/approval/{stage_id}"
+            )
+        except Exception:
+            logger.warning("could not announce approval %s", stage_id, exc_info=True)
+
+    publish_after_commit(db, _publish)
+
+
 async def decide_approval(
     db: AsyncSession,
     approval: m.ApprovalRequest,
@@ -513,8 +622,28 @@ async def decide_approval(
     # the status and the time, so checking it first would answer "does this
     # approval exist and when was it answered" for a department the caller may
     # not see.
-    if not actor.scope.may_decide(approval.department_id):
+    if is_member_owned(approval):
+        # The person decides for themselves, and only they do: no seat, no
+        # `decide_any`, no copilot:manage carve-out -- and not the department
+        # the card happens to be filed in (R21). Same sentence as a missing row
+        # for anybody else. An owned card whose member cannot be read is
+        # nobody's: fail closed.
+        owner = direct_access_owner(approval)
+        if owner is None or actor.member.id != owner:
+            raise NotYourDepartment("this approval belongs to another department")
+        if isinstance(actor, AgentActor):
+            # The Copilot's decide_approval acts AS the owner; letting it would
+            # let the model approve its own request.
+            raise NotYourSayAtAll("a direct-access approval is decided by the person, in oc8")
+    elif not actor.scope.may_decide(approval.department_id):
         raise NotYourDepartment("this approval belongs to another department")
+    elif isinstance(actor, AgentActor) and isinstance(
+        (approval.payload or {}).get("direct_access"), dict
+    ):
+        # The department's stage of a direct write the Copilot made: even
+        # when its person is an approver there, the Copilot acting as them
+        # would be approving its own call.
+        raise NotYourSayAtAll("a direct-access approval is decided by people, in oc8")
     # SECOND: what `approval:decide` means depends on what is being decided, and
     # for two of the five action types it means a `:manage` act the seat
     # vocabulary is closed against. Checked in the funnel and not at the route,
@@ -595,6 +724,13 @@ async def decide_approval(
         await db.execute(
             text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
         )
+    elif approval.action_type == "tool_send" and (
+        decision == "approve" and department_after_person(approval) is not None
+    ):
+        # The person approved a direct write a department's own policy holds:
+        # now that department's approvers are asked. The run stays parked and
+        # nothing is recorded on it -- only the department's answer resumes it.
+        await _raise_department_stage(db, approval)
     elif approval.action_type == "tool_send":
         # Resume the suspended run: on approve it executes the held tool call, on
         # reject it moves past it. The run is re-queued and published by the caller.
@@ -617,6 +753,12 @@ async def decide_approval(
         await resolve_builder_approval(
             db, approval=approval, decision=decision, reason=reason, actor=actor
         )
+    elif approval.action_type == "direct_access":
+        from oc8.copilot.direct_access import resolve_direct_access_approval
+
+        # The grant (on approve), and either way the parked run woken and told.
+        # Raises EffectRefused when the conversation or the person's right is gone.
+        resumed_run = await resolve_direct_access_approval(db, approval=approval, decision=decision)
 
     await _close_out(db, approval)
     await append_event(

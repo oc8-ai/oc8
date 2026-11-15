@@ -127,6 +127,54 @@ async def append_resolved_approval(
     return _adopt(run, stored)
 
 
+_APPEND_WAIVED = text(
+    "UPDATE agent_run SET context = jsonb_set("
+    "  context, '{waived_read_before_write}',"
+    "  coalesce(context->'waived_read_before_write', '[]'::jsonb) || :entry"
+    ") WHERE id = :id RETURNING context"
+).bindparams(bindparam("entry", type_=JSONB))
+
+
+async def append_waived_read_before_write(
+    db: AsyncSession, run: AgentRun, key: str
+) -> dict[str, Any]:
+    """Record that one approval's read-before-write waiver was used.
+
+    Durable across legs (the run's context outlives the leg), so an approval
+    waives the check once, not once per leg. An append, like the writers above.
+    """
+    stored = (await db.execute(_APPEND_WAIVED, {"entry": [key], "id": run.id})).scalar_one()
+    return _adopt(run, stored)
+
+
+_RESOLVE_DIRECT_ACCESS = text(
+    "UPDATE agent_run SET context = jsonb_set("
+    "  context || :latest, '{declined_direct_access}',"
+    "  coalesce(context->'declined_direct_access', '[]'::jsonb) || :declined"
+    ") WHERE id = :id RETURNING context"
+).bindparams(bindparam("latest", type_=JSONB), bindparam("declined", type_=JSONB))
+
+
+async def record_direct_access_answer(
+    db: AsyncSession, run: AgentRun, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Record a person's answer to a direct-access offer on the run that asked.
+
+    `resolved_direct_access` is the LATEST answer -- what the resumed run is
+    told. A decline is also appended to `declined_direct_access`, so a later
+    answer about another connection in the same run cannot overwrite it and
+    let the Copilot offer the declined one again. One statement, as above.
+    """
+    declined = [entry["tool_key"]] if entry.get("decision") == "reject" else []
+    stored = (
+        await db.execute(
+            _RESOLVE_DIRECT_ACCESS,
+            {"latest": {"resolved_direct_access": entry}, "declined": declined, "id": run.id},
+        )
+    ).scalar_one()
+    return _adopt(run, stored)
+
+
 async def append_tool_call(
     db: AsyncSession, run: AgentRun, entry: dict[str, Any]
 ) -> dict[str, Any]:
@@ -159,3 +207,17 @@ def clean_suggestions(raw: list[Any]) -> list[str]:
         if chip:
             out.append(chip)
     return out[:3]
+
+
+_TAKE_DIRECT_ACCESS = text(
+    "UPDATE agent_run SET context = context - 'resolved_direct_access' "
+    "WHERE id = :id RETURNING context"
+)
+
+
+async def take_direct_access_answer(db: AsyncSession, run: AgentRun) -> dict[str, Any]:
+    """Consume the offer answer that woke this leg, in the leg's own
+    transaction: a later leg (woken by something else) must not be told it
+    again. Declines stay in `declined_direct_access`. One statement, as above."""
+    stored = (await db.execute(_TAKE_DIRECT_ACCESS, {"id": run.id})).scalar_one()
+    return _adopt(run, stored)

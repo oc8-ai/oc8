@@ -72,8 +72,10 @@ def test_both_runtimes_have_the_same_number_of_record_sites() -> None:
     finds nothing). Every other site exists in both: parked-for-approval, the
     shared append, and the held re-run of a call an operator's answer or an
     approval released (`engine.py`'s held block, `internal_agent.py`'s
-    `_finish_elicitation`). So four sites in the engine, three in the isolated
-    runtime. If either count changes, this should be re-examined rather than
-    the numbers bumped blindly."""
-    assert len(_call_record_literals(_ENGINE)) == 4
+    `_finish_elicitation`). The engine also parks the Copilot's
+    `offer_direct_access` call with its own record: the isolated runtime never
+    offers direct access (NO_DIRECT_ACCESS, fail-closed), so that site is
+    engine-only. So five sites in the engine, three in the isolated runtime.
+    If either count changes, this should be re-examined rather than the numbers bumped blindly."""
+    assert len(_call_record_literals(_ENGINE)) == 5
     assert len(_call_record_literals(_ISOLATED)) == 3

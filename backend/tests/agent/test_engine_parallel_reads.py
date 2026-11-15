@@ -222,6 +222,9 @@ async def test_destructive_gate_parks_with_preview_and_stripped_justification(
         "arguments": {"id": 7},
         "justification": "Duplicate record",
         "preview": "Allow deleting record 7?",
+        # Raised after the B gate answered "ask": read-before-write had passed.
+        "read_before_write_ok": True,
+        "gate_connection": "things",
     }
 
 

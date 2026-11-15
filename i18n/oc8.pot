@@ -350,6 +350,9 @@ msgstr ""
 msgid "All systems operational"
 msgstr ""
 
+msgid "Allow"
+msgstr ""
+
 msgid "allowed"
 msgstr ""
 
@@ -1160,6 +1163,9 @@ msgstr ""
 msgid "Copilot"
 msgstr ""
 
+msgid "Copilot on behalf of"
+msgstr ""
+
 msgid "Copilot settings updated"
 msgstr ""
 
@@ -1866,6 +1872,9 @@ msgid "Did something"
 msgstr ""
 
 msgid "Diff"
+msgstr ""
+
+msgid "Direct access"
 msgstr ""
 
 msgid "Disable"
@@ -3590,6 +3599,9 @@ msgstr ""
 msgid "Organisation accesses"
 msgstr ""
 
+msgid "organisation account"
+msgstr ""
+
 msgid "Organisation ID"
 msgstr ""
 
@@ -3869,6 +3881,9 @@ msgstr ""
 msgid "Re-sync"
 msgstr ""
 
+msgid "read"
+msgstr ""
+
 msgid "Read"
 msgstr ""
 
@@ -3897,6 +3912,9 @@ msgid "Reading a web page …"
 msgstr ""
 
 msgid "Reading archive…"
+msgstr ""
+
+msgid "Reading is allowed for the rest of this chat. Every change asks you again."
 msgstr ""
 
 msgid "Reading its instructions"
@@ -4122,6 +4140,9 @@ msgid "Review"
 msgstr ""
 
 msgid "Revoke"
+msgstr ""
+
+msgid "Revoke access"
 msgstr ""
 
 msgid "Revoke this connection?"
@@ -4889,6 +4910,9 @@ msgstr ""
 msgid "The access could not be saved. Please try again."
 msgstr ""
 
+msgid "The account could not be determined."
+msgstr ""
+
 msgid "The account's owner or an administrator can confirm it."
 msgstr ""
 
@@ -5130,6 +5154,9 @@ msgid "The username or API key is not correct."
 msgstr ""
 
 msgid "The usual choice"
+msgstr ""
+
+msgid "their own login"
 msgstr ""
 
 msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
@@ -5612,6 +5639,12 @@ msgstr ""
 msgid "Uses your personal subscription — agents on it can only be started manually."
 msgstr ""
 
+msgid "Using the organisation account"
+msgstr ""
+
+msgid "Using your own login"
+msgstr ""
+
 msgid "value"
 msgstr ""
 
@@ -5670,6 +5703,9 @@ msgid "waiting for task"
 msgstr ""
 
 msgid "Waiting for task"
+msgstr ""
+
+msgid "Waiting for the department's approval."
 msgstr ""
 
 msgid "Waiting for the next step"

@@ -173,6 +173,25 @@ AGENT = ChatMode(
 #: Keyed by command word. Insertion order is picker order.
 MODES: dict[str, ChatMode] = {m.key: m for m in (ASK, PLAN, DO, SUMMARISE, AGENT)}
 
+ACT = ChatMode(
+    key="act",
+    summary="The Copilot acts through a connection you allowed in this chat.",
+    instruction=(
+        "The person allowed you to act directly through the connections whose "
+        "tools you now have, in this conversation only. Use only those. If an "
+        "agent in the roster fits the request, delegate to it instead. Reading "
+        "needs no further approval; every change asks the person again, so call "
+        "the tool and let them decide -- never ask them to confirm in words "
+        "first. Link every record you mention with the link its tool result "
+        "gave you, and never invent a link."
+    ),
+    assistant_only=True,
+)
+
+#: Modes oc8 sets from state, never from a command: not parsed, not in the
+#: picker. ACT is on while the chat holds a direct-access grant (§6).
+AUTOMATIC_MODES: dict[str, ChatMode] = {ACT.key: ACT}
+
 #: Core-owned tools that CHANGE something, and therefore have no business in a
 #: read-only mode. The connection tools are classified by the pack's own
 #: `scopes` and resolved through `required_right`; these are not on any
@@ -212,6 +231,8 @@ WRITING_CONTROL_TOOLS: frozenset[str] = frozenset(
         "responsibility_close",
         "schedule_followup",
         "cancel_followup",
+        # Raises an approval: a read-only turn asks nobody for anything.
+        "offer_direct_access",
     }
 )
 
@@ -261,7 +282,8 @@ def mode_from_context(context: Mapping[str, Any] | None) -> ChatMode | None:
     """
     if not context:
         return None
-    return MODES.get(str(context.get("chat_mode") or ""))
+    key = str(context.get("chat_mode") or "")
+    return MODES.get(key) or AUTOMATIC_MODES.get(key)
 
 
 def mode_directive(mode: ChatMode) -> str:

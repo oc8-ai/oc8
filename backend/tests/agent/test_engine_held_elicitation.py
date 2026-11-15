@@ -26,6 +26,7 @@ from oc8.modelrouter import NeutralTool, ToolCall
 pytestmark = pytest.mark.asyncio
 
 HELD = {"model": "sale.order"}
+FOCUS = {"entity_field": "model", "id_fields": ["id"], "labels": {"sale.order": "Order"}}
 
 
 class _Server:
@@ -72,6 +73,8 @@ async def _resume(
     autonomy: str = "default",
     approval_actions: list[str] | None = None,
     approved_original: bool = False,
+    focused: bool = False,
+    proof: bool = False,
 ) -> tuple[Any, list[Any], dict[str, Any]]:
     _reset(monkeypatch, [_turn("Done.")])
     tenant = uuid.uuid4()
@@ -84,22 +87,38 @@ async def _resume(
             parallel_tool_calls=False,
             agent_definition={"autonomy": autonomy},
         )
+        held = {**HELD, "id": 115} if focused else HELD
+        if focused:
+            # A single-record identity, so read-before-write applies.
+            conn.config = {**conn.config, "focus_spec": FOCUS}
+            await db.flush()
         context: dict[str, Any] = {
             "pending_elicitation": {
                 "connection": "things",
                 "tool": "write_a",
-                "arguments": HELD,
+                "arguments": held,
                 "question": "Which customer?",
             },
             "clarifications": [{"question": "Which customer?", "answer": answer}],
         }
         if mode is not None:
             context["chat_mode"] = mode
+        if proof:
+            context["resolved_tool_approvals"] = [
+                {
+                    "sig": call_sig(ToolCall(id="x", name="write_a", arguments=held)),
+                    "tool": "write_a",
+                    "arguments": held,
+                    "decision": "approve",
+                    "read_before_write_ok": True,
+                    "gate_connection": "things",
+                }
+            ]
         run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context=context)
         db.add(run)
         await db.flush()
         pre = (
-            {call_sig(ToolCall(id="x", name="write_a", arguments=HELD)): "approve"}
+            {call_sig(ToolCall(id="x", name="write_a", arguments=held)): "approve"}
             if approved_original
             else None
         )
@@ -361,3 +380,41 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
         assert fourth.status == "done", fourth
         assert toolset.ran == [{"value_eur": 500}], "replayed, not executed again"
         assert "replay" in fourth.tool_calls[-1]["result"]
+
+
+async def test_a_proven_approval_waives_read_before_write_on_the_held_rerun(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The held re-run starts with a fresh ledger. An approval raised after the
+    B gate had passed the call carries the proof: the call runs, and the use is
+    recorded durably so the approval cannot be spent again in a later leg."""
+    result, _approvals, ctx = await _resume(
+        app_session,
+        monkeypatch,
+        answer='{"model": "sale.order", "id": 115}',
+        autonomy="conservative",
+        approved_original=True,
+        focused=True,
+        proof=True,
+    )
+    assert _Server.ran == [("x", "write_a", {**HELD, "id": 115})]
+    assert result.status == "done"
+    assert ctx["waived_read_before_write"] == [
+        "things\n" + call_sig(ToolCall(id="x", name="write_a", arguments={**HELD, "id": 115}))
+    ]
+
+
+async def test_an_unproven_approval_does_not_waive_read_before_write_on_the_held_rerun(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _result, _approvals, ctx = await _resume(
+        app_session,
+        monkeypatch,
+        answer='{"model": "sale.order", "id": 115}',
+        autonomy="conservative",
+        approved_original=True,
+        focused=True,
+        proof=False,
+    )
+    assert _Server.ran == []
+    assert "waived_read_before_write" not in ctx

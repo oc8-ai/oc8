@@ -45,7 +45,23 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "oc8"
 #: the Copilot (the proposed agent does not exist yet), so deriving would file
 #: the request under the Copilot's department instead of the one the new agent
 #: is for (`copilot/builder.py::request_builder_approval`).
-_MAY_OVERRIDE = {"metering/budget.py", "copilot/builder.py"}
+#:
+#: A direct-access offer passes None, and is NOT tenant-wide: it is one
+#: person's own card (`approvals.repo.is_member_owned`), listed and decided by
+#: that member alone -- deriving would file it in the Copilot's department
+#: queue, showing their private purpose to its approvers (R21).
+#:
+#: The department stage of a direct write names the department whose OWN
+#: policy holds the call, never None: the raising agent is the Copilot, so
+#: deriving would file it under the Copilot's department instead of the one
+#: that holds the write (spec §1: person first, then that department). Only
+#: that one function of the funnel is exempt, not the funnel's module.
+_MAY_OVERRIDE = {
+    "approvals/service.py::_raise_department_stage",
+    "metering/budget.py",
+    "copilot/builder.py",
+    "copilot/direct_access.py",
+}
 
 
 def _subject_uuid(subject: str) -> uuid.UUID:
@@ -189,9 +205,13 @@ async def test_only_a_tenant_scope_budget_incident_has_no_department(
 
 
 def _modules_overriding_the_department() -> set[str]:
-    """Every module in `src/oc8` that passes `department_id=` to `raise_approval`."""
+    """Every module in `src/oc8` that passes `department_id=` to `raise_approval`
+    -- as `module::function` where `_MAY_OVERRIDE` exempts one function of a
+    module rather than the whole of it."""
+    by_function = {e.split("::")[0] for e in _MAY_OVERRIDE if "::" in e}
     found: set[str] = set()
     for path in sorted(SRC.rglob("*.py")):
+        rel = path.relative_to(SRC).as_posix()
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -201,8 +221,19 @@ def _modules_overriding_the_department() -> set[str]:
             if name != "raise_approval":
                 continue
             if any(kw.arg == "department_id" for kw in node.keywords):
-                found.add(path.relative_to(SRC).as_posix())
+                found.add(rel if rel not in by_function else f"{rel}::{_innermost(tree, node)}")
     return found
+
+
+def _innermost(tree: ast.Module, call: ast.Call) -> str:
+    """The name of the innermost function enclosing `call`, or "<module>"."""
+    name = "<module>"
+    for fn in ast.walk(tree):  # breadth-first: an inner function comes later
+        if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and any(
+            n is call for n in ast.walk(fn)
+        ):
+            name = fn.name
+    return name
 
 
 def _constructs_an_approval(source: str) -> bool:
@@ -230,6 +261,9 @@ def test_the_source_sweeps_here_can_actually_see_what_they_look_for() -> None:
     assert _constructs_an_approval("x = ApprovalRequest(tenant_id=1)")
     assert _constructs_an_approval("x = m.ApprovalRequest(tenant_id=1)")
     assert not _constructs_an_approval("x = raise_approval(db, tenant_id=1)")
+    nested = ast.parse("async def a():\n    def b():\n        raise_approval(department_id=1)\n")
+    (call,) = [n for n in ast.walk(nested) if isinstance(n, ast.Call)]
+    assert _innermost(nested, call) == "b"
     # `raise_approval` is called from at least the five raisers, so a walker
     # that found no calls at all is broken rather than reassuring.
     calls = 0

@@ -18,9 +18,15 @@ def autonomy_of(definition: dict[str, Any] | None) -> str:
     return raw if raw in {"conservative", "default", "autonomous"} else "default"
 
 
-def posture(tier: str, autonomy: str, *, granted: bool) -> ApprovalPosture:
+def posture(
+    tier: str, autonomy: str, *, granted: bool, always_ask_writes: bool = False
+) -> ApprovalPosture:
+    """`always_ask_writes`: every non-read tier asks, whatever the autonomy --
+    the Copilot's direct access (§1: every write approved individually)."""
     if tier == "read":
         return "allow"
+    if always_ask_writes:
+        return "ask"
     if autonomy == "conservative":
         return "ask"
     if tier == "write":

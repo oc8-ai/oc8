@@ -31,6 +31,7 @@ from oc8.agent.control_tools import (
     ENTER_AGENT_MODE,
     FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
+    READ_RESOURCE,
     audit_edition_call,
     execute_control_tool,
     has_readable_context,
@@ -68,6 +69,11 @@ from oc8.agent.harness.stages.b_clarify import (
     clarification_prompt,
     parse_clarification,
     should_clarify,
+)
+from oc8.agent.harness.stages.b_direct_access import (
+    NO_DIRECT_ACCESS,
+    DirectAccessView,
+    offers_direct,
 )
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
@@ -107,9 +113,10 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import raise_approval
+from oc8.approvals import DERIVE, raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
+    NOT_THIS_CONNECTION,
     Decision,
     Effect,
     effective_tool_policies,
@@ -138,6 +145,7 @@ from oc8.connections.runtime_env import (
     run_mcp_env,
 )
 from oc8.connections.tool_denied import record_tool_denied, tool_denied
+from oc8.connections.usable import direct_connection
 from oc8.copilot.door import chat_door, door_of
 from oc8.copilot.notes import member_behind_run_task
 from oc8.edition.tools import edition_offer
@@ -194,7 +202,7 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
-from oc8.runtime.run_context import append_tool_call
+from oc8.runtime.run_context import append_tool_call, append_waived_read_before_write
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
@@ -631,6 +639,115 @@ async def run_agent(
             extra_conns += await integration_connections(
                 db, agent=agent, policies=tool_policies, have={c.name for c in extra_conns}
             )
+        # Lazily: oc8.connections.direct_access reaches the copilot package,
+        # which imports this module back (R9).
+        from oc8.connections import direct_access as _direct
+
+        # The Copilot reaches a system only through a grant in this
+        # conversation, resolved for the person it acts for -- never through
+        # its own department (copilot direct access §6). A run nobody is
+        # present in (follow-up, messenger, trigger, delegation) gets none.
+        direct_run = (
+            _direct.direct_access_run(run_row, agent) if agent.is_tenant_assistant else None
+        )
+        if agent.is_tenant_assistant and toolset is None:
+            # One row per key, of the department granting the strongest
+            # right the person holds there (R23); every call is checked
+            # against the right it needs on that row (R17).
+            extra_conns = (
+                await _direct.direct_connections(db, run=run_row, agent=agent, right=None)
+                if direct_run is not None
+                else []
+            )
+
+        async def _direct_view() -> DirectAccessView:
+            """The Copilot's grants as they stand NOW. Loaded for every call,
+            never cached for the run: a grant revoked or a seat lost since the
+            last call bites on the next one (§4)."""
+            if direct_run is None:
+                return NO_DIRECT_ACCESS
+            return await _direct.load_direct_access(db, run=run_row, agent=agent)
+
+        initial_direct = await _direct_view()
+
+        # Writes a person approved that had PASSED the read-before-write gate
+        # before they were parked (the raiser marks the approval, see
+        # resolve_tool_approval). A resumed leg starts with a fresh ledger, so
+        # only these are waived, once each; an approval without the mark never
+        # is -- it may have been raised before that gate ever ran.
+        async def _consume_waiver(connection: str | None, sig: str) -> bool:
+            """Use up one approval's proof, durably: the count of proofs for
+            this (connection, call) minus those already used in ANY leg of the
+            run (`waived_read_before_write`, appended atomically in the
+            dispatching transaction). False when none is left."""
+            if run_row is None:
+                return False
+            ctx = run_row.context or {}
+            key = f"{connection or 'oc8'}\n{sig}"
+            proofs = sum(
+                1
+                for e in ctx.get("resolved_tool_approvals") or []
+                if isinstance(e, dict)
+                and e.get("decision") == "approve"
+                and e.get("read_before_write_ok") is True
+                and f"{e.get('gate_connection') or 'oc8'}\n{e.get('sig')}" == key
+            )
+            used = sum(1 for k in ctx.get("waived_read_before_write") or [] if k == key)
+            if proofs <= used:
+                return False
+            await append_waived_read_before_write(db, run_row, key)
+            return True
+
+        async def _direct_right_check(
+            decision: Decision,
+            *,
+            view: DirectAccessView,
+            call_key: str | None,
+            owner: m.McpConnection | None,
+            right: str,
+        ) -> Decision:
+            """A direct call runs only on a row of a department that grants
+            the right it needs, for the person as they stand now (R17): never
+            on another department's identity. The run opened each key on its
+            strongest department's row (R23), so this bites only when that
+            department no longer grants the right (a seat or a policy lost)."""
+            if call_key is None:
+                return decision
+            departments = view.granted.get(call_key, ())
+            granting = {d for d, policy in departments if policy.has_right(right)}
+            if owner is not None and owner.department_id is not None:
+                allowed = owner.department_id in granting
+            elif owner is not None:
+                # An organisation-wide row: allowed when some department that
+                # grants the right would, on its own, run the call on it --
+                # i.e. it has no connected row of its own. The row is already
+                # a candidate, so this never materialises one.
+                allowed = False
+                for department_id, policy in departments:
+                    if not policy.has_right(right):
+                        continue
+                    expected = await direct_connection(
+                        db,
+                        tenant_id=tenant_id,
+                        tool_key=call_key,
+                        departments=[(department_id, policy)],
+                        right=right,
+                    )
+                    if expected is not None and expected.id == owner.id:
+                        allowed = True
+                        break
+            else:
+                allowed = False
+            if allowed:
+                return decision
+            action = "read" if right == "read" else "change"
+            return Decision(
+                Effect.DENY,
+                f"this conversation reaches {call_key!r} through another department; "
+                f"this {action} is not possible here",
+                reason_code=NOT_THIS_CONNECTION,
+            )
+
         if toolset is not None:
             connection_config: dict[str, Any] = {}
             connection_key: str | None = CODING_FRAME_KEY
@@ -933,6 +1050,7 @@ async def run_agent(
                         else None
                     ),
                     edition_tools=edition.neutral_tools(),
+                    offer_direct_access=direct_run is not None,
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -957,6 +1075,7 @@ async def run_agent(
                 connection: str | None,
                 spec: dict[str, Any] | None,
                 advertised: str | None = None,
+                direct: bool = False,
             ) -> GateVerdict:
                 # `tc` carries the real tool name; the offer (and its
                 # annotations) is listed under the name the model saw, which a
@@ -984,7 +1103,49 @@ async def run_agent(
                     record_label=describe_focus(tc.name, tc.arguments, spec) or "",
                     identity=identity,
                     procedures=_active_procedures(active_skills),
+                    # A Copilot call through a grant: every write asks the
+                    # person, whatever the autonomy (§1).
+                    always_ask_writes=direct,
                 )
+
+            async def _direct_hold_terms(
+                conn_key: str | None, decision: Decision, tool_name: str
+            ) -> tuple[str, dict[str, Any], dict[str, Any]] | None:
+                """A held direct write's (title, payload additions, raise
+                kwargs), or None outside a direct-access run. The person
+                decides it first -- in no department, announced to them alone
+                (R21, R22). When a department's own policy holds it too, that
+                department's approvers are asked once the person approved
+                (spec §1: a policy only adds a gate; decide_approval raises
+                their card). The payload names the conversation (a deleted
+                chat expires it) and the run the decision resumes."""
+                if direct_run is None or run_row is None:
+                    return None
+                from oc8.runtime.fencing import one_line
+
+                hold = await _direct.direct_hold(
+                    db,
+                    run=run_row,
+                    conn=next((c for c in extra_conns if c.name == conn_key), None),
+                    decision=decision,
+                    direct=direct_run,
+                )
+                name = one_line(str(hold.payload.get("member_name") or ""), 120)
+                label = one_line(str(hold.payload.get("label") or conn_key or ""), 120)
+                extra: dict[str, Any] = {
+                    "direct_access": hold.payload,
+                    "run_id": str(run_row.id),
+                    "i18n": {
+                        "de": {
+                            "title": f"Copilot im Auftrag von {name}: {label} ändern ({tool_name})"
+                        }
+                    },
+                }
+                kwargs: dict[str, Any] = {
+                    "department_id": None,
+                    "announce_to_member": direct_run.member_id,
+                }
+                return f"Copilot on behalf of {name}: change {label} ({tool_name})", extra, kwargs
 
             def _skill_snapshot() -> dict[str, Any]:
                 """The active skills' guardrails, stored with a held call. A
@@ -1041,13 +1202,16 @@ async def run_agent(
                 )
                 return call_key, scopes, guardrails, per_value, spec, config, real
 
-            def _held_verdict(
+            async def _held_verdict(
                 advertised: str,
                 arguments: dict[str, Any],
                 route: tuple[Any, ...],
                 stored: Mapping[str, Any],
-            ) -> tuple[str, str]:
-                """("run" | "refuse" | "park", why) for an answered elicitation.
+                direct_view: DirectAccessView,
+            ) -> tuple[str, str, Decision, bool]:
+                """("run" | "refuse" | "park", why, the PEP's decision) for an
+                answered elicitation. `direct_view` is the Copilot's grants
+                loaded for THIS call, never the run's first view.
 
                 The re-run is a new call -- the answer is merged into its
                 arguments -- so it is decided as the step loop decides any call:
@@ -1103,14 +1267,15 @@ async def run_agent(
                     # Always the connection's tool, whatever core tool shares
                     # its name.
                     routed=True,
+                    direct_access=direct_view,
                 )
                 verdict = (pre_decided or {}).get(_call_sig(held))
                 if decision.effect is Effect.DENY:
-                    return "refuse", decision.reason or "denied"
+                    return "refuse", decision.reason or "denied", decision, False
                 if verdict == "reject":
-                    return "refuse", "operator rejected this action"
+                    return "refuse", "operator rejected this action", decision, False
                 if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
-                    return "park", decision.reason or ""
+                    return "park", decision.reason or "", decision, False
                 gate = _gate(
                     auth_held,
                     scopes=scopes,
@@ -1118,12 +1283,24 @@ async def run_agent(
                     connection=call_key,
                     spec=spec,
                     advertised=advertised,
+                    direct=call_key is not None and call_key in direct_view.granted,
                 )
-                if gate.effect == "deny":
-                    return "refuse", gate.reason or "denied"
+                if (
+                    gate.effect == "deny"
+                    and gate.rule == "read_before_write"
+                    and verdict == "approve"
+                    and await _consume_waiver(call_key, _call_sig(held))
+                ):
+                    pass
+                elif gate.effect == "deny":
+                    return "refuse", gate.reason or "denied", decision, False
                 if gate.effect == "ask" and verdict != "approve":
-                    return "park", gate.preview or ""
-                return "run", ""
+                    return "park", gate.preview or "", decision, True
+                if gate.effect == "ask":
+                    # The approved write runs: its proof is spent, whether or
+                    # not read-before-write needed waiving this leg.
+                    await _consume_waiver(call_key, _call_sig(held))
+                return "run", "", decision, False
 
             steps = 0
             step_timings: list[dict[str, Any]] = []
@@ -1173,7 +1350,32 @@ async def run_agent(
                             )
                         )
                         parked_ctx = dict(parked.context or {})
-                        effect, why = _held_verdict(tool_name, arguments, held_route, pending)
+                        held_view = await _direct_view()
+                        effect, why, held_decision, held_gate_ok = await _held_verdict(
+                            tool_name, arguments, held_route, pending, held_view
+                        )
+                        # The verdict may have spent a waiver (an atomic write
+                        # to this very context): re-read, or the whole-context
+                        # assignment below would overwrite it.
+                        parked_ctx = dict(parked.context or {})
+                        held_direct = (
+                            direct_run is not None
+                            and held_route[0] is not None
+                            and held_route[0] in held_view.granted
+                        )
+                        held_nudge = False
+                        if held_direct and effect != "refuse":
+                            checked = await _direct_right_check(
+                                held_decision,
+                                view=held_view,
+                                call_key=held_route[0],
+                                owner=next(
+                                    (c for c in extra_conns if c.name == held_route[0]), None
+                                ),
+                                right=required_right(held_route[6], held_route[1]),
+                            )
+                            if checked.effect is Effect.DENY:
+                                effect, why = "refuse", checked.reason or "denied"
                         # Audited like any call: the held re-run is a new one.
                         await append_event(
                             db,
@@ -1192,20 +1394,39 @@ async def run_agent(
                             originating_operator=originating_operator,
                         )
                         if effect == "park":
+                            held_terms = (
+                                await _direct_hold_terms(held_route[0], held_decision, tool_name)
+                                if held_direct
+                                else None
+                            )
                             held_ar = await raise_approval(
                                 db,
                                 tenant_id=tenant_id,
                                 agent_id=agent.id,
                                 task_id=task.id,
                                 action_type="tool_send",
-                                title=f"{agent.name} wants to call {tool_name}",
+                                title=(
+                                    held_terms[0]
+                                    if held_terms is not None
+                                    else f"{agent.name} wants to call {tool_name}"
+                                ),
                                 detail=why,
                                 payload={
                                     "tool": tool_name,
                                     "arguments": arguments,
                                     "justification": "",
                                     "preview": why,
+                                    **(
+                                        {
+                                            "read_before_write_ok": True,
+                                            "gate_connection": held_route[0] or "oc8",
+                                        }
+                                        if held_gate_ok
+                                        else {}
+                                    ),
+                                    **(held_terms[1] if held_terms is not None else {}),
                                 },
+                                **(held_terms[2] if held_terms is not None else {}),
                             )
                             parked_ctx["pending_elicitation"] = {
                                 **pending,
@@ -1215,18 +1436,21 @@ async def run_agent(
                             parked.context = parked_ctx
                             from oc8.realtime.bus import get_event_bus
 
-                            await get_event_bus().publish_event(
-                                held_ar.tenant_id,
-                                "approval.created",
-                                {
-                                    "approval_id": str(held_ar.id),
-                                    "action_type": held_ar.action_type,
-                                    "status": held_ar.status,
-                                    "title": held_ar.title,
-                                    "detail": held_ar.detail,
-                                },
-                                source=f"oc8/approval/{held_ar.id}",
-                            )
+                            # A member-owned card was announced to its member
+                            # alone (raise_approval); never tenant-wide.
+                            if held_terms is None or "announce_to_member" not in held_terms[2]:
+                                await get_event_bus().publish_event(
+                                    held_ar.tenant_id,
+                                    "approval.created",
+                                    {
+                                        "approval_id": str(held_ar.id),
+                                        "action_type": held_ar.action_type,
+                                        "status": held_ar.status,
+                                        "title": held_ar.title,
+                                        "detail": held_ar.detail,
+                                    },
+                                    source=f"oc8/approval/{held_ar.id}",
+                                )
                             task.state = "waiting_for_approval"
                             # Not over a pause or stop somebody made during the run: the
                             # executor no longer holds the agent row (oc8.runtime.agent_status).
@@ -1318,6 +1542,16 @@ async def run_agent(
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
+                            if held_direct and run_row is not None:
+                                # Ran through the grant: audited and counted
+                                # like the step loop's direct calls.
+                                held_nudge = await _direct.note_direct_action(
+                                    db,
+                                    run=run_row,
+                                    tool_key=held_route[0] or "",
+                                    tool=held_route[6],
+                                    succeeded=not finished.startswith("ERROR:"),
+                                )
                         if effect == "run" and not finished.startswith("ERROR:"):
                             # Linked like any tool result (the replay record
                             # above stays raw), so the answered call's records
@@ -1349,6 +1583,10 @@ async def run_agent(
                                 ),
                             )
                         )
+                        if held_nudge:
+                            messages.append(
+                                NeutralMessage(role="user", content=_direct.DIRECT_ACTION_NUDGE)
+                            )
                         tool_trace.append(
                             {
                                 "tool": tool_name,
@@ -1361,6 +1599,9 @@ async def run_agent(
                                 ),
                             }
                         )
+                        if held_direct and direct_run is not None:
+                            # Run log: whom the Copilot acted for (§8).
+                            tool_trace[-1]["actingMember"] = str(direct_run.member_id)
                         await _live_tool_call(tool_trace[-1])
                         parked_ctx.pop("pending_elicitation", None)
                         parked.context = parked_ctx
@@ -2193,6 +2434,16 @@ async def run_agent(
                             *skill_metric_keys,
                         ]
                         call_value_spec = merged
+                    # Reloaded for EVERY call: a grant revoked or a seat lost
+                    # since the last call bites now (§4, Review Focus 4).
+                    direct_view = await _direct_view()
+                    direct_call = (
+                        direct_run is not None
+                        and call_key is not None
+                        and call_key in direct_view.granted
+                        and not is_core_call(auth_tc.name, routed=auth_tc.name != tc.name)
+                    )
+                    direct_nudge = False
                     decision = _authorize(
                         agent,
                         auth_tc,
@@ -2214,6 +2465,7 @@ async def run_agent(
                         ),
                         chat_mode=chat_mode,
                         edition_offer=edition,
+                        direct_access=direct_view,
                         # Renamed by the route: the model named a connection's
                         # tool (`<connection>.ask_user`). execute_control_tool below
                         # sees the advertised name and leaves it to the
@@ -2222,6 +2474,38 @@ async def run_agent(
                         # when it is one, so it is decided as one.
                         routed=auth_tc.name != tc.name,
                     )
+                    if direct_call and decision.effect is not Effect.DENY:
+                        decision = await _direct_right_check(
+                            decision,
+                            view=direct_view,
+                            call_key=call_key,
+                            owner=next((c for c in extra_conns if c.name == call_key), None),
+                            right=required_right(auth_tc.name, call_scopes),
+                        )
+                    # The Copilot's read_resource is a core tool, so it is not a
+                    # `direct_call` above; it still reads through the
+                    # connection this run opened for its grant, and needs the
+                    # same per-call right check (R17).
+                    direct_read_conn: m.McpConnection | None = None
+                    if (
+                        agent.is_tenant_assistant
+                        and direct_run is not None
+                        and auth_tc.name == READ_RESOURCE.name
+                        and tc.name == auth_tc.name
+                    ):
+                        read_key = str(tc.arguments.get("connection", "")).strip() or None
+                        if read_key is not None and read_key in direct_view.granted:
+                            direct_read_conn = next(
+                                (c for c in extra_conns if c.name == read_key), None
+                            )
+                            if decision.effect is not Effect.DENY:
+                                decision = await _direct_right_check(
+                                    decision,
+                                    view=direct_view,
+                                    call_key=read_key,
+                                    owner=direct_read_conn,
+                                    right="read",
+                                )
                     if tc.id in call_justifications:
                         justification = call_justifications[tc.id]
                     else:
@@ -2354,10 +2638,16 @@ async def run_agent(
                                 connection=call_key,
                                 spec=call_focus,
                                 advertised=tc.name,
+                                direct=direct_call,
                             )
                             if gate_verdict.effect == "ask":
                                 verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
                                 if verdict == "approve":
+                                    # The approved write runs: spend its proof
+                                    # (if it carries one) even though this leg
+                                    # needed no waiver, so a later leg cannot
+                                    # spend it on a second execution.
+                                    await _consume_waiver(call_key, _call_sig(tc))
                                     decision = Decision(Effect.ALLOW, "operator approved")
                                 elif verdict == "reject":
                                     decision = Decision(
@@ -2367,6 +2657,18 @@ async def run_agent(
                                     decision = Decision(
                                         Effect.REQUIRE_APPROVAL, gate_verdict.preview
                                     )
+                            elif (
+                                gate_verdict.effect == "deny"
+                                and gate_verdict.rule == "read_before_write"
+                                and pre_decided
+                                and pre_decided.get(_call_sig(tc)) == "approve"
+                                and await _consume_waiver(call_key, _call_sig(tc))
+                            ):
+                                # A resumed leg starts with a fresh ledger, but
+                                # a held write passed this very gate (the read
+                                # happened) before it was parked, and a person
+                                # then approved exactly this call.
+                                decision = Decision(Effect.ALLOW, "operator approved")
                             elif gate_verdict.effect == "deny":
                                 decision = Decision(Effect.DENY, gate_verdict.reason)
                             tool_span.set_attribute("decision", decision.effect.value)
@@ -2375,6 +2677,7 @@ async def run_agent(
                             # Not over a pause or stop somebody made during the run: the
                             # executor no longer holds the agent row (oc8.runtime.agent_status).
                             await settle_agent_status(db, agent, "waiting_for_approval")
+                            hold_terms: tuple[str, dict[str, Any], dict[str, Any]] | None = None
                             if tc.name == "memory_write":
                                 record = await write_memory(
                                     db,
@@ -2430,13 +2733,41 @@ async def run_agent(
                                     if held_record is not None
                                     else None
                                 )
+                                hold_terms = (
+                                    await _direct_hold_terms(call_key, decision, tc.name)
+                                    if direct_call
+                                    else None
+                                )
+                                # Did read-before-write pass for this call as it
+                                # stands? The B gate answered "ask" (it ran, so it
+                                # passed), or the PEP held the call before the gate
+                                # ever ran: probe the gate on the current ledger.
+                                if gate_verdict is not None:
+                                    read_ok_at_hold = gate_verdict.effect == "ask"
+                                elif is_core_call(auth_tc.name, routed=auth_tc.name != tc.name):
+                                    read_ok_at_hold = False
+                                else:
+                                    probe = _gate(
+                                        auth_tc,
+                                        scopes=call_scopes,
+                                        config=call_config,
+                                        connection=call_key,
+                                        spec=call_focus,
+                                        advertised=tc.name,
+                                        direct=direct_call,
+                                    )
+                                    read_ok_at_hold = probe.effect != "deny"
                                 ar = await raise_approval(
                                     db,
                                     tenant_id=tenant_id,
                                     agent_id=agent.id,
                                     task_id=task.id,
                                     action_type="tool_send",
-                                    title=f"{agent.name} wants to call {tc.name}",
+                                    title=(
+                                        hold_terms[0]
+                                        if hold_terms is not None
+                                        else f"{agent.name} wants to call {tc.name}"
+                                    ),
                                     detail=decision.reason,
                                     payload={
                                         "tool": tc.name,
@@ -2445,32 +2776,51 @@ async def run_agent(
                                         "preview": (
                                             gate_verdict.preview if gate_verdict is not None else ""
                                         ),
+                                        # Raised after the B gate answered "ask":
+                                        # read-before-write had passed for it.
+                                        **(
+                                            {
+                                                "read_before_write_ok": True,
+                                                "gate_connection": call_key or "oc8",
+                                            }
+                                            if read_ok_at_hold
+                                            else {}
+                                        ),
                                         **({"record_url": link} if link else {}),
+                                        **(hold_terms[1] if hold_terms is not None else {}),
                                     },
                                     reason_code=decision.reason_code,
                                     reason_context=decision.context,
                                     record_url=link,
                                     related_links=related_links(link_ctx, tc.arguments),
+                                    **(
+                                        hold_terms[2]
+                                        if hold_terms is not None
+                                        else {"department_id": DERIVE}
+                                    ),
                                 )
 
                             from oc8.realtime.bus import get_event_bus
 
-                            await get_event_bus().publish_event(
-                                ar.tenant_id,
-                                "approval.created",
-                                {
-                                    "approval_id": str(ar.id),
-                                    "action_type": ar.action_type,
-                                    "status": ar.status,
-                                    # Carried in the envelope on purpose: the
-                                    # executor commits, not us, so a fresh
-                                    # session reading this row would see
-                                    # nothing (see EventBus._push_payload).
-                                    "title": ar.title,
-                                    "detail": ar.detail,
-                                },
-                                source=f"oc8/approval/{ar.id}",
-                            )
+                            # A member-owned card was announced to its member
+                            # alone (raise_approval); never tenant-wide (R22).
+                            if hold_terms is None or "announce_to_member" not in hold_terms[2]:
+                                await get_event_bus().publish_event(
+                                    ar.tenant_id,
+                                    "approval.created",
+                                    {
+                                        "approval_id": str(ar.id),
+                                        "action_type": ar.action_type,
+                                        "status": ar.status,
+                                        # Carried in the envelope on purpose: the
+                                        # executor commits, not us, so a fresh
+                                        # session reading this row would see
+                                        # nothing (see EventBus._push_payload).
+                                        "title": ar.title,
+                                        "detail": ar.detail,
+                                    },
+                                    source=f"oc8/approval/{ar.id}",
+                                )
                             tool_trace.append(
                                 {
                                     "tool": tc.name,
@@ -2488,6 +2838,9 @@ async def run_agent(
                                     "reason": decision.reason,
                                 }
                             )
+                            if direct_call and direct_run is not None:
+                                # Run log: whom the Copilot acted for (§8).
+                                tool_trace[-1]["actingMember"] = str(direct_run.member_id)
                             await _live_tool_call(tool_trace[-1])
                             checkpoint_trace_delta.append(tool_trace[-1])
                             await maybe_checkpoint(
@@ -2636,6 +2989,7 @@ async def run_agent(
                                 s for s in active_skills if s.definition.steps
                             ],
                             edition_offer=edition,
+                            direct_read_conn=direct_read_conn,
                         )
                         if control is not None:
                             if tc.name == ENTER_AGENT_MODE.name and not control.output.startswith(
@@ -2739,6 +3093,41 @@ async def run_agent(
                                     todos,
                                     step_timings,
                                     pending_questions=control.questions,
+                                )
+                            if control.suspend == "waiting_for_approval":
+                                # offer_direct_access asked the person (§3 step
+                                # 2). The offer and this park commit in the
+                                # executor's one transaction, so nobody can
+                                # decide it before the run is parked; the
+                                # executor's requeue_if_already_decided guards
+                                # the rest. Logged like a held write's park.
+                                tool_trace.append(
+                                    {
+                                        "tool": tc.name,
+                                        "arguments": tc.arguments,
+                                        "result": control.output[:300],
+                                        "decision": "require_approval",
+                                        "step": steps,
+                                        "connection": None,
+                                        "state": "awaiting_approval",
+                                    }
+                                )
+                                await _live_tool_call(tool_trace[-1])
+                                checkpoint_trace_delta.append(tool_trace[-1])
+                                task.state = "waiting_for_approval"
+                                await settle_agent_status(db, agent, "waiting_for_approval")
+                                await _finish_step_timing(step_rec, step_tool_wait_ms)
+                                return RunResult(
+                                    task.id,
+                                    agent.id,
+                                    "waiting_for_approval",
+                                    control.output,
+                                    tool_trace,
+                                    steps,
+                                    pending_runs,
+                                    rendered_components,
+                                    todos,
+                                    step_timings,
                                 )
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"
@@ -2940,6 +3329,28 @@ async def run_agent(
                                         urls=issued,
                                     )
                         succeeded = tool_error is None and not output.startswith("ERROR:")
+                        read_via_grant = (
+                            direct_read_conn is not None and decision.effect is Effect.ALLOW
+                        )
+                        if (
+                            (direct_call or read_via_grant)
+                            and _tool_call_dispatched
+                            and run_row is not None
+                        ):
+                            # Audited "on behalf of", counted when it worked;
+                            # a failing call keeps the grant (§9, §11). The
+                            # Copilot's read_resource counts like a read tool.
+                            direct_nudge = await _direct.note_direct_action(
+                                db,
+                                run=run_row,
+                                tool_key=(
+                                    direct_read_conn.name
+                                    if direct_read_conn is not None and not direct_call
+                                    else call_key or ""
+                                ),
+                                tool=auth_tc.name,
+                                succeeded=succeeded,
+                            )
                         # harness.shape() below prepends a "[step N/max · ...]"
                         # stamp to EVERY shaped result, so the reassigned
                         # `output` no longer starts with a literal "ERROR:"
@@ -2952,10 +3363,15 @@ async def run_agent(
                         before_sat = _satisfied_map(procs, harness)
                         if succeeded:
                             record_tool(harness.state.ledger, tc.name)
-                            if access_identity is not None and mcp_conn is not None:
+                            if access_identity is not None:
+                                # Under the connection the call RAN on -- the
+                                # key the gate reads it back under -- not the
+                                # run's single bound `mcp_conn`: a Copilot's
+                                # granted connections (and any multi-connection
+                                # agent's) have none.
                                 note_access(
                                     harness.state.ledger,
-                                    connection=mcp_conn.name,
+                                    connection=call_key or "oc8",
                                     kind=access_identity[0],
                                     id=access_identity[1],
                                     label=record_label,
@@ -3065,6 +3481,9 @@ async def run_agent(
                                 )
                             )
                             step_tool_wait_ms += int(_tool_call_entry["durationMs"])
+                        if direct_call and direct_run is not None:
+                            # Run log: whom the Copilot acted for (§8).
+                            _tool_call_entry["actingMember"] = str(direct_run.member_id)
                         if not _tool_call_dispatched:
                             _tool_call_entry["reason"] = denial_record_reason or (
                                 tool_error.message if tool_error is not None else None
@@ -3078,6 +3497,10 @@ async def run_agent(
                         )
                         for reminder in shaped.reminders:
                             messages.append(NeutralMessage(role="user", content=reminder))
+                        if direct_nudge:
+                            messages.append(
+                                NeutralMessage(role="user", content=_direct.DIRECT_ACTION_NUDGE)
+                            )
                         checkpoint_trace_delta.append(tool_trace[-1])
                         step_had_tool_error = step_had_tool_error or tool_error is not None
                         post_event = (
@@ -3148,6 +3571,20 @@ async def run_agent(
             # grants files only). Filtered before routes are built, so a
             # withheld tool never forces another system's twin to be qualified.
             scopes = _mcp_auth(conn).tool_scopes
+            if agent.is_tenant_assistant:
+                # The Copilot's tools are its grants' -- the person's
+                # departments, intersected with its own pinned narrowing.
+                return [
+                    t
+                    for t in listed
+                    if offers_direct(
+                        initial_direct,
+                        connection_key=conn.name,
+                        tool=t.name,
+                        scopes=scopes,
+                        narrowing=pinned["narrowing"] or {},
+                    )
+                ]
             return [
                 t
                 for t in listed

@@ -110,6 +110,7 @@ class Harness:
         record_label: str,
         identity: tuple[str, str] | None,
         procedures: Sequence[tuple[str, str, tuple[Step, ...]]] | None = None,
+        always_ask_writes: bool = False,
     ) -> GateVerdict:
         if procedures is not None:
             hit = procedure_denial(
@@ -151,7 +152,7 @@ class Harness:
                 tier=tier,
             )
 
-        if posture(tier, autonomy, granted=granted) == "ask":
+        if posture(tier, autonomy, granted=granted, always_ask_writes=always_ask_writes) == "ask":
             cfg = config or {}
             templates = cfg.get("approval_templates")
             template = templates.get(tc.name) if isinstance(templates, dict) else None

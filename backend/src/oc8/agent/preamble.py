@@ -416,6 +416,19 @@ async def build_run_preamble(
         if roster is not None:
             messages.append(NeutralMessage(role="system", content=roster))
 
+    if agent.is_tenant_assistant:
+        # What the Copilot may offer to do itself (copilot direct access §3).
+        from oc8.copilot.direct_access import direct_access_block
+
+        block = await direct_access_block(
+            db,
+            run=run,
+            agent=agent,
+            narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
+        )
+        if block is not None:
+            messages.append(NeutralMessage(role="system", content=block))
+
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=tenant_id)
     catalog = catalog_block(assigned_skills)
     if catalog:

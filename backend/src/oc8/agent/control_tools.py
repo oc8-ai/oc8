@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.components import COMPONENT_CATALOG
 from oc8.agent.harness.retrieval import ToolCard, rank_tools
+from oc8.agent.harness.stages.b_direct_access import OFFER_DIRECT_ACCESS_TOOL
 from oc8.agent.harness.state import HarnessState, ProcedureMark
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import pinned_model_config_id
@@ -1212,6 +1213,29 @@ COPILOT_TOOLS: tuple[NeutralTool, ...] = (
     CANCEL_FOLLOWUP,
 )
 COPILOT_TOOL_NAMES: frozenset[str] = frozenset(t.name for t in COPILOT_TOOLS)
+OFFER_DIRECT_ACCESS = NeutralTool(
+    name=OFFER_DIRECT_ACCESS_TOOL,
+    description=(
+        "Only when no agent fits the person's request: offer to do it yourself "
+        "through one connection from your direct-access list. The person sees an "
+        "approval card naming the connection and the account; nothing happens "
+        "until they allow it. Once allowed, you can read through it for the "
+        "rest of this conversation; every change asks them again."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "connection": {"type": "string", "description": "A key from your direct-access list."},
+            "purpose": {
+                "type": "string",
+                "maxLength": 300,
+                "description": "One sentence: what you will do with it.",
+            },
+        },
+        "required": ["connection", "purpose"],
+    },
+)
+
 #: The agent builder's tools (Copilot Agent Builder §3.1); the executors are in
 #: oc8.copilot.builder_tools. Offered to the Copilot on the web door only.
 BUILDER_TOOLS: tuple[NeutralTool, ...] = (ENTER_AGENT_MODE, BUILDER_OPTIONS, PROPOSE_AGENT)
@@ -1247,6 +1271,7 @@ CONTROL_TOOL_SCHEMAS: dict[str, NeutralTool] = {
     KPI_OVERVIEW.name: KPI_OVERVIEW,
     **{t.name: t for t in COPILOT_TOOLS},
     **{t.name: t for t in BUILDER_TOOLS},
+    OFFER_DIRECT_ACCESS.name: OFFER_DIRECT_ACCESS,
 }
 CONTROL_TOOL_NAMES: frozenset[str] = frozenset(CONTROL_TOOL_SCHEMAS)
 
@@ -1278,6 +1303,7 @@ def offered_tools(
     copilot_door: str | None = None,
     has_context: bool = False,
     edition_tools: Sequence[NeutralTool] = (),
+    offer_direct_access: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -1385,6 +1411,8 @@ def offered_tools(
                 offered.extend((BUILDER_OPTIONS, PROPOSE_AGENT))
             else:
                 offered.append(ENTER_AGENT_MODE)
+            if offer_direct_access and (chat_mode is None or chat_mode.key != "agent"):
+                offered.append(OFFER_DIRECT_ACCESS)
         if copilot_door in ("web", "followup"):
             # §7a.6: the messenger reason above still holds; a web or follow-up
             # turn's question lands in "Waiting on me" and can be answered.
@@ -2283,8 +2311,13 @@ async def _execute_read_resource(
     agent: m.Agent,
     tc: ToolCall,
     run_id: uuid.UUID | None = None,
+    direct_row: m.McpConnection | None = None,
 ) -> ControlOutcome:
-    """One resource body, through the same pool as a tool call."""
+    """One resource body, through the same pool as a tool call.
+
+    `direct_row` is the connection the engine opened for the Copilot's grant:
+    the Copilot's own department owns no system, so it is read through that
+    row, never looked up by the agent's department."""
     from sqlalchemy import select
 
     from oc8.agent import mcp_pool
@@ -2295,13 +2328,16 @@ async def _execute_read_resource(
 
     connection = str(tc.arguments.get("connection", "")).strip()
     uri = str(tc.arguments.get("uri", "")).strip()
-    row = await db.scalar(
-        select(m.McpConnection).where(
-            m.McpConnection.department_id == agent.department_id,
-            m.McpConnection.name == connection,
-            m.McpConnection.connected.is_(True),
+    if agent.is_tenant_assistant:
+        row = direct_row if direct_row is not None and direct_row.name == connection else None
+    else:
+        row = await db.scalar(
+            select(m.McpConnection).where(
+                m.McpConnection.department_id == agent.department_id,
+                m.McpConnection.name == connection,
+                m.McpConnection.connected.is_(True),
+            )
         )
-    )
     if row is None:
         return ControlOutcome(output=f"ERROR: no connected system named {connection}")
     cfg = row.config if isinstance(row.config, dict) else {}
@@ -2513,6 +2549,7 @@ async def execute_control_tool(
     harness_state: HarnessState | None = None,
     active_procedure_skills: Sequence[LoadedSkill] | None = None,
     edition_offer: EditionOffer = NO_EDITION_OFFER,
+    direct_read_conn: m.McpConnection | None = None,
 ) -> ControlOutcome | None:
     """Run one core-owned tool call, or return None if it isn't one.
 
@@ -2599,6 +2636,21 @@ async def execute_control_tool(
     )
     if builder_outcome is not None:
         return builder_outcome
+    if tc.name == OFFER_DIRECT_ACCESS.name and decision.effect is not Effect.ALLOW:
+        return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
+    from oc8.copilot.direct_access import execute_direct_access_tool
+
+    direct_outcome = await execute_direct_access_tool(
+        db,
+        tenant_id=tenant_id,
+        agent=agent,
+        task=task,
+        tc=tc,
+        run_id=run_id,
+        narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
+    )
+    if direct_outcome is not None:
+        return direct_outcome
 
     if tc.name == FIND_TOOLS.name:
         return _execute_find_tools(tc, harness_state)
@@ -2607,7 +2659,12 @@ async def execute_control_tool(
         if decision.effect is not Effect.ALLOW:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
         return await _execute_read_resource(
-            db, tenant_id=tenant_id, agent=agent, tc=tc, run_id=run_id
+            db,
+            tenant_id=tenant_id,
+            agent=agent,
+            tc=tc,
+            run_id=run_id,
+            direct_row=direct_read_conn,
         )
 
     if tc.name == PROCEDURE_STEP_DONE.name:

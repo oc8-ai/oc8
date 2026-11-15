@@ -94,9 +94,12 @@ async def test_read_resource_returns_that_one_body() -> None:
     assert await session.read_resource("odoo://chart") == "the chart itself"
 
 
+_PLAIN_AGENT = SimpleNamespace(is_tenant_assistant=False)
+
+
 def test_read_resource_needs_a_uri_and_the_connections_read_right() -> None:
     missing = authorize(
-        None,  # type: ignore[arg-type]
+        _PLAIN_AGENT,  # type: ignore[arg-type]
         ToolCall(id="1", name="read_resource", arguments={"connection": "odoo"}),
         frame={},
         tool_policies={},
@@ -108,7 +111,7 @@ def test_read_resource_needs_a_uri_and_the_connections_read_right() -> None:
     assert missing.effect is Effect.DENY
 
     allowed = authorize(
-        None,  # type: ignore[arg-type]
+        _PLAIN_AGENT,  # type: ignore[arg-type]
         ToolCall(
             id="2",
             name="read_resource",

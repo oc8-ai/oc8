@@ -1341,6 +1341,33 @@ async def test_ask_user_is_withheld_from_the_tenant_assistant_through_the_gatewa
     assert "delegate_task" in names, "the withholding must be scoped to ask_user only"
 
 
+async def test_the_tenant_assistant_reaches_no_connection_through_the_gateway(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Copilot direct access is wired into the in-process engine only. The
+    gateway (and the isolated runtime behind it) decides the Copilot's
+    connection calls against no grants at all, so every one is refused --
+    fail closed, never through the Copilot's own department."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.is_tenant_assistant = True
+        await db.flush()
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "search_records", "arguments": {"model": "crm.lead"}},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True
+    assert _FakeMcp.calls == [], "nothing may reach the tool server"
+
+
 async def test_search_knowledge_is_offered_through_the_gateway(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -7,11 +7,13 @@ one. Mirrors the clarification (ask_user) resume, one layer up for tool calls.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.approvals.repo import department_after_person
 from oc8.models.ops import ApprovalRequest
 from oc8.models.run import AgentRun
 from oc8.runtime.repository import RunRepository
@@ -35,9 +37,27 @@ async def resolve_tool_approval(
     """
     if approval.task_id is None:
         return None
-    run = (
-        await db.execute(select(AgentRun).where(AgentRun.task_id == approval.task_id))
-    ).scalar_one_or_none()
+    if decision == "approve" and department_after_person(approval) is not None:
+        # The person's approval of a write a department's policy holds is
+        # never the call's approval: the department's card that it raises
+        # (decide_approval) is the one that resumes the run (spec §1).
+        return None
+    # A Copilot conversation runs every turn on ONE task, so "the run of this
+    # task" is ambiguous there (MultipleResultsFound from the second turn on):
+    # a raiser that knows its run says which, and it must be of this task.
+    raw_run = (approval.payload or {}).get("run_id")
+    run: AgentRun | None
+    if raw_run:
+        try:
+            run = await db.get(AgentRun, uuid.UUID(str(raw_run)))
+        except ValueError:
+            run = None
+        if run is not None and run.task_id != approval.task_id:
+            run = None
+    else:
+        run = (
+            await db.execute(select(AgentRun).where(AgentRun.task_id == approval.task_id))
+        ).scalar_one_or_none()
     if run is None:
         return None
 
@@ -61,6 +81,15 @@ async def resolve_tool_approval(
             "tool": tool,
             "arguments": arguments,
             "decision": decision,
+            # Only a raiser that saw the call pass read-before-write sets it.
+            **(
+                {
+                    "read_before_write_ok": True,
+                    "gate_connection": str(approval.payload.get("gate_connection") or ""),
+                }
+                if approval.payload.get("read_before_write_ok") is True
+                else {}
+            ),
         },
     )
     await db.flush()

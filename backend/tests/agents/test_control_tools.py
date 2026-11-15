@@ -214,6 +214,7 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "enter_agent_mode",
         "builder_options",
         "propose_agent",
+        "offer_direct_access",
     }
 
 

@@ -11,7 +11,10 @@
 // and so no `approval:view` at all.
 import type { ComponentType } from "react";
 
+import { useMyDirectAccessApprovals } from "@/lib/direct-access-api";
 import type { Approval } from "@/lib/hooks";
+
+import { DirectAccessCard } from "./direct-access-card";
 
 export interface TurnApprovalCardEntry {
   /** The approvals this card answers, pending ones. Called as a hook, once
@@ -23,4 +26,7 @@ export interface TurnApprovalCardEntry {
 }
 
 /** Keyed by the card's name. PR #71 adds `member_guardrail` here. */
-export const TURN_APPROVAL_CARDS: Record<string, TurnApprovalCardEntry> = {};
+export const TURN_APPROVAL_CARDS: Record<string, TurnApprovalCardEntry> = {
+  // The Copilot's direct access: the person's own offers and held writes.
+  direct_access: { useApprovals: useMyDirectAccessApprovals, Card: DirectAccessCard },
+};

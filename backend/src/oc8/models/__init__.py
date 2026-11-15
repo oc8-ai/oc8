@@ -22,6 +22,7 @@ from oc8.models.core import (
     RolePermission,
 )
 from oc8.models.credentials import Credential
+from oc8.models.direct_access import DirectAccessGrant
 from oc8.models.flow import Flow, FlowRun, FlowVersion
 from oc8.models.identity import (
     DashboardPreset,
@@ -99,6 +100,7 @@ __all__ = [
     "DashboardPreset",
     "DataSource",
     "Department",
+    "DirectAccessGrant",
     "FileAttachment",
     "Flow",
     "FlowRun",
