@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { api, ApiError, retryUnlessRefused } from "@/lib/api";
+import { boardKeys } from "@/lib/boards-api";
 import type { Translate } from "@/lib/tool-labels";
 
 export type BuilderStatus =
@@ -114,7 +115,16 @@ function useBuilderAction(proposalId: string, action: "apply" | "request") {
   return useMutation({
     mutationFn: () =>
       api.post<AgentBuilderDTO>(`/copilot/builder/${encodeURIComponent(proposalId)}/${action}`, {}),
-    onSuccess: (dto) => qc.setQueryData(builderKeys.one(proposalId), dto),
+    onSuccess: (dto) => {
+      qc.setQueryData(builderKeys.one(proposalId), dto);
+      // An applied proposal created or changed a dashboard: read it and the
+      // board lists again, so open tiles and lists show what just landed.
+      const boardId = dto.status === "applied" ? dto.board?.boardId : null;
+      if (boardId) {
+        void qc.invalidateQueries({ queryKey: boardKeys.one(boardId) });
+        void qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true });
+      }
+    },
     // A refusal is stored on the proposal; read it back.
     onError: () => qc.invalidateQueries({ queryKey: builderKeys.one(proposalId) }),
   });
