@@ -47,6 +47,8 @@ from oc8.knowledge.ingest import (
     reembed_knowledge_base,
 )
 from oc8.knowledge.retrieval import similar_chunks
+from oc8.knowledge.scope_prune import FLAG as SCOPE_FLAG
+from oc8.knowledge.scope_prune import picker_changed
 from oc8.knowledge.sources import SourceRejected, validate_source_config
 from oc8.knowledge.tombstone import (
     OPERATOR_DELETE,
@@ -743,14 +745,33 @@ async def update_source(
     the source's content immediately). This is an ordinary metadata edit, on a
     row that stays exactly as reachable afterward as before."""
     ds = await _live_source(db, source_id, principal.tenant_id)
+    if body.config is not None:
+        # Validated BEFORE anything is applied, so a refusal leaves the row
+        # exactly as it was: the edit drawer must not be able to save a config
+        # the connector would have refused at creation.
+        before = dict(ds.config or {})
+        merged = {**before, **body.config}
+        try:
+            connector = await validate_source_config(
+                db,
+                tenant_id=principal.tenant_id,
+                connector_type=ds.connector_type,
+                config=merged,
+                oauth_connection_id=ds.oauth_connection_id,
+            )
+        except (ConnectorError, SourceRejected) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        if picker_changed(connector.config_schema, before, merged):
+            # The next sync prunes what the new selection leaves out, at once --
+            # see oc8/knowledge/scope_prune.py for why this skips reconcile.
+            ds.cursor = {**(ds.cursor or {}), SCOPE_FLAG: True}
+        ds.config = merged
     if body.name is not None:
         ds.name = body.name
     if body.classification is not None:
         ds.classification = body.classification
     if body.schedule_cron is not None:
         ds.schedule_cron = body.schedule_cron
-    if body.config is not None:
-        ds.config = {**(ds.config or {}), **body.config}
     await db.flush()
     # Build the DTO from the in-memory object, not a post-commit re-fetch: a
     # commit here unbinds the tenant GUC that RLS relies on (see create_source,

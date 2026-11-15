@@ -31,6 +31,7 @@ from oc8.knowledge.connectors.registry import resolve_connector
 from oc8.knowledge.connectors.report import SyncReport, collect_sync_report
 from oc8.knowledge.embedding_policy import require_local_reason, strictest
 from oc8.knowledge.reconcile import observe_listing
+from oc8.knowledge.scope_prune import apply_scope_change
 from oc8.knowledge.tombstone import (
     SUPERSEDED,
     recompute_freshness,
@@ -483,6 +484,31 @@ async def run_source_sync(
             # so without this the object the caller is holding would keep
             # reporting the count from before this sync.
             await db.refresh(data_source, ["doc_count"])
+
+    if fatal is None and connector is not None:
+        # An admin narrowed this source's selection (`cursor["scope_changed"]`).
+        # Pruned here, outside the collector -- what a connector reports skipping
+        # is about this sync's fetch, and a prune is not a skip -- and BEFORE the
+        # listing observation below: a pruned document is no longer live, so
+        # reconcile neither counts it toward its vanish ratio (which would hold
+        # the source over the admin's own edit) nor marks it missing.
+        # Only after a sync with no connector-level failure; the flag survives
+        # anything short of a pruning savepoint that completed.
+        try:
+            async with db.begin_nested():
+                pruned = await apply_scope_change(
+                    db,
+                    tenant_id=tenant_id,
+                    data_source=data_source,
+                    connector=connector,
+                    auth=auth,
+                    now=now,
+                )
+        except Exception as exc:
+            bookkeeping_error = bookkeeping_error or f"scope prune failed: {exc}"
+        else:
+            if pruned is not None:
+                stats["scope_pruned"] = pruned
 
     if connector is not None:
         # AFTER the cursor write-back, where §4.1 put it before it. The

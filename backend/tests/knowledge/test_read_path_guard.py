@@ -34,6 +34,9 @@ ALLOWED = {
     "knowledge/ingest.py",
     "knowledge/tombstone.py",
     "knowledge/reconcile.py",
+    # Projects (kb_id, source_uri) off `live_chunks()` to find what a narrowed
+    # selection left out; every read there starts from the live predicate.
+    "knowledge/scope_prune.py",
     "knowledge/retrieval.py",
 }
 

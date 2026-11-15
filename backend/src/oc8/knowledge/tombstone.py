@@ -82,7 +82,7 @@ SUPERSEDED_REDUCED = "knowledge.superseded_reduced"  # sweep, one aggregate even
 DOCUMENT_RESTORED = "knowledge.document_restored"
 RECONCILE_HELD = "knowledge.reconcile_held"
 
-#: The three legal values of `kb_chunk.deleted_reason`. Not cosmetic: the reason
+#: The legal values of `kb_chunk.deleted_reason`. Not cosmetic: the reason
 #: decides reduction timing (immediate or after the grace window), write-path
 #: suppression (§5.3 -- only an operator's deletion stays deleted) and cursor
 #: eviction (§5.6 -- only an absence is forgotten, so the document can come back
@@ -90,6 +90,10 @@ RECONCILE_HELD = "knowledge.reconcile_held"
 OPERATOR_DELETE = "operator_delete"
 SOURCE_ABSENT = "source_absent"
 SUPERSEDED = "superseded"
+#: An admin narrowed the source's selection (`oc8.knowledge.scope_prune`). Not
+#: reduced at once and not suppressed, so re-selecting the document brings it
+#: back; licensed by the admin's edit rather than by two attested listings.
+SCOPE_CHANGED = "scope_changed"
 
 
 @dataclass
