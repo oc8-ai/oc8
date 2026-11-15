@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -199,6 +200,23 @@ async def test_command_center_template_leads_with_a_dominant_chat_tile() -> None
                 if wtype == "chat":
                     continue
                 assert chat_area > w["w"] * w["h"], f"chat should dominate over {wtype}"
+
+
+async def test_templates_use_forty_pixel_rows() -> None:
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(subject='templates-reader')}"}
+            r = await client.get("/api/v1/dashboard/templates", headers=headers)
+            assert r.status_code == 200
+            by_id = {t["id"]: {w["type"]: w for w in t["widgets"]} for t in r.json()}
+
+    def box(w: dict[str, Any]) -> dict[str, int]:
+        return {k: w[k] for k in ("x", "y", "w", "h")}
+
+    assert box(by_id["command-center"]["chat"]) == {"x": 0, "y": 0, "w": 8, "h": 16}
+    assert box(by_id["overview"]["budget"]) == {"x": 0, "y": 10, "w": 6, "h": 6}
 
 
 def _preset_body(name: str = "My layout", scope: str = "personal") -> dict:
