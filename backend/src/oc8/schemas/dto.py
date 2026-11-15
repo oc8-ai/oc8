@@ -2176,3 +2176,27 @@ class AgentIdeaDTO(CamelModel):
     title: LocalizedTextDTO
     subtitle: LocalizedTextDTO
     prompt: LocalizedTextDTO
+
+
+class BoardSummaryDTO(CamelModel):
+    """One dashboard in a list. `stale` = no producing agent any more (banner
+    "no longer updated")."""
+
+    id: str
+    title: str
+    description: str
+    department_id: str
+    agent_id: str | None
+    agent_name: str | None
+    stale: bool
+    record_count: int
+    last_recorded_at: str | None
+    may_delete: bool
+
+
+class DataBoardDTO(BoardSummaryDTO):
+    """A dashboard with its spec. Named `DataBoard...` because `BoardDTO` is the
+    department task board."""
+
+    spec: dict[str, Any]
+    spec_version: int

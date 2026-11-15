@@ -1,0 +1,111 @@
+"""The read term's forcing function for data boards.
+
+Same sweep as `tests/agents/test_reads_go_through_the_scoped_repository.py`
+(its `_loads` walker, given this sweep's own guarded sets): nothing outside
+`boards/repo.py` may load a board, its records, batches or spec versions without
+a sentence saying why it may see every department's.
+"""
+
+from __future__ import annotations
+
+import pathlib
+
+from tests.agents.test_reads_go_through_the_scoped_repository import _loads
+
+SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "oc8"
+
+GUARDED = frozenset({"DataBoard", "DataBoardRecord", "DataBoardBatch", "DataBoardSpecVersion"})
+GUARDED_TABLES = frozenset(
+    {"data_board", "data_board_record", "data_board_batch", "data_board_spec_version"}
+)
+
+#: Path (relative to `src/oc8`) -> why it may load one. `boards/lifecycle.py`
+#: joins this list in the task that creates it.
+ALLOWED: dict[str, str] = {
+    "boards/repo.py": "the scoped repository itself -- this is the door",
+    "boards/records.py": (
+        "the write path (board_write): reads its own agent's board under a row lock, "
+        "and the effective-batch rules; no human caller"
+    ),
+    "boards/query.py": (
+        "reads the records and batches of a board the caller was already admitted to "
+        "through boards.repo; the board row is passed in"
+    ),
+    "boards/mission.py": (
+        "syncs the mission section from the producing agent's own live boards; "
+        "no human caller, no departmental browse"
+    ),
+    "copilot/capabilities.py": (
+        "the Copilot's board capabilities, gated by the same department reach as the "
+        "agent capabilities beside them"
+    ),
+    "copilot/builder.py": (
+        "applies a builder proposal's board after may_view/may_create_agent or the "
+        "approval funnel decided reach"
+    ),
+    "copilot/builder_tools.py": (
+        "builder tools read the board a proposal names, behind the proposal's owner "
+        "and department gates"
+    ),
+    "api/v1/copilot_builder.py": (
+        "the builder card reads the board a proposal created, only after the owner or "
+        "submitted+may_view gate passed, tenant-checked"
+    ),
+    "api/v1/boards.py": (
+        "the read routes: they load records and batches only for boards boards.repo "
+        "already admitted the caller to (aggregate counts and the query engine)"
+    ),
+}
+
+
+def _boards_loads(source: str) -> list[tuple[int, str]]:
+    return _loads(source, guarded=GUARDED, guarded_tables=GUARDED_TABLES)
+
+
+def test_the_sweep_sees_board_loads() -> None:
+    assert _boards_loads("select(m.DataBoard)") == [(1, "DataBoard")]
+    assert _boards_loads("db.get(m.DataBoardRecord, x)") == [(1, "DataBoardRecord")]
+    assert _boards_loads('db.execute(text("select 1 from data_board_batch"))') == [
+        (1, "data_board"),
+        (1, "data_board_batch"),
+    ]
+    assert _boards_loads("select(m.Agent)") == []
+    assert _loads("select(m.DataBoard)") == []  # the agents sets do not guard boards
+
+
+def test_the_sweep_is_reading_the_real_tree() -> None:
+    known = SRC / "boards" / "mission.py"
+    loaded = {
+        model
+        for _line, model in _loads(
+            known.read_text(), guarded=GUARDED, guarded_tables=GUARDED_TABLES
+        )
+    }
+    assert loaded & GUARDED, "boards/mission.py loads board rows and the sweep no longer sees it"
+
+
+def test_no_module_loads_a_board_outside_the_scoped_repository() -> None:
+    offenders: list[str] = []
+    for path in sorted(SRC.rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(SRC).as_posix()
+        if rel in ALLOWED:
+            continue
+        for line, model in _loads(
+            path.read_text(), filename=str(path), guarded=GUARDED, guarded_tables=GUARDED_TABLES
+        ):
+            offenders.append(f"src/oc8/{rel}:{line} loads {model}")
+    assert not offenders, (
+        "these load a board without going through boards.repo, so they see every "
+        "department's:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_allowlist_names_files_that_exist() -> None:
+    missing = [rel for rel in ALLOWED if not (SRC / rel).is_file()]
+    assert not missing, f"allowlisted modules that do not exist: {missing}"
+
+
+def test_every_allowlisted_module_says_why() -> None:
+    assert all(len(reason.strip()) >= 20 for reason in ALLOWED.values())
