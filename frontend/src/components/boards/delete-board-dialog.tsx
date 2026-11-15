@@ -13,7 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
-import { useDeleteBoard, type BoardSummary } from "@/lib/boards-api";
+import { recordsChanged, useDeleteBoard, type BoardSummary } from "@/lib/boards-api";
 import { useT } from "@/lib/i18n";
 
 export function DeleteBoardDialog({
@@ -53,12 +53,19 @@ export function DeleteBoardDialog({
                 { id: board.id, records: n },
                 {
                   onSuccess: () => onOpenChange(false),
-                  onError: () =>
+                  onError: (error) =>
                     toast.error(
-                      t(
-                        "The dashboard could not be deleted. Reload and try again.",
-                        "Das Dashboard konnte nicht gelöscht werden. Lade neu und versuch es noch einmal.",
-                      ),
+                      recordsChanged(error)
+                        ? // The count above refreshes (`useDeleteBoard`); the
+                          // dialog stays open for the person to confirm it.
+                          t(
+                            "New records arrived — check the count and confirm again.",
+                            "Neue Einträge sind hinzugekommen — prüf die Anzahl und bestätige noch einmal.",
+                          )
+                        : t(
+                            "The dashboard could not be deleted. Reload and try again.",
+                            "Das Dashboard konnte nicht gelöscht werden. Lade neu und versuch es noch einmal.",
+                          ),
                     ),
                 },
               )

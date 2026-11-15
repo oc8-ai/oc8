@@ -51,4 +51,50 @@ describe("useDeleteBoard", () => {
     // Another board is left alone.
     expect(qc.getQueryState(["boards", "b2"])?.isInvalidated).toBe(false);
   });
+
+  it("refreshes the board's count and the lists when records arrived meanwhile", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    );
+    vi.mocked(api.get).mockReset();
+    vi.mocked(api.get).mockImplementation(async (path: string) =>
+      path.startsWith("/boards/") ? { id: path.slice(8), recordCount: 4 } : [],
+    );
+    const refused = Object.assign(new Error("board_records_changed"), { status: 409 });
+    vi.mocked(api.delete).mockRejectedValue(refused);
+
+    renderHook(() => useBoards(), { wrapper });
+    const tile = renderHook(() => useBoard("b1"), { wrapper });
+    await waitFor(() => expect(tile.result.current.isSuccess).toBe(true));
+    qc.setQueryData(["boards", "b2"], { id: "b2" });
+    const before = vi.mocked(api.get).mock.calls.length;
+
+    const { result } = renderHook(() => useDeleteBoard(), { wrapper });
+    result.current.mutate({ id: "b1", records: 4 });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+
+    // Both read again: the board's detail and the list; nothing removed.
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(before + 2));
+    const paths = vi
+      .mocked(api.get)
+      .mock.calls.slice(before)
+      .map(([p]) => p);
+    expect(paths.sort()).toEqual(["/boards", "/boards/b1"]);
+    expect(qc.getQueryState(["boards", "b2"])?.isInvalidated).toBe(false);
+    expect(qc.getQueryData(["boardDeleted", "b1"])).toBeUndefined();
+  });
+
+  it("leaves the queries alone on any other refusal", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    );
+    qc.setQueryData(["boards", "b1"], { id: "b1" });
+    vi.mocked(api.delete).mockRejectedValue(Object.assign(new Error("nope"), { status: 403 }));
+    const { result } = renderHook(() => useDeleteBoard(), { wrapper });
+    result.current.mutate({ id: "b1", records: 4 });
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(qc.getQueryState(["boards", "b1"])?.isInvalidated).toBe(false);
+  });
 });

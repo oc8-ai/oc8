@@ -3197,6 +3197,9 @@ msgstr ""
 msgid "New project"
 msgstr ""
 
+msgid "New records arrived — check the count and confirm again."
+msgstr ""
+
 msgid "New role"
 msgstr ""
 

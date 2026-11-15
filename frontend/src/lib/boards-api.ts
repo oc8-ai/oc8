@@ -235,6 +235,16 @@ export function useBoardQuery(id: string, query: BoardQuery | null) {
   });
 }
 
+/** The delete was refused because records arrived since the count the
+ *  person confirmed (`409 board_records_changed`). */
+export function recordsChanged(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    (error as Error & { status?: unknown }).status === 409 &&
+    error.message === "board_records_changed"
+  );
+}
+
 export function useDeleteBoard() {
   const qc = useQueryClient();
   return useMutation({
@@ -250,6 +260,15 @@ export function useDeleteBoard() {
       await qc.cancelQueries({ queryKey: boardKeys.one(id) });
       qc.removeQueries({ queryKey: boardKeys.one(id) });
       return qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true });
+    },
+    onError: (error, { id }) => {
+      if (!recordsChanged(error)) return;
+      // The board is still there with more records: read its count again, in
+      // the board and in the lists, so the next confirmation names it.
+      return Promise.all([
+        qc.invalidateQueries({ queryKey: boardKeys.one(id), exact: true }),
+        qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true }),
+      ]);
     },
   });
 }
