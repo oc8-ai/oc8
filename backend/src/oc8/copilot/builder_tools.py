@@ -28,6 +28,7 @@ from oc8.agent.control_tools import (
 )
 from oc8.agents.repo import visible_agents
 from oc8.authz.authority import Authority, authority_for_member, tenant_wide_read
+from oc8.authz.permissions import AGENT as AGENT_RESOURCE
 from oc8.authz.permissions import DEPARTMENT, VIEW, perm
 from oc8.authz.scope import AgentActor
 from oc8.boards.repo import visible_boards
@@ -178,8 +179,9 @@ async def _board_lines(
 ) -> list[str]:
     """The agents the member may give a dashboard and the dashboards they may
     change -- exactly where they may edit the producing agent (§6.6) -- and
-    the spec catalogue."""
-    tenant_wide = _reads_every_department(authority)
+    the spec catalogue. Agents and boards by their own reach, `agent:view`
+    tenant-wide (as `api/v1/boards.py`), not the departments'."""
+    tenant_wide = _reads_every_agent(authority)
     agents, _total = await visible_agents(db, scope=actor.scope, tenant_wide=tenant_wide)
     names: dict[uuid.UUID | None, str] = {a.id: a.name for a in agents}
     lines = ["Agents you may give a dashboard (agentId | name):"]
@@ -201,6 +203,11 @@ async def _board_lines(
     artifact = await tenant_has_capability(tenant_id, ENTERPRISE_CANVAS)
     lines.append(_CATALOGUE + (_ARTIFACT_BLOCK if artifact else "") + ". " + _ADDITIVE)
     return lines
+
+
+def _reads_every_agent(authority: Authority) -> bool:
+    """`tenant_wide` for the scoped agent and board repositories (§6.8.2)."""
+    return tenant_wide_read(authority, perm(AGENT_RESOURCE, VIEW))
 
 
 def _reads_every_department(authority: Authority) -> bool:
@@ -402,6 +409,7 @@ async def execute_builder_tool(
                 operations=operations,
                 now=dt.datetime.now(tz=dt.UTC),
                 may_create_departments=may_create_department(authority),
+                boards_tenant_wide=_reads_every_agent(authority),
             )
     except BuilderInvalid as exc:
         return ControlOutcome(output=_refusal(exc))

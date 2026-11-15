@@ -26,6 +26,7 @@ from oc8 import models as m
 from oc8.copilot.builder import create_step
 from oc8.copilot.builder_ops import BuilderStep, is_board_only
 from oc8.copilot.models import CopilotProposal
+from oc8.runtime.fencing import one_line
 
 logger = logging.getLogger(__name__)
 
@@ -156,7 +157,7 @@ def notice_text(
     code = reason if isinstance(reason, str) else refusal
     why = REASONS.get(code, _UNKNOWN)
     board = is_board_only(steps)
-    name = board_title if board else create_step(steps).name
+    name = one_line(board_title, 120) if board else create_step(steps).name
     tool, subject = ("propose_board", "dashboard") if board else ("propose_agent", "agent")
     card = subject
     where = ""

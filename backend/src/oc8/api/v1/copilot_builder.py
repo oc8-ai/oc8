@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import DbSession, require_departmental, require_permission
-from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT_USE, DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.copilot.agent_templates import (
@@ -28,6 +28,7 @@ from oc8.copilot.agent_templates import (
 )
 from oc8.copilot.builder import (
     BUILDER_KIND,
+    SeesBoard,
     announce_builder,
     apply_builder_proposal,
     board_spec,
@@ -131,10 +132,24 @@ async def _target(db: AsyncSession, steps: list[BuilderStep]) -> tuple[uuid.UUID
         return None, False
 
 
+def _sees(actor: HumanActor, authority: Authority) -> SeesBoard:
+    """Whether the caller may see a board's content NOW, by its department:
+    the boards' own rule (§6.8.2) -- a seat there, or `agent:view`
+    tenant-wide. A card outlives the seat it was proposed under."""
+    everywhere = tenant_wide_read(authority, perm(AGENT, VIEW))
+    return lambda department_id: everywhere or actor.scope.may_view(department_id)
+
+
+def _sees_nothing(_department_id: uuid.UUID) -> bool:
+    return False
+
+
 async def _board_dto(
-    db: AsyncSession, proposal: CopilotProposal, steps: list[BuilderStep]
+    db: AsyncSession, proposal: CopilotProposal, steps: list[BuilderStep], sees: SeesBoard
 ) -> BuilderBoardDTO | None:
-    """The board a proposal creates or changes, as the card shows it."""
+    """The board a proposal creates or changes, as the card shows it. What a
+    change leaves out is filled from the live board only for a caller who may
+    see it; anybody else reads the step's own fields alone."""
     operation = board_step(steps)
     if operation is None:
         return None
@@ -146,13 +161,13 @@ async def _board_dto(
         mode = "create"
         applied = result.get("boardId")
         board_id = applied if isinstance(applied, str) else None
-    spec = await board_spec(db, steps) or {}
+    spec = await board_spec(db, steps, sees=sees) or {}
     datasets = spec.get("datasets") if isinstance(spec.get("datasets"), list) else []
     blocks = spec.get("blocks") if isinstance(spec.get("blocks"), list) else []
     return BuilderBoardDTO(
         board_id=board_id,
         mode=mode,
-        title=await board_title(db, steps),
+        title=await board_title(db, steps, sees=sees),
         datasets=[
             BuilderDatasetDTO(
                 key=str(ds.get("key", "")),
@@ -181,10 +196,15 @@ async def builder_dto(
     may_create: bool,
     read_only: bool,
     show_mission: bool,
+    sees: SeesBoard | None = None,
 ) -> AgentBuilderDTO:
+    """One card. `sees` decides whether a change may be filled from the live
+    board (`_sees`); without it, it never is."""
+    if sees is None:
+        sees = _sees_nothing
     if is_board_only(steps):
         return await _board_only_dto(
-            db, proposal, steps, may_create=may_create, read_only=read_only
+            db, proposal, steps, may_create=may_create, read_only=read_only, sees=sees
         )
     create = create_step(steps)
     planned = new_department(steps)
@@ -277,7 +297,7 @@ async def builder_dto(
         rejected_reason=rejected_reason if isinstance(rejected_reason, str) else None,
         agent=agent_dto,
         kind="agent",
-        board=await _board_dto(db, proposal, steps),
+        board=await _board_dto(db, proposal, steps, sees),
     )
 
 
@@ -288,9 +308,13 @@ async def _board_only_dto(
     *,
     may_create: bool,
     read_only: bool,
+    sees: SeesBoard,
 ) -> AgentBuilderDTO:
-    """A board-only card: no agent of its own, the board's department."""
-    department_id, _known = await _target(db, steps)
+    """A board-only card: no agent of its own, the board's department -- named
+    only to a caller who may still see it there (`sees`)."""
+    department_id, known = await _target(db, steps)
+    if department_id is not None and not sees(department_id):
+        department_id = None
     department = await db.get(m.Department, department_id) if department_id else None
     result = proposal.result or {}
     refusal = result.get("refusal")
@@ -309,14 +333,15 @@ async def _board_only_dto(
         mission="",
         expires_at=proposal.expires_at.isoformat() if proposal.expires_at else None,
         may_create=may_create and is_draft and not read_only,
-        may_request=is_draft and not read_only,
+        # A board or agent that is gone has nowhere to send a request to.
+        may_request=is_draft and not read_only and known,
         read_only=read_only,
         refusal=refusal if isinstance(refusal, str) else None,
         failed_step=failed_step if isinstance(failed_step, int) else None,
         failed_reason=failed_reason if isinstance(failed_reason, str) else None,
         rejected_reason=rejected_reason if isinstance(rejected_reason, str) else None,
         kind="board",
-        board=await _board_dto(db, proposal, steps),
+        board=await _board_dto(db, proposal, steps, sees),
     )
 
 
@@ -343,6 +368,7 @@ async def get_builder(
         may_create=owner and may_create,
         read_only=not owner,
         show_mission=owner or approver,
+        sees=_sees(actor, authority),
     )
     await db.commit()
     return dto
@@ -360,8 +386,13 @@ async def apply_builder(
     authority = await authority_for_principal(request, db, actor.principal)
     # Read before applying: a refusal commits, and the notice that follows
     # names the board by this title (`builder_notice` reads no board).
-    title = await board_title(db, steps) if is_board_only(steps) else ""
+    sees = _sees(actor, authority)
+    board_only = is_board_only(steps)
+    title = await board_title(db, steps, sees=sees) if board_only else ""
     try:
+        # A board-only proposal is decided in this department; apply reads it
+        # again under the board's lock and refuses one that moved meanwhile.
+        decided = await target_department(db, steps) if board_only else None
         allowed = await may_apply(db, authority, actor.scope, steps)
     except BuilderInvalid as exc:
         # The board or its agent is gone: nothing to apply.
@@ -385,6 +416,7 @@ async def apply_builder(
             applied_by=actor.principal.subject,
             principal=actor.principal,
             now=_now(),
+            decided_department=decided,
         )
     except BuilderInvalid as exc:
         # The refusal (and its step) stays on the proposal for the card.
@@ -403,7 +435,7 @@ async def apply_builder(
         raise _refused(exc) from None
     await announce_builder(db, proposal)
     dto = await builder_dto(
-        db, proposal, steps, may_create=True, read_only=False, show_mission=True
+        db, proposal, steps, may_create=True, read_only=False, show_mission=True, sees=sees
     )
     await db.commit()
     return dto
@@ -425,6 +457,7 @@ async def request_builder(
             requester=actor.member,
             scope=actor.scope,
             tenant_wide=tenant_wide_read(authority, perm(DEPARTMENT, VIEW)),
+            boards_tenant_wide=tenant_wide_read(authority, perm(AGENT, VIEW)),
             now=_now(),
         )
     except BuilderInvalid as exc:
@@ -438,6 +471,7 @@ async def request_builder(
         may_create=known and await may_apply(db, authority, actor.scope, steps),
         read_only=False,
         show_mission=True,
+        sees=_sees(actor, authority),
     )
     await db.commit()
     return dto

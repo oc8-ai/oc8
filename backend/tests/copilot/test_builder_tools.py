@@ -831,3 +831,77 @@ def test_every_board_refusal_code_has_a_hint() -> None:
         "missing_board_target",
     ):
         assert _REFUSALS.get(code), code
+
+
+@pytest.mark.asyncio
+async def test_department_view_alone_does_not_reach_a_board(
+    app_session: AppSessionFactory,
+) -> None:
+    """A member without a seat whose role grants `department:view` neither
+    sees a board in builder_options nor proposes a change to it (§6.8.2:
+    boards follow `agent:view`). No built-in role holds one read without the
+    other, so the flag itself is pinned by
+    `test_board_reach_is_agent_view_not_department_view`."""
+    from oc8.authz.permissions import DEPARTMENT, VIEW, perm
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        agent, board = await _producer_and_board(db, office)
+        reader = await copilot_seat(db, tenant, "reader")
+        member = await db.get(m.OrgMember, reader.member_id)
+        assert member is not None and member.role_id is not None
+        db.add(
+            m.RolePermission(
+                tenant_id=tenant, role_id=member.role_id, permission=perm(DEPARTMENT, VIEW)
+            )
+        )
+        await db.flush()
+        run, _task = await _run(db, office, chat_mode="agent")
+        run.context = {
+            **run.context,
+            "chat_session_id": str(reader.session_id),
+            "originating_operator": reader.subject,
+            "operator_role": "member",
+        }
+        run.task_id = reader.task_id
+        await db.flush()
+        reader_task = await db.get(m.Task, reader.task_id)
+        assert reader_task is not None
+        outcome = await _call(db, office, run, reader_task, "builder_options")
+        assert outcome is not None and not outcome.output.startswith("ERROR"), outcome.output
+        assert str(agent.id) not in outcome.output and str(board.id) not in outcome.output
+        refused = await _call(
+            db, office, run, reader_task, "propose_board", boardId=str(board.id), title="x"
+        )
+        assert refused is not None and "(board_unknown" in refused.output, refused.output
+        assert (await db.execute(select(CopilotProposal))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_builder_options_offers_the_artifact_block_with_canvas(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.edition.tools import use_edition_tools
+    from oc8.licensing.capabilities import ENTERPRISE_CANVAS, Capability
+    from oc8.licensing.contracts import Entitlements
+
+    class _Canvas:
+        def has(self, capability: Capability) -> bool:
+            return capability == ENTERPRISE_CANVAS
+
+        def limit(self, name: str) -> int | None:
+            return None
+
+    async def canvas(_tenant: uuid.UUID) -> Entitlements:
+        return _Canvas()
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        run, task = await _run(db, office, chat_mode="agent")
+        with use_edition_tools([], canvas):
+            outcome = await _call(db, office, run, task, "builder_options")
+        assert outcome is not None
+        assert "| artifact (artifact_ref, datasets)" in outcome.output
