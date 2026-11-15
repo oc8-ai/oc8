@@ -12,6 +12,7 @@ from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz.scope import scope_for_principal
 from oc8.copilot.capabilities import (
+    BOARD_OPERATION_TYPES,
     InvalidOperation,
     apply_operation,
     operation_data,
@@ -47,6 +48,10 @@ async def create_proposal(
     idempotency_key: uuid.UUID | None = None,
 ) -> CopilotProposal:
     parsed = parse_operations(operations)
+    if any(operation.type in BOARD_OPERATION_TYPES for operation in parsed):
+        # Boards reach a tenant only through builder proposals, which apply the
+        # department rule (apply, or ask for approval); this path has none.
+        raise InvalidOperation("board_builder_only")
     proposal = CopilotProposal(tenant_id=actor.tenant_id, created_by=actor.subject,
                                idempotency_key=idempotency_key or uuid.uuid4())
     db.add(proposal)
@@ -106,6 +111,11 @@ async def apply_proposal(db: AsyncSession, proposal_id: uuid.UUID, actor: Princi
     operations = (await db.execute(select(CopilotOperation).where(
         CopilotOperation.proposal_id == proposal.id).order_by(CopilotOperation.ordinal)
     )).scalars().all()
+    if any(operation.operation_type in BOARD_OPERATION_TYPES for operation in operations):
+        # `create_proposal` never stores one; a row that does is refused, not applied.
+        proposal.status = "rejected"
+        await db.flush()
+        raise ProposalRejected()
     stale = [await _is_stale(db, operation) for operation in operations]
     if not operations or any(stale):
         proposal.status = "expired"

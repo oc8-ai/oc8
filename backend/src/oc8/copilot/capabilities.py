@@ -13,7 +13,16 @@ import uuid
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,10 +32,21 @@ from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
 from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
+from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
-from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
+from oc8.boards.lifecycle import (
+    archive_department_boards,
+    lock_live_board,
+    restore_department_boards,
+)
+from oc8.boards.spec import (
+    BoardSpecInvalid,
+    SpecChangeRefused,
+    check_additive,
+    parse_board_spec,
+)
 from oc8.capas.discovery import (
     connection_supports_value_spec,
     find_plugin,
@@ -258,6 +278,68 @@ class GuardrailSet(_Operation):
     conditions: list[GuardrailConditionInput] = Field(default_factory=list, max_length=20)
 
 
+#: The pydantic error type a refused board spec becomes. Its message is fixed:
+#: `BoardSpecInvalid` names submitted keys (meant for the agent's `board_write`),
+#: and nothing submitted may reach an `InvalidOperation` (F13).
+_BOARD_SPEC_ERROR = "board_spec_invalid"
+
+
+def _board_spec(value: object) -> object:
+    """A spec in its normalized form, or the fixed `board_spec_invalid` error."""
+    try:
+        return parse_board_spec(value).model_dump(mode="json")
+    except BoardSpecInvalid:
+        raise PydanticCustomError(_BOARD_SPEC_ERROR, "invalid board spec") from None
+
+
+class BoardCreate(_Operation):
+    """A new data board. Its department is not part of the operation: it is
+    always the producing agent's, pinned at apply (§6.8.5)."""
+
+    type: Literal["board.create"]
+    agentId: uuid.UUID
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2_000)
+    spec: dict[str, Any]
+
+    @field_validator("spec", mode="before")
+    @classmethod
+    def _valid_spec(cls, value: object) -> object:
+        return _board_spec(value)
+
+
+class BoardUpdate(_Operation):
+    """Changes a board's view, never its records. `spec` must be additive
+    (`check_additive`); `restoreVersion` is the undo: that version's blocks over
+    the CURRENT datasets, since datasets may only grow (§6.2, §6.8.3).
+    `agentId` hands the board to another agent of its own department."""
+
+    type: Literal["board.update"]
+    boardId: uuid.UUID
+    agentId: uuid.UUID | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2_000)
+    spec: dict[str, Any] | None = None
+    restoreVersion: int | None = Field(default=None, ge=1)
+
+    @field_validator("spec", mode="before")
+    @classmethod
+    def _valid_spec(cls, value: object) -> object:
+        return None if value is None else _board_spec(value)
+
+    @model_validator(mode="after")
+    def _one_view_change(self) -> BoardUpdate:
+        if self.spec is not None and self.restoreVersion is not None:
+            raise ValueError("spec and restoreVersion are mutually exclusive")
+        return self
+
+
+#: Board operations reach a tenant only through builder proposals, which apply
+#: the department rule (apply, or ask for approval); generic proposals refuse
+#: them (`proposals.create_proposal`, F11).
+BOARD_OPERATION_TYPES: frozenset[str] = frozenset({"board.create", "board.update"})
+
+
 Operation = (
     MissionSet
     | TriggerCreate
@@ -281,6 +363,8 @@ Operation = (
     | AgentModelSwitch
     | AgentSkillAssign
     | GuardrailSet
+    | BoardCreate
+    | BoardUpdate
 )
 _OPERATIONS = TypeAdapter(list[Operation])
 
@@ -299,7 +383,15 @@ class InvalidOperation(ValueError):
 def parse_operations(raw: object) -> list[Operation]:
     try:
         operations = _OPERATIONS.validate_python(raw)
-    except (ValidationError, TypeError, ValueError) as exc:
+    except ValidationError as exc:
+        if any(
+            error["type"] == _BOARD_SPEC_ERROR
+            for error in exc.errors(include_input=False, include_url=False, include_context=False)
+        ):
+            # Not chained: the validation error carries the submitted spec.
+            raise InvalidOperation(_BOARD_SPEC_ERROR) from None
+        raise InvalidOperation() from exc
+    except (TypeError, ValueError) as exc:
         raise InvalidOperation() from exc
     if not operations:
         raise InvalidOperation()
@@ -334,6 +426,7 @@ def operation_references(data: dict[str, Any]) -> dict[str, str]:
         "integrationId",
         "configurationRef",
         "departmentId",
+        "boardId",
         "connectionName",
         "function",
         "decision",
@@ -359,8 +452,22 @@ async def target_revision(
     `AgentCreate.departmentId` exists at apply time, which is the one thing
     that actually could have changed underneath it.
     """
-    if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall)):
+    if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall, BoardCreate)):
         return None
+    if isinstance(operation, BoardUpdate):
+        # The board row first and nothing else: the same lock `board_write` and
+        # the delete route take, so a view change serializes with writes.
+        board_statement = select(m.DataBoard.spec_version).where(
+            m.DataBoard.id == operation.boardId,
+            m.DataBoard.deleted_at.is_(None),
+            m.DataBoard.removed_at.is_(None),
+        )
+        version = await db.scalar(
+            board_statement.with_for_update() if lock_for_apply else board_statement
+        )
+        if version is None:
+            raise InvalidOperation()
+        return str(version)
     if isinstance(operation, (DepartmentUpdate, DepartmentDelete)):
         statement = select(m.Department.config_revision).where(
             m.Department.id == operation.departmentId, m.Department.deleted_at.is_(None)
@@ -965,11 +1072,139 @@ async def apply_operation(
     if isinstance(operation, GuardrailSet):
         await _apply_guardrail_set(db, tenant_id=tenant_id, operation=operation, publish=publish)
         return None
+    if isinstance(operation, BoardCreate):
+        return await _apply_board_create(
+            db, tenant_id=tenant_id, operation=operation, actor_member_id=actor_member_id
+        )
+    if isinstance(operation, BoardUpdate):
+        await _apply_board_update(
+            db, tenant_id=tenant_id, operation=operation, actor_member_id=actor_member_id
+        )
+        return None
     # Integration prepare validates the opaque reference still identifies a
     # tenant-visible integration. It deliberately does not configure credentials.
     if await db.get(m.Integration, operation.integrationId) is None:
         raise InvalidOperation()
     return None
+
+
+async def _apply_board_create(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    operation: BoardCreate,
+    actor_member_id: uuid.UUID | None,
+) -> uuid.UUID:
+    """A new board, in its producing agent's department. Returns its id."""
+    agent = await db.get(m.Agent, operation.agentId)
+    if agent is None or agent.deleted_at is not None:
+        raise InvalidOperation("agent_unknown")
+    board = m.DataBoard(
+        tenant_id=tenant_id,
+        department_id=agent.department_id,
+        agent_id=agent.id,
+        title=operation.title,
+        description=operation.description,
+        spec=operation.spec,
+        spec_version=1,
+    )
+    db.add(board)
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="operator",
+        actor_id=actor_member_id,
+        category="copilot",
+        action="board.created",
+        resource={
+            "board_id": str(board.id),
+            "agent_id": str(agent.id),
+            "department_id": str(board.department_id),
+        },
+    )
+    return board.id
+
+
+async def _restored_spec(db: AsyncSession, board: m.DataBoard, version: int) -> dict[str, Any]:
+    """The undo: `version`'s blocks over the board's current datasets."""
+    if version == board.spec_version:
+        old: dict[str, Any] | None = board.spec
+    else:
+        old = await db.scalar(
+            select(m.DataBoardSpecVersion.spec).where(
+                m.DataBoardSpecVersion.board_id == board.id,
+                m.DataBoardSpecVersion.version == version,
+            )
+        )
+    if old is None:
+        raise InvalidOperation("board_version_unknown")
+    candidate = {"datasets": board.spec.get("datasets"), "blocks": old.get("blocks")}
+    try:
+        return parse_board_spec(candidate).model_dump(mode="json")
+    except BoardSpecInvalid:
+        raise InvalidOperation(_BOARD_SPEC_ERROR) from None
+
+
+async def _apply_board_update(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    operation: BoardUpdate,
+    actor_member_id: uuid.UUID | None,
+) -> None:
+    """Change a board's view, title or producing agent. Records are never
+    touched; the previous spec is kept as a version so the change can be undone."""
+    board = await lock_live_board(db, operation.boardId)
+    if board is None or board.deleted_at is not None:
+        raise InvalidOperation("board_unknown")
+    if operation.agentId is not None:
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation("agent_unknown")
+        if agent.department_id != board.department_id:
+            # A board's department is its producing agent's (§6.8.5).
+            raise InvalidOperation("agent_other_department")
+    new_spec: dict[str, Any] | None = None
+    if operation.spec is not None:
+        new_spec = operation.spec
+    elif operation.restoreVersion is not None:
+        new_spec = await _restored_spec(db, board, operation.restoreVersion)
+    if new_spec is not None:
+        try:
+            check_additive(parse_board_spec(board.spec), parse_board_spec(new_spec))
+        except BoardSpecInvalid:
+            raise InvalidOperation(_BOARD_SPEC_ERROR) from None
+        except SpecChangeRefused as exc:
+            # Its message is its stable code; nothing submitted.
+            raise InvalidOperation(exc.code) from exc
+        db.add(
+            m.DataBoardSpecVersion(
+                tenant_id=tenant_id,
+                board_id=board.id,
+                version=board.spec_version,
+                title=board.title,
+                spec=board.spec,
+            )
+        )
+        board.spec = new_spec
+        board.spec_version += 1
+    if operation.agentId is not None:
+        board.agent_id = operation.agentId
+    if operation.title is not None:
+        board.title = operation.title
+    if operation.description is not None:
+        board.description = operation.description
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="operator",
+        actor_id=actor_member_id,
+        category="copilot",
+        action="board.updated",
+        resource={"board_id": str(board.id), "spec_version": board.spec_version},
+    )
 
 
 def _connection_tool_names(conn: m.McpConnection) -> frozenset[str]:

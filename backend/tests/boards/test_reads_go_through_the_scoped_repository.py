@@ -37,8 +37,9 @@ ALLOWED: dict[str, str] = {
         "no human caller, no departmental browse"
     ),
     "copilot/capabilities.py": (
-        "the Copilot's board capabilities, gated by the same department reach as the "
-        "agent capabilities beside them"
+        "board.create/board.update: the board's revision and its kept spec versions, "
+        "applied only through builder proposals (generic proposals refuse them), whose "
+        "department rule decided reach"
     ),
     "copilot/builder.py": (
         "applies a builder proposal's board after may_view/may_create_agent or the "

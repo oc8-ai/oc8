@@ -45,6 +45,8 @@ from oc8.copilot.capabilities import (
     AgentModelSwitch,
     AgentNarrowingSet,
     AgentSkillAssign,
+    BoardCreate,
+    BoardUpdate,
     DepartmentCreate,
     GuardrailSet,
     InvalidOperation,
@@ -218,6 +220,13 @@ def _texts(operation: Operation) -> list[str]:
         return [text for c in operation.conditions for text in _leaf_texts(c.model_dump())]
     if isinstance(operation, AgentNarrowingSet):
         return list(_leaf_texts(operation.narrowing))
+    if isinstance(operation, BoardCreate | BoardUpdate):
+        # Labels, titles and an artifact block's ref are free text in the spec.
+        return [
+            text
+            for text in (operation.title, operation.description, *_leaf_texts(operation.spec))
+            if text is not None
+        ]
     return []
 
 
