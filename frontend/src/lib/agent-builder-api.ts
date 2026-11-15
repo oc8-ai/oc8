@@ -181,6 +181,32 @@ function boardReasonText(code: string, t: Translate): string | null {
         "Artifact blocks are available in Enterprise only.",
         "Artefakt-Blöcke gibt es nur in Enterprise.",
       );
+    // A change to a dashboard may only add (§6.6): what is there stays.
+    case "dataset_removed":
+      return t(
+        "A dashboard change may only add datasets; an existing dataset can't be removed.",
+        "Eine Dashboard-Änderung darf nur Datensätze hinzufügen; ein bestehender Datensatz kann nicht entfernt werden.",
+      );
+    case "field_removed":
+      return t(
+        "A dashboard change may only add fields; an existing field can't be removed.",
+        "Eine Dashboard-Änderung darf nur Felder hinzufügen; ein bestehendes Feld kann nicht entfernt werden.",
+      );
+    case "grain_changed":
+      return t(
+        "A dataset's grain can't change; add a new dataset instead.",
+        "Die Granularität eines Datensatzes kann sich nicht ändern; leg stattdessen einen neuen Datensatz an.",
+      );
+    case "field_type_changed":
+      return t(
+        "A field's type can't change; add a new field instead.",
+        "Der Typ eines Felds kann sich nicht ändern; leg stattdessen ein neues Feld an.",
+      );
+    case "currency_changed":
+      return t(
+        "A field's currency can't change; add a new field instead.",
+        "Die Währung eines Felds kann sich nicht ändern; leg stattdessen ein neues Feld an.",
+      );
     case "board_builder_only":
       return t(
         "Dashboards can only be proposed by the Copilot.",

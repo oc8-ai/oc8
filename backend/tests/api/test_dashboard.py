@@ -267,7 +267,7 @@ async def test_out_of_range_widget_positions_are_refused(patch: dict[str, int]) 
     assert post_r.status_code == 422, post_r.text
 
 
-def _preset_body(name: str = "My layout", scope: str = "personal") -> dict:
+def _preset_body(name: str = "My layout", scope: str = "personal") -> dict[str, Any]:
     return {
         "name": name,
         "scope": scope,

@@ -74,7 +74,22 @@ msgstr ""
 msgid "A dashboard can only go to an agent of its own department."
 msgstr ""
 
+msgid "A dashboard change may only add datasets; an existing dataset can't be removed."
+msgstr ""
+
+msgid "A dashboard change may only add fields; an existing field can't be removed."
+msgstr ""
+
+msgid "A dataset's grain can't change; add a new dataset instead."
+msgstr ""
+
 msgid "A decision was made."
+msgstr ""
+
+msgid "A field's currency can't change; add a new field instead."
+msgstr ""
+
+msgid "A field's type can't change; add a new field instead."
 msgstr ""
 
 msgid "a former member"
@@ -5364,6 +5379,9 @@ msgid "This connection is not set up yet. Please contact your administrator."
 msgstr ""
 
 msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr ""
+
+msgid "This dashboard can't be shown."
 msgstr ""
 
 msgid "This dashboard couldn't be loaded."

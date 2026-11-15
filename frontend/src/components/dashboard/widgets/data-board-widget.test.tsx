@@ -66,6 +66,16 @@ describe("DataBoardWidget", () => {
     expect(screen.queryByText(/removed/)).toBeNull();
   });
 
+  it.each([{}, { boardId: 42 }, { boardId: "" }])(
+    "says a tile without a usable board id can't be shown (%o)",
+    (config) => {
+      mockBoard({});
+      render(wrap(<DataBoardWidget config={config} onConfigChange={vi.fn()} />));
+      expect(screen.getByText("This dashboard can't be shown.")).toBeInTheDocument();
+      expect(screen.queryByText("No access")).toBeNull();
+    },
+  );
+
   it("shows removed on 410", () => {
     mockBoard({ error: new ApiError("gone", 410) });
     render(wrap(<DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />));

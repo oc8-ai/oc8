@@ -65,9 +65,17 @@ export function DataBoardWidget({
       </TileMessage>
     );
   }
+  // A tile without a usable board id is a broken config, not a refusal.
+  if (!boardId) {
+    return (
+      <TileMessage>
+        {t("This dashboard can't be shown.", "Dieses Dashboard kann nicht angezeigt werden.")}
+      </TileMessage>
+    );
+  }
   // 404 is also what the server answers once the person lost access: say no
   // more than that, not even the title.
-  if (!boardId || status === 404 || status === 403) {
+  if (status === 404 || status === 403) {
     return <TileMessage>{t("No access", "Kein Zugriff")}</TileMessage>;
   }
   if (!board) {

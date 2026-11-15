@@ -443,6 +443,31 @@ describe("builderRefusalText", () => {
     );
     expect(fallback).not.toMatch(/agent/i);
   });
+  it("says what a dashboard change may not do", () => {
+    const de = (_en: string, de: string) => de;
+    const additive = [
+      "dataset_removed",
+      "field_removed",
+      "grain_changed",
+      "field_type_changed",
+      "currency_changed",
+    ];
+    const generic = builderRefusalText("step_failed", 0, t, null, "board");
+    const texts = additive.map((r) => builderRefusalText("step_failed", 0, t, r, "board"));
+    expect(new Set(texts).size).toBe(additive.length);
+    for (const x of texts) {
+      expect(x).not.toBe(generic);
+      expect(x).toMatch(/^Step 1 could not be applied: .+ Nothing was saved\.$/);
+    }
+    expect(texts[1]).toContain("an existing field can't be removed");
+    expect(texts[3]).toContain("A field's type can't change");
+    expect(builderRefusalText("dataset_removed", null, t, null, "board")).toBe(
+      "A dashboard change may only add datasets; an existing dataset can't be removed.",
+    );
+    expect(builderRefusalText("step_failed", 0, de, "currency_changed", "board")).toMatch(
+      /Die Währung eines Felds kann sich nicht ändern/,
+    );
+  });
   it("names a concurrent replacement", () => {
     expect(builderRefusalText("superseded_concurrently", null, t)).toBe(
       "Replaced by a newer proposal meanwhile.",
