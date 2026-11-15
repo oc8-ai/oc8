@@ -260,13 +260,17 @@ def _direct_access_dto(raw: Any) -> DirectAccessInfoDTO | None:
     if not isinstance(raw, dict):
         return None
     account = raw.get("account")
+    department_stage = raw.get("decider") == "department"
     return DirectAccessInfoDTO(
-        session_id=str(raw.get("session_id") or ""),
+        # A department's approvers decide the call, not the conversation: the
+        # session id stays in the payload (deleting the chat expires the
+        # card) but is the person's, so it never reaches them.
+        session_id="" if department_stage else str(raw.get("session_id") or ""),
         tool_key=str(raw.get("tool_key") or ""),
         label=str(raw.get("label") or raw.get("tool_key") or ""),
         member_name=str(raw.get("member_name") or ""),
         account=str(account) if account in ("own", "organisation") else None,
-        decider="department" if raw.get("decider") == "department" else "member",
+        decider="department" if department_stage else "member",
     )
 
 

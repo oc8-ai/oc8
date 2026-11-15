@@ -523,8 +523,26 @@ async def _raise_department_stage(db: AsyncSession, approval: m.ApprovalRequest)
     it follows (`member_approval_id`) -- which is what tells the person's
     listing that their card now waits for the department."""
     department_id = department_after_person(approval)
-    if department_id is None:  # pragma: no cover - the caller checked
-        return
+    if department_id is None:
+        # Never tenant-wide: a stage with no department would be a card only
+        # the unrestricted see. The caller checked; fail loudly if it did not.
+        raise ValueError("a department stage needs the holding department")
+    live = (
+        await db.execute(
+            select(m.Department.id).where(
+                m.Department.id == department_id,
+                m.Department.tenant_id == approval.tenant_id,
+                m.Department.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if live is None:
+        # The holding department was archived between the two stages: its
+        # queue is one nobody sees, and parking the run there would wait for
+        # ever. Refused like any effect that can no longer be applied: the
+        # caller rolls back, the person's card stays pending (they can still
+        # reject it).
+        raise EffectRefused("direct_access_department_gone")
     payload = {k: v for k, v in (approval.payload or {}).items() if k not in _PER_CARD_KEYS}
     payload["direct_access"] = {
         **payload["direct_access"],

@@ -327,3 +327,62 @@ async def test_deleting_the_chat_expires_the_persons_stage(
         await db.refresh(card)
         assert card.status == "expired"
         assert [r.id for r in await _tool_sends(db)] == [card.id]
+
+
+async def test_the_departments_approvers_never_see_the_conversation(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The session id stays on the department's card (the deletion sweep needs
+    it) but its DTO does not carry it: the conversation is the person's."""
+    from oc8.api.v1._serializers import approval_to_dto
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        _run, card = await _parked(db, office)
+        anna = await _human(db, tenant, "anna", "member")
+        await decide_approval(db, card, decision="approve", tenant_id=tenant, actor=anna)
+        dept = await _department_stage(db, card)
+        assert dept.payload["direct_access"]["session_id"] == str(office.session_id)
+        dto = approval_to_dto(dept)
+        assert dto.direct_access is not None
+        assert dto.direct_access.decider == "department"
+        assert dto.direct_access.session_id == ""
+        assert str(office.session_id) not in dto.model_dump_json()
+        # The person's own card still names it.
+        own = approval_to_dto(card)
+        assert own.direct_access is not None
+        assert own.direct_access.session_id == str(office.session_id)
+
+
+async def test_an_archived_holding_department_refuses_the_persons_approval(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """No department card in a queue nobody sees: the approval is refused like
+    any effect that can no longer be applied (the caller rolls back), so the
+    person's card stays pending and the run parked."""
+    import datetime as dt
+
+    from oc8.approvals import EffectRefused
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        run, card = await _parked(db, office)
+        department = await db.get(m.Department, office.department_id)
+        assert department is not None
+        department.deleted_at = dt.datetime.now(dt.UTC)
+        await db.flush()
+        anna = await _human(db, tenant, "anna", "member")
+        with pytest.raises(EffectRefused):
+            async with db.begin_nested():
+                await decide_approval(db, card, decision="approve", tenant_id=tenant, actor=anna)
+        await db.refresh(card)
+        assert card.status == "pending"
+        assert [r.id for r in await _tool_sends(db)] == [card.id]
+        await db.refresh(run)
+        assert run.state == "waiting_for_approval"
+        assert not (run.context or {}).get("resolved_tool_approvals")
+        # Rejecting it still works.
+        result = await decide_approval(db, card, decision="reject", tenant_id=tenant, actor=anna)
+        assert result.resumed_run_id == run.id

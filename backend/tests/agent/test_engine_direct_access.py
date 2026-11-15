@@ -690,6 +690,55 @@ async def test_an_elicited_direct_write_parks_for_the_person(
     assert [who for who, _k, _d in bus.member] == [[office.member_id]]
 
 
+async def test_an_elicited_department_held_write_needs_both_approvals_and_runs_once(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The held-elicitation path raises the same two stages: the person's card,
+    then the department's. The answered call runs only after both, once."""
+    recorder = _RecordingServer(delay_s=0)
+    _patch(monkeypatch, recorder, [_turn("done") for _ in range(6)])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(
+            db,
+            tenant,
+            policy={"enabled": True, "read": True, "modify": True, "approval_actions": ["modify"]},
+        )
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(
+            db,
+            office,
+            extra={
+                "pending_elicitation": {
+                    "connection": "things",
+                    "tool": "update_record",
+                    "arguments": {"id": 7},
+                    "question": "Which customer?",
+                },
+                "clarifications": [{"question": "Which customer?", "answer": "ACME"}],
+            },
+        )
+        leg1 = await _run(db, office, agent, run)
+        assert leg1.status == "waiting_for_approval"
+        held = await _held(db)
+        assert held.department_id is None
+        assert held.payload["direct_access"]["decider"] == "member"
+        assert held.payload["direct_access"]["department_id"] == str(office.department_id)
+        pre = await _decide_both_stages(db, office, run)
+        assert recorder.windows == []
+        leg2 = await run_agent(
+            db,
+            agent=agent,
+            task_text="resume",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided=pre,
+        )
+    assert leg2.status == "done"
+    assert [name for name, _s, _e in recorder.windows] == ["update_record"]
+
+
 async def test_an_elicited_direct_write_after_the_grant_was_revoked_is_refused(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
