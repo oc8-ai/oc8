@@ -53,6 +53,7 @@ from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ConditionDatatype, ConditionOperator, Effect
 from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.schemas.base import CamelModel
@@ -436,6 +437,7 @@ async def delete_department(
     else:
         dept.deleted_at = now
         outcome = "archived"
+        await archive_department_boards(db, department_id=dept_id, now=now)
         for agent in live_agents:
             agent_id = agent.id
             # The same delete-or-archive-and-retire step `delete_agent` takes.
@@ -490,6 +492,7 @@ async def restore_department(
     if dept is None or dept.deleted_at is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no archived department with that id")
     dept.deleted_at = None
+    await restore_department_boards(db, department_id=dept_id)
     await db.flush()
     # `department_to_dto` is a pure in-memory serialization of the already-
     # loaded `dept` row -- no DB read of its own, so building the DTO here

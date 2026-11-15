@@ -1,4 +1,4 @@
-"""Read API for data boards (dashboards): list, open and query.
+"""API for data boards (dashboards): list, open, query and delete.
 
 Visibility is `agent:view` in the board's department (spec §6.8.2): every seat
 carries it and tenant-wide holders see all boards. Both resolve through
@@ -7,18 +7,26 @@ carries it and tenant-wide holders see all boards. Both resolve through
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.api.deps import DbSession, require_departmental
+from oc8.api.deps import (
+    DbSession,
+    authorize_agent_write,
+    require_agent_write,
+    require_departmental,
+)
+from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.boards.lifecycle import count_board_records, remove_board
 from oc8.boards.query import BoardQuery, QueryInvalid, QueryResult, run_query
 from oc8.boards.repo import may_delete_board, visible_board, visible_boards
 from oc8.schemas.dto import BoardSummaryDTO, DataBoardDTO
@@ -129,3 +137,47 @@ async def query_board(
         return await run_query(db, board=board, query=body)
     except QueryInvalid as exc:
         raise HTTPException(422, f"board_query:{exc.code}") from exc
+
+
+@router.delete("/boards/{board_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_board(
+    board_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_agent_write())],
+    records: Annotated[int, Query(ge=0)],
+) -> Response:
+    """Remove a board and its history. `records` is the count the person was shown;
+    if it moved since, nothing is deleted (409) so the confirmation stays honest."""
+    not_found = HTTPException(404, "board not found")
+    authority = await authority_for_principal(request, db, actor.principal)
+    board = await visible_board(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide_read(authority, perm(AGENT, VIEW)),
+        tenant_id=actor.principal.tenant_id,
+        board_id=board_id,
+    )
+    if board is None or board.removed_at is not None:
+        raise not_found
+    await authorize_agent_write(request, db, actor, board.department_id, not_found=not_found)
+    if await count_board_records(db, board.id) != records:
+        raise HTTPException(409, "board_records_changed")
+    department_id = board.department_id
+    deleted = await remove_board(db, board, now=dt.datetime.now(tz=dt.UTC))
+    await append_event(
+        db,
+        tenant_id=actor.principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="board.deleted",
+        resource={
+            "board_id": str(board_id),
+            "record_count": deleted,
+            "department_id": str(department_id),
+            "by": actor.principal.subject,
+        },
+        principal=actor.principal,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

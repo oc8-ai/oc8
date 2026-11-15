@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -282,3 +282,94 @@ async def test_archived_producer_marks_the_board_stale(app_session: AppSessionFa
         )
     assert r.status_code == 200, r.text
     assert r.json()["stale"] is True
+
+
+async def _count(app_session: AppSessionFactory, tenant: uuid.UUID, model: Any) -> int:
+    async with app_session(tenant) as db:
+        return int((await db.execute(select(func.count()).select_from(model))).scalar_one())
+
+
+async def test_delete_requires_the_confirmed_record_count(
+    app_session: AppSessionFactory,
+) -> None:
+    o = await _office(app_session)
+    h = _headers(o.tenant, "boss", "org_admin")
+    url = f"/api/v1/boards/{o.finance_board}"
+    async with _http() as c:
+        stale = await c.delete(url, params={"records": 1}, headers=h)
+        assert stale.status_code == 409 and stale.json()["detail"] == "board_records_changed"
+        assert (await c.get(url, headers=h)).status_code == 200
+        ok = await c.delete(url, params={"records": 2}, headers=h)
+        assert ok.status_code == 204, ok.text
+        assert (await c.get(url, headers=h)).status_code == 410
+        again = await c.delete(url, params={"records": 0}, headers=h)
+        assert again.status_code == 404
+    async with app_session(o.tenant) as db:
+        for model in (m.DataBoardRecord, m.DataBoardBatch):
+            n = (
+                await db.execute(
+                    select(func.count()).select_from(model).where(model.board_id == o.finance_board)
+                )
+            ).scalar_one()
+            assert n == 0
+        other = (
+            await db.execute(
+                select(func.count())
+                .select_from(m.DataBoardRecord)
+                .where(m.DataBoardRecord.board_id == o.sales_board)
+            )
+        ).scalar_one()
+        assert other == 2  # the other department's board is untouched
+
+
+async def test_delete_needs_agent_manage_in_the_department(
+    app_session: AppSessionFactory,
+) -> None:
+    o = await _office(app_session)
+    async with _http() as c:
+        # An operator holds agent:view tenant-wide but not agent:manage: refused at the door.
+        op = await c.delete(
+            f"/api/v1/boards/{o.finance_board}",
+            params={"records": 2},
+            headers=_headers(o.tenant, "ops", "operator"),
+        )
+        assert op.status_code == 403, op.text
+        # A seat with agent_manage in its OWN department only.
+        async with app_session(o.tenant) as db:
+            seat = (
+                await db.execute(
+                    select(m.OrgMemberDepartment).where(m.OrgMemberDepartment.id == o.seat)
+                )
+            ).scalar_one()
+            seat.agent_manage = True
+        h = _headers(o.tenant, "fin-member", "member")
+        foreign = await c.delete(
+            f"/api/v1/boards/{o.sales_board}", params={"records": 2}, headers=h
+        )
+        assert foreign.status_code == 404, foreign.text
+        assert "Pipeline" not in foreign.text and "Sales" not in foreign.text
+        own = await c.delete(f"/api/v1/boards/{o.finance_board}", params={"records": 2}, headers=h)
+        assert own.status_code == 204, own.text
+    assert await _count(app_session, o.tenant, m.DataBoardRecord) == 2  # sales board's rows
+
+
+async def test_delete_is_audited(app_session: AppSessionFactory) -> None:
+    o = await _office(app_session)
+    async with _http() as c:
+        r = await c.delete(
+            f"/api/v1/boards/{o.finance_board}",
+            params={"records": 2},
+            headers=_headers(o.tenant, "boss", "org_admin"),
+        )
+    assert r.status_code == 204, r.text
+    async with app_session(o.tenant) as db:
+        events = (
+            (await db.execute(select(m.AuditEvent).where(m.AuditEvent.action == "board.deleted")))
+            .scalars()
+            .all()
+        )
+    assert len(events) == 1
+    assert events[0].resource["record_count"] == 2
+    assert events[0].resource["board_id"] == str(o.finance_board)
+    assert events[0].resource["department_id"] == str(o.finance)
+    assert events[0].resource["by"] == "boss"

@@ -26,6 +26,7 @@ from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_vers
 from oc8.auth import Principal
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
+from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
 from oc8.capas.discovery import (
     connection_supports_value_spec,
     find_plugin,
@@ -682,6 +683,7 @@ async def apply_operation(
             await db.delete(dept)
         else:
             dept.deleted_at = now
+            await archive_department_boards(db, department_id=dept.id, now=now)
             for agent in live_agents:
                 # The same step `DELETE /departments/{id}` takes for each agent.
                 await delete_or_archive_agent(
@@ -699,6 +701,7 @@ async def apply_operation(
         if dept is None or dept.deleted_at is None:
             raise InvalidOperation()
         dept.deleted_at = None
+        await restore_department_boards(db, department_id=dept.id)
         await db.flush()
         return None
     if isinstance(operation, AgentCreate):

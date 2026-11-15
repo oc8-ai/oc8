@@ -21,7 +21,7 @@ GUARDED_TABLES = frozenset(
 )
 
 #: Path (relative to `src/oc8`) -> why it may load one. `boards/lifecycle.py`
-#: joins this list in the task that creates it.
+#: is listed below.
 ALLOWED: dict[str, str] = {
     "boards/repo.py": "the scoped repository itself -- this is the door",
     "boards/records.py": (
@@ -51,6 +51,10 @@ ALLOWED: dict[str, str] = {
     "api/v1/copilot_builder.py": (
         "the builder card reads the board a proposal created, only after the owner or "
         "submitted+may_view gate passed, tenant-checked"
+    ),
+    "boards/lifecycle.py": (
+        "archives and restores a department's boards and deletes a board's history; "
+        "called by routes that already authorized the department or the board"
     ),
     "api/v1/boards.py": (
         "the read routes: they load records and batches only for boards boards.repo "
