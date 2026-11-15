@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agent import mcp_pool
-from oc8.agent.http_tools import HttpToolSession, resolve_http_login
+from oc8.agent.http_tools import HttpToolError, HttpToolSession, resolve_http_login
 from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -26,6 +26,7 @@ from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
 from oc8.capas.service import _artifact_hash
 from oc8.connections.usable import needs_department
+from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
     ConnectionToolLabelsDTO,
@@ -347,6 +348,10 @@ async def create_connection(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> McpConnectionDTO:
+    # Checked here, not on the request model: a validation error echoes the
+    # input, and that input is the address with the password in it.
+    if body.transport == "manual_http" and base_url_has_login(body.server_url):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, LOGIN_IN_BASE_URL)
     conn = m.McpConnection(
         id=uuid.uuid4(),
         tenant_id=principal.tenant_id,
@@ -551,13 +556,16 @@ async def run_test_call(
     if body.tool not in {str(t["name"]) for t in http_tools}:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "tool not found")
     env = await _connection_env(db, conn)
-    session = HttpToolSession(
-        conn.server_url,
-        http_tools,
-        headers=resolve_auth_header(cfg, env),
-        login=resolve_http_login(cfg, env),
-        timeout_s=_TEST_TIMEOUT_S,
-    )
+    try:
+        session = HttpToolSession(
+            conn.server_url,
+            http_tools,
+            headers=resolve_auth_header(cfg, env),
+            login=resolve_http_login(cfg, env),
+            timeout_s=_TEST_TIMEOUT_S,
+        )
+    except HttpToolError as exc:  # a stored base URL the session refuses
+        return HttpTestCallResultDTO(ok=False, error_class=exc.kind, message=str(exc))
     # Everything the call needs is loaded: end the transaction now, so its
     # pooled connection is not held for as long as the API takes to answer.
     await db.commit()

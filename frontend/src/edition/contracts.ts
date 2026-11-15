@@ -170,6 +170,10 @@ export interface CustomServerSourceProps {
   /** create: base URL, login, tools, scopes, import metadata. edit: only tools, scopes and metadata are used. */
   readonly onComplete: (draft: CustomServerDraft) => void;
   readonly onCancel: () => void;
+  /** Back out of the source: create mode returns to the wizard's previous
+   * step (where the source was chosen); edit mode closes the dialog. A source
+   * with `ownsFooter` wires its own Back button to this. */
+  readonly onBack: () => void;
 }
 
 /** A way to describe a plain HTTP API's endpoints other than by hand. */
@@ -183,4 +187,8 @@ export interface CustomServerSource {
   readonly needs?: readonly Capability[];
   /** Whether "Edit endpoints" opens this source for an existing connection. */
   readonly canEdit?: (existing: HttpToolsSnapshot) => boolean;
+  /** The source draws its own Back and Continue: while its step is shown the
+   * create wizard renders no footer, and the source calls `onBack` and
+   * `onComplete` itself. */
+  readonly ownsFooter?: boolean;
 }

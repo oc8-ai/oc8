@@ -2112,6 +2112,10 @@ msgid "Created"
 msgstr "Aangemaakt"
 
 #, fuzzy
+msgid "Created record"
+msgstr "Aangemaakt record"
+
+#, fuzzy
 msgid "Creating…"
 msgstr "Aanmaken…"
 
@@ -6568,6 +6572,10 @@ msgid "The assistant returned no answer. Try again or rephrase."
 msgstr "De assistent gaf geen antwoord. Probeer het opnieuw of formuleer het anders."
 
 #, fuzzy
+msgid "The base URL contains a login. Logins belong in the login fields, not in the address."
+msgstr "De basis-URL bevat een login. Inloggegevens horen in de loginvelden, niet in het adres."
+
+#, fuzzy
 msgid "The call could not be made."
 msgstr "De aanroep kon niet worden gedaan."
 
@@ -6958,6 +6966,10 @@ msgstr "Deze verbinding zit in geen enkele afdeling, dus nog geen agent krijgt h
 #, fuzzy
 msgid "This connection is not set up yet. Please contact your administrator."
 msgstr "Deze koppeling is nog niet ingericht. Neem contact op met je beheerder."
+
+#, fuzzy
+msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr "De basis-URL van deze verbinding bevat een login. Verwijder deze verbinding en maak haar opnieuw aan met de login in de loginvelden."
 
 #, fuzzy
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."

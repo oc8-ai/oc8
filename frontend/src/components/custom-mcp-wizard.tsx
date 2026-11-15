@@ -25,7 +25,7 @@ import {
 import { toast } from "sonner";
 import { Field } from "@/components/agent-identity-fields";
 import { HttpLoginFields } from "@/components/http-login-fields";
-import { HttpTestCallPanel, type TestableTool } from "@/components/http-test-call-panel";
+import { HttpTestCallPanel } from "@/components/http-test-call-panel";
 import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
 import { useCustomServerSources } from "@/edition/composition";
 import { useConfirm } from "@/hooks/use-confirm";
@@ -46,7 +46,9 @@ import {
   httpToolsUpdateBetween,
   loginToConfig,
   metadataToConfig,
+  baseUrlHasLogin,
   customServerDraftProblem,
+  type TestableTool,
   patchHttpTools,
   postHttpTestCall,
   toolToConfig,
@@ -570,6 +572,7 @@ export function CustomMcpWizard({
         if (activeSource) return state.draft !== null;
         return (
           state.baseUrl.trim().length > 0 &&
+          !baseUrlHasLogin(state.baseUrl) &&
           state.httpTools.length > 0 &&
           loginComplete(state.login)
         );
@@ -1167,6 +1170,7 @@ export function CustomMcpWizard({
                     setStepError(null);
                     setStep(0);
                   }}
+                  onBack={handleBack}
                 />
                 {stepError && (
                   <p role="alert" className="text-xs text-[color:var(--status-error)]">
@@ -1185,6 +1189,14 @@ export function CustomMcpWizard({
                     placeholder="https://api.example.com"
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-sm outline-none focus:border-primary/50"
                   />
+                  {baseUrlHasLogin(state.baseUrl) && (
+                    <p role="alert" className="mt-1 text-xs text-[color:var(--status-error)]">
+                      {t(
+                        "The base URL contains a login. Logins belong in the login fields, not in the address.",
+                        "Die Basis-URL enthält eine Anmeldung. Anmeldedaten gehören in die Anmeldefelder, nicht in die Adresse.",
+                      )}
+                    </p>
+                  )}
                 </Field>
                 <HttpLoginFields value={state.login} onChange={(login) => update({ login })} />
                 <div>
@@ -1335,52 +1347,54 @@ export function CustomMcpWizard({
             )}
           </div>
 
-          <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
-            <button
-              onClick={handleBack}
-              disabled={busy}
-              className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {step === 0 ? (
-                "Cancel"
-              ) : (
-                <>
-                  <ChevronLeft className="h-4 w-4" /> Back
-                </>
-              )}
-            </button>
-            {sourceStepActive ? null : !isLastStep ? (
+          {sourceStepActive && activeSource?.ownsFooter ? null : (
+            <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
               <button
-                onClick={handleNext}
-                disabled={!canProceed}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition",
-                  canProceed
-                    ? "bg-primary text-primary-foreground hover:brightness-110 glow-teal"
-                    : "cursor-not-allowed bg-background/40 text-muted-foreground",
-                )}
+                onClick={handleBack}
+                disabled={busy}
+                className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Next <ChevronRight className="h-4 w-4" />
+                {step === 0 ? (
+                  "Cancel"
+                ) : (
+                  <>
+                    <ChevronLeft className="h-4 w-4" /> Back
+                  </>
+                )}
               </button>
-            ) : (
-              <div className="flex items-center gap-2">
+              {sourceStepActive ? null : !isLastStep ? (
                 <button
-                  onClick={() => handleSave(false)}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-background/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={handleNext}
+                  disabled={!canProceed}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition",
+                    canProceed
+                      ? "bg-primary text-primary-foreground hover:brightness-110 glow-teal"
+                      : "cursor-not-allowed bg-background/40 text-muted-foreground",
+                  )}
                 >
-                  Save
+                  Next <ChevronRight className="h-4 w-4" />
                 </button>
-                <button
-                  onClick={() => handleSave(true)}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Check className="h-4 w-4" /> Save & export as capa
-                </button>
-              </div>
-            )}
-          </footer>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleSave(false)}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-background/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => handleSave(true)}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Check className="h-4 w-4" /> Save & export as capa
+                  </button>
+                </div>
+              )}
+            </footer>
+          )}
         </div>
       </div>
     </>

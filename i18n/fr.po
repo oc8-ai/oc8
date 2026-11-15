@@ -2112,6 +2112,10 @@ msgid "Created"
 msgstr "Créé"
 
 #, fuzzy
+msgid "Created record"
+msgstr "Enregistrement créé"
+
+#, fuzzy
 msgid "Creating…"
 msgstr "Création…"
 
@@ -6568,6 +6572,10 @@ msgid "The assistant returned no answer. Try again or rephrase."
 msgstr "L'assistant n'a renvoyé aucune réponse. Réessayez ou reformulez."
 
 #, fuzzy
+msgid "The base URL contains a login. Logins belong in the login fields, not in the address."
+msgstr "L'URL de base contient un identifiant. Les identifiants vont dans les champs de connexion, pas dans l'adresse."
+
+#, fuzzy
 msgid "The call could not be made."
 msgstr "L'appel n'a pas pu être effectué."
 
@@ -6958,6 +6966,10 @@ msgstr "Cette connexion n'est dans aucun service, aucun agent ne reçoit donc en
 #, fuzzy
 msgid "This connection is not set up yet. Please contact your administrator."
 msgstr "Cette connexion n'est pas encore configurée. Veuillez contacter votre administrateur."
+
+#, fuzzy
+msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr "L'URL de base de cette connexion contient un identifiant. Supprimez cette connexion et recréez-la avec l'identifiant dans les champs de connexion."
 
 #, fuzzy
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."

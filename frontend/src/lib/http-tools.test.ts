@@ -74,3 +74,44 @@ describe("customServerDraftProblem scope messages", () => {
     expect(out).toContain("list_pets");
   });
 });
+
+describe("customServerDraftProblem base URL", () => {
+  function draft(baseUrl: string): CustomServerDraft {
+    return {
+      baseUrl,
+      login: { kind: "none" } as CustomServerDraft["login"],
+      httpTools: [
+        {
+          name: "list_pets",
+          description: "",
+          method: "GET",
+          urlTemplate: "/pets",
+          paramSchema: { type: "object", properties: {} },
+          paramLocations: {},
+          bodyParam: null,
+        },
+      ],
+      scopes: { read: ["list_pets"], modify: [] },
+      openapi: null,
+    };
+  }
+  const t = (en: string) => en;
+
+  it.each([
+    "https://user:secret@api.example.com/v1",
+    "https://user@api.example.com",
+    "http://:secret@api.example.com",
+    " https://user:secret@api.example.com ",
+  ])("refuses a login inside the address: %s", (baseUrl) => {
+    expect(customServerDraftProblem(draft(baseUrl), t, { withConnection: true })).toMatch(
+      /login fields, not in the address/,
+    );
+  });
+
+  it.each(["https://api.example.com/v1", "https://api.example.com/users/@me"])(
+    "accepts an address without a login: %s",
+    (baseUrl) => {
+      expect(customServerDraftProblem(draft(baseUrl), t, { withConnection: true })).toBeNull();
+    },
+  );
+});

@@ -1585,6 +1585,9 @@ msgstr "Webhook-URL erstellen"
 msgid "Created"
 msgstr "Angelegt"
 
+msgid "Created record"
+msgstr "Angelegter Datensatz"
+
 msgid "Creating…"
 msgstr "Wird erstellt …"
 
@@ -4927,6 +4930,9 @@ msgstr "Die Argumente müssen ein JSON-Objekt sein."
 msgid "The assistant returned no answer. Try again or rephrase."
 msgstr "Der Assistent hat keine Antwort geliefert. Versuch es nochmal oder formuliere anders."
 
+msgid "The base URL contains a login. Logins belong in the login fields, not in the address."
+msgstr "Die Basis-URL enthält eine Anmeldung. Anmeldedaten gehören in die Anmeldefelder, nicht in die Adresse."
+
 msgid "The call could not be made."
 msgstr "Der Aufruf war nicht möglich."
 
@@ -5220,6 +5226,9 @@ msgstr "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agen
 
 msgid "This connection is not set up yet. Please contact your administrator."
 msgstr "Diese Verbindung ist noch nicht eingerichtet. Bitte wende dich an deinen Administrator."
+
+msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr "Die Basis-URL dieser Verbindung enthält eine Anmeldung. Lösche diese Verbindung und lege sie mit der Anmeldung in den Anmeldefeldern neu an."
 
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr "Dies löscht jeden Agenten, jeden Lauf und jeden Wissenseintrag, den dieses Unternehmen derzeit hat, und ersetzt sie durch den Inhalt der hochgeladenen Datei. Dies kann nicht rückgängig gemacht werden."

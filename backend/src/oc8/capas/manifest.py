@@ -9,6 +9,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
+
 logger = logging.getLogger(__name__)
 
 PluginType = Literal[
@@ -948,6 +950,15 @@ def claude_hook_permissions(spec: ClaudeHooksSpec | None) -> list[str]:
                     seen.add(perm)
                     out.append(perm)
     return out
+
+
+def http_api_login_in_base_url(manifest: Manifest) -> str | None:
+    """`LOGIN_IN_BASE_URL` naming the first HTTP API connection whose base URL
+    carries a login, or None. The URL itself is never repeated."""
+    for conn in manifest.tool_pack.connections if manifest.tool_pack else []:
+        if conn.transport == "manual_http" and base_url_has_login(conn.server_url):
+            return f"{conn.name}: {LOGIN_IN_BASE_URL}"
+    return None
 
 
 def parse_manifest(data: dict[str, Any]) -> Manifest:

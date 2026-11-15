@@ -44,7 +44,22 @@ import httpx
 from opentelemetry.instrumentation.utils import suppress_http_instrumentation
 
 from oc8.modelrouter.types import NeutralTool
-from oc8.net.outbound import USER_AGENT, OutboundBlocked, PinnedTransport, guard_outbound_url
+from oc8.net.decoding import (
+    ACCEPT_ENCODING,
+    BoundedDecoder,
+    UnsupportedContentEncoding,
+    content_decoder,
+    decode_step,
+)
+from oc8.net.outbound import (
+    STORED_LOGIN_IN_BASE_URL,
+    USER_AGENT,
+    OutboundBlocked,
+    PinnedTransport,
+    base_url_has_login,
+    guard_outbound_url,
+    url_origin,
+)
 
 #: The same allowance as `mcp_client.MCP_REQUEST_TIMEOUT_SECONDS` (not
 #: imported from there: `mcp_client` imports this module).
@@ -64,7 +79,7 @@ _REDACTED = "[redacted]"
 #: redacted on its own; shorter parts are too likely to be ordinary words.
 _MIN_SECRET_PART = 8
 #: Only encodings decoded here in bounded steps are asked for and accepted.
-_ACCEPT_ENCODING = "gzip, deflate"
+_ACCEPT_ENCODING = ACCEPT_ENCODING
 
 logger = logging.getLogger(__name__)
 
@@ -335,8 +350,7 @@ async def _checked_ip(url: str) -> str:
         raise HttpToolError("blocked", BLOCKED_MESSAGE) from exc
 
 
-def _origin(url: httpx.URL) -> tuple[str, str, int | None]:
-    return (url.scheme, url.host, url.port)
+_origin = url_origin
 
 
 def _without_auth(
@@ -369,73 +383,36 @@ def _with_query(request: httpx.Request, params: Mapping[str, str]) -> httpx.Requ
     )
 
 
-class _Identity:
-    unconsumed_tail = b""
-
-    def decompress(self, data: bytes, max_length: int) -> bytes:
-        self.unconsumed_tail = data[max_length:]
-        return data[:max_length]
-
-
-class _Deflate:
-    """`deflate` is zlib-wrapped by the standard and raw in practice; try the
-    first and fall back to the second on the first chunk."""
-
-    def __init__(self) -> None:
-        self._inner: Any = zlib.decompressobj()
-        self._started = False
-
-    @property
-    def unconsumed_tail(self) -> bytes:
-        return bytes(self._inner.unconsumed_tail)
-
-    def decompress(self, data: bytes, max_length: int) -> bytes:
-        if not self._started:
-            self._started = True
-            try:
-                return bytes(self._inner.decompress(data, max_length))
-            except zlib.error:
-                self._inner = zlib.decompressobj(-zlib.MAX_WBITS)
-        return bytes(self._inner.decompress(data, max_length))
-
-
-def _decoder(content_encoding: str) -> Any:
-    encodings = [e.strip().lower() for e in content_encoding.split(",") if e.strip()]
-    encodings = [e for e in encodings if e != "identity"]
-    if not encodings:
-        return _Identity()
-    if encodings == ["gzip"] or encodings == ["x-gzip"]:
-        return zlib.decompressobj(zlib.MAX_WBITS | 16)
-    if encodings == ["deflate"]:
-        return _Deflate()
-    raise HttpToolError(
-        "http", f"The API answered with an unsupported content encoding ({content_encoding})."
-    )
+def _decoder(content_encoding: str) -> BoundedDecoder:
+    try:
+        return content_decoder(content_encoding)
+    except UnsupportedContentEncoding:
+        raise HttpToolError(
+            "http", f"The API answered with an unsupported content encoding ({content_encoding})."
+        ) from None
 
 
 async def _read_capped(response: httpx.Response) -> tuple[str, bool]:
     """At most MAX_RESPONSE_BYTES of the decoded body. The raw bytes are
     decoded here, never more than what still fits per step (`max_length`),
-    so a small compressed body cannot inflate to many MB in memory."""
+    so a small compressed body cannot inflate to many MB in memory. A
+    compressed body that stops before its end is refused, not handed on in
+    part; one cut at the cap is `truncated`, as before."""
     decoder = _decoder(response.headers.get("content-encoding", ""))
     buffer = bytearray()
     truncated = False
+    received = False
     try:
         async for chunk in response.aiter_raw():
-            data = chunk
-            while data:
-                room = MAX_RESPONSE_BYTES - len(buffer)
-                out = decoder.decompress(data, room + 1)
-                if len(out) > room:
-                    buffer.extend(out[:room])
-                    truncated = True
-                    break
-                buffer.extend(out)
-                data = decoder.unconsumed_tail
+            received = received or bool(chunk)
+            out, truncated = decode_step(decoder, chunk, MAX_RESPONSE_BYTES - len(buffer))
+            buffer.extend(out)
             if truncated:
                 break
     except zlib.error as exc:
         raise HttpToolError("http", "The API answered with a body that cannot be decoded.") from exc
+    if received and not truncated and not decoder.eof:
+        raise HttpToolError("http", "The API answered with a body that ended early.")
     return bytes(buffer).decode(response.encoding or "utf-8", errors="replace"), truncated
 
 
@@ -825,7 +802,12 @@ class HttpToolSession:
         form no header shows verbatim (a password inside a Basic credential,
         a fetched access token); they are redacted like the header values.
         `login`'s own secrets (and every access token it fetches) are added
-        to them here."""
+        to them here.
+
+        A base URL with a username or password in it is refused (`blocked`):
+        httpx would send it as Basic auth on every call, past the login."""
+        if base_url_has_login(base_url):
+            raise HttpToolError("blocked", STORED_LOGIN_IN_BASE_URL)
         self._base_url = base_url.rstrip("/")
         self._login = login
         self._extra_secrets = [str(v) for v in secrets if v] + login_secrets(login)

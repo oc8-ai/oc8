@@ -271,6 +271,25 @@ describe("CustomMcpWizard", () => {
     expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
   });
 
+  it("refuses a login typed into the base URL and says where it belongs", () => {
+    render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
+    fireEvent.click(screen.getByText("Plain HTTP API"));
+    fireEvent.click(screen.getByRole("button", { name: /next/i }));
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://ada:pw@tickets.acme.test" },
+    });
+    addTool();
+    expect(screen.getByRole("alert")).toHaveTextContent(/login fields, not in the address/);
+    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText("https://api.example.com"), {
+      target: { value: "https://tickets.acme.test" },
+    });
+    expect(screen.queryByText(/login fields, not in the address/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next/i })).toBeEnabled();
+  });
+
   it("keeps Next disabled until an OAuth2 login has its token URL, client and secret", () => {
     render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper });
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Tickets" } });
