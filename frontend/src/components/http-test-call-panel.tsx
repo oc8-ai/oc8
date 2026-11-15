@@ -3,26 +3,15 @@
 // server wizard and by the endpoints editor.
 import { useState } from "react";
 import { FlaskConical } from "lucide-react";
-import type { HttpTestCallResult } from "@/lib/http-tools";
+import {
+  defaultTestTool,
+  exampleText,
+  orderTestTools,
+  type HttpTestCallResult,
+  type TestableTool,
+} from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-
-export interface TestableTool {
-  name: string;
-  method: string;
-  paramSchema: Record<string, unknown>;
-}
-
-function needsArguments(tool: TestableTool): boolean {
-  const required = tool.paramSchema.required;
-  return Array.isArray(required) && required.length > 0;
-}
-
-/** A GET endpoint that needs no arguments is the safest first call. */
-export function defaultTestTool(tools: readonly TestableTool[]): string {
-  const read = tools.filter((t) => t.method.toUpperCase() === "GET");
-  return (read.find((t) => !needsArguments(t)) ?? read[0] ?? tools[0])?.name ?? "";
-}
 
 export function HttpTestCallPanel({
   tools,
@@ -32,8 +21,12 @@ export function HttpTestCallPanel({
   run: (tool: string, args: Record<string, unknown>) => Promise<HttpTestCallResult>;
 }) {
   const t = useT();
+  const ordered = orderTestTools(tools);
   const [tool, setTool] = useState(() => defaultTestTool(tools));
-  const [argsText, setArgsText] = useState("{}");
+  // What the person typed, per endpoint; an endpoint not in here shows its
+  // prefilled example, so switching endpoints never loses an edit.
+  const [edited, setEdited] = useState<Record<string, string>>({});
+  const argsText = edited[tool] ?? exampleText(tools.find((x) => x.name === tool));
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<HttpTestCallResult | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
@@ -51,6 +44,19 @@ export function HttpTestCallPanel({
     unreachable: t("The API is not reachable.", "Die API ist nicht erreichbar."),
     http: t("The API answered with an error.", "Die API hat mit einem Fehler geantwortet."),
   };
+
+  // Why a call was blocked, when the server says: the server's sentence in
+  // the person's language when it is one of these, as sent otherwise.
+  const BLOCKED_REASONS: Record<string, string> = {
+    "This address is not allowed.": MESSAGES.blocked,
+    "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields.":
+      t(
+        "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields.",
+        "Die Basis-URL dieser Verbindung enthält eine Anmeldung. Lösche diese Verbindung und lege sie mit der Anmeldung in den Anmeldefeldern neu an.",
+      ),
+  };
+  const blockedText = (message: string) =>
+    message.trim() ? (BLOCKED_REASONS[message] ?? message) : MESSAGES.blocked;
 
   // auth and http with no status: the request never got an answer (refused
   // before sending, a redirect loop, a body that cannot be decoded), so the
@@ -108,7 +114,7 @@ export function HttpTestCallPanel({
             onChange={(e) => setTool(e.target.value)}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground"
           >
-            {tools.map((x) => (
+            {ordered.map((x) => (
               <option key={x.name} value={x.name}>
                 {x.method.toUpperCase()} · {x.name}
               </option>
@@ -120,7 +126,10 @@ export function HttpTestCallPanel({
           <textarea
             aria-label={t("Arguments (JSON)", "Argumente (JSON)")}
             value={argsText}
-            onChange={(e) => setArgsText(e.target.value)}
+            onChange={(e) => {
+              const text = e.target.value;
+              setEdited((prev) => ({ ...prev, [tool]: text }));
+            }}
             rows={3}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 font-mono text-xs text-foreground"
           />
@@ -161,7 +170,9 @@ export function HttpTestCallPanel({
               ? t("The call worked.", "Der Aufruf hat funktioniert.")
               : neutral
                 ? t("The call could not be made.", "Der Aufruf war nicht möglich.")
-                : MESSAGES[result.errorClass ?? "http"]}
+                : result.errorClass === "blocked"
+                  ? blockedText(result.message)
+                  : MESSAGES[result.errorClass ?? "http"]}
           </p>
           {neutral && result.message && (
             <p className="text-xs text-muted-foreground">{result.message}</p>

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
@@ -9,6 +9,22 @@ from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.fetcher import _is_blocked_ip, safe_fetch
 
 pytestmark = pytest.mark.asyncio
+
+
+def _streaming(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
+    """A mock transport that answers like a real connection, with a body not
+    yet read: the fetch reads the raw bytes to decode them in bounded steps,
+    and an `httpx.Response(content=...)` arrives already consumed."""
+
+    def send(request: httpx.Request) -> httpx.Response:
+        resp = handler(request)
+        if not resp.is_stream_consumed:
+            return resp
+        return httpx.Response(
+            resp.status_code, headers=resp.headers, stream=httpx.ByteStream(resp.content)
+        )
+
+    return httpx.MockTransport(send)
 
 
 @pytest.mark.parametrize(
@@ -74,7 +90,7 @@ async def test_streaming_cap_aborts_over_max_bytes(monkeypatch: pytest.MonkeyPat
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=body_chunks(), headers={"content-type": "text/plain"})
 
-    transport = httpx.MockTransport(handler)
+    transport = _streaming(handler)
     real_async_client = httpx.AsyncClient
 
     def client_factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
@@ -110,7 +126,7 @@ async def test_streaming_redirect_reguards_each_hop(monkeypatch: pytest.MonkeyPa
             return httpx.Response(302, headers={"location": "http://final.example.com/end"})
         return httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
 
-    transport = httpx.MockTransport(handler)
+    transport = _streaming(handler)
     real_async_client = httpx.AsyncClient
 
     def client_factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
@@ -140,7 +156,7 @@ async def test_each_hop_connects_to_the_address_its_guard_checked(
 
     def factory(*args: object, **kwargs: object) -> httpx.AsyncClient:
         pinned.append(kwargs["transport"])
-        kwargs["transport"] = httpx.MockTransport(lambda r: httpx.Response(200, text="ok"))
+        kwargs["transport"] = _streaming(lambda r: httpx.Response(200, text="ok"))
         return real(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(httpx, "AsyncClient", factory)
@@ -172,7 +188,7 @@ def _pin_through(
     monkeypatch.setattr(
         f,
         "PinnedTransport",
-        lambda ip: PinnedTransport(ip, inner=httpx.MockTransport(handler)),  # type: ignore[arg-type]
+        lambda ip: PinnedTransport(ip, inner=_streaming(handler)),  # type: ignore[arg-type]
     )
     return guarded
 
@@ -291,7 +307,7 @@ async def test_fetches_send_the_oc8_user_agent(monkeypatch: pytest.MonkeyPatch) 
         seen.append(request.headers.get("user-agent"))
         return httpx.Response(200, content=b"ok", headers={"content-type": "text/plain"})
 
-    transport = httpx.MockTransport(handler)
+    transport = _streaming(handler)
     real_async_client = httpx.AsyncClient
 
     def client_factory(*args: object, **kwargs: object) -> httpx.AsyncClient:

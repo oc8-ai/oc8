@@ -450,6 +450,18 @@ export function scopesProblem(
   return null;
 }
 
+/** Whether a base URL carries a username or password (`https://user:pw@host`):
+ * a login there would be sent with every call and shown wherever the address
+ * is, so it belongs in the login fields. */
+export function baseUrlHasLogin(baseUrl: string): boolean {
+  try {
+    const url = new URL(baseUrl.trim());
+    return url.username !== "" || url.password !== "";
+  } catch {
+    return false;
+  }
+}
+
 /** Why what a custom server source handed back cannot be used, in the
  * person's language, or null. `withConnection`: the draft also brings the base
  * URL and login (the wizard); editing an existing connection uses only its
@@ -464,6 +476,12 @@ export function customServerDraftProblem(
       return t(
         "The API needs a base URL starting with http:// or https://.",
         "Die API braucht eine Basis-URL, die mit http:// oder https:// beginnt.",
+      );
+    }
+    if (baseUrlHasLogin(draft.baseUrl)) {
+      return t(
+        "The base URL contains a login. Logins belong in the login fields, not in the address.",
+        "Die Basis-URL enthält eine Anmeldung. Anmeldedaten gehören in die Anmeldefelder, nicht in die Adresse.",
       );
     }
     if (basicUsernameHasColon(draft.login)) {
@@ -501,4 +519,68 @@ export function customServerDraftProblem(
     )} ${scopes.names.join(", ")}`;
   }
   return null;
+}
+
+// --- the test call: which endpoint first, and with which arguments ---------
+
+export interface TestableTool {
+  name: string;
+  method: string;
+  paramSchema: Record<string, unknown>;
+}
+
+function isRead(tool: TestableTool): boolean {
+  return ["GET", "HEAD"].includes(tool.method.toUpperCase());
+}
+
+/** Read endpoints (GET, HEAD) first, the order within each group kept: the
+ * safest calls are the first offered. */
+export function orderTestTools<T extends TestableTool>(tools: readonly T[]): T[] {
+  return [...tools.filter(isRead), ...tools.filter((t) => !isRead(t))];
+}
+
+/** The first read endpoint is the safest first call; without one, the first. */
+export function defaultTestTool(tools: readonly TestableTool[]): string {
+  return orderTestTools(tools)[0]?.name ?? "";
+}
+
+function placeholder(schema: unknown): unknown {
+  const s =
+    schema !== null && typeof schema === "object" ? (schema as Record<string, unknown>) : {};
+  if (Array.isArray(s.enum) && s.enum.length > 0) return s.enum[0];
+  const type = Array.isArray(s.type) ? s.type.find((x) => x !== "null") : s.type;
+  switch (type) {
+    case "number":
+    case "integer":
+      return 0;
+    case "boolean":
+      return false;
+    case "array":
+      return [];
+    case "object":
+      return {};
+    default:
+      return "";
+  }
+}
+
+/** The arguments a call of this schema cannot do without, each with an
+ * empty value of its type (the first value of an enum). Optional ones are
+ * left out: the person adds what they want to try. */
+export function exampleArguments(paramSchema: Record<string, unknown>): Record<string, unknown> {
+  const required = Array.isArray(paramSchema.required) ? paramSchema.required : [];
+  const properties =
+    paramSchema.properties !== null && typeof paramSchema.properties === "object"
+      ? (paramSchema.properties as Record<string, unknown>)
+      : {};
+  const out: Record<string, unknown> = {};
+  for (const name of required) {
+    if (typeof name === "string") out[name] = placeholder(properties[name]);
+  }
+  return out;
+}
+
+export function exampleText(tool: TestableTool | undefined): string {
+  const args = tool ? exampleArguments(tool.paramSchema) : {};
+  return Object.keys(args).length === 0 ? "{}" : JSON.stringify(args, null, 2);
 }

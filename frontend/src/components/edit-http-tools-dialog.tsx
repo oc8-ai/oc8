@@ -102,6 +102,7 @@ export function EditHttpToolsDialog({
               existing={snapshot}
               onComplete={(draft) => void onComplete(draft)}
               onCancel={onClose}
+              onBack={onClose}
             />
           ) : (
             <>

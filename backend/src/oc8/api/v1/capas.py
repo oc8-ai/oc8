@@ -34,6 +34,7 @@ from oc8.capas.manifest import (
     PluginSetupSpec,
     SetupFieldSpec,
     SetupOAuthProvision,
+    http_api_login_in_base_url,
     parse_manifest,
 )
 from oc8.capas.service import (
@@ -561,6 +562,8 @@ async def _apply_plugin_setup(
     setup = manifest.setup
     if setup is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "plugin has no setup contract")
+    if (problem := http_api_login_in_base_url(manifest)) is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, problem)
 
     fields = {field.key: field for field in setup.fields}
     try:

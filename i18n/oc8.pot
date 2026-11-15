@@ -4952,6 +4952,9 @@ msgstr ""
 msgid "The assistant returned no answer. Try again or rephrase."
 msgstr ""
 
+msgid "The base URL contains a login. Logins belong in the login fields, not in the address."
+msgstr ""
+
 msgid "The call could not be made."
 msgstr ""
 
@@ -5247,6 +5250,9 @@ msgid "This connection is in no department, so no agent gets its tools yet. Some
 msgstr ""
 
 msgid "This connection is not set up yet. Please contact your administrator."
+msgstr ""
+
+msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
 msgstr ""
 
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."

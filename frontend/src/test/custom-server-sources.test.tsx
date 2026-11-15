@@ -254,6 +254,68 @@ describe("customServerSources", () => {
     expect(postMock).not.toHaveBeenCalled();
   });
 
+  describe("the wizard footer", () => {
+    function FooterSource({ onComplete, onBack }: CustomServerSourceProps) {
+      return (
+        <div>
+          <p>footer source</p>
+          <button type="button" onClick={onBack}>
+            Source back
+          </button>
+          <button type="button" onClick={() => onComplete(DRAFT)}>
+            Source continue
+          </button>
+        </div>
+      );
+    }
+
+    function openSourceStep(ownsFooter: boolean | undefined) {
+      const owning: FrontendEditionExtension = {
+        ...ext,
+        customServerSources: [
+          { ...ext.customServerSources![0], component: FooterSource, ownsFooter },
+        ],
+      };
+      render(<CustomMcpWizard open onOpenChange={() => {}} />, { wrapper: wrap([owning]) });
+      fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Pets" } });
+      fireEvent.click(screen.getByText("Plain HTTP API"));
+      fireEvent.click(screen.getByRole("button", { name: /From a spec file/ }));
+      fireEvent.click(screen.getByRole("button", { name: /next/i }));
+      expect(screen.getByText("footer source")).toBeInTheDocument();
+    }
+
+    it("keeps its own Back for a source that does not own the footer", () => {
+      openSourceStep(undefined);
+      expect(screen.getByRole("button", { name: /^back$/i })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /next/i })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /^back$/i }));
+      expect(screen.queryByText("footer source")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /From a spec file/ })).toBeInTheDocument();
+    });
+
+    it("renders no footer while a source that owns it is shown", () => {
+      openSourceStep(true);
+      expect(screen.queryByRole("button", { name: /^back$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /next/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^cancel$/i })).not.toBeInTheDocument();
+    });
+
+    it("lets a source that owns the footer go back to the chooser", () => {
+      openSourceStep(true);
+      fireEvent.click(screen.getByRole("button", { name: "Source back" }));
+      expect(screen.queryByText("footer source")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /From a spec file/ })).toBeInTheDocument();
+    });
+
+    it("shows the footer again on the step after a source that owns it", async () => {
+      openSourceStep(true);
+      fireEvent.click(screen.getByRole("button", { name: "Source continue" }));
+      expect(await screen.findByRole("button", { name: "Run test call" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^back$/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /next/i })).toBeInTheDocument();
+    });
+  });
+
   describe("a draft that changes after a test call", () => {
     beforeEach(() => {
       postMock.mockImplementation((path: string) => {
