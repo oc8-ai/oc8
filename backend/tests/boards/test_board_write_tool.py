@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import time
 import uuid
 from typing import Any
 
@@ -11,10 +12,12 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent import control_tools
 from oc8.agent.control_tools import ControlOutcome, execute_control_tool, offered_tools
 from oc8.agent.engine import _authorize
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
 from oc8.authz.pdp import Decision, Effect
+from oc8.boards.lifecycle import lock_live_board
 from oc8.chat.modes import PLAN
 from oc8.modelrouter import ToolCall
 from tests.audit.helpers import flush_audit
@@ -315,3 +318,66 @@ async def test_the_write_is_its_own_transaction(app_session: AppSessionFactory) 
     async with app_session(tenant) as check:
         assert await _count(check, m.DataBoardBatch) == 1
         assert await _count(check, m.DataBoardRecord) == 1
+
+
+async def test_a_held_board_lock_makes_the_write_busy_not_wait(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Somebody holds the board row (a delete, another write): the tool gives up
+    after its lock timeout with a value-free busy error and writes nothing."""
+    monkeypatch.setattr(control_tools, "BOARD_WRITE_LOCK_TIMEOUT", "200ms")
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        seeded = await _seed(db, tenant)
+        board = seeded[1]
+        async with app_session(tenant) as holder:
+            assert await lock_live_board(holder, board.id) is not None
+            started = time.monotonic()
+            outcome = await _call(
+                db,
+                tenant,
+                seeded,
+                {
+                    "board": str(board.id),
+                    "dataset": "sales",
+                    "as_of": "2026-03-01",
+                    "values": {"amount": 987654},
+                },
+            )
+            waited = time.monotonic() - started
+            await holder.rollback()
+        assert outcome.output == "ERROR: the dashboard is busy; try the write again."
+        assert waited < 3
+    async with app_session(tenant) as check:
+        assert await _count(check, m.DataBoardBatch) == 0
+        assert await _count(check, m.DataBoardRecord) == 0
+
+
+async def test_a_held_cap_lock_makes_the_write_busy_not_wait(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tenant's cap lock held elsewhere: the same bounded wait."""
+    monkeypatch.setattr(control_tools, "BOARD_WRITE_LOCK_TIMEOUT", "200ms")
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        seeded = await _seed(db, tenant)
+        async with app_session(tenant) as holder:
+            await holder.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": f"board-cap:{tenant}"},
+            )
+            outcome = await _call(
+                db,
+                tenant,
+                seeded,
+                {
+                    "board": str(seeded[1].id),
+                    "dataset": "sales",
+                    "as_of": "2026-03-01",
+                    "values": {"amount": 1},
+                },
+            )
+            await holder.rollback()
+        assert outcome.output == "ERROR: the dashboard is busy; try the write again."
+    async with app_session(tenant) as check:
+        assert await _count(check, m.DataBoardBatch) == 0

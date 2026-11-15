@@ -22,6 +22,9 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 from sqlalchemy import case, select
+from sqlalchemy import text as sql_text
+from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -2647,6 +2650,25 @@ async def _execute_edition_tool(
     )
 
 
+#: How long `board_write`'s own transaction may wait for the board row and the
+#: tenant's cap lock. The run holds a pooled connection of its own meanwhile, so
+#: a long wait would pin two; past it the agent is told to try again.
+BOARD_WRITE_LOCK_TIMEOUT = "5s"
+
+#: Postgres `lock_not_available`: `lock_timeout` ran out.
+_LOCK_NOT_AVAILABLE = "55P03"
+
+_BOARD_BUSY = "ERROR: the dashboard is busy; try the write again."
+
+
+def _gave_up_waiting(exc: DBAPIError) -> bool:
+    """A lock wait that ran past `BOARD_WRITE_LOCK_TIMEOUT` (asyncpg reports it
+    as a plain DBAPIError carrying the sqlstate), not any other database error."""
+    if isinstance(exc, OperationalError):
+        return True
+    return getattr(exc.orig, "sqlstate", None) == _LOCK_NOT_AVAILABLE
+
+
 async def _board_write(
     db: AsyncSession,
     *,
@@ -2701,6 +2723,8 @@ async def _board_write(
 
     try:
         async with tenant_session(tenant_id) as short:
+            # First: every lock this transaction takes waits a bounded time.
+            await short.execute(sql_text(f"SET LOCAL lock_timeout = '{BOARD_WRITE_LOCK_TIMEOUT}'"))
             batch = await write_batch(
                 short,
                 tenant_id=tenant_id,
@@ -2734,6 +2758,16 @@ async def _board_write(
             )
     except BoardWriteRefused as exc:
         return ControlOutcome(output=f"ERROR: {exc}")
+    except SQLAlchemyTimeoutError:
+        # No pooled connection for the short transaction in time: nothing written.
+        return ControlOutcome(output=_BOARD_BUSY)
+    except DBAPIError as exc:
+        # The board row or the cap lock stayed held past the timeout; the
+        # transaction rolled back, so nothing was written.
+        if not _gave_up_waiting(exc):
+            raise
+        logger.info("board_write: board %s stayed locked; asked to retry", board_id)
+        return ControlOutcome(output=_BOARD_BUSY)
     return ControlOutcome(
         output=(
             f"Recorded {batch.row_count} row(s) for {dataset} {as_of}. This replaces earlier "
