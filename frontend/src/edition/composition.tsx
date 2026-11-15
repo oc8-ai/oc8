@@ -2,6 +2,7 @@ import { createContext, useContext, type ComponentType, type ReactNode } from "r
 import { useCallerCapabilities } from "@/lib/governance-hooks";
 import type {
   Capability,
+  CustomServerSource,
   EditionBanner,
   EditionChatContributions,
   EditionHomeSection,
@@ -39,6 +40,7 @@ export interface FrontendEditionComposition {
   readonly profileSections: readonly EditionProfileSection[];
   readonly chat: ComposedChat;
   readonly homeSections: readonly EditionHomeSection[];
+  readonly customServerSources: readonly CustomServerSource[];
 }
 
 export interface EditionCapabilityGateRule {
@@ -97,6 +99,7 @@ const emptyComposition: FrontendEditionComposition = {
   profileSections: [],
   chat: EMPTY_CHAT,
   homeSections: [],
+  customServerSources: [],
 };
 
 const EditionCompositionContext = createContext<FrontendEditionComposition>(emptyComposition);
@@ -130,6 +133,8 @@ export function composeFrontendEdition(
   const chatIds = new Set<string>();
   const homeSectionIds = new Set<string>();
   const homeSections: EditionHomeSection[] = [];
+  const customServerSourceIds = new Set<string>();
+  const customServerSources: CustomServerSource[] = [];
 
   for (const extension of extensions) {
     if (extensionIds.has(extension.id))
@@ -181,6 +186,12 @@ export function composeFrontendEdition(
       homeSectionIds.add(section.id);
       homeSections.push(section);
     }
+    for (const source of extension.customServerSources ?? []) {
+      if (customServerSourceIds.has(source.id))
+        throw new Error(`Duplicate custom server source: ${source.id}`);
+      customServerSourceIds.add(source.id);
+      customServerSources.push(source);
+    }
   }
 
   return {
@@ -194,6 +205,7 @@ export function composeFrontendEdition(
     profileSections,
     chat,
     homeSections,
+    customServerSources,
   };
 }
 
@@ -267,4 +279,14 @@ export function useChatSlot<K extends keyof ComposedChat>(slot: K): ComposedChat
   return composition.chat[slot].filter((entry) =>
     (entry.needs ?? []).every(holds),
   ) as ComposedChat[K];
+}
+
+/** The custom server sources whose `needs` the caller all holds. */
+// eslint-disable-next-line react-refresh/only-export-components
+export function useCustomServerSources(): readonly CustomServerSource[] {
+  const known = useCallerCapabilities();
+  const composition = useFrontendEdition();
+  const holds = (cap: Capability) =>
+    known !== null ? known.includes(cap) : composition.capabilities.has(cap);
+  return composition.customServerSources.filter((source) => (source.needs ?? []).every(holds));
 }
