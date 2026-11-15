@@ -19,7 +19,7 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.capas.discovery import find_plugin
+from oc8.capas.discovery import find_plugin, on_disk_deferred_permissions
 from oc8.capas.manifest import DEFERRABLE_PERMISSIONS
 from oc8.capas.materialise import materialise_plugin_data
 from oc8.capas.service import PluginError
@@ -118,6 +118,13 @@ def deferred_permissions(version: CapaVersion) -> set[str]:
     """
     declared = set((version.manifest or {}).get("deferred_permissions") or [])
     return declared & DEFERRABLE_PERMISSIONS
+
+
+def effective_deferred_permissions(version: CapaVersion, name: str) -> set[str]:
+    """Deferred if EITHER the installed version or the manifest on disk defers
+    it. Fails closed: a stale install never skips the consent the disk code
+    asks for."""
+    return deferred_permissions(version) | on_disk_deferred_permissions(name)
 
 
 def consent_required(version: CapaVersion) -> list[str]:
@@ -229,7 +236,7 @@ async def enable_plugin(
         raise PluginError("plugin has no current version")
     # A deferred permission is granted later (grant_deferred_permission), so
     # enabling never waits on it.
-    deferred = deferred_permissions(version)
+    deferred = effective_deferred_permissions(version, plugin.name)
     required = set(version.permissions) - deferred
     if not required.issubset(set(granted_permissions)):
         raise ConsentError(f"missing consent for: {sorted(required - set(granted_permissions))}")
@@ -303,7 +310,7 @@ async def grant_deferred_permission(
     version = await _current_version(db, plugin)
     if version is None:
         raise PluginError("plugin has no current version")
-    if permission not in deferred_permissions(version):
+    if permission not in effective_deferred_permissions(version, plugin.name):
         raise NotDeferredError(f"{permission!r} is not a deferred permission of this capa")
     inst = (
         await db.execute(select(CapaInstallation).where(CapaInstallation.capa_id == capa_id))

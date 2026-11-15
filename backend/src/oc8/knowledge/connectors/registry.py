@@ -26,7 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.capas.contributions import connectors_for
-from oc8.capas.discovery import find_plugin
+from oc8.capas.discovery import find_plugin, on_disk_deferred_permissions
 from oc8.capas.loader import load_plugin
 from oc8.capas.manifest import DEFERRABLE_PERMISSIONS
 from oc8.knowledge.connectors.base import Connector, ConnectorError
@@ -89,7 +89,12 @@ async def _enabled_plugin_grants(
 ) -> list[tuple[str, uuid.UUID, set[str], set[str]]]:
     """(name, capa id, granted permissions, deferred permissions) of each plugin
     this tenant has enabled -- the same rows as ``enabled_plugin_names``, read
-    with what the enabled version defers and what the tenant granted."""
+    with what the tenant granted and what is deferred.
+
+    Deferred means deferred by the enabled version OR by the manifest on disk:
+    the contributions are loaded from disk, so a tenant still on an older
+    installed version that predates the deferral must not get the newer code
+    without its consent."""
     rows = await db.execute(
         select(
             Capa.name,
@@ -108,7 +113,12 @@ async def _enabled_plugin_grants(
     return [
         # Only allow-listed permissions count as deferred, whatever the
         # stored manifest says (see DEFERRABLE_PERMISSIONS).
-        (name, capa_id, set(granted or []), set(deferred or []) & DEFERRABLE_PERMISSIONS)
+        (
+            name,
+            capa_id,
+            set(granted or []),
+            (set(deferred or []) & DEFERRABLE_PERMISSIONS) | on_disk_deferred_permissions(name),
+        )
         for name, capa_id, granted, deferred in rows.all()
     ]
 

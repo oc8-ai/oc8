@@ -112,3 +112,59 @@ async def test_vector_index_hidden_until_deferred_permission_granted(
     async with app_session(tenant) as db:
         index = await resolve_vector_index(db, tenant_id=tenant, type_id=INDEX_TYPE_ID)
         assert index.type_id == INDEX_TYPE_ID
+
+
+async def test_stale_installed_version_does_not_skip_consent_of_disk_code(
+    app_session: AppSessionFactory, capas_root: Path
+) -> None:
+    """A tenant still on an installed version that predates the deferral gets
+    the newer code from disk. The disk manifest's deferral counts too: the
+    connector waits for the grant, and the grant is accepted on the old
+    installed version."""
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    write_capa(capas_root, version="1.0.0", permissions=["mcp:connect"])
+    async with api() as c:
+        r = await c.post("/api/v1/capas/install-from-disk", json={"pluginId": NAME}, headers=admin)
+        assert r.status_code == 201, r.text
+        capa_id = r.json()["pluginId"]
+
+        # The update lands on disk; nobody clicks Update.
+        write_capa(
+            capas_root,
+            version="1.1.0",
+            permissions=["mcp:connect", "knowledge:write"],
+            deferred=["knowledge:write"],
+        )
+
+        async with app_session(tenant) as db:
+            with pytest.raises(ConnectorError):
+                await resolve_connector(db, tenant_id=tenant, type_id=TYPE_ID)
+            with pytest.raises(VectorIndexError):
+                await resolve_vector_index(db, tenant_id=tenant, type_id=INDEX_TYPE_ID)
+            pending = await consent_pending_connectors(db, tenant_id=tenant)
+        assert str(pending[TYPE_ID][1]) == capa_id
+
+        listed = (await c.get("/api/v1/knowledge/connectors", headers=admin)).json()
+        row = next(x for x in listed if x["typeId"] == TYPE_ID)
+        assert row["usable"] is False
+        assert row["missing"] == "consent:knowledge:write"
+
+        g = await c.post(
+            f"/api/v1/capas/{capa_id}/grant", json={"permission": "knowledge:write"}, headers=admin
+        )
+        assert g.status_code == 200, g.text
+
+        async with app_session(tenant) as db:
+            assert (await resolve_connector(db, tenant_id=tenant, type_id=TYPE_ID)).type_id == (
+                TYPE_ID
+            )
+            assert await consent_pending_connectors(db, tenant_id=tenant) == {}
+
+        # Clicking Update afterwards keeps the grant.
+        r = await c.post("/api/v1/capas/install-from-disk", json={"pluginId": NAME}, headers=admin)
+        assert r.status_code == 201, r.text
+        async with app_session(tenant) as db:
+            assert (await resolve_connector(db, tenant_id=tenant, type_id=TYPE_ID)).type_id == (
+                TYPE_ID
+            )
