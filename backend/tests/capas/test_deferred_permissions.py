@@ -227,3 +227,55 @@ async def test_setting_up_a_never_enabled_capa_does_not_grant_a_deferred_permiss
     inst = await _installation(app_session, tenant)
     assert inst.status == "enabled"
     assert sorted(inst.granted_permissions) == sorted(BASE)
+
+
+@pytest.mark.asyncio
+async def test_enable_never_grants_a_deferred_permission_and_never_drops_one(
+    app_session: AppSessionFactory, capas_root: Path
+) -> None:
+    """Only POST /grant grants a deferred permission. An enable that asks for
+    it does not get it, and a later enable (or an update's re-enable) keeps
+    the one that was granted, even when the caller leaves it out."""
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    write_capa(capas_root, permissions=[*BASE, "knowledge:write"], deferred=["knowledge:write"])
+    async with api() as c:
+        capa_id = await _install(c, admin)
+
+        asked = await c.post(
+            f"/api/v1/capas/{capa_id}/enable",
+            json={"grantedPermissions": [*BASE, "knowledge:write"]},
+            headers=admin,
+        )
+        assert asked.status_code == 200, asked.text
+        assert "knowledge:write" not in asked.json()["grantedPermissions"]
+        assert (
+            "knowledge:write" not in (await _installation(app_session, tenant)).granted_permissions
+        )
+
+        granted = await c.post(
+            f"/api/v1/capas/{capa_id}/grant", json={"permission": "knowledge:write"}, headers=admin
+        )
+        assert granted.status_code == 200, granted.text
+        assert "knowledge:write" in granted.json()["grantedPermissions"]
+
+        again = await c.post(
+            f"/api/v1/capas/{capa_id}/enable", json={"grantedPermissions": BASE}, headers=admin
+        )
+        assert again.status_code == 200, again.text
+        assert "knowledge:write" in again.json()["grantedPermissions"]
+
+        write_capa(
+            capas_root,
+            version="1.2.0",
+            permissions=[*BASE, "knowledge:write"],
+            deferred=["knowledge:write"],
+        )
+        await _install(c, admin)
+        updated = await c.post(
+            f"/api/v1/capas/{capa_id}/enable", json={"grantedPermissions": BASE}, headers=admin
+        )
+        assert updated.status_code == 200, updated.text
+    inst = await _installation(app_session, tenant)
+    assert inst.status == "enabled"
+    assert inst.granted_permissions.count("knowledge:write") == 1

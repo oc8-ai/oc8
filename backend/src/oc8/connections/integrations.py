@@ -106,16 +106,13 @@ async def installed_integrations(db: AsyncSession) -> list[InstalledIntegration]
             continue
         integration = integration_from_manifest(manifest)
         if integration is not None:
+            deferred = set(manifest.deferred_permissions) & DEFERRABLE_PERMISSIONS
             out.append(
                 InstalledIntegration(
                     integration,
                     capa.id,
                     available=installation is not None and installation.status == "enabled",
-                    permissions=tuple(
-                        p
-                        for p in version.permissions or []
-                        if p not in set(manifest.deferred_permissions) & DEFERRABLE_PERMISSIONS
-                    ),
+                    permissions=tuple(p for p in version.permissions or [] if p not in deferred),
                 )
             )
     return sorted(out, key=lambda item: item.integration.label.lower())

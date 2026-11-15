@@ -212,7 +212,15 @@ async def enable_plugin(
     tenant_id: uuid.UUID,
     capa_id: uuid.UUID,
     granted_permissions: list[str],
+    grant_deferred: str | None = None,
 ) -> CapaInstallation:
+    """Enable the capa's current version with the caller's consent.
+
+    A deferred permission is never granted here, whatever the caller asks
+    for: only ``grant_deferred_permission`` grants one, through the internal
+    ``grant_deferred`` parameter. One granted earlier is kept for as long as
+    the version still defers it, even when the caller leaves it out.
+    """
     plugin = await db.get(Capa, capa_id)
     if plugin is None:
         raise PluginError("plugin not found")
@@ -221,7 +229,8 @@ async def enable_plugin(
         raise PluginError("plugin has no current version")
     # A deferred permission is granted later (grant_deferred_permission), so
     # enabling never waits on it.
-    required = set(version.permissions) - deferred_permissions(version)
+    deferred = deferred_permissions(version)
+    required = set(version.permissions) - deferred
     if not required.issubset(set(granted_permissions)):
         raise ConsentError(f"missing consent for: {sorted(required - set(granted_permissions))}")
     inst = await _installation(db, tenant_id, capa_id)
@@ -240,6 +249,11 @@ async def enable_plugin(
         # double-count and disabling cannot under-count.
         await _unregister_and_teardown(get_hook_registry(tenant_id), capa_id)
         _unregister_claude_hooks(tenant_id, capa_id)
+    kept = set(inst.granted_permissions or []) & deferred
+    if grant_deferred is not None and grant_deferred in deferred:
+        kept.add(grant_deferred)
+    requested = [p for p in dict.fromkeys(granted_permissions) if p not in deferred]
+    granted_permissions = [*requested, *sorted(kept)]
     inst.status = "enabled"
     inst.version_id = version.id
     inst.granted_permissions = list(granted_permissions)
@@ -305,7 +319,8 @@ async def grant_deferred_permission(
         db,
         tenant_id=tenant_id,
         capa_id=capa_id,
-        granted_permissions=[*inst.granted_permissions, permission],
+        granted_permissions=list(inst.granted_permissions),
+        grant_deferred=permission,
     )
 
 
