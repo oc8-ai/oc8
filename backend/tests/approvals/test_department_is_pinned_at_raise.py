@@ -50,7 +50,18 @@ SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "oc8"
 #: person's own card (`approvals.repo.is_member_owned`), listed and decided by
 #: that member alone -- deriving would file it in the Copilot's department
 #: queue, showing their private purpose to its approvers (R21).
-_MAY_OVERRIDE = {"metering/budget.py", "copilot/builder.py", "copilot/direct_access.py"}
+#:
+#: The department stage of a direct write (`approvals/service.py`) names the
+#: department whose OWN policy holds the call, never None: the raising agent is
+#: the Copilot, so deriving would file it under the Copilot's department
+#: instead of the one that holds the write (spec §1: person first, then that
+#: department).
+_MAY_OVERRIDE = {
+    "approvals/service.py",
+    "metering/budget.py",
+    "copilot/builder.py",
+    "copilot/direct_access.py",
+}
 
 
 def _subject_uuid(subject: str) -> uuid.UUID:

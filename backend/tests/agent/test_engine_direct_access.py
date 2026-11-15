@@ -207,9 +207,11 @@ async def test_a_followup_turn_never_sees_granted_tools(
     assert opened == []
 
 
-async def test_a_department_gate_sends_the_write_to_the_department(
+async def test_a_department_gate_asks_the_person_first(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A department's own policy only ADDS a gate (§1): the person's card comes
+    first, naming the department that decides after them."""
     recorder = _RecordingServer(delay_s=0)
     _opened, bus, _stream = _patch(
         monkeypatch,
@@ -231,13 +233,17 @@ async def test_a_department_gate_sends_the_write_to_the_department(
         run = await chat_run(db, office)
         await _run(db, office, agent, run)
         held = await _held(db)
-    assert held.department_id == office.department_id
-    assert held.payload["direct_access"]["decider"] == "department"
+    assert held.department_id is None
+    info = held.payload["direct_access"]
+    assert info["decider"] == "member" and info["member_id"] == str(office.member_id)
+    assert info["department_id"] == str(office.department_id)
     assert held.payload["direct_access"]["session_id"] == str(office.session_id)
     assert held.payload["run_id"] == str(run.id)
-    # Its approvers decide: announced the ordinary way, not to the member alone.
-    assert bus.member == []
-    assert [kind for kind, _d in bus.tenant if kind == "approval.created"] == ["approval.created"]
+    # The person's card: announced to them alone.
+    assert [ev for ev in bus.tenant if ev[0] == "approval.created"] == []
+    assert [(who, kind) for who, kind, _d in bus.member] == [
+        ([office.member_id], "approval.created")
+    ]
 
 
 class _FlakyServer(_RecordingServer):
@@ -1185,14 +1191,45 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
 
 
+async def _decide_both_stages(
+    db: AsyncSession, office: DirectOffice, run: m.AgentRun
+) -> dict[str, str]:
+    """The person approves their card, then the holding department approves
+    the one that raises; returns what the resumed leg is pre-decided with."""
+    from tests.copilot.test_direct_access_department_stage import _approver, _human
+
+    from oc8.approvals import decide_approval
+    from oc8.runtime.approval_resume import pre_decided_map
+
+    card = await _held(db)
+    anna = await _human(db, office.tenant, office.subject, "member")
+    first = await decide_approval(db, card, decision="approve", tenant_id=office.tenant, actor=anna)
+    assert first.resumed_run_id is None
+    await db.refresh(run)
+    assert not (run.context or {}).get("resolved_tool_approvals")
+    (dept,) = [
+        r
+        for r in (
+            await db.execute(
+                select(m.ApprovalRequest).where(
+                    m.ApprovalRequest.action_type == "tool_send",
+                    m.ApprovalRequest.id != card.id,
+                )
+            )
+        ).scalars()
+    ]
+    assert dept.status == "pending" and dept.department_id == office.department_id
+    hos = await _approver(db, office)
+    await decide_approval(db, dept, decision="approve", tenant_id=office.tenant, actor=hos)
+    await db.refresh(run)
+    return pre_decided_map(run.context["resolved_tool_approvals"])
+
+
 async def test_a_pdp_hold_leaves_no_proof_so_the_resumed_write_is_refused(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The department holds every write itself, before the B gate runs: the
-    person's approval is of a call that was never read-checked."""
-    from oc8.agent.harness.calls import call_sig
-    from oc8.runtime.approval_resume import resolve_tool_approval
-
+    approvals are of a call that was never read-checked."""
     recorder = _RecordingServer(delay_s=0)
     _patch(
         monkeypatch,
@@ -1218,8 +1255,7 @@ async def test_a_pdp_hold_leaves_no_proof_so_the_resumed_write_is_refused(
         assert leg1.status == "waiting_for_approval"
         held = await _held(db)
         assert "read_before_write_ok" not in held.payload
-        await resolve_tool_approval(db, approval=held, decision="approve")
-        await db.refresh(run)
+        pre = await _decide_both_stages(db, office, run)
         (entry,) = run.context["resolved_tool_approvals"]
         assert "read_before_write_ok" not in entry
         await run_agent(
@@ -1228,73 +1264,18 @@ async def test_a_pdp_hold_leaves_no_proof_so_the_resumed_write_is_refused(
             task_text="resume",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided={
-                call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER))): "approve"
-            },
+            pre_decided=pre,
         )
     assert recorder.windows == []
 
 
-async def test_a_proof_is_spent_when_the_approved_write_runs_after_a_read(
+async def test_a_department_held_write_that_was_read_runs_once_after_both_approve(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Leg 2 reads the record first, so the approved write needs no waiver. Its
-    proof is spent all the same: leg 3 repeating the write unread is refused."""
-    from oc8.agent.harness.calls import call_sig
-
-    recorder = _RecordingServer(delay_s=0)
-    turns = [
-        _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
-        _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
-        # Leg 2: read, then the approved write.
-        _turn("", ToolCall(id="c3", name="get_record", arguments=dict(_ORDER))),
-        _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
-        *[_turn("done") for _ in range(8)],
-    ]
-    _opened, _bus, stream = _patch(monkeypatch, recorder, turns)
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        office = await direct_office(db, tenant)
-        await _focused(db, office)
-        await grant(db, office)
-        agent = await _copilot(db, office)
-        run = await chat_run(db, office)
-        approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
-        leg1 = await _run(db, office, agent, run)
-        assert leg1.status == "waiting_for_approval"
-        from oc8.runtime.approval_resume import resolve_tool_approval
-
-        await resolve_tool_approval(db, approval=await _held(db), decision="approve")
-        await db.refresh(run)
-        for text in ("resume", "resume again"):
-            if text == "resume again":
-                # Leg 3's own script: the same write, unread.
-                stream.script[:] = [
-                    _turn("", ToolCall(id="c5", name="update_record", arguments=dict(_ORDER))),
-                    *[_turn("done") for _ in range(8)],
-                ]
-            leg = await run_agent(
-                db,
-                agent=agent,
-                task_text=text,
-                tenant_id=office.tenant,
-                run_id=run.id,
-                pre_decided={approved: "approve"},
-            )
-        await db.refresh(run)
-        assert run.context["waived_read_before_write"] == ["things\n" + approved]
-    (entry,) = [e for e in leg.tool_calls if e["tool"] == "update_record"]
-    assert "have not read" in str(entry["result"])
-    assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
-
-
-async def test_a_policy_held_write_that_was_read_carries_a_proof(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The department holds every write itself (the PEP, before the B gate). The
-    record WAS read, so the hold carries the read-before-write proof: after the
-    approval the resumed leg runs the write once; the next leg's unread repeat is
-    refused."""
+    """The record was read, then the department's policy held the write: the
+    person approves, then the department. Nothing runs before both; the
+    resumed leg runs the write once without re-reading (the proof travelled
+    to the department's card); the next leg's unread repeat is refused."""
     from oc8.agent.harness.calls import call_sig
 
     recorder = _RecordingServer(delay_s=0)
@@ -1310,11 +1291,29 @@ async def test_a_policy_held_write_that_was_read_carries_a_proof(
         await grant(db, office)
         agent = await _copilot(db, office)
         run = await chat_run(db, office)
-        await _two_legs_on(db, office, agent, run)
+        leg1 = await _run(db, office, agent, run)
+        assert leg1.status == "waiting_for_approval"
+        held = await _held(db)
+        assert held.payload["direct_access"]["decider"] == "member"
+        assert held.payload["read_before_write_ok"] is True
+        pre = await _decide_both_stages(db, office, run)
+        # Nothing ran on the person's approval alone.
+        assert [n for n, _s, _e in recorder.windows] == ["get_record"]
         approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
-        await db.refresh(run)
+        assert pre == {approved: "approve"}
         (entry,) = run.context["resolved_tool_approvals"]
         assert entry["read_before_write_ok"] is True
+        leg2 = await run_agent(
+            db,
+            agent=agent,
+            task_text="resume",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided=pre,
+        )
+        assert leg2.status == "done"
+        assert [n for n, _s, _e in recorder.windows] == ["get_record", "update_record"]
+        await db.refresh(run)
         assert run.context["waived_read_before_write"] == ["things\n" + approved]
         stream.script[:] = [
             _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
@@ -1326,7 +1325,7 @@ async def test_a_policy_held_write_that_was_read_carries_a_proof(
             task_text="resume again",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided={approved: "approve"},
+            pre_decided=pre,
         )
     (entry3,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry3["result"])

@@ -35,7 +35,8 @@ from oc8.authz.pdp import (
 OFFER_DIRECT_ACCESS_TOOL: Final = "offer_direct_access"
 
 #: `Decision.context` key: the department whose own policy holds a direct call.
-#: Its approvers decide that call, not the person (a policy adds a gate).
+#: Its approvers decide that call AFTER the person approved it -- a policy only
+#: adds a gate, it never replaces the person's (§1).
 HOLDING_DEPARTMENT: Final = "holding_department_id"
 
 

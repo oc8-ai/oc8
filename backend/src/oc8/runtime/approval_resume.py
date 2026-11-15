@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.approvals.repo import department_after_person
 from oc8.models.ops import ApprovalRequest
 from oc8.models.run import AgentRun
 from oc8.runtime.repository import RunRepository
@@ -35,6 +36,11 @@ async def resolve_tool_approval(
     already moved on). `decision` is "approve" or "reject".
     """
     if approval.task_id is None:
+        return None
+    if decision == "approve" and department_after_person(approval) is not None:
+        # The person's approval of a write a department's policy holds is
+        # never the call's approval: the department's card that it raises
+        # (decide_approval) is the one that resumes the run (spec §1).
         return None
     # A Copilot conversation runs every turn on ONE task, so "the run of this
     # task" is ambiguous there (MultipleResultsFound from the second turn on):

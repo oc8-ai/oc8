@@ -1111,11 +1111,12 @@ async def run_agent(
             ) -> tuple[str, dict[str, Any], dict[str, Any]] | None:
                 """A held direct write's (title, payload additions, raise
                 kwargs), or None outside a direct-access run. The person
-                decides it -- in no department, announced to them alone --
-                unless a department's own policy holds it: then that
-                department's approvers do (R11, R21, R22). The payload names
-                the conversation (a deleted chat expires it) and the run the
-                decision resumes."""
+                decides it first -- in no department, announced to them alone
+                (R21, R22). When a department's own policy holds it too, that
+                department's approvers are asked once the person approved
+                (spec §1: a policy only adds a gate; decide_approval raises
+                their card). The payload names the conversation (a deleted
+                chat expires it) and the run the decision resumes."""
                 if direct_run is None or run_row is None:
                     return None
                 from oc8.runtime.fencing import one_line
@@ -1138,11 +1139,10 @@ async def run_agent(
                         }
                     },
                 }
-                kwargs: dict[str, Any] = (
-                    {"department_id": hold.department_id}
-                    if hold.department_id is not None
-                    else {"department_id": None, "announce_to_member": direct_run.member_id}
-                )
+                kwargs: dict[str, Any] = {
+                    "department_id": None,
+                    "announce_to_member": direct_run.member_id,
+                }
                 return f"Copilot on behalf of {name}: change {label} ({tool_name})", extra, kwargs
 
             def _skill_snapshot() -> dict[str, Any]:

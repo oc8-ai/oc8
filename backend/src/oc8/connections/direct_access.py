@@ -273,10 +273,11 @@ async def revoke_grant(
 class DirectHold:
     """What a held direct-access call's approval carries (§8)."""
 
+    #: Always the person's card (every write asks, §1). `department_id` in
+    #: `direct_access` names the department whose own policy holds it too:
+    #: its approvers are asked once the person approved
+    #: (`approvals.service.decide_approval`).
     payload: dict[str, Any]
-    #: The department whose policy holds it -- its approvers decide; None:
-    #: the person decides (every write asks, §1).
-    department_id: uuid.UUID | None
 
 
 async def direct_hold(
@@ -311,8 +312,9 @@ async def direct_hold(
             "tool_key": conn.name if conn is not None else "",
             "label": label,
             "account": account,
-            "decider": "department" if holding is not None else "member",
+            # The person's card, always; a holding department decides after
+            # them (`approvals.repo.department_after_person`).
+            "decider": "member",
             "department_id": str(holding) if holding is not None else None,
         },
-        department_id=holding,
     )

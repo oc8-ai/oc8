@@ -93,6 +93,8 @@ export interface DirectAccessInfo {
   decider: "member" | "department";
   grantId: string | null;
   grantActive: boolean;
+  /** The person approved; the department whose policy holds the write still has to. */
+  awaitingDepartment?: boolean;
 }
 
 export interface Approval {

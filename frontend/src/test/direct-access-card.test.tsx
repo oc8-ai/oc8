@@ -111,6 +111,35 @@ describe("direct access in the chat", () => {
     expect(screen.getByText(/department/i)).toBeInTheDocument();
   });
 
+  it("shows the person's approved write as waiting for the department", () => {
+    render(
+      <DirectAccessCard
+        approval={{
+          ...write,
+          status: "approved",
+          directAccess: { ...write.directAccess!, awaitingDepartment: true },
+        }}
+      />,
+    );
+    expect(screen.getByText(/waiting for the department's approval/i)).toBeInTheDocument();
+    expect(screen.queryByText(/^approved$/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /reject/i })).toBeNull();
+  });
+
+  it("switches to waiting for the department once the person approves", () => {
+    m.decide.mockImplementation((_vars: unknown, opts: { onSuccess: (dto: Approval) => void }) =>
+      opts.onSuccess({
+        ...write,
+        status: "approved",
+        directAccess: { ...write.directAccess!, awaitingDepartment: true },
+      }),
+    );
+    render(<DirectAccessCard approval={write} />);
+    fireEvent.click(screen.getByRole("button", { name: /approve/i }));
+    expect(screen.getByText(/waiting for the department's approval/i)).toBeInTheDocument();
+  });
+
   it("says nothing about the account when it could not be resolved", () => {
     render(
       <DirectAccessCard

@@ -20,7 +20,9 @@ from oc8.approvals import (
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
+    awaiting_department,
     decide_approval,
+    department_after_person,
     load_direct_access_card,
     member_direct_access_cards,
 )
@@ -62,12 +64,15 @@ async def my_direct_access_approvals(db: DbSession, actor: _ChatActor) -> list[A
         ).scalars()
     }
     names = await resolve_approval_names(db, rows)
+    waiting = await awaiting_department(db, [r.id for r in rows])
     out: list[ApprovalDTO] = []
     for row in rows:
         dto = approval_to_dto(row, names)
         if dto.direct_access is not None and row.id in grants:
             dto.direct_access.grant_id = str(grants[row.id].id)
             dto.direct_access.grant_active = True
+        if dto.direct_access is not None and row.id in waiting:
+            dto.direct_access.awaiting_department = True
         out.append(dto)
     return out
 
@@ -103,6 +108,13 @@ async def decide_direct_access(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     dto = approval_to_dto(result.approval)
     dto.resumed = result.resumed_run_id is not None
+    if (
+        dto.direct_access is not None
+        and result.approval.status == "approved"
+        and department_after_person(result.approval) is not None
+    ):
+        # Approved by the person: the department is asked now.
+        dto.direct_access.awaiting_department = True
     await db.commit()
     if result.resumed_run_id is not None:
         # After the commit: a stream entry whose run is not yet visible is a

@@ -2,6 +2,8 @@
 
 from oc8.approvals.record_url import record_url_for_connection
 from oc8.approvals.repo import (
+    awaiting_department,
+    department_after_person,
     direct_access_owner,
     load_direct_access_card,
     member_direct_access_cards,
@@ -33,7 +35,9 @@ __all__ = [
     "NotYourSayAtAll",
     "UnknownDecision",
     "UnknownOption",
+    "awaiting_department",
     "decide_approval",
+    "department_after_person",
     "direct_access_owner",
     "expire_approval",
     "load_direct_access_card",

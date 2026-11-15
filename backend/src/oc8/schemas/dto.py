@@ -134,6 +134,9 @@ class DirectAccessInfoDTO(CamelModel):
     decider: str = "member"
     grant_id: str | None = None
     grant_active: bool = False
+    #: The person approved; the department whose own policy holds the write
+    #: still has to (person first, then the department -- spec §1).
+    awaiting_department: bool = False
 
 
 class DirectAccessGrantDTO(CamelModel):

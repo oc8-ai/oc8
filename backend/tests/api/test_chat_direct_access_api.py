@@ -141,3 +141,69 @@ async def test_only_the_member_sees_decides_and_revokes(
             assert (await c.post(revoke, headers=anna)).status_code == 204
             assert (await c.get(grants_url, headers=anna)).json() == []
             assert (await c.post(revoke, headers=anna)).status_code == 404
+
+
+async def test_an_approved_write_the_department_still_holds_shows_as_waiting(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Person first, then the department: the person's approved card stays in
+    their listing as waiting for the department, until it decides. They never
+    see the department's own card."""
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            anna = _h(tenant, "anna")
+            copilot_id = (await c.get("/api/v1/assistant", headers=anna)).json()["agentId"]
+            sid = (
+                await c.post("/api/v1/chat/sessions", json={"agentId": copilot_id}, headers=anna)
+            ).json()["id"]
+            with patch("oc8.runtime.intake.publish_run"):
+                await c.post(
+                    f"/api/v1/chat/sessions/{sid}/messages", json={"message": "hello"}, headers=anna
+                )
+            offer_id, run_id = await _seed(app_session, tenant, sid, copilot_id)
+            async with app_session(tenant) as db:
+                offer = await db.get(m.ApprovalRequest, offer_id)
+                assert offer is not None
+                dept_id = (
+                    await db.execute(select(m.Department.id).where(m.Department.name == "Sales"))
+                ).scalar_one()
+                offer.status = "approved"
+                held = m.ApprovalRequest(
+                    tenant_id=tenant,
+                    agent_id=offer.agent_id,
+                    task_id=offer.task_id,
+                    action_type="tool_send",
+                    title="Copilot on behalf of Anna: change things (update_record)",
+                    status="pending",
+                    payload={
+                        "run_id": str(run_id),
+                        "tool": "update_record",
+                        "arguments": {"id": 7},
+                        "direct_access": {
+                            **offer.payload["direct_access"],
+                            "department_id": str(dept_id),
+                        },
+                    },
+                )
+                db.add(held)
+                await db.flush()
+                held_id = held.id
+                await db.commit()
+
+            url = f"/api/v1/chat/direct-access/approvals/{held_id}/decision"
+            with patch("oc8.api.v1.chat_direct_access.publish_run") as published:
+                ok = await c.post(url, json={"decision": "approve"}, headers=anna)
+            assert ok.status_code == 200, ok.text
+            body = ok.json()
+            assert body["resumed"] is False and not published.called
+            assert body["directAccess"]["awaitingDepartment"] is True
+
+            mine = (await c.get("/api/v1/chat/direct-access/approvals", headers=anna)).json()
+            waiting = [a for a in mine if a["id"] == str(held_id)]
+            assert len(waiting) == 1
+            assert waiting[0]["status"] == "approved"
+            assert waiting[0]["directAccess"]["awaitingDepartment"] is True
+            # Only her own cards: the department's card is not in her listing.
+            assert {a["id"] for a in mine} <= {str(offer_id), str(held_id)}

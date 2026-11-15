@@ -21,10 +21,14 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
   const decide = useDecideDirectAccess();
   const revoke = useRevokeDirectAccess(info?.sessionId ?? "");
   const { data: grants } = useDirectAccessGrants(info?.sessionId ?? null);
-  const [decided, setDecided] = useState<"approved" | "rejected" | null>(null);
+  const [decided, setDecided] = useState<"approved" | "rejected" | "awaiting" | null>(null);
   if (!info) return null;
   const isOffer = approval.actionType === "direct_access";
-  const status = decided ?? approval.status;
+  // Person first, then the department (spec §1): the person's approval of a
+  // write a department's policy holds leaves it waiting for that department.
+  const status =
+    decided ??
+    (approval.status === "approved" && info.awaitingDepartment ? "awaiting" : approval.status);
   const grant = isOffer ? grants?.find((g) => g.approvalId === approval.id) : undefined;
   const title = resolveTranslation(approval.title, approval.titleTranslations, lang);
   const account =
@@ -36,7 +40,16 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
   const answer = (decision: "approve" | "reject") =>
     decide.mutate(
       { approvalId: approval.id, decision },
-      { onSuccess: () => setDecided(decision === "approve" ? "approved" : "rejected") },
+      {
+        onSuccess: (dto) =>
+          setDecided(
+            decision === "reject"
+              ? "rejected"
+              : dto?.directAccess?.awaitingDepartment
+                ? "awaiting"
+                : "approved",
+          ),
+      },
     );
 
   return (
@@ -90,7 +103,7 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
             </Button>
           </>
         )}
-        {status === "pending" && info.decider === "department" && (
+        {((status === "pending" && info.decider === "department") || status === "awaiting") && (
           <span className="text-xs text-muted-foreground">
             {t("Waiting for the department's approval.", "Wartet auf die Freigabe der Abteilung.")}
           </span>
