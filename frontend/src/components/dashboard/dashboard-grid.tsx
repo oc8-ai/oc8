@@ -15,6 +15,9 @@ import "react-grid-layout/css/styles.css";
 
 const GridLayout = WidthProvider(ReactGridLayout);
 
+const ROW_HEIGHT = 35;
+const GRID_MARGIN: [number, number] = [10, 10];
+
 export function DashboardGrid({
   widgets,
   editing,
@@ -47,7 +50,11 @@ export function DashboardGrid({
   return (
     <GridLayout
       cols={12}
-      rowHeight={40}
+      // Migration 0121 doubled every stored h (one old 80 px row is two rows
+      // now). 35 px rows with an explicit 10 px gap keep that exact: 2h rows
+      // span 2h*35 + (2h-1)*10 = h*80 + (h-1)*10 px, the old height.
+      rowHeight={ROW_HEIGHT}
+      margin={GRID_MARGIN}
       containerPadding={[0, 0]}
       isDraggable={editing}
       isResizable={editing}

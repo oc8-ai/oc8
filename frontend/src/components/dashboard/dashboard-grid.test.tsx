@@ -40,6 +40,21 @@ describe("DashboardGrid", () => {
     expect(onChange).toHaveBeenCalledWith([widgets[1]]);
   });
 
+  it("keeps a migrated tile exactly as tall as before 0121", () => {
+    // Before: h rows of 80 px with 10 px gaps. 0121 doubled h; 35 px rows
+    // with the same gap must land on the same height.
+    const oldH = 2;
+    const tall: WidgetInstance[] = [
+      { id: "t", type: "budget", x: 0, y: 0, w: 3, h: oldH * 2, config: {} },
+    ];
+    const { container } = render(
+      <DashboardGrid widgets={tall} editing={false} onChange={vi.fn()} />,
+      { wrapper },
+    );
+    const item = container.querySelector<HTMLElement>(".react-grid-item");
+    expect(item?.style.height).toBe(`${oldH * 80 + (oldH - 1) * 10}px`);
+  });
+
   it("has no resize handles unless editing", () => {
     // react-grid-layout keeps the handle in the DOM and hides it with CSS via
     // the item's `react-resizable-hide` class, so a visible handle is one whose

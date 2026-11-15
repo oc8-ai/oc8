@@ -3,8 +3,9 @@ import { cn } from "@/lib/utils";
 import type { WidgetInstance } from "@/lib/hooks";
 
 const GRID_COLUMNS = 12;
-// Stored rows are 40 px tall (half of the old 80 px unit), so halve them to
-// keep the sketch proportioned as it was.
+// Two stored rows (35 px each plus the 10 px gap between them) make one old
+// 80 px row exactly (dashboard-grid.tsx), so halve them to keep the sketch
+// proportioned as it was.
 const ROW_UNITS_PER_OLD_ROW = 2;
 
 /** A small proportional sketch of a widget arrangement -- one rectangle per
