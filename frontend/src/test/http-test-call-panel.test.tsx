@@ -66,10 +66,26 @@ describe("HttpTestCallPanel", () => {
     ["unreachable", "The API is not reachable."],
     ["http", "The API answered with an error."],
   ] as const)("explains the %s error class", async (errorClass, text) => {
-    const run = vi.fn().mockResolvedValue(result({ ok: false, errorClass, status: 401 }));
+    const run = vi
+      .fn()
+      .mockResolvedValue(result({ ok: false, errorClass, status: 401, message: "" }));
     render(<HttpTestCallPanel tools={TOOLS} run={run} />);
     fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
     expect(await screen.findByText(text)).toBeInTheDocument();
+  });
+
+  it("shows the server's reason for a blocked call when it gives one", async () => {
+    const reason =
+      "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields.";
+    const run = vi
+      .fn()
+      .mockResolvedValue(
+        result({ ok: false, errorClass: "blocked", status: null, message: reason }),
+      );
+    render(<HttpTestCallPanel tools={TOOLS} run={run} />);
+    fireEvent.click(screen.getByRole("button", { name: "Run test call" }));
+    expect(await screen.findByText(reason)).toBeInTheDocument();
+    expect(screen.queryByText("This address is not allowed.")).not.toBeInTheDocument();
   });
 
   it("says when the answer was cut", async () => {

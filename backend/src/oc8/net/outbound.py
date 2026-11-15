@@ -114,6 +114,14 @@ LOGIN_IN_BASE_URL = (
 )
 
 
+#: The same refusal for a connection already stored with such an address:
+#: its base URL cannot be edited in place, so the way out is a new one.
+STORED_LOGIN_IN_BASE_URL = (
+    "This connection's base URL contains a login. Delete this connection and "
+    "create it again with the login in the login fields."
+)
+
+
 def base_url_has_login(url: str) -> bool:
     """Whether `url` carries a username or password (`https://user:pw@host`).
     httpx would send it as Basic auth on every call, and the address is shown

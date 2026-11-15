@@ -5252,6 +5252,9 @@ msgstr ""
 msgid "This connection is not set up yet. Please contact your administrator."
 msgstr ""
 
+msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr ""
+
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr ""
 

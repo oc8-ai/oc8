@@ -90,6 +90,8 @@ def _guard(url: str) -> str | None:
         return guard_outbound_url(url, resolver=_resolve_ips)
     except OutboundBlocked as exc:
         raise FetchBlocked(str(exc)) from exc
+    except ValueError as exc:  # urlparse on a malformed address ("http://[::1")
+        raise FetchBlocked("malformed address") from exc
 
 
 #: Never taken from a caller: the guard checked the URL's host and the
@@ -186,14 +188,22 @@ async def _fetch(
     that never yield more than what still fits, so a small compressed body
     cannot inflate past the budget in memory."""
     current = url
-    origin = url_origin(httpx.URL(url))
+    origin: tuple[str, str, int | None] | None = None
     hop_headers = headers
     for _ in range(max_redirects + 1):
         ip = _guard(current)
+        # After the guard, so a malformed address is refused as blocked; one
+        # the guard passes but httpx cannot parse is refused the same way.
+        try:
+            hop_origin = url_origin(httpx.URL(current))
+        except httpx.InvalidURL as exc:
+            raise FetchBlocked("malformed address") from exc
+        if origin is None:
+            origin = hop_origin
         # Redirects are followed by hand, so httpx's own stripping never runs:
         # once off the first origin, the caller's other headers stay behind,
         # also on a later hop back to it.
-        if url_origin(httpx.URL(current)) != origin:
+        if hop_origin != origin:
             hop_headers = _cross_origin(headers)
         async with httpx.AsyncClient(
             follow_redirects=False,

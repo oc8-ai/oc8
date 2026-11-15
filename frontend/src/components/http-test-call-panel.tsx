@@ -52,6 +52,19 @@ export function HttpTestCallPanel({
     http: t("The API answered with an error.", "Die API hat mit einem Fehler geantwortet."),
   };
 
+  // Why a call was blocked, when the server says: the server's sentence in
+  // the person's language when it is one of these, as sent otherwise.
+  const BLOCKED_REASONS: Record<string, string> = {
+    "This address is not allowed.": MESSAGES.blocked,
+    "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields.":
+      t(
+        "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields.",
+        "Die Basis-URL dieser Verbindung enthält eine Anmeldung. Lösche diese Verbindung und lege sie mit der Anmeldung in den Anmeldefeldern neu an.",
+      ),
+  };
+  const blockedText = (message: string) =>
+    message.trim() ? (BLOCKED_REASONS[message] ?? message) : MESSAGES.blocked;
+
   // auth and http with no status: the request never got an answer (refused
   // before sending, a redirect loop, a body that cannot be decoded), so the
   // API neither "refused the login" nor "answered with an error".
@@ -161,7 +174,9 @@ export function HttpTestCallPanel({
               ? t("The call worked.", "Der Aufruf hat funktioniert.")
               : neutral
                 ? t("The call could not be made.", "Der Aufruf war nicht möglich.")
-                : MESSAGES[result.errorClass ?? "http"]}
+                : result.errorClass === "blocked"
+                  ? blockedText(result.message)
+                  : MESSAGES[result.errorClass ?? "http"]}
           </p>
           {neutral && result.message && (
             <p className="text-xs text-muted-foreground">{result.message}</p>

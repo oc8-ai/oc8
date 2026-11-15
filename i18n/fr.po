@@ -6968,6 +6968,10 @@ msgid "This connection is not set up yet. Please contact your administrator."
 msgstr "Cette connexion n'est pas encore configurée. Veuillez contacter votre administrateur."
 
 #, fuzzy
+msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr "L'URL de base de cette connexion contient un identifiant. Supprimez cette connexion et recréez-la avec l'identifiant dans les champs de connexion."
+
+#, fuzzy
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr "Cela supprime tous les agents, exécutions et éléments de connaissance actuels de l'entreprise et les remplace par le contenu du fichier téléversé. Cette action est irréversible."
 

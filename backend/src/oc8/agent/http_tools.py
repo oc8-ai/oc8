@@ -52,7 +52,7 @@ from oc8.net.decoding import (
     decode_step,
 )
 from oc8.net.outbound import (
-    LOGIN_IN_BASE_URL,
+    STORED_LOGIN_IN_BASE_URL,
     USER_AGENT,
     OutboundBlocked,
     PinnedTransport,
@@ -807,7 +807,7 @@ class HttpToolSession:
         A base URL with a username or password in it is refused (`blocked`):
         httpx would send it as Basic auth on every call, past the login."""
         if base_url_has_login(base_url):
-            raise HttpToolError("blocked", LOGIN_IN_BASE_URL)
+            raise HttpToolError("blocked", STORED_LOGIN_IN_BASE_URL)
         self._base_url = base_url.rstrip("/")
         self._login = login
         self._extra_secrets = [str(v) for v in secrets if v] + login_secrets(login)

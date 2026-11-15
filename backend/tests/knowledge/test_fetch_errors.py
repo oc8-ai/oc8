@@ -410,3 +410,10 @@ async def test_a_cross_origin_redirect_drops_caller_headers(
         assert headers["accept-language"] == "de"
         assert headers["accept-encoding"] == "gzip"
         assert headers["user-agent"].startswith("oc8/")
+
+
+@pytest.mark.parametrize("fetch", _FETCHES)
+@pytest.mark.parametrize("url", ["http://[::1", "https://exa mple.test/", "http://:80/"])
+async def test_a_malformed_url_is_blocked(fetch: Callable[..., object], url: str) -> None:
+    with pytest.raises(FetchBlocked):
+        await fetch(url)  # type: ignore[misc]

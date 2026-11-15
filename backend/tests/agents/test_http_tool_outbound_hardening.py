@@ -354,5 +354,5 @@ async def test_a_session_refuses_a_login_inside_the_base_url(base_url: str) -> N
     with pytest.raises(HttpToolError) as caught:
         HttpToolSession(base_url, [_tool("/x")])
     assert caught.value.kind == "blocked"
-    assert "login fields" in str(caught.value)
+    assert "Delete this connection and create it again" in str(caught.value)
     assert "pw" not in str(caught.value)

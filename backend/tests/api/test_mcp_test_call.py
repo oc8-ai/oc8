@@ -276,3 +276,20 @@ async def test_no_database_connection_is_held_during_the_call(
     r = await _call(tenant, conn_id, {"tool": "get_ticket", "arguments": {"id": "1"}})
     assert r.status_code == 200, r.text
     assert checked_out == [0]
+
+
+async def test_a_stored_login_in_the_base_url_answers_blocked_with_a_way_out(
+    app_session: AppSessionFactory,
+) -> None:
+    """A row from before installs refused it (or written by hand): the call is
+    never made, and the answer says what to do instead of a 500."""
+    tenant = uuid.uuid4()
+    conn_id = await _conn(app_session, tenant, "https://ada:pw-SECRET@tickets.acme.test")
+    r = await _call(tenant, conn_id, {"tool": "get_ticket", "arguments": {"id": "1"}})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is False
+    assert body["errorClass"] == "blocked"
+    assert body["status"] is None
+    assert "Delete this connection and create it again" in body["message"]
+    assert "pw-SECRET" not in r.text

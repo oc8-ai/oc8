@@ -6968,6 +6968,10 @@ msgid "This connection is not set up yet. Please contact your administrator."
 msgstr "Deze koppeling is nog niet ingericht. Neem contact op met je beheerder."
 
 #, fuzzy
+msgid "This connection's base URL contains a login. Delete this connection and create it again with the login in the login fields."
+msgstr "De basis-URL van deze verbinding bevat een login. Verwijder deze verbinding en maak haar opnieuw aan met de login in de loginvelden."
+
+#, fuzzy
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
 msgstr "Hiermee verwijder je alle agents, runs en kennisitems van het bedrijf zoals het nu is en vervang je ze door de inhoud van het geüploade bestand. Dit kan niet ongedaan worden gemaakt."
 
