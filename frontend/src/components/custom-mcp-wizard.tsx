@@ -1167,6 +1167,7 @@ export function CustomMcpWizard({
                     setStepError(null);
                     setStep(0);
                   }}
+                  onBack={handleBack}
                 />
                 {stepError && (
                   <p role="alert" className="text-xs text-[color:var(--status-error)]">
@@ -1335,52 +1336,54 @@ export function CustomMcpWizard({
             )}
           </div>
 
-          <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
-            <button
-              onClick={handleBack}
-              disabled={busy}
-              className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {step === 0 ? (
-                "Cancel"
-              ) : (
-                <>
-                  <ChevronLeft className="h-4 w-4" /> Back
-                </>
-              )}
-            </button>
-            {sourceStepActive ? null : !isLastStep ? (
+          {sourceStepActive && activeSource?.ownsFooter ? null : (
+            <footer className="flex items-center justify-between gap-3 border-t border-border bg-background/30 px-6 py-4">
               <button
-                onClick={handleNext}
-                disabled={!canProceed}
-                className={cn(
-                  "inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition",
-                  canProceed
-                    ? "bg-primary text-primary-foreground hover:brightness-110 glow-teal"
-                    : "cursor-not-allowed bg-background/40 text-muted-foreground",
-                )}
+                onClick={handleBack}
+                disabled={busy}
+                className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Next <ChevronRight className="h-4 w-4" />
+                {step === 0 ? (
+                  "Cancel"
+                ) : (
+                  <>
+                    <ChevronLeft className="h-4 w-4" /> Back
+                  </>
+                )}
               </button>
-            ) : (
-              <div className="flex items-center gap-2">
+              {sourceStepActive ? null : !isLastStep ? (
                 <button
-                  onClick={() => handleSave(false)}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-background/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={handleNext}
+                  disabled={!canProceed}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-md px-4 py-2 text-sm font-medium transition",
+                    canProceed
+                      ? "bg-primary text-primary-foreground hover:brightness-110 glow-teal"
+                      : "cursor-not-allowed bg-background/40 text-muted-foreground",
+                  )}
                 >
-                  Save
+                  Next <ChevronRight className="h-4 w-4" />
                 </button>
-                <button
-                  onClick={() => handleSave(true)}
-                  disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <Check className="h-4 w-4" /> Save & export as capa
-                </button>
-              </div>
-            )}
-          </footer>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleSave(false)}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-md border border-border px-4 py-2 text-sm font-medium text-foreground transition hover:bg-background/40 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => handleSave(true)}
+                    disabled={busy}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Check className="h-4 w-4" /> Save & export as capa
+                  </button>
+                </div>
+              )}
+            </footer>
+          )}
         </div>
       </div>
     </>
