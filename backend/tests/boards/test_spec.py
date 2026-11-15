@@ -129,12 +129,14 @@ def test_artifact_block_contract() -> None:
         parse_board_spec(raw)
 
 
-@pytest.mark.parametrize("value", ["12", True, float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "value", ["12", True, float("nan"), float("inf"), 10**400, 1e308, -(10**16)]
+)
 def test_values_are_validated_against_field_types(value: object) -> None:
     with pytest.raises(BoardSpecInvalid) as exc:
         validate_values(_sales(), {"amount": value})
     assert "amount" in str(exc.value)
-    assert "submitted" not in str(exc.value)
+    assert exc.value.code == "invalid_value"
 
 
 def test_valid_values_pass_and_missing_keys_stay_absent() -> None:
@@ -228,3 +230,61 @@ def test_labels_blocks_and_new_fields_may_change() -> None:
     )
     raw["blocks"] = [{"type": "table", "dataset": "costs", "fields": ["c"]}]
     check_additive(old, parse_board_spec(raw))
+
+
+def test_errors_do_not_echo_submitted_text() -> None:
+    raw = _spec()
+    raw["blocks"] = [{"type": "SENTINEL_TYPE", "dataset": "sales"}]
+    with pytest.raises(BoardSpecInvalid) as exc:
+        parse_board_spec(raw)
+    assert "SENTINEL_TYPE" not in str(exc.value)
+    assert "unknown block type" in str(exc.value)
+
+
+def test_long_extra_keys_and_refs_are_truncated_or_not_echoed() -> None:
+    raw = _spec() | {"k" * 500: 1}
+    with pytest.raises(BoardSpecInvalid) as exc:
+        parse_board_spec(raw)
+    assert "k" * 41 not in str(exc.value)
+    raw = _spec()
+    raw["blocks"] = [{"type": "kpi", "dataset": "SENTINEL" * 50, "field": "amount"}]
+    with pytest.raises(BoardSpecInvalid) as exc:
+        parse_board_spec(raw)
+    assert "SENTINEL" not in str(exc.value)
+    assert len(str(exc.value)) < 1100
+    with pytest.raises(BoardSpecInvalid) as exc:
+        validate_values(_sales(), {"z" * 500: 1})
+    assert "z" * 41 not in str(exc.value)
+
+
+def test_as_of_overflow_is_refused() -> None:
+    with pytest.raises(BoardSpecInvalid):
+        normalize_as_of("0001-01-01T00:00:00+05:00", "day")
+
+
+def test_filter_bar_choices_are_unique_and_page_size_is_strict() -> None:
+    raw = _spec()
+    raw["blocks"] = [{"type": "filter_bar", "presets": ["custom", "custom"]}]
+    with pytest.raises(BoardSpecInvalid):
+        parse_board_spec(raw)
+    raw["blocks"] = [{"type": "table", "dataset": "sales", "fields": ["amount"], "page_size": True}]
+    with pytest.raises(BoardSpecInvalid):
+        parse_board_spec(raw)
+
+
+def test_a_change_on_a_second_dataset_is_refused() -> None:
+    base = _spec()
+    base["datasets"].append(
+        {
+            "key": "costs",
+            "label": "Costs",
+            "grain": "month",
+            "fields": [{"key": "c", "label": "C", "type": "number"}],
+        }
+    )
+    old = parse_board_spec(base)
+    raw = copy.deepcopy(base)
+    raw["datasets"][1]["grain"] = "day"
+    with pytest.raises(SpecChangeRefused) as exc:
+        check_additive(old, parse_board_spec(raw))
+    assert exc.value.code == "grain_changed"

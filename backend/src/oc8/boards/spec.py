@@ -19,6 +19,12 @@ KEY_PATTERN = r"^[a-z][a-z0-9_]{0,39}$"
 NUMERIC_TYPES: frozenset[str] = frozenset({"number", "money", "percent"})
 
 _KEY = Field(pattern=KEY_PATTERN)
+Ref = Annotated[str, Field(pattern=KEY_PATTERN)]
+_SEG_MAX = 40
+_MESSAGE_MAX = 1000
+# Magnitude bound for stored numbers: integers up to 1e15 are exact in float64
+# (2**53 is about 9e15) and leave headroom for a SUM over many rows.
+MAX_ABS_VALUE = 10**15
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 FieldType = Literal["number", "money", "percent", "text", "category", "date"]
@@ -91,46 +97,56 @@ class _Block(_Strict):
 
 class KpiBlock(_Block):
     type: Literal["kpi"]
-    dataset: str
-    field: str
+    dataset: Ref
+    field: Ref
 
 
 class ChartBlock(_Block):
     type: Literal["line", "bar", "area"]
-    dataset: str
-    fields: list[str] = Field(min_length=1, max_length=5)
-    split_by: str | None = None
+    dataset: Ref
+    fields: list[Ref] = Field(min_length=1, max_length=5)
+    split_by: Ref | None = None
 
 
 class TableBlock(_Block):
     type: Literal["table"]
-    dataset: str
-    fields: list[str] = Field(min_length=1, max_length=20)
-    page_size: int = Field(default=25, ge=5, le=100)
+    dataset: Ref
+    fields: list[Ref] = Field(min_length=1, max_length=20)
+    page_size: int = Field(default=25, ge=5, le=100, strict=True)
 
 
 class CategoryFilterRef(_Strict):
-    dataset: str
-    field: str
+    dataset: Ref
+    field: Ref
 
 
 class FilterBarBlock(_Block):
     type: Literal["filter_bar"]
     width: Literal[12] = 12
-    presets: list[Preset] = Field(default_factory=lambda: list(get_args(Preset)))
-    comparisons: list[Comparison] = Field(default_factory=lambda: list(get_args(Comparison)))
+    presets: list[Preset] = Field(default_factory=lambda: list(get_args(Preset)), max_length=4)
+    comparisons: list[Comparison] = Field(
+        default_factory=lambda: list(get_args(Comparison)), max_length=2
+    )
     category_filters: list[CategoryFilterRef] = Field(default_factory=list, max_length=10)
+
+    @model_validator(mode="after")
+    def _unique_choices(self) -> FilterBarBlock:
+        if len(set(self.presets)) != len(self.presets):
+            raise ValueError("filter_bar presets must be unique")
+        if len(set(self.comparisons)) != len(self.comparisons):
+            raise ValueError("filter_bar comparisons must be unique")
+        return self
 
 
 class NoteBlock(_Block):
     type: Literal["note"]
-    dataset: str
+    dataset: Ref
 
 
 class ArtifactBlock(_Block):
     type: Literal["artifact"]
     artifact_ref: str = Field(min_length=1, max_length=200)
-    datasets: list[str] = Field(min_length=1, max_length=10)
+    datasets: list[Ref] = Field(min_length=1, max_length=10)
 
 
 Block = Annotated[
@@ -191,11 +207,23 @@ class BoardSpec(_Strict):
 
 
 def _loc(loc: tuple[int | str, ...]) -> str:
-    return ".".join(str(p) for p in loc) or "spec"
+    return ".".join(str(p)[:_SEG_MAX] for p in loc) or "spec"
+
+
+def _describe(err_type: str, msg: str) -> str:
+    if err_type in ("union_tag_invalid", "union_tag_not_found"):
+        return "unknown block type"
+    if err_type == "extra_forbidden":
+        return "unknown key"
+    return msg.removeprefix("Value error, ")
 
 
 def parse_board_spec(raw: object) -> BoardSpec:
-    """Validate a raw spec; raises BoardSpecInvalid with a corrigible message."""
+    """Validate a raw spec; raises BoardSpecInvalid with a corrigible message.
+
+    The message is built from error types and truncated locations, never from
+    submitted values.
+    """
     if not isinstance(raw, Mapping):
         raise BoardSpecInvalid("the board spec must be an object")
     try:
@@ -203,10 +231,9 @@ def parse_board_spec(raw: object) -> BoardSpec:
     except ValidationError as exc:
         parts = []
         for err in exc.errors(include_input=False, include_url=False, include_context=False):
-            loc = _loc(err["loc"])
-            msg = str(err["msg"]).removeprefix("Value error, ")
-            parts.append(f"{loc}: {msg}")
-        raise BoardSpecInvalid("invalid board spec: " + "; ".join(parts[:8])) from None
+            parts.append(f"{_loc(err['loc'])}: {_describe(err['type'], str(err['msg']))}")
+        message = "invalid board spec: " + "; ".join(parts[:8])
+        raise BoardSpecInvalid(message[:_MESSAGE_MAX]) from None
 
 
 def uses_artifact(spec: BoardSpec) -> bool:
@@ -220,16 +247,18 @@ def validate_values(dataset: DatasetSpec, row: Mapping[str, object]) -> dict[str
         f = dataset.field(key)
         if f is None:
             raise BoardSpecInvalid(
-                f"dataset '{dataset.key}' has no field '{key}'", code="unknown_field"
+                f"dataset '{dataset.key}' has no field '{key[:_SEG_MAX]}'", code="unknown_field"
             )
         if f.type in NUMERIC_TYPES:
             if (
                 isinstance(value, bool)
                 or not isinstance(value, int | float)
-                or not math.isfinite(value)
+                or (isinstance(value, float) and not math.isfinite(value))
+                or abs(value) > MAX_ABS_VALUE
             ):
                 raise BoardSpecInvalid(
-                    f"field '{key}' must be a finite number", code="invalid_value"
+                    f"field '{key}' must be a finite number of at most 1e15 in magnitude",
+                    code="invalid_value",
                 )
         elif f.type == "text":
             if not isinstance(value, str) or len(value) > 2000:
@@ -261,10 +290,19 @@ def normalize_as_of(raw: str, grain: str) -> dt.datetime:
     """Parse `raw` and snap it to the start of its grain period, in UTC."""
     try:
         parsed = dt.datetime.fromisoformat(raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         raise BoardSpecInvalid(
             "as_of must be an ISO date or datetime", code="invalid_as_of"
         ) from None
+    try:
+        return _snap(parsed, grain)
+    except OverflowError:
+        raise BoardSpecInvalid(
+            "as_of must be an ISO date or datetime", code="invalid_as_of"
+        ) from None
+
+
+def _snap(parsed: dt.datetime, grain: str) -> dt.datetime:
     parsed = parsed.replace(tzinfo=dt.UTC) if parsed.tzinfo is None else parsed.astimezone(dt.UTC)
     day = parsed.replace(hour=0, minute=0, second=0, microsecond=0)
     if grain == "moment":
