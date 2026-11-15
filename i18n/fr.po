@@ -4452,6 +4452,10 @@ msgid "No providers configured yet. Start with the wizard."
 msgstr "Aucun fournisseur configuré pour l'instant. Lancez l'assistant."
 
 #, fuzzy
+msgid "No read access."
+msgstr "Pas d'accès en lecture."
+
+#, fuzzy
 msgid "No reason was recorded."
 msgstr "Aucun motif enregistré."
 
@@ -4570,6 +4574,10 @@ msgstr "Non autorisé"
 #, fuzzy
 msgid "Not available: "
 msgstr "Indisponible : "
+
+#, fuzzy
+msgid "Not available."
+msgstr "Non disponible."
 
 #, fuzzy
 msgid "Not connected"
@@ -6980,6 +6988,10 @@ msgid "This agent was already created."
 msgstr "Cet agent est déjà créé."
 
 #, fuzzy
+msgid "This app is not installed."
+msgstr "Cette app n'est pas installée."
+
+#, fuzzy
 msgid "This archive cannot be restored:"
 msgstr "Cette archive ne peut pas être restaurée :"
 
@@ -7434,6 +7446,10 @@ msgstr "Désépingler"
 #, fuzzy
 msgid "Unpublished changes"
 msgstr "Modifications non publiées"
+
+#, fuzzy
+msgid "unreadable"
+msgstr "illisible"
 
 #, fuzzy
 msgid "Unregistered"

@@ -9,10 +9,12 @@
 //   "Everything" row first, stored as {id: <app id>, label, kind: "all"}. Ticking it
 //   clears and disables every other tick inside that app.
 // - An entry with a `note` (e.g. an app that is not installed) shows the note
-//   instead of children and cannot be ticked.
+//   instead of children and cannot be ticked. A note is a code
+//   (`app_missing`, `no_access`); an unknown one shows a generic text.
+// - An app's name is shown in the current language when its capa translates it.
 import { Check, ChevronDown, ChevronRight, FileText, Folder, Layers } from "lucide-react";
 import { createContext, useContext, useEffect, useRef, useState } from "react";
-import { useT } from "@/lib/i18n";
+import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { useBrowseDraft, type BrowseEntry } from "@/lib/knowledge-connector-hooks";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +26,18 @@ export interface ScopeItem {
 
 /** The `kind` of the item that stands for everything inside an app. */
 export const ALL_KIND = "all";
+
+/** What a browse entry's `note` code means, in words. */
+function noteText(note: string, t: (en: string, de?: string) => string): string {
+  switch (note) {
+    case "app_missing":
+      return t("This app is not installed.", "Diese App ist nicht installiert.");
+    case "no_access":
+      return t("No read access.", "Kein Lesezugriff.");
+    default:
+      return t("Not available.", "Nicht verfügbar.");
+  }
+}
 
 interface PickerCtx {
   typeId: string;
@@ -193,8 +207,10 @@ function Node({
   depth: number;
 }) {
   const t = useT();
+  const { lang } = useLang();
   const { value, allApps, toggle, toggleAll } = usePicker();
   const [open, setOpen] = useState(false);
+  const name = resolveTranslation(entry.name, entry.nameTranslations, lang);
   const indent = { paddingLeft: `${depth * 16}px` };
   const isApp = entry.kind === "app";
   const Icon = isApp ? Layers : entry.isFolder ? Folder : FileText;
@@ -205,9 +221,9 @@ function Node({
         <div className="flex items-center gap-1.5 text-muted-foreground">
           <span className="w-4" />
           <Icon className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{entry.name}</span>
+          <span className="truncate">{name}</span>
         </div>
-        <p className="ml-[22px] text-[11px] text-muted-foreground">{entry.note}</p>
+        <p className="ml-[22px] text-[11px] text-muted-foreground">{noteText(entry.note, t)}</p>
       </li>
     );
   }
@@ -229,14 +245,14 @@ function Node({
         {!isApp && (
           <input
             type="checkbox"
-            aria-label={entry.name}
+            aria-label={name}
             checked={checked}
             disabled={coveredByAll}
             onChange={(e) =>
               toggle(
                 {
                   id: entry.id,
-                  label: entry.name,
+                  label: name,
                   kind: entry.kind ?? (entry.isFolder ? "folder" : "file"),
                 },
                 e.target.checked,
@@ -253,10 +269,10 @@ function Node({
             onClick={() => setOpen((o) => !o)}
             className={cn("truncate text-left hover:text-primary", isApp && "font-medium")}
           >
-            {entry.name}
+            {name}
           </button>
         ) : (
-          <span className="truncate">{entry.name}</span>
+          <span className="truncate">{name}</span>
         )}
         {allTicked && (
           <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">

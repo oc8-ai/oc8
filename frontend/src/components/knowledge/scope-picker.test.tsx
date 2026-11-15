@@ -16,15 +16,34 @@ vi.mock("@/lib/api", () => ({
 let lang: "en" | "de" = "de";
 vi.mock("@/lib/i18n", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/i18n")>();
-  return { ...actual, useT: () => (en: string, de?: string) => (lang === "de" ? (de ?? en) : en) };
+  return {
+    ...actual,
+    useT: () => (en: string, de?: string) => (lang === "de" ? (de ?? en) : en),
+    useLang: () => ({ lang, setLang: () => {}, locales: [], catalogs: {} }),
+  };
 });
 
 import { ScopePicker, type ScopeItem } from "@/components/knowledge/scope-picker";
 
 const ROOT = {
   entries: [
-    { id: "app:documents", name: "Documents", isFolder: true, kind: "app" },
-    { id: "app:knowledge", name: "Knowledge", isFolder: true, kind: "app", note: "Not installed" },
+    {
+      id: "app:documents",
+      name: "Documents",
+      isFolder: true,
+      kind: "app",
+      nameTranslations: { de: "Dokumente" },
+    },
+    {
+      id: "app:knowledge",
+      name: "Knowledge",
+      isFolder: true,
+      kind: "app",
+      note: "app_missing",
+      nameTranslations: { de: "Wissen" },
+    },
+    { id: "app:sales", name: "Sales", isFolder: true, kind: "app", note: "no_access" },
+    { id: "app:other", name: "Other", isFolder: true, kind: "app", note: "something_new" },
     { id: "f:1", name: "Contracts", isFolder: true, kind: "folder" },
     { id: "d:9", name: "readme.txt", isFolder: false, kind: "file" },
   ],
@@ -88,7 +107,7 @@ describe("ScopePicker", () => {
 
   it("renders the root listing", async () => {
     renderPicker();
-    expect(await screen.findByText("Documents")).toBeInTheDocument();
+    expect(await screen.findByText("Dokumente")).toBeInTheDocument();
     expect(screen.getByText("Contracts")).toBeInTheDocument();
     expect(screen.getByText("readme.txt")).toBeInTheDocument();
     expect(postMock).toHaveBeenCalledWith("/knowledge/connectors/demo/browse", {
@@ -99,7 +118,7 @@ describe("ScopePicker", () => {
 
   it("expands a folder lazily, browsing with the entry's id as the path", async () => {
     renderPicker();
-    fireEvent.click(await screen.findByRole("button", { name: "Documents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dokumente" }));
     expect(await screen.findByText("Invoices")).toBeInTheDocument();
     expect(postMock).toHaveBeenCalledWith("/knowledge/connectors/demo/browse", {
       config: { credential: "cred-1" },
@@ -126,7 +145,7 @@ describe("ScopePicker", () => {
   it("offers 'Alles' first in an app; ticking it clears and disables the app's other ticks", async () => {
     const onChange = vi.fn();
     renderPicker({ onChange });
-    fireEvent.click(await screen.findByRole("button", { name: "Documents" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dokumente" }));
     const invoices = await screen.findByRole("checkbox", { name: "Invoices" });
     const all = screen.getByRole("checkbox", { name: "Alles" });
     // "Alles" is the app's first child row.
@@ -147,7 +166,7 @@ describe("ScopePicker", () => {
 
   it("marks a collapsed app whose 'Alles' is ticked", async () => {
     renderPicker({ initial: [{ id: "app:documents", label: "Alles", kind: "all" }] });
-    const app = await screen.findByRole("button", { name: "Documents" });
+    const app = await screen.findByRole("button", { name: "Dokumente" });
     expect(app).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByText("Alles: ausgewählt")).toBeInTheDocument();
   });
@@ -183,10 +202,39 @@ describe("ScopePicker", () => {
 
   it("shows an entry's note instead of its children, without a checkbox", async () => {
     renderPicker();
-    expect(await screen.findByText("Not installed")).toBeInTheDocument();
-    expect(screen.getByText("Knowledge")).toBeInTheDocument();
-    expect(screen.queryByRole("checkbox", { name: "Knowledge" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Knowledge" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Diese App ist nicht installiert.")).toBeInTheDocument();
+    expect(screen.getByText("Wissen")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox", { name: "Wissen" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Wissen" })).not.toBeInTheDocument();
+  });
+
+  it("words the note codes and never shows a raw code", async () => {
+    const { container } = renderPicker();
+    expect(await screen.findByText("Kein Lesezugriff.")).toBeInTheDocument();
+    expect(screen.getByText("Nicht verfügbar.")).toBeInTheDocument();
+    for (const code of ["app_missing", "no_access", "something_new"]) {
+      expect(container.textContent).not.toContain(code);
+    }
+  });
+
+  it("words the note codes in English", async () => {
+    lang = "en";
+    renderPicker();
+    expect(await screen.findByText("This app is not installed.")).toBeInTheDocument();
+    expect(screen.getByText("No read access.")).toBeInTheDocument();
+    expect(screen.getByText("Not available.")).toBeInTheDocument();
+  });
+
+  it("shows an app's name in the capa's translation, and in English as declared", async () => {
+    renderPicker();
+    expect(await screen.findByRole("button", { name: "Dokumente" })).toBeInTheDocument();
+    expect(screen.queryByText("Documents")).not.toBeInTheDocument();
+  });
+
+  it("keeps an app's English name in English", async () => {
+    lang = "en";
+    renderPicker();
+    expect(await screen.findByRole("button", { name: "Documents" })).toBeInTheDocument();
   });
 
   it("says when a listing was cut off", async () => {

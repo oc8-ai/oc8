@@ -5,9 +5,10 @@
 // (`keys.sources = ["knowledge", "sources"]`), so the sources list refreshes
 // after create/sync.
 
-import { useEffect } from "react";
+import { useCallback, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { resolveTranslation, useLang, type Lang } from "@/lib/i18n";
 
 const SOURCES_KEY = ["knowledge", "sources"] as const;
 
@@ -79,6 +80,47 @@ export interface ConnectorCatalogEntry {
   usable?: boolean;
   missing?: string | null;
   capaId?: string | null;
+  // `label`/`description` and each config property's `title`/`description`
+  // in every locale the contributing capa's `i18n/*.po` translates them into.
+  // `useKnowledgeConnectors` resolves them for the current language.
+  labelTranslations?: Record<string, string>;
+  descriptionTranslations?: Record<string, string>;
+  fieldTranslations?: Record<string, Record<string, Record<string, string>>>;
+}
+
+/** A catalog entry with its label, description and config field titles in
+ *  `lang`, falling back to the English text the connector declares. */
+export function localizeConnector(entry: ConnectorCatalogEntry, lang: Lang): ConnectorCatalogEntry {
+  const fields = entry.fieldTranslations ?? {};
+  const properties = entry.configSchema?.properties;
+  return {
+    ...entry,
+    label: entry.label
+      ? resolveTranslation(entry.label, entry.labelTranslations, lang)
+      : entry.label,
+    description: entry.description
+      ? resolveTranslation(entry.description, entry.descriptionTranslations, lang)
+      : entry.description,
+    configSchema: properties
+      ? {
+          ...entry.configSchema,
+          properties: Object.fromEntries(
+            Object.entries(properties).map(([key, field]) => [
+              key,
+              {
+                ...field,
+                title: field.title
+                  ? resolveTranslation(field.title, fields[key]?.title, lang)
+                  : field.title,
+                description: field.description
+                  ? resolveTranslation(field.description, fields[key]?.description, lang)
+                  : field.description,
+              },
+            ]),
+          ),
+        }
+      : entry.configSchema,
+  };
 }
 
 /** The `missing` prefix of a connector whose capa waits for a permission. */
@@ -92,6 +134,8 @@ export interface BrowseEntry {
   contentType?: string | null;
   kind?: string | null;
   note?: string | null;
+  // An app entry's name in every locale its capa translates it into.
+  nameTranslations?: Record<string, string>;
 }
 
 export interface BrowseListing {
@@ -150,9 +194,15 @@ export interface OAuthConnection {
 }
 
 export function useKnowledgeConnectors() {
+  const { lang } = useLang();
+  const select = useCallback(
+    (entries: ConnectorCatalogEntry[]) => entries.map((entry) => localizeConnector(entry, lang)),
+    [lang],
+  );
   return useQuery({
     queryKey: ["knowledge", "connectors"],
     queryFn: () => api.get<ConnectorCatalogEntry[]>("/knowledge/connectors"),
+    select,
   });
 }
 

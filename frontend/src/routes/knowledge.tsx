@@ -2390,7 +2390,7 @@ export function BaseWizard({
 
 // Reasons a connector reports for a file it skipped, in the order they are
 // listed; any other reason still counts, under "other".
-const SKIP_REASONS = ["unsupported_type", "too_large", "url_document"] as const;
+const SKIP_REASONS = ["unsupported_type", "too_large", "url_document", "unreadable"] as const;
 
 /** What the last finished sync skipped, by reason, and the notes it left for
  *  the admin. Renders nothing for a sync that skipped and noted nothing, and
@@ -2407,6 +2407,7 @@ function SyncReport({
     unsupported_type: t("unsupported file type", "Dateityp nicht unterstützt"),
     too_large: t("too large", "zu groß"),
     url_document: t("link instead of file", "Link statt Datei"),
+    unreadable: t("unreadable", "nicht lesbar"),
   };
   const noteText: Record<string, string> = {
     api_key_recommended: t(

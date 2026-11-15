@@ -3340,6 +3340,9 @@ msgstr "Noch kein Zugang der Organisation."
 msgid "No providers configured yet. Start with the wizard."
 msgstr "Noch keine Anbieter konfiguriert. Mit dem Assistenten starten."
 
+msgid "No read access."
+msgstr "Kein Lesezugriff."
+
 msgid "No reason was recorded."
 msgstr "Es wurde kein Grund festgehalten."
 
@@ -3429,6 +3432,9 @@ msgstr "Nicht erlaubt"
 
 msgid "Not available: "
 msgstr "Nicht vergebbar: "
+
+msgid "Not available."
+msgstr "Nicht verfügbar."
 
 msgid "Not connected"
 msgstr "Nicht verbunden"
@@ -5236,6 +5242,9 @@ msgstr "Nur dieser Agent"
 msgid "This agent was already created."
 msgstr "Dieser Agent wurde schon angelegt."
 
+msgid "This app is not installed."
+msgstr "Diese App ist nicht installiert."
+
 msgid "This archive cannot be restored:"
 msgstr "Dieses Archiv kann nicht wiederhergestellt werden:"
 
@@ -5577,6 +5586,9 @@ msgstr "Lösen"
 
 msgid "Unpublished changes"
 msgstr "Unveröffentlichte Änderungen"
+
+msgid "unreadable"
+msgstr "nicht lesbar"
 
 msgid "Unregistered"
 msgstr "Nicht registriert"

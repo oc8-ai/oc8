@@ -4452,6 +4452,10 @@ msgid "No providers configured yet. Start with the wizard."
 msgstr "Nog geen providers geconfigureerd. Start de wizard."
 
 #, fuzzy
+msgid "No read access."
+msgstr "Geen leestoegang."
+
+#, fuzzy
 msgid "No reason was recorded."
 msgstr "Geen reden vastgelegd."
 
@@ -4570,6 +4574,10 @@ msgstr "Niet toegestaan"
 #, fuzzy
 msgid "Not available: "
 msgstr "Niet beschikbaar: "
+
+#, fuzzy
+msgid "Not available."
+msgstr "Niet beschikbaar."
 
 #, fuzzy
 msgid "Not connected"
@@ -6980,6 +6988,10 @@ msgid "This agent was already created."
 msgstr "Deze agent is al aangemaakt."
 
 #, fuzzy
+msgid "This app is not installed."
+msgstr "Deze app is niet geïnstalleerd."
+
+#, fuzzy
 msgid "This archive cannot be restored:"
 msgstr "Dit archief kan niet worden hersteld:"
 
@@ -7434,6 +7446,10 @@ msgstr "Losmaken"
 #, fuzzy
 msgid "Unpublished changes"
 msgstr "Niet-gepubliceerde wijzigingen"
+
+#, fuzzy
+msgid "unreadable"
+msgstr "onleesbaar"
 
 #, fuzzy
 msgid "Unregistered"

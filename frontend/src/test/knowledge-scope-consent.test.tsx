@@ -348,6 +348,11 @@ describe("Source card: what the last sync skipped and noted", () => {
     expect(screen.getByText("4 übersprungen: Link statt Datei (4)")).toBeInTheDocument();
   });
 
+  it("names a file Odoo sent that could not be read", () => {
+    renderSources([{ ...synced, lastSyncSkipped: { unreadable: 1 } } as DataSource]);
+    expect(screen.getByText("1 übersprungen: nicht lesbar (1)")).toBeInTheDocument();
+  });
+
   it("renders a known note and nothing for an unknown one, in German", () => {
     const { container } = renderSources([synced]);
     expect(

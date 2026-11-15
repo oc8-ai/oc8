@@ -3446,6 +3446,9 @@ msgstr ""
 msgid "No providers configured yet. Start with the wizard."
 msgstr ""
 
+msgid "No read access."
+msgstr ""
+
 msgid "No reason was recorded."
 msgstr ""
 
@@ -3537,6 +3540,9 @@ msgid "Not allowed"
 msgstr ""
 
 msgid "Not available: "
+msgstr ""
+
+msgid "Not available."
 msgstr ""
 
 msgid "Not connected"
@@ -5384,6 +5390,9 @@ msgstr ""
 msgid "This agent was already created."
 msgstr ""
 
+msgid "This app is not installed."
+msgstr ""
+
 msgid "This archive cannot be restored:"
 msgstr ""
 
@@ -5751,6 +5760,9 @@ msgid "Unpin"
 msgstr ""
 
 msgid "Unpublished changes"
+msgstr ""
+
+msgid "unreadable"
 msgstr ""
 
 msgid "unsupported file type"
