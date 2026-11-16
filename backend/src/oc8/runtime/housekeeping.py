@@ -18,6 +18,7 @@ from typing import Any
 
 from oc8.evidence.sweep import sweep_evidence
 from oc8.knowledge.reconcile import sweep_knowledge_deletions
+from oc8.notifications.service import prune_read_notifications
 from oc8.records.registry import prune_expired_links
 from oc8.runtime.reconcile import (
     close_abandoned_runs,
@@ -65,7 +66,8 @@ async def run_worker_housekeeping() -> None:
        close, so a run closed this tick is archived on the next one;
     6. remove knowledge a sync observed as gone upstream (inert unless
        OC8_KNOWLEDGE_RECONCILE_ENABLED; no network IO, no connector calls);
-    7. delete issued record links past their TTL.
+    7. delete issued record links past their TTL;
+    8. delete member notifications read more than 90 days ago.
 
     Only the run queue gets these -- an ingestion job has no containers, no
     agent to free and no evidence on disk. A sandbox runtime syncs its own
@@ -78,6 +80,7 @@ async def run_worker_housekeeping() -> None:
     await _run("sweep_evidence", sweep_evidence)
     await _run("sweep_knowledge_deletions", sweep_knowledge_deletions)
     await _run("prune_expired_links", prune_expired_links)
+    await _run("prune_read_notifications", prune_read_notifications)
 
 
 __all__ = ["run_worker_housekeeping", "run_worker_startup"]

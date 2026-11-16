@@ -13,6 +13,7 @@ told anybody anything.
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
 import uuid
 from collections.abc import Iterable
@@ -176,3 +177,38 @@ def _clear_on_end(session: Session, transaction: SessionTransaction) -> None:
     # staged in it may be delivered any more.
     if transaction.parent is None:
         session.info.pop(_PENDING_KEY, None)
+
+
+#: A read notification is kept this long, then pruned. Unread ones are never.
+READ_RETENTION = dt.timedelta(days=90)
+
+
+async def prune_read_notifications() -> int:
+    """Delete notifications read more than `READ_RETENTION` ago, in every
+    tenant. One tick of the worker's housekeeping timer; never raises."""
+    from sqlalchemy import delete
+
+    from oc8.db.session import tenant_session
+    from oc8.triggers.scheduler import list_active_tenant_ids
+
+    try:
+        tenants = await list_active_tenant_ids()
+    except Exception:
+        logger.warning("notifications: could not list tenants; skipping prune", exc_info=True)
+        return 0
+    deleted = 0
+    cutoff = dt.datetime.now(dt.UTC) - READ_RETENTION
+    for tenant_id in tenants:
+        try:
+            async with tenant_session(tenant_id) as db:
+                result = await db.execute(
+                    delete(m.MemberNotification).where(
+                        m.MemberNotification.tenant_id == tenant_id,
+                        m.MemberNotification.read_at.is_not(None),
+                        m.MemberNotification.read_at < cutoff,
+                    )
+                )
+            deleted += getattr(result, "rowcount", 0) or 0
+        except Exception:
+            logger.warning("notifications: prune failed for tenant %s", tenant_id, exc_info=True)
+    return deleted

@@ -6,15 +6,28 @@ device subscriptions, the same trust level as reading one's own profile
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+import datetime as dt
+import uuid
+from typing import Annotated, get_args
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.dialects.postgresql import insert
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.auth import Principal
 from oc8.authz.scope import scope_for_principal
 from oc8.config import get_settings
-from oc8.schemas.dto import VapidPublicKeyDTO
+from oc8.notifications.service import NotificationKind
+from oc8.schemas.dto import (
+    LocalizedTextDTO,
+    NotificationDTO,
+    NotificationPageDTO,
+    NotificationSettingDTO,
+    UnreadCountDTO,
+    VapidPublicKeyDTO,
+)
 from oc8.schemas.requests import PushSubscribeRequest
 
 router = APIRouter()
@@ -117,3 +130,201 @@ async def unsubscribe(endpoint: str, principal: CurrentPrincipal, db: DbSession)
         await db.delete(existing)
         await db.commit()
     return Response(status_code=204)
+
+
+# --- the member's inbox ----------------------------------------------------
+
+_KINDS: tuple[str, ...] = get_args(NotificationKind)
+_CURSOR_SEP = "_"
+#: URL-safe (no `+` of an ISO offset), microsecond-exact.
+_CURSOR_TS = "%Y%m%dT%H%M%S.%fZ"
+
+
+def _dto(n: m.MemberNotification) -> NotificationDTO:
+    return NotificationDTO(
+        id=n.id,
+        kind=n.kind,
+        subject_id=n.subject_id,
+        title=LocalizedTextDTO(en=n.title.get("en", ""), de=n.title.get("de", "")),
+        body=LocalizedTextDTO(en=n.body.get("en", ""), de=n.body.get("de", "")),
+        link=n.link,
+        created_at=n.created_at,
+        read=n.read_at is not None,
+    )
+
+
+def _cursor(n: m.MemberNotification) -> str:
+    return f"{n.created_at.astimezone(dt.UTC).strftime(_CURSOR_TS)}{_CURSOR_SEP}{n.id}"
+
+
+def _parse_cursor(raw: str) -> tuple[dt.datetime, uuid.UUID]:
+    try:
+        at, nid = raw.split(_CURSOR_SEP, 1)
+        return dt.datetime.strptime(at, _CURSOR_TS).replace(tzinfo=dt.UTC), uuid.UUID(nid)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid cursor") from exc
+
+
+def _visible(
+    items: list[m.MemberNotification],
+) -> list[m.MemberNotification]:
+    """The one place a notification's subject can veto its listing. Identity
+    until board visibility is wired in (a `board.available` item whose board
+    the member can no longer see must not be listed)."""
+    return items
+
+
+@router.get(
+    "/notifications",
+    response_model=NotificationPageDTO,
+    dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
+)
+async def list_notifications(
+    principal: CurrentPrincipal,
+    db: DbSession,
+    unread: bool = False,
+    kind: str | None = None,
+    cursor: str | None = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+) -> NotificationPageDTO:
+    member = await _member_for(db, principal)
+    n = m.MemberNotification
+    base = [n.member_id == member.id]
+    if unread:
+        base.append(n.read_at.is_(None))
+    if kind is not None:
+        base.append(n.kind == kind)
+    total = (await db.execute(select(func.count()).select_from(n).where(*base))).scalar_one()
+    conds = list(base)
+    if cursor:
+        at, nid = _parse_cursor(cursor)
+        conds.append(or_(n.created_at < at, and_(n.created_at == at, n.id < nid)))
+    rows = list(
+        (
+            await db.execute(
+                select(n).where(*conds).order_by(n.created_at.desc(), n.id.desc()).limit(limit + 1)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    has_more = len(rows) > limit
+    page = rows[:limit]
+    return NotificationPageDTO(
+        items=[_dto(r) for r in _visible(page)],
+        total_count=total,
+        next_cursor=_cursor(page[-1]) if has_more and page else None,
+    )
+
+
+@router.get(
+    "/notifications/unread-count",
+    response_model=UnreadCountDTO,
+    dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
+)
+async def unread_count(principal: CurrentPrincipal, db: DbSession) -> UnreadCountDTO:
+    member = await _member_for(db, principal)
+    n = m.MemberNotification
+    rows = list(
+        (await db.execute(select(n).where(n.member_id == member.id, n.read_at.is_(None))))
+        .scalars()
+        .all()
+    )
+    return UnreadCountDTO(count=len(_visible(rows)))
+
+
+@router.post(
+    "/notifications/read-all",
+    status_code=204,
+    dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
+)
+async def read_all(principal: CurrentPrincipal, db: DbSession) -> Response:
+    member = await _member_for(db, principal)
+    n = m.MemberNotification
+    await db.execute(
+        update(n).where(n.member_id == member.id, n.read_at.is_(None)).values(read_at=func.now())
+    )
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.post(
+    "/notifications/{notification_id}/read",
+    status_code=204,
+    dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
+)
+async def mark_read(
+    notification_id: uuid.UUID, principal: CurrentPrincipal, db: DbSession
+) -> Response:
+    member = await _member_for(db, principal)
+    n = m.MemberNotification
+    row = (
+        await db.execute(select(n).where(n.id == notification_id, n.member_id == member.id))
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "notification not found")
+    if row.read_at is None:
+        row.read_at = dt.datetime.now(dt.UTC)
+        await db.commit()
+    return Response(status_code=204)
+
+
+async def _settings_for(db: DbSession, member_id: uuid.UUID) -> list[NotificationSettingDTO]:
+    s = m.MemberNotificationSetting
+    rows = {
+        r.kind: r
+        for r in (await db.execute(select(s).where(s.member_id == member_id))).scalars().all()
+    }
+    return [
+        NotificationSettingDTO(
+            kind=k,
+            push_enabled=rows[k].push_enabled if k in rows else True,
+            messenger_enabled=rows[k].messenger_enabled if k in rows else True,
+        )
+        for k in _KINDS
+    ]
+
+
+@router.get(
+    "/notifications/settings",
+    response_model=list[NotificationSettingDTO],
+    dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
+)
+async def get_settings_list(
+    principal: CurrentPrincipal, db: DbSession
+) -> list[NotificationSettingDTO]:
+    member = await _member_for(db, principal)
+    return await _settings_for(db, member.id)
+
+
+@router.put(
+    "/notifications/settings",
+    response_model=list[NotificationSettingDTO],
+    dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
+)
+async def put_settings(
+    body: list[NotificationSettingDTO], principal: CurrentPrincipal, db: DbSession
+) -> list[NotificationSettingDTO]:
+    member = await _member_for(db, principal)
+    for item in body:
+        stmt = insert(m.MemberNotificationSetting).values(
+            tenant_id=principal.tenant_id,
+            member_id=member.id,
+            kind=item.kind,
+            push_enabled=item.push_enabled,
+            messenger_enabled=item.messenger_enabled,
+        )
+        await db.execute(
+            stmt.on_conflict_do_update(
+                constraint="uq_member_notification_setting",
+                set_={
+                    "push_enabled": stmt.excluded.push_enabled,
+                    "messenger_enabled": stmt.excluded.messenger_enabled,
+                },
+            )
+        )
+    # Read back BEFORE committing: a commit unbinds the tenant for the rest of
+    # the request (see `require_departmental`), so a later query sees no rows.
+    result = await _settings_for(db, member.id)
+    await db.commit()
+    return result

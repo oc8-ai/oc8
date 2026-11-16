@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -9,6 +10,7 @@ from pydantic import Field
 
 from oc8.modelrouter.types import ReasoningLevel
 from oc8.schemas.base import CamelModel
+from oc8.schemas.paging import Page
 
 
 class AgentDTO(CamelModel):
@@ -2210,6 +2212,33 @@ class CompleteOAuthDTO(CamelModel):
 class LocalizedTextDTO(CamelModel):
     en: str
     de: str
+
+
+class NotificationDTO(CamelModel):
+    id: uuid.UUID
+    kind: str
+    subject_id: uuid.UUID | None
+    title: LocalizedTextDTO
+    body: LocalizedTextDTO
+    link: str
+    created_at: datetime
+    read: bool
+
+
+class NotificationPageDTO(Page[NotificationDTO]):
+    """`Page` plus the keyset cursor of the next page (None on the last)."""
+
+    next_cursor: str | None = None
+
+
+class UnreadCountDTO(CamelModel):
+    count: int
+
+
+class NotificationSettingDTO(CamelModel):
+    kind: Literal["board.available", "run.failed", "approval.decided"]
+    push_enabled: bool = True
+    messenger_enabled: bool = True
 
 
 class AgentIdeaDTO(CamelModel):
