@@ -94,7 +94,7 @@ async def _send_and_prune(
 async def _send_one(sub: m.PushSubscription, payload: dict[str, Any]) -> m.PushSubscription | None:
     """Send to one subscription. Returns `sub` if it should be pruned (dead
     endpoint), else None. Never touches the database and never raises --
-    see the concurrency note on `send_push_for_tenant`."""
+    see the concurrency note in `_send_and_prune`."""
     settings = get_settings()
     try:
         await webpush_async(

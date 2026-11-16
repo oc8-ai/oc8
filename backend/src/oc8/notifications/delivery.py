@@ -36,6 +36,14 @@ async def deliver(
 ) -> None:
     members = list(member_ids)
     title_de, body_de = title[1], body[1]
+    # Each step runs in its own `tenant_session`. The tenant binding is
+    # transaction-local (`set_config(..., true)`), and the push step commits
+    # when it prunes a dead subscription: a step sharing that session after
+    # the commit would run unbound, RLS would hide every row, and it would
+    # silently send nothing. Separate sessions also keep one step's failure
+    # (an aborted transaction) out of the next.
+    push_to: list[uuid.UUID] = []
+    message_to: list[uuid.UUID] = []
     try:
         async with tenant_session(tenant_id) as db:
             settings = {
@@ -49,29 +57,36 @@ async def deliver(
                     )
                 ).scalars()
             }
-            # An absent setting row means both channels are on.
-            push_to = [mid for mid in members if mid not in settings or settings[mid].push_enabled]
-            message_to = [
-                mid for mid in members if mid not in settings or settings[mid].messenger_enabled
-            ]
-            try:
+        # An absent setting row means both channels are on.
+        push_to = [mid for mid in members if mid not in settings or settings[mid].push_enabled]
+        message_to = [
+            mid for mid in members if mid not in settings or settings[mid].messenger_enabled
+        ]
+    except Exception:
+        logger.warning("could not read notification settings (kind=%s)", kind, exc_info=True)
+    if push_to:
+        try:
+            async with tenant_session(tenant_id) as db:
                 await send_push_to_members(
                     db,
                     tenant_id=tenant_id,
                     member_ids=push_to,
                     payload={"title": title_de, "body": body_de, "url": link},
                 )
-            except Exception:
-                logger.warning("notification push failed (kind=%s)", kind, exc_info=True)
-            await _send_messenger(
-                db,
-                tenant_id=tenant_id,
-                member_ids=message_to,
-                text=f"{title_de}\n{body_de}",
-                classification=classification,
-            )
-    except Exception:
-        logger.warning("notification delivery failed (kind=%s)", kind, exc_info=True)
+        except Exception:
+            logger.warning("notification push failed (kind=%s)", kind, exc_info=True)
+    if message_to:
+        try:
+            async with tenant_session(tenant_id) as db:
+                await _send_messenger(
+                    db,
+                    tenant_id=tenant_id,
+                    member_ids=message_to,
+                    text=f"{title_de}\n{body_de}",
+                    classification=classification,
+                )
+        except Exception:
+            logger.warning("notification messenger failed (kind=%s)", kind, exc_info=True)
     try:
         await get_event_bus().publish_member_event(
             tenant_id, members, "notification.created", {"kind": kind}, source="notifications"

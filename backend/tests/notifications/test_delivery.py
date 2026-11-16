@@ -302,3 +302,39 @@ async def test_send_push_to_members_filters_by_member(
             payload={"title": _TITLE[1], "body": _BODY[1], "url": "/boards/1"},
         )
     assert sent == [b]
+
+
+async def test_messenger_still_delivers_after_a_dead_push_subscription_is_pruned(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, bus: _FakeBus
+) -> None:
+    from sqlalchemy import select
+
+    tenant = uuid.uuid4()
+    (a,) = await _seed(app_session, tenant, 1)
+
+    async def _dead(sub: m.PushSubscription, payload: dict[str, Any]) -> m.PushSubscription:
+        return sub
+
+    monkeypatch.setattr(push, "_send_one", _dead)
+    seen: list[str | None] = []
+    chan = _FakeChannel("internal")
+
+    async def _channels_for_tenant(db: Any, *, tenant_id: uuid.UUID) -> dict[str, Any]:
+        return {"telegram": chan}
+
+    async def _binding(
+        db: Any, *, tenant_id: uuid.UUID, member_id: uuid.UUID, channel: str
+    ) -> str | None:
+        # A real lookup through RLS: it only sees rows when the tenant is bound
+        # in the transaction this messenger step runs in.
+        found = await db.scalar(select(m.OrgMember.id).where(m.OrgMember.id == member_id))
+        seen.append(str(found) if found else None)
+        return "ext-a" if found else None
+
+    monkeypatch.setattr("oc8.channels.registry.channels_for_tenant", _channels_for_tenant)
+    monkeypatch.setattr("oc8.copilot.followups.live_binding_external_id", _binding)
+    await _deliver(tenant, [a])
+    async with app_session(tenant) as db:
+        assert (await db.execute(select(m.PushSubscription))).scalars().all() == []
+    assert chan.said == [("ext-a", f"{_TITLE[1]}\n{_BODY[1]}")]
+    assert len(bus.calls) == 1
