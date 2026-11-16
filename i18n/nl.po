@@ -8094,3 +8094,7 @@ msgstr "Jouw seats"
 #, fuzzy
 msgid "Your work is next door"
 msgstr "Je werk is hiernaast"
+
+#, fuzzy
+msgid "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it."
+msgstr "Hier telt alleen een verbinding van de organisatie. Een gegevensbron voedt kennis die iedereen in de organisatie gebruikt, daarom wordt je persoonlijke aanmelding er nooit voor gebruikt."

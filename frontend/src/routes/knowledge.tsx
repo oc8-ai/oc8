@@ -60,6 +60,7 @@ import {
   useSyncSource,
   useUpdateSource,
 } from "@/lib/knowledge-connector-hooks";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { useMay } from "@/lib/governance-hooks";
@@ -1425,6 +1426,10 @@ export function SourceWizard({
       : null;
   // A connector the organisation has not connected yet is shown, but cannot
   // be picked (`usable` from GET /knowledge/connectors).
+  const orgOnlyHint = t(
+    "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it.",
+    "Hier zählt nur eine Verbindung der Organisation. Eine Datenquelle füttert Wissen, das alle in der Organisation nutzen, deshalb wird deine persönliche Anmeldung dafür nie verwendet.",
+  );
   const selectable = (entry: ConnectorCatalogEntry) =>
     entry.usable !== false ||
     granted.has(entry.typeId) ||
@@ -1618,35 +1623,43 @@ export function SourceWizard({
               const Icon = KIND_ICON[entry.typeId as DataSourceKind] ?? FileText;
               if (!selectable(entry)) {
                 return (
-                  <div
-                    key={entry.typeId}
-                    className="flex flex-col gap-1 rounded-md border border-dashed border-border bg-background/20 p-3 text-xs"
-                  >
-                    <button
-                      type="button"
-                      disabled
-                      className="flex cursor-not-allowed items-center gap-2 text-left opacity-60"
-                    >
-                      <Icon className="h-4 w-4 text-muted-foreground" />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">
-                          {entry.label ?? entry.typeId.replace(/[-_]/g, " ")}
+                  <TooltipProvider key={entry.typeId} delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div
+                          tabIndex={0}
+                          className="flex flex-col gap-1 rounded-md border border-dashed border-border bg-background/20 p-3 text-xs"
+                        >
+                          <button
+                            type="button"
+                            disabled
+                            className="flex cursor-not-allowed items-center gap-2 text-left opacity-60"
+                          >
+                            <Icon className="h-4 w-4 text-muted-foreground" />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium">
+                                {entry.label ?? entry.typeId.replace(/[-_]/g, " ")}
+                              </div>
+                              <div className="truncate text-[10px] text-muted-foreground">
+                                {t(
+                                  "Needs an organisation connection",
+                                  "Braucht eine Verbindung der Organisation",
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                          <Link
+                            to="/connections"
+                            search={{ tab: "organisation" }}
+                            className="text-[11px] font-medium text-primary hover:underline"
+                          >
+                            {t("Connect first", "Erst verbinden")} →
+                          </Link>
                         </div>
-                        <div className="truncate text-[10px] text-muted-foreground">
-                          {t(
-                            "Needs an organisation connection",
-                            "Braucht eine Verbindung der Organisation",
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                    <Link
-                      to="/connections"
-                      className="text-[11px] font-medium text-primary hover:underline"
-                    >
-                      {t("Connect first", "Erst verbinden")} →
-                    </Link>
-                  </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">{orgOnlyHint}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
                 );
               }
               const active = kind === entry.typeId;
@@ -1913,7 +1926,11 @@ function DynamicConnectorFields({
                 `The organisation has no active ${oauthProvider} connection yet.`,
                 `Die Organisation hat noch keine aktive Verbindung zu ${oauthProvider}.`,
               )}{" "}
-              <Link to="/connections" className="font-medium underline">
+              <Link
+                to="/connections"
+                search={{ tab: "organisation" }}
+                className="font-medium underline"
+              >
                 {t("Connect first", "Erst verbinden")}
               </Link>
             </span>

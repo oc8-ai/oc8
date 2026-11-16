@@ -14,13 +14,18 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
     Link: ({
       children,
       to,
+      search,
       className,
     }: {
       children?: ReactNode;
       to?: string;
+      search?: Record<string, string>;
       className?: string;
     }) => (
-      <a href={to} className={className}>
+      <a
+        href={`${to}${search ? `?${new URLSearchParams(search).toString()}` : ""}`}
+        className={className}
+      >
         {children}
       </a>
     ),
@@ -88,8 +93,16 @@ describe("SourceWizard: connectors that need a connection first", () => {
     const google = screen.getByRole("button", { name: /google drive/i });
     expect(google).toBeDisabled();
     const link = screen.getByRole("link", { name: /connect first/i });
-    expect(link).toHaveAttribute("href", "/connections");
+    expect(link).toHaveAttribute("href", "/connections?tab=organisation");
     expect(screen.getByRole("button", { name: /website/i })).toBeEnabled();
+  });
+
+  it("explains that only an organisation connection counts", async () => {
+    renderWizard();
+    fireEvent.focus(screen.getByRole("button", { name: /google drive/i }).parentElement!);
+    expect(await screen.findAllByText(/only an organisation connection counts/i)).not.toHaveLength(
+      0,
+    );
   });
 
   it("starts on a usable connector, not the unusable first one", () => {
