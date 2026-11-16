@@ -97,6 +97,12 @@ ALLOWED: dict[str, str] = {
         "is live (board_audience), and which live departments' seats a department "
         "share reaches (the seat join in board_audience); never agents or data"
     ),
+    "notifications/events.py": (
+        "addresses a notification, with no human viewer to scope it to: reads the "
+        "created board's producing agent (name, for the body) and the failed run's own "
+        "agent (name, department_id, is_tenant_assistant); joins Department only to "
+        "require a live department for the seat holders it notifies; never data"
+    ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",
     "copilot/builder.py": (

@@ -69,6 +69,7 @@ from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
 )
+from oc8.notifications.events import on_board_created
 from oc8.runtime.registry import (
     RuntimeCapabilityError,
     RuntimeNotExecutableError,
@@ -1146,6 +1147,7 @@ async def _apply_board_create(
             "department_id": str(board.department_id),
         },
     )
+    await on_board_created(db, board=board, actor_member_id=actor_member_id)
     return board.id
 
 
