@@ -289,6 +289,27 @@ async def test_realtime_event_goes_to_the_members(
     ]
 
 
+async def test_realtime_event_is_published_before_push_and_messenger(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, bus: _FakeBus
+) -> None:
+    """The bell must not wait on a slow push service or messenger."""
+    tenant = uuid.uuid4()
+    (a,) = await _seed(app_session, tenant, 1)
+    seen: list[str] = []
+
+    async def _push(sub: m.PushSubscription, payload: dict[str, Any]) -> None:
+        seen.append(f"push after {len(bus.calls)} realtime")
+
+    class _Recording(_FakeChannel):
+        async def say(self, external_id: str, text: str) -> None:
+            seen.append(f"messenger after {len(bus.calls)} realtime")
+
+    monkeypatch.setattr(push, "_send_one", _push)
+    _channels(monkeypatch, {"telegram": _Recording("internal")}, {a: "ext-a"})
+    await _deliver(tenant, [a])
+    assert seen == ["push after 1 realtime", "messenger after 1 realtime"]
+
+
 async def test_send_push_to_members_filters_by_member(
     app_session: AppSessionFactory, sent: list[uuid.UUID]
 ) -> None:

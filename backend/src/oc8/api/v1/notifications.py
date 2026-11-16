@@ -10,7 +10,7 @@ import datetime as dt
 import uuid
 from typing import Annotated, get_args
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
@@ -324,8 +324,13 @@ async def get_settings_list(
     dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
 )
 async def put_settings(
-    body: list[NotificationSettingDTO], principal: CurrentPrincipal, db: DbSession
+    # One entry per kind at most: there are three kinds.
+    body: Annotated[list[NotificationSettingDTO], Body(max_length=len(_KINDS))],
+    principal: CurrentPrincipal,
+    db: DbSession,
 ) -> list[NotificationSettingDTO]:
+    if len({item.kind for item in body}) != len(body):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "duplicate notification kind")
     member = await _member_for(db, principal)
     for item in body:
         stmt = insert(m.MemberNotificationSetting).values(

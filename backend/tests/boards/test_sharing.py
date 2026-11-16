@@ -333,6 +333,36 @@ async def test_share_title_is_localized_and_links_to_the_workspace(
     assert row.body == {"en": "Revenue", "de": "Revenue"}
 
 
+async def test_share_body_names_the_boards_agent_like_a_created_board(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=w.finance.id,
+            name="Nora",
+            status="idle",
+            definition={},
+            presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        w.board.agent_id = agent.id
+        await db.flush()
+        await share_board(db, board=w.board, actor_member_id=w.owner.id, member_id=w.loner.id)
+    await _drain()
+    async with app_session(tenant) as db:
+        row = (
+            await db.execute(
+                select(m.MemberNotification).where(m.MemberNotification.member_id == w.loner.id)
+            )
+        ).scalar_one()
+    assert row.title == {"en": "Dashboard shared with you", "de": "Dashboard mit dir geteilt"}
+    assert row.body == {"en": "Revenue · Nora", "de": "Revenue · Nora"}
+
+
 async def test_share_target_must_be_a_live_member_or_department(
     app_session: AppSessionFactory, delivered: list[dict[str, Any]]
 ) -> None:
@@ -342,16 +372,23 @@ async def test_share_target_must_be_a_live_member_or_department(
         w.loner.deleted_at = dt.datetime.now(dt.UTC)
         w.ops.deleted_at = dt.datetime.now(dt.UTC)
         await db.flush()
-        for target in (
-            {"member_id": w.loner.id},
-            {"member_id": uuid.uuid4()},
-            {"department_id": w.ops.id},
-            {"department_id": uuid.uuid4()},
-            {},
-            {"member_id": w.fin.id, "department_id": w.sales.id},
-        ):
+        targets: list[tuple[uuid.UUID | None, uuid.UUID | None]] = [
+            (w.loner.id, None),
+            (uuid.uuid4(), None),
+            (None, w.ops.id),
+            (None, uuid.uuid4()),
+            (None, None),
+            (w.fin.id, w.sales.id),
+        ]
+        for member_id, department_id in targets:
             with pytest.raises(ShareTargetInvalid):
-                await share_board(db, board=w.board, actor_member_id=w.owner.id, **target)
+                await share_board(
+                    db,
+                    board=w.board,
+                    actor_member_id=w.owner.id,
+                    member_id=member_id,
+                    department_id=department_id,
+                )
 
 
 async def test_unsharing_removes_the_share_and_audits_ids(

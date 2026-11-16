@@ -213,7 +213,7 @@ async def test_a_failed_manual_run_notifies_its_starter(
     assert row.subject_id == agent_id
     assert row.title == {"en": "Agent 'Nora' failed", "de": "Agent ‚Nora‘ fehlgeschlagen"}  # noqa: RUF001
     assert row.body == dict(zip(("en", "de"), events.CATEGORY_TEXT["error"], strict=True))
-    assert row.link == f"/agents/{agent_id}?tab=live"
+    assert row.link == f"/agents/{agent_id}?tab=livelog&runId={run_id}"
 
 
 async def test_a_failed_scheduled_run_for_nobody_notifies_the_agent_managers(
@@ -281,12 +281,15 @@ async def test_two_failures_of_one_agent_collapse_into_one_unread_row(
         ctx = {"originating_operator": starter.subject}
         first, second = await _run(db, agent, ctx), await _run(db, agent, ctx)
         ids = (first.id, second.id)
+        agent_id = agent.id
     await _fail(app_session, tenant, ids[0])
     await _fail(app_session, tenant, ids[1])
     await _drain()
     rows = await _rows(app_session, tenant)
     assert len(rows) == 1
     assert rows[0].read_at is None
+    # The collapsed row links to the latest failed run, not the first.
+    assert rows[0].link == f"/agents/{agent_id}?tab=livelog&runId={ids[1]}"
 
 
 async def test_two_concurrent_failures_of_one_agent_collapse_into_one_unread_row(
@@ -586,11 +589,11 @@ async def test_a_business_flush_error_is_not_swallowed_by_the_guard(
         run_id = run.id
     with pytest.raises(IntegrityError):
         async with app_session(tenant) as db:
-            run = await db.get(m.AgentRun, run_id)
-            assert run is not None
+            loaded = await db.get(m.AgentRun, run_id)
+            assert loaded is not None
             # Pending, unflushed, and NOT NULL-violating: the business write.
             db.add(m.Task(tenant_id=tenant, department_id=agent.department_id, title=None))
-            await events.on_run_failed(db, run)
+            await events.on_run_failed(db, loaded)
     assert delivered == []
 
 
@@ -617,4 +620,4 @@ async def test_a_decision_on_a_chat_run_links_to_the_chat(
     await _drain()
     (row,) = await _rows(app_session, tenant)
     assert row.member_id == person.id
-    assert row.link == f"/chat/{session_id}"
+    assert row.link == f"/copilot?session={session_id}"

@@ -172,6 +172,23 @@ async def test_settings_defaults_and_round_trip(client: AsyncClient) -> None:
     assert {s["kind"]: s["pushEnabled"] for s in r.json()}["run.failed"] is False
 
 
+async def test_settings_put_rejects_more_than_three_or_duplicate_kinds(
+    client: AsyncClient,
+) -> None:
+    h = _headers("inbox-cap")
+    one = {"kind": "run.failed", "pushEnabled": False, "messengerEnabled": False}
+    kinds = ("board.available", "run.failed", "approval.decided")
+    all_three = [{**one, "kind": k} for k in kinds]
+    assert (await client.put(f"{BASE}/settings", json=all_three, headers=h)).status_code == 200
+    r = await client.put(f"{BASE}/settings", json=[*all_three, one], headers=h)
+    assert r.status_code == 422
+    r = await client.put(f"{BASE}/settings", json=[one, {**one, "pushEnabled": True}], headers=h)
+    assert r.status_code == 422
+    # Neither rejected write changed anything.
+    r = await client.get(f"{BASE}/settings", headers=h)
+    assert {s["kind"]: s["pushEnabled"] for s in r.json()}["run.failed"] is False
+
+
 async def test_prune_removes_only_old_read_rows(app_session: AppSessionFactory) -> None:
     # Its own tenant: the sweep discovers tenants through `organization`.
     tenant = uuid.uuid4()

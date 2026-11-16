@@ -1,4 +1,4 @@
-"""Best-effort delivery of a member notification: push, messenger, realtime.
+"""Best-effort delivery of a member notification: realtime, push, messenger.
 
 Runs as a background task started after the notifying transaction committed
 (`oc8.notifications.service`). Never raises: the notification row already
@@ -36,6 +36,14 @@ async def deliver(
 ) -> None:
     members = list(member_ids)
     title_de, body_de = title[1], body[1]
+    # Realtime first: the row is already committed, so the bell can refresh
+    # now instead of waiting on a slow push service or messenger.
+    try:
+        await get_event_bus().publish_member_event(
+            tenant_id, members, "notification.created", {"kind": kind}, source="notifications"
+        )
+    except Exception:
+        logger.warning("notification realtime event failed (kind=%s)", kind, exc_info=True)
     # Each step runs in its own `tenant_session`. The tenant binding is
     # transaction-local (`set_config(..., true)`), and the push step commits
     # when it prunes a dead subscription: a step sharing that session after
@@ -87,12 +95,6 @@ async def deliver(
                 )
         except Exception:
             logger.warning("notification messenger failed (kind=%s)", kind, exc_info=True)
-    try:
-        await get_event_bus().publish_member_event(
-            tenant_id, members, "notification.created", {"kind": kind}, source="notifications"
-        )
-    except Exception:
-        logger.warning("notification realtime event failed (kind=%s)", kind, exc_info=True)
 
 
 async def _send_messenger(

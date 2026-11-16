@@ -161,6 +161,8 @@ async def share_board(
     if inserted is None:
         return row
     after = await board_audience(db, board)
+    agent = await db.get(m.Agent, board.agent_id) if board.agent_id else None
+    body = f"{board.title} · {agent.name}" if agent is not None else board.title
     await append_event(
         db,
         tenant_id=board.tenant_id,
@@ -177,10 +179,10 @@ async def share_board(
         member_ids=sorted(after - before - {actor_member_id}),
         kind="board.available",
         subject_id=board.id,
-        # The reason ("shared", not "created") is the title; the board title
-        # is the body, as for a created board (`notifications/events.py`).
+        # The reason ("shared", not "created") is the title; the body is
+        # "<board> · <agent>", as for a created board (`notifications/events.py`).
         title=("Dashboard shared with you", "Dashboard mit dir geteilt"),
-        body=(board.title, board.title),
+        body=(body, body),
         link="/workspace",
         classification="internal",
     )

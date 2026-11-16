@@ -148,3 +148,12 @@ async def test_dependency_order_puts_boards_before_records(
     assert order.index("data_board") < order.index("data_board_batch")
     assert order.index("data_board_batch") < order.index("data_board_record")
     assert order.index("data_board") < order.index("data_board_spec_version")
+
+
+async def test_dependency_order_puts_boards_members_and_departments_before_shares(
+    app_session: AppSessionFactory,
+) -> None:
+    async with app_session(uuid.uuid4()) as s:
+        order = await dependency_order(s, exported_tables())
+    for parent in ("data_board", "org_member", "department"):
+        assert order.index(parent) < order.index("data_board_share"), parent

@@ -184,8 +184,9 @@ async def on_board_created(
             member_ids=[mid for mid in members if mid != actor_member_id],
             kind="board.available",
             subject_id=board.id,
-            # Same title as a share (`boards/sharing.py`): for the person it
-            # is one event -- a dashboard they can now open.
+            # Same kind and body shape as a share (`boards/sharing.py`):
+            # "<board> · <agent>". The title carries the reason -- "New
+            # dashboard" here, "Dashboard shared with you" there.
             title=("New dashboard", "Neues Dashboard"),
             body=(body, body),
             link="/workspace",
@@ -224,7 +225,9 @@ async def on_run_failed(db: AsyncSession, run: m.AgentRun) -> None:
                 f"Agent ‚{agent.name}‘ fehlgeschlagen",  # noqa: RUF001
             ),
             body=reason,
-            link=f"/agents/{agent.id}?tab=live",
+            # The failed run's technical view. A collapsed row takes the
+            # latest run's link (`service.notify` updates it on conflict).
+            link=f"/agents/{agent.id}?tab=livelog&runId={run.id}",
             classification="internal",
         )
 
@@ -260,7 +263,10 @@ async def on_approval_decided(db: AsyncSession, approval: m.ApprovalRequest) -> 
         else:
             title = (f"Rejected: {approval.title}", f"Abgelehnt: {approval.title}")
         session_id = (run.context or {}).get("chat_session_id")
-        link = f"/chat/{session_id}" if session_id else f"/agents/{run.agent_id}?tab=live"
+        # A chat lives in the Copilot page (`frontend/src/routes/copilot.tsx`).
+        link = (
+            f"/copilot?session={session_id}" if session_id else f"/agents/{run.agent_id}?tab=live"
+        )
         await notify(
             db,
             tenant_id=approval.tenant_id,
