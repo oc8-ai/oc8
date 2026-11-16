@@ -718,6 +718,8 @@ export interface CurrentUser {
   onboardingStatus?: "pending" | "completed" | "skipped";
   /** The caller's own welcome, shown by an edition that greets members. */
   memberOnboardingStatus?: "pending" | "completed" | "skipped" | null;
+  /** The organisation's IANA zone: what a new schedule is read in by default. */
+  organisationTimezone?: string;
 }
 
 export function useAuth() {
@@ -2404,6 +2406,9 @@ export interface TriggerDTO {
   taskText: string;
   enabled: boolean;
   cronExpression: string | null;
+  //: The IANA zone the cron expression is read in; null = UTC (saved before
+  //: triggers carried a zone).
+  timezone?: string | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
   eventSource: string | null;
@@ -2439,6 +2444,7 @@ export function useCreateAgentTrigger() {
       taskText,
       kind = "cron",
       cronExpression,
+      timezone,
     }: {
       agentId: string;
       taskText: string;
@@ -2448,7 +2454,16 @@ export function useCreateAgentTrigger() {
       //: not be something the caller could have picked).
       kind?: "cron" | "webhook";
       cronExpression?: string;
-    }) => api.post<TriggerDTO>(`/agents/${agentId}/triggers`, { kind, taskText, cronExpression }),
+      //: The zone the cron is read in; the server uses the organisation's
+      //: when it is left out.
+      timezone?: string;
+    }) =>
+      api.post<TriggerDTO>(`/agents/${agentId}/triggers`, {
+        kind,
+        taskText,
+        cronExpression,
+        timezone,
+      }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });
 }
@@ -2460,14 +2475,22 @@ export function useUpdateAgentTrigger() {
       agentId,
       triggerId,
       cronExpression,
+      timezone,
       actsForCreator,
     }: {
       agentId: string;
       triggerId: string;
       cronExpression?: string;
+      //: A new zone for the schedule; left out keeps the one it has.
+      timezone?: string;
       //: Only the trigger's creator may switch this on (webhook/event).
       actsForCreator?: boolean;
-    }) => api.patch<TriggerDTO>(`/triggers/${triggerId}`, { cronExpression, actsForCreator }),
+    }) =>
+      api.patch<TriggerDTO>(`/triggers/${triggerId}`, {
+        cronExpression,
+        timezone,
+        actsForCreator,
+      }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });
 }

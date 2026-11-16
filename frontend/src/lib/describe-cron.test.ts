@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeCron } from "./describe-cron";
+import { describeCron, describeSchedule } from "./describe-cron";
 import type { Translate } from "./tool-labels";
 
 const en: Translate = (english) => english;
@@ -43,4 +43,23 @@ describe("describeCron", () => {
       expect(describeCron(expr, de)).toBe(`Benutzerdefiniert (${expr})`);
     },
   );
+});
+
+describe("describeSchedule", () => {
+  it("names the zone the schedule runs in, in brackets", () => {
+    expect(describeSchedule("0 7 * * 1-5", "Europe/Berlin", de)).toBe(
+      "Werktags um 7:00 Uhr (Europe/Berlin)",
+    );
+    expect(describeSchedule("0 7 * * 1-5", "Europe/Berlin", en)).toBe(
+      "Every weekday at 7:00 (Europe/Berlin)",
+    );
+    expect(describeSchedule("*/15 * * * *", "America/New_York", en)).toBe(
+      "Every 15 minutes (America/New_York)",
+    );
+  });
+
+  it("reads a schedule without a zone as UTC", () => {
+    expect(describeSchedule("0 7 * * 1-5", null, de)).toBe("Werktags um 7:00 Uhr (UTC)");
+    expect(describeSchedule("0 7 * * 1-5", undefined, en)).toBe("Every weekday at 7:00 (UTC)");
+  });
 });

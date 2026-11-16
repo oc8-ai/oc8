@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Save } from "lucide-react";
-import { describeCron } from "@/lib/describe-cron";
+import { TimezoneSelect } from "@/components/timezone-select";
+import { describeCron, describeSchedule } from "@/lib/describe-cron";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -88,11 +89,17 @@ export function CronBuilder({
   onChange,
   onSave,
   saveLabel,
+  timezone,
+  onTimezoneChange,
 }: {
   initial: string;
   onChange: (cron: string) => void;
   onSave: () => void;
   saveLabel: string;
+  /** The zone the schedule is read in; with `onTimezoneChange` it can be
+   *  picked, and the description names it. */
+  timezone?: string;
+  onTimezoneChange?: (zone: string) => void;
 }) {
   const t = useT();
   const [state, setState] = useState<CronState>(() => parseCron(initial));
@@ -106,7 +113,8 @@ export function CronBuilder({
   }
 
   const cron = buildCron(state);
-  const human = describeCron(cron, t);
+  const human =
+    timezone !== undefined ? describeSchedule(cron, timezone, t) : describeCron(cron, t);
 
   return (
     <div className="space-y-3 rounded-md border border-border bg-background/30 p-3">
@@ -210,6 +218,12 @@ export function CronBuilder({
           value={state.dayOfMonth}
           onChange={(v) => update({ dayOfMonth: v })}
         />
+      )}
+
+      {timezone !== undefined && onTimezoneChange && (
+        <div className="sm:max-w-xs">
+          <TimezoneSelect value={timezone} onChange={onTimezoneChange} />
+        </div>
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
