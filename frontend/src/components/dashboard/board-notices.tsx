@@ -20,36 +20,36 @@ export function BoardNotices({
   const t = useT();
   const { data: notices = [] } = useNotifications({ unread: true, kind: "board.available" });
   const markRead = useMarkRead();
-  // Ids already acted on: a second click on the same notice is a no-op, even
-  // before the read mark comes back and the notice leaves the list.
-  const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
+  // Ids being acted on: a second click on the same notice is a no-op while the
+  // read mark is in flight. A failed mark releases it, so the person can retry.
+  const acting = useRef(new Set<string>());
+  // Ids auto-marked (their board is on the grid): once per mount, never
+  // retried, so a persistent failure cannot loop. The bell still shows them.
   const autoMarked = useRef(new Set<string>());
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const onGrid = new Set(boardIdsOnGrid);
-  const open = notices.filter((n) => n.subjectId && !handled.has(n.id));
-  const pending = open.filter((n) => !onGrid.has(n.subjectId!));
+  const open = notices.filter((n) => n.subjectId && !autoMarked.current.has(n.id));
+  const pending = open.filter((n) => !onGrid.has(n.subjectId!) && !hidden.has(n.id));
   const redundant = open.filter((n) => onGrid.has(n.subjectId!));
 
-  // Silent on failure, but the id is released so a later render retries.
   useEffect(() => {
     for (const n of redundant) {
       if (autoMarked.current.has(n.id)) continue;
       autoMarked.current.add(n.id);
-      markRead.mutate(n.id, { onError: () => autoMarked.current.delete(n.id) });
+      markRead.mutate(n.id);
     }
   });
 
-  const handle = (id: string, after?: () => void) => {
-    if (handled.has(id)) return;
-    setHandled((prev) => new Set(prev).add(id));
+  const handle = async (id: string, after?: () => void) => {
+    if (acting.current.has(id)) return;
+    acting.current.add(id);
     after?.();
-    markRead.mutate(id, {
-      onError: () =>
-        setHandled((prev) => {
-          const next = new Set(prev);
-          next.delete(id);
-          return next;
-        }),
-    });
+    try {
+      await markRead.mutateAsync(id);
+      setHidden((prev) => new Set(prev).add(id));
+    } catch {
+      acting.current.delete(id);
+    }
   };
 
   if (pending.length === 0) return null;
@@ -71,7 +71,7 @@ export function BoardNotices({
           <button
             type="button"
             aria-label={t("Add to My work", "Zu Meine Arbeit hinzufügen")}
-            onClick={() => handle(n.id, () => onAdd("data_board", { boardId: n.subjectId }))}
+            onClick={() => void handle(n.id, () => onAdd("data_board", { boardId: n.subjectId }))}
             className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs transition hover:bg-muted/30"
           >
             {t("Add to My work", "Zu Meine Arbeit hinzufügen")}
@@ -79,7 +79,7 @@ export function BoardNotices({
           <button
             type="button"
             aria-label={t("Dismiss", "Schließen")}
-            onClick={() => handle(n.id)}
+            onClick={() => void handle(n.id)}
             className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
           >
             <X className="size-3.5" />
