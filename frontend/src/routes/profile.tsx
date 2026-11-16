@@ -3,6 +3,7 @@ import { Check, Copy, Link2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { NotificationSettings } from "@/components/notification-settings";
 import { ApiKeysPanel } from "@/components/api-keys-panel";
 import {
   AccountManagementLink,
@@ -464,6 +465,9 @@ export function ProfilePage() {
             </button>
           </div>
         )}
+        <div className="mt-4 border-t border-border pt-4">
+          <NotificationSettings />
+        </div>
       </Panel>
       <Panel className="p-4">
         <h2 className="mb-3 text-sm font-semibold text-foreground">

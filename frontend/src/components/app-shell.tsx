@@ -1,3 +1,4 @@
+import { NotificationBell } from "@/components/notification-bell";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Activity,
@@ -1074,6 +1075,7 @@ export function AppShell() {
             >
               <LogOut className="h-3.5 w-3.5" />
             </button>
+            <NotificationBell />
             <DropdownMenu>
               <DropdownMenuTrigger
                 aria-label={t("Change language", "Sprache ändern")}

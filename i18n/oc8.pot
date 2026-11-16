@@ -1763,6 +1763,9 @@ msgstr ""
 msgid "Decided a request"
 msgstr ""
 
+msgid "Decided approvals"
+msgstr ""
+
 msgid "Decided by you"
 msgstr ""
 
@@ -2312,6 +2315,9 @@ msgstr ""
 msgid "Failed"
 msgstr ""
 
+msgid "Failed agents"
+msgstr ""
+
 msgid "Fast"
 msgstr ""
 
@@ -2723,6 +2729,9 @@ msgstr ""
 msgid "Judging against your number for this look only — nothing is saved."
 msgstr ""
 
+msgid "just now"
+msgstr ""
+
 msgid "Keep an eye on something for me"
 msgstr ""
 
@@ -3002,6 +3011,9 @@ msgstr ""
 msgid "Map each complexity tier to an existing model config. At least one is required."
 msgstr ""
 
+msgid "Mark all as read"
+msgstr ""
+
 msgid "Max output tokens (optional)"
 msgstr ""
 
@@ -3039,6 +3051,9 @@ msgid "Message"
 msgstr ""
 
 msgid "Messages to this run"
+msgstr ""
+
+msgid "Messenger"
 msgstr ""
 
 msgid "metered by the platform"
@@ -3207,6 +3222,9 @@ msgid "New cost limit"
 msgstr ""
 
 msgid "New credential"
+msgstr ""
+
+msgid "New dashboards"
 msgstr ""
 
 msgid "New department"
@@ -3444,6 +3462,9 @@ msgid "no note"
 msgstr ""
 
 msgid "No note for this period"
+msgstr ""
+
+msgid "No notifications"
 msgstr ""
 
 msgid "No organisation access yet."
@@ -4005,6 +4026,9 @@ msgid "Published"
 msgstr ""
 
 msgid "Published configuration · newest first"
+msgstr ""
+
+msgid "Push"
 msgstr ""
 
 msgid "Push notifications aren't configured on this server yet."
@@ -5778,6 +5802,9 @@ msgid "Unpin"
 msgstr ""
 
 msgid "Unpublished changes"
+msgstr ""
+
+msgid "Unread"
 msgstr ""
 
 msgid "unreadable"
