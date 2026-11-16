@@ -10,14 +10,17 @@ import datetime as dt
 import uuid
 from typing import Annotated, get_args
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import and_, func, or_, select, update
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.auth import Principal
-from oc8.authz.scope import scope_for_principal
+from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.permissions import AGENT, VIEW, perm
+from oc8.authz.scope import DepartmentScope, scope_for_principal
+from oc8.boards.repo import board_notice_visible
 from oc8.config import get_settings
 from oc8.notifications.service import NotificationKind
 from oc8.schemas.dto import (
@@ -39,6 +42,12 @@ _UNGUARDED_REASON = (
 
 
 async def _member_for(db: DbSession, principal: Principal) -> m.OrgMember:
+    return (await _member_and_scope(db, principal))[0]
+
+
+async def _member_and_scope(
+    db: DbSession, principal: Principal
+) -> tuple[m.OrgMember, DepartmentScope]:
     """The caller's own `OrgMember` row, or a clean 403.
 
     `scope_for_principal(..., upsert=True)` raises `PermissionError` for a
@@ -48,14 +57,14 @@ async def _member_for(db: DbSession, principal: Principal) -> m.OrgMember:
     a per-human-operator concept, so such a caller gets a 403, not a 500.
     """
     try:
-        member, _scope = await scope_for_principal(db, principal, upsert=True)
+        member, scope = await scope_for_principal(db, principal, upsert=True)
     except PermissionError as exc:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="this caller cannot hold a push subscription",
         ) from exc
     assert member is not None  # upsert=True raises before returning None
-    return member
+    return member, scope
 
 
 @router.get(
@@ -165,13 +174,20 @@ def _parse_cursor(raw: str) -> tuple[dt.datetime, uuid.UUID]:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid cursor") from exc
 
 
-def _visible(
-    items: list[m.MemberNotification],
-) -> list[m.MemberNotification]:
-    """The one place a notification's subject can veto its listing. Identity
-    until board visibility is wired in (a `board.available` item whose board
-    the member can no longer see must not be listed)."""
-    return items
+async def _visible(
+    request: Request, db: DbSession, principal: Principal
+) -> tuple[m.OrgMember, ColumnElement[bool]]:
+    """The caller's member row and the one place a notification's subject can
+    veto its listing: a `board.available` item whose board the member can no
+    longer see (`boards.repo`). A SQL predicate, so total, unread count and
+    cursor pages agree with the items listed."""
+    member, scope = await _member_and_scope(db, principal)
+    authority = await authority_for_principal(request, db, principal)
+    return member, board_notice_visible(
+        scope=scope,
+        tenant_wide=tenant_wide_read(authority, perm(AGENT, VIEW)),
+        member_id=member.id,
+    )
 
 
 @router.get(
@@ -180,6 +196,7 @@ def _visible(
     dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
 )
 async def list_notifications(
+    request: Request,
     principal: CurrentPrincipal,
     db: DbSession,
     unread: bool = False,
@@ -187,9 +204,9 @@ async def list_notifications(
     cursor: str | None = None,
     limit: Annotated[int, Query(ge=1, le=50)] = 20,
 ) -> NotificationPageDTO:
-    member = await _member_for(db, principal)
+    member, visible = await _visible(request, db, principal)
     n = m.MemberNotification
-    base = [n.member_id == member.id]
+    base = [n.member_id == member.id, visible]
     if unread:
         base.append(n.read_at.is_(None))
     if kind is not None:
@@ -211,7 +228,7 @@ async def list_notifications(
     has_more = len(rows) > limit
     page = rows[:limit]
     return NotificationPageDTO(
-        items=[_dto(r) for r in _visible(page)],
+        items=[_dto(r) for r in page],
         total_count=total,
         next_cursor=_cursor(page[-1]) if has_more and page else None,
     )
@@ -222,15 +239,19 @@ async def list_notifications(
     response_model=UnreadCountDTO,
     dependencies=[Depends(unguarded(_UNGUARDED_REASON))],
 )
-async def unread_count(principal: CurrentPrincipal, db: DbSession) -> UnreadCountDTO:
-    member = await _member_for(db, principal)
+async def unread_count(
+    request: Request, principal: CurrentPrincipal, db: DbSession
+) -> UnreadCountDTO:
+    member, visible = await _visible(request, db, principal)
     n = m.MemberNotification
-    rows = list(
-        (await db.execute(select(n).where(n.member_id == member.id, n.read_at.is_(None))))
-        .scalars()
-        .all()
-    )
-    return UnreadCountDTO(count=len(_visible(rows)))
+    count = (
+        await db.execute(
+            select(func.count())
+            .select_from(n)
+            .where(n.member_id == member.id, n.read_at.is_(None), visible)
+        )
+    ).scalar_one()
+    return UnreadCountDTO(count=count)
 
 
 @router.post(

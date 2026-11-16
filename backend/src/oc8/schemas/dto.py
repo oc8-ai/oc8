@@ -2267,6 +2267,33 @@ class BoardSummaryDTO(CamelModel):
     last_recorded_at: str | None
     may_delete: bool
     may_run: bool
+    #: May share and unshare: the same rule as `may_delete`.
+    may_share: bool
+    #: Visible to the caller only through a share, not through their own reach.
+    shared_with_me: bool
+
+
+class BoardShareDTO(CamelModel):
+    """One share of a board: exactly one of member and department is set."""
+
+    id: str
+    member_id: str | None = None
+    member_name: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
+    created_at: str
+
+
+class ShareTargetDTO(CamelModel):
+    id: str
+    name: str
+
+
+class ShareTargetsDTO(CamelModel):
+    """Who a board can be shared with, matching the search (at most 20 of each)."""
+
+    members: list[ShareTargetDTO]
+    departments: list[ShareTargetDTO]
 
 
 class DataBoardDTO(BoardSummaryDTO):
