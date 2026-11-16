@@ -20,6 +20,7 @@ const board: BoardSummary = {
   recordCount: 2,
   lastRecordedAt: null,
   mayDelete: true,
+  mayRun: false,
 };
 
 /** `useDeleteBoard` whose request fails with `error`. */

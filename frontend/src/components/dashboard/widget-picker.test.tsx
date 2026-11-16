@@ -19,6 +19,7 @@ const sales: BoardSummary = {
   recordCount: 2,
   lastRecordedAt: null,
   mayDelete: false,
+  mayRun: false,
 };
 
 function open() {

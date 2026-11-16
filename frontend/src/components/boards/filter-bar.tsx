@@ -91,7 +91,7 @@ export function FilterBar({
   };
 
   return (
-    <div className="flex flex-wrap items-end gap-3 px-3 py-2">
+    <div className="flex flex-wrap items-end gap-3 py-1">
       <label className={LABEL_CLASS}>
         {t("Period", "Zeitraum")}
         <select
