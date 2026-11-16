@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from croniter import CroniterBadCronError, croniter
+from croniter import CroniterBadCronError
+
+from oc8.triggers.zones import UnknownTimezone, next_fire_utc
 
 MIN_INTERVAL = dt.timedelta(minutes=15)
 MAX_HORIZON = dt.timedelta(days=366)
@@ -57,12 +59,12 @@ def _instant(raw: str | None, what: str) -> dt.datetime:
 
 def next_fire(cron_expression: str, *, timezone: str, after: dt.datetime) -> dt.datetime:
     """The next fire strictly after `after`, reading the expression in `timezone`."""
-    local_after = after.astimezone(ZoneInfo(timezone))
     try:
-        nxt = cast(dt.datetime, croniter(cron_expression, local_after).get_next(dt.datetime))
+        return next_fire_utc(cron_expression, timezone=timezone, after=after)
+    except UnknownTimezone as exc:
+        raise FollowupRejected(str(exc)) from exc
     except (CroniterBadCronError, ValueError) as exc:
         raise FollowupRejected(f"invalid cron expression: {exc}") from exc
-    return nxt.astimezone(dt.UTC)
 
 
 def validate_followup(

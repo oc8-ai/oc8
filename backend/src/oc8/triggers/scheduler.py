@@ -67,7 +67,9 @@ async def _advance_without_firing(tenant_id: uuid.UUID) -> None:
         )
         for trigger in due:
             assert trigger.cron_expression is not None
-            trigger.next_run_at = compute_next_run(trigger.cron_expression, after=now)
+            trigger.next_run_at = compute_next_run(
+                trigger.cron_expression, after=now, timezone=trigger.timezone
+            )
 
 
 async def fire_trigger(
@@ -114,7 +116,9 @@ async def fire_trigger(
     now = datetime.now(tz=UTC)
     trigger.last_run_at = now
     if trigger.kind == "cron" and trigger.cron_expression is not None:
-        trigger.next_run_at = compute_next_run(trigger.cron_expression, after=now)
+        trigger.next_run_at = compute_next_run(
+            trigger.cron_expression, after=now, timezone=trigger.timezone
+        )
     task = trigger.task_text
     if payload is not None:
         task = f"{task}\n\nWebhook payload:\n{json.dumps(payload, indent=2, default=str)}"
