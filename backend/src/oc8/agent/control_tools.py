@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import ValidationError
 from sqlalchemy import case, select
 from sqlalchemy import text as sql_text
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -2662,10 +2662,14 @@ _BOARD_BUSY = "ERROR: the dashboard is busy; try the write again."
 
 
 def _gave_up_waiting(exc: DBAPIError) -> bool:
-    """A lock wait that ran past `BOARD_WRITE_LOCK_TIMEOUT` (asyncpg reports it
-    as a plain DBAPIError carrying the sqlstate), not any other database error."""
-    if isinstance(exc, OperationalError):
-        return True
+    """A lock wait that ran past `BOARD_WRITE_LOCK_TIMEOUT`, and nothing else.
+
+    asyncpg reports it as a plain DBAPIError carrying the sqlstate. It can come
+    from the board row, the cap lock, or the tenant's audit chain lock, which the
+    `before_commit` listener takes inside this transaction: in every case
+    Postgres rolled the transaction back, so a retry cannot write twice. Any
+    other error -- notably a connection lost during COMMIT, which may already
+    have committed -- is not "busy" and propagates."""
     return getattr(exc.orig, "sqlstate", None) == _LOCK_NOT_AVAILABLE
 
 
