@@ -56,6 +56,7 @@ const GATE_PUBLIC_ROUTES = new Set([
 const SHELL_PUBLIC_ROUTES = new Set([...GATE_PUBLIC_ROUTES, "/welcome"]);
 
 import {
+  EditionAppGate,
   EditionCompositionProvider,
   composeFrontendEdition,
   editionBarePaths,
@@ -293,32 +294,38 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {/* Around the live updates: their toasts speak the reader's language. */}
+      {/* Around the live updates and the edition's gate: both speak the reader's language. */}
       <LanguageProvider>
-        <LiveUpdatesProvider>
-          <EditionCompositionProvider extensions={editionExtensions}>
-            <AuthGate>
-              <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
-            </AuthGate>
-            {/*
-              The ONE <Toaster/> in the app, deliberately a sibling of `gatedContent`
-              rather than inside it. `sonner` seeds a freshly mounted <Toaster/> from
-              empty state and never replays toasts raised before it mounted, so the
-              two per-layout Toasters this replaces (one in `PublicAuthLayout`, one in
-              `AppShell`) silently swallowed every toast fired immediately before a
-              route change -- notably the login-success and 2FA grace-period toasts in
-              `routes/login.tsx`, which fire and then navigate /login -> / in the same
-              breath. `RootComponent` is the one wrapper that survives that swap.
-              The `dark` wrapper is what gives the toast's design-system tokens
-              (bg-background, text-foreground, border-border) their dark values: on
-              `/login` the surrounding `dark` class is scoped to `PublicAuthLayout`'s
-              own subtree, which no longer contains this Toaster.
-            */}
-            <div className={toasterTheme === "dark" ? "dark" : undefined}>
-              <Toaster theme={toasterTheme} position="bottom-right" richColors closeButton />
-            </div>
-          </EditionCompositionProvider>
-        </LiveUpdatesProvider>
+        <EditionCompositionProvider extensions={editionExtensions}>
+          {/* An edition's gate runs outside AuthGate, so it decides whether
+              anything of the app renders before AuthGate can redirect. Live
+              updates and the toaster sit inside it: a gate that has not let
+              the app through gets no authenticated socket and no toasts. */}
+          <EditionAppGate>
+            <LiveUpdatesProvider>
+              <AuthGate>
+                <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
+              </AuthGate>
+              {/*
+                The ONE <Toaster/> in the app, deliberately a sibling of `gatedContent`
+                rather than inside it. `sonner` seeds a freshly mounted <Toaster/> from
+                empty state and never replays toasts raised before it mounted, so the
+                two per-layout Toasters this replaces (one in `PublicAuthLayout`, one in
+                `AppShell`) silently swallowed every toast fired immediately before a
+                route change -- notably the login-success and 2FA grace-period toasts in
+                `routes/login.tsx`, which fire and then navigate /login -> / in the same
+                breath. `RootComponent` is the one wrapper that survives that swap.
+                The `dark` wrapper is what gives the toast's design-system tokens
+                (bg-background, text-foreground, border-border) their dark values: on
+                `/login` the surrounding `dark` class is scoped to `PublicAuthLayout`'s
+                own subtree, which no longer contains this Toaster.
+              */}
+              <div className={toasterTheme === "dark" ? "dark" : undefined}>
+                <Toaster theme={toasterTheme} position="bottom-right" richColors closeButton />
+              </div>
+            </LiveUpdatesProvider>
+          </EditionAppGate>
+        </EditionCompositionProvider>
       </LanguageProvider>
     </QueryClientProvider>
   );

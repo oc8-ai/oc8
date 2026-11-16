@@ -43,6 +43,8 @@ export interface FrontendEditionComposition {
   readonly homeSections: readonly EditionHomeSection[];
   readonly customServerSources: readonly CustomServerSource[];
   readonly boardBlocks: readonly BoardBlockEntry[];
+  /** App gates in extension order, the first outermost. */
+  readonly appGates: readonly ComponentType<{ children: ReactNode }>[];
 }
 
 export interface EditionCapabilityGateRule {
@@ -103,6 +105,7 @@ const emptyComposition: FrontendEditionComposition = {
   homeSections: [],
   customServerSources: [],
   boardBlocks: [],
+  appGates: [],
 };
 
 const EditionCompositionContext = createContext<FrontendEditionComposition>(emptyComposition);
@@ -140,6 +143,7 @@ export function composeFrontendEdition(
   const customServerSources: CustomServerSource[] = [];
   const boardBlockIds = new Set<string>();
   const boardBlocks: BoardBlockEntry[] = [];
+  const appGates: ComponentType<{ children: ReactNode }>[] = [];
 
   for (const extension of extensions) {
     if (extensionIds.has(extension.id))
@@ -203,6 +207,7 @@ export function composeFrontendEdition(
       boardBlockIds.add(entry.id);
       boardBlocks.push(entry);
     }
+    if (extension.appGate) appGates.push(extension.appGate);
   }
 
   return {
@@ -218,6 +223,7 @@ export function composeFrontendEdition(
     homeSections,
     customServerSources,
     boardBlocks,
+    appGates,
   };
 }
 
@@ -269,6 +275,22 @@ export function EditionCompositionProvider({
 
 export function useFrontendEdition(): FrontendEditionComposition {
   return useContext(EditionCompositionContext);
+}
+
+/** Wraps `children` in every composed app gate, the first extension's
+ *  outermost. Without a gate it renders `children` unchanged. */
+export function EditionAppGate({ children }: { children: ReactNode }) {
+  const { appGates } = useFrontendEdition();
+  return (
+    <>
+      {appGates.reduceRight<ReactNode>(
+        (inner, Gate) => (
+          <Gate>{inner}</Gate>
+        ),
+        children,
+      )}
+    </>
+  );
 }
 
 /** Spec §6.2: does the caller hold this capability? Known capabilities decide;
