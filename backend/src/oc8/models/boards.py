@@ -127,3 +127,36 @@ class DataBoardRecord(Base, PkMixin, TenantMixin):
         Index("ix_data_board_record_period", "board_id", "dataset", "as_of"),
         Index("ix_data_board_record_batch", "batch_id"),
     )
+
+
+class DataBoardShare(Base, PkMixin, TenantMixin):
+    """Read access to one board for one member OR one department (exactly one).
+
+    Grants nothing beyond reading and querying that board."""
+
+    __tablename__ = "data_board_share"
+
+    board_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("data_board.id", ondelete="CASCADE"), nullable=False
+    )
+    member_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("org_member.id", ondelete="CASCADE"), nullable=True
+    )
+    department_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("department.id", ondelete="CASCADE"), nullable=True
+    )
+    created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(member_id IS NULL) <> (department_id IS NULL)",
+            name="ck_data_board_share_one_target",
+        ),
+        UniqueConstraint("board_id", "member_id", name="uq_data_board_share_member"),
+        UniqueConstraint("board_id", "department_id", name="uq_data_board_share_department"),
+        Index("ix_data_board_share_member", "member_id"),
+        Index("ix_data_board_share_department", "department_id"),
+    )

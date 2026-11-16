@@ -37,6 +37,8 @@ function board(blocks: BoardBlock[]): Board {
     lastRecordedAt: null,
     mayDelete: true,
     mayRun: false,
+    mayShare: false,
+    sharedWithMe: false,
     specVersion: 1,
     spec: {
       datasets: [

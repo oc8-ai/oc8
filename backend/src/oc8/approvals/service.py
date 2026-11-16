@@ -31,6 +31,7 @@ from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
 from oc8.authz.scope import AgentActor, DecisionActor, HumanActor
+from oc8.notifications.events import on_approval_decided
 from oc8.realtime.emit import publish_after_commit, record_activity
 
 Verdict = Literal["approve", "reject"]
@@ -686,6 +687,9 @@ async def decide_approval(
     # answerable only as "an operator".
     approval.decided_by = actor.member.id
     await db.flush()
+    # The person behind the run is told, in this transaction: a decision whose
+    # effect raises below rolls back and tells nobody anything.
+    await on_approval_decided(db, approval)
 
     from oc8.realtime.bus import get_event_bus
 

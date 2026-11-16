@@ -14,6 +14,7 @@ from oc8 import models as m
 from oc8.models import RunStateTransition
 from oc8.models.core import Agent
 from oc8.models.run import AgentRun
+from oc8.notifications.events import on_run_failed
 from oc8.runtime.states import TERMINAL, RunState, assert_transition
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,11 @@ class RunRepository:
             # the terminal state is COMMITTED: a rolled-back transition leaves
             # a run that may still resume. Best-effort; see delete_run_state.
             _delete_state_after_commit(self._s, tenant_id=run.tenant_id, run_id=run.id)
+        if dst is RunState.FAILED:
+            # Past the already-terminal return above, so once per run that
+            # FAILS, whichever of the executor's sites or closers got here,
+            # and in the same transaction as the ending itself.
+            await on_run_failed(self._s, run)
         from oc8.realtime.bus import get_event_bus
 
         await get_event_bus().publish_event(

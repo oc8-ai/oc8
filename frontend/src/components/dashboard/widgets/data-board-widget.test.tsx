@@ -34,6 +34,8 @@ function board(over: Partial<Board> = {}): Board {
     lastRecordedAt: null,
     mayDelete: true,
     mayRun: true,
+    mayShare: false,
+    sharedWithMe: false,
     specVersion: 1,
     spec: { datasets: [], blocks: [] },
     ...over,
@@ -220,6 +222,20 @@ describe("data_board refresh", () => {
   });
 });
 
+describe("data_board shared label", () => {
+  it("labels a dashboard shared with the person, outside edit mode", () => {
+    mockBoard({ data: board({ mayDelete: false, sharedWithMe: true }) });
+    render(wrap(<DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />));
+    expect(screen.getByText("Shared with you")).toBeInTheDocument();
+  });
+
+  it("shows no label for the person's own dashboard", () => {
+    mockBoard({ data: board() });
+    render(wrap(<DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />));
+    expect(screen.queryByText("Shared with you")).toBeNull();
+  });
+});
+
 describe("data_board tile menu", () => {
   function frame(config: Record<string, unknown>) {
     return (
@@ -237,6 +253,19 @@ describe("data_board tile menu", () => {
     render(wrap(frame({ boardId: "b1" })));
     expect(screen.queryByRole("button", { name: "Delete dashboard" })).toBeNull();
     expect(screen.getByRole("button", { name: "Remove widget" })).toBeInTheDocument();
+  });
+
+  it("offers Share when the person may share, even without delete", () => {
+    mockBoard({ data: board({ mayDelete: false, mayShare: true }) });
+    render(wrap(frame({ boardId: "b1" })));
+    expect(screen.getByRole("button", { name: "Share dashboard" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete dashboard" })).toBeNull();
+  });
+
+  it("hides Share without mayShare", () => {
+    mockBoard({ data: board({ mayShare: false }) });
+    render(wrap(frame({ boardId: "b1" })));
+    expect(screen.queryByRole("button", { name: "Share dashboard" })).toBeNull();
   });
 
   it("removing the tile never deletes the board", () => {

@@ -21,6 +21,8 @@ const board: BoardSummary = {
   lastRecordedAt: null,
   mayDelete: true,
   mayRun: false,
+  mayShare: false,
+  sharedWithMe: false,
 };
 
 /** `useDeleteBoard` whose request fails with `error`. */

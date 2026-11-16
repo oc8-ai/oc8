@@ -1082,3 +1082,11 @@ class VerifyRecordLinksRequest(CamelModel):
     message_id: uuid.UUID
     #: One chat answer's worth of links; the URL cap matches what `enrich` issues.
     urls: list[Annotated[str, StringConstraints(max_length=2000)]] = Field(max_length=100)
+
+
+class BoardShareRequest(CamelModel):
+    """`POST /boards/{id}/shares`: exactly one of the two (checked by the service,
+    which answers 422 for neither, both, or a target that is not live)."""
+
+    member_id: uuid.UUID | None = None
+    department_id: uuid.UUID | None = None

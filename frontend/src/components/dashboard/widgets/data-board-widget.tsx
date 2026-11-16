@@ -3,7 +3,7 @@
 // is read through `/boards`, so access is checked on every read: a person who
 // lost access sees "No access" -- never the title -- on the next fetch.
 import { useQueryClient } from "@tanstack/react-query";
-import { RefreshCw, Trash2 } from "lucide-react";
+import { RefreshCw, Share2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
@@ -11,6 +11,7 @@ import { BlockMessage } from "@/components/boards/block-status";
 import { DEFAULT_FILTERS, type BoardFilterState } from "@/components/boards/board-filters";
 import { BoardView } from "@/components/boards/board-view";
 import { DeleteBoardDialog } from "@/components/boards/delete-board-dialog";
+import { ShareBoardDialog } from "@/components/boards/share-board-dialog";
 import { WidgetTitle } from "@/components/dashboard/widget-title";
 import { ApiError } from "@/lib/api";
 import { boardKeys, useBoard, useBoardDeleted } from "@/lib/boards-api";
@@ -103,6 +104,11 @@ export function DataBoardWidget({
           ) : undefined
         }
       />
+      {board.sharedWithMe && (
+        <p className="shrink-0 px-3 pb-1 text-xs text-muted-foreground">
+          {t("Shared with you", "Mit dir geteilt")}
+        </p>
+      )}
       {board.stale && (
         <p className="shrink-0 px-3 pb-1 text-xs text-[color:var(--status-warning)]">
           {t("No longer updated", "Wird nicht mehr aktualisiert")}
@@ -176,28 +182,49 @@ function RefreshBoardButton({ board, agentId }: { board: Board; agentId: string 
   );
 }
 
-/** The tile's edit-mode menu: "Delete dashboard", for a person who may. It
- *  reads the board itself, so the frame never fetches board data. */
+/** The tile's edit-mode menu: "Share dashboard" and "Delete dashboard", each
+ *  for a person who may. It reads the board itself, so the frame never
+ *  fetches board data. */
 export function DataBoardMenu({ config }: { config: Record<string, unknown> }) {
   const t = useT();
   const boardId = boardIdOf(config);
   const deleted = useBoardDeleted(boardId);
   const { data: board } = useBoard(boardId);
   const [open, setOpen] = useState(false);
-  if (deleted || !board?.mayDelete) return null;
+  const [sharing, setSharing] = useState(false);
+  if (deleted || !board) return null;
+  if (!board.mayDelete && !board.mayShare) return null;
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        aria-label={t("Delete dashboard", "Dashboard löschen")}
-        title={t("Delete dashboard", "Dashboard löschen")}
-        className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-      <DeleteBoardDialog board={board} open={open} onOpenChange={setOpen} />
+      {board.mayShare && (
+        <>
+          <button
+            type="button"
+            onClick={() => setSharing(true)}
+            aria-label={t("Share dashboard", "Dashboard teilen")}
+            title={t("Share dashboard", "Dashboard teilen")}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </button>
+          <ShareBoardDialog board={board} open={sharing} onOpenChange={setSharing} />
+        </>
+      )}
+      {board.mayDelete && (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen(true)}
+            aria-label={t("Delete dashboard", "Dashboard löschen")}
+            title={t("Delete dashboard", "Dashboard löschen")}
+            className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+          <DeleteBoardDialog board={board} open={open} onOpenChange={setOpen} />
+        </>
+      )}
     </>
   );
 }

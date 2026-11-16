@@ -82,7 +82,26 @@ ALLOWED: dict[str, str] = {
     ),
     "api/v1/boards.py": (
         "names the producing agent of a board the caller was already admitted to by "
-        "agent:view in the board's department (boards.repo); name and deleted_at only"
+        "agent:view in the board's department (boards.repo); name and deleted_at only. "
+        "For someone who may share the board (may_delete_board), names the departments "
+        "it is shared with and the tenant's live departments to share it with: id and "
+        "name only, never their agents or data"
+    ),
+    "boards/repo.py": (
+        "the board read door: in the share predicate, correlates on whether the board's "
+        "department and a shared department are live (deleted_at); loads no row"
+    ),
+    "boards/sharing.py": (
+        "behind the caller's may_delete_board gate, reads ids only: whether a share's "
+        "target department is live (target check), whether the board's own department "
+        "is live (board_audience), and which live departments' seats a department "
+        "share reaches (the seat join in board_audience); never agents or data"
+    ),
+    "notifications/events.py": (
+        "addresses a notification, with no human viewer to scope it to: reads the "
+        "created board's producing agent (name, for the body) and the failed run's own "
+        "agent (name, department_id, is_tenant_assistant); joins Department only to "
+        "require a live department for the seat holders it notifies; never data"
     ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",

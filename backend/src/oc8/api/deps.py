@@ -18,6 +18,7 @@ from oc8.auth.provider import InvalidToken
 from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, ALL_PERMISSIONS, MANAGE, perm
 from oc8.authz.scope import HumanActor, scope_for_principal
+from oc8.boards.repo import has_direct_share
 from oc8.db.session import tenant_session
 
 logger = logging.getLogger(__name__)
@@ -280,7 +281,7 @@ def require_permission(permission: str) -> Callable[..., Awaitable[Principal]]:
 
 
 def require_departmental(
-    permission: str, *, or_tenant_wide: str | None = None
+    permission: str, *, or_tenant_wide: str | None = None, or_board_share: bool = False
 ) -> Callable[..., Awaitable[HumanActor]]:
     """Admit a caller who holds `permission` tenant-wide OR in at least one seat
     OR (when given) `or_tenant_wide` tenant-wide.
@@ -301,6 +302,13 @@ def require_departmental(
     an unboxed second string parameter could nondeterministically be picked up
     instead of `permission`, silently mislabelling which permission a route is
     pinned on.
+
+    `or_board_share` exists for the data-board read routes (`api/v1/boards.py`):
+    it also admits a member to whom a board is shared BY NAME, though they hold no
+    seat at all. That is the narrowest widening that lets such a person read the
+    one board a share grants -- a department share needs a live seat, which
+    already admits -- and the routes behind it still narrow every row through
+    `boards.repo` with the member's id, so it opens nothing else.
 
     Both gates now read the same `Authority`, once per request, memoised -- so
     the difference between them is what they do with it and not where they
@@ -344,6 +352,8 @@ def require_departmental(
             or scope.holds_anywhere(permission)
             or (or_tenant_wide is not None and or_tenant_wide in authority.tenant_wide)
         )
+        if not admitted and or_board_share and member is not None:
+            admitted = await has_direct_share(db, member.id)
         if not admitted:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

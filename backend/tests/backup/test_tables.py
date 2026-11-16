@@ -57,6 +57,13 @@ def test_exported_tables_excludes_the_denylist() -> None:
     assert len(exported) == 63
 
 
+def test_board_shares_and_settings_export_but_the_inbox_does_not() -> None:
+    exported = exported_tables()
+    assert "data_board_share" in exported
+    assert "member_notification_setting" in exported
+    assert "member_notification" not in exported
+
+
 def test_table_by_name_returns_a_real_table() -> None:
     table = table_by_name("agent")
     assert "tenant_id" in table.columns
@@ -141,3 +148,12 @@ async def test_dependency_order_puts_boards_before_records(
     assert order.index("data_board") < order.index("data_board_batch")
     assert order.index("data_board_batch") < order.index("data_board_record")
     assert order.index("data_board") < order.index("data_board_spec_version")
+
+
+async def test_dependency_order_puts_boards_members_and_departments_before_shares(
+    app_session: AppSessionFactory,
+) -> None:
+    async with app_session(uuid.uuid4()) as s:
+        order = await dependency_order(s, exported_tables())
+    for parent in ("data_board", "org_member", "department"):
+        assert order.index(parent) < order.index("data_board_share"), parent

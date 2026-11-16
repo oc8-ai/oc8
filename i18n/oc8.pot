@@ -257,6 +257,9 @@ msgstr ""
 msgid "Add seat"
 msgstr ""
 
+msgid "Add to My work"
+msgstr ""
+
 msgid "Add tool"
 msgstr ""
 
@@ -1472,6 +1475,9 @@ msgstr ""
 msgid "Could not save your dashboard layout"
 msgstr ""
 
+msgid "Could not save your notification settings"
+msgstr ""
+
 msgid "Could not save."
 msgstr ""
 
@@ -1547,6 +1553,9 @@ msgstr ""
 msgid "Couldn't load the run history."
 msgstr ""
 
+msgid "Couldn't mark the notification as read"
+msgstr ""
+
 msgid "Couldn't publish"
 msgstr ""
 
@@ -1557,6 +1566,9 @@ msgid "Couldn't refresh"
 msgstr ""
 
 msgid "Couldn't remove skill"
+msgstr ""
+
+msgid "Couldn't remove the share"
 msgstr ""
 
 msgid "Couldn't remove webhook"
@@ -1584,6 +1596,9 @@ msgid "Couldn't save instructions"
 msgstr ""
 
 msgid "Couldn't send answer"
+msgstr ""
+
+msgid "Couldn't share the dashboard"
 msgstr ""
 
 msgid "Couldn't start run"
@@ -1761,6 +1776,9 @@ msgid "Decided"
 msgstr ""
 
 msgid "Decided a request"
+msgstr ""
+
+msgid "Decided approvals"
 msgstr ""
 
 msgid "Decided by you"
@@ -2312,6 +2330,9 @@ msgstr ""
 msgid "Failed"
 msgstr ""
 
+msgid "Failed agents"
+msgstr ""
+
 msgid "Fast"
 msgstr ""
 
@@ -2723,6 +2744,9 @@ msgstr ""
 msgid "Judging against your number for this look only — nothing is saved."
 msgstr ""
 
+msgid "just now"
+msgstr ""
+
 msgid "Keep an eye on something for me"
 msgstr ""
 
@@ -3002,6 +3026,9 @@ msgstr ""
 msgid "Map each complexity tier to an existing model config. At least one is required."
 msgstr ""
 
+msgid "Mark all as read"
+msgstr ""
+
 msgid "Max output tokens (optional)"
 msgstr ""
 
@@ -3039,6 +3066,9 @@ msgid "Message"
 msgstr ""
 
 msgid "Messages to this run"
+msgstr ""
+
+msgid "Messenger"
 msgstr ""
 
 msgid "metered by the platform"
@@ -3207,6 +3237,9 @@ msgid "New cost limit"
 msgstr ""
 
 msgid "New credential"
+msgstr ""
+
+msgid "New dashboards"
 msgstr ""
 
 msgid "New department"
@@ -3422,6 +3455,9 @@ msgstr ""
 msgid "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password."
 msgstr ""
 
+msgid "No matches"
+msgstr ""
+
 msgid "No MCP connections yet."
 msgstr ""
 
@@ -3444,6 +3480,9 @@ msgid "no note"
 msgstr ""
 
 msgid "No note for this period"
+msgstr ""
+
+msgid "No notifications"
 msgstr ""
 
 msgid "No organisation access yet."
@@ -3579,6 +3618,9 @@ msgid "Not set"
 msgstr ""
 
 msgid "not set up"
+msgstr ""
+
+msgid "Not shared yet"
 msgstr ""
 
 msgid "Not tested"
@@ -4005,6 +4047,9 @@ msgid "Published"
 msgstr ""
 
 msgid "Published configuration · newest first"
+msgstr ""
+
+msgid "Push"
 msgstr ""
 
 msgid "Push notifications aren't configured on this server yet."
@@ -4517,6 +4562,9 @@ msgstr ""
 msgid "Search people"
 msgstr ""
 
+msgid "Search people and departments"
+msgstr ""
+
 msgid "Search person or account"
 msgstr ""
 
@@ -4682,6 +4730,9 @@ msgstr ""
 msgid "Share account"
 msgstr ""
 
+msgid "Share dashboard"
+msgstr ""
+
 msgid "Share this invite link"
 msgstr ""
 
@@ -4694,7 +4745,13 @@ msgstr ""
 msgid "Shared memory & private stores."
 msgstr ""
 
+msgid "Shared with"
+msgstr ""
+
 msgid "Shared with the team"
+msgstr ""
+
+msgid "Shared with you"
 msgstr ""
 
 msgid "Short summary — otherwise the instructions are used"
@@ -5778,6 +5835,9 @@ msgid "Unpin"
 msgstr ""
 
 msgid "Unpublished changes"
+msgstr ""
+
+msgid "Unread"
 msgstr ""
 
 msgid "unreadable"

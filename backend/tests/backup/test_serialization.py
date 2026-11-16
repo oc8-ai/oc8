@@ -149,6 +149,20 @@ def test_board_tables_round_trip_a_fully_populated_row() -> None:
         _round_trip_populated(name)
 
 
+#: Board sharing's tables (0124): a board's shares and a member's delivery
+#: settings are company data. `member_notification`, the inbox, is excluded.
+_SHARING_TABLES = ("data_board_share", "member_notification_setting")
+
+
+def test_sharing_tables_round_trip_a_fully_populated_row() -> None:
+    """Like the board tables above: covered on their own, past the pinned count."""
+    tables = exported_tables()
+    for name in _SHARING_TABLES:
+        assert name in tables
+        _round_trip_populated(name)
+    assert "member_notification" not in tables
+
+
 def test_embeddings_encode_little_endian_regardless_of_host() -> None:
     """The byte order is pinned, not inherited from whoever ran the export.
 

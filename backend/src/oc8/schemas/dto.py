@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Any, Literal
 
@@ -9,6 +10,7 @@ from pydantic import Field
 
 from oc8.modelrouter.types import ReasoningLevel
 from oc8.schemas.base import CamelModel
+from oc8.schemas.paging import Page
 
 
 class AgentDTO(CamelModel):
@@ -2212,6 +2214,33 @@ class LocalizedTextDTO(CamelModel):
     de: str
 
 
+class NotificationDTO(CamelModel):
+    id: uuid.UUID
+    kind: str
+    subject_id: uuid.UUID | None
+    title: LocalizedTextDTO
+    body: LocalizedTextDTO
+    link: str
+    created_at: datetime
+    read: bool
+
+
+class NotificationPageDTO(Page[NotificationDTO]):
+    """`Page` plus the keyset cursor of the next page (None on the last)."""
+
+    next_cursor: str | None = None
+
+
+class UnreadCountDTO(CamelModel):
+    count: int
+
+
+class NotificationSettingDTO(CamelModel):
+    kind: Literal["board.available", "run.failed", "approval.decided"]
+    push_enabled: bool = True
+    messenger_enabled: bool = True
+
+
 class AgentIdeaDTO(CamelModel):
     """One agent idea for the empty Copilot chat. Both languages travel: the
     texts are catalogue data, not UI strings the frontend's t() knows."""
@@ -2238,6 +2267,33 @@ class BoardSummaryDTO(CamelModel):
     last_recorded_at: str | None
     may_delete: bool
     may_run: bool
+    #: May share and unshare: the same rule as `may_delete`.
+    may_share: bool
+    #: Visible to the caller only through a share, not through their own reach.
+    shared_with_me: bool
+
+
+class BoardShareDTO(CamelModel):
+    """One share of a board: exactly one of member and department is set."""
+
+    id: str
+    member_id: str | None = None
+    member_name: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
+    created_at: str
+
+
+class ShareTargetDTO(CamelModel):
+    id: str
+    name: str
+
+
+class ShareTargetsDTO(CamelModel):
+    """Who a board can be shared with, matching the search (at most 20 of each)."""
+
+    members: list[ShareTargetDTO]
+    departments: list[ShareTargetDTO]
 
 
 class DataBoardDTO(BoardSummaryDTO):

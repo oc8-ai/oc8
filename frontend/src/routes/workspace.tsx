@@ -8,6 +8,7 @@ import { Check, LayoutTemplate, Pencil, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { BoardNotices } from "@/components/dashboard/board-notices";
 import { DashboardGrid } from "@/components/dashboard/dashboard-grid";
 import { SavePresetDialog } from "@/components/dashboard/save-preset-dialog";
 import { TemplatePicker } from "@/components/dashboard/template-picker";
@@ -26,6 +27,7 @@ import {
   type WidgetType,
 } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import { useNotifications } from "@/lib/notifications-api";
 
 export const Route = createFileRoute("/workspace")({
   component: WorkspacePage,
@@ -45,6 +47,10 @@ export function WorkspacePage() {
   const standing = useStanding();
   const layoutQuery = useDashboardLayout();
   const save = useSaveDashboardLayout();
+  // The same query `BoardNotices` reads (one cache entry): a member without a
+  // department still reaches a board shared with them directly.
+  const boardNotices = useNotifications({ unread: true, kind: "board.available" });
+  const hasBoardNotices = (boardNotices.data ?? []).some((n) => n.subjectId);
 
   const [widgets, setWidgets] = useState<WidgetInstance[] | null>(null);
   const [templateId, setTemplateId] = useState<string | null>(null);
@@ -138,6 +144,12 @@ export function WorkspacePage() {
     const { defaultSize } = WIDGET_REGISTRY[type];
     setWidgets((prev) => {
       const list = prev ?? [];
+      // One tile per dashboard: a repeated add (a double click) is a no-op.
+      if (
+        type === "data_board" &&
+        list.some((w) => w.type === type && w.config?.boardId === config.boardId)
+      )
+        return list;
       return [
         ...list,
         {
@@ -160,15 +172,33 @@ export function WorkspacePage() {
     });
   }
 
-  if (standing.unassigned) {
+  const unassignedText = t(
+    "You are not assigned to a department",
+    "Du bist keiner Abteilung zugeordnet",
+  );
+
+  if (standing.unassigned && (layoutQuery.isPending || boardNotices.isPending)) {
+    return (
+      <div className="flex items-center justify-center p-10 text-sm text-muted-foreground">
+        {t("Loading…", "Wird geladen…")}
+      </div>
+    );
+  }
+
+  // Without a department there is nothing to arrange -- unless a board was
+  // shared with the member directly, or they already keep a layout.
+  if (standing.unassigned && widgets === null && !layoutQuery.data && !hasBoardNotices) {
     return (
       <Panel className="p-10 text-center">
-        <h2 className="font-serif text-xl">
-          {t("You are not assigned to a department", "Du bist keiner Abteilung zugeordnet")}
-        </h2>
+        <h2 className="font-serif text-xl">{unassignedText}</h2>
       </Panel>
     );
   }
+
+  // Kept, as a note, for a member without a department who has boards here.
+  const unassignedNote = standing.unassigned ? (
+    <p className="text-xs text-muted-foreground">{unassignedText}</p>
+  ) : null;
 
   if (layoutQuery.isPending) {
     return (
@@ -202,16 +232,22 @@ export function WorkspacePage() {
   }
 
   if (widgets === null) {
+    // A board added from a notice becomes the first layout: `addWidget`
+    // starts the list, and the debounced save above stores it.
     return (
-      <>
-        <TemplatePicker onPick={pickTemplate} onPickPreset={pickPreset} />
+      <div className="space-y-3">
+        {unassignedNote}
+        <BoardNotices onAdd={addWidget} boardIdsOnGrid={[]} />
+        {/* The layouts are department widgets: no use without a department. */}
+        {!standing.unassigned && <TemplatePicker onPick={pickTemplate} onPickPreset={pickPreset} />}
         {ConfirmDialog}
-      </>
+      </div>
     );
   }
 
   return (
     <div className="space-y-3">
+      {unassignedNote}
       <EditionHomeSections />
       <div className="flex flex-wrap justify-end gap-2">
         {editing && (
@@ -244,6 +280,14 @@ export function WorkspacePage() {
           {editing ? t("Done", "Fertig") : t("Edit", "Bearbeiten")}
         </button>
       </div>
+      <BoardNotices
+        onAdd={addWidget}
+        boardIdsOnGrid={widgets.flatMap((w) =>
+          w.type === "data_board" && typeof w.config?.boardId === "string"
+            ? [w.config.boardId]
+            : [],
+        )}
+      />
       <DashboardGrid widgets={widgets} editing={editing} onChange={setWidgets} />
       <Dialog open={switcherOpen} onOpenChange={setSwitcherOpen}>
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">

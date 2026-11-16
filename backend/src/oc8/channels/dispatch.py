@@ -304,7 +304,9 @@ async def tell_sender(impl: Any, external_id: str, text: str) -> None:
 _CONTENT_WITHHELD = "I have a reply, but this channel isn't cleared for it -- check oc8."
 
 
-async def tell_sender_gated(impl: Any, external_id: str, text: str) -> None:
+async def tell_sender_gated(
+    impl: Any, external_id: str, text: str, classification: str = "internal"
+) -> None:
     """Like `tell_sender`, but for content that carries the same weight as an
     approval's `detail` -- gated by the channel's own `max_classification`,
     the identical check `announce()` applies to approvals (`outranks`,
@@ -315,9 +317,12 @@ async def tell_sender_gated(impl: Any, external_id: str, text: str) -> None:
     say more precisely what a given reply actually contains. A fresh channel
     (`max_classification` defaults to `public`) therefore carries none of it
     until an operator explicitly widens it -- the same friction `announce()`
-    already applies, now applied consistently to this door too."""
+    already applies, now applied consistently to this door too.
+
+    `classification` is for a caller that does know better -- a member
+    notification about an approval carries that approval's own value."""
     caps = impl.capabilities()
-    if outranks("internal", caps.max_classification):
+    if outranks(classification, caps.max_classification):
         text = _CONTENT_WITHHELD
     await tell_sender(impl, external_id, text)
 

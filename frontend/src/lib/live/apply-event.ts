@@ -3,6 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { Agent, ActivityItem } from "@/lib/mock-data";
 import type { RealtimeEvent } from "@/lib/live/types";
 import type { RunComponentDTO } from "@/lib/hooks";
+import { notificationKeys } from "@/lib/notifications-api";
 
 // Query keys that carry live-updatable data (resynced on reconnect).
 export const liveQueryKeys: readonly unknown[][] = [
@@ -28,6 +29,8 @@ export const liveQueryKeys: readonly unknown[][] = [
   // The Live tab: runs that started or ended, inputs a run read, while down.
   ["chat", "live"],
   ["run-steering"],
+  // The bell: a notification created while the socket was down.
+  [...notificationKeys.all],
 ];
 
 export interface McpTestLogLine {
@@ -307,6 +310,9 @@ const patchers: Record<string, Patcher> = {
       { step, message },
     ]);
   },
+  // A notification row was created for this member (backend publishes only
+  // {kind}): refetch the bell's count and list.
+  "notification.created": (qc) => qc.invalidateQueries({ queryKey: notificationKeys.all }),
   "copilot.profile": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "profile"] }),
   "copilot.responsibility": (qc) => {
     qc.invalidateQueries({ queryKey: ["copilot", "responsibilities"] });
