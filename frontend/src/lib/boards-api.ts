@@ -105,6 +105,8 @@ export interface BoardSummary {
   recordCount: number;
   lastRecordedAt: string | null;
   mayDelete: boolean;
+  /** The person may start the producing agent, so may ask it to refresh. */
+  mayRun: boolean;
 }
 
 /** `DataBoardDTO`: a dashboard with its spec. */

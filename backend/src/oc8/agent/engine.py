@@ -919,6 +919,7 @@ async def run_agent(
         has_knowledge = preamble.has_knowledge
         has_instruction_files = preamble.has_instruction_files
         copilot_permissions = preamble.copilot_permissions
+        copilot_has_member = preamble.copilot_has_member
         produces_board = preamble.produces_board
         # C3's step stamp uses the SAME resolved timezone as A2's "Now" line
         # above, instead of re-resolving it -- consumed by the harness.shape()
@@ -1038,6 +1039,7 @@ async def run_agent(
                     or has_released_knowledge(run_row.context if run_row is not None else None),
                     has_instruction_files=has_instruction_files,
                     copilot_permissions=copilot_permissions,
+                    copilot_has_member=copilot_has_member,
                     produces_board=produces_board,
                     has_context=has_readable_context(
                         run_row.context if run_row is not None else None

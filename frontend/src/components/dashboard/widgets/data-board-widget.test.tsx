@@ -1,14 +1,19 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_FILTERS } from "@/components/boards/board-filters";
 import { WidgetFrame } from "@/components/dashboard/widget-frame";
+import { toast } from "sonner";
+
 import { api, ApiError } from "@/lib/api";
 import * as boardsApi from "@/lib/boards-api";
+import * as hooks from "@/lib/hooks";
 import type { Board } from "@/lib/boards-api";
 import { DataBoardWidget } from "./data-board-widget";
+
+vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 vi.mock("@/lib/api", async (orig) => ({
   ...(await orig<typeof import("@/lib/api")>()),
@@ -28,6 +33,7 @@ function board(over: Partial<Board> = {}): Board {
     recordCount: 2,
     lastRecordedAt: null,
     mayDelete: true,
+    mayRun: true,
     specVersion: 1,
     spec: { datasets: [], blocks: [] },
     ...over,
@@ -139,6 +145,78 @@ describe("DataBoardWidget", () => {
       ),
     );
     expect(screen.getByLabelText("Period")).toHaveValue("year_to_date");
+  });
+});
+
+describe("data_board refresh", () => {
+  type Run = { state: string } | undefined;
+  function mockRun(opts: { pending?: boolean; run?: () => Run } = {}) {
+    const mutate = vi.fn();
+    vi.spyOn(hooks, "useRunAgent").mockReturnValue({
+      mutate,
+      isPending: opts.pending ?? false,
+    } as never);
+    const useRun = vi
+      .spyOn(hooks, "useRun")
+      .mockImplementation(
+        (runId: string | null) => ({ data: runId ? opts.run?.() : undefined }) as never,
+      );
+    return { mutate, useRun };
+  }
+  const widget = <DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />;
+
+  it.each([
+    ["the person may not run the agent", { mayRun: false }],
+    ["no agent fills the board", { agentId: null }],
+    ["the board is no longer updated", { stale: true }],
+  ])("offers no refresh when %s", (_why, over) => {
+    mockBoard({ data: board(over) });
+    mockRun();
+    render(wrap(widget));
+    expect(screen.queryByRole("button", { name: "Refresh data" })).toBeNull();
+  });
+
+  it("asks the board's agent to refresh it", () => {
+    mockBoard({ data: board() });
+    const { mutate } = mockRun();
+    render(wrap(widget));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh data" }));
+    expect(mutate).toHaveBeenCalledWith(
+      { agentId: "a1", task: 'Refresh the dashboard "Sales" with current data.' },
+      expect.anything(),
+    );
+  });
+
+  it("is disabled while the run is starting", () => {
+    mockBoard({ data: board() });
+    mockRun({ pending: true });
+    render(wrap(widget));
+    expect(screen.getByRole("button", { name: "Refresh data" })).toBeDisabled();
+  });
+
+  it("stays disabled until the run ends, then reloads the board", async () => {
+    mockBoard({ data: board() });
+    let run: Run = { state: "running" };
+    const { mutate } = mockRun({ run: () => run });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const view = render(wrap(widget, qc));
+
+    fireEvent.click(screen.getByRole("button", { name: "Refresh data" }));
+    act(() => mutate.mock.calls[0][1].onSuccess({ id: "r1" }));
+    const button = screen.getByRole("button", { name: "Refresh data" });
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("title", "Updating…");
+    expect(invalidate).not.toHaveBeenCalled();
+
+    run = { state: "failed" };
+    // A new element: the same one would let React skip the render.
+    view.rerender(
+      wrap(<DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />, qc),
+    );
+    await waitFor(() => expect(screen.getByRole("button", { name: "Refresh data" })).toBeEnabled());
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["boards", "b1"] });
+    expect(toast.error).toHaveBeenCalledWith("Couldn't refresh");
   });
 });
 

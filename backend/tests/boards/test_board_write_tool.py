@@ -52,6 +52,11 @@ def test_offered_only_to_a_producing_agent() -> None:
     assert "board_write" not in _names(_offer(_agent(assistant=True), produces_board=True))
 
 
+def test_description_says_the_dashboard_sums_rows_itself() -> None:
+    text = control_tools.BOARD_WRITE.description
+    assert "sums" in text and "total" in text and "1 per row" in text
+
+
 def test_withheld_in_plan_mode() -> None:
     assert "board_write" not in _names(_offer(_agent(), produces_board=True, chat_mode=PLAN))
 

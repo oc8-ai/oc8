@@ -193,6 +193,46 @@ const TAB_IDS = [
 ] as const;
 type TabId = (typeof TAB_IDS)[number];
 
+/** The agent page's tabs. The Live Log ("livelog") is no tab of its own: it
+ *  is the Live tab's technical view, opened from its "Technical view" link
+ *  (`?tab=livelog&runId=...`), so while it is open the Live tab is current. */
+export function AgentTabBar({ tab, onSelect }: { tab: TabId; onSelect: (tab: TabId) => void }) {
+  const t = useT();
+  const tabs: { id: TabId; label: string }[] = [
+    { id: "overview", label: t("Overview", "Übersicht") },
+    { id: "instructions", label: t("Instructions", "Anweisungen") },
+    { id: "guardrails", label: t("Tools & Access", "Tools & Zugriff") },
+    { id: "live", label: t("Live", "Live") },
+    { id: "files", label: t("Files", "Dateien") },
+    { id: "config", label: t("Configuration", "Konfiguration") },
+    { id: "skills", label: t("Skills", "Skills") },
+    { id: "memory", label: t("Memory", "Gedächtnis") },
+    { id: "history", label: t("History", "Verlauf") },
+    { id: "versions", label: t("Versions", "Versionen") },
+  ];
+  const current = tab === "livelog" ? "live" : tab;
+  return (
+    <div className="flex gap-1 overflow-x-auto border-b border-border">
+      {tabs.map((tb) => (
+        <button
+          key={tb.id}
+          type="button"
+          onClick={() => onSelect(tb.id)}
+          aria-current={current === tb.id ? "page" : undefined}
+          className={cn(
+            "-mb-px border-b-2 px-4 py-2 text-sm transition",
+            current === tb.id
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {tb.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function AgentDetail() {
   const t = useT();
   // Not a UUID: nothing is fetched and the page says the agent wasn't found.
@@ -291,20 +331,6 @@ function AgentDetail() {
     ? allBases.filter((kb) => kb.linkedDepartments.includes(agent.departmentId!)).map((kb) => kb.id)
     : [];
 
-  const tabs: { id: TabId; label: string }[] = [
-    { id: "overview", label: t("Overview", "Übersicht") },
-    { id: "instructions", label: t("Instructions", "Anweisungen") },
-    { id: "guardrails", label: t("Tools & Access", "Tools & Zugriff") },
-    { id: "livelog", label: t("Live Log", "Live-Log") },
-    { id: "live", label: t("Live", "Live") },
-    { id: "files", label: t("Files", "Dateien") },
-    { id: "config", label: t("Configuration", "Konfiguration") },
-    { id: "skills", label: t("Skills", "Skills") },
-    { id: "memory", label: t("Memory", "Gedächtnis") },
-    { id: "history", label: t("History", "Verlauf") },
-    { id: "versions", label: t("Versions", "Versionen") },
-  ];
-
   function submitRun() {
     // Task is optional -- the agent's own Instructions (mission) are already
     // sent as its standing system prompt on every run (agent/preamble.py),
@@ -320,7 +346,7 @@ function AgentDetail() {
           setRunId(data.id);
           setRunPickerOpen(false);
           setRunTask("");
-          setTab("livelog");
+          setTab("live");
           toast.success(t(`Run started · ${agent!.name}`, `Lauf gestartet · ${agent!.name}`));
         },
         onError: () => toast.error(t("Couldn't start run", "Lauf konnte nicht gestartet werden")),
@@ -472,22 +498,7 @@ function AgentDetail() {
         </div>
       )}
 
-      <div className="flex gap-1 overflow-x-auto border-b border-border">
-        {tabs.map((tb) => (
-          <button
-            key={tb.id}
-            onClick={() => selectTab(tb.id)}
-            className={cn(
-              "-mb-px border-b-2 px-4 py-2 text-sm transition",
-              tab === tb.id
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {tb.label}
-          </button>
-        ))}
-      </div>
+      <AgentTabBar tab={tab} onSelect={selectTab} />
 
       {tab === "overview" && <OverviewTab agent={agent} />}
 
@@ -500,6 +511,7 @@ function AgentDetail() {
           agentId={agent.id}
           runId={runId ?? agent.currentRunId ?? null}
           onOpenVersions={() => setTab("versions")}
+          onBack={() => selectTab("live")}
         />
       )}
 
@@ -2557,10 +2569,13 @@ export function LiveLog({
   agentId,
   runId,
   onOpenVersions,
+  onBack,
 }: {
   agentId: string;
   runId: string | null;
   onOpenVersions: () => void;
+  /** Back to the Live tab, whose technical view this is. */
+  onBack?: () => void;
 }) {
   const t = useT();
   const run = useRun(runId);
@@ -2594,6 +2609,16 @@ export function LiveLog({
       <Panel className="p-5">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                {t("Back to Live", "Zurück zu Live")}
+              </button>
+            )}
             <span
               className={cn(
                 "relative inline-flex h-2.5 w-2.5 rounded-full",

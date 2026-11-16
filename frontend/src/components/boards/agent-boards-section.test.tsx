@@ -17,6 +17,7 @@ function summary(over: Partial<BoardSummary> = {}): BoardSummary {
     recordCount: 2,
     lastRecordedAt: null,
     mayDelete: true,
+    mayRun: false,
     ...over,
   };
 }

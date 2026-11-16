@@ -36,6 +36,7 @@ function board(blocks: BoardBlock[]): Board {
     recordCount: 10,
     lastRecordedAt: null,
     mayDelete: true,
+    mayRun: false,
     specVersion: 1,
     spec: {
       datasets: [
@@ -256,7 +257,7 @@ describe("BoardView", () => {
     expect(screen.getByText("1–1 of 30")).toHaveAttribute("aria-live", "polite");
     // Newest first until a header is clicked.
     expect(spy.mock.lastCall?.[1]?.sort).toEqual({ field: "as_of", dir: "desc" });
-    expect(screen.getByRole("columnheader", { name: /Date/ })).toHaveAttribute(
+    expect(screen.getByRole("columnheader", { name: /As of/ })).toHaveAttribute(
       "aria-sort",
       "descending",
     );
@@ -270,6 +271,70 @@ describe("BoardView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Next page" }));
     expect(spy.mock.lastCall?.[1]?.page).toEqual({ offset: 10, limit: 10 });
     expect(screen.getByRole("button", { name: "Previous page" })).toBeEnabled();
+  });
+
+  it("labels the row date As of, so a board's own date field keeps its name", () => {
+    mockQueries(() => ({
+      data: result({ rows: [{ as_of: "2026-11-02T00:00:00+00:00", amount: 42 }], totalRows: 1 }),
+    }));
+    const b = board([{ type: "table", dataset: "sales", fields: ["day", "amount"], width: 12 }]);
+    b.spec.datasets[0].fields.push({ key: "day", label: "Date", type: "date" });
+    render(
+      <BoardView board={b} filters={DEFAULT_FILTERS} onFiltersChange={vi.fn()} today={today} />,
+    );
+    expect(screen.getAllByRole("columnheader", { name: /^Date/ })).toHaveLength(1);
+    expect(screen.getByRole("columnheader", { name: /As of/ })).toBeInTheDocument();
+  });
+
+  it("right-aligns numeric columns, zebra-stripes rows and shows categories as chips", () => {
+    mockQueries(() => ({
+      data: result({
+        rows: [
+          { as_of: "2026-11-02T00:00:00+00:00", amount: 42, region: "north" },
+          { as_of: "2026-11-01T00:00:00+00:00", amount: 7, region: "south" },
+        ],
+        totalRows: 2,
+      }),
+    }));
+    renderView([{ type: "table", dataset: "sales", fields: ["amount", "region"], width: 12 }]);
+
+    expect(screen.getByRole("columnheader", { name: /Amount/ })).toHaveClass("text-right");
+    expect(screen.getByRole("columnheader", { name: /Region/ })).not.toHaveClass("text-right");
+    expect(screen.getByText(/€\s?42[.,]00/)).toHaveClass("text-right", "tabular-nums");
+    expect(screen.getByText("north")).toHaveAttribute("data-chip");
+    expect(screen.getByText("south").closest("tr")?.className).toMatch(/even:bg-/);
+    const [head] = screen.getAllByRole("row");
+    expect(head.parentElement?.className).toMatch(/sticky/);
+  });
+
+  it("shows a KPI rise and fall with an arrow, not colour alone", () => {
+    const kpi = (change: number) => ({
+      data: result({
+        totals: [{ group: null, values: { amount: 120 } }],
+        compare: {
+          period: { from: "2026-10-01", to: "2026-11-01" },
+          series: [],
+          totals: [{ group: null, values: { amount: 100 } }],
+          change: [{ group: null, values: { amount: change } }],
+        },
+      }),
+    });
+    mockQueries(() => kpi(-0.1));
+    renderView([{ type: "kpi", dataset: "sales", field: "amount", width: 3 }]);
+    const badge = screen.getByText("-10%").closest("[data-trend]");
+    expect(badge).toHaveAttribute("data-trend", "down");
+    expect(badge?.querySelector("svg")).not.toBeNull();
+  });
+
+  it("sets each data block on a card, but not the filter bar", () => {
+    mockQueries(() => ({ data: result({ totals: [{ group: null, values: { amount: 1 } }] }) }));
+    renderView([
+      { type: "filter_bar", width: 12 },
+      { type: "kpi", dataset: "sales", field: "amount", width: 3 },
+    ]);
+    const [bar, kpi] = screen.getAllByTestId("board-block");
+    expect(bar.querySelector("[data-block-card]")).toBeNull();
+    expect(kpi.querySelector("[data-block-card]")).not.toBeNull();
   });
 
   it("changes the preset, the comparison and the reporting from the filter bar", () => {

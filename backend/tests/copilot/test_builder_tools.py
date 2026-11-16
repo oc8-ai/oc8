@@ -705,7 +705,30 @@ async def test_builder_options_lists_editable_boards(app_session: AppSessionFact
         assert f"- {board.id} | Kassenstand | Zahlenwerk | 1" in outcome.output
         assert "Grains: day | week | month | moment" in outcome.output
         assert "may only add datasets and fields" in outcome.output
+        assert "never store a precomputed total or count on each row" in outcome.output
+        assert "KPIs first" in outcome.output and "table last" in outcome.output
         assert "artifact" not in outcome.output, "Community: no artifact block"
+
+
+@pytest.mark.asyncio
+async def test_builder_options_says_schedules_run_in_utc_and_names_the_local_zone(
+    app_session: AppSessionFactory,
+) -> None:
+    """Agent schedules fire in UTC; the model must convert the person's time."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        org = await db.get(m.Organization, tenant)
+        if org is None:
+            org = m.Organization(id=tenant, slug=f"t-{tenant.hex[:8]}", name="T")
+            db.add(org)
+        org.timezone = "Europe/Berlin"
+        await db.flush()
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(db, office, run, task, "builder_options")
+        assert outcome is not None
+        assert "Schedules (schedule, cronExpression) run in UTC" in outcome.output
+        assert "Europe/Berlin (now UTC+0" in outcome.output
 
 
 @pytest.mark.asyncio

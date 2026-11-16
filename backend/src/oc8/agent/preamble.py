@@ -134,6 +134,10 @@ class RunPreamble:
     #: fetched on demand.
     has_instruction_files: bool = False
     copilot_permissions: frozenset[str] = frozenset()
+    #: The Copilot only: whether a member is behind this turn (not a wake-up
+    #: after a delegated sub-task, nor an operator in a colleague's session).
+    #: Without one, `memory_write` has nobody to note for and is not offered.
+    copilot_has_member: bool = False
     #: Whether the agent produces at least one live board: `board_write` is offered
     #: to it alone (see oc8.boards.mission).
     produces_board: bool = False
@@ -353,6 +357,11 @@ async def build_run_preamble(
     # limit in agent/blast_radius.py.
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
 
+    copilot_member = (
+        await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
+        if agent.is_tenant_assistant
+        else None
+    )
     memory_ctx = await retrieve_context(
         db,
         agent=agent,
@@ -361,11 +370,7 @@ async def build_run_preamble(
         query_text=task_text,
         model_locality=model_locality,
         narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
-        member_id=(
-            await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
-            if agent.is_tenant_assistant
-            else None
-        ),
+        member_id=copilot_member,
     )
     if memory_ctx:
         messages.append(NeutralMessage(role="system", content=memory_ctx))
@@ -488,6 +493,7 @@ async def build_run_preamble(
         has_knowledge=has_knowledge,
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        copilot_has_member=copilot_member is not None,
         produces_board=boards_text is not None,
         tz=tz_label,
     )

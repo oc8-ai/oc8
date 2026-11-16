@@ -330,3 +330,61 @@ async def test_followup_cannot_write_personal_notes(app_session: AppSessionFacto
             db, tenant, cop, task, web, "memory_write", {"tier": "agent", "content": "y"}
         )
         assert ok.startswith("memory recorded")
+
+
+def test_memory_write_is_withheld_from_a_copilot_turn_without_a_member() -> None:
+    """A wake-up after a delegated sub-task has no member behind it: offering
+    memory_write there only invites a call the dispatch refuses."""
+    from oc8.agent.control_tools import offered_tools
+
+    cop = m.Agent(
+        id=uuid.uuid4(), tenant_id=uuid.uuid4(), department_id=uuid.uuid4(),
+        name="Copilot", is_tenant_assistant=True, is_team_lead=True,
+    )  # fmt: skip
+    common: dict[str, Any] = {"assigned_skills": [], "active_skills": [], "mcp_tools": []}
+
+    def names(**kw: Any) -> set[str]:
+        return {t.name for t in offered_tools(cop, **common, **kw)}
+
+    assert "memory_write" in names(copilot_door="web", copilot_has_member=True)
+    assert "memory_write" not in names(copilot_door="web", copilot_has_member=False)
+    assert "memory_write" not in names(copilot_door="followup", copilot_has_member=True)
+    other = m.Agent(id=uuid.uuid4(), tenant_id=cop.tenant_id, department_id=uuid.uuid4())
+    plain = {t.name for t in offered_tools(other, **common, copilot_has_member=False)}
+    assert "memory_write" in plain, "only the Copilot keeps member-scoped notes"
+
+
+async def test_preamble_knows_whether_a_member_is_behind_the_copilot_turn(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.harness.caps import ModelCaps
+    from oc8.agent.preamble import build_run_preamble
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        lisa = await copilot_seat(db, tenant, "lisa@example.com")
+        task = await db.get(m.Task, lisa.task_id)
+        assert task is not None
+        own = await _notes_run(db, tenant, cop, lisa, door="web", originating_operator=lisa.subject)
+        # The lead's wake-up after a delegated sub-task runs on a task of its
+        # own, which no chat session opened (executor._maybe_wake_parent).
+        wake_task = m.Task(
+            tenant_id=tenant, department_id=cop.department_id, title="wake",
+            assigned_agent_id=cop.id,
+        )  # fmt: skip
+        db.add(wake_task)
+        await db.flush()
+        wake = await _notes_run(db, tenant, cop, lisa, door="web")
+        wake.task_id = wake_task.id
+        await db.flush()
+
+        async def preamble(t: m.Task, run: m.AgentRun) -> Any:
+            return await build_run_preamble(
+                db, agent=cop, tenant_id=tenant, task_text="x", frame={},
+                model_locality="eu", caps=ModelCaps(), max_steps=10, task=t, run_id=run.id,
+            )  # fmt: skip
+
+        assert (await preamble(task, own)).copilot_has_member is True
+        assert (await preamble(wake_task, wake)).copilot_has_member is False

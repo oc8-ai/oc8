@@ -26,7 +26,11 @@ import { BlockMessage, BlockStatus } from "./block-status";
 import { formatAsOf, formatCompact, formatValue } from "./board-format";
 import { chartData } from "./chart-data";
 
+// The theme's chart tokens, in their fixed order: a series keeps its colour
+// as long as it keeps its place.
 const color = (i: number) => `var(--chart-${(i % 5) + 1})`;
+// Room for the first and last tick labels, none wasted at the top.
+const CHART_MARGIN = { top: 4, right: 8, bottom: 0, left: 0 };
 
 /** A line, bar or area chart of fields over time. */
 export function ChartBlock({
@@ -112,21 +116,26 @@ function ChartBody({
   };
   const axes = (
     <>
+      {/* Recessive: hairline horizontal grid, no axis lines, small muted ticks. */}
       <CartesianGrid vertical={false} />
       <XAxis
         dataKey="asOf"
         tickLine={false}
         axisLine={false}
         tickFormatter={tick}
-        minTickGap={16}
+        tick={{ fontSize: 11 }}
+        tickMargin={6}
+        minTickGap={24}
       />
       <YAxis
         tickLine={false}
         axisLine={false}
-        width={40}
+        width={44}
+        tick={{ fontSize: 11 }}
         tickFormatter={(v: number) => formatCompact(v, lang)}
       />
       <ChartTooltip
+        cursor={block.type === "bar" ? undefined : { strokeWidth: 1 }}
         content={
           <ChartTooltipContent labelFormatter={(v) => tick(String(v))} formatter={tooltipRow} />
         }
@@ -138,14 +147,21 @@ function ChartBody({
     <div className="flex min-w-0 flex-col gap-2 px-3 pb-3">
       <ChartContainer className="aspect-auto h-48 w-full" config={config}>
         {block.type === "bar" ? (
-          <BarChart data={rows}>
+          <BarChart data={rows} barGap={2} margin={CHART_MARGIN}>
             {axes}
             {series.map((s) => (
-              <Bar key={s.key} dataKey={s.key} fill={`var(--color-${s.key})`} radius={2} />
+              // Thin bars with rounded data ends, square at the baseline.
+              <Bar
+                key={s.key}
+                dataKey={s.key}
+                fill={`var(--color-${s.key})`}
+                radius={[4, 4, 0, 0]}
+                maxBarSize={24}
+              />
             ))}
           </BarChart>
         ) : block.type === "area" ? (
-          <AreaChart data={rows}>
+          <AreaChart data={rows} margin={CHART_MARGIN}>
             {axes}
             {series.map((s) => (
               <Area
@@ -154,13 +170,14 @@ function ChartBody({
                 type="monotone"
                 stroke={`var(--color-${s.key})`}
                 fill={`var(--color-${s.key})`}
-                fillOpacity={0.15}
+                fillOpacity={0.1}
                 strokeWidth={2}
+                activeDot={{ r: 4, strokeWidth: 2, stroke: "var(--panel)" }}
               />
             ))}
           </AreaChart>
         ) : (
-          <LineChart data={rows}>
+          <LineChart data={rows} margin={CHART_MARGIN}>
             {axes}
             {series.map((s) => (
               <Line
@@ -170,6 +187,7 @@ function ChartBody({
                 stroke={`var(--color-${s.key})`}
                 strokeWidth={2}
                 dot={false}
+                activeDot={{ r: 4, strokeWidth: 2, stroke: "var(--panel)" }}
               />
             ))}
           </LineChart>

@@ -37,14 +37,22 @@ export function BoardView({
   const { spec } = board;
   return (
     <div className="@container min-w-0">
-      <div className="grid min-w-0 grid-cols-12 gap-x-3 gap-y-2">
+      <div className="grid min-w-0 grid-cols-12 gap-3 px-3">
         {spec.blocks.map((block, i) => (
           <div
             key={i}
             data-testid="board-block"
             className={`col-span-12 min-w-0 ${SPAN[block.width ?? 6] ?? SPAN[12]}`}
           >
-            {renderBlock(block, board, filters, onFiltersChange, today)}
+            {block.type === "filter_bar" ? (
+              renderBlock(block, board, filters, onFiltersChange, today)
+            ) : (
+              // Each data block on its own quiet card: a fill, not a border,
+              // so the tile frame stays the only bordered box.
+              <div data-block-card className="h-full min-w-0 rounded-lg bg-muted/50">
+                {renderBlock(block, board, filters, onFiltersChange, today)}
+              </div>
+            )}
           </div>
         ))}
       </div>

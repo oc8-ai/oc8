@@ -3,13 +3,19 @@ import { useState } from "react";
 
 import { WidgetTitle } from "@/components/dashboard/widget-title";
 import { useBoardQuery } from "@/lib/boards-api";
-import type { BoardQuery, DatasetSpec, TableBlock as TableSpec } from "@/lib/boards-api";
+import type { BoardQuery, DatasetSpec, FieldSpec, TableBlock as TableSpec } from "@/lib/boards-api";
 import { useLang, useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 
 import { BlockMessage, BlockStatus } from "./block-status";
-import { formatAsOf, formatValue } from "./board-format";
+import { formatAsOf, formatValue, NO_VALUE } from "./board-format";
 
 type Sort = { field: string; dir: "asc" | "desc" };
+
+/** Numbers, money and percentages line up on the right, digit under digit. */
+function isNumeric(field: FieldSpec | undefined): boolean {
+  return field?.type === "number" || field?.type === "money" || field?.type === "percent";
+}
 
 /** A dataset's rows, paged and sorted on the server. */
 export function TableBlock({
@@ -54,12 +60,14 @@ export function TableBlock({
   };
   const goTo = (offset: number) => setView({ ...current, offset });
 
+  // The row's own date is "As of", not "Date": a dataset often has a date
+  // field of its own, and two columns named "Date" can't be told apart.
   const columns = [
-    { key: "as_of", label: t("Date", "Datum") },
-    ...block.fields.map((key) => ({
-      key,
-      label: dataset.fields.find((f) => f.key === key)?.label ?? key,
-    })),
+    { key: "as_of", label: t("As of", "Stand"), field: undefined as FieldSpec | undefined },
+    ...block.fields.map((key) => {
+      const field = dataset.fields.find((f) => f.key === key);
+      return { key, label: field?.label ?? key, field };
+    }),
   ];
   const total = data?.totalRows ?? 0;
   const rows = data?.rows ?? [];
@@ -75,12 +83,14 @@ export function TableBlock({
           </BlockMessage>
         ) : (
           <div className="flex min-w-0 flex-col gap-1 px-3 pb-2">
-            <div className="min-w-0 overflow-x-auto">
+            {/* Scrolls inside itself, so the header can stay in view. */}
+            <div className="max-h-80 min-w-0 overflow-auto rounded-md">
               <table className="w-full text-xs">
-                <thead>
+                <thead className="sticky top-0 z-10 bg-muted">
                   <tr>
                     {columns.map((c) => {
                       const sorted = current.sort?.field === c.key ? current.sort.dir : null;
+                      const numeric = isNumeric(c.field);
                       return (
                         <th
                           key={c.key}
@@ -92,12 +102,18 @@ export function TableBlock({
                                 ? "descending"
                                 : "none"
                           }
-                          className="py-1 pr-3 text-left font-medium text-muted-foreground"
+                          className={cn(
+                            "px-2 py-1.5 font-medium whitespace-nowrap text-muted-foreground",
+                            numeric ? "text-right" : "text-left",
+                          )}
                         >
                           <button
                             type="button"
                             onClick={() => toggleSort(c.key)}
-                            className="inline-flex items-center gap-1 hover:text-foreground"
+                            className={cn(
+                              "inline-flex items-center gap-1 hover:text-foreground",
+                              numeric && "flex-row-reverse",
+                            )}
                           >
                             {c.label}
                             {sorted === "asc" && <ArrowUp aria-hidden className="size-3" />}
@@ -110,24 +126,44 @@ export function TableBlock({
                 </thead>
                 <tbody>
                   {rows.map((row, i) => (
-                    <tr key={i}>
+                    <tr key={i} className="even:bg-muted/50">
                       {columns.map((c) => {
-                        const field = dataset.fields.find((f) => f.key === c.key);
                         const value = row[c.key];
-                        const numeric =
-                          field?.type === "number" ||
-                          field?.type === "money" ||
-                          field?.type === "percent";
+                        if (c.key === "as_of") {
+                          return (
+                            <td
+                              key={c.key}
+                              className="px-2 py-1.5 whitespace-nowrap text-muted-foreground tabular-nums"
+                            >
+                              {typeof value === "string"
+                                ? formatAsOf(value, dataset.grain, lang)
+                                : formatValue(value, undefined, lang)}
+                            </td>
+                          );
+                        }
+                        const text = formatValue(value, c.field, lang);
+                        if (isNumeric(c.field)) {
+                          return (
+                            <td
+                              key={c.key}
+                              className="px-2 py-1.5 text-right whitespace-nowrap tabular-nums"
+                            >
+                              {text}
+                            </td>
+                          );
+                        }
                         return (
-                          <td
-                            key={c.key}
-                            className={
-                              numeric ? "py-1 pr-3 text-right font-mono tabular-nums" : "py-1 pr-3"
-                            }
-                          >
-                            {c.key === "as_of" && typeof value === "string"
-                              ? formatAsOf(value, dataset.grain, lang)
-                              : formatValue(value, field, lang)}
+                          <td key={c.key} className="px-2 py-1.5">
+                            {c.field?.type === "category" && text !== NO_VALUE ? (
+                              <span
+                                data-chip
+                                className="inline-block max-w-40 truncate rounded-full bg-foreground/[0.07] px-2 py-0.5 align-middle"
+                              >
+                                {text}
+                              </span>
+                            ) : (
+                              text
+                            )}
                           </td>
                         );
                       })}

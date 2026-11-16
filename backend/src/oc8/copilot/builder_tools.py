@@ -26,6 +26,7 @@ from oc8.agent.control_tools import (
     _acting_token_role,
     _resolve_agent_actor,
 )
+from oc8.agent.harness.prompts import resolve_timezone
 from oc8.agents.repo import visible_agents
 from oc8.authz.authority import Authority, authority_for_member, tenant_wide_read
 from oc8.authz.permissions import AGENT as AGENT_RESOURCE
@@ -171,6 +172,18 @@ _ADDITIVE = (
     "boardId) may only add datasets and fields: never remove one or change its "
     "grain, type or currency."
 )
+#: How the figures add up and what a good board looks like: the model otherwise
+#: stamps a batch total on every row and lays out a bare table.
+_DESIGN = (
+    "A kpi sums its field over the period's rows (percent: averages), so never "
+    "store a precomputed total or count on each row: to count rows use a number "
+    "field set to 1 per row; a headline figure that is not a sum of rows gets its "
+    "own dataset with one row per period. Design: KPIs first (width 3 or 4), at "
+    "least one chart (line or area over time for a trend, bar with split_by a "
+    "category for a breakdown), table last (width 12) with the most useful "
+    "fields, a filter_bar when there is a category to filter by, and a note "
+    "block if the agent writes notes."
+)
 
 
 async def _board_lines(
@@ -205,6 +218,7 @@ async def _board_lines(
     )
     artifact = await tenant_has_capability(tenant_id, ENTERPRISE_CANVAS)
     lines.append(_CATALOGUE + (_ARTIFACT_BLOCK if artifact else "") + ". " + _ADDITIVE)
+    lines.append(_DESIGN)
     return lines
 
 
@@ -310,8 +324,22 @@ async def builder_options_text(
     )
     lines.append("Skills (skillVersionId | name):")
     lines.extend(f"- {s.current_version_id} | {one_line(s.name, 80)}" for s in skills)
+    lines.append(await _schedule_line(db, tenant_id))
     lines.extend(await _board_lines(db, tenant_id=tenant_id, actor=actor, authority=authority))
     return fence("\n".join(lines), tag="builder_options")
+
+
+async def _schedule_line(db: AsyncSession, tenant_id: uuid.UUID) -> str:
+    """Agent schedules fire in UTC (triggers.service.compute_next_run) and the
+    card shows them in UTC, so the model converts the person's local time."""
+    org = await db.get(m.Organization, tenant_id)
+    label, zone = resolve_timezone(org.timezone if org is not None else "UTC")
+    offset = dt.datetime.now(zone).strftime("%z")
+    return (
+        "Schedules (schedule, cronExpression) run in UTC. This organisation's "
+        f"timezone: {label} (now UTC{offset[:3]}:{offset[3:]}). Convert the time "
+        "the person means to UTC and tell them the time in their own timezone."
+    )
 
 
 async def execute_builder_tool(

@@ -695,7 +695,10 @@ BOARD_WRITE = NeutralTool(
         "(a single record) or `rows` (a list of records). Always report the "
         "COMPLETE period: the latest write for a dataset and period replaces "
         "the earlier ones on the dashboard, so a partial write hides the rest. "
-        "Use only the fields the dashboard declares, with their types."
+        "Use only the fields the dashboard declares, with their types. The "
+        "dashboard sums each figure over the period's rows itself (percent: "
+        "averages), so never put a precomputed total or count on each row: to "
+        "count rows, set a number field to 1 per row."
     ),
     parameters={
         "type": "object",
@@ -886,7 +889,7 @@ _BUILDER_OPERATION = {
         "skillVersionId": {**_ID, "description": "agent.skill.assign: id from builder_options."},
         "kind": {"type": "string", "enum": ["cron", "event"], "description": "trigger.create."},
         "taskText": {**_TEXT, "description": "trigger.create: what each run does."},
-        "cronExpression": {"type": "string", "description": "trigger.create with kind cron."},
+        "cronExpression": {"type": "string", "description": "trigger.create, kind cron; in UTC."},
         "eventSource": {"type": "string", "description": "trigger.create with kind event."},
         "eventType": {"type": "string", "description": "trigger.create with kind event."},
         "connectionName": {
@@ -964,7 +967,10 @@ PROPOSE_AGENT = NeutralTool(
             },
             "schedule": {
                 "type": "string",
-                "description": "When it runs on its own, as a cron expression, e.g. 0 7 * * 1-5.",
+                "description": (
+                    "When it runs on its own, as a cron expression in UTC, e.g. 0 6 * * 1-5 "
+                    "(see builder_options for the person's timezone)."
+                ),
             },
             "eventSource": {"type": "string", "description": "Runs when this source reports"},
             "eventType": {"type": "string", "description": "...this event type."},
@@ -1420,6 +1426,7 @@ def offered_tools(
     edition_tools: Sequence[NeutralTool] = (),
     offer_direct_access: bool = False,
     produces_board: bool = False,
+    copilot_has_member: bool = True,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -1446,6 +1453,11 @@ def offered_tools(
 
     `has_context` is `has_readable_context(run.context)`: read_context is
     offered only to a chat turn with something readable pinned to it.
+
+    `copilot_has_member` is `RunPreamble.copilot_has_member`: a Copilot turn
+    with nobody behind it (a wake-up after a delegated sub-task) or a
+    follow-up has no one to keep personal notes for, so memory_write is not
+    offered there. The dispatch refuses it as well.
 
     `edition_tools` are the edition tools offered on this run
     (`oc8.edition.tools.edition_offer`); a writing one is dropped in a
@@ -1479,6 +1491,8 @@ def offered_tools(
         READ_RESOURCE,
         READ_RUN_FILE,
     ]
+    if agent.is_tenant_assistant and (not copilot_has_member or copilot_door == "followup"):
+        offered.remove(MEMORY_WRITE)
     if offer_write_output_file:
         offered.append(WRITE_OUTPUT_FILE)
     # Only a producing agent has a board to write; the writer checks which one.

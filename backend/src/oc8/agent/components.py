@@ -14,7 +14,9 @@ consulted).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RecordCardField(BaseModel):
@@ -52,6 +54,35 @@ class DataTableProps(BaseModel):
     columns: list[DataTableColumn] = Field(..., min_length=1, max_length=20)
     rows: list[dict[str, str]] = Field(default_factory=list, max_length=500)
     caption: str | None = Field(default=None, max_length=500)
+
+    # Models often send a column as just its heading and cells as raw numbers;
+    # accept both rather than burning a retry on a display-only shape.
+    @field_validator("columns", mode="before")
+    @classmethod
+    def _plain_columns(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [{"key": c, "label": c} if isinstance(c, str) else c for c in value]
+
+    @field_validator("rows", mode="before")
+    @classmethod
+    def _scalar_cells(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [
+            {k: _cell_text(v) for k, v in row.items()} if isinstance(row, dict) else row
+            for row in value
+        ]
+
+
+def _cell_text(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return value
 
 
 class ChartSeries(BaseModel):

@@ -202,3 +202,56 @@ async def test_row_cap_is_per_tenant(
         agent2, board2 = await _seed(db, other_tenant)
         batch = await _write(db, other_tenant, agent2, board2, [{"amount": 1}, {"amount": 2}])
         assert batch.row_count == 2
+
+
+_TOTALS_SPEC: dict[str, Any] = {
+    "datasets": [
+        {
+            "key": "sales",
+            "label": "Sales",
+            "grain": "day",
+            "fields": [
+                {"key": "amount", "label": "Amount", "type": "money", "currency": "EUR"},
+                {"key": "total_amount", "label": "Total", "type": "money", "currency": "EUR"},
+                {"key": "count", "label": "Count", "type": "number"},
+                {"key": "customer", "label": "Customer", "type": "category"},
+            ],
+        }
+    ],
+    "blocks": [{"type": "kpi", "dataset": "sales", "field": "total_amount"}],
+}
+
+
+async def test_a_batch_total_repeated_on_every_row_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, board = await _seed(db, tenant)
+        board.spec = _TOTALS_SPEC
+        await db.flush()
+        rows: list[dict[str, object]] = [
+            {"amount": 100.5, "total_amount": 350.75, "customer": "A"},
+            {"amount": 200.25, "total_amount": 350.75, "customer": "B"},
+            {"amount": 50.0, "total_amount": 350.75, "customer": "C"},
+        ]
+        with pytest.raises(BoardWriteRefused) as exc:
+            await _write(db, tenant, agent, board, rows)
+        assert exc.value.code == "repeated_total"
+        message = str(exc.value)
+        assert "'total_amount'" in message and "'amount'" in message
+        assert "350" not in message
+        assert await _counts(db) == (0, 0)
+
+
+async def test_equal_per_row_values_that_are_not_a_total_are_accepted(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, board = await _seed(db, tenant)
+        board.spec = _TOTALS_SPEC
+        await db.flush()
+        rows: list[dict[str, object]] = [{"amount": 269.1, "count": 1}] * 3
+        batch = await _write(db, tenant, agent, board, rows)
+        assert batch.row_count == 3

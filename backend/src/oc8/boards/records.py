@@ -7,6 +7,7 @@ earlier batches stay, so "first reported" remains answerable.
 from __future__ import annotations
 
 import datetime as dt
+import math
 import uuid
 from collections.abc import Mapping, Sequence
 
@@ -14,7 +15,14 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import oc8.models as m
-from oc8.boards.spec import BoardSpecInvalid, normalize_as_of, parse_board_spec, validate_values
+from oc8.boards.spec import (
+    NUMERIC_TYPES,
+    BoardSpecInvalid,
+    DatasetSpec,
+    normalize_as_of,
+    parse_board_spec,
+    validate_values,
+)
 from oc8.config import get_settings
 
 MAX_BATCH_ROWS = 500
@@ -26,6 +34,39 @@ class BoardWriteRefused(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def _refuse_repeated_total(ds: DatasetSpec, rows: Sequence[Mapping[str, object]]) -> None:
+    """Refuse a batch that stamps its own total on every row.
+
+    A KPI sums a field over the period's rows, so a total repeated on each row
+    would be counted once per row.
+    """
+    if len(rows) < 2:
+        return
+    numbers: dict[str, list[float]] = {}
+    for f in ds.fields:
+        if f.type not in NUMERIC_TYPES:
+            continue
+        cells = [r.get(f.key) for r in rows]
+        values = [float(v) for v in cells if isinstance(v, int | float)]
+        if len(values) == len(cells):
+            numbers[f.key] = values
+    sums = {k: math.fsum(values) for k, values in numbers.items()}
+    for f in ds.fields:
+        # A percent KPI averages, so a repeated percent is harmless.
+        repeated = numbers.get(f.key)
+        if repeated is None or f.type == "percent" or repeated[0] == 0:
+            continue
+        if len(set(repeated)) != 1:
+            continue
+        for other, total in sums.items():
+            if other != f.key and abs(total - repeated[0]) <= 0.005:
+                raise BoardWriteRefused(
+                    "repeated_total",
+                    f"Field '{f.key}' repeats the batch total in every row; the dashboard "
+                    f"adds rows up itself. Leave it out and point the KPI at '{other}'.",
+                )
 
 
 async def write_batch(
@@ -87,6 +128,7 @@ async def write_batch(
             clean.append(validate_values(ds, row))
         except BoardSpecInvalid as exc:
             raise BoardWriteRefused("invalid_values", f"Row {i + 1}: {exc}") from None
+    _refuse_repeated_total(ds, clean)
 
     # The board lock serialises writers of one board; the advisory lock serialises
     # the cap check across all of a tenant's boards.

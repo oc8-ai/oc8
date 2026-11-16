@@ -2,8 +2,10 @@
 // board's id and the person's filters (`{boardId, filters}`); the board itself
 // is read through `/boards`, so access is checked on every read: a person who
 // lost access sees "No access" -- never the title -- on the next fetch.
-import { Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { RefreshCw, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 
 import { BlockMessage } from "@/components/boards/block-status";
 import { DEFAULT_FILTERS, type BoardFilterState } from "@/components/boards/board-filters";
@@ -11,8 +13,11 @@ import { BoardView } from "@/components/boards/board-view";
 import { DeleteBoardDialog } from "@/components/boards/delete-board-dialog";
 import { WidgetTitle } from "@/components/dashboard/widget-title";
 import { ApiError } from "@/lib/api";
-import { useBoard, useBoardDeleted } from "@/lib/boards-api";
+import { boardKeys, useBoard, useBoardDeleted } from "@/lib/boards-api";
+import type { Board } from "@/lib/boards-api";
+import { isTerminalRunState, useRun, useRunAgent } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
+import { cn } from "@/lib/utils";
 
 function boardIdOf(config: Record<string, unknown>): string {
   return typeof config.boardId === "string" ? config.boardId : "";
@@ -90,14 +95,21 @@ export function DataBoardWidget({
 
   return (
     <div className="flex h-full min-w-0 flex-col">
-      <WidgetTitle title={board.title} />
+      <WidgetTitle
+        title={board.title}
+        actions={
+          board.mayRun && board.agentId && !board.stale ? (
+            <RefreshBoardButton board={board} agentId={board.agentId} />
+          ) : undefined
+        }
+      />
       {board.stale && (
         <p className="shrink-0 px-3 pb-1 text-xs text-[color:var(--status-warning)]">
           {t("No longer updated", "Wird nicht mehr aktualisiert")}
         </p>
       )}
-      {/* No side padding: each block pads itself (px-3) like the title, so
-          block titles line up with the tile's. */}
+      {/* No side padding: the board pads its grid (px-3) like the title, so
+          its cards line up with the tile's title. */}
       <div
         data-testid="board-body"
         className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto pb-3"
@@ -109,6 +121,58 @@ export function DataBoardWidget({
         />
       </div>
     </div>
+  );
+}
+
+/** Asks the board's agent for a run that refreshes it. Busy from the click
+ *  until that run ends; then the board and its data are read again, and a
+ *  run that did not finish says so. */
+function RefreshBoardButton({ board, agentId }: { board: Board; agentId: string }) {
+  const t = useT();
+  const qc = useQueryClient();
+  const runAgent = useRunAgent();
+  const [runId, setRunId] = useState<string | null>(null);
+  const state = useRun(runId).data?.state;
+  const boardId = board.id;
+
+  useEffect(() => {
+    if (!runId || !state || !isTerminalRunState(state)) return;
+    setRunId(null);
+    // The board (its record count) and every query of its blocks: all of
+    // them sit under `["boards", id]`. The lists show the count too.
+    void qc.invalidateQueries({ queryKey: boardKeys.one(boardId) });
+    void qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true });
+    if (state !== "done") toast.error(t("Couldn't refresh", "Aktualisierung fehlgeschlagen"));
+  }, [runId, state, boardId, qc, t]);
+
+  const busy = runAgent.isPending || runId !== null;
+  const label = t("Refresh data", "Daten aktualisieren");
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      aria-busy={busy}
+      onClick={() =>
+        runAgent.mutate(
+          {
+            agentId,
+            task: t(
+              `Refresh the dashboard "${board.title}" with current data.`,
+              `Aktualisiere das Dashboard „${board.title}“ mit aktuellen Daten.`,
+            ),
+          },
+          {
+            onSuccess: (run) => setRunId(run.id),
+            onError: () => toast.error(t("Couldn't refresh", "Aktualisierung fehlgeschlagen")),
+          },
+        )
+      }
+      aria-label={label}
+      title={busy ? t("Updating…", "Wird aktualisiert …") : label}
+      className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground transition hover:bg-muted/40 hover:text-foreground disabled:cursor-default disabled:hover:bg-transparent"
+    >
+      <RefreshCw className={cn("h-3.5 w-3.5", busy && "animate-spin")} />
+    </button>
   );
 }
 

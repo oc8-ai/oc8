@@ -441,3 +441,35 @@ async def test_delete_is_audited(app_session: AppSessionFactory) -> None:
     assert events[0].resource["board_id"] == str(o.finance_board)
     assert events[0].resource["department_id"] == str(o.finance)
     assert events[0].resource["by"] == "boss"
+
+
+async def test_may_run_follows_the_run_start_door(app_session: AppSessionFactory) -> None:
+    """`mayRun` is true exactly where POST /agents/{agentId}/run would start the
+    producing agent: run:start (tenant-wide, every role that has it) and an
+    agent the caller reaches."""
+    o = await _office(app_session)
+    async with _http() as c:
+        admin = await c.get("/api/v1/boards", headers=_headers(o.tenant, "boss", "org_admin"))
+        ops = await c.get("/api/v1/boards", headers=_headers(o.tenant, "ops", "operator"))
+        seat = await c.get("/api/v1/boards", headers=_headers(o.tenant, "fin-member", "member"))
+        one = await c.get(
+            f"/api/v1/boards/{o.finance_board}", headers=_headers(o.tenant, "boss", "org_admin")
+        )
+    assert all(b["mayRun"] is True for b in admin.json())
+    assert all(b["mayRun"] is True for b in ops.json())
+    assert [b["mayRun"] for b in seat.json()] == [False], "a viewer seat cannot start runs"
+    assert one.json()["mayRun"] is True
+
+
+async def test_may_run_is_false_without_a_live_producer(app_session: AppSessionFactory) -> None:
+    o = await _office(app_session)
+    async with app_session(o.tenant) as db:
+        agent = (await db.execute(select(m.Agent).where(m.Agent.id == o.agent))).scalar_one()
+        agent.deleted_at = dt.datetime.now(dt.UTC)
+        await db.execute(
+            update(m.DataBoard).where(m.DataBoard.id == o.sales_board).values(agent_id=None)
+        )
+    async with _http() as c:
+        r = await c.get("/api/v1/boards", headers=_headers(o.tenant, "boss", "org_admin"))
+    assert r.status_code == 200, r.text
+    assert [b["mayRun"] for b in r.json()] == [False, False]
