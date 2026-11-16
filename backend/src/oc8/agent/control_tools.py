@@ -767,7 +767,8 @@ PROPOSE_CHANGE = NeutralTool(
                     "fields per operation_type, optional ones in brackets: "
                     "agent.mission.set: agentId (uuid), mission (text). "
                     "trigger.create: agentId (uuid), kind ('cron' or "
-                    "'event'), taskText (text), [cronExpression, "
+                    "'event'), taskText (text), [cronExpression (local "
+                    "time), timezone (IANA name; default the organisation's), "
                     "eventSource, eventType]. "
                     "plugin.enable: pluginId (uuid), [grantedPermissions "
                     "(list of strings)]. "
@@ -889,7 +890,17 @@ _BUILDER_OPERATION = {
         "skillVersionId": {**_ID, "description": "agent.skill.assign: id from builder_options."},
         "kind": {"type": "string", "enum": ["cron", "event"], "description": "trigger.create."},
         "taskText": {**_TEXT, "description": "trigger.create: what each run does."},
-        "cronExpression": {"type": "string", "description": "trigger.create, kind cron; in UTC."},
+        "cronExpression": {
+            "type": "string",
+            "description": "trigger.create, kind cron; in the person's local time.",
+        },
+        "timezone": {
+            "type": "string",
+            "description": (
+                "trigger.create, kind cron: IANA zone, e.g. Europe/Berlin; "
+                "leave out for the organisation's timezone."
+            ),
+        },
         "eventSource": {"type": "string", "description": "trigger.create with kind event."},
         "eventType": {"type": "string", "description": "trigger.create with kind event."},
         "connectionName": {
@@ -931,7 +942,8 @@ PROPOSE_AGENT = NeutralTool(
         "it yourself. Pass the agent's fields directly: departmentId (or "
         "newDepartment, when builder_options allows it and no department fits), name, "
         "roleTitle, mission, and optionally modelId, skillIds, schedule (a cron "
-        "expression), eventSource/eventType, taskText, systems and limits. Use "
+        "expression in local time) and timezone, eventSource/eventType, taskText, "
+        "systems and limits. Use "
         "only ids and systems from builder_options. Calling it again replaces "
         "your previous proposal in this conversation. (Instead of the fields you "
         'may pass `operations`: agent.create with ref "$new" first, then each '
@@ -968,8 +980,16 @@ PROPOSE_AGENT = NeutralTool(
             "schedule": {
                 "type": "string",
                 "description": (
-                    "When it runs on its own, as a cron expression in UTC, e.g. 0 6 * * 1-5 "
-                    "(see builder_options for the person's timezone)."
+                    "When it runs on its own, as a cron expression in the person's "
+                    "local time, e.g. 0 7 * * 1-5 for weekdays at 7:00."
+                ),
+            },
+            "timezone": {
+                "type": "string",
+                "description": (
+                    "The IANA zone the schedule is read in, e.g. Europe/Berlin -- only "
+                    "when the person is not in the organisation's timezone "
+                    "(see builder_options)."
                 ),
             },
             "eventSource": {"type": "string", "description": "Runs when this source reports"},

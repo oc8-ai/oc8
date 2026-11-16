@@ -22,6 +22,8 @@ export interface BuilderChoiceDTO {
 export interface BuilderTriggerDTO {
   kind: string;
   cronExpression: string | null;
+  /** The zone the schedule will run in (cron only); null reads as UTC. */
+  timezone?: string | null;
   eventSource: string | null;
   eventType: string | null;
   taskText: string;

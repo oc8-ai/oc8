@@ -19,7 +19,7 @@ import {
   type BuilderBoardDTO,
   type BuilderTriggerDTO,
 } from "@/lib/agent-builder-api";
-import { describeCron } from "@/lib/describe-cron";
+import { describeSchedule } from "@/lib/describe-cron";
 import { useMay } from "@/lib/governance-hooks";
 import { useRunAgent } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
@@ -28,8 +28,9 @@ import { cn } from "@/lib/utils";
 
 function whenText(trigger: BuilderTriggerDTO, t: Translate): string {
   if (trigger.kind === "cron" && trigger.cronExpression) {
-    // The scheduler fires crons in UTC (triggers/service.compute_next_run).
-    return describeCron(trigger.cronExpression, t, "UTC");
+    // The zone the schedule will run in: the one proposed, else the
+    // organisation's (the server fills it in); none reads as UTC.
+    return describeSchedule(trigger.cronExpression, trigger.timezone, t);
   }
   if (trigger.kind === "event") {
     return t(

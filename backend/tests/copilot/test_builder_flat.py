@@ -119,6 +119,30 @@ def test_the_flat_form_expands_to_the_explicit_operations() -> None:
     assert _stored(proposal_operations(_flat(), frame=FRAME)) == _stored(_explicit())
 
 
+def test_a_schedule_can_name_its_timezone() -> None:
+    """Without one the trigger takes the organisation's when it is created."""
+    explicit = _explicit()
+    explicit[3] = {**explicit[3], "timezone": "America/New_York"}
+    flat = _flat(timezone="America/New_York")
+    assert flat_operations(flat, frame=FRAME) == explicit
+    assert _stored(proposal_operations(flat, frame=FRAME))[3]["timezone"] == "America/New_York"
+    assert _stored(_explicit())[3].get("timezone") is None
+    jsonschema.Draft202012Validator(PROPOSE_AGENT.parameters).validate(flat)
+    jsonschema.Draft202012Validator(PROPOSE_AGENT.parameters).validate({"operations": explicit})
+
+
+def test_the_schedule_texts_ask_for_local_time_not_utc() -> None:
+    from oc8.agent.control_tools import _BUILDER_OPERATION
+
+    schedule = PROPOSE_AGENT.parameters["properties"]["schedule"]["description"]
+    cron = _BUILDER_OPERATION["properties"]["cronExpression"]["description"]
+    for text in (schedule, cron):
+        assert "UTC" not in text
+        assert "local time" in text
+    assert "timezone" in PROPOSE_AGENT.parameters["properties"]
+    assert "timezone" in _BUILDER_OPERATION["properties"]
+
+
 def test_a_flat_event_trigger_and_an_own_task_text() -> None:
     ops = flat_operations(
         _flat(schedule=None, eventSource="odoo", eventType="invoice.created", taskText="Prüfe sie.")
@@ -183,6 +207,7 @@ def test_a_bad_create_field_is_refused_like_the_explicit_form(
         ({"modelId": "not-an-id"}, 1),
         ({"skillIds": ["not-an-id"]}, 2),
         ({"schedule": "x" * 300}, 3),
+        ({"timezone": "Mars/Olympus"}, 3),
         ({"limits": [{"system": "odoo", "function": "f", "decision": "maybe"}]}, 5),
         ({"limits": [{"system": "odoo", "function": "f", "decision": "not_allowed", "x": 1}]}, 5),
     ],

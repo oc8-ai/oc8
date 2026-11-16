@@ -54,6 +54,7 @@ const draft: AgentBuilderDTO = {
     {
       kind: "cron",
       cronExpression: "0 7 * * 1-5",
+      timezone: "Europe/Berlin",
       eventSource: null,
       eventType: null,
       taskText: "Prüfe die offenen Rechnungen.",
@@ -109,6 +110,12 @@ beforeEach(() => {
 });
 
 describe("AgentBuilderCard", () => {
+  it("reads a schedule without a zone as UTC", () => {
+    m.card = { ...draft, triggers: [{ ...draft.triggers[0], timezone: null }] };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Every weekday at 7:00 (UTC)")).toBeInTheDocument();
+  });
+
   it("shows what will be created and creates it", () => {
     m.card = draft;
     render(<AgentBuilderCard proposalId="p1" />);
@@ -117,8 +124,8 @@ describe("AgentBuilderCard", () => {
     expect(screen.getByText("Mistral")).toBeInTheDocument();
     expect(screen.getByText("Rechnungen prüfen")).toBeInTheDocument();
     expect(screen.getByText("odoo")).toBeInTheDocument();
-    // The schedule in plain words, not the cron.
-    expect(screen.getByText("Every weekday at 7:00 UTC")).toBeInTheDocument();
+    // The schedule in plain words with the zone it runs in, not the cron.
+    expect(screen.getByText("Every weekday at 7:00 (Europe/Berlin)")).toBeInTheDocument();
     expect(screen.queryByText(/0 7 \* \* 1-5/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Create this agent" }));
     expect(m.apply).toHaveBeenCalled();
@@ -353,7 +360,7 @@ describe("AgentBuilderCard for a dashboard", () => {
     m.card = { ...draft, board: boardDraft.board };
     render(<AgentBuilderCard proposalId="p1" />);
     expect(screen.getByText("Rechnungsprüfer")).toBeInTheDocument();
-    expect(screen.getByText("Every weekday at 7:00 UTC")).toBeInTheDocument();
+    expect(screen.getByText("Every weekday at 7:00 (Europe/Berlin)")).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Dashboard" })).toHaveTextContent("Umsatz");
   });
 

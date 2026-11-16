@@ -1,7 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { CopilotSettingsPanel, MailServerSetting } from "@/routes/settings";
+import { CopilotSettingsPanel, MailServerSetting, OrganizationPanel } from "@/routes/settings";
 vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => true }));
 import type { CredentialDTO, OrganizationSettingsDTO } from "@/lib/hooks";
 
@@ -228,5 +228,32 @@ describe("CopilotSettingsPanel", () => {
     fireEvent.change(input, { target: { value: "7" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
     await waitFor(() => expect(putCopilotMock).toHaveBeenCalledWith({ maxActiveFollowups: 7 }));
+  });
+});
+
+describe("OrganizationPanel timezone", () => {
+  it("shows the organisation's timezone, PUTs a new one and refreshes /me", async () => {
+    getOrgMock.mockResolvedValue({ ...ORG, timezone: "UTC" });
+    putOrgMock.mockReset();
+    putOrgMock.mockResolvedValue({ ...ORG, timezone: "Europe/Berlin" });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    render(
+      <QueryClientProvider client={qc}>
+        <OrganizationPanel />
+      </QueryClientProvider>,
+    );
+    const zone = (await screen.findByLabelText("Timezone")) as HTMLInputElement;
+    await waitFor(() => expect(zone.value).toBe("UTC"));
+    fireEvent.change(zone, { target: { value: "Europe/Berlin" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await waitFor(() =>
+      expect(putOrgMock).toHaveBeenCalledWith({
+        name: ORG.name,
+        region: ORG.region,
+        timezone: "Europe/Berlin",
+      }),
+    );
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["auth", "me"] }));
   });
 });

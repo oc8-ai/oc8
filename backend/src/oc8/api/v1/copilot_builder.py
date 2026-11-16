@@ -67,6 +67,7 @@ from oc8.schemas.dto import (
     BuilderTriggerDTO,
     LocalizedTextDTO,
 )
+from oc8.triggers.zones import organisation_timezone
 
 router = APIRouter()
 
@@ -241,10 +242,15 @@ async def builder_dto(
                 BuilderChoiceDTO(id=str(op.skillVersionId), label=skill.name if skill else "")
             )
         elif isinstance(op, TriggerCreate):
+            zone = None
+            if op.kind == "cron":
+                # What create_trigger will read the schedule in.
+                zone = op.timezone or await organisation_timezone(db, proposal.tenant_id)
             triggers.append(
                 BuilderTriggerDTO(
                     kind=op.kind,
                     cron_expression=op.cronExpression,
+                    timezone=zone,
                     event_source=op.eventSource,
                     event_type=op.eventType,
                     # The trigger's task is mission text too.

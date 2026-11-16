@@ -40,6 +40,7 @@ import {
   type McpLoginDTO,
 } from "@/lib/hooks";
 import { mcpToolsFromConnections, type McpTool } from "@/lib/permissions";
+import { useOrgTimezone } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
 
 // A tool's real guardrail is its per-tool approval threshold in `narrowing`,
@@ -99,6 +100,10 @@ export function NewAgentDialog({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [trigger, setTrigger] = useState("on-demand");
   const [cronExpression, setCronExpression] = useState(DEFAULT_CRON);
+  // The zone the schedule is read in: the organisation's unless picked.
+  const orgTimezone = useOrgTimezone();
+  const [pickedZone, setPickedZone] = useState<string | null>(null);
+  const timezone = pickedZone ?? orgTimezone;
   const [guardrail, setGuardrail] = useState("Approval from €5,000");
 
   // Per-tool login pin + approval cap, keyed like `tools` -- the same by-name
@@ -287,6 +292,7 @@ export function NewAgentDialog({
           await createTrigger.mutateAsync({
             agentId: agent.id,
             cronExpression,
+            timezone,
             taskText: `Scheduled run for ${identity.name}`,
           });
         } catch (err) {
@@ -587,6 +593,8 @@ export function NewAgentDialog({
                           })
                         }
                         saveLabel="Looks good"
+                        timezone={timezone}
+                        onTimezoneChange={setPickedZone}
                       />
                     </div>
                   )}

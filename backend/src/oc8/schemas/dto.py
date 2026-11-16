@@ -445,6 +445,9 @@ class MeDTO(CamelModel):
     #: read by an edition that greets members. None only for a principal with
     #: no member row at all (a plugin token).
     member_onboarding_status: str | None = None
+    #: The organisation's IANA timezone (UTC when unset or unknown): what a new
+    #: schedule is read in unless the editor names another.
+    organisation_timezone: str = "UTC"
 
 
 class IntegrationDTO(CamelModel):
@@ -1385,6 +1388,8 @@ class BuilderChoiceDTO(CamelModel):
 class BuilderTriggerDTO(CamelModel):
     kind: str  # cron | event
     cron_expression: str | None = None
+    #: The zone the schedule will be read in (cron only).
+    timezone: str | None = None
     event_source: str | None = None
     event_type: str | None = None
     task_text: str = ""
@@ -1624,6 +1629,9 @@ class TriggerDTO(CamelModel):
     task_text: str
     enabled: bool
     cron_expression: str | None = None
+    #: The zone the cron expression is read in; None = UTC (saved before
+    #: triggers carried a zone).
+    timezone: str | None = None
     next_run_at: str | None = None
     last_run_at: str | None = None
     event_source: str | None = None

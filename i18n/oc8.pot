@@ -3194,6 +3194,9 @@ msgstr ""
 msgid "New agent"
 msgstr ""
 
+msgid "New agent schedules run in this timezone unless they name another."
+msgstr ""
+
 msgid "New approval requested"
 msgstr ""
 
@@ -3753,6 +3756,9 @@ msgid "organisation account"
 msgstr ""
 
 msgid "Organisation ID"
+msgstr ""
+
+msgid "Organisation timezone is UTC — "
 msgstr ""
 
 msgid "Organization"
@@ -4635,6 +4641,9 @@ msgid "Set anyway"
 msgstr ""
 
 msgid "Set automatically from the selected model"
+msgstr ""
+
+msgid "set it in settings"
 msgstr ""
 
 msgid "Set new password"

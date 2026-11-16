@@ -711,10 +711,11 @@ async def test_builder_options_lists_editable_boards(app_session: AppSessionFact
 
 
 @pytest.mark.asyncio
-async def test_builder_options_says_schedules_run_in_utc_and_names_the_local_zone(
+async def test_builder_options_says_schedules_run_in_local_time_and_names_the_zone(
     app_session: AppSessionFactory,
 ) -> None:
-    """Agent schedules fire in UTC; the model must convert the person's time."""
+    """Agent schedules are read in their timezone, by default the
+    organisation's: the model writes the person's own clock time."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         office = await builder_office(db, tenant)
@@ -727,8 +728,14 @@ async def test_builder_options_says_schedules_run_in_utc_and_names_the_local_zon
         run, task = await _run(db, office, chat_mode="agent")
         outcome = await _call(db, office, run, task, "builder_options")
         assert outcome is not None
-        assert "Schedules (schedule, cronExpression) run in UTC" in outcome.output
-        assert "Europe/Berlin (now UTC+0" in outcome.output
+        assert "run in UTC" not in outcome.output
+        assert "Convert the time" not in outcome.output
+        assert (
+            "Schedules (schedule, cronExpression) run in their timezone, by default "
+            "this organisation's: Europe/Berlin (now UTC+0"
+        ) in outcome.output
+        assert "in the person's local time" in outcome.output
+        assert "set timezone" in outcome.output
 
 
 @pytest.mark.asyncio

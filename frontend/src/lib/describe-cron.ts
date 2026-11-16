@@ -50,9 +50,9 @@ function pad2(n: number): string {
 }
 
 /**
- * `timeZone`: the zone the schedule fires in, named after a time of day
- * ("Every day at 8:00 UTC") -- the scheduler evaluates crons in UTC, and a
- * reader would otherwise assume their own clock.
+ * `timeZone`: a zone to name after a time of day ("Every day at 8:00 UTC").
+ * A saved schedule is described with `describeSchedule`, which always names
+ * the zone it fires in.
  */
 export function describeCron(expr: string, t: Translate, timeZone?: string): string {
   const custom = t(`Custom schedule (${expr.trim()})`, `Benutzerdefiniert (${expr.trim()})`);
@@ -122,4 +122,18 @@ export function describeCron(expr: string, t: Translate, timeZone?: string): str
   const day = int(dom, 1, 31);
   if (day === null || dow !== "*") return custom;
   return t(`Every month on day ${day} at ${time}`, `Monatlich am ${day}. um ${uhr}`);
+}
+
+/**
+ * A saved schedule in plain words with the zone it fires in, in brackets:
+ * "Werktags um 7:00 Uhr (Europe/Berlin)". The backend reads each cron in its
+ * trigger's zone; one without a zone fires in UTC, and says so -- a reader
+ * would otherwise assume their own clock.
+ */
+export function describeSchedule(
+  expr: string,
+  timeZone: string | null | undefined,
+  t: Translate,
+): string {
+  return `${describeCron(expr, t)} (${timeZone || "UTC"})`;
 }

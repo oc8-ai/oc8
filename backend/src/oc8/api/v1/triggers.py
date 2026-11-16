@@ -82,6 +82,7 @@ def _dto_with(
         task_text=t.task_text,
         enabled=t.enabled,
         cron_expression=t.cron_expression,
+        timezone=t.timezone,
         next_run_at=t.next_run_at.isoformat() if t.next_run_at else None,
         last_run_at=t.last_run_at.isoformat() if t.last_run_at else None,
         event_source=t.event_source,
@@ -111,6 +112,7 @@ def _changes_what_runs(trigger: m.Trigger, body: UpdateTriggerRequest) -> bool:
             and trigger.kind == "cron"
             and body.cron_expression != trigger.cron_expression
         )
+        or (bool(body.timezone) and trigger.kind == "cron" and body.timezone != trigger.timezone)
         or body.enabled is True
     )
 
@@ -136,6 +138,7 @@ async def create_agent_trigger(
             kind=body.kind,
             task_text=body.task_text,
             cron_expression=body.cron_expression,
+            timezone=body.timezone,
             event_source=body.event_source,
             event_type=body.event_type,
             created_by_member_id=caller,
@@ -215,6 +218,7 @@ async def update_agent_trigger(
             task_text=body.task_text,
             enabled=body.enabled,
             cron_expression=body.cron_expression,
+            timezone=body.timezone,
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc

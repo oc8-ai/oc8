@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -685,3 +686,60 @@ async def test_a_due_follow_up_waits_and_fires_once_after_the_organisation_may_r
     async with app_session(tenant) as db:
         spent = await db.get(m.Trigger, trigger_id)
         assert spent is not None and spent.enabled is False
+
+
+async def _due_trigger_in(
+    app_session: AppSessionFactory, tenant: uuid.UUID, zone: str
+) -> uuid.UUID:
+    async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
+        trigger = await create_trigger(
+            db,
+            tenant_id=tenant,
+            agent_id=agent_id,
+            kind="cron",
+            task_text="scheduled",
+            cron_expression="0 9 * * *",
+            timezone=zone,
+        )
+        trigger.next_run_at = datetime.now(tz=UTC) - timedelta(minutes=30)
+        await db.flush()
+        return trigger.id
+
+
+async def test_a_fired_schedule_moves_on_to_the_next_time_in_its_own_timezone(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # UTC+14: 09:00 there is never 09:00 UTC, so the zone has to be read.
+    zone = "Pacific/Kiritimati"
+    tenant = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    trigger_id = await _due_trigger_in(app_session, tenant, zone)
+    try:
+        await run_scheduler_tick()
+    finally:
+        await test_queue.close()
+    async with app_session(tenant) as db:
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None and refreshed.next_run_at is not None
+        local = refreshed.next_run_at.astimezone(ZoneInfo(zone))
+        assert (local.hour, local.minute) in ((9, 0), (9, 1))
+
+
+async def test_a_skipped_schedule_moves_on_in_its_own_timezone(
+    app_session: AppSessionFactory,
+) -> None:
+    zone = "Pacific/Kiritimati"
+    tenant = await _new_tenant_with_org(app_session)
+    trigger_id = await _due_trigger_in(app_session, tenant, zone)
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+    try:
+        await run_scheduler_tick()
+    finally:
+        set_tenant_activity_gate(None)
+    async with app_session(tenant) as db:
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None and refreshed.next_run_at is not None
+        assert refreshed.last_run_at is None
+        assert refreshed.next_run_at.astimezone(ZoneInfo(zone)).hour == 9

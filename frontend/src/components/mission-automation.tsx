@@ -8,6 +8,7 @@ import {
   useCreateAgentTrigger,
   useUpdateAgentAutomation,
 } from "@/lib/hooks";
+import { scheduleZone } from "@/lib/timezones";
 
 type Autonomy = "review" | "guided" | "independent";
 
@@ -224,7 +225,7 @@ export function MissionAutomation({
                 <Play className="h-3.5 w-3.5 text-primary" />
                 {trigger.kind === "event"
                   ? `${trigger.eventSource} · ${trigger.eventType}`
-                  : trigger.cronExpression}
+                  : `${trigger.cronExpression} (${scheduleZone(trigger.timezone)})`}
                 <span className="text-muted-foreground">— {trigger.taskText}</span>
               </li>
             ))}

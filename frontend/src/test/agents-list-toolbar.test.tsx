@@ -48,6 +48,7 @@ vi.mock("@/lib/hooks", () => ({
   useDepartmentTools: () => ({ data: { tools: {} } }),
   useCreateAgent: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useCreateAgentTrigger: () => ({ mutateAsync: vi.fn() }),
+  useAuth: () => ({ data: undefined }),
 }));
 
 import { AgentsPage } from "@/routes/agents.index";

@@ -50,6 +50,7 @@ from oc8.tenants.provision import (
     get_singleton_organization,
     list_tenants,
 )
+from oc8.triggers.zones import organisation_timezone
 from oc8.workspace.inviter import get_member_inviter
 from oc8.workspace.members import list_members, seats_for
 
@@ -241,6 +242,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
     """
     org = await db.get(m.Organization, principal.tenant_id)
     onboarding_status = org.onboarding_status if org is not None else None
+    org_zone = await organisation_timezone(db, principal.tenant_id)
     try:
         member, scope = await scope_for_principal(db, principal, upsert=True)
     except PermissionError:
@@ -256,6 +258,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
             scopes=list(principal.scopes),
             email=principal.email,
             onboarding_status=onboarding_status,
+            organisation_timezone=org_zone,
         )
 
     # `include_archived=False`: this answers WHERE THIS PERSON STANDS, and
@@ -286,6 +289,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
         seats=[seat_to_dto(s) for s in seats],
         onboarding_status=onboarding_status,
         member_onboarding_status=member.onboarding_status if member is not None else None,
+        organisation_timezone=org_zone,
     )
 
 

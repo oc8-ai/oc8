@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -185,3 +186,77 @@ async def test_non_admin_cannot_edit_organization_settings() -> None:
                 headers={"Authorization": f"Bearer {_token(tenant, 'member')}"},
             )
             assert response.status_code == 403, response.text
+
+
+async def test_the_organisation_timezone_is_settable_and_audited(
+    app_session: AppSessionFactory, _client: AsyncClient
+) -> None:
+    """New schedules default to it, so an admin must be able to set it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        db.add(m.Organization(id=tenant, slug=f"tz-{uuid.uuid4().hex}", name="TZ"))
+        await db.flush()
+    headers = {"Authorization": f"Bearer {_token(tenant)}"}
+    before = await _client.get("/api/v1/settings/organization", headers=headers)
+    assert before.json()["timezone"] == "UTC"
+
+    changed = await _client.put(
+        "/api/v1/settings/organization",
+        json={"name": "TZ", "region": "eu", "timezone": "Europe/Berlin"},
+        headers=headers,
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["timezone"] == "Europe/Berlin"
+    me = await _client.get("/api/v1/me", headers=headers)
+    assert me.json()["organisationTimezone"] == "Europe/Berlin"
+
+    # Saving only name and region leaves it alone.
+    kept = await _client.put(
+        "/api/v1/settings/organization", json={"name": "TZ", "region": "eu"}, headers=headers
+    )
+    assert kept.json()["timezone"] == "Europe/Berlin"
+
+    async with app_session(tenant) as db:
+        events = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action == "organization.settings.updated",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        changes = [e.resource.get("timezone") for e in events if e.resource.get("timezone")]
+        assert changes == [{"from": "UTC", "to": "Europe/Berlin"}]
+
+
+async def test_an_unknown_organisation_timezone_is_refused(
+    app_session: AppSessionFactory, _client: AsyncClient
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        db.add(m.Organization(id=tenant, slug=f"tz-{uuid.uuid4().hex}", name="TZ"))
+        await db.flush()
+    headers = {"Authorization": f"Bearer {_token(tenant)}"}
+    refused = await _client.put(
+        "/api/v1/settings/organization",
+        json={"name": "TZ", "region": "eu", "timezone": "Mars/Olympus"},
+        headers=headers,
+    )
+    assert refused.status_code == 422
+    assert "unknown time zone" in refused.text
+    after = await _client.get("/api/v1/settings/organization", headers=headers)
+    assert after.json()["timezone"] == "UTC"
+
+
+async def test_non_admin_cannot_set_the_organisation_timezone(_client: AsyncClient) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    response = await _client.put(
+        "/api/v1/settings/organization",
+        json={"name": "Nope", "region": "eu", "timezone": "Europe/Berlin"},
+        headers={"Authorization": f"Bearer {_token(tenant, 'member')}"},
+    )
+    assert response.status_code == 403, response.text

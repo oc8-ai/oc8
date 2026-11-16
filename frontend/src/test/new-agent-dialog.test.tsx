@@ -72,6 +72,7 @@ vi.mock("@/lib/hooks", () => ({
   useDepartments: () => ({ data: { items: departments, totalCount: departments.length } }),
   useCreateAgent: () => ({ mutateAsync: createAgentMock, isPending: false }),
   useCreateAgentTrigger: () => ({ mutateAsync: createTriggerMock }),
+  useAuth: () => ({ data: { organisationTimezone: "Europe/Berlin" } }),
 }));
 
 vi.mock("sonner", () => ({
@@ -353,8 +354,28 @@ describe("NewAgentDialog: real schedule + webhook triggers", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
     await waitFor(() => expect(createTriggerMock).toHaveBeenCalled());
-    expect(createTriggerMock.mock.calls[0][0]).toMatchObject({ agentId: "new-agent-id" });
+    expect(createTriggerMock.mock.calls[0][0]).toMatchObject({
+      agentId: "new-agent-id",
+      // A new schedule is read in the organisation's timezone by default.
+      timezone: "Europe/Berlin",
+    });
     expect(navigateMock).not.toHaveBeenCalled();
+  });
+
+  it("sends the timezone picked for the schedule", async () => {
+    renderDialog();
+    await screen.findByText("Hire a new agent");
+    fillIdentityAndGoToTools();
+    fireEvent.click(screen.getByRole("button", { name: /Next/i })); // -> Guardrails & Trigger
+    fireEvent.click(screen.getByRole("button", { name: /^Schedule$/i }));
+    const zone = screen.getByLabelText("Timezone") as HTMLInputElement;
+    expect(zone.value).toBe("Europe/Berlin");
+    fireEvent.change(zone, { target: { value: "America/New_York" } });
+    expect(screen.getByText(/\(America\/New_York\)$/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
+    await waitFor(() => expect(createTriggerMock).toHaveBeenCalled());
+    expect(createTriggerMock.mock.calls[0][0]).toMatchObject({ timezone: "America/New_York" });
   });
 
   it("enables the Webhook trigger option, creates a kind='webhook' trigger on hire, and navigates to the agent's page", async () => {
