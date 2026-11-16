@@ -107,6 +107,10 @@ export interface BoardSummary {
   mayDelete: boolean;
   /** The person may start the producing agent, so may ask it to refresh. */
   mayRun: boolean;
+  /** The person may share and unshare: the same rule as `mayDelete`. */
+  mayShare: boolean;
+  /** Visible to the person only through a share, not through their own reach. */
+  sharedWithMe: boolean;
 }
 
 /** `DataBoardDTO`: a dashboard with its spec. */
@@ -182,6 +186,8 @@ export const boardKeys = {
   list: (agentId?: string) => ["boards", agentId ?? "all"] as const,
   one: (id: string) => ["boards", id] as const,
   query: (id: string, query: BoardQuery | null) => ["boards", id, "query", query] as const,
+  shares: (id: string) => ["boardShares", id] as const,
+  targets: (id: string, q: string) => ["boardShareTargets", id, q] as const,
   /** Set once this client deleted the board. Outside `["boards", ...]` on
    *  purpose, so removing or invalidating the board's queries leaves it. */
   deleted: (id: string) => ["boardDeleted", id] as const,
@@ -272,5 +278,78 @@ export function useDeleteBoard() {
         qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true }),
       ]);
     },
+  });
+}
+
+/** `BoardShareDTO`: exactly one of member and department is set. */
+export interface BoardShare {
+  id: string;
+  memberId: string | null;
+  memberName: string | null;
+  departmentId: string | null;
+  departmentName: string | null;
+  createdAt: string;
+}
+
+export interface ShareTarget {
+  id: string;
+  name: string;
+}
+
+/** `ShareTargetsDTO`: who the board can be shared with (at most 20 of each). */
+export interface ShareTargets {
+  members: ShareTarget[];
+  departments: ShareTarget[];
+}
+
+export function useBoardShares(id: string, enabled = true) {
+  return useQuery({
+    queryKey: boardKeys.shares(id),
+    queryFn: () => api.get<BoardShare[]>(`/boards/${encodeURIComponent(id)}/shares`),
+    enabled: !!id && enabled,
+    retry: retryUnlessRefused,
+  });
+}
+
+export function useShareTargets(id: string, q: string, enabled = true) {
+  return useQuery({
+    queryKey: boardKeys.targets(id, q),
+    queryFn: () =>
+      api.get<ShareTargets>(
+        `/boards/${encodeURIComponent(id)}/share-targets?q=${encodeURIComponent(q)}`,
+      ),
+    enabled: !!id && enabled,
+    retry: retryUnlessRefused,
+    placeholderData: keepPreviousData,
+  });
+}
+
+function useInvalidateShares() {
+  const qc = useQueryClient();
+  return (id: string) =>
+    Promise.all([
+      qc.invalidateQueries({ queryKey: boardKeys.shares(id) }),
+      qc.invalidateQueries({ predicate: (q) => q.meta?.boardList === true }),
+    ]);
+}
+
+export function useShareBoard() {
+  const invalidate = useInvalidateShares();
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...target
+    }: { id: string } & ({ memberId: string } | { departmentId: string })) =>
+      api.post<BoardShare>(`/boards/${encodeURIComponent(id)}/shares`, target),
+    onSuccess: (_data, { id }) => invalidate(id),
+  });
+}
+
+export function useUnshareBoard() {
+  const invalidate = useInvalidateShares();
+  return useMutation({
+    mutationFn: ({ id, shareId }: { id: string; shareId: string }) =>
+      api.delete(`/boards/${encodeURIComponent(id)}/shares/${encodeURIComponent(shareId)}`),
+    onSuccess: (_data, { id }) => invalidate(id),
   });
 }

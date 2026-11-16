@@ -8,6 +8,7 @@ import { Check, LayoutTemplate, Pencil, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { BoardNotices } from "@/components/dashboard/board-notices";
 import { DashboardGrid } from "@/components/dashboard/dashboard-grid";
 import { SavePresetDialog } from "@/components/dashboard/save-preset-dialog";
 import { TemplatePicker } from "@/components/dashboard/template-picker";
@@ -244,6 +245,14 @@ export function WorkspacePage() {
           {editing ? t("Done", "Fertig") : t("Edit", "Bearbeiten")}
         </button>
       </div>
+      <BoardNotices
+        onAdd={addWidget}
+        boardIdsOnGrid={widgets.flatMap((w) =>
+          w.type === "data_board" && typeof w.config?.boardId === "string"
+            ? [w.config.boardId]
+            : [],
+        )}
+      />
       <DashboardGrid widgets={widgets} editing={editing} onChange={setWidgets} />
       <Dialog open={switcherOpen} onOpenChange={setSwitcherOpen}>
         <DialogContent className="max-h-[85vh] max-w-3xl overflow-y-auto">

@@ -18,6 +18,8 @@ function summary(over: Partial<BoardSummary> = {}): BoardSummary {
     lastRecordedAt: null,
     mayDelete: true,
     mayRun: false,
+    mayShare: false,
+    sharedWithMe: false,
     ...over,
   };
 }
@@ -41,6 +43,13 @@ describe("AgentBoardsSection", () => {
     expect(screen.getByText("Sales")).toBeInTheDocument();
     expect(screen.getByText("Stock")).toBeInTheDocument();
     expect(screen.getByText("7 records")).toBeInTheDocument();
+  });
+
+  it("shows Share only when the person may share", () => {
+    mockBoards([summary({ mayShare: true }), summary({ id: "b2", title: "Stock" })]);
+    render(<AgentBoardsSection agentId="a1" />);
+    expect(screen.getByRole("button", { name: 'Share "Sales"' })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: 'Share "Stock"' })).toBeNull();
   });
 
   it("deletes only after confirming the record count", () => {

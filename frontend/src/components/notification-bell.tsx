@@ -1,5 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, Bell, CheckCircle2, LayoutDashboard } from "lucide-react";
+import { toast } from "sonner";
 
 import {
   DropdownMenu,
@@ -42,8 +43,19 @@ export function NotificationBell() {
   const markAll = useMarkAllRead();
 
   const open = (n: Notification) => {
-    if (!n.read) markRead.mutate(n.id);
-    if (n.link) navigate({ href: n.link });
+    if (!n.read) {
+      markRead.mutate(n.id, {
+        onError: () =>
+          toast.error(
+            t(
+              "Couldn't mark the notification as read",
+              "Die Benachrichtigung konnte nicht als gelesen markiert werden",
+            ),
+          ),
+      });
+    }
+    // Only an in-app path: never an absolute or protocol-relative URL.
+    if (n.link.startsWith("/") && !n.link.startsWith("//")) navigate({ href: n.link });
   };
 
   return (

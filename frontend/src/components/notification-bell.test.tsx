@@ -7,6 +7,8 @@ import { api } from "@/lib/api";
 
 const navigate = vi.fn();
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => navigate }));
+const toastError = vi.hoisted(() => vi.fn());
+vi.mock("sonner", () => ({ toast: { error: toastError } }));
 vi.mock("@/lib/api", () => ({
   api: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
   retryUnlessRefused: () => false,
@@ -60,6 +62,33 @@ describe("NotificationBell", () => {
     fireEvent.click(await screen.findByText("Title n1"));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith("/notifications/n1/read"));
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ href: "/boards/n1" }));
+  });
+
+  it("does not navigate to an external or protocol-relative link", async () => {
+    setup(1, [
+      { ...item("n1"), link: "//evil.example/x" },
+      { ...item("n2"), link: "https://evil.example" },
+    ]);
+    fireEvent.pointerDown(await screen.findByLabelText("Notifications"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByText("Title n1"));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith("/notifications/n1/read"));
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("toasts when marking read fails", async () => {
+    setup(1, [item("n1")]);
+    vi.mocked(api.post).mockRejectedValue(new Error("boom"));
+    fireEvent.pointerDown(await screen.findByLabelText("Notifications"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByText("Title n1"));
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith("Couldn't mark the notification as read"),
+    );
   });
 
   it("marks all as read", async () => {

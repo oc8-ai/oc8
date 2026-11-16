@@ -20,6 +20,8 @@ const sales: BoardSummary = {
   lastRecordedAt: null,
   mayDelete: false,
   mayRun: false,
+  mayShare: false,
+  sharedWithMe: false,
 };
 
 function open() {
