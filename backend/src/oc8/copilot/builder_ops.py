@@ -309,6 +309,7 @@ FLAT_FIELDS: Final = frozenset(
         "modelId",
         "skillIds",
         "schedule",
+        "timezone",
         "eventSource",
         "eventType",
         "taskText",
@@ -396,7 +397,14 @@ def flat_operations(
         follow("agent.skill.assign", skillVersionId=skill)
     task = fields.get("taskText") if _given(fields.get("taskText")) else fields.get("mission")
     if _given(fields.get("schedule")):
-        follow("trigger.create", kind="cron", cronExpression=fields["schedule"], taskText=task)
+        zone = {"timezone": fields["timezone"]} if _given(fields.get("timezone")) else {}
+        follow(
+            "trigger.create",
+            kind="cron",
+            cronExpression=fields["schedule"],
+            **zone,
+            taskText=task,
+        )
     if _given(fields.get("eventSource")) or _given(fields.get("eventType")):
         follow(
             "trigger.create",

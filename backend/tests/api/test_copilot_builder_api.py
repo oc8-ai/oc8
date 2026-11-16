@@ -396,3 +396,31 @@ async def _seed_in(
             now=dt.datetime.now(tz=dt.UTC),
         )
         return office, proposal.id
+
+
+async def test_the_card_names_the_schedules_timezone_and_the_trigger_gets_it(
+    app_session: AppSessionFactory,
+) -> None:
+    """A schedule proposed without a zone is read in the organisation's: the
+    card says which, and the trigger it creates carries it."""
+    office, pid = await _seed(app_session, "admin")
+    async with app_session(office.tenant) as db:
+        org = await db.get(m.Organization, office.tenant)
+        if org is None:
+            org = m.Organization(id=office.tenant, slug=f"t-{office.tenant.hex[:8]}", name="T")
+            db.add(org)
+        org.timezone = "Europe/Berlin"
+    admin = _headers(office.tenant, "admin", "org_admin")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        card = await c.get(f"/api/v1/copilot/builder/{pid}", headers=admin)
+        assert card.status_code == 200, card.text
+        assert card.json()["triggers"][0]["timezone"] == "Europe/Berlin"
+        applied = await c.post(f"/api/v1/copilot/builder/{pid}/apply", headers=admin)
+        assert applied.status_code == 200, applied.text
+        agent_id = uuid.UUID(applied.json()["agent"]["id"])
+    async with app_session(office.tenant) as db:
+        trigger = (
+            await db.execute(select(m.Trigger).where(m.Trigger.agent_id == agent_id))
+        ).scalar_one()
+        assert trigger.timezone == "Europe/Berlin"

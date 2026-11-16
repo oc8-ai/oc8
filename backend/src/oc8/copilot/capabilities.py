@@ -78,6 +78,7 @@ from oc8.runtime.registry import (
     resolve_runtime_plugin,
 )
 from oc8.triggers.service import InvalidTriggerConfig, create_trigger
+from oc8.triggers.zones import valid_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,17 @@ class TriggerCreate(_Operation):
     kind: Literal["cron", "event"]
     taskText: str = Field(min_length=1, max_length=10_000)
     cronExpression: str | None = Field(default=None, max_length=256)
+    #: IANA zone the cron expression is read in; the organisation's when absent.
+    timezone: str | None = Field(default=None, max_length=64)
     eventSource: str | None = Field(default=None, max_length=128)
     eventType: str | None = Field(default=None, max_length=128)
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, value: str | None) -> str | None:
+        # Refused when proposed, not only when applied: the person confirms
+        # a card that names the zone.
+        return valid_timezone(value) if value else None
 
 
 class PluginEnable(_Operation):
@@ -665,6 +675,7 @@ async def apply_operation(
                 kind=operation.kind,
                 task_text=operation.taskText,
                 cron_expression=operation.cronExpression,
+                timezone=operation.timezone,
                 event_source=operation.eventSource,
                 event_type=operation.eventType,
                 declared_events={(event.source, event.type) for event in events},

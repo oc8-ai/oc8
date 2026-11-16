@@ -1385,6 +1385,8 @@ class BuilderChoiceDTO(CamelModel):
 class BuilderTriggerDTO(CamelModel):
     kind: str  # cron | event
     cron_expression: str | None = None
+    #: The zone the schedule will be read in (cron only).
+    timezone: str | None = None
     event_source: str | None = None
     event_type: str | None = None
     task_text: str = ""

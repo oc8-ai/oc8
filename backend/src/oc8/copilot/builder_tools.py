@@ -330,15 +330,17 @@ async def builder_options_text(
 
 
 async def _schedule_line(db: AsyncSession, tenant_id: uuid.UUID) -> str:
-    """Agent schedules fire in UTC (triggers.service.compute_next_run) and the
-    card shows them in UTC, so the model converts the person's local time."""
+    """Agent schedules are read in their trigger's timezone, by default the
+    organisation's (triggers.service.create_trigger), and the card names it --
+    so the model writes the person's own clock time and never converts."""
     org = await db.get(m.Organization, tenant_id)
     label, zone = resolve_timezone(org.timezone if org is not None else "UTC")
     offset = dt.datetime.now(zone).strftime("%z")
     return (
-        "Schedules (schedule, cronExpression) run in UTC. This organisation's "
-        f"timezone: {label} (now UTC{offset[:3]}:{offset[3:]}). Convert the time "
-        "the person means to UTC and tell them the time in their own timezone."
+        "Schedules (schedule, cronExpression) run in their timezone, by default "
+        f"this organisation's: {label} (now UTC{offset[:3]}:{offset[3:]}). Write the "
+        "cron in the person's local time, e.g. 0 7 * * 1-5 for weekdays at 7:00; "
+        "set timezone (an IANA name) only when the person is in another one."
     )
 
 
