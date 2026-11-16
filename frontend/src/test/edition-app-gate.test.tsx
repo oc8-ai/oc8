@@ -15,7 +15,15 @@ import { getRouter } from "../router";
 // `AuthGate`, so it decides whether anything of the app renders before
 // `AuthGate` can redirect a visitor without a session to /login.
 
-const gate = vi.hoisted(() => ({ mode: "pass" as "pass" | "block" }));
+const gate = vi.hoisted(() => ({ mode: "pass" as "pass" | "block" | "none" }));
+const live = vi.hoisted(() => ({ connect: vi.fn() }));
+
+vi.mock("@/lib/live/connection", () => ({
+  useLiveConnection: (...args: unknown[]) => {
+    live.connect(...args);
+    return { watch: () => undefined, unwatch: () => undefined };
+  },
+}));
 
 vi.mock("@oc8/edition-entry", async () => {
   const { createElement, Fragment } = await import("react");
@@ -25,7 +33,9 @@ vi.mock("@oc8/edition-entry", async () => {
       : createElement(Fragment, null, children);
   }
   return {
-    editionExtensions: [{ id: "test-gate", appGate: TestGate }],
+    get editionExtensions() {
+      return gate.mode === "none" ? [] : [{ id: "test-gate", appGate: TestGate }];
+    },
     editionRoutes: [],
     editionServer: {},
   };
@@ -60,6 +70,8 @@ describe("an edition's app gate around AuthGate", () => {
 
   afterEach(() => {
     gate.mode = "pass";
+    live.connect.mockClear();
+    window.localStorage.removeItem("oc8-community-token");
     vi.unstubAllGlobals();
   });
 
@@ -74,6 +86,30 @@ describe("an edition's app gate around AuthGate", () => {
     expect(fetchMock.mock.calls.some((c) => String(c[0]).endsWith("/auth/config"))).toBe(false);
     expect(screen.queryByText("Redirecting…")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Your email")).not.toBeInTheDocument();
+  });
+
+  it("opens no live connection and mounts no toaster while the gate refuses, even with a token", async () => {
+    gate.mode = "block";
+    window.localStorage.setItem("oc8-community-token", "session-token");
+    stubCommunityConfig();
+    await renderAt("/forgot-password");
+
+    expect(await screen.findByText("edition signed-out screen")).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(live.connect).not.toHaveBeenCalled();
+    expect(
+      document.querySelector("[data-sonner-toaster], section[aria-label^='Notifications']"),
+    ).toBeNull();
+  });
+
+  it("still mounts live updates and the toaster without any gate", async () => {
+    gate.mode = "none";
+    stubCommunityConfig();
+    await renderAt("/forgot-password");
+
+    expect(await screen.findByLabelText("Your email")).toBeInTheDocument();
+    expect(live.connect).toHaveBeenCalled();
+    expect(document.querySelector("section[aria-label^='Notifications']")).not.toBeNull();
   });
 
   it("keeps AuthGate's redirect behind a gate that passes through", async () => {
