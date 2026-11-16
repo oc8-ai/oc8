@@ -1624,6 +1624,9 @@ class TriggerDTO(CamelModel):
     task_text: str
     enabled: bool
     cron_expression: str | None = None
+    #: The zone the cron expression is read in; None = UTC (saved before
+    #: triggers carried a zone).
+    timezone: str | None = None
     next_run_at: str | None = None
     last_run_at: str | None = None
     event_source: str | None = None

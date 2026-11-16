@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import datetime as dt
 import uuid
+from zoneinfo import ZoneInfo
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -540,3 +541,75 @@ async def test_followup_triggers_are_invisible_to_the_trigger_api(
     async with app_session(tenant) as s:
         still = await s.get(m.Trigger, followup_id)
         assert still is not None and still.enabled
+
+
+async def test_a_cron_trigger_carries_its_timezone_in_and_out(
+    app_session: AppSessionFactory,
+) -> None:
+    """Given a zone, the trigger keeps it; without one it takes the
+    organisation's; an unknown zone is a 422 that names the problem."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id, headers = await _agent_and_headers(app_session, tenant)
+    async with app_session(tenant) as s:
+        org = await s.get(m.Organization, tenant)
+        org_zone = org.timezone if org is not None else "UTC"
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            given = await client.post(
+                f"/api/v1/agents/{agent_id}/triggers",
+                json={
+                    "kind": "cron",
+                    "taskText": "daily report",
+                    "cronExpression": "0 7 * * 1-5",
+                    "timezone": "Europe/Berlin",
+                },
+                headers=headers,
+            )
+            assert given.status_code == 201
+            assert given.json()["timezone"] == "Europe/Berlin"
+            next_run = dt.datetime.fromisoformat(given.json()["nextRunAt"])
+            assert next_run.astimezone(ZoneInfo("Europe/Berlin")).hour == 7
+
+            defaulted = await client.post(
+                f"/api/v1/agents/{agent_id}/triggers",
+                json={"kind": "cron", "taskText": "x", "cronExpression": "0 9 * * *"},
+                headers=headers,
+            )
+            assert defaulted.status_code == 201
+            assert defaulted.json()["timezone"] == org_zone
+
+            unknown = await client.post(
+                f"/api/v1/agents/{agent_id}/triggers",
+                json={
+                    "kind": "cron",
+                    "taskText": "x",
+                    "cronExpression": "0 9 * * *",
+                    "timezone": "Mars/Olympus",
+                },
+                headers=headers,
+            )
+            assert unknown.status_code == 422
+            assert "unknown time zone" in unknown.json()["detail"]
+
+            moved = await client.patch(
+                f"/api/v1/triggers/{given.json()['id']}",
+                json={"timezone": "America/New_York"},
+                headers=headers,
+            )
+            assert moved.status_code == 200
+            assert moved.json()["timezone"] == "America/New_York"
+            assert moved.json()["cronExpression"] == "0 7 * * 1-5"
+            next_run = dt.datetime.fromisoformat(moved.json()["nextRunAt"])
+            assert next_run.astimezone(ZoneInfo("America/New_York")).hour == 7
+
+            refused = await client.patch(
+                f"/api/v1/triggers/{given.json()['id']}",
+                json={"timezone": "Mars/Olympus"},
+                headers=headers,
+            )
+            assert refused.status_code == 422
+            listed = await client.get(f"/api/v1/agents/{agent_id}/triggers", headers=headers)
+            row = next(t for t in listed.json() if t["id"] == given.json()["id"])
+            assert row["timezone"] == "America/New_York"

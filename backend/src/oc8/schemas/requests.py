@@ -593,6 +593,8 @@ class CreateTriggerRequest(CamelModel):
     kind: Literal["cron", "event", "webhook"]
     task_text: str
     cron_expression: str | None = None
+    #: IANA zone the cron expression is read in; the organisation's when omitted.
+    timezone: str | None = Field(default=None, max_length=64)
     event_source: str | None = None
     event_type: str | None = None
     acts_for_creator: bool = False
@@ -602,6 +604,8 @@ class UpdateTriggerRequest(CamelModel):
     task_text: str | None = None
     enabled: bool | None = None
     cron_expression: str | None = None
+    #: A new zone for the schedule; omitted keeps the one it has.
+    timezone: str | None = Field(default=None, max_length=64)
     acts_for_creator: bool | None = None
 
 
