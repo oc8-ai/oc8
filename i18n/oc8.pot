@@ -584,6 +584,9 @@ msgstr ""
 msgid "As first reported"
 msgstr ""
 
+msgid "As of"
+msgstr ""
+
 msgid "Ask an admin to allow this"
 msgstr ""
 
@@ -735,6 +738,9 @@ msgid "Back to agents"
 msgstr ""
 
 msgid "Back to knowledge"
+msgstr ""
+
+msgid "Back to Live"
 msgstr ""
 
 msgid "Back to office"
@@ -1547,6 +1553,9 @@ msgstr ""
 msgid "Couldn't reach the copilot"
 msgstr ""
 
+msgid "Couldn't refresh"
+msgstr ""
+
 msgid "Couldn't remove skill"
 msgstr ""
 
@@ -1740,9 +1749,6 @@ msgid "Data Sources"
 msgstr ""
 
 msgid "Data sources (optional)"
-msgstr ""
-
-msgid "Date"
 msgstr ""
 
 msgid "Day"
@@ -2838,9 +2844,6 @@ msgid "Linked in this tenant"
 msgstr ""
 
 msgid "Live"
-msgstr ""
-
-msgid "Live Log"
 msgstr ""
 
 msgid "Live Log · current run"
@@ -4152,6 +4155,9 @@ msgid "Reference material this agent can read on demand — never injected into 
 msgstr ""
 
 msgid "Refresh"
+msgstr ""
+
+msgid "Refresh data"
 msgstr ""
 
 msgid "Regenerate answer"
