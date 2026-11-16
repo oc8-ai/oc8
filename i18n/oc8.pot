@@ -3671,6 +3671,9 @@ msgstr ""
 msgid "One sentence"
 msgstr ""
 
+msgid "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it."
+msgstr ""
+
 msgid "Only for me"
 msgstr ""
 
