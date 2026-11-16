@@ -17,7 +17,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
-from sqlalchemy import func, or_, select
+from sqlalchemy import false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -277,8 +277,23 @@ def _share_dto(
     )
 
 
-def _member_name(member: m.OrgMember) -> str:
-    return member.display_name or member.email or member.subject
+def _member_name(member: m.OrgMember, *, typed_email: str | None = None) -> str:
+    """A member's label for a sharer, who may lack `member:view`: the display
+    name, else a masked address (`j…@example.com`). The full email only for the
+    member found by the exact address the caller typed -- nothing they did not
+    already know. Never the subject."""
+    if member.display_name:
+        return member.display_name
+    if member.email and typed_email and member.email.lower() == typed_email.lower():
+        return member.email
+    return _masked(member.email or member.subject)
+
+
+def _masked(address: str) -> str:
+    local, at, domain = address.partition("@")
+    if not at or not local or not domain:
+        return "…"
+    return f"{local[0]}…@{domain}"
 
 
 async def _share_dtos(db: AsyncSession, shares: list[m.DataBoardShare]) -> list[BoardShareDTO]:
@@ -393,8 +408,12 @@ async def board_share_targets(
     answers names and ids only, and only to someone who may share this board."""
     await _sharer(request, db, actor, board_id)
     tenant_id = actor.principal.tenant_id
-    pattern = f"%{_escape_like(q.strip())}%"
+    typed = q.strip()
+    pattern = f"%{_escape_like(typed)}%"
     member = m.OrgMember
+    # Names by substring; an email only when the WHOLE address is typed, so a
+    # sharer without member:view cannot enumerate addresses letter by letter.
+    email_match = func.lower(member.email) == typed.lower() if "@" in typed else false()
     members = (
         (
             await db.execute(
@@ -404,7 +423,7 @@ async def board_share_targets(
                     member.deleted_at.is_(None),
                     or_(
                         member.display_name.ilike(pattern, escape="\\"),
-                        member.email.ilike(pattern, escape="\\"),
+                        email_match,
                     ),
                 )
                 .order_by(func.lower(member.display_name), member.id)
@@ -432,7 +451,9 @@ async def board_share_targets(
         .all()
     )
     return ShareTargetsDTO(
-        members=[ShareTargetDTO(id=str(r.id), name=_member_name(r)) for r in members],
+        members=[
+            ShareTargetDTO(id=str(r.id), name=_member_name(r, typed_email=typed)) for r in members
+        ],
         departments=[ShareTargetDTO(id=str(r.id), name=r.name) for r in departments],
     )
 

@@ -270,7 +270,7 @@ async def test_share_targets_search_and_limit(app_session: AppSessionFactory) ->
     o = await _office(app_session)
     for i in range(25):
         await _member(app_session, o.tenant, f"z{i}", name=f"Zed {i}")
-    await _member(app_session, o.tenant, "mail", name="Nobody", email="ZEDDY@example.com")
+    await _member(app_session, o.tenant, "mail", email="ZEDDY@example.com")
     await _department(app_session, o.tenant, "Zed Department")
     archived = await _department(app_session, o.tenant, "Zed Archive")
     async with app_session(o.tenant) as db:
@@ -279,18 +279,73 @@ async def test_share_targets_search_and_limit(app_session: AppSessionFactory) ->
     url = f"/api/v1/boards/{o.finance_board}/share-targets"
     async with _http() as c:
         many = await c.get(url, params={"q": "zed"}, headers=_boss(o))
-        mail = await c.get(url, params={"q": "zeddy@"}, headers=_boss(o))
+        partial = [
+            await c.get(url, params={"q": q}, headers=_boss(o))
+            for q in ("zeddy@", "example.com", "@example.com", "zeddy@example.co")
+        ]
+        exact = await c.get(url, params={"q": " zeddy@EXAMPLE.com "}, headers=_boss(o))
         dept = await c.get(url, params={"q": "zed dep"}, headers=_boss(o))
         fin = await c.get(url, params={"q": "fin"}, headers=_boss(o))
     assert many.status_code == 200, many.text
     assert len(many.json()["members"]) == 20
-    # Display name or email: "Nobody" matches through ZEDDY@example.com.
-    assert "Nobody" in {t["name"] for t in many.json()["members"]}
-    assert all(
-        t["name"].startswith("Zed ") or t["name"] == "Nobody" for t in many.json()["members"]
-    )
-    assert [t["name"] for t in mail.json()["members"]] == ["Nobody"]
+    assert all(t["name"].startswith("Zed ") for t in many.json()["members"])
+    # An email is matched only as a whole address: no enumeration by substring.
+    for r in partial:
+        assert r.status_code == 200 and r.json()["members"] == [], r.text
+        assert "ZEDDY" not in r.text
+    # The caller typed the whole address, so it may be shown back to them.
+    assert [t["name"] for t in exact.json()["members"]] == ["ZEDDY@example.com"]
     assert [t["name"] for t in dept.json()["departments"]] == ["Zed Department"]
     assert dept.json()["members"] == []
     assert [t["name"] for t in fin.json()["departments"]] == ["Finance"]
     assert all(set(t) == {"id", "name"} for t in many.json()["members"])
+
+
+async def test_a_nameless_member_is_masked_in_targets_and_shares(
+    app_session: AppSessionFactory,
+) -> None:
+    """A sharer may lack member:view: no email or subject is shown that they did
+    not type themselves."""
+    o = await _office(app_session)
+    nameless, _ = await _member(app_session, o.tenant, "subj-jane", email="jane.doe@example.com")
+    base = f"/api/v1/boards/{o.finance_board}"
+    async with _http() as c:
+        targets = await c.get(f"{base}/share-targets", params={"q": ""}, headers=_boss(o))
+        created = await c.post(f"{base}/shares", json={"memberId": str(nameless)}, headers=_boss(o))
+        listed = await c.get(f"{base}/shares", headers=_boss(o))
+    labels = {t["id"]: t["name"] for t in targets.json()["members"]}
+    assert labels[str(nameless)] == "j…@example.com"
+    assert created.json()["memberName"] == "j…@example.com"
+    assert [s["memberName"] for s in listed.json()] == ["j…@example.com"]
+    for r in (targets, created, listed):
+        assert "jane.doe" not in r.text and "subj-jane" not in r.text
+
+
+async def test_a_direct_share_grants_reading_only(app_session: AppSessionFactory) -> None:
+    """Sharing grants read and query of one board: no delete, no run, no agent."""
+    o = await _office(app_session)
+    loner, _ = await _member(app_session, o.tenant, "loner", name="Lona")
+    h = _headers(o.tenant, "loner", "member")
+    async with _http() as c:
+        r = await c.post(
+            f"/api/v1/boards/{o.finance_board}/shares",
+            json={"memberId": str(loner)},
+            headers=_boss(o),
+        )
+        assert r.status_code == 201, r.text
+        assert (await c.get(f"/api/v1/boards/{o.finance_board}", headers=h)).status_code == 200
+        delete = await c.delete(
+            f"/api/v1/boards/{o.finance_board}", params={"records": 2}, headers=h
+        )
+        run = await c.post(f"/api/v1/agents/{o.agent}/run", json={"task": "go"}, headers=h)
+        agents = await c.get("/api/v1/agents", headers=h)
+        agent = await c.get(f"/api/v1/agents/{o.agent}", headers=h)
+    for resp in (delete, run, agents, agent):
+        assert resp.status_code in (403, 404), (resp.request.url, resp.status_code, resp.text)
+        assert "Reporter" not in resp.text
+    async with app_session(o.tenant) as db:
+        board = (
+            await db.execute(select(m.DataBoard).where(m.DataBoard.id == o.finance_board))
+        ).scalar_one()
+        assert board.removed_at is None
+        assert (await db.execute(select(m.AgentRun))).scalars().all() == []

@@ -12,6 +12,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from sqlalchemy import or_, select
+from sqlalchemy.dialects.postgresql import insert
 
 from oc8 import models as m
 from oc8.audit import append_event
@@ -121,28 +122,44 @@ async def share_board(
         db, tenant_id=board.tenant_id, member_id=member_id, department_id=department_id
     )
     share = m.DataBoardShare
-    existing = (
-        await db.execute(
-            select(share).where(
-                share.board_id == board.id,
-                share.member_id == member_id
-                if member_id is not None
-                else share.department_id == department_id,
-            )
-        )
-    ).scalar_one_or_none()
+    same_target = (
+        share.member_id == member_id
+        if member_id is not None
+        else share.department_id == department_id
+    )
+
+    async def _existing() -> m.DataBoardShare | None:
+        stmt = select(share).where(share.board_id == board.id, same_target)
+        return (await db.execute(stmt)).scalar_one_or_none()
+
+    existing = await _existing()
     if existing is not None:
         return existing
     before = await board_audience(db, board)
-    row = m.DataBoardShare(
-        tenant_id=board.tenant_id,
-        board_id=board.id,
-        member_id=member_id,
-        department_id=department_id,
-        created_by=actor_member_id,
-    )
-    db.add(row)
-    await db.flush()
+    # ON CONFLICT DO NOTHING: a concurrent identical share that committed first
+    # wins, and this call returns that row and tells nobody a second time.
+    inserted = (
+        await db.execute(
+            insert(share)
+            .values(
+                tenant_id=board.tenant_id,
+                board_id=board.id,
+                member_id=member_id,
+                department_id=department_id,
+                created_by=actor_member_id,
+            )
+            .on_conflict_do_nothing(
+                constraint="uq_data_board_share_member"
+                if member_id is not None
+                else "uq_data_board_share_department"
+            )
+            .returning(share.id)
+        )
+    ).scalar_one_or_none()
+    row = await _existing()
+    assert row is not None  # inserted here or by the winner of the race
+    if inserted is None:
+        return row
     after = await board_audience(db, board)
     await append_event(
         db,

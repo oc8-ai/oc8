@@ -377,3 +377,43 @@ async def test_unsharing_removes_the_share_and_audits_ids(
         (audit,) = await _audits(db, "board.unshared")
         assert audit == {"board_id": str(w.board.id), "member_id": str(w.loner.id)}
         assert not await _sees(db, w, w.loner)
+
+
+async def test_a_concurrent_duplicate_share_returns_the_winner_and_tells_nobody_twice(
+    app_session: AppSessionFactory, delivered: list[dict[str, Any]]
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+    board_id = w.board.id
+    async with app_session(tenant) as first, app_session(tenant) as second:
+        board_a = (
+            await first.execute(select(m.DataBoard).where(m.DataBoard.id == board_id))
+        ).scalar_one()
+        board_b = (
+            await second.execute(select(m.DataBoard).where(m.DataBoard.id == board_id))
+        ).scalar_one()
+        winner = await share_board(
+            first, board=board_a, actor_member_id=w.owner.id, member_id=w.loner.id
+        )
+        # The second sees no committed share yet, so it reaches the INSERT and
+        # blocks on the unique index until the first commits.
+        racing = asyncio.create_task(
+            share_board(second, board=board_b, actor_member_id=w.owner.id, member_id=w.loner.id)
+        )
+        await asyncio.sleep(0.3)
+        assert not racing.done()
+        await first.commit()
+        loser = await racing
+        assert loser.id == winner.id
+        await second.commit()
+    await _drain()
+    async with app_session(tenant) as db:
+        assert len(await _audits(db, "board.shared")) == 1
+        rows = (
+            await db.execute(
+                select(m.MemberNotification).where(m.MemberNotification.member_id == w.loner.id)
+            )
+        ).scalars()
+        assert len(list(rows)) == 1
+    assert len(delivered) == 1

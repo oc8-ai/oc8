@@ -87,9 +87,15 @@ ALLOWED: dict[str, str] = {
         "it is shared with and the tenant's live departments to share it with: id and "
         "name only, never their agents or data"
     ),
+    "boards/repo.py": (
+        "the board read door: in the share predicate, correlates on whether the board's "
+        "department and a shared department are live (deleted_at); loads no row"
+    ),
     "boards/sharing.py": (
-        "checks a share's target department is live in the tenant; id only, behind "
-        "the caller's may_delete_board gate"
+        "behind the caller's may_delete_board gate, reads ids only: whether a share's "
+        "target department is live (target check), whether the board's own department "
+        "is live (board_audience), and which live departments' seats a department "
+        "share reaches (the seat join in board_audience); never agents or data"
     ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",
