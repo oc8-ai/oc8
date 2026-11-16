@@ -2216,7 +2216,8 @@ class AgentIdeaDTO(CamelModel):
 
 class BoardSummaryDTO(CamelModel):
     """One dashboard in a list. `stale` = no producing agent any more (banner
-    "no longer updated")."""
+    "no longer updated"). `may_run` = the viewer may start the producing agent
+    now (POST /agents/{agent_id}/run would admit them)."""
 
     id: str
     title: str
@@ -2228,6 +2229,7 @@ class BoardSummaryDTO(CamelModel):
     record_count: int
     last_recorded_at: str | None
     may_delete: bool
+    may_run: bool
 
 
 class DataBoardDTO(BoardSummaryDTO):

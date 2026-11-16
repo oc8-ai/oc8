@@ -84,3 +84,33 @@ def test_record_card_rejects_an_unknown_field() -> None:
 def test_record_card_requires_a_title() -> None:
     with pytest.raises(ValidationError):
         RecordCardProps.model_validate({"fields": []})
+
+
+def test_data_table_accepts_plain_string_columns() -> None:
+    props = DataTableProps.model_validate(
+        {"title": "Angebote", "columns": ["Kunde", {"key": "sum", "label": "Summe"}]}
+    )
+    assert props.model_dump()["columns"] == [
+        {"key": "Kunde", "label": "Kunde"},
+        {"key": "sum", "label": "Summe"},
+    ]
+
+
+def test_data_table_coerces_scalar_row_values_to_text() -> None:
+    props = DataTableProps.model_validate(
+        {
+            "title": "Angebote",
+            "columns": ["Kunde", "Summe", "Anzahl", "Offen", "Notiz"],
+            "rows": [{"Kunde": "A", "Summe": 269.1, "Anzahl": 3, "Offen": True, "Notiz": None}],
+        }
+    )
+    assert props.rows == [
+        {"Kunde": "A", "Summe": "269.1", "Anzahl": "3", "Offen": "true", "Notiz": ""}
+    ]
+
+
+def test_data_table_still_rejects_nested_row_values() -> None:
+    with pytest.raises(ValidationError):
+        DataTableProps.model_validate(
+            {"title": "x", "columns": ["a"], "rows": [{"a": {"nested": 1}}]}
+        )

@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.repo import RunReach, run_reach
 from oc8.api.deps import (
     DbSession,
     authorize_agent_write,
@@ -24,7 +25,7 @@ from oc8.api.deps import (
 )
 from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
-from oc8.authz.permissions import AGENT, VIEW, perm
+from oc8.authz.permissions import AGENT, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.boards.lifecycle import (
     count_board_records,
@@ -58,10 +59,23 @@ async def _summaries(
             )
         ).all()
     }
+    # Only after the repository admitted the boards: name, deleted_at and what
+    # the run door reads, never more of the agent.
+    agent_ids = {b.agent_id for b in boards if b.agent_id is not None}
+    agents = (
+        {
+            a.id: a
+            for a in (await db.execute(select(m.Agent).where(m.Agent.id.in_(agent_ids))))
+            .scalars()
+            .all()
+        }
+        if agent_ids
+        else {}
+    )
+    reach = run_reach(authority=authority, scope=actor.scope, permission=RUN_START)
     out: list[BoardSummaryDTO] = []
     for b in boards:
-        # Only after the repository admitted the board: name and deleted_at only.
-        agent = await db.get(m.Agent, b.agent_id) if b.agent_id is not None else None
+        agent = agents.get(b.agent_id) if b.agent_id is not None else None
         count, last = stats.get(b.id, (0, None))
         out.append(
             BoardSummaryDTO(
@@ -75,9 +89,20 @@ async def _summaries(
                 record_count=count,
                 last_recorded_at=last.isoformat() if last is not None else None,
                 may_delete=may_delete_board(authority, actor.scope, b),
+                may_run=_may_run(reach, agent),
             )
         )
     return out
+
+
+def _may_run(reach: RunReach, agent: m.Agent | None) -> bool:
+    """What `POST /agents/{agent_id}/run` admits (`api/v1/run.py`): a live agent
+    not awaiting hire approval, inside the caller's `run:start` reach."""
+    if agent is None or agent.deleted_at is not None or agent.status == "pending_approval":
+        return False
+    if reach.every_agent:
+        return True
+    return agent.department_id in reach.departments and not agent.is_tenant_assistant
 
 
 async def _admitted(

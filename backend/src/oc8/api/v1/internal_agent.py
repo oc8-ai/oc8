@@ -1420,6 +1420,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         ctx["produces_board"] = preamble.produces_board
         ctx["has_instruction_files"] = preamble.has_instruction_files
         ctx["copilot_permissions"] = sorted(preamble.copilot_permissions)
+        ctx["copilot_has_member"] = preamble.copilot_has_member
         # C3 (a later package) reads this back from run.context so the step
         # stamp uses the SAME resolved timezone as A2's "Now" line, instead of
         # re-resolving org.timezone a second time on every later step.
@@ -1484,6 +1485,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     produces_board = bool(ctx.get("produces_board", False))
     has_instruction_files = bool(ctx.get("has_instruction_files", False))
     copilot_permissions = frozenset(ctx.get("copilot_permissions", []))
+    # Absent on a run already in flight: keep offering; the dispatch refuses.
+    copilot_has_member = bool(ctx.get("copilot_has_member", True))
 
     # This endpoint only ever runs for a containerized runtime (the in-process
     # engine calls offered_tools directly, never over HTTP). A real runtime
@@ -1516,6 +1519,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         produces_board=produces_board,
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        copilot_has_member=copilot_has_member,
         has_context=has_readable_context(ctx),
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
