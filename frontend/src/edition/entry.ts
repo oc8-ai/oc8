@@ -1,4 +1,4 @@
-import type { FrontendEditionExtension } from "./contracts";
+import type { EditionServerHooks, FrontendEditionExtension } from "./contracts";
 import type { AnyRoute } from "@tanstack/react-router";
 
 /**
@@ -7,3 +7,4 @@ import type { AnyRoute } from "@tanstack/react-router";
  */
 export const editionExtensions: readonly FrontendEditionExtension[] = [];
 export const editionRoutes: readonly AnyRoute[] = [];
+export const editionServer: EditionServerHooks = {};

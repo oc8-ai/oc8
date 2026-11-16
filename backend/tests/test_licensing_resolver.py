@@ -65,6 +65,7 @@ def test_all_capabilities_holds_every_named_constant() -> None:
             "enterprise.dictation",
             "enterprise.prompt_templates",
             "enterprise.openapi_import",
+            "enterprise.embedding",
         }
     )
 

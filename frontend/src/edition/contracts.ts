@@ -211,3 +211,9 @@ export interface BoardBlockEntry {
   readonly needs?: readonly Capability[];
   readonly component: ComponentType<BoardBlockSlotProps>;
 }
+
+/** Server-side hooks an edition can provide; the Community build has none. */
+export interface EditionServerHooks {
+  /** Extra origins allowed to frame the app, resolved per request. */
+  frameAncestors?: (request: Request) => Promise<readonly string[]>;
+}
