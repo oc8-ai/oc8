@@ -54,6 +54,35 @@ describe("AgentBoardsSection", () => {
     expect(mutate.mock.calls[0][0]).toEqual({ id: "b1", records: 2 });
   });
 
+  it("shows the refreshed count after new records arrived while confirming", () => {
+    const { spy } = mockBoards([summary()]);
+    const { rerender } = render(<AgentBoardsSection agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: 'Delete "Sales"' }));
+    // The refused delete refetched the list (useDeleteBoard): the open dialog
+    // names the new count, and confirming sends it.
+    spy.mockReturnValue({
+      data: [summary({ recordCount: 5 })],
+      isPending: false,
+      isError: false,
+    } as never);
+    rerender(<AgentBoardsSection agentId="a1" />);
+    const dialog = screen.getByRole("alertdialog");
+    expect(within(dialog).getByText('Delete "Sales" and its 5 records?')).toBeInTheDocument();
+  });
+
+  it("closes the dialog when the dashboard is gone from the list", () => {
+    const { spy } = mockBoards([summary()]);
+    const { rerender } = render(<AgentBoardsSection agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: 'Delete "Sales"' }));
+    spy.mockReturnValue({
+      data: [summary({ id: "b2", title: "Stock" })],
+      isPending: false,
+      isError: false,
+    } as never);
+    rerender(<AgentBoardsSection agentId="a1" />);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
   it("offers no delete for a dashboard the person may not delete", () => {
     mockBoards([summary({ mayDelete: false })]);
     render(<AgentBoardsSection agentId="a1" />);

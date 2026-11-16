@@ -4,7 +4,7 @@ import { LayoutDashboard, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { Panel } from "@/components/app-shell";
-import { useBoards, type BoardSummary } from "@/lib/boards-api";
+import { useBoards } from "@/lib/boards-api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -20,8 +20,12 @@ export function AgentBoardsSection({
 }) {
   const t = useT();
   const { data: boards } = useBoards(agentId);
-  const [deleting, setDeleting] = useState<BoardSummary | null>(null);
+  // The id, not a copy of the row: the dialog reads the live list, so a refused
+  // delete (new records arrived) shows the refetched count, and a dashboard
+  // gone from the list closes it.
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   if (!boards?.length) return null;
+  const deleting = boards.find((board) => board.id === deletingId);
 
   return (
     <Panel className={cn("p-5", className)}>
@@ -44,7 +48,7 @@ export function AgentBoardsSection({
             {board.mayDelete && (
               <button
                 type="button"
-                onClick={() => setDeleting(board)}
+                onClick={() => setDeletingId(board.id)}
                 aria-label={t(`Delete "${board.title}"`, `„${board.title}" löschen`)}
                 className="grid size-8 shrink-0 place-items-center rounded text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
               >
@@ -58,7 +62,7 @@ export function AgentBoardsSection({
         <DeleteBoardDialog
           board={deleting}
           open
-          onOpenChange={(open) => !open && setDeleting(null)}
+          onOpenChange={(open) => !open && setDeletingId(null)}
         />
       )}
     </Panel>
