@@ -257,6 +257,9 @@ msgstr ""
 msgid "Add seat"
 msgstr ""
 
+msgid "Add to My work"
+msgstr ""
+
 msgid "Add tool"
 msgstr ""
 
@@ -1547,6 +1550,9 @@ msgstr ""
 msgid "Couldn't load the run history."
 msgstr ""
 
+msgid "Couldn't mark the notification as read"
+msgstr ""
+
 msgid "Couldn't publish"
 msgstr ""
 
@@ -1557,6 +1563,9 @@ msgid "Couldn't refresh"
 msgstr ""
 
 msgid "Couldn't remove skill"
+msgstr ""
+
+msgid "Couldn't remove the share"
 msgstr ""
 
 msgid "Couldn't remove webhook"
@@ -1584,6 +1593,9 @@ msgid "Couldn't save instructions"
 msgstr ""
 
 msgid "Couldn't send answer"
+msgstr ""
+
+msgid "Couldn't share the dashboard"
 msgstr ""
 
 msgid "Couldn't start run"
@@ -3440,6 +3452,9 @@ msgstr ""
 msgid "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password."
 msgstr ""
 
+msgid "No matches"
+msgstr ""
+
 msgid "No MCP connections yet."
 msgstr ""
 
@@ -3600,6 +3615,9 @@ msgid "Not set"
 msgstr ""
 
 msgid "not set up"
+msgstr ""
+
+msgid "Not shared yet"
 msgstr ""
 
 msgid "Not tested"
@@ -4541,6 +4559,9 @@ msgstr ""
 msgid "Search people"
 msgstr ""
 
+msgid "Search people and departments"
+msgstr ""
+
 msgid "Search person or account"
 msgstr ""
 
@@ -4706,6 +4727,9 @@ msgstr ""
 msgid "Share account"
 msgstr ""
 
+msgid "Share dashboard"
+msgstr ""
+
 msgid "Share this invite link"
 msgstr ""
 
@@ -4718,7 +4742,13 @@ msgstr ""
 msgid "Shared memory & private stores."
 msgstr ""
 
+msgid "Shared with"
+msgstr ""
+
 msgid "Shared with the team"
+msgstr ""
+
+msgid "Shared with you"
 msgstr ""
 
 msgid "Short summary — otherwise the instructions are used"
