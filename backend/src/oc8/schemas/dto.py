@@ -445,6 +445,9 @@ class MeDTO(CamelModel):
     #: read by an edition that greets members. None only for a principal with
     #: no member row at all (a plugin token).
     member_onboarding_status: str | None = None
+    #: The organisation's IANA timezone (UTC when unset or unknown): what a new
+    #: schedule is read in unless the editor names another.
+    organisation_timezone: str = "UTC"
 
 
 class IntegrationDTO(CamelModel):
