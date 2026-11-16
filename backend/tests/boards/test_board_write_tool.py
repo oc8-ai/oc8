@@ -381,3 +381,64 @@ async def test_a_held_cap_lock_makes_the_write_busy_not_wait(
         assert outcome.output == "ERROR: the dashboard is busy; try the write again."
     async with app_session(tenant) as check:
         assert await _count(check, m.DataBoardBatch) == 0
+
+
+async def test_a_held_audit_chain_lock_makes_the_write_busy_not_wait(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tenant's audit chain lock, taken at commit, waits the same bounded
+    time; giving up rolls back, so nothing was written and a retry is safe."""
+    monkeypatch.setattr(control_tools, "BOARD_WRITE_LOCK_TIMEOUT", "200ms")
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        seeded = await _seed(db, tenant)
+        async with app_session(tenant) as holder:
+            await holder.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:k, 0))"),
+                {"k": str(tenant)},
+            )
+            outcome = await _call(
+                db,
+                tenant,
+                seeded,
+                {
+                    "board": str(seeded[1].id),
+                    "dataset": "sales",
+                    "as_of": "2026-03-01",
+                    "values": {"amount": 1},
+                },
+            )
+            await holder.rollback()
+        assert outcome.output == "ERROR: the dashboard is busy; try the write again."
+    async with app_session(tenant) as check:
+        assert await _count(check, m.DataBoardBatch) == 0
+
+
+async def test_a_lost_connection_is_not_reported_as_busy(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any database error other than a lock timeout -- a connection lost at
+    commit may already have committed -- propagates instead of inviting a retry."""
+    from sqlalchemy.exc import OperationalError
+
+    from oc8.boards import records
+
+    async def lost(*_a: Any, **_kw: Any) -> Any:
+        raise OperationalError("COMMIT", {}, ConnectionResetError("connection lost"))
+
+    monkeypatch.setattr(records, "write_batch", lost)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        seeded = await _seed(db, tenant)
+        with pytest.raises(OperationalError):
+            await _call(
+                db,
+                tenant,
+                seeded,
+                {
+                    "board": str(seeded[1].id),
+                    "dataset": "sales",
+                    "as_of": "2026-03-01",
+                    "values": {"amount": 1},
+                },
+            )
