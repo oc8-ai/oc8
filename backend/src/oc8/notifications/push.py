@@ -12,10 +12,11 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from pywebpush import WebPushException, webpush_async
-from sqlalchemy import select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -39,12 +40,38 @@ _PUSH_TIMEOUT_SECONDS = 10
 async def send_push_for_tenant(
     db: AsyncSession, *, tenant_id: uuid.UUID, payload: dict[str, Any]
 ) -> None:
+    await _send_and_prune(
+        db, select(m.PushSubscription).where(m.PushSubscription.tenant_id == tenant_id), payload
+    )
+
+
+async def send_push_to_members(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    member_ids: Sequence[uuid.UUID],
+    payload: dict[str, Any],
+) -> None:
+    """Like `send_push_for_tenant`, but only to `member_ids`' subscriptions."""
+    if not member_ids:
+        return
+    await _send_and_prune(
+        db,
+        select(m.PushSubscription).where(
+            m.PushSubscription.tenant_id == tenant_id,
+            m.PushSubscription.member_id.in_(list(member_ids)),
+        ),
+        payload,
+    )
+
+
+async def _send_and_prune(
+    db: AsyncSession, query: Select[tuple[m.PushSubscription]], payload: dict[str, Any]
+) -> None:
     settings = get_settings()
     if not settings.vapid_public_key or not settings.vapid_private_key:
         return
-    result = await db.execute(
-        select(m.PushSubscription).where(m.PushSubscription.tenant_id == tenant_id)
-    )
+    result = await db.execute(query)
     subs = list(result.scalars().all())
     if not subs:
         return
