@@ -1,3 +1,5 @@
+import { toast } from "sonner";
+
 import { Switch } from "@/components/ui/switch";
 import { useT } from "@/lib/i18n";
 import {
@@ -33,6 +35,15 @@ export function NotificationSettings() {
   ) => {
     save.mutate(
       NOTIFICATION_KINDS.map((k) => (k === kind ? { ...current(k), [field]: value } : current(k))),
+      {
+        onError: () =>
+          toast.error(
+            t(
+              "Could not save your notification settings",
+              "Deine Benachrichtigungseinstellungen konnten nicht gespeichert werden",
+            ),
+          ),
+      },
     );
   };
 

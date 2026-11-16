@@ -64,6 +64,16 @@ describe("NotificationBell", () => {
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ href: "/boards/n1" }));
   });
 
+  it("navigates to an in-app link with a query string", async () => {
+    setup(1, [{ ...item("n1"), link: "/copilot?session=s1" }]);
+    fireEvent.pointerDown(await screen.findByLabelText("Notifications"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByText("Title n1"));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith({ href: "/copilot?session=s1" }));
+  });
+
   it("does not navigate to an external or protocol-relative link", async () => {
     setup(1, [
       { ...item("n1"), link: "//evil.example/x" },

@@ -1475,6 +1475,9 @@ msgstr ""
 msgid "Could not save your dashboard layout"
 msgstr ""
 
+msgid "Could not save your notification settings"
+msgstr ""
+
 msgid "Could not save."
 msgstr ""
 
