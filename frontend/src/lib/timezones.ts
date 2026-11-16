@@ -36,3 +36,10 @@ export function useOrgTimezone(): string {
   const { data } = useAuth();
   return data?.organisationTimezone || browserTimezone();
 }
+
+/** True once /me says the organisation's zone is still UTC (the default
+ *  nobody chose): the schedule editor then points to the settings. */
+export function useOrgTimezoneIsUnset(): boolean {
+  const { data } = useAuth();
+  return !!data && (data.organisationTimezone || "UTC") === "UTC";
+}

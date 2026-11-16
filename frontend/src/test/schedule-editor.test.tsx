@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TriggerDTO } from "@/lib/hooks";
@@ -19,6 +20,12 @@ vi.mock("@/lib/hooks", () => ({
 }));
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to, hash }: { children: ReactNode; to: string; hash?: string }) => (
+    <a href={hash ? `${to}#${hash}` : to}>{children}</a>
+  ),
+}));
 
 import { ScheduleEditor } from "@/components/schedule-editor";
 
@@ -108,5 +115,20 @@ describe("ScheduleEditor timezone", () => {
       expect.objectContaining({ timezone: "America/New_York" }),
       expect.anything(),
     );
+  });
+
+  it("points to the settings while the organisation's zone is still UTC", () => {
+    m.orgTimezone = "UTC";
+    render(<ScheduleEditor initial="On-Demand" agentName="Ada" agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Time scheduled" }));
+    const link = screen.getByRole("link", { name: /set it in settings/i });
+    expect(link).toHaveAttribute("href", "/settings#organization");
+    expect(screen.getByText(/Organisation timezone is UTC/)).toBeInTheDocument();
+  });
+
+  it("gives no hint once the organisation has a zone", () => {
+    render(<ScheduleEditor initial="On-Demand" agentName="Ada" agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Time scheduled" }));
+    expect(screen.queryByRole("link", { name: /set it in settings/i })).toBeNull();
   });
 });

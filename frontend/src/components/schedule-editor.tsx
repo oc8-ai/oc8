@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
+import { Link } from "@tanstack/react-router";
 
 import { TriggerOwner } from "@/components/connections/trigger-owner";
 import { CronBuilder } from "@/components/cron-builder";
@@ -15,7 +16,7 @@ import {
   useUpdateAgentTrigger,
 } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
-import { scheduleZone, useOrgTimezone } from "@/lib/timezones";
+import { scheduleZone, useOrgTimezone, useOrgTimezoneIsUnset } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
 
 type TriggerMode = "continuous" | "24-7" | "schedule" | "on-demand" | "custom";
@@ -59,6 +60,7 @@ export function ScheduleEditor({
   const [mode, setMode] = useState<TriggerMode>(() => detectTriggerMode(initial));
   const [value, setValue] = useState<string>(initial);
   const orgTimezone = useOrgTimezone();
+  const orgZoneUnset = useOrgTimezoneIsUnset();
   // The zone the schedule is read in: the saved trigger's (none = UTC), or
   // the organisation's for a new one. `null` until the person picks one.
   const [pickedZone, setPickedZone] = useState<string | null>(null);
@@ -149,14 +151,24 @@ export function ScheduleEditor({
       </div>
       {showTextInput ? (
         mode === "custom" ? (
-          <CronBuilder
-            initial={value}
-            onChange={setValue}
-            onSave={save}
-            saveLabel={t("Save", "Speichern")}
-            timezone={timezone}
-            onTimezoneChange={setPickedZone}
-          />
+          <>
+            <CronBuilder
+              initial={value}
+              onChange={setValue}
+              onSave={save}
+              saveLabel={t("Save", "Speichern")}
+              timezone={timezone}
+              onTimezoneChange={setPickedZone}
+            />
+            {orgZoneUnset && (
+              <p className="mt-1.5 text-[11px] text-muted-foreground">
+                {t("Organisation timezone is UTC — ", "Die Zeitzone der Organisation ist UTC — ")}
+                <Link to="/settings" hash="organization" className="underline">
+                  {t("set it in settings", "in den Einstellungen festlegen")}
+                </Link>
+              </p>
+            )}
+          </>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
             <input

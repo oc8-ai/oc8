@@ -16,6 +16,7 @@ import { Panel } from "@/components/app-shell";
 import { BackupPanel } from "@/components/backup-panel";
 import { CredentialPicker } from "@/components/credential-picker";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
+import { TimezoneSelect } from "@/components/timezone-select";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -169,23 +170,25 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
   );
 }
 
-function OrganizationPanel() {
+export function OrganizationPanel() {
   const t = useT();
   const { data: organization, isLoading, error } = useOrganizationSettings();
   const update = useUpdateOrganizationSettings();
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
+  const [timezone, setTimezone] = useState("UTC");
 
   useEffect(() => {
     if (organization) {
       setName(organization.name);
       setRegion(organization.region);
+      setTimezone(organization.timezone || "UTC");
     }
   }, [organization]);
 
   const save = async () => {
     try {
-      await update.mutateAsync({ name: name.trim(), region: region.trim() });
+      await update.mutateAsync({ name: name.trim(), region: region.trim(), timezone });
       toast.success(t("Organization updated", "Organisation aktualisiert"));
     } catch (err) {
       toast.error(
@@ -229,6 +232,15 @@ function OrganizationPanel() {
               className="mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground"
             />
           </label>
+          <div>
+            <TimezoneSelect value={timezone} onChange={setTimezone} />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t(
+                "New agent schedules run in this timezone unless they name another.",
+                "Neue Zeitpläne von Agenten laufen in dieser Zeitzone, sofern sie keine andere nennen.",
+              )}
+            </p>
+          </div>
           <dl className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
             <div>
               <dt>{t("Tenant", "Mandant")}</dt>

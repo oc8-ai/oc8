@@ -348,6 +348,8 @@ export interface OrganizationSettingsDTO {
   // (not on every other field) only so existing fixtures that predate this
   // task (e.g. backup-panel.test.tsx's ORG) don't have to be touched.
   active_smtp_credential_id?: string | null;
+  /** IANA zone new agent schedules are read in (also on /me). */
+  timezone?: string;
 }
 
 export interface ModelWriteBody {
@@ -884,9 +886,13 @@ export function useUpdateOrganizationSettings() {
     // mail-server pointer untouched, while including it with `null` clears it.
     mutationFn: (
       body: Pick<OrganizationSettingsDTO, "name" | "region"> &
-        Partial<Pick<OrganizationSettingsDTO, "active_smtp_credential_id">>,
+        Partial<Pick<OrganizationSettingsDTO, "active_smtp_credential_id" | "timezone">>,
     ) => api.put<OrganizationSettingsDTO>("/settings/organization", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", "organization"] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings", "organization"] });
+      // /me carries the organisation's timezone, the schedule editors' default.
+      return qc.invalidateQueries({ queryKey: ["auth", "me"] });
+    },
   });
 }
 
