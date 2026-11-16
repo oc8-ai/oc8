@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from oc8 import models as m
 from oc8.approvals import decide_approval
@@ -22,6 +23,7 @@ from oc8.authz.permissions import SEAT_APPROVER, SEAT_VIEWER
 from oc8.authz.scope import HumanActor, scope_for_principal, subject_uuid_for
 from oc8.copilot.capabilities import BoardCreate, _apply_board_create
 from oc8.notifications import delivery, events, service
+from oc8.runtime import repository as run_repository
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.states import RunState
 from tests.conftest import AppSessionFactory
@@ -44,6 +46,14 @@ SPEC: dict[str, Any] = {
 async def _drain() -> None:
     while service._background_tasks:
         await asyncio.gather(*list(service._background_tasks), return_exceptions=True)
+
+
+@pytest.fixture(autouse=True)
+def _no_run_state_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A terminal transition deletes the run's saved state after commit, which
+    reaches Redis and object storage; neither exists here and neither is what
+    these tests are about."""
+    monkeypatch.setattr(run_repository, "_delete_state_after_commit", lambda *a, **k: None)
 
 
 @pytest.fixture
@@ -512,3 +522,99 @@ async def test_a_raising_push_still_commits_the_decision(
         row = await db.get(m.ApprovalRequest, approval_id)
         assert row is not None and row.status == "approved"
     assert [r.member_id for r in await _rows(app_session, tenant)] == [person.id]
+
+
+# --- the guard ------------------------------------------------------------------
+
+
+async def _boom(*args: Any, **kwargs: Any) -> None:
+    raise RuntimeError("notification store down")
+
+
+async def test_a_failing_hook_still_fails_the_run_and_tells_nobody(
+    app_session: AppSessionFactory,
+    delivered: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _office(db, tenant)
+        starter = await _member(db, tenant)
+        run = await _run(db, agent, {"originating_operator": starter.subject})
+        run_id = run.id
+    monkeypatch.setattr(events, "notify", _boom)
+    await _fail(app_session, tenant, run_id)
+    await _drain()
+    async with app_session(tenant) as db:
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None and row.state == RunState.FAILED.value
+    assert await _rows(app_session, tenant) == []
+    assert delivered == []
+
+
+async def test_a_failing_hook_still_commits_the_decision_and_tells_nobody(
+    app_session: AppSessionFactory,
+    delivered: list[dict[str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, approval, _person = await _held_call(db, tenant)
+        decider = await _member(db, tenant, seat_in=agent.department_id, seat_role=SEAT_APPROVER)
+        approval_id = approval.id
+        monkeypatch.setattr(events, "resolve_acting_person", _boom)
+        await decide_approval(
+            db, approval, decision="approve", tenant_id=tenant, actor=await _actor(db, decider)
+        )
+    await _drain()
+    async with app_session(tenant) as db:
+        row = await db.get(m.ApprovalRequest, approval_id)
+        assert row is not None and row.status == "approved"
+    assert await _rows(app_session, tenant) == []
+    assert delivered == []
+
+
+async def test_a_business_flush_error_is_not_swallowed_by_the_guard(
+    app_session: AppSessionFactory, delivered: list[dict[str, Any]]
+) -> None:
+    """The guard covers the notification only. A pending business row that
+    cannot be written must raise from the caller, not be logged as a notice."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _office(db, tenant)
+        run = await _run(db, agent, {})
+        run_id = run.id
+    with pytest.raises(IntegrityError):
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            # Pending, unflushed, and NOT NULL-violating: the business write.
+            db.add(m.Task(tenant_id=tenant, department_id=agent.department_id, title=None))
+            await events.on_run_failed(db, run)
+    assert delivered == []
+
+
+async def test_a_decision_on_a_chat_run_links_to_the_chat(
+    app_session: AppSessionFactory, delivered: list[dict[str, Any]]
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _office(db, tenant)
+        person = await _member(db, tenant)
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=person.id)
+        db.add(session)
+        await db.flush()
+        _, approval, _ = await _held_call(db, tenant, agent=agent, person=person)
+        run = (
+            await db.execute(select(m.AgentRun).where(m.AgentRun.task_id == approval.task_id))
+        ).scalar_one()
+        run.context = {"chat_session_id": str(session.id)}
+        decider = await _member(db, tenant, seat_in=agent.department_id, seat_role=SEAT_APPROVER)
+        await decide_approval(
+            db, approval, decision="approve", tenant_id=tenant, actor=await _actor(db, decider)
+        )
+        session_id = session.id
+    await _drain()
+    (row,) = await _rows(app_session, tenant)
+    assert row.member_id == person.id
+    assert row.link == f"/chat/{session_id}"

@@ -124,7 +124,13 @@ def failure_category(run: m.AgentRun) -> FailureCategory:
 
 async def _guarded(db: AsyncSession, what: str, hook: Callable[[], Awaitable[None]]) -> None:
     """Run `hook` in a SAVEPOINT; on failure roll back only that and log it.
-    Rolling back the savepoint also drops whatever `notify` staged in it."""
+    Rolling back the savepoint also drops whatever `notify` staged in it.
+
+    The caller's pending rows are flushed FIRST and outside the guard:
+    `begin_nested()` would flush them itself, and a business write that fails
+    there (the run's transition row, the board's audit row) must raise from
+    the caller -- not be logged as a notice and leave a dead transaction."""
+    await db.flush()
     try:
         async with db.begin_nested():
             await hook()
