@@ -10,10 +10,42 @@ const API_URL =
 const TOKEN_KEY = "oc8-dev-token";
 export const COMMUNITY_TOKEN_KEY = "oc8-community-token";
 
+/** Where the access token is read, written and cleared. */
+export interface TokenStore {
+  get(): string | null;
+  set(token: string): void;
+  clear(): void;
+}
+
+/** The default: the access token lives in localStorage under `COMMUNITY_TOKEN_KEY`. */
+const localStorageTokenStore: TokenStore = {
+  get: () =>
+    typeof window !== "undefined" ? window.localStorage.getItem(COMMUNITY_TOKEN_KEY) : null,
+  set: (token) => {
+    if (typeof window !== "undefined") window.localStorage.setItem(COMMUNITY_TOKEN_KEY, token);
+  },
+  clear: () => {
+    if (typeof window !== "undefined") window.localStorage.removeItem(COMMUNITY_TOKEN_KEY);
+  },
+};
+
+let tokenStore: TokenStore = localStorageTokenStore;
+
+/** An edition may keep the access token elsewhere, for example in memory.
+ *  `null` restores the default localStorage store. Every read, write and
+ *  clear of the access token in core goes through the store set here. */
+export function setTokenStore(store: TokenStore | null): void {
+  tokenStore = store ?? localStorageTokenStore;
+}
+
+/** Keeps a freshly issued access token in the current token store. */
+export function setCommunityToken(token: string): void {
+  tokenStore.set(token);
+}
+
 async function getToken(): Promise<string> {
   // Check for community token first (single-instance auth)
-  const communityToken =
-    typeof window !== "undefined" ? window.localStorage.getItem(COMMUNITY_TOKEN_KEY) : null;
+  const communityToken = tokenStore.get();
   if (communityToken) return communityToken;
   // Fall back to dev token
   const stored = typeof window !== "undefined" ? window.localStorage.getItem(TOKEN_KEY) : null;
@@ -22,7 +54,7 @@ async function getToken(): Promise<string> {
 }
 
 export function hasCommunitySession(): boolean {
-  return typeof window !== "undefined" && window.localStorage.getItem(COMMUNITY_TOKEN_KEY) !== null;
+  return tokenStore.get() !== null;
 }
 
 /** Clears the local session and, if the identity provider has an external SSO
@@ -32,7 +64,7 @@ export function hasCommunitySession(): boolean {
  *  SSO redirect and win, silently cancelling it. */
 export async function logoutCommunity(): Promise<void> {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(COMMUNITY_TOKEN_KEY);
+  tokenStore.clear();
   // /auth/config is unguarded, so this works with the token already gone.
   try {
     const res = await fetch(`${API_URL}/auth/config`);

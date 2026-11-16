@@ -45,6 +45,11 @@ export interface FrontendEditionExtension {
   readonly customServerSources?: readonly CustomServerSource[];
   /** Renders a dashboard's `artifact` blocks, which core only stands in for. */
   readonly boardBlocks?: readonly BoardBlockEntry[];
+  /** Gates the app shell: wraps the whole app outside the sign-in gate, so it
+   *  decides whether anything of the app renders before a visitor without a
+   *  session is sent to /login. Render `children` to let the app through.
+   *  Several gates nest in extension order, the first outermost. */
+  readonly appGate?: ComponentType<{ children: ReactNode }>;
 }
 
 export type Capability = string;

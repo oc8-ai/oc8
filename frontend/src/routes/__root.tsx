@@ -56,6 +56,7 @@ const GATE_PUBLIC_ROUTES = new Set([
 const SHELL_PUBLIC_ROUTES = new Set([...GATE_PUBLIC_ROUTES, "/welcome"]);
 
 import {
+  EditionAppGate,
   EditionCompositionProvider,
   composeFrontendEdition,
   editionBarePaths,
@@ -297,9 +298,13 @@ function RootComponent() {
       <LanguageProvider>
         <LiveUpdatesProvider>
           <EditionCompositionProvider extensions={editionExtensions}>
-            <AuthGate>
-              <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
-            </AuthGate>
+            {/* An edition's gate runs outside AuthGate, so it decides whether
+                anything of the app renders before AuthGate can redirect. */}
+            <EditionAppGate>
+              <AuthGate>
+                <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
+              </AuthGate>
+            </EditionAppGate>
             {/*
               The ONE <Toaster/> in the app, deliberately a sibling of `gatedContent`
               rather than inside it. `sonner` seeds a freshly mounted <Toaster/> from

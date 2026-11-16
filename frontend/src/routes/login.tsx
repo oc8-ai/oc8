@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useT } from "@/lib/i18n";
+import { setCommunityToken } from "@/lib/api";
 import { PublicAuthLayout } from "@/components/public-auth-layout";
 import { TotpChallenge } from "@/components/totp-challenge";
 import { TotpEnroll } from "@/components/totp-enroll";
@@ -33,9 +34,9 @@ export function LoginPage() {
   const [celebrating, setCelebrating] = useState(false);
   const [alreadyInitializedNotice, setAlreadyInitializedNotice] = useState<string | null>(null);
   // Narrow, single-purpose tokens handed back by POST /auth/login when the
-  // password alone is not enough. Deliberately NOT stored in
-  // "oc8-community-token" -- that key is the real session, and anything
-  // holding it is treated as logged in.
+  // password alone is not enough. Deliberately NOT kept in the token store
+  // (`setCommunityToken`) -- that is the real session, and anything holding
+  // it is treated as logged in.
   const [totpChallengeToken, setTotpChallengeToken] = useState<string | null>(null);
   const [totpEnrollToken, setTotpEnrollToken] = useState<string | null>(null);
 
@@ -122,9 +123,7 @@ export function LoginPage() {
 
       const result = await response.json();
       // Store token and redirect to welcome
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("oc8-community-token", result.token);
-      }
+      setCommunityToken(result.token);
       toast.success(t("Account created successfully", "Konto erfolgreich erstellt"));
       setLoading(false);
       celebrateAndNavigate("/welcome");
@@ -207,9 +206,7 @@ export function LoginPage() {
       }
 
       // Store token and redirect to dashboard
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("oc8-community-token", result.token);
-      }
+      setCommunityToken(result.token);
       toast.success(t("Logged in successfully", "Erfolgreich angemeldet"));
       setLoading(false);
       celebrateAndNavigate("/");
@@ -227,9 +224,7 @@ export function LoginPage() {
         <TotpChallenge
           token={totpChallengeToken}
           onVerified={(sessionToken) => {
-            if (typeof window !== "undefined") {
-              window.localStorage.setItem("oc8-community-token", sessionToken);
-            }
+            setCommunityToken(sessionToken);
             celebrateAndNavigate("/");
           }}
         />

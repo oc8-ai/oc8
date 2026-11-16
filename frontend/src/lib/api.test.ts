@@ -1,6 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { API_URL, COMMUNITY_TOKEN_KEY, api, setSessionRenewer } from "./api";
+import {
+  API_URL,
+  COMMUNITY_TOKEN_KEY,
+  api,
+  getToken,
+  hasCommunitySession,
+  logoutCommunity,
+  setCommunityToken,
+  setSessionRenewer,
+  setTokenStore,
+  type TokenStore,
+} from "./api";
 
 // What a 401 does to the session. With no renewer set, `request()` signs out
 // at once, exactly as before the seam existed. With one set, it asks the
@@ -59,6 +70,7 @@ beforeEach(() => {
 
 afterEach(() => {
   setSessionRenewer(null);
+  setTokenStore(null);
   vi.unstubAllGlobals();
   Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
 });
@@ -315,5 +327,76 @@ describe("request() on a refusal", () => {
   it("keeps a string detail as it is", async () => {
     stubFetch(() => json(400, { detail: "This source can't be browsed." }));
     await expect(api.post("/x", {})).rejects.toThrow("This source can't be browsed.");
+  });
+});
+
+describe("where the access token is kept", () => {
+  function memoryStore(initial: string | null): TokenStore & { value: string | null } {
+    const store = {
+      value: initial,
+      get: () => store.value,
+      set: (token: string) => {
+        store.value = token;
+      },
+      clear: () => {
+        store.value = null;
+      },
+    };
+    return store;
+  }
+
+  it("keeps it under the community key in localStorage by default", async () => {
+    const fetchMock = stubFetch(() => json(200, { ok: true }));
+
+    await api.get("/me");
+
+    expect(authHeader(apiCalls(fetchMock)[0])).toBe("Bearer old-token");
+    expect(hasCommunitySession()).toBe(true);
+    setCommunityToken("next-token");
+    expect(window.localStorage.getItem(COMMUNITY_TOKEN_KEY)).toBe("next-token");
+    await logoutCommunity();
+    expect(window.localStorage.getItem(COMMUNITY_TOKEN_KEY)).toBeNull();
+    expect(hasCommunitySession()).toBe(false);
+  });
+
+  it("sends the token from a store an edition sets and leaves localStorage alone", async () => {
+    window.localStorage.clear();
+    const store = memoryStore("memory-token");
+    setTokenStore(store);
+    const fetchMock = stubFetch(() => json(200, { ok: true }));
+
+    await api.get("/me");
+    await expect(getToken()).resolves.toBe("memory-token");
+    expect(hasCommunitySession()).toBe(true);
+    setCommunityToken("signed-in-token");
+
+    expect(authHeader(apiCalls(fetchMock)[0])).toBe("Bearer memory-token");
+    expect(store.value).toBe("signed-in-token");
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it("ignores a token in localStorage while an edition's store is set", async () => {
+    setTokenStore(memoryStore(null));
+
+    expect(hasCommunitySession()).toBe(false);
+    await expect(getToken()).rejects.toThrow("not signed in");
+  });
+
+  it("clears the edition's store on sign-out, not localStorage", async () => {
+    const store = memoryStore("memory-token");
+    setTokenStore(store);
+    stubFetch(() => json(401, { detail: "expired" }));
+
+    await expect(api.get("/me")).rejects.toThrow("session expired");
+
+    expect(store.value).toBeNull();
+    expect(window.localStorage.getItem(COMMUNITY_TOKEN_KEY)).toBe("old-token");
+  });
+
+  it("goes back to localStorage when the store is reset", async () => {
+    setTokenStore(memoryStore("memory-token"));
+    setTokenStore(null);
+
+    await expect(getToken()).resolves.toBe("old-token");
   });
 });
