@@ -57,6 +57,13 @@ def test_exported_tables_excludes_the_denylist() -> None:
     assert len(exported) == 63
 
 
+def test_board_shares_and_settings_export_but_the_inbox_does_not() -> None:
+    exported = exported_tables()
+    assert "data_board_share" in exported
+    assert "member_notification_setting" in exported
+    assert "member_notification" not in exported
+
+
 def test_table_by_name_returns_a_real_table() -> None:
     table = table_by_name("agent")
     assert "tenant_id" in table.columns
