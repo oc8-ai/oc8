@@ -2,7 +2,7 @@
 // a tile or dismiss it. Either way the notice is marked read; a dashboard that
 // is already on the grid needs no notice, so that one is marked read silently.
 import { LayoutDashboard, X } from "lucide-react";
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { WidgetType } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
@@ -20,16 +20,37 @@ export function BoardNotices({
   const t = useT();
   const { data: notices = [] } = useNotifications({ unread: true, kind: "board.available" });
   const markRead = useMarkRead();
+  // Ids already acted on: a second click on the same notice is a no-op, even
+  // before the read mark comes back and the notice leaves the list.
+  const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
+  const autoMarked = useRef(new Set<string>());
   const onGrid = new Set(boardIdsOnGrid);
-  const pending = notices.filter((n) => n.subjectId && !onGrid.has(n.subjectId));
-  const redundant = notices.filter((n) => n.subjectId && onGrid.has(n.subjectId));
-  const redundantKey = redundant.map((n) => n.id).join(",");
+  const open = notices.filter((n) => n.subjectId && !handled.has(n.id));
+  const pending = open.filter((n) => !onGrid.has(n.subjectId!));
+  const redundant = open.filter((n) => onGrid.has(n.subjectId!));
 
+  // Silent on failure, but the id is released so a later render retries.
   useEffect(() => {
-    for (const id of redundantKey ? redundantKey.split(",") : []) markRead.mutate(id);
-    // `markRead` is a new object each render; the ids are the real trigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [redundantKey]);
+    for (const n of redundant) {
+      if (autoMarked.current.has(n.id)) continue;
+      autoMarked.current.add(n.id);
+      markRead.mutate(n.id, { onError: () => autoMarked.current.delete(n.id) });
+    }
+  });
+
+  const handle = (id: string, after?: () => void) => {
+    if (handled.has(id)) return;
+    setHandled((prev) => new Set(prev).add(id));
+    after?.();
+    markRead.mutate(id, {
+      onError: () =>
+        setHandled((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        }),
+    });
+  };
 
   if (pending.length === 0) return null;
   const shown = pending.slice(0, MAX_SHOWN);
@@ -50,10 +71,7 @@ export function BoardNotices({
           <button
             type="button"
             aria-label={t("Add to My work", "Zu Meine Arbeit hinzufügen")}
-            onClick={() => {
-              onAdd("data_board", { boardId: n.subjectId });
-              markRead.mutate(n.id);
-            }}
+            onClick={() => handle(n.id, () => onAdd("data_board", { boardId: n.subjectId }))}
             className="shrink-0 rounded-md border border-border px-2.5 py-1 text-xs transition hover:bg-muted/30"
           >
             {t("Add to My work", "Zu Meine Arbeit hinzufügen")}
@@ -61,7 +79,7 @@ export function BoardNotices({
           <button
             type="button"
             aria-label={t("Dismiss", "Schließen")}
-            onClick={() => markRead.mutate(n.id)}
+            onClick={() => handle(n.id)}
             className="grid size-6 shrink-0 place-items-center rounded text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
           >
             <X className="size-3.5" />

@@ -56,20 +56,43 @@ describe("BoardNotices", () => {
     const { onAdd, mutate } = setup([item("n1", "b1")]);
     fireEvent.click(screen.getByRole("button", { name: "Add to My work" }));
     expect(onAdd).toHaveBeenCalledWith("data_board", { boardId: "b1" });
-    expect(mutate).toHaveBeenCalledWith("n1");
+    expect(mutate).toHaveBeenCalledWith("n1", expect.anything());
+  });
+
+  it("adds once on a double click", () => {
+    const { onAdd, mutate } = setup([item("n1", "b1")]);
+    const add = screen.getByRole("button", { name: "Add to My work" });
+    fireEvent.click(add);
+    fireEvent.click(add);
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-fire the auto mark on rerender, and retries after a failure", () => {
+    const items = [item("n1", "b1")];
+    vi.spyOn(notificationsApi, "useNotifications").mockReturnValue({ data: items } as never);
+    const mutate = vi.fn();
+    vi.spyOn(notificationsApi, "useMarkRead").mockReturnValue({ mutate } as never);
+    const ui = () => <BoardNotices onAdd={vi.fn()} boardIdsOnGrid={["b1"]} />;
+    const { rerender } = render(ui());
+    rerender(ui());
+    expect(mutate).toHaveBeenCalledTimes(1);
+    mutate.mock.calls[0][1].onError();
+    rerender(ui());
+    expect(mutate).toHaveBeenCalledTimes(2);
   });
 
   it("dismisses by marking read, without adding", () => {
     const { onAdd, mutate } = setup([item("n1", "b1")]);
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(mutate).toHaveBeenCalledWith("n1");
+    expect(mutate).toHaveBeenCalledWith("n1", expect.anything());
     expect(onAdd).not.toHaveBeenCalled();
   });
 
   it("marks a notice read when its board is already on the grid", () => {
     const { mutate } = setup([item("n1", "b1"), item("n2", "b2")], ["b1"]);
-    expect(mutate).toHaveBeenCalledWith("n1");
-    expect(mutate).not.toHaveBeenCalledWith("n2");
+    expect(mutate).toHaveBeenCalledWith("n1", expect.anything());
+    expect(mutate).not.toHaveBeenCalledWith("n2", expect.anything());
     expect(screen.queryByText("New dashboard n1")).toBeNull();
   });
 });

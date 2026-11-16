@@ -99,6 +99,13 @@ describe("ShareBoardDialog", () => {
     expect(unshare.mock.calls[0][0]).toEqual({ id: "b1", shareId: "s1" });
   });
 
+  it("toasts when removing a share fails", () => {
+    const { unshare } = setup();
+    unshare.mockImplementation((_v: unknown, o: { onError?: () => void }) => o.onError?.());
+    fireEvent.click(screen.getByRole("button", { name: "Remove Eva Example" }));
+    expect(m.error).toHaveBeenCalledWith("Couldn't remove the share");
+  });
+
   it("toasts when sharing fails", () => {
     const { share } = setup();
     share.mockImplementation((_v: unknown, o: { onError?: () => void }) => o.onError?.());

@@ -139,6 +139,12 @@ export function WorkspacePage() {
     const { defaultSize } = WIDGET_REGISTRY[type];
     setWidgets((prev) => {
       const list = prev ?? [];
+      // One tile per dashboard: a repeated add (a double click) is a no-op.
+      if (
+        type === "data_board" &&
+        list.some((w) => w.type === type && w.config?.boardId === config.boardId)
+      )
+        return list;
       return [
         ...list,
         {

@@ -222,6 +222,20 @@ describe("data_board refresh", () => {
   });
 });
 
+describe("data_board shared label", () => {
+  it("labels a dashboard shared with the person, outside edit mode", () => {
+    mockBoard({ data: board({ mayDelete: false, sharedWithMe: true }) });
+    render(wrap(<DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />));
+    expect(screen.getByText("Shared with you")).toBeInTheDocument();
+  });
+
+  it("shows no label for the person's own dashboard", () => {
+    mockBoard({ data: board() });
+    render(wrap(<DataBoardWidget config={{ boardId: "b1" }} onConfigChange={vi.fn()} />));
+    expect(screen.queryByText("Shared with you")).toBeNull();
+  });
+});
+
 describe("data_board tile menu", () => {
   function frame(config: Record<string, unknown>) {
     return (
@@ -252,12 +266,6 @@ describe("data_board tile menu", () => {
     mockBoard({ data: board({ mayShare: false }) });
     render(wrap(frame({ boardId: "b1" })));
     expect(screen.queryByRole("button", { name: "Share dashboard" })).toBeNull();
-  });
-
-  it("labels a dashboard shared with the person", () => {
-    mockBoard({ data: board({ mayDelete: false, sharedWithMe: true }) });
-    render(wrap(frame({ boardId: "b1" })));
-    expect(screen.getByText("Shared with you")).toBeInTheDocument();
   });
 
   it("removing the tile never deletes the board", () => {

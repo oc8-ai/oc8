@@ -78,6 +78,17 @@ describe("NotificationBell", () => {
     expect(navigate).not.toHaveBeenCalled();
   });
 
+  it("does not navigate to a backslash link", async () => {
+    setup(1, [{ ...item("n3"), link: "/\\evil.example" }]);
+    fireEvent.pointerDown(await screen.findByLabelText("Notifications"), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByText("Title n3"));
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith("/notifications/n3/read"));
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
   it("toasts when marking read fails", async () => {
     setup(1, [item("n1")]);
     vi.mocked(api.post).mockRejectedValue(new Error("boom"));

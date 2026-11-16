@@ -55,7 +55,7 @@ export function NotificationBell() {
       });
     }
     // Only an in-app path: never an absolute or protocol-relative URL.
-    if (n.link.startsWith("/") && !n.link.startsWith("//")) navigate({ href: n.link });
+    if (/^\/(?![/\\])/.test(n.link)) navigate({ href: n.link });
   };
 
   return (

@@ -104,6 +104,11 @@ export function DataBoardWidget({
           ) : undefined
         }
       />
+      {board.sharedWithMe && (
+        <p className="shrink-0 px-3 pb-1 text-xs text-muted-foreground">
+          {t("Shared with you", "Mit dir geteilt")}
+        </p>
+      )}
       {board.stale && (
         <p className="shrink-0 px-3 pb-1 text-xs text-[color:var(--status-warning)]">
           {t("No longer updated", "Wird nicht mehr aktualisiert")}
@@ -178,8 +183,7 @@ function RefreshBoardButton({ board, agentId }: { board: Board; agentId: string 
 }
 
 /** The tile's edit-mode menu: "Share dashboard" and "Delete dashboard", each
- *  for a person who may, and a "Shared with you" label when the dashboard
- *  reached them through a share. It reads the board itself, so the frame never
+ *  for a person who may. It reads the board itself, so the frame never
  *  fetches board data. */
 export function DataBoardMenu({ config }: { config: Record<string, unknown> }) {
   const t = useT();
@@ -189,15 +193,10 @@ export function DataBoardMenu({ config }: { config: Record<string, unknown> }) {
   const [open, setOpen] = useState(false);
   const [sharing, setSharing] = useState(false);
   if (deleted || !board) return null;
-  if (!board.mayDelete && !board.mayShare && !board.sharedWithMe) return null;
+  if (!board.mayDelete && !board.mayShare) return null;
 
   return (
     <>
-      {board.sharedWithMe && (
-        <span className="shrink-0 text-[10px] text-muted-foreground">
-          {t("Shared with you", "Mit dir geteilt")}
-        </span>
-      )}
       {board.mayShare && (
         <>
           <button
