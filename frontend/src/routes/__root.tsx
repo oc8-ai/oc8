@@ -67,7 +67,16 @@ import { editionExtensions } from "@oc8/edition-entry";
 // An edition's onboarding screens are full-page like `/welcome`: no app shell.
 // They still need a session (unlike GATE_PUBLIC_ROUTES), and they follow the
 // stored theme, so they are not part of SHELL_PUBLIC_ROUTES.
-const EDITION_BARE_ROUTES = new Set(editionBarePaths(composeFrontendEdition(editionExtensions)));
+//
+// Worked out on first use, not while this module loads: an edition's routes
+// import this module and its entry imports those routes, so when the entry
+// loads first (the server reads its hooks) this module runs before
+// `editionExtensions` exists.
+let editionBareRoutes: ReadonlySet<string> | undefined;
+function isEditionBareRoute(pathname: string): boolean {
+  editionBareRoutes ??= new Set(editionBarePaths(composeFrontendEdition(editionExtensions)));
+  return editionBareRoutes.has(pathname);
+}
 
 function AuthGate({ children }: { children: ReactNode }) {
   const t = useT();
@@ -262,7 +271,7 @@ function RootComponent() {
   // Single source of truth for "which UI wrapper does this route get". Computed
   // synchronously from the pathname so `/login` is never wrapped in `AppShell`,
   // regardless of auth state, session staleness or hydration timing.
-  const bareRoute = publicRoute || EDITION_BARE_ROUTES.has(pathname);
+  const bareRoute = publicRoute || isEditionBareRoute(pathname);
   const gatedContent = bareRoute ? <Outlet /> : <AppShell />;
 
   // `AppShell` owns the theme toggle and persists it to localStorage("bf-theme")

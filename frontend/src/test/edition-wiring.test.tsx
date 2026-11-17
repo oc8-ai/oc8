@@ -30,7 +30,7 @@ describe("edition wiring", () => {
   it("renders edition onboarding routes without the app shell", () => {
     const root = src("src/routes/__root.tsx");
     expect(root).toContain("editionBarePaths(composeFrontendEdition(editionExtensions))");
-    expect(root).toContain("EDITION_BARE_ROUTES.has(pathname)");
+    expect(root).toContain("isEditionBareRoute(pathname)");
   });
 
   it("lets the office page ask onboardingRedirect", () => {
