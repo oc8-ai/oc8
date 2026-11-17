@@ -10,6 +10,7 @@ import type {
   EditionNavigationItem,
   EditionOnboarding,
   EditionProfileSection,
+  EditionSettingsSection,
   EditionSidebarSlotProps,
   FrontendEditionExtension,
 } from "./contracts";
@@ -39,6 +40,7 @@ export interface FrontendEditionComposition {
   readonly sidebarHeader: ComponentType<EditionSidebarSlotProps> | null;
   readonly sidebarFooter: ComponentType<EditionSidebarSlotProps> | null;
   readonly profileSections: readonly EditionProfileSection[];
+  readonly settingsSections: readonly EditionSettingsSection[];
   readonly chat: ComposedChat;
   readonly homeSections: readonly EditionHomeSection[];
   readonly customServerSources: readonly CustomServerSource[];
@@ -101,6 +103,7 @@ const emptyComposition: FrontendEditionComposition = {
   sidebarHeader: null,
   sidebarFooter: null,
   profileSections: [],
+  settingsSections: [],
   chat: EMPTY_CHAT,
   homeSections: [],
   customServerSources: [],
@@ -126,6 +129,8 @@ export function composeFrontendEdition(
   let sidebarFooter: ComponentType<EditionSidebarSlotProps> | null = null;
   const profileSectionIds = new Set<string>();
   const profileSections: EditionProfileSection[] = [];
+  const settingsSectionIds = new Set<string>();
+  const settingsSections: EditionSettingsSection[] = [];
   const chat: { -readonly [K in keyof ComposedChat]: ComposedChat[K][number][] } = {
     composerActions: [],
     composerPickers: [],
@@ -181,6 +186,12 @@ export function composeFrontendEdition(
       profileSectionIds.add(section.id);
       profileSections.push(section);
     }
+    for (const section of extension.settingsSections ?? []) {
+      if (settingsSectionIds.has(section.id))
+        throw new Error(`Duplicate edition settings section: ${section.id}`);
+      settingsSectionIds.add(section.id);
+      settingsSections.push(section);
+    }
     for (const slot of Object.keys(chat) as (keyof ComposedChat)[]) {
       for (const entry of extension.chat?.[slot] ?? []) {
         const key = `${slot}:${entry.id}`;
@@ -219,6 +230,7 @@ export function composeFrontendEdition(
     sidebarHeader,
     sidebarFooter,
     profileSections,
+    settingsSections,
     chat,
     homeSections,
     customServerSources,

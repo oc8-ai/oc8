@@ -9,6 +9,7 @@ import {
 } from "@/edition/composition";
 import {
   EditionProfileSections,
+  EditionSettingsSections,
   EditionSidebarFooter,
   EditionSidebarHeader,
 } from "@/edition/slots";
@@ -49,6 +50,28 @@ describe("edition onboarding composition", () => {
         { id: "b", profileSections: [{ id: "x", component: C }] },
       ]),
     ).toThrow("Duplicate edition profile section: x");
+  });
+
+  it("composes settings sections in extension order and refuses a duplicate id", () => {
+    const C = () => null;
+    const D = () => null;
+    expect(
+      composeFrontendEdition([
+        { id: "a", settingsSections: [{ id: "one", component: C }] },
+        { id: "b" },
+        { id: "c", settingsSections: [{ id: "two", component: D }] },
+      ]).settingsSections,
+    ).toEqual([
+      { id: "one", component: C },
+      { id: "two", component: D },
+    ]);
+    expect(composeFrontendEdition([]).settingsSections).toEqual([]);
+    expect(() =>
+      composeFrontendEdition([
+        { id: "a", settingsSections: [{ id: "x", component: C }] },
+        { id: "b", settingsSections: [{ id: "x", component: C }] },
+      ]),
+    ).toThrow("Duplicate edition settings section: x");
   });
 
   it("lists the onboarding routes as paths without the app shell", () => {
@@ -154,12 +177,30 @@ describe("edition slots", () => {
     ]);
   });
 
+  it("renders settings sections in extension order", () => {
+    render(
+      <EditionCompositionProvider
+        extensions={[
+          { id: "a", settingsSections: [{ id: "one", component: () => <section>First</section> }] },
+          { id: "b", settingsSections: [{ id: "two", component: () => <section>Second</section> }] },
+        ]}
+      >
+        <EditionSettingsSections />
+      </EditionCompositionProvider>,
+    );
+    expect(screen.getAllByText(/First|Second/).map((n) => n.textContent)).toEqual([
+      "First",
+      "Second",
+    ]);
+  });
+
   it("renders nothing without an edition", () => {
     const { container } = render(
       <>
         <EditionSidebarHeader collapsed={false} />
         <EditionSidebarFooter collapsed={false} />
         <EditionProfileSections />
+        <EditionSettingsSections />
       </>,
     );
     expect(container).toBeEmptyDOMElement();
