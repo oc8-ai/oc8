@@ -46,6 +46,13 @@ describe("edition wiring", () => {
     );
   });
 
+  it("appends edition settings sections after core's own settings panels", () => {
+    const settings = src("src/routes/settings.tsx");
+    const sections = settings.indexOf("<EditionSettingsSections />");
+    expect(sections).toBeGreaterThan(settings.indexOf("<OrganizationPanel />"));
+    expect(sections).toBeGreaterThan(settings.indexOf("<BackupPanel />"));
+  });
+
   it("gives the chat composer the edition focus glow hook", () => {
     expect(src("src/components/conversation/composer.tsx")).toContain("edition-accent-focus");
     expect(src("src/styles.css")).toContain("var(--edition-accent-glow, transparent)");

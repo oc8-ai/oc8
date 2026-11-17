@@ -17,6 +17,7 @@ import { BackupPanel } from "@/components/backup-panel";
 import { CredentialPicker } from "@/components/credential-picker";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 import { TimezoneSelect } from "@/components/timezone-select";
+import { EditionSettingsSections } from "@/edition/slots";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -47,6 +48,7 @@ function SettingsPage() {
         <MailServerSetting />
         <CopilotSettingsPanel />
         <BackupPanel />
+        <EditionSettingsSections />
       </div>
       {setupOpen && (
         // The SAME wizard as the first-run /welcome route -- there used to be

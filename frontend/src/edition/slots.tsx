@@ -64,6 +64,18 @@ export function EditionProfileSections() {
   );
 }
 
+/** Panels editions append to the settings page, in extension order. */
+export function EditionSettingsSections() {
+  const { settingsSections } = useFrontendEdition();
+  return (
+    <>
+      {settingsSections.map(({ id, component: Section }) => (
+        <Section key={id} />
+      ))}
+    </>
+  );
+}
+
 /** Typed message parts, each drawn by the edition renderer registered for its
  *  type. Unknown types render nothing; core part types are never delegated. */
 export function MessageParts({
