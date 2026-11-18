@@ -8,8 +8,9 @@ import copy
 import dataclasses
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
@@ -25,7 +26,16 @@ from oc8.capas.guardrails import GuardrailLibrary
 from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
 from oc8.capas.service import _artifact_hash
+from oc8.connections.credential_env import with_login
+from oc8.connections.integrations import integration_for_connection
 from oc8.connections.usable import needs_department
+from oc8.credentials.registry import get_credential_type
+from oc8.credentials.service import (
+    CredentialNotFound,
+    IncompleteCredential,
+    get_credential,
+    missing_required,
+)
 from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 from oc8.realtime.emit import publish_mcp_test_log
 from oc8.schemas.dto import (
@@ -125,9 +135,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
     # connection unavailable to the UI.
     scopes = c.scopes if isinstance(c.scopes, list) else []
     resolved = _manifest_connection(c)
-    manifest_conn, guardrail_library, i18n = (
-        resolved if resolved is not None else (None, None, {})
-    )
+    manifest_conn, guardrail_library, i18n = resolved if resolved is not None else (None, None, {})
     presets = (
         [
             GuardrailPresetDTO(
@@ -455,11 +463,19 @@ async def test_connection(
     conn_id: uuid.UUID,
     db: DbSession,
     principal: CurrentPrincipal,
+    credential_id: uuid.UUID | None = Query(default=None, alias="credentialId"),
 ) -> McpConnectionDTO:
+    """Start the connection's bridge once and list its tools. `credentialId`
+    tests the tool's row with that organisation login -- the login a setup
+    just chose (the row holds none of its values). A failure with a login is
+    that login's, not the bridge's: the row, shared by every department,
+    keeps its state and only the answer carries the error."""
     conn = await db.get(m.McpConnection, conn_id)
     if conn is None or conn.tenant_id != principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
     cfg = conn.config or {}
+    if credential_id is not None:
+        cfg = await _with_test_login(db, principal.tenant_id, conn, credential_id)
     now = _utcnow_iso()
 
     _STEP_MESSAGES = {
@@ -475,7 +491,9 @@ async def test_connection(
 
     try:
         async with asyncio.timeout(_TEST_TIMEOUT_S):
-            env = await _connection_env(db, conn)
+            env = await resolve_mcp_env(
+                db, tenant_id=conn.tenant_id, cfg=cfg, connection_name=conn.name
+            )
             headers = resolve_auth_header(cfg, env)
             if conn.transport == "manual_http":
                 http_tools = list(cfg.get("http_tools", []))
@@ -517,14 +535,46 @@ async def test_connection(
             message=f"Connected — {len(names)} tool(s) discovered.",
         )
     except Exception as exc:  # any bring-up failure is an operator-visible error health, not a 500
-        conn.connected = False
         error = str(exc)[:500]
-        conn.health = {"status": "error", "checkedAt": now, "error": error}
+        failed = {"status": "error", "checkedAt": now, "error": error}
         await publish_mcp_test_log(
             principal.tenant_id, connection_id=conn_id, step="result", message=f"Error: {error}"
         )
+        if credential_id is not None:
+            await db.commit()
+            return _to_dto(conn).model_copy(update={"connected": False, "health": failed})
+        conn.connected = False
+        conn.health = failed
     await db.commit()
     return _to_dto(conn)
+
+
+async def _with_test_login(
+    db: DbSession, tenant_id: uuid.UUID, conn: m.McpConnection, credential_id: uuid.UUID
+) -> dict[str, Any]:
+    """The row's config with the organisation login `credential_id` in place
+    of any login values it holds -- as a run that resolved this login would
+    start the bridge. An incomplete login is refused naming its fields."""
+    integration = integration_for_connection(conn)
+    if integration is None or integration.kind != "credential":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "this connection's tool takes no login"
+        )
+    try:
+        cred = await get_credential(
+            db, tenant_id=tenant_id, credential_id=credential_id, owner="organisation"
+        )
+    except CredentialNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such credential") from exc
+    if cred.credential_type != integration.credential_type:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "not a login of this connection's tool"
+        )
+    cred_type = await get_credential_type(db, tenant_id=tenant_id, name=cred.credential_type)
+    missing = missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
+    if missing:
+        raise IncompleteCredential(missing)
+    return with_login(dict(conn.config or {}), cred, cred_type, integration.credential_env_fields)
 
 
 @router.post(

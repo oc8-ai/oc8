@@ -35,24 +35,11 @@ const connections = [
   },
 ];
 
-const logins = [
-  {
-    id: "login-1",
-    name: "Odoo",
-    credentialId: "cred-1",
-    departmentId: null,
-    connected: true,
-    scopes: [],
-    health: {},
-  },
-];
-
 const createAgentMock = vi.fn().mockResolvedValue({ id: "new-agent-id" });
 const createTriggerMock = vi.fn().mockResolvedValue({});
 const credentialTypesMock = vi.fn().mockReturnValue({ data: [] });
 const credentialsMock = vi.fn().mockReturnValue({ data: [] });
 const connectionsMock = vi.fn().mockReturnValue({ data: connections });
-const useMcpLoginsMock = vi.fn().mockReturnValue({ data: logins });
 const createLoginMock = vi.fn();
 const createCredentialMock = vi.fn();
 const departmentToolsMock = vi.fn().mockReturnValue({
@@ -63,7 +50,6 @@ vi.mock("@/lib/hooks", () => ({
   useModels: () => ({ data: [{ id: "m1", name: "GPT", provider: "OpenAI" }] }),
   useModelProviders: () => ({ data: [] }),
   useMcpConnections: () => connectionsMock(),
-  useMcpLogins: () => useMcpLoginsMock(),
   useCredentialTypes: () => credentialTypesMock(),
   useCredentials: () => credentialsMock(),
   useCreateCredential: () => ({ mutateAsync: createCredentialMock, isPending: false }),
@@ -109,8 +95,6 @@ beforeEach(() => {
   credentialsMock.mockReturnValue({ data: [] });
   connectionsMock.mockReset();
   connectionsMock.mockReturnValue({ data: connections });
-  useMcpLoginsMock.mockReset();
-  useMcpLoginsMock.mockReturnValue({ data: logins });
   createLoginMock.mockReset();
   createCredentialMock.mockReset();
   departmentToolsMock.mockReset();
@@ -191,8 +175,10 @@ describe("NewAgentDialog: inline credential picker", () => {
     expect(screen.getByText(/not yet enabled for this department/i)).toBeInTheDocument();
   });
 
-  it("blocks hiring when a login-capable tool is selected without a login picked", async () => {
-    const { toast } = await import("sonner");
+  it("hires without a login picked, leaving the login to the department", async () => {
+    connectionsMock.mockReturnValue({
+      data: [{ ...connections[0], credentialType: "odoo_login" }],
+    });
     renderDialog();
     await screen.findByText("Hire a new agent");
     fillIdentityAndGoToTools();
@@ -200,29 +186,30 @@ describe("NewAgentDialog: inline credential picker", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     fireEvent.click(screen.getByRole("button", { name: /Next/i })); // -> Guardrails & Trigger
     fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
-    await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    expect(createAgentMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(createAgentMock).toHaveBeenCalled());
+    expect(createAgentMock.mock.calls[0][0].narrowing.tools.Odoo.connection_id).toBeNull();
+    expect(createLoginMock).not.toHaveBeenCalled();
   });
 
-  it("hires with an existing credential (already backing a login) wired into narrowing", async () => {
+  it("hires with a picked credential as the agent's fixed login, not a new connection", async () => {
     connectionsMock.mockReturnValue({
       data: [{ ...connections[0], credentialType: "odoo_login" }],
     });
     credentialsMock.mockReturnValue({
       data: [{ id: "cred-1", name: "oc8-local", credentialType: "odoo_login" }],
     });
+    createLoginMock.mockResolvedValue({ id: "cred-1", name: "Odoo" });
     renderDialog();
     await screen.findByText("Hire a new agent");
     fillIdentityAndGoToTools();
     fireEvent.click(screen.getByRole("button", { name: "Add tool" }));
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
-    // "cred-1" is the credential logins[0] ("login-1") is already backed by
-    // -- picking it reuses that login, no POST /mcp/logins round trip.
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "cred-1" } });
     await waitFor(() =>
       expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("cred-1"),
     );
+    // Nothing is created before the agent exists.
     expect(createLoginMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: /Next/i })); // -> Guardrails & Trigger
@@ -234,46 +221,20 @@ describe("NewAgentDialog: inline credential picker", () => {
       read: true,
       modify: true,
       approval_eur: null,
-      connection_id: "login-1",
+      connection_id: null,
     });
-  });
-
-  it("does not reuse a login scoped to a different department, even if it shares the tool key and credential", async () => {
-    // Agent tool login selection design's department-scoping extension:
-    // "login-1" belongs to dept-b, this agent is hired into dept-a
-    // (departments[0], the default preselection) -- picking the same
-    // credential must mint a NEW, dept-a-scoped login instead of silently
-    // reusing dept-b's.
-    connectionsMock.mockReturnValue({
-      data: [{ ...connections[0], credentialType: "odoo_login" }],
-    });
-    credentialsMock.mockReturnValue({
-      data: [{ id: "cred-1", name: "oc8-local", credentialType: "odoo_login" }],
-    });
-    useMcpLoginsMock.mockReturnValue({
-      data: [{ ...logins[0], departmentId: "dept-b" }],
-    });
-    createLoginMock.mockResolvedValue({ id: "new-login-2", name: "Odoo" });
-
-    renderDialog();
-    await screen.findByText("Hire a new agent");
-    fillIdentityAndGoToTools();
-    fireEvent.click(screen.getByRole("button", { name: "Add tool" }));
-    fireEvent.click(screen.getByRole("button", { name: "Add" }));
-
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "cred-1" } });
     await waitFor(() =>
       expect(createLoginMock).toHaveBeenCalledWith({
         name: "Odoo",
         credentialType: "odoo_login",
         credentialId: "cred-1",
         scopes: [],
-        departmentId: "dept-a",
+        agentId: "new-agent-id",
       }),
     );
   });
 
-  it("creates a new credential inline and pins its login immediately -- no separate modal, no free-text tool scopes", async () => {
+  it("creates a new credential inline and fixes it for the agent on hire -- no separate modal, no free-text tool scopes", async () => {
     // Live user feedback: a stacked modal asking for raw tool-call names
     // "das bekommt doch kein mitarbeiter hin" -- creating a credential now
     // happens inline, the same "select or create new" control the Capa
@@ -302,7 +263,7 @@ describe("NewAgentDialog: inline credential picker", () => {
       ],
     });
     createCredentialMock.mockResolvedValue({ id: "new-cred-1" });
-    createLoginMock.mockResolvedValue({ id: "new-login-1", name: "Odoo" });
+    createLoginMock.mockResolvedValue({ id: "new-cred-1", name: "Odoo" });
 
     renderDialog();
     await screen.findByText("Hire a new agent");
@@ -325,21 +286,20 @@ describe("NewAgentDialog: inline credential picker", () => {
         fieldValues: { password: "secret1" },
       }),
     );
+    fireEvent.click(screen.getByRole("button", { name: /Next/i })); // -> Guardrails & Trigger
+    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
+    await waitFor(() => expect(createAgentMock).toHaveBeenCalled());
+    const body = createAgentMock.mock.calls[0][0];
+    expect(body.narrowing.tools.Odoo.connection_id).toBeNull();
     await waitFor(() =>
       expect(createLoginMock).toHaveBeenCalledWith({
         name: "Odoo",
         credentialType: "odoo_login",
         credentialId: "new-cred-1",
         scopes: [],
-        departmentId: "dept-a",
+        agentId: "new-agent-id",
       }),
     );
-
-    fireEvent.click(screen.getByRole("button", { name: /Next/i })); // -> Guardrails & Trigger
-    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
-    await waitFor(() => expect(createAgentMock).toHaveBeenCalled());
-    const body = createAgentMock.mock.calls[0][0];
-    expect(body.narrowing.tools.Odoo.connection_id).toBe("new-login-1");
   });
 });
 

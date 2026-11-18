@@ -69,7 +69,6 @@ import {
   useUnassignSkill,
   useMcpConnections,
   useMcpLogins,
-  useCreateMcpLogin,
   type McpLoginDTO,
   type ModelDTO,
   type RunDTO,
@@ -77,6 +76,11 @@ import {
   type RunTodoDTO,
   type TriggerDTO,
 } from "@/lib/hooks";
+import {
+  useAgentToolAccess,
+  useResetAgentToolAccess,
+  useSetAgentToolAccess,
+} from "@/lib/connections";
 import { AgentBoardsSection } from "@/components/boards/agent-boards-section";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { CredentialPicker } from "@/components/credential-picker";
@@ -1469,7 +1473,11 @@ export function AgentGuardrailsPanel({
   const update = useUpdateNarrowing(agent.id);
   const logins = useMcpLogins();
   const { data: connections = [] } = useMcpConnections();
-  const createLogin = useCreateMcpLogin();
+  // The login an agent uses for a tool is its fixed access (the same row
+  // the Tools tab's access setting writes), never a pinned connection.
+  const access = useAgentToolAccess(agent.id);
+  const setAccess = useSetAgentToolAccess(agent.id);
+  const resetAccess = useResetAgentToolAccess(agent.id);
   const frame = agent.departmentFrameTools;
   const narrowing = agent.narrowingTools;
   const effective = agent.effectiveTools;
@@ -1593,7 +1601,9 @@ export function AgentGuardrailsPanel({
         ? "narrowed"
         : "inherited";
     const connection = connectionByName.get(key);
+    const fixed = (access.data ?? []).find((a) => a.toolKey === key && a.mode === "fixed");
     const pickedCredentialId =
+      fixed?.credentialId ??
       (loginsByKey[key] ?? []).find((l) => l.id === effective[key]?.connectionId)?.credentialId ??
       "";
     return {
@@ -1608,30 +1618,15 @@ export function AgentGuardrailsPanel({
             credentialType={connection.credentialType}
             value={pickedCredentialId}
             onChange={async (credentialId) => {
-              if (!credentialId) {
-                persistOne(key, own, null);
-                return;
-              }
-              const existing = (loginsByKey[key] ?? []).find(
-                (l) => l.credentialId === credentialId,
-              );
-              if (existing) {
-                persistOne(key, own, existing.id);
-                return;
-              }
               try {
-                const login = await createLogin.mutateAsync({
-                  name: key,
-                  credentialType: connection.credentialType!,
-                  credentialId,
-                  scopes: [],
-                  // Scoped to this agent's own department, not tenant-wide:
-                  // lets a different department pin a different login under
-                  // the same tool key instead of hitting the "already
-                  // exists" conflict a tenant-wide login would.
-                  departmentId: agent.departmentId ?? undefined,
+                if (!credentialId) {
+                  if (fixed) await resetAccess.mutateAsync(key);
+                  return;
+                }
+                await setAccess.mutateAsync({
+                  toolKey: key,
+                  body: { mode: "fixed", credentialId },
                 });
-                persistOne(key, own, login.id);
               } catch (err) {
                 toast.error(
                   t(

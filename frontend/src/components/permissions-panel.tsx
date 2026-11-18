@@ -47,15 +47,17 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
   const { data: connections = [] } = useMcpConnections();
   const tools = useMemo(() => mcpToolsFromConnections(connections), [connections]);
   // The default-login picker (department mode) is the same inline "select
-  // existing credential or create new" control the Hire dialog uses -- a
-  // login is a Credential paired 1:1 with a tenant-global McpConnection
-  // (POST /mcp/logins), grouped here by tool key exactly like there.
+  // existing credential or create new" control the Hire dialog uses. The
+  // pick enables that login for the department (POST /mcp/logins with the
+  // department); a login pinned as the department's default connection by an
+  // older version is still shown until the tenant's rows are consolidated.
   const logins = useMcpLogins();
   const loginsByKey: Record<string, McpLoginDTO[]> = {};
   for (const login of logins.data ?? []) {
     (loginsByKey[login.name] ??= []).push(login);
   }
   const createLogin = useCreateMcpLogin();
+  const [enabledPick, setEnabledPick] = useState<Record<string, string>>({});
 
   // In this prototype, the department frame is fixed in agent mode
   // and editable in department mode.
@@ -114,12 +116,9 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
     toast.success(`${toolName} removed from ${dept.name}`);
   }
 
-  // Resolves a picked/created credential to a login (McpConnection) and
-  // sets it as this tool's department-wide default. Reuses an existing
-  // login already backed by this exact credential; otherwise creates one --
-  // POST /mcp/logins 409s if a DIFFERENT credential already backs a login
-  // under this tool key, surfaced as the toast below (switching credentials
-  // isn't supported yet).
+  // Enables a picked/created login for this department -- the login its
+  // agents use for the tool unless an agent has its own. Clearing the pick
+  // only drops an older version's pinned default connection.
   async function pinDefaultCredential(
     toolId: string,
     credentialType: string,
@@ -128,22 +127,20 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
     const dTool = dPol[toolId];
     if (!dTool) return;
     if (!credentialId) {
+      setEnabledPick((s) => ({ ...s, [toolId]: "" }));
       setDeptTool(toolId, { ...dTool, defaultConnectionId: null });
       return;
     }
-    const existing = (loginsByKey[toolId] ?? []).find((l) => l.credentialId === credentialId);
-    if (existing) {
-      setDeptTool(toolId, { ...dTool, defaultConnectionId: existing.id });
-      return;
-    }
     try {
-      const login = await createLogin.mutateAsync({
+      await createLogin.mutateAsync({
         name: toolId,
         credentialType,
         credentialId,
         scopes: [],
+        departmentId: dept.id,
       });
-      setDeptTool(toolId, { ...dTool, defaultConnectionId: login.id });
+      setEnabledPick((s) => ({ ...s, [toolId]: credentialId }));
+      if (dTool.defaultConnectionId) setDeptTool(toolId, { ...dTool, defaultConnectionId: null });
     } catch (err) {
       toast.error("Could not link this credential", {
         description: err instanceof Error ? err.message : String(err),
@@ -252,8 +249,10 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
                 mode === "agent" && dTool && eff && isRestricted(dTool, eff);
               const credentialType = connections.find((c) => c.name === tool.id)?.credentialType;
               const pickedCredentialId =
+                enabledPick[tool.id] ??
                 (loginsByKey[tool.id] ?? []).find((l) => l.id === dTool?.defaultConnectionId)
-                  ?.credentialId ?? "";
+                  ?.credentialId ??
+                "";
               return (
                 <ToolTile
                   key={tool.id}

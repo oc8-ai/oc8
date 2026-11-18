@@ -1,8 +1,9 @@
 # backend/tests/api/test_moodle_capa_flow.py
 """The moodle capa's real install -> enable -> setup flow, using the ACTUAL
 shipped manifest folder discovered off disk exactly as production would.
-Setup points the connection at a stored `moodle_token` credential and must
-wire MOODLE_URL into the bridge's launch env and MOODLE_TOKEN into a secret
+Setup chooses a stored `moodle_token` credential (unified connections design,
+"Storage"): the connection row keeps none of its values, and the bridge started
+with that login gets MOODLE_URL in its env and MOODLE_TOKEN from a secret
 reference that resolves at launch -- the token itself is stored encrypted,
 never in the connection config or a secret row's ciphertext in clear. Stops
 short of starting the bridge: no live Moodle is part of this test."""
@@ -24,6 +25,9 @@ from oc8 import models as m
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.auth import get_identity_provider
 from oc8.config import get_settings
+from oc8.connections.credential_env import with_login
+from oc8.connections.integrations import integration_for_connection
+from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import create_credential
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
@@ -94,6 +98,7 @@ async def test_install_enable_and_configure_moodle_wires_url_and_token_into_the_
             )
             assert r.status_code == 200, r.text
             connection_id = r.json()["connectionId"]
+            assert r.json()["credentialId"] == cred_id
 
     async with app_session(tenant) as db:
         conn = await db.get(m.McpConnection, uuid.UUID(connection_id))
@@ -101,9 +106,16 @@ async def test_install_enable_and_configure_moodle_wires_url_and_token_into_the_
         assert conn.transport == "stdio"
         cfg = conn.config or {}
         assert cfg["args"] == ["-m", "mcp_bridge"]
-        assert cfg["env"]["MOODLE_URL"] == "https://lms.example.org"
+        assert "MOODLE_URL" not in cfg["env"] and "MOODLE_TOKEN" not in cfg.get("secret_env", {})
         assert "s3cr3t-moodle" not in json.dumps(cfg)
-        env = await resolve_mcp_env(db, tenant_id=tenant, cfg=cfg, connection_name=conn.name)
+        # No department chosen: the login is enabled for all of them.
+        login = await db.get(m.Credential, uuid.UUID(cred_id))
+        assert login is not None and login.all_departments is True
+        integration = integration_for_connection(conn)
+        assert integration is not None
+        cred_type = await get_credential_type(db, tenant_id=tenant, name="moodle_token")
+        launch = with_login(cfg, login, cred_type, integration.credential_env_fields)
+        env = await resolve_mcp_env(db, tenant_id=tenant, cfg=launch, connection_name=conn.name)
         assert env["MOODLE_TOKEN"] == "s3cr3t-moodle"
         assert env["MOODLE_URL"] == "https://lms.example.org"
         rows = (

@@ -42,7 +42,10 @@ export function CapaSetupDialog({
       // setup_validate (if it declared one) already ran server-side, inside
       // the /setup call that just succeeded.
       if (setup.mcp && result.connectionId) {
-        const tested = await test.mutateAsync(result.connectionId);
+        const tested = await test.mutateAsync({
+          id: result.connectionId,
+          credentialId: result.credentialId,
+        });
         if (!tested.connected) {
           const detail =
             typeof tested.health?.error === "string" ? tested.health.error : "unknown error";

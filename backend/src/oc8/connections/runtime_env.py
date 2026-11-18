@@ -33,7 +33,7 @@ from oc8.connections.access import (
     resolve_tool_access,
 )
 from oc8.connections.acting import resolve_acting_person
-from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
+from oc8.connections.credential_env import with_login
 from oc8.connections.integrations import (
     enabled_tool_pack_connection,
     integration_enabled,
@@ -116,16 +116,14 @@ async def _effective(
         cred_type = await get_credential_type(
             db, tenant_id=tenant_id, name=access.credential.credential_type
         )
-        fields = access.integration.credential_env_fields
-        # The chosen login replaces the stored identity whole: a variable it
-        # leaves empty must not keep the department's value (never a mix of
-        # two logins in one bridge).
-        for target in credential_env_targets(cred_type, fields):
-            env.pop(target, None)
-            secret_env.pop(target, None)
-        cred_env, cred_secret_env = credential_mcp_env(access.credential, cred_type, fields)
-        env.update(cred_env)
-        secret_env.update(cred_secret_env)
+        # The chosen login replaces the stored identity whole (with_login).
+        chosen = with_login(
+            {"env": env, "secret_env": secret_env},
+            access.credential,
+            cred_type,
+            access.integration.credential_env_fields,
+        )
+        env, secret_env = chosen["env"], chosen["secret_env"]
     out["env"] = env
     out["secret_env"] = secret_env
     return out

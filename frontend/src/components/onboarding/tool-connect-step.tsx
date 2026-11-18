@@ -118,12 +118,15 @@ export function ToolConnectStep({
     }
     setSubmitting(true);
     try {
-      const result = await api.post<{ connectionId: string | null }>(
+      const result = await api.post<{ connectionId: string | null; credentialId?: string | null }>(
         `/capas/${target.databaseId}/setup`,
         { values },
       );
       if (target.setup.mcp && result.connectionId) {
-        const tested = await test.mutateAsync(result.connectionId);
+        const tested = await test.mutateAsync({
+          id: result.connectionId,
+          credentialId: result.credentialId,
+        });
         if (!tested.connected) {
           const detail =
             typeof tested.health?.error === "string" ? tested.health.error : "unknown error";

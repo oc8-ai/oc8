@@ -156,7 +156,7 @@ describe("PermissionsPanel", () => {
     expect(screen.queryByText(/default login/i)).not.toBeInTheDocument();
   });
 
-  it("offers the same inline credential picker the Hire dialog uses for the department-wide default login, contained in the tile, and persists the choice", async () => {
+  it("offers the same inline credential picker the Hire dialog uses for the department-wide default login, contained in the tile, and enables the login for the department", async () => {
     getConnections.mockResolvedValue([
       {
         id: "conn-own",
@@ -221,15 +221,14 @@ describe("PermissionsPanel", () => {
         credentialType: "odoo_login",
         credentialId: "cred-1",
         scopes: [],
+        departmentId: dept.id,
       }),
     );
+    // The pick is the department's enabled login, not a pinned connection.
     await waitFor(() =>
-      expect(onChange).toHaveBeenCalledWith(
-        expect.objectContaining({
-          Odoo: expect.objectContaining({ defaultConnectionId: "login-new" }),
-        }),
-      ),
+      expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("cred-1"),
     );
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   describe("Add tool / Remove tool (department mode only shows explicitly-added connections)", () => {

@@ -413,6 +413,10 @@ class CreateMcpLoginRequest(CamelModel):
     credential_id: uuid.UUID | None = None
     scopes: list[str] | dict[str, Any] = []
     department_id: uuid.UUID | None = None
+    #: The agent this login is chosen for (the new-agent dialog): it becomes
+    #: the agent's fixed access for the tool `name`, never a further
+    #: connection row.
+    agent_id: uuid.UUID | None = None
 
 
 class CreateMcpConnectionRequest(CamelModel):

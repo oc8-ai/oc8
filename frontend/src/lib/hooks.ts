@@ -1680,7 +1680,13 @@ export function useTestMcpConnection(id: string) {
 export function useTestMcpConnectionById() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<McpConnection>(`/mcp/connections/${id}/test`),
+    // `credentialId`: test the tool's connection with that login -- the one a
+    // setup just chose (the connection holds none of its values).
+    mutationFn: (arg: string | { id: string; credentialId?: string | null }) => {
+      const { id, credentialId } = typeof arg === "string" ? { id: arg, credentialId: null } : arg;
+      const query = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+      return api.post<McpConnection>(`/mcp/connections/${id}/test${query}`);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
   });
 }
@@ -1754,10 +1760,11 @@ export function useCreateMcpLogin() {
       fieldValues?: Record<string, unknown>;
       credentialId?: string;
       scopes: string[] | Record<string, string[]>;
-      // Omitted/undefined creates a tenant-wide login; set it to scope the
-      // login to one department, so a second login can reuse the same
-      // `name` (tool key) for a different department.
+      // Only names a newly created credential after the department.
       departmentId?: string;
+      // The agent the login is chosen for: it becomes the agent's fixed
+      // access for the tool `name` (no extra connection is created).
+      agentId?: string;
     }) => api.post<McpLoginDTO>("/mcp/logins", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["mcp-logins"] });
@@ -2717,7 +2724,10 @@ export function useConfigurePlugin(pluginId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (values: Record<string, string>) =>
-      api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, { values }),
+      api.post<{ connectionId: string | null; credentialId?: string | null }>(
+        `/capas/${pluginId}/setup`,
+        { values },
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
   });
 }
