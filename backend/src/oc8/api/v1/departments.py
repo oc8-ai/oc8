@@ -55,6 +55,7 @@ from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
+from oc8.connections.tool_connection import not_retired
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDTO, TaskDTO
@@ -614,6 +615,7 @@ async def set_department_tools(
                     m.McpConnection.tenant_id == _p.tenant_id,
                     m.McpConnection.name == key,
                     m.McpConnection.credential_id.is_(None),
+                    not_retired(),
                 )
                 .order_by(m.McpConnection.created_at)
                 .limit(1)

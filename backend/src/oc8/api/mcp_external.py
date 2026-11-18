@@ -39,6 +39,7 @@ from oc8.apikeys.service import API_KEY_PREFIX, find_enabled_by_token, touch_las
 from oc8.auth import Principal
 from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import COPILOT, MANAGE, MEMBER_ROLE, VIEW, perm
+from oc8.connections.tool_connection import not_retired
 from oc8.copilot.capabilities import InvalidOperation, _connection_tool_names, operation_references
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.copilot.proposals import (
@@ -163,12 +164,16 @@ def _parse_uuid(value: Any) -> uuid.UUID | None:
 
 async def _proposal_payload(db: AsyncSession, proposal: CopilotProposal) -> dict[str, Any]:
     operations = (
-        await db.execute(
-            select(CopilotOperation)
-            .where(CopilotOperation.proposal_id == proposal.id)
-            .order_by(CopilotOperation.ordinal)
+        (
+            await db.execute(
+                select(CopilotOperation)
+                .where(CopilotOperation.proposal_id == proposal.id)
+                .order_by(CopilotOperation.ordinal)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return {
         "id": str(proposal.id),
         "status": proposal.status,
@@ -349,16 +354,20 @@ async def _call_tool(
         await _require(request, db, principal, perm(COPILOT, VIEW))
         status_filter = arguments.get("status") or "draft"
         rows = (
-            await db.execute(
-                select(CopilotProposal)
-                .where(
-                    CopilotProposal.tenant_id == principal.tenant_id,
-                    CopilotProposal.status == status_filter,
-                    CopilotProposal.kind == "operations",
+            (
+                await db.execute(
+                    select(CopilotProposal)
+                    .where(
+                        CopilotProposal.tenant_id == principal.tenant_id,
+                        CopilotProposal.status == status_filter,
+                        CopilotProposal.kind == "operations",
+                    )
+                    .order_by(CopilotProposal.created_at.desc())
                 )
-                .order_by(CopilotProposal.created_at.desc())
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         payload = [await _proposal_payload(db, row) for row in rows]
         return _tool_result(json.dumps(payload))
 
@@ -399,10 +408,14 @@ async def _call_tool(
     if name == "copilot_list_departments":
         await _require(request, db, principal, perm(COPILOT, VIEW))
         rows = (
-            await db.execute(
-                select(m.Department).where(m.Department.tenant_id == principal.tenant_id)
+            (
+                await db.execute(
+                    select(m.Department).where(m.Department.tenant_id == principal.tenant_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         payload = [department_to_dto(d).model_dump(mode="json", by_alias=True) for d in rows]
         return _tool_result(json.dumps(payload))
 
@@ -444,8 +457,10 @@ async def _call_tool(
     if name == "copilot_list_plugins":
         await _require(request, db, principal, perm(COPILOT, VIEW))
         rows = (
-            await db.execute(select(m.Capa).where(m.Capa.tenant_id == principal.tenant_id))
-        ).scalars().all()
+            (await db.execute(select(m.Capa).where(m.Capa.tenant_id == principal.tenant_id)))
+            .scalars()
+            .all()
+        )
         return _tool_result(
             json.dumps(
                 [
@@ -488,8 +503,10 @@ async def _call_tool(
     if name == "copilot_list_integrations":
         await _require(request, db, principal, perm(COPILOT, VIEW))
         rows = (
-            await db.execute(select(m.Integration).order_by(m.Integration.created_at))
-        ).scalars().all()
+            (await db.execute(select(m.Integration).order_by(m.Integration.created_at)))
+            .scalars()
+            .all()
+        )
         slug_to_id = await _agent_slug_to_id(db)
         payload = [
             integration_to_dto(i, slug_to_id).model_dump(mode="json", by_alias=True) for i in rows
@@ -510,6 +527,7 @@ async def _call_tool(
                     m.McpConnection.tenant_id == principal.tenant_id,
                     m.McpConnection.name == connection_name,
                     m.McpConnection.credential_id.is_(None),
+                    not_retired(),
                 )
                 .order_by(m.McpConnection.created_at)
                 .limit(1)
@@ -563,9 +581,7 @@ async def mcp_external_endpoint(
         if not isinstance(arguments, dict):
             return _error(rpc_id, _INVALID_REQUEST, "arguments must be an object")
         try:
-            payload = await _call_tool(
-                request, db, principal, name=name, arguments=arguments
-            )
+            payload = await _call_tool(request, db, principal, name=name, arguments=arguments)
         except HTTPException:
             raise
         except Exception as exc:

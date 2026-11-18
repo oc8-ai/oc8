@@ -480,3 +480,47 @@ async def test_testing_a_shared_tool_row_without_a_login_does_not_disconnect_it(
         assert several.json()["detail"]["code"] == "login_required"
     (after,) = await _tool_rows(app_session, tenant)
     assert after.connected is True
+
+
+async def test_setup_never_writes_to_a_retired_row(app_session: AppSessionFactory) -> None:
+    """A row consolidation retired (still named by an unfinished run) keeps the
+    plugin's stamp but is no tool row: a setup must never land on it."""
+    import datetime as dt
+
+    from oc8.connections.tool_connection import RETIRED_KEY
+
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    (sales,) = await _departments(app_session, tenant, "Sales")
+    login = await _login(app_session, tenant, name="Company system")
+    async with api() as c:
+        capa_id = await install(c, admin, PLUGIN)
+        (tool,) = await _tool_rows(app_session, tenant)
+        async with app_session(tenant) as db:
+            retired = m.McpConnection(
+                tenant_id=tenant,
+                name=KEY,
+                server_url=tool.server_url,
+                transport=tool.transport,
+                scopes=tool.scopes,
+                config={**(tool.config or {}), RETIRED_KEY: str(tool.id)},
+                connected=False,
+                # Older than the tool row: an unfiltered "oldest" pick takes it.
+                created_at=tool.created_at - dt.timedelta(days=1),
+            )
+            db.add(retired)
+            await db.flush()
+            retired_id, retired_config = retired.id, dict(retired.config)
+        r = await c.post(
+            f"/api/v1/capas/{capa_id}/setup",
+            json={"values": {"department": str(sales), "system": str(login)}},
+            headers=admin,
+        )
+        assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:
+        untouched = await db.get(m.McpConnection, retired_id)
+        assert untouched is not None
+        assert untouched.config == retired_config
+        assert untouched.department_id is None and not untouched.connected
+    live = [r for r in await _tool_rows(app_session, tenant) if RETIRED_KEY not in (r.config or {})]
+    assert [r.id for r in live] == [tool.id]

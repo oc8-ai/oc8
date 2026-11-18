@@ -53,6 +53,7 @@ from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
 from oc8.connections.login import login_chosen
+from oc8.connections.tool_connection import not_retired
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     interpret_guardrail_definition,
@@ -426,6 +427,7 @@ async def set_narrowing(
                         m.McpConnection.tenant_id == principal.tenant_id,
                         m.McpConnection.name == key,
                         m.McpConnection.credential_id.is_(None),
+                        not_retired(),
                     )
                     .order_by(m.McpConnection.created_at)
                     .limit(1)
@@ -549,6 +551,7 @@ async def _connection_guardrail_attributes(
                 m.McpConnection.tenant_id == tenant_id,
                 m.McpConnection.name == connection_name,
                 m.McpConnection.credential_id.is_(None),
+                not_retired(),
             )
             .order_by(m.McpConnection.created_at)
             .limit(1)
@@ -577,6 +580,7 @@ async def _connection_tool_catalog(
                 m.McpConnection.tenant_id == tenant_id,
                 m.McpConnection.name == connection_name,
                 m.McpConnection.credential_id.is_(None),
+                not_retired(),
             )
             .order_by(m.McpConnection.created_at)
             .limit(1)

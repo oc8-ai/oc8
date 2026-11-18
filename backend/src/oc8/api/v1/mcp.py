@@ -29,6 +29,7 @@ from oc8.capas.service import _artifact_hash
 from oc8.connections.credential_env import with_login
 from oc8.connections.integrations import integration_for_connection
 from oc8.connections.login import holds_copied_login
+from oc8.connections.tool_connection import not_retired
 from oc8.connections.usable import needs_department
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
@@ -238,7 +239,11 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
 )
 async def list_connections(db: DbSession) -> list[McpConnectionDTO]:
     rows = (
-        (await db.execute(select(m.McpConnection).order_by(m.McpConnection.created_at)))
+        (
+            await db.execute(
+                select(m.McpConnection).where(not_retired()).order_by(m.McpConnection.created_at)
+            )
+        )
         .scalars()
         .all()
     )
@@ -260,7 +265,11 @@ async def get_connection_tool_names(name: str, db: DbSession) -> ConnectionToolN
     conn = (
         await db.execute(
             select(m.McpConnection)
-            .where(m.McpConnection.name == name, m.McpConnection.credential_id.is_(None))
+            .where(
+                m.McpConnection.name == name,
+                m.McpConnection.credential_id.is_(None),
+                not_retired(),
+            )
             .order_by(m.McpConnection.created_at)
             .limit(1)
         )
@@ -305,7 +314,11 @@ async def get_connection_tool_labels(name: str, db: DbSession) -> ConnectionTool
     conn = (
         await db.execute(
             select(m.McpConnection)
-            .where(m.McpConnection.name == name, m.McpConnection.credential_id.is_(None))
+            .where(
+                m.McpConnection.name == name,
+                m.McpConnection.credential_id.is_(None),
+                not_retired(),
+            )
             .order_by(m.McpConnection.created_at)
             .limit(1)
         )

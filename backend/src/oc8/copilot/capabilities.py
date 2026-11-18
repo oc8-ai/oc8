@@ -60,6 +60,7 @@ from oc8.capas.service import (
     install_with_dependencies,
     validate_setup_values,
 )
+from oc8.connections.tool_connection import not_retired
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     attributes_for_function,
@@ -925,6 +926,7 @@ async def apply_operation(
                             m.McpConnection.tenant_id == tenant_id,
                             m.McpConnection.name == key,
                             m.McpConnection.credential_id.is_(None),
+                            not_retired(),
                         )
                         .order_by(m.McpConnection.created_at)
                         .limit(1)
@@ -1325,6 +1327,7 @@ async def _apply_guardrail_set(
                 m.McpConnection.tenant_id == tenant_id,
                 m.McpConnection.name == operation.connectionName,
                 m.McpConnection.credential_id.is_(None),
+                not_retired(),
             )
             .order_by(m.McpConnection.created_at)
             .limit(1)

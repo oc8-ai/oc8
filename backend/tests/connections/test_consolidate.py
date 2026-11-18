@@ -966,3 +966,194 @@ async def test_a_pass_that_consolidates_nothing_restamps_nothing(
     async with app_session(tenant) as db:
         stored = await db.get(m.Trigger, trigger_id)
         assert stored is not None and stored.access_fingerprint == legacy
+
+
+# ------------------------------------------------------------------ fix round 2
+
+
+async def test_a_forged_redirect_marker_is_not_followed(app_session: AppSessionFactory) -> None:
+    from oc8.connections.tool_connection import (
+        FOLDED_KEY,
+        RETIRED_KEY,
+        connection_for_context,
+    )
+
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    tool = await _row(app_session, tenant, department_id=None, url=None, token_ref=None, age=30)
+    other_dept_row = await _row(app_session, tenant, department_id=agent.department_id, age=20)
+    gone = uuid.uuid4()
+    async with app_session(tenant) as db:
+        custom = m.McpConnection(
+            tenant_id=tenant,
+            name="custom_server",
+            server_url="",
+            transport="stdio",
+            connected=True,
+            # Claims to be retired into the login tool's row: another tool.
+            config={"command": "x", RETIRED_KEY: str(tool)},
+        )
+        to_dept_row = m.McpConnection(
+            tenant_id=tenant,
+            name=KEY,
+            server_url="",
+            transport="stdio",
+            connected=True,
+            # Same name, but the successor is a department's row.
+            config={**_config(), RETIRED_KEY: str(other_dept_row)},
+        )
+        claims_fold = m.McpConnection(
+            tenant_id=tenant,
+            name=KEY,
+            server_url="",
+            transport="stdio",
+            connected=True,
+            # A younger shared row claiming a removed id: not the tool's row.
+            config={**_config(), FOLDED_KEY: [str(gone)]},
+        )
+        db.add_all([custom, to_dept_row, claims_fold])
+        await db.flush()
+        ids = (custom.id, to_dept_row.id)
+
+    async with app_session(tenant) as db:
+        assert await connection_for_context(db, ids[0]) is None
+        assert await connection_for_context(db, ids[1]) is None
+        assert await connection_for_context(db, gone) is None
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        choice = await _resolve_mcp_connection(
+            db, agent=live, run_context={"mcp_connection_id": str(ids[0])}
+        )
+        assert choice.connection is None and choice.error is not None
+
+
+async def test_users_cannot_write_reserved_consolidation_keys(
+    app_session: AppSessionFactory,
+) -> None:
+    from types import SimpleNamespace
+
+    from oc8.capas.materialise import unbound_connection
+    from oc8.connections.tool_connection import FOLDED_KEY, RETIRED_KEY
+
+    tenant = uuid.uuid4()
+    # A manifest (a custom capa's) declaring the keys: dropped when its row
+    # is materialised.
+    manifest = SimpleNamespace(name="evil_pack")
+    pack_conn = SimpleNamespace(
+        key="primary",
+        name="evil_tool",
+        server_url="",
+        transport="stdio",
+        scopes=[],
+        config={"command": "x", RETIRED_KEY: str(uuid.uuid4()), FOLDED_KEY: [str(uuid.uuid4())]},
+    )
+    row = unbound_connection(tenant_id=tenant, manifest=manifest, conn=pack_conn)  # type: ignore[arg-type]
+    assert RETIRED_KEY not in row.config and FOLDED_KEY not in row.config
+    assert row.config["command"] == "x"
+
+    # The connection API has no way to set them either.
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    body = {
+        "name": "custom_server",
+        "command": "x",
+        "env": {RETIRED_KEY: "y"},
+        RETIRED_KEY: str(uuid.uuid4()),
+        "config": {RETIRED_KEY: str(uuid.uuid4()), FOLDED_KEY: [str(uuid.uuid4())]},
+    }
+    async with api() as client:
+        r = await client.post("/api/v1/mcp/connections", json=body, headers=admin)
+        assert r.status_code in (201, 422), r.text
+        created = r.json().get("id") if r.status_code == 201 else None
+        r = await client.post(
+            "/api/v1/mcp/connections",
+            json={"name": "plain_server", "command": "x"},
+            headers=admin,
+        )
+        assert r.status_code == 201, r.text
+        plain = r.json()["id"]
+        r = await client.patch(
+            f"/api/v1/mcp/connections/{plain}",
+            json={"command": "y", RETIRED_KEY: str(uuid.uuid4())},
+            headers=admin,
+        )
+        assert r.status_code in (200, 422), r.text
+    async with app_session(tenant) as db:
+        for conn_id in (created, plain):
+            if conn_id is None:
+                continue
+            stored = await db.get(m.McpConnection, uuid.UUID(conn_id))
+            assert stored is not None
+            assert RETIRED_KEY not in stored.config and FOLDED_KEY not in stored.config
+
+
+async def test_a_department_default_login_survives_consolidation(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    only = await _login_cred(app_session, tenant, "The one", "https://only.test")
+    shared = await _row(app_session, tenant, department_id=None, url=None, token_ref=None, age=9)
+    # The department's default names a row pinned to a second organisation
+    # login: that one is what the department's agents used.
+    other = await _login_cred(app_session, tenant, "Department's", "https://dept.test")
+    login_row = await _row(
+        app_session, tenant, department_id=None, url=None, token_ref=None, credential_id=other
+    )
+    sales = await _department(app_session, tenant, "Sales")
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {
+            "tools": {KEY: {**FRAME["tools"][KEY], "default_connection_id": str(login_row)}}
+        }
+
+    report = await _consolidate(app_session, tenant)
+
+    # Eng keeps its default's login (now enabled for it); with two
+    # organisation logins no single one was in use, so Sales gets none.
+    assert await _enabled(app_session, tenant, other) == {agent.department_id}
+    assert await _enabled(app_session, tenant, only) == set()
+    assert sales not in await _enabled(app_session, tenant, other)
+    async with app_session(tenant) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        newcomer = m.Agent(tenant_id=tenant, department_id=agent.department_id, name="New")
+        db.add(newcomer)
+        await db.flush()
+        run = m.AgentRun(tenant_id=tenant, agent_id=newcomer.id, source="manual", context={})
+        db.add(run)
+        await db.flush()
+        conn = await db.get(m.McpConnection, shared)
+        assert conn is not None
+        # An agent created after the pass gets the department's login too.
+        access = await resolve_tool_access(db, run=run, agent=newcomer, conn=conn)
+        assert access.credential is not None and access.credential.id == other
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        assert dept.frame["tools"][KEY]["default_connection_id"] == str(shared)
+    assert report.kept_single == 0
+
+
+async def test_a_department_default_on_the_single_login_keeps_it(
+    app_session: AppSessionFactory,
+) -> None:
+    """The single organisation login, named by a department default through a
+    login row: every department reaching the tool keeps it."""
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    only = await _login_cred(app_session, tenant, "The one", "https://only.test")
+    await _row(app_session, tenant, department_id=None, url=None, token_ref=None, age=9)
+    login_row = await _row(
+        app_session, tenant, department_id=None, url=None, token_ref=None, credential_id=only
+    )
+    sales = await _department(app_session, tenant, "Sales")
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {
+            "tools": {KEY: {**FRAME["tools"][KEY], "default_connection_id": str(login_row)}}
+        }
+
+    await _consolidate(app_session, tenant)
+
+    assert await _enabled(app_session, tenant, only) == {agent.department_id, sales}

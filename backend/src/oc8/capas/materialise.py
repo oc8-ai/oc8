@@ -36,6 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.capas.manifest import Manifest, SkillTemplateSpec, ToolPackConnection
+from oc8.connections.tool_connection import without_reserved
 from oc8.skills.schema import SkillDefinitionError, parse_definition
 
 logger = logging.getLogger(__name__)
@@ -230,7 +231,7 @@ def unbound_connection(
 ) -> m.McpConnection:
     """The department-less connection a tool pack's manifest describes, before
     any setup form gave it a department or an identity."""
-    config = dict(conn.config)
+    config = without_reserved(dict(conn.config))
     config["_plugin_name"] = manifest.name
     config["_connection_key"] = conn.key
     return m.McpConnection(

@@ -56,6 +56,7 @@ from oc8.capas.service import (
     validate_setup_values,
 )
 from oc8.connections.credential_env import credential_env_targets
+from oc8.connections.tool_connection import not_retired, without_reserved
 from oc8.credentials.enablement import enable_for_department
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
@@ -748,7 +749,7 @@ async def _apply_plugin_setup(
         (
             await db.execute(
                 select(m.McpConnection)
-                .where(m.McpConnection.credential_id.is_(None))
+                .where(m.McpConnection.credential_id.is_(None), not_retired())
                 .order_by(m.McpConnection.created_at, m.McpConnection.id)
             )
         )
@@ -1029,7 +1030,10 @@ async def _new_row(
         ),
         None,
     )
-    base_config = dict(manifest_conn.config) if manifest_conn is not None else template
+    # Never a consolidation marker of the row it is copied from.
+    base_config = without_reserved(
+        dict(manifest_conn.config) if manifest_conn is not None else dict(template)
+    )
     base_config["_plugin_name"] = manifest.name
     base_config["_connection_key"] = setup.mcp.connection_key
     # Same source as base_config, for the same reason: a further row is never

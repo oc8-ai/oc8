@@ -464,7 +464,10 @@ class _Pass:
         self.report.enabled += 1
 
     async def keep_single_login(
-        self, integration: Integration, departments: dict[uuid.UUID, m.Department]
+        self,
+        integration: Integration,
+        departments: dict[uuid.UUID, m.Department],
+        login_rows: list[m.McpConnection],
     ) -> None:
         """Resolver step 4 -- the organisation's single login -- applies only
         while no login of the type is enabled anywhere; the first enablement
@@ -478,7 +481,12 @@ class _Pass:
         only = await single_organisation_credential(self.db, integration.credential_type)
         if only is None:
             return
+        # A department whose default names a login row keeps that login
+        # (`bind_login_rows` enables it), not the single one.
+        defaulted = {str(r.id) for r in login_rows}
         for dept in sorted(departments.values(), key=lambda d: d.id):
+            if _frame_default(dept, integration.tool_key) in defaulted:
+                continue
             if dept.deleted_at is None and _frame_enables(dept, integration.tool_key):
                 await enable_for_department(self.db, only, dept.id)
                 self.report.enabled += 1
@@ -801,7 +809,7 @@ async def _consolidate(db: AsyncSession, tenant_id: uuid.UUID, report: Consolida
         report.tools.append(tool.name)
         department_rows = [r for r in tool.fresh if r.credential_id is None]
         login_rows = [r for r in tool.fresh if r.credential_id is not None]
-        await work.keep_single_login(tool.integration, departments)
+        await work.keep_single_login(tool.integration, departments, login_rows)
         await work.fold_department_rows(tool.integration, department_rows, departments)
         await work.bind_login_rows(tool.integration, login_rows, agents, departments)
         shared = [r for r in tool.group if r.department_id is None and r.credential_id is None]
