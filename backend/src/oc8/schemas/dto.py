@@ -1701,10 +1701,13 @@ class SecretDTO(CamelModel):
 
 class ConnectionUsedByDTO(CamelModel):
     """What a credential is used by: departments enabled for it or wired to
-    it, and agents that chose it."""
+    it, agents that chose it, and data sources that read it."""
 
     departments: list[str] = []
     agents: list[str] = []
+    #: Names of the data sources that read it (a deletion never overrides
+    #: them, not even forced).
+    data_sources: list[str] = []
 
 
 class CredentialDTO(CamelModel):

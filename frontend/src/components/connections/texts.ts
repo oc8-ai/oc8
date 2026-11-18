@@ -320,6 +320,29 @@ export function usedByText(t: T, usedBy: CredentialUsedBy | undefined): string {
     .join(" · ");
 }
 
+/** Why a credential cannot be deleted while data sources read it (the
+ *  server refuses even a forced delete), or null when none does. */
+export function dataSourceBlockText(
+  t: T,
+  name: string,
+  usedBy: CredentialUsedBy | undefined,
+): string | null {
+  const sources = usedBy?.dataSources ?? [];
+  if (!sources.length) return null;
+  return fill(
+    sources.length === 1
+      ? t(
+          "{name} is still read by the data source {sources}. Choose another credential there first, then delete it.",
+          "{name} wird noch von der Datenquelle {sources} gelesen. Wähl dort zuerst andere Zugangsdaten und lösch sie dann.",
+        )
+      : t(
+          "{name} is still read by the data sources {sources}. Choose another credential there first, then delete it.",
+          "{name} wird noch von den Datenquellen {sources} gelesen. Wähl dort zuerst andere Zugangsdaten und lösch sie dann.",
+        ),
+    { name, sources: sources.join(", ") },
+  );
+}
+
 /** What deleting a login still in use means, for the confirmation after the
  *  server's 409: agents that chose it are left without one (never switched to
  *  another), departments lose it. */

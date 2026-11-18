@@ -24,7 +24,14 @@ import {
   useSetCredentialDepartments,
 } from "@/lib/connections";
 import { ConnectionRow, RowList, RowMenu } from "./connection-row";
-import { checkErrorText, fill, inUseDescription, saveErrorText, usedByText } from "./texts";
+import {
+  checkErrorText,
+  dataSourceBlockText,
+  fill,
+  inUseDescription,
+  saveErrorText,
+  usedByText,
+} from "./texts";
 
 /** Enables an organisation login for departments, or for all of them: the
  *  one place a login is shared (setups only choose it). */
@@ -197,6 +204,10 @@ export function OrganisationCredentials({
       toast.success(t("Deleted", "Gelöscht"));
     } catch (e: unknown) {
       if (!isCredentialInUse(e)) return failed(e);
+      // A data source reads it: no "delete anyway" -- the server refuses
+      // that too. Say which, and where to change it.
+      const blocked = dataSourceBlockText(t, cred.name, cred.usedBy);
+      if (blocked) return void toast.error(blocked);
       // Still in use: say by what, and delete only on a second yes.
       const anyway = await confirm({
         title: t("Still in use", "Wird noch genutzt"),

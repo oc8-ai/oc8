@@ -65,11 +65,21 @@ class CredentialFieldNotSet(Exception):
 
 
 class CredentialInUse(Exception):
-    """Refused to delete: something still references this credential."""
+    """Refused to delete: something still references this credential.
+    `forceable` False: a reference `force` does not override (a data source
+    reads the login by id and would be left naming nothing)."""
 
-    def __init__(self, references: list[str]) -> None:
+    def __init__(self, references: list[str], *, forceable: bool = True) -> None:
         self.references = references
-        super().__init__(f"credential is in use by: {', '.join(references)}")
+        self.forceable = forceable
+        if forceable:
+            message = f"credential is in use by: {', '.join(references)}"
+        else:
+            message = (
+                f"credential is used by {', '.join(references)} and cannot be deleted, "
+                "not even with force: choose another credential there first"
+            )
+        super().__init__(message)
 
 
 class IncompleteCredential(ValueError):
@@ -270,8 +280,12 @@ async def delete_credential(
     """Delete the credential and the secrets only it refers to. Refused with
     `CredentialInUse` while something references it, unless `force`: then an
     agent's fixed choice of it is left naming nothing (the runtime refuses
-    rather than picking another login)."""
+    rather than picking another login). A data source naming it is never
+    overridden, not even with `force` (`CredentialInUse.forceable` False)."""
     cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id, owner=owner)
+    sources = await data_sources_using(db, tenant_id=tenant_id, credential_id=credential_id)
+    if sources:
+        raise CredentialInUse([f"data source {name!r}" for name in sources], forceable=False)
     references = await _find_references(db, tenant_id=tenant_id, credential_id=credential_id)
     if references and not force:
         raise CredentialInUse(references)
@@ -312,6 +326,25 @@ async def delete_unshared_secrets(db: AsyncSession, *, tenant_id: uuid.UUID, ref
             continue
 
 
+async def data_sources_using(
+    db: AsyncSession, *, tenant_id: uuid.UUID, credential_id: uuid.UUID
+) -> list[str]:
+    """The names of the live data sources whose config names the credential."""
+    sources = (
+        (
+            await db.execute(
+                select(m.DataSource).where(
+                    m.DataSource.tenant_id == tenant_id, m.DataSource.deleted_at.is_(None)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    wanted = str(credential_id)
+    return [s.name for s in sources if (s.config or {}).get("credential") == wanted]
+
+
 async def _find_references(
     db: AsyncSession, *, tenant_id: uuid.UUID, credential_id: uuid.UUID
 ) -> list[str]:
@@ -336,22 +369,10 @@ async def _find_references(
     pattern as the DataSource check above -- this function remains the
     single place to extend when that happens.
     """
-    references: list[str] = []
-    sources = (
-        (
-            await db.execute(
-                select(m.DataSource).where(
-                    m.DataSource.tenant_id == tenant_id, m.DataSource.deleted_at.is_(None)
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    cred_id_str = str(credential_id)
-    for source in sources:
-        if (source.config or {}).get("credential") == cred_id_str:
-            references.append(f"data source {source.name!r}")
+    references: list[str] = [
+        f"data source {name!r}"
+        for name in await data_sources_using(db, tenant_id=tenant_id, credential_id=credential_id)
+    ]
     agents = await db.scalar(
         select(func.count())
         .select_from(m.AgentToolAccess)

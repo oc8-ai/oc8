@@ -76,6 +76,13 @@ async def credential_facts(
         )
     ):
         wired[credential_id].add(department_id)
+    sources: dict[str, list[str]] = {str(i): [] for i in ids}
+    for name, config in await db.execute(
+        select(m.DataSource.name, m.DataSource.config).where(m.DataSource.deleted_at.is_(None))
+    ):
+        named = (config or {}).get("credential") if isinstance(config, dict) else None
+        if isinstance(named, str) and named in sources:
+            sources[named].append(name)
     out: dict[uuid.UUID, CredentialFacts] = {}
     for cred in creds:
         cred_type = types.get(cred.credential_type)
@@ -91,6 +98,7 @@ async def credential_facts(
             used_by=ConnectionUsedByDTO(
                 departments=[str(d) for d in departments],
                 agents=sorted(str(a) for a in agents[cred.id]),
+                data_sources=sorted(sources[str(cred.id)]),
             ),
         )
     return out

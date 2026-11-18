@@ -278,4 +278,32 @@ describe("Further credentials (organisation)", () => {
       expect(deleteCredentialMock).toHaveBeenLastCalledWith({ credentialId: "c1", force: true }),
     );
   });
+  it("never offers to force a delete a data source still blocks, and names it", async () => {
+    credentialsMock.mockReturnValue({
+      data: [
+        {
+          id: "c1",
+          name: "Prod S3",
+          credentialType: "s3_api",
+          fieldValues: {},
+          lastTestedAt: null,
+          lastTestOk: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          usedBy: { departments: [], agents: ["a1"], dataSources: ["Archive"] },
+        },
+      ],
+    });
+    deleteCredentialMock.mockRejectedValueOnce(new ApiError("credential is used by …", 409));
+    renderPage();
+    choose(/^delete$/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+    await vi.waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Prod S3 is still read by the data source Archive. Choose another credential there first, then delete it.",
+      ),
+    );
+    expect(screen.queryByRole("button", { name: /delete anyway/i })).toBeNull();
+    expect(deleteCredentialMock).toHaveBeenCalledTimes(1);
+  });
 });

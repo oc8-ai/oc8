@@ -41,6 +41,7 @@ import { LoginDepartmentsDialog, OrganisationCredentials } from "./organisation-
 import { ReturnError } from "./return-error";
 import {
   checkErrorText,
+  dataSourceBlockText,
   inUseDescription,
   incompleteText,
   isBroken,
@@ -226,6 +227,10 @@ export function ConnectionsPage({
       toast.success(t("Done.", "Erledigt."));
     } catch (err: unknown) {
       if (!isCredentialInUse(err)) return failed();
+      // A data source reads it: no "remove anyway" -- the server refuses
+      // that too. Say which, and where to change it.
+      const blocked = dataSourceBlockText(t, c.accountLabel, c.usedBy);
+      if (blocked) return void toast.error(blocked);
       // A login still in use: say by what, and remove it only on a second yes.
       const anyway = await confirm({
         title: t("Still in use", "Wird noch genutzt"),

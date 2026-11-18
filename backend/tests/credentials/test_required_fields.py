@@ -233,3 +233,33 @@ async def test_deleting_one_of_two_credentials_sharing_a_secret_ref_keeps_the_se
         # the first one's secret is not the second's to remove.
         await delete_credential(db, tenant_id=tenant, credential_id=second.id)
         assert await resolve_secret(db, tenant_id=tenant, ref=ref) == "s3cret"
+
+
+async def test_force_never_deletes_a_login_a_data_source_still_names(
+    app_session: AppSessionFactory,
+) -> None:
+    """A data source reads its login by id: force does not skip it. The
+    deletion is refused (naming the data source) until the data source is
+    changed; the listing names it too, so the confirmation can say why."""
+    from oc8.api.v1.credentials import credential_facts
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cred = await _login(db, tenant)
+        db.add(
+            m.DataSource(
+                tenant_id=tenant,
+                connector_type="s3",
+                name="Archive",
+                config={"credential": str(cred.id)},
+            )
+        )
+        await db.flush()
+        facts = await credential_facts(db, tenant, [cred])
+        assert facts[cred.id].used_by.data_sources == ["Archive"]
+        for force in (False, True):
+            with pytest.raises(CredentialInUse) as exc:
+                await delete_credential(db, tenant_id=tenant, credential_id=cred.id, force=force)
+            assert exc.value.references == ["data source 'Archive'"]
+            assert exc.value.forceable is False
+        assert await db.get(m.Credential, cred.id) is not None

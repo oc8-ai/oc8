@@ -67,6 +67,8 @@ export interface Connection {
 export interface CredentialUsedBy {
   departments: string[];
   agents: string[];
+  /** Names of the data sources that read it: a delete never overrides them. */
+  dataSources?: string[];
 }
 
 export interface CredentialCheck {
