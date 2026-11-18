@@ -205,3 +205,31 @@ async def test_an_external_invitation_is_audited(inviter, app_session: AppSessio
     invited = [resource for action, resource in events if action == "member.invited"]
     assert invited and invited[0]["subject"] == "kc-kim@acme.test"
     assert invited[0]["role"] == "operator"
+
+
+async def test_renaming_an_existing_member_does_not_invite_them_again(
+    inviter, app_session: AppSessionFactory
+) -> None:
+    # The member page saves a new display name through POST /members with the
+    # member's sign-in subject, which is not an email. Sending that to the
+    # inviter asked the identity service to invite "kc-sam" and failed the rename.
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        db.add(
+            m.OrgMember(
+                tenant_id=tenant,
+                subject="kc-sam",
+                subject_uuid=_subject_uuid("kc-sam"),
+                display_name="Sam",
+            )
+        )
+
+    response = await _post(tenant, {"subject": "kc-sam", "displayName": "Sam Lee"})
+
+    assert response.status_code == 200
+    assert inviter.invites == []
+    async with app_session(tenant) as db:
+        member = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.subject == "kc-sam"))
+        ).scalar_one()
+    assert member.display_name == "Sam Lee"
