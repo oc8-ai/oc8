@@ -787,6 +787,7 @@ def _redacted_run(dto: RunDTO) -> RunDTO:
             "failure_reason": None,
             "task_id": None,
             "connection_required": None,
+            "tool_notices": [],
         }
     )
 

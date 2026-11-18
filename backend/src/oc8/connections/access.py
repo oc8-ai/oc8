@@ -33,6 +33,10 @@ if TYPE_CHECKING:
     from oc8.connections.login import LoginChoice
 
 
+#: Reasons a listing reports as a notice (`ConnectionRequired.is_notice`).
+NOTICE_REASONS: frozenset[str] = frozenset({"incomplete", "ambiguous"})
+
+
 class ConnectionRequired(Exception):
     """The call needs an account that is not available. `str()` is for the
     model; `as_context()` is what the run records for the UI."""
@@ -119,6 +123,23 @@ class ConnectionRequired(Exception):
             f"connection_required: this task needs {what}, which is not connected. "
             "Tell the user to connect it under Connections."
         )
+
+    @property
+    def is_notice(self) -> bool:
+        """An admin's configuration error (an incomplete login, several
+        logins and none chosen): stable for the run, so a listing reports
+        it as a quiet notice instead of a connect prompt."""
+        return self.reason in NOTICE_REASONS
+
+    def as_notice(self, tool: str) -> dict[str, Any]:
+        """What a run records under `tool_notices` for the tool `tool`."""
+        return {
+            "tool": tool,
+            "integration": self.integration.name,
+            "label": self.integration.label,
+            "reason": self.reason,
+            "missing": list(self.missing),
+        }
 
     def as_context(self) -> dict[str, Any]:
         out: dict[str, Any] = {

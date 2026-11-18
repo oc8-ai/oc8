@@ -95,6 +95,16 @@ export interface ConnectionRequiredInfo {
   missing?: string[];
 }
 
+/** A tool a run's listing skipped for an admin's configuration error
+ *  (`RunDTO.toolNotices`). Non-blocking, unlike `ConnectionRequiredInfo`. */
+export interface ToolNoticeInfo {
+  tool: string;
+  integration: string;
+  label: string;
+  reason: "incomplete" | "ambiguous";
+  missing: string[];
+}
+
 /** The login an agent's tool uses in the viewer's own chat, and where it
  *  comes from -- or why there is none (`GET …/tool-access/{key}/effective`). */
 export interface EffectiveLogin {

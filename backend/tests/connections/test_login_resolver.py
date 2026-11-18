@@ -675,3 +675,131 @@ async def test_listing_without_a_login_does_not_ask_for_a_connection(
         run_row = await db.get(m.AgentRun, run)
         assert run_row is not None
         assert run_row.context["connection_required"]["reason"] == "not_configured"
+
+
+INCOMPLETE_LINE = (
+    "connection_required: The Test Login login is incomplete: url missing. "
+    "Ask an admin to complete it under Settings → Connections."
+)
+
+
+async def test_listing_records_a_notice_not_a_connection_prompt(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An incomplete (or ambiguous) login is an admin's configuration error:
+    a listing records a quiet notice on the run naming the tool -- never the
+    connect prompt a call raises."""
+
+    async def _never(*args: Any, **kwargs: Any) -> dict[str, str]:
+        raise AssertionError("no bridge for an incomplete login")
+
+    monkeypatch.setattr(runtime_env, "resolve_mcp_env", _never)
+    agent, _anna, conn, run = await _world(app_session)
+    await _login(
+        app_session, agent.tenant_id, name="Empty", url="", departments={agent.department_id}
+    )
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        conn_row = await db.get(m.McpConnection, conn)
+        assert run_row is not None and conn_row is not None
+        for _ in range(2):  # a second listing does not repeat it
+            with pytest.raises(ConnectionRequired):
+                await run_mcp_env(db, run=run_row, conn=conn_row, listing=True)
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        assert run_row is not None
+        assert "connection_required" not in run_row.context
+        assert run_row.context["tool_notices"] == [
+            {
+                "tool": KEY,
+                "integration": "test_login_pack",
+                "label": "Test Login",
+                "reason": "incomplete",
+                "missing": ["url"],
+            }
+        ]
+
+
+async def test_listing_without_any_login_records_no_notice(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, _anna, conn, run = await _world(app_session)  # no login at all
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        conn_row = await db.get(m.McpConnection, conn)
+        assert run_row is not None and conn_row is not None
+        with pytest.raises(ConnectionRequired):
+            await run_mcp_env(db, run=run_row, conn=conn_row, listing=True)
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        assert run_row is not None
+        assert "tool_notices" not in (run_row.context or {})
+
+
+async def test_an_incomplete_login_is_named_to_the_model_in_isolated_runtimes(
+    app_session: AppSessionFactory,
+) -> None:
+    """Both isolated runtimes tell the model, in one line, why the tool is
+    missing: the step endpoint's listing note and the gateway's
+    `initialize` instructions -- the same words a call would raise."""
+    from oc8.agent.offering import connection_notes
+    from oc8.api.mcp_gateway import _initialize_result
+    from oc8.api.v1.internal_agent import _discover_connection_tools
+
+    agent, _anna, conn, run = await _world(app_session)
+    await _login(
+        app_session, agent.tenant_id, name="Empty", url="", departments={agent.department_id}
+    )
+    async with app_session(agent.tenant_id) as db:
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = FRAME
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        conn_row = await db.get(m.McpConnection, conn)
+        live = await db.get(m.Agent, agent.id)
+        dept = await db.get(m.Department, agent.department_id)
+        assert run_row is not None and conn_row is not None and live is not None
+        schemas, _routes, unavailable, _res, _prompts = await _discover_connection_tools(
+            db, run=run_row, agent=live, dept=dept, conns=[conn_row], pinned={"narrowing": {}}
+        )
+        assert schemas == []
+        assert connection_notes(unavailable) == [INCOMPLETE_LINE]
+        result = await _initialize_result(
+            db, run=run_row, agent=live, dept=dept, conns=[conn_row]
+        )
+    assert result["instructions"] == INCOMPLETE_LINE
+
+
+async def test_an_ambiguous_login_joins_the_run_and_is_named(
+    app_session: AppSessionFactory,
+) -> None:
+    """Several logins and none chosen: the tool is not dropped before its
+    listing, which then names the problem."""
+    from oc8.api.mcp_gateway import _initialize_result
+    from oc8.authz.pdp import effective_tool_policies
+    from oc8.connections.runtime_env import integration_connections
+
+    agent, _anna, conn, run = await _world(app_session)
+    for name in ("One", "Two"):
+        await _login(app_session, agent.tenant_id, name=name, departments={agent.department_id})
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        live = await db.get(m.Agent, agent.id)
+        assert run_row is not None and live is not None
+        joined = await integration_connections(
+            db, agent=live, policies=effective_tool_policies(FRAME, {}), have=set(), run=run_row
+        )
+        assert [c.id for c in joined] == [conn]
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = FRAME
+        result = await _initialize_result(db, run=run_row, agent=live, dept=dept, conns=joined)
+    assert result["instructions"] == (
+        "connection_required: Several Test Login logins are enabled for this department "
+        "and the agent has none chosen."
+    )
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        assert run_row is not None
+        assert [n["reason"] for n in run_row.context["tool_notices"]] == ["ambiguous"]

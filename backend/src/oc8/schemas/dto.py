@@ -1305,6 +1305,10 @@ class RunDTO(CamelModel):
     #: (connections design). The chat and the run history show a "connect"
     #: call to action for it.
     connection_required: dict[str, Any] | None = None
+    #: Tools a listing skipped for an admin's configuration error (an
+    #: incomplete or ambiguous login): `[{tool, integration, label, reason,
+    #: missing}]`. Non-blocking; the chat shows a quiet line for each.
+    tool_notices: list[dict[str, Any]] = []
     #: A tool call the department frame (or the agent's own guardrails)
     #: withholds: `{connection, tool, label, right, reason, scope,
     #: departmentId, agentId}` (oc8.connections.tool_denied). The chat and the

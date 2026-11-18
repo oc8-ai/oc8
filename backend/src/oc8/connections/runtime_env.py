@@ -162,6 +162,49 @@ async def _require_complete(
         raise ConnectionRequired(access.integration, "incomplete", missing=missing)
 
 
+#: Run context key: tools a listing skipped for an admin's configuration
+#: error (`ConnectionRequired.as_notice`). Non-blocking, unlike
+#: `connection_required`; the chat shows it as a quiet line.
+TOOL_NOTICES = "tool_notices"
+
+
+def _notices(context: Any) -> list[dict[str, Any]]:
+    raw = context.get(TOOL_NOTICES) if isinstance(context, dict) else None
+    return [n for n in raw if isinstance(n, dict)] if isinstance(raw, list) else []
+
+
+async def record_tool_notice(
+    db: AsyncSession,
+    run: m.AgentRun,
+    exc: ConnectionRequired,
+    *,
+    tool: str,
+    ctx: dict[str, Any] | None = None,
+) -> None:
+    """Record (once per tool) why a listing skipped `tool`."""
+    notice = exc.as_notice(tool)
+    current = _notices(run.context)
+    if notice in current:
+        return
+    notices = [n for n in current if n.get("tool") != tool] + [notice]
+    await merge_context(db, run, {TOOL_NOTICES: notices})
+    if ctx is not None:
+        ctx[TOOL_NOTICES] = [n for n in _notices(ctx) if n.get("tool") != tool] + [notice]
+
+
+async def _clear_tool_notice(
+    db: AsyncSession, run: m.AgentRun, tool: str, ctx: dict[str, Any] | None
+) -> None:
+    """The tool works now: its notice is stale."""
+    current = _notices(run.context)
+    if any(n.get("tool") == tool for n in current):
+        await merge_context(
+            db, run, {TOOL_NOTICES: [n for n in current if n.get("tool") != tool]}
+        )
+    if ctx is not None and any(n.get("tool") == tool for n in _notices(ctx)):
+        ctx[TOOL_NOTICES] = [n for n in _notices(ctx) if n.get("tool") != tool]
+
+
 async def _clear_connection_required(
     db: AsyncSession, run: m.AgentRun, integration: str, ctx: dict[str, Any] | None
 ) -> None:
@@ -203,7 +246,9 @@ async def run_mcp_env(
     login integration without a usable login starts no bridge: the reason is
     raised (the caller skips the tool) but not recorded on the run -- only an
     actual call asks for a connection. `right`: the right the call needs, when
-    `tool` does not say (a core tool reading through the connection). `ctx`: a
+    `tool` does not say (a core tool reading through the connection). An
+    incomplete or ambiguous login at a listing is recorded as a notice
+    (`tool_notices`), not a connect prompt. `ctx`: a
     caller's in-request copy of the run context that it writes back whole
     (the isolated-runtime step endpoint); the CTA is merged into it too."""
     cfg = _cfg(conn)
@@ -228,9 +273,13 @@ async def run_mcp_env(
     except ConnectionRequired as exc:
         if listing and exc.integration.kind == "credential":
             # A login integration's bridge cannot start without its login (it
-            # would only report "Connection closed"): the tool is skipped. Not
-            # recorded on the run -- an agent that merely has the tool enabled
-            # must not ask for a connection on every run.
+            # would only report "Connection closed"): the tool is skipped. No
+            # connect prompt -- an agent that merely has the tool enabled
+            # must not ask for a connection on every run. An admin's
+            # configuration error (incomplete, ambiguous) is recorded as a
+            # quiet notice, so the tool does not vanish without a word.
+            if exc.is_notice:
+                await record_tool_notice(db, run, exc, tool=conn.name, ctx=ctx)
             raise
         if listing:
             # A sign-in integration's tools stay listed; the first call shows
@@ -280,6 +329,8 @@ async def run_mcp_env(
         raise required from None
     if not listing and access.integration is not None:
         await _clear_connection_required(db, run, access.integration.name, ctx)
+    if access.integration is not None:
+        await _clear_tool_notice(db, run, conn.name, ctx)
     if tool is not None:
         await append_event(
             db,
@@ -304,6 +355,30 @@ async def run_mcp_env(
     )
 
 
+async def listing_notice(
+    db: AsyncSession, *, run: m.AgentRun, conn: m.McpConnection
+) -> ConnectionRequired | None:
+    """The configuration notice a listing of `conn` would record (an
+    incomplete or ambiguous login), recorded now -- without starting a
+    bridge or minting a token. None when the login resolves, or when what
+    is missing is nobody's configuration error (no login at all)."""
+    integration = integration_for_connection(conn)
+    if integration is None or integration.kind != "credential":
+        return None
+    agent = await db.get(m.Agent, run.agent_id)
+    if agent is None:
+        return None
+    try:
+        await require_enabled(db, conn)
+        access = await resolve_tool_access(db, run=run, agent=agent, conn=conn)
+        await _require_complete(db, access, run.tenant_id, conn)
+    except ConnectionRequired as exc:
+        if exc.is_notice:
+            await record_tool_notice(db, run, exc, tool=conn.name)
+            return exc
+    return None
+
+
 async def integration_connections(
     db: AsyncSession,
     *,
@@ -317,8 +392,10 @@ async def integration_connections(
     access row (the agent's explicit choice), or a login type for which a
     login resolves (`connections.login.offer_problem`: the person's own in a
     live chat, one enabled for the agent's department, the organisation's
-    single one). The frame and narrowing (`policies`) stay the ceiling: they,
-    not the row's department, decide whether the agent reaches the tool.
+    single one). Several logins and none chosen (`ambiguous`) still joins:
+    its listing records the notice naming it (`tool_notices`) instead of the
+    tool vanishing. The frame and narrowing (`policies`) stay the ceiling:
+    they, not the row's department, decide whether the agent reaches the tool.
 
     Which row carries the server config: the tool's one row
     (`tool_connection`; the agent's own department's while unconsolidated),
@@ -375,7 +452,7 @@ async def integration_connections(
                 live_member_id=live_member,
                 agent=agent,
             )
-            if problem is not None:
+            if problem is not None and not problem.is_notice:
                 continue
         if conn is None:
             db.add(candidate)

@@ -85,7 +85,12 @@ from oc8.authz.pdp import (
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.connections.access import ConnectionRequired
-from oc8.connections.runtime_env import McpLaunchEnv, integration_connections, run_mcp_env
+from oc8.connections.runtime_env import (
+    McpLaunchEnv,
+    integration_connections,
+    listing_notice,
+    run_mcp_env,
+)
 from oc8.connections.tool_connection import connection_for_context
 from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.connections.usable import department_connections
@@ -335,6 +340,43 @@ async def _env(
 ) -> McpLaunchEnv:
     # The run decides whose account the bridge gets (connections/access.py).
     return await run_mcp_env(db, run=run, conn=conn, tool=tool, listing=listing)
+
+
+# ------------------------------------------------------------------ initialize
+
+
+async def _initialize_result(
+    db: DbSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    dept: m.Department | None,
+    conns: list[m.McpConnection],
+) -> dict[str, Any]:
+    """The handshake. A tool the run cannot list for an admin's
+    configuration error (an incomplete or ambiguous login) is named in the
+    server's `instructions`, one line each in the words a call would raise
+    -- the runtime puts them in the model's context, so the tool does not
+    vanish without a word. Resolved without starting any bridge."""
+    result: dict[str, Any] = {
+        "protocolVersion": PROTOCOL_VERSION,
+        "capabilities": {"tools": {"listChanged": False}},
+        "serverInfo": {"name": SERVER_NAME, "version": "1.0.0"},
+    }
+    frame = dept.frame if dept is not None else {}
+    pinned = await resolve_version(db, run, agent)
+    policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+    lines: list[str] = []
+    for conn in conns:
+        policy = policies.get(conn.name)
+        if policy is None or not policy.enabled:
+            continue
+        notice = await listing_notice(db, run=run, conn=conn)
+        if notice is not None:
+            lines.append(str(notice))
+    if lines:
+        result["instructions"] = "\n".join(lines)
+    return result
 
 
 # ------------------------------------------------------------------ tools/list
@@ -1430,12 +1472,7 @@ async def mcp_endpoint(
 
     if method == "initialize":
         return _result(
-            rpc_id,
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "version": "1.0.0"},
-            },
+            rpc_id, await _initialize_result(db, run=run, agent=agent, dept=dept, conns=conns)
         )
     if method == "ping":
         return _result(rpc_id, {})

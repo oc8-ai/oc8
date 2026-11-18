@@ -132,6 +132,7 @@ import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
 import { EffortField } from "@/components/effort-field";
 import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
 import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
+import { ToolNotices } from "@/components/connections/tool-notices";
 import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { RunStartPhase } from "@/components/run-start-phase";
 import { isStartPhase, phaseLabel } from "@/lib/run-start-phase";
@@ -2547,6 +2548,7 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
       {run.state === "waiting_for_input" && <WaitingForInputCallout run={run} />}
       {run.state === "failed" && <RunFailureReason reason={run.failureReason ?? run.output} />}
       <ConnectionRequiredNotice value={run.connectionRequired} agentId={run.agentId} />
+      <ToolNotices value={run.toolNotices} />
       <ToolDeniedNotice value={run.toolDenied} />
       <RunModelSteps
         stepTimings={run.stepTimings}
