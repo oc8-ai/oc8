@@ -614,6 +614,10 @@ class SetupFieldSpec(BaseModel):
     default: str = ""
     placeholder: str = ""
     help: str = ""
+    # A `url` field whose service answers at its root: only scheme, host and
+    # port are kept, so an address copied from the browser bar (with a page
+    # path and query behind it) still reaches the service.
+    origin_only: bool = False
     # Where a `password`-kind value is stored. Empty means the default
     # `plugin:{manifest.name}:{key}` convention (what an MCP tool pack uses);
     # a plugin whose OWN code already reads a fixed name -- an approval
