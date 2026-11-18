@@ -803,3 +803,39 @@ async def test_an_ambiguous_login_joins_the_run_and_is_named(
         run_row = await db.get(m.AgentRun, run)
         assert run_row is not None
         assert [n["reason"] for n in run_row.context["tool_notices"]] == ["ambiguous"]
+
+
+async def test_copilot_engine_wraps_a_read_resolved_session_read_only(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The in-process engine opens the whole-run bridge itself: a login lent
+    only for reading comes back wrapped, so the session lists no write tool
+    and a write call through it is refused before it reaches the bridge."""
+    from oc8.agent import engine
+
+    inner = _FakeSession()
+    opened: list[dict[str, str]] = []
+
+    async def _fake_open(conn: Any, cfg: Any, env: dict[str, str]) -> _FakeSession:
+        opened.append(env)
+        return inner
+
+    monkeypatch.setattr(engine, "_open_tool_session_for", _fake_open)
+    tenant, _anna, depts, conn, run = await _copilot_run(app_session, seats={"Reading": READ_ONLY})
+    await _login(app_session, tenant, name="Read", departments={depts["Reading"]})
+    async with app_session(tenant) as db:
+        run_row = await db.get(m.AgentRun, run)
+        conn_row = await db.get(m.McpConnection, conn)
+        assert run_row is not None and conn_row is not None
+        session = await engine._open_mcp_session(
+            db, tenant_id=tenant, mcp_conn=conn_row, run=run_row
+        )
+        assert isinstance(session, ReadOnlyBridge)
+        async with session as entered:
+            assert [t.name for t in entered.tools] == ["look"]
+            with pytest.raises(ConnectionRequired) as refused:
+                await entered.call("change", {})
+            assert await entered.call("look", {}) == "ok"
+    assert refused.value.reason == "read_only"
+    assert inner.calls == ["look"]
+    assert opened and opened[0]["LOGIN_URL"] == "https://svc.acme.test"

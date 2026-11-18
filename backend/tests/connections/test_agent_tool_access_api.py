@@ -237,6 +237,49 @@ async def test_a_fixed_login_binding_and_input_rules(app_session: AppSessionFact
         assert unknown.status_code == 404
 
 
+async def test_department_targets_counts_only_the_agents_own_department_logins(
+    app_session: AppSessionFactory,
+) -> None:
+    """Without the manage right a person may bind an agent only to an
+    organisation login enabled for the agent's OWN department (directly or
+    for all departments) -- never to another department's."""
+    from oc8.connections.access import department_targets
+    from oc8.credentials.enablement import set_departments
+
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    ours = await credential_row(app_session, tenant, owner=None, name="Ours")
+    theirs = await credential_row(app_session, tenant, owner=None, name="Theirs")
+    everyone = await credential_row(app_session, tenant, owner=None, name="Everyone")
+    unused = await credential_row(app_session, tenant, owner=None, name="Unused")
+    async with app_session(tenant) as db:
+        other = m.Department(tenant_id=tenant, name="Other", frame={})
+        db.add(other)
+        await db.flush()
+        for cred_id, departments, all_departments in (
+            (ours, {agent.department_id}, False),
+            (theirs, {other.id}, False),
+            (everyone, set(), True),
+        ):
+            cred = await db.get(m.Credential, cred_id)
+            assert cred is not None
+            await set_departments(
+                db, cred, department_ids=departments, all_departments=all_departments
+            )
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "odoo_mcp")
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            assert set(await department_targets(db, live, "odoo")) == {ours, everyone}
+        url = f"/api/v1/agents/{agent.id}/tool-access/odoo"
+        ben = headers(tenant, "ben@acme.test", MANAGER)
+        for cred_id, expected in ((theirs, 403), (unused, 403), (everyone, 200), (ours, 200)):
+            r = await c.put(url, json={"mode": "fixed", "credentialId": str(cred_id)}, headers=ben)
+            assert r.status_code == expected, (cred_id, r.text)
+
+
 async def test_a_fixed_choice_of_an_incomplete_login_is_refused(
     app_session: AppSessionFactory,
 ) -> None:
