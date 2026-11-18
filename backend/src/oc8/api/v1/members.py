@@ -254,7 +254,20 @@ async def create_member(
     subject = body.subject
     if inviter is not None and body.password is not None:
         _refuse_local_password_with_external_inviter()
-    if inviter is not None:
+    # A person who is already a member is updated, never invited again: the
+    # member page saves a new display name through this same door with the
+    # member's sign-in subject, which an inviter would take for an address.
+    already_member = (
+        await db.scalar(
+            select(m.OrgMember.id).where(
+                m.OrgMember.tenant_id == principal.tenant_id,
+                m.OrgMember.subject == body.subject,
+            )
+        )
+        is not None
+    )
+    invited = inviter is not None and not already_member
+    if inviter is not None and not already_member:
         # The deployment invites people itself (e.g. through its identity
         # service); `subject` is then the email, and the inviter answers with
         # the subject that person will sign in as.
@@ -279,9 +292,9 @@ async def create_member(
         all_departments=body.all_departments,
         # With an inviter `body.subject` is the address it was asked to invite;
         # locally the subject is the address.
-        email=body.subject if inviter is not None or looks_like_email(subject) else None,
+        email=body.subject if invited or looks_like_email(subject) else None,
     )
-    if inviter is not None:
+    if invited:
         # Same audit trail as a local invitation: who invited whom, as what.
         await append_event(
             db,
