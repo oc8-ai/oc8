@@ -28,7 +28,7 @@ from oc8.models.core import (
     Role,
     RolePermission,
 )
-from oc8.models.credentials import Credential
+from oc8.models.credentials import Credential, CredentialDepartment
 from oc8.models.direct_access import DirectAccessGrant
 from oc8.models.flow import Flow, FlowRun, FlowVersion
 from oc8.models.identity import (
@@ -108,6 +108,7 @@ __all__ = [
     "CopilotProfile",
     "CopilotProposal",
     "Credential",
+    "CredentialDepartment",
     "DashboardPreset",
     "DataBoard",
     "DataBoardBatch",
