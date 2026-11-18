@@ -198,9 +198,7 @@ async def _clear_tool_notice(
     """The tool works now: its notice is stale."""
     current = _notices(run.context)
     if any(n.get("tool") == tool for n in current):
-        await merge_context(
-            db, run, {TOOL_NOTICES: [n for n in current if n.get("tool") != tool]}
-        )
+        await merge_context(db, run, {TOOL_NOTICES: [n for n in current if n.get("tool") != tool]})
     if ctx is not None and any(n.get("tool") == tool for n in _notices(ctx)):
         ctx[TOOL_NOTICES] = [n for n in _notices(ctx) if n.get("tool") != tool]
 

@@ -765,9 +765,7 @@ async def test_an_incomplete_login_is_named_to_the_model_in_isolated_runtimes(
         )
         assert schemas == []
         assert connection_notes(unavailable) == [INCOMPLETE_LINE]
-        result = await _initialize_result(
-            db, run=run_row, agent=live, dept=dept, conns=[conn_row]
-        )
+        result = await _initialize_result(db, run=run_row, agent=live, dept=dept, conns=[conn_row])
     assert result["instructions"] == INCOMPLETE_LINE
 
 

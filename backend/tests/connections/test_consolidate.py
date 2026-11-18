@@ -851,9 +851,7 @@ async def test_a_waiting_run_survives_consolidation(app_session: AppSessionFacto
         assert choice.connection is not None and choice.connection.id == keep
 
 
-async def _tool_conn(
-    db: Any, who: m.Agent
-) -> m.McpConnection:
+async def _tool_conn(db: Any, who: m.Agent) -> m.McpConnection:
     """The row the agent's runs reach: its department's own while
     unconsolidated, else the tool's one row."""
     rows = list(

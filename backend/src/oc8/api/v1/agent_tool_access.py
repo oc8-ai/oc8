@@ -314,9 +314,7 @@ async def effective_login(
             cfg = legacy.config if isinstance(legacy.config, dict) else {}
             missing = copied_missing(cfg, copied_type, integ.credential_env_fields)
             if missing:
-                return EffectiveLoginDTO(
-                    source=choice.source, reason="incomplete", missing=missing
-                )
+                return EffectiveLoginDTO(source=choice.source, reason="incomplete", missing=missing)
         return EffectiveLoginDTO(source=choice.source)
     out = EffectiveLoginDTO(
         credential_id=str(cred.id), credential_name=cred.name, source=choice.source
