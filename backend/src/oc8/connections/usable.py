@@ -248,8 +248,9 @@ async def tool_key_connected(
     departments: a login integration only when a login resolves for them (the
     resolver's order: their own, one enabled for these departments, the
     organisation's single one) -- so an offer is never approved and then
-    refused; another system when it has a connected row the departments
-    reach (`tool_connection`)."""
+    refused; a sign-in integration whenever it is enabled (the person signs
+    in at the first call); another system when it has a connected row the
+    departments reach (`tool_connection`)."""
     if not department_ids:
         return False
     conn = await tool_connection(db, name=tool_key, department_id=department_ids)
@@ -263,6 +264,11 @@ async def tool_key_connected(
         integration = template[2]
     elif not await integration_enabled(db, integration):
         return False
+    if integration.kind == "oauth":
+        # The same rule as every other offer (`login_offer_problem`,
+        # `runtime_env.integration_connections`): a sign-in integration acts
+        # as the person, and its sign-in prompt is how they connect.
+        return True
     if conn is None:
         member = await db.get(m.OrgMember, member_id)
         if member is None:

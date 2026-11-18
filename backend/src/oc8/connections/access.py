@@ -374,19 +374,14 @@ async def binding_fingerprint(
         ]
         for a in assignments
     )
-    from oc8.connections.tool_connection import tool_connections, tool_names
-
     dept = await db.get(m.Department, agent.department_id)
-    names = (
-        [tool_key]
-        if tool_key is not None
-        else await tool_names(db, department_id=agent.department_id)
-    )
-    # The tool's row the agent runs on (its department's own while
-    # unconsolidated), whichever department it sits in.
-    conns = await tool_connections(
-        db, names=names, department_id=agent.department_id, connected_only=False
-    )
+    # The rows the department owns, as before the one-row-per-tool change:
+    # a stored confirmation (a trigger's, a binding's) must stay valid for
+    # a tenant whose setups did not change. Consolidation re-stamps them.
+    which = select(m.McpConnection).where(m.McpConnection.department_id == agent.department_id)
+    if tool_key is not None:
+        which = which.where(m.McpConnection.name == tool_key)
+    conns = (await db.execute(which)).scalars()
     setup = sorted(
         [str(c.id), str(c.credential_id), c.server_url, c.transport, c.scopes, c.config]
         for c in conns
@@ -638,25 +633,23 @@ async def resolve_direct_access(
     from oc8.connections.usable import member_departments_for, member_may_use
 
     integration = integration_for_connection(conn)
-    may = await member_may_use(db, member_id=member_id, tool_key=conn.name, right=right)
     if integration is None:
         # Not a connectable integration: it has one account, the organisation's.
-        if may:
+        if await member_may_use(db, member_id=member_id, tool_key=conn.name, right=right):
             return ToolAccess("legacy", None, member_id, right=right)
         raise PermissionError(f"{conn.name!r} is not usable by the person this run acts for")
     if not await integration_enabled(db, integration):
         raise ConnectionRequired(integration, "not_configured")
-    granting = (
-        [
-            dept
-            for dept, policy in await member_departments_for(
-                db, member_id=member_id, tool_key=conn.name
-            )
-            if policy.has_right(right)
-        ]
-        if may
-        else []
-    )
+    # The departments of the person's whose frame grants `right` -- not
+    # gated on `member_may_use`, which already asks whether a login resolves:
+    # the resolver itself must say why not (`ambiguous`, ...).
+    granting = [
+        dept
+        for dept, policy in await member_departments_for(
+            db, member_id=member_id, tool_key=conn.name
+        )
+        if policy.has_right(right)
+    ]
     choice = await resolve_login(
         db,
         agent=None,

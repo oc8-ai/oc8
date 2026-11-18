@@ -8,6 +8,7 @@ involved."""
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 
@@ -15,12 +16,17 @@ from oc8 import models as m
 from oc8.api.mcp_gateway import _connections
 from oc8.authz.pdp import effective_tool_policies
 from oc8.capas.discovery import find_plugin
-from oc8.connections.access import resolve_tool_access
+from oc8.connections.access import (
+    ConnectionRequired,
+    binding_fingerprint,
+    resolve_direct_access,
+    resolve_tool_access,
+)
 from oc8.connections.runtime_env import integration_connections
 from oc8.connections.tool_connection import tool_connection
 from oc8.connections.usable import department_systems, member_may_use
 from tests.conftest import AppSessionFactory
-from tests.connections.helpers import member
+from tests.connections.helpers import enable_plugin_row, member
 from tests.connections.test_login_resolver import (  # noqa: F401 -- `_test_pack` is autouse
     CFG,
     FRAME,
@@ -265,3 +271,128 @@ async def test_a_department_with_one_enabled_login_among_several_is_offered_the_
     usable, missing = (await _systems(app_session, tenant, other))[KEY]
     assert usable is False and missing is not None and "/connections" in missing
     assert not await _may_use(app_session, tenant, bob)
+
+
+# ------------------------------------------------------------------ fix round 1
+
+OAUTH_KEY = "microsoft365"
+OAUTH_CFG: dict[str, Any] = {
+    "_plugin_name": "microsoft365",
+    "_connection_key": "primary",
+    "command": "python",
+    "args": ["-m", "mcp_bridge"],
+    "env": {},
+    "secret_env": {"GRAPH_ACCESS_TOKEN": "oauth:graph_access_token"},
+}
+
+
+async def test_copilot_still_offers_an_oauth_tool_before_sign_in(
+    app_session: AppSessionFactory,
+) -> None:
+    """A sign-in integration is offered everywhere before the person signed
+    in -- the sign-in prompt at the first call is how they connect."""
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    dept = await _department(
+        app_session,
+        tenant,
+        "Office",
+        {"tools": {OAUTH_KEY: {"enabled": True, "read": True, "modify": True}}},
+    )
+    await _seat(app_session, tenant, anna, dept)
+    async with app_session(tenant) as db:
+        db.add(
+            m.McpConnection(
+                tenant_id=tenant,
+                name=OAUTH_KEY,
+                server_url="",
+                transport="stdio",
+                connected=True,
+                config=dict(OAUTH_CFG),
+            )
+        )
+    await enable_plugin_row(app_session, tenant, "microsoft365")
+    async with app_session(tenant) as db:
+        assert await member_may_use(db, member_id=anna, tool_key=OAUTH_KEY, right="read")
+
+
+async def test_copilot_reports_ambiguous_logins_not_not_connected(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, _other = await _world(app_session)
+    tenant = agent.tenant_id
+    conn_id = await _row(app_session, tenant)
+    anna = await member(app_session, tenant, "anna@acme.test")
+    await _seat(app_session, tenant, anna, agent.department_id)
+    await _login(app_session, tenant, name="One", departments={agent.department_id})
+    await _login(app_session, tenant, name="Two", departments={agent.department_id})
+    assert not await _may_use(app_session, tenant, anna)
+    async with app_session(tenant) as db:
+        conn = await db.get(m.McpConnection, conn_id)
+        assert conn is not None
+        with pytest.raises(ConnectionRequired) as exc:
+            await resolve_direct_access(db, member_id=anna, conn=conn, right="read")
+    assert exc.value.reason == "ambiguous"
+
+
+#: Fixed ids, so the fingerprint is reproducible across test databases.
+_FP_OWN = uuid.UUID("00000000-0000-4000-8000-0000000000a1")
+_FP_PINNED = uuid.UUID("00000000-0000-4000-8000-0000000000a2")
+_FP_SHARED = uuid.UUID("00000000-0000-4000-8000-0000000000a3")
+_FP_LOGIN = uuid.UUID("00000000-0000-4000-8000-0000000000b1")
+_FP_VERSION = uuid.UUID("00000000-0000-4000-8000-0000000000c1")
+
+#: What `binding_fingerprint` of base 6b9237e7 (before one row per tool)
+#: returned for this fixture: (every tool, one tool).
+_FP_BASE_ALL = "e4d2d68dbf8bf1420bf8c510198c556feda474316cb6f8043a759beb0ad6162d"
+_FP_BASE_ONE = "4becd1adc5c8eb9defa00d995975b65ebdb0757b05300e746a06c26d1764f999"
+
+
+async def test_binding_fingerprint_is_unchanged_for_an_unconsolidated_tenant(
+    app_session: AppSessionFactory,
+) -> None:
+    """Stored confirmations (a trigger's `access_fingerprint`, a binding's)
+    stay valid on deploy: the same inputs give the same digest as before."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.goal = "Sell things"
+        dept.frame = FRAME
+        dept.frame_capa_defaults = {}
+        common: dict[str, Any] = {
+            "tenant_id": tenant,
+            "server_url": "",
+            "transport": "stdio",
+            "connected": True,
+            "scopes": [],
+        }
+        db.add_all(
+            [
+                m.McpConnection(
+                    id=_FP_OWN,
+                    name=KEY,
+                    department_id=agent.department_id,
+                    config={**CFG, "env": {**CFG["env"], "LOGIN_URL": "https://copied.test"}},
+                    **common,
+                ),
+                m.McpConnection(
+                    id=_FP_PINNED,
+                    name="pinned_tool",
+                    department_id=agent.department_id,
+                    credential_id=_FP_LOGIN,
+                    config={"command": "x", "args": []},
+                    **common,
+                ),
+                # Department-less (an installed integration's own row): never
+                # part of the department's setup before, and not now.
+                m.McpConnection(id=_FP_SHARED, name="other_tool", config=dict(CFG), **common),
+            ]
+        )
+    async with app_session(tenant) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        every = await binding_fingerprint(db, live, None, version_id=_FP_VERSION)
+        one = await binding_fingerprint(db, live, KEY, version_id=_FP_VERSION)
+    assert (every, one) == (_FP_BASE_ALL, _FP_BASE_ONE)
