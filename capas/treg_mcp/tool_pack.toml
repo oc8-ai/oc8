@@ -18,6 +18,13 @@ transport = "http"
 server_url = "https://treg.to/mcp/v2/"
 credential_type = "treg_token"
 
+# Name -> the credential_type's own field key (treg_token.toml). The name is
+# the header `auth_header_name` sends the token in, so the connection is
+# called with the chosen login itself (the setup only chooses the login;
+# nothing is copied onto the connection).
+[connections.credential_env_fields]
+X-Treg-Token = "token"
+
 # Deliberately no `[connections.scopes]` table: unlike every other tool-pack
 # capa in this repo, treg's tool list is not known at manifest-authoring
 # time -- it is whatever the tenant has registered on their own treg

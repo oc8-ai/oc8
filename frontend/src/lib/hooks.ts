@@ -1,7 +1,7 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
-import type { ConnectionRequiredInfo, ToolDeniedInfo } from "@/lib/connections";
+import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
 import {
   useInfiniteQuery,
   useMutation,
@@ -400,6 +400,9 @@ export interface RunDTO {
   // A tool call needed an account that is not connected (connections): the
   // chat and the run detail show a "connect" call to action for it.
   connectionRequired?: ConnectionRequiredInfo | null;
+  // Tools the run could not offer for an admin's configuration error (an
+  // incomplete or ambiguous login): a quiet line each, not a call to action.
+  toolNotices?: ToolNoticeInfo[];
   // A tool call the department frame (or the agent's own guardrails)
   // withholds: the run detail and the chat say which and where it is allowed.
   toolDenied?: ToolDeniedInfo | null;
@@ -1680,7 +1683,13 @@ export function useTestMcpConnection(id: string) {
 export function useTestMcpConnectionById() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<McpConnection>(`/mcp/connections/${id}/test`),
+    // `credentialId`: test the tool's connection with that login -- the one a
+    // setup just chose (the connection holds none of its values).
+    mutationFn: (arg: string | { id: string; credentialId?: string | null }) => {
+      const { id, credentialId } = typeof arg === "string" ? { id: arg, credentialId: null } : arg;
+      const query = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+      return api.post<McpConnection>(`/mcp/connections/${id}/test${query}`);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
   });
 }
@@ -1754,10 +1763,11 @@ export function useCreateMcpLogin() {
       fieldValues?: Record<string, unknown>;
       credentialId?: string;
       scopes: string[] | Record<string, string[]>;
-      // Omitted/undefined creates a tenant-wide login; set it to scope the
-      // login to one department, so a second login can reuse the same
-      // `name` (tool key) for a different department.
+      // Only names a newly created credential after the department.
       departmentId?: string;
+      // The agent the login is chosen for: it becomes the agent's fixed
+      // access for the tool `name` (no extra connection is created).
+      agentId?: string;
     }) => api.post<McpLoginDTO>("/mcp/logins", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["mcp-logins"] });
@@ -2717,7 +2727,10 @@ export function useConfigurePlugin(pluginId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (values: Record<string, string>) =>
-      api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, { values }),
+      api.post<{ connectionId: string | null; credentialId?: string | null }>(
+        `/capas/${pluginId}/setup`,
+        { values },
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
   });
 }
@@ -2908,6 +2921,13 @@ export interface CredentialDTO {
   lastTestOk: boolean | null;
   createdAt: string;
   updatedAt: string;
+  /** The departments this login is enabled for, or all of them. */
+  departmentIds?: string[];
+  allDepartments?: boolean;
+  /** Required field keys without a value. */
+  incomplete?: string[];
+  /** Departments enabled for (or wired to) it and agents that chose it. */
+  usedBy?: { departments: string[]; agents: string[] };
 }
 
 export function useCredentials(credentialType?: string) {
@@ -2954,10 +2974,16 @@ export function useUpdateCredential() {
   });
 }
 
+/** Deletes a credential: the id, or `{credentialId, force}` to delete one
+ *  still in use (the server answers 409 without `force`). */
 export function useDeleteCredential() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (credentialId: string) => api.delete<void>(`/credentials/${credentialId}`),
+    mutationFn: (target: string | { credentialId: string; force?: boolean }) => {
+      const { credentialId, force } =
+        typeof target === "string" ? { credentialId: target, force: false } : target;
+      return api.delete<void>(`/credentials/${credentialId}${force ? "?force=true" : ""}`);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["credentials"] }),
   });
 }

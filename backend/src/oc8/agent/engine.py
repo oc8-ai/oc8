@@ -139,6 +139,7 @@ from oc8.chat.modes import AGENT, mode_from_context
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
+from oc8.connections.read_only import ReadOnlyBridge
 from oc8.connections.runtime_env import (
     integration_connections,
     require_enabled,
@@ -497,11 +498,22 @@ async def _open_mcp_session(
     # every call of the run, so it is audited once, for all tools ("*").
     if run is None:
         await require_enabled(db, mcp_conn)
+    launch = await run_mcp_env(db, run=run, conn=mcp_conn, tool="*") if run is not None else None
     env = (
-        (await run_mcp_env(db, run=run, conn=mcp_conn, tool="*")).env
-        if run is not None
+        launch.env
+        if launch is not None
         else await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=mcp_conn.name)
     )
+    if launch is not None and launch.right == "read":
+        # The account was lent for reading only (a Copilot person whose
+        # departments grant no modify): the session refuses every other call.
+        return ReadOnlyBridge(await _open_tool_session_for(mcp_conn, cfg, env), mcp_conn)
+    return await _open_tool_session_for(mcp_conn, cfg, env)
+
+
+async def _open_tool_session_for(
+    mcp_conn: m.McpConnection, cfg: dict[str, Any], env: dict[str, str]
+) -> Any:
     headers = resolve_auth_header(cfg, env)
     if mcp_conn.transport == "manual_http":
         return await open_tool_session(
@@ -624,12 +636,11 @@ async def run_agent(
         if not extra_conns and run_row is not None:
             raw_ids = run_row.context.get("mcp_connection_ids")
             if isinstance(raw_ids, list):
+                from oc8.connections.tool_connection import connection_for_context
+
                 for raw in raw_ids:
-                    try:
-                        loaded = await db.get(m.McpConnection, uuid.UUID(str(raw)))
-                    except ValueError:
-                        continue
-                    if loaded is not None:
+                    loaded = await connection_for_context(db, raw)
+                    if loaded is not None and loaded not in extra_conns:
                         extra_conns.append(loaded)
         if not extra_conns and mcp_conn is not None:
             extra_conns = [mcp_conn]
@@ -637,7 +648,11 @@ async def run_agent(
             # A tool in the user's context needs no department setup
             # (connections design): add its unbound connection.
             extra_conns += await integration_connections(
-                db, agent=agent, policies=tool_policies, have={c.name for c in extra_conns}
+                db,
+                agent=agent,
+                policies=tool_policies,
+                have={c.name for c in extra_conns},
+                run=run_row,
             )
         # Lazily: oc8.connections.direct_access reaches the copilot package,
         # which imports this module back (R9).

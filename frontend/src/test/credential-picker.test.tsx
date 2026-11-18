@@ -17,7 +17,8 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
   };
 });
 
-import { CredentialPicker } from "@/components/credential-picker";
+import { CredentialPicker, URL_PLACEHOLDER } from "@/components/credential-picker";
+import { ApiError } from "@/lib/api";
 
 function renderPicker(props: Partial<React.ComponentProps<typeof CredentialPicker>> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -116,5 +117,115 @@ describe("CredentialPicker", () => {
     } finally {
       window.localStorage.removeItem("oc8-lang");
     }
+  });
+
+  describe("a login with a required URL", () => {
+    const LOGIN_TYPE = {
+      name: "svc_login",
+      displayName: "Service",
+      fields: [
+        {
+          key: "url",
+          label: "Address",
+          kind: "url",
+          required: true,
+          default: "",
+          // What a pack once shipped: it looked like a value already filled in.
+          placeholder: "http://host.docker.internal:1000",
+          help: "",
+        },
+        {
+          key: "database",
+          label: "Database",
+          kind: "text",
+          required: true,
+          default: "main",
+          placeholder: "",
+          help: "",
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      credentialTypesMock.mockReturnValue({ data: [LOGIN_TYPE] });
+      credentialsMock.mockReturnValue({ data: [] });
+    });
+
+    it("blocks saving when a required field is empty", async () => {
+      createCredentialMock.mockResolvedValue({ id: "new-id" });
+      renderPicker({ credentialType: "svc_login" });
+      fireEvent.click(screen.getByRole("button", { name: /create new/i }));
+      fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "Prod" } });
+
+      const url = screen.getByLabelText(/address/i) as HTMLInputElement;
+      // The placeholder can no longer pass for a value, and the field is empty.
+      expect(url.value).toBe("");
+      expect(url.placeholder).toBe(URL_PLACEHOLDER);
+      expect(url.placeholder).not.toMatch(/localhost|docker\.internal|127\.0\.0\.1/);
+      expect(url).toBeRequired();
+      expect(url).toHaveAttribute("aria-invalid", "true");
+      // Marked with a "*" drawn by CSS, so the field's label stays its name.
+      expect(screen.getByText("Address").querySelector("[data-required-mark]")).not.toBeNull();
+
+      const save = screen.getByRole("button", { name: /^save$/i });
+      expect(save).toBeDisabled();
+      fireEvent.click(save);
+      expect(createCredentialMock).not.toHaveBeenCalled();
+
+      fireEvent.change(url, { target: { value: "https://svc.acme.test" } });
+      expect(url).not.toHaveAttribute("aria-invalid");
+      expect(save).toBeEnabled();
+      fireEvent.click(save);
+      await waitFor(() =>
+        // The default the form shows is the value sent.
+        expect(createCredentialMock).toHaveBeenCalledWith({
+          name: "Prod",
+          credentialType: "svc_login",
+          fieldValues: { url: "https://svc.acme.test", database: "main" },
+        }),
+      );
+    });
+
+    it("marks the fields the server names as missing", async () => {
+      createCredentialMock.mockRejectedValue(
+        new ApiError("incomplete", 422, {
+          detail: { code: "credential_incomplete", missing: ["url"] },
+        }),
+      );
+      const onChange = vi.fn();
+      renderPicker({ credentialType: "svc_login", onChange });
+      fireEvent.click(screen.getByRole("button", { name: /create new/i }));
+      fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "Prod" } });
+      fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "   x" } });
+      fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Prod is incomplete: Address missing",
+      );
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("shows an incomplete login and what uses it in the list", () => {
+      credentialsMock.mockReturnValue({
+        data: [
+          {
+            id: "c1",
+            name: "Old login",
+            credentialType: "svc_login",
+            incomplete: ["url"],
+            usedBy: { departments: [], agents: ["a1", "a2"] },
+          },
+        ],
+      });
+      renderPicker({ credentialType: "svc_login", value: "c1" });
+      expect(
+        screen.getByRole("option", {
+          name: "Old login is incomplete: Address missing · used by 2 agents",
+        }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("combobox")).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Old login is incomplete: Address missing",
+      );
+    });
   });
 });

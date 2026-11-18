@@ -181,9 +181,7 @@ FIND_TOOLS = NeutralTool(
             },
             "connection": {
                 "type": "string",
-                "description": (
-                    "Optional: only search tools belonging to this connection."
-                ),
+                "description": ("Optional: only search tools belonging to this connection."),
             },
         },
         "required": ["query"],
@@ -211,8 +209,7 @@ PROCEDURE_STEP_DONE = NeutralTool(
             "skill": {
                 "type": "string",
                 "description": (
-                    "Optional: skill slug when more than one active procedure "
-                    "has this step id."
+                    "Optional: skill slug when more than one active procedure has this step id."
                 ),
             },
         },
@@ -2288,9 +2285,7 @@ async def _model_locality(
         pinned_model_config_id(pinned) if pinned is not None else agent.model_config_id
     )
     if model_config_id is None:
-        provider = (agent.presentation or {}).get(
-            "provider", get_settings().default_model_provider
-        )
+        provider = (agent.presentation or {}).get("provider", get_settings().default_model_provider)
         return locality_for_provider(str(provider))
     config = await db.get(m.ModelConfig, model_config_id)
     from oc8.modelrouter.auto_router import is_auto_config
@@ -2348,9 +2343,7 @@ _MISSING_DEFERRED = "No deferred tools. Every tool is already in your list."
 _NO_MATCHES = "No matching tools."
 
 
-def _execute_find_tools(
-    tc: ToolCall, harness_state: HarnessState | None
-) -> ControlOutcome:
+def _execute_find_tools(tc: ToolCall, harness_state: HarnessState | None) -> ControlOutcome:
     """Rank the deferred catalog and pin matches for the next step."""
     from oc8.agent.offering import notice_for_find
 
@@ -2400,9 +2393,7 @@ def _execute_find_tools(
     return ControlOutcome(output="\n".join(lines))
 
 
-_PROCEDURE_AMBIGUOUS = (
-    "ERROR: procedure_step_done needs one matching active procedure."
-)
+_PROCEDURE_AMBIGUOUS = "ERROR: procedure_step_done needs one matching active procedure."
 _EVIDENCE_CAP = 500
 
 
@@ -2428,11 +2419,7 @@ def _execute_procedure_step_done(
     if skill_slug is not None:
         matches = [s for s in candidates if s.definition.slug == skill_slug]
     else:
-        matches = [
-            s
-            for s in candidates
-            if any(step.id == step_id for step in s.definition.steps)
-        ]
+        matches = [s for s in candidates if any(step.id == step_id for step in s.definition.steps)]
 
     if len(matches) != 1:
         return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
@@ -2443,10 +2430,7 @@ def _execute_procedure_step_done(
         return ControlOutcome(output=_PROCEDURE_AMBIGUOUS)
     if step.requires_kind != "manual":
         return ControlOutcome(
-            output=(
-                f"ERROR: step {step_id} is tracked by the system; "
-                "do not mark it manually."
-            )
+            output=(f"ERROR: step {step_id} is tracked by the system; do not mark it manually.")
         )
 
     mark = harness_state.procedure.get(skill.definition.slug)
@@ -2465,14 +2449,16 @@ async def _execute_read_resource(
     tc: ToolCall,
     run_id: uuid.UUID | None = None,
     direct_row: m.McpConnection | None = None,
+    narrowing: Mapping[str, Any] | None = None,
 ) -> ControlOutcome:
     """One resource body, through the same pool as a tool call.
 
     `direct_row` is the connection the engine opened for the Copilot's grant:
     the Copilot's own department owns no system, so it is read through that
-    row, never looked up by the agent's department."""
-    from sqlalchemy import select
-
+    row, never looked up by the agent's department. An agent reads through
+    the tool's one row (`tool_connection`) when its frame and narrowing
+    (`narrowing`: the run's pinned version; None reads the live row) reach
+    the tool -- the row's department does not decide that."""
     from oc8.agent import mcp_pool
     from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
     from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -2484,13 +2470,24 @@ async def _execute_read_resource(
     if agent.is_tenant_assistant:
         row = direct_row if direct_row is not None and direct_row.name == connection else None
     else:
-        row = await db.scalar(
-            select(m.McpConnection).where(
-                m.McpConnection.department_id == agent.department_id,
-                m.McpConnection.name == connection,
-                m.McpConnection.connected.is_(True),
-            )
+        from oc8.authz.pdp import effective_tool_policies, reachable_connections
+        from oc8.connections.tool_connection import tool_connection
+
+        dept = await db.get(m.Department, agent.department_id)
+        policies = effective_tool_policies(
+            (dept.frame or {}) if dept is not None else {},
+            dict(narrowing) if narrowing is not None else (agent.narrowing or {}),
         )
+        from oc8.connections.usable import needs_department
+
+        row = (
+            await tool_connection(db, name=connection, department_id=agent.department_id)
+            if connection in reachable_connections(policies)
+            else None
+        )
+        if row is not None and needs_department(row):
+            # A custom server in no department reaches no agent run.
+            row = None
     if row is None:
         return ControlOutcome(output=f"ERROR: no connected system named {connection}")
     cfg = row.config if isinstance(row.config, dict) else {}
@@ -2498,7 +2495,9 @@ async def _execute_read_resource(
     if run is not None:
         # The run decides whose account the bridge gets (connections/access.py).
         try:
-            launch = await run_mcp_env(db, run=run, conn=row, tool=READ_RESOURCE.name)
+            # Reading a resource: a read-only login suffices (the core tool is
+            # no tool of the connection's own classification).
+            launch = await run_mcp_env(db, run=run, conn=row, tool=READ_RESOURCE.name, right="read")
         except ConnectionRequired as exc:
             return ControlOutcome(output=str(exc))
         env, reusable = launch.env, launch.reusable
@@ -2507,9 +2506,7 @@ async def _execute_read_resource(
             await require_enabled(db, row)
         except ConnectionRequired as exc:
             return ControlOutcome(output=str(exc))
-        env = await resolve_mcp_env(
-            db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name
-        )
+        env = await resolve_mcp_env(db, tenant_id=tenant_id, cfg=cfg, connection_name=row.name)
         reusable = not has_oauth_ref(cfg)
     command, args = wrap_with_requirements(cfg.get("command", ""), cfg.get("args", []), cfg)
     try:
@@ -2893,9 +2890,7 @@ async def execute_control_tool(
         decision.effect is Effect.DENY
         and tc.name != DELEGATE_TASK.name
         and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_by_tool)
-        and (
-            decision.reason_code != NOT_THIS_CONNECTION or tc.name in WRITING_CONTROL_TOOLS
-        )
+        and (decision.reason_code != NOT_THIS_CONNECTION or tc.name in WRITING_CONTROL_TOOLS)
     ):
         return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
 
@@ -2948,12 +2943,11 @@ async def execute_control_tool(
             tc=tc,
             run_id=run_id,
             direct_row=direct_read_conn,
+            narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         )
 
     if tc.name == PROCEDURE_STEP_DONE.name:
-        return _execute_procedure_step_done(
-            tc, harness_state, active_procedure_skills
-        )
+        return _execute_procedure_step_done(tc, harness_state, active_procedure_skills)
 
     if tc.name == SEARCH_MEMORY.name:
         query = str(tc.arguments.get("query", "")).strip()
@@ -3061,9 +3055,7 @@ async def execute_control_tool(
                 "found": bool(context.strip()),
                 "narrowed_to": sorted(
                     str(i)
-                    for i in (
-                        await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ()
-                    )
+                    for i in (await _context_kb_ids(db, tenant_id=tenant_id, run_id=run_id) or ())
                 ),
                 "released": sorted(str(i) for i in (released or ())),
             },
@@ -4207,10 +4199,7 @@ async def execute_control_tool(
         else:
             block = instruction_block(skill)
         return ControlOutcome(
-            output=(
-                f"Skill '{skill.name}' activated. Follow this procedure:\n\n"
-                f"{block}"
-            ),
+            output=(f"Skill '{skill.name}' activated. Follow this procedure:\n\n{block}"),
             activated_skill=skill,
         )
 

@@ -8,12 +8,14 @@ import {
   type Integration,
   useAgentToolAccess,
   useAgentToolAccessOptions,
+  useEffectiveLogin,
   useIntegrations,
   useResetAgentToolAccess,
   useSetAgentToolAccess,
 } from "@/lib/connections";
-import { useT } from "@/lib/i18n";
+import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { IntegrationIcon } from "./integration-icon";
+import { effectiveLoginText } from "./texts";
 
 type SetBody = {
   mode: "user" | "fixed";
@@ -200,6 +202,7 @@ function AccessRow({
           ))}
         </select>
       </label>
+      <EffectiveLoginLine agentId={agentId} toolKey={row.toolKey} integration={integration} />
       {row.needsConfirmation && !pending && (
         <div
           role="alert"
@@ -281,5 +284,34 @@ function AccessRow({
       )}
       {ConfirmDialog}
     </div>
+  );
+}
+
+/** Which login the tool uses in your own chats with this agent, and where
+ *  it comes from -- or why none can be used. */
+function EffectiveLoginLine({
+  agentId,
+  toolKey,
+  integration,
+}: {
+  agentId: string;
+  toolKey: string;
+  integration: Integration | undefined;
+}) {
+  const t = useT();
+  const { lang } = useLang();
+  const { data } = useEffectiveLogin(agentId, toolKey);
+  if (!data) return null;
+  const label = (key: string) => {
+    const field = integration?.credentialFields.find((f) => f.key === key);
+    return field ? resolveTranslation(field.label, field.label_translations, lang) : key;
+  };
+  return (
+    <p
+      data-testid={`effective-login-${toolKey}`}
+      className={`text-xs ${data.reason ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}`}
+    >
+      {effectiveLoginText(data, t, label)}
+    </p>
   );
 }

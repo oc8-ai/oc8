@@ -44,6 +44,8 @@ from oc8.authz.permissions import (
     perm,
 )
 from oc8.authz.scope import AgentActor
+from oc8.connections.tool_connection import tool_connections
+from oc8.connections.usable import needs_department
 from oc8.copilot.notes import member_behind_run_task
 from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
 from oc8.memory.router import retrieve_context
@@ -60,6 +62,7 @@ _ORIGIN_LABELS: dict[str, str] = {
     "manual": "manual run",
     "handoff": "handoff",
 }
+
 
 async def _origin_label(db: AsyncSession, *, run: m.AgentRun | None) -> str:
     """A2 "Origin" line. `run.source` is the ck_agent_run_source CHECK
@@ -193,8 +196,10 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
             f"- {a.id}: {a.name} ({dept}" + (f", {a.role_title})" if a.role_title else ")")
             for a, dept in rows
         ]
-        return "Every agent in this tenant, by department -- delegate_task may reach any " \
+        return (
+            "Every agent in this tenant, by department -- delegate_task may reach any "
             "of them if the person you are acting for can:\n" + "\n".join(lines)
+        )
 
     mates = (
         (
@@ -255,9 +260,7 @@ async def _gated_copilot_permissions(
     # Seat-grantable: a departmental seat alone is enough (SEAT_PERMISSIONS
     # includes all three of these for both SEAT_VIEWER and SEAT_APPROVER).
     for permission in (perm(APPROVAL, VIEW), perm(DEPARTMENT, VIEW), perm(AGENT, VIEW)):
-        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(
-            permission
-        ):
+        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(permission):
             granted.add(permission)
     # Tenant-wide only: not in SEAT_PERMISSIONS, so no seat can ever grant
     # these -- checked against authority.tenant_wide alone.
@@ -325,19 +328,16 @@ async def build_run_preamble(
     connection_names = reachable_connections(effective_tool_policies(frame, narrowing))
     connection_details: dict[str, str] = {}
     if connection_names:
-        rows = (
-            (
-                await db.execute(
-                    select(m.McpConnection).where(
-                        m.McpConnection.tenant_id == tenant_id,
-                        m.McpConnection.department_id == agent.department_id,
-                        m.McpConnection.name.in_(connection_names),
-                    )
-                )
+        # The tool's one row, whichever department the agent sits in (the
+        # policy above decided it reaches it).
+        rows = [
+            row
+            for row in await tool_connections(
+                db, names=connection_names, department_id=agent.department_id, connected_only=False
             )
-            .scalars()
-            .all()
-        )
+            # A custom server in no department reaches no agent run.
+            if not needs_department(row)
+        ]
         for row in rows:
             cfg = row.config if isinstance(row.config, dict) else {}
             instruction = cfg.get("server_instructions")

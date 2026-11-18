@@ -237,6 +237,101 @@ async def test_a_fixed_login_binding_and_input_rules(app_session: AppSessionFact
         assert unknown.status_code == 404
 
 
+async def test_department_targets_counts_only_the_agents_own_department_logins(
+    app_session: AppSessionFactory,
+) -> None:
+    """Without the manage right a person may bind an agent only to an
+    organisation login enabled for the agent's OWN department (directly or
+    for all departments) -- never to another department's."""
+    from oc8.connections.access import department_targets
+    from oc8.credentials.enablement import set_departments
+
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    ours = await credential_row(app_session, tenant, owner=None, name="Ours")
+    theirs = await credential_row(app_session, tenant, owner=None, name="Theirs")
+    everyone = await credential_row(app_session, tenant, owner=None, name="Everyone")
+    unused = await credential_row(app_session, tenant, owner=None, name="Unused")
+    async with app_session(tenant) as db:
+        other = m.Department(tenant_id=tenant, name="Other", frame={})
+        db.add(other)
+        await db.flush()
+        for cred_id, departments, all_departments in (
+            (ours, {agent.department_id}, False),
+            (theirs, {other.id}, False),
+            (everyone, set(), True),
+        ):
+            cred = await db.get(m.Credential, cred_id)
+            assert cred is not None
+            await set_departments(
+                db, cred, department_ids=departments, all_departments=all_departments
+            )
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "odoo_mcp")
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, agent.id)
+            assert live is not None
+            assert set(await department_targets(db, live, "odoo")) == {ours, everyone}
+        url = f"/api/v1/agents/{agent.id}/tool-access/odoo"
+        ben = headers(tenant, "ben@acme.test", MANAGER)
+        for cred_id, expected in ((theirs, 403), (unused, 403), (everyone, 200), (ours, 200)):
+            r = await c.put(url, json={"mode": "fixed", "credentialId": str(cred_id)}, headers=ben)
+            assert r.status_code == expected, (cred_id, r.text)
+
+
+async def test_a_fixed_choice_of_an_incomplete_login_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """The Tools tab and the new-agent dialog refuse an incomplete login as
+    a fixed choice, naming its empty fields (as the tool setup does)."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    half = await credential_row(app_session, tenant, owner=None, name="Half", complete=False)
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        await install(c, admin, "odoo_mcp")
+        refused = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/odoo",
+            json={"mode": "fixed", "credentialId": str(half)},
+            headers=admin,
+        )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == {
+        "code": "credential_incomplete",
+        "missing": ["database", "password"],
+    }
+    async with app_session(tenant) as db:
+        assert (
+            await db.scalar(
+                select(m.AgentToolAccess.id).where(m.AgentToolAccess.agent_id == agent.id)
+            )
+        ) is None
+
+
+async def test_an_unauthorised_caller_cannot_learn_whether_a_login_is_complete(
+    app_session: AppSessionFactory,
+) -> None:
+    """A person who may not bind an organisation login gets the same refusal
+    for an incomplete one as for a complete one: nothing about its fields."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    half = await credential_row(app_session, tenant, owner=None, name="Half", complete=False)
+    whole = await credential_row(app_session, tenant, owner=None, name="Whole")
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "odoo_mcp")
+        url = f"/api/v1/agents/{agent.id}/tool-access/odoo"
+        ben = headers(tenant, "ben@acme.test", MANAGER)
+        answers = [
+            await c.put(url, json={"mode": "fixed", "credentialId": str(cred)}, headers=ben)
+            for cred in (half, whole)
+        ]
+    assert [r.status_code for r in answers] == [403, 403]
+    assert answers[0].json() == answers[1].json()
+    assert "missing" not in answers[0].text
+
+
 async def test_other_tenants_ids_are_not_found_and_nothing_secret_is_returned(
     app_session: AppSessionFactory,
 ) -> None:

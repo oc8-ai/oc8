@@ -34,10 +34,8 @@ import {
   useDepartments,
   useDepartmentTools,
   useMcpConnections,
-  useMcpLogins,
   useModelProviders,
   useModels,
-  type McpLoginDTO,
 } from "@/lib/hooks";
 import { mcpToolsFromConnections, type McpTool } from "@/lib/permissions";
 import { useOrgTimezone } from "@/lib/timezones";
@@ -106,33 +104,20 @@ export function NewAgentDialog({
   const timezone = pickedZone ?? orgTimezone;
   const [guardrail, setGuardrail] = useState("Approval from €5,000");
 
-  // Per-tool login pin + approval cap, keyed like `tools` -- the same by-name
-  // convention NarrowingEditor uses (agents.$id.tsx): `McpConnection.name`
-  // IS the tool key. This is what makes tool selection here actually GRANT
-  // access via `narrowing` at creation time, instead of only decorating the
-  // profile card the way it did before.
-  const logins = useMcpLogins();
-  // Only logins this agent could actually use: tenant-wide ones
-  // (departmentId === null, the pre-existing default) plus ones scoped to
-  // this agent's own department -- never another department's login, even
-  // if it happens to share this tool key (agent tool login selection
-  // design's department-scoping extension).
-  const loginsByKey: Record<string, McpLoginDTO[]> = {};
-  for (const login of logins.data ?? []) {
-    if (login.departmentId !== null && login.departmentId !== identity.departmentId) continue;
-    (loginsByKey[login.name] ??= []).push(login);
-  }
+  // Per-tool login choice + approval cap, keyed like `tools` -- the same
+  // by-name convention NarrowingEditor uses (agents.$id.tsx): the tool key IS
+  // the tool's connection name. Tool selection here GRANTS access via
+  // `narrowing` at creation time; a picked login becomes the agent's fixed
+  // access for the tool (POST /mcp/logins with the new agent's id) once the
+  // agent exists. Without a pick the agent uses the login enabled for its
+  // department.
   const { data: deptTools } = useDepartmentTools(identity.departmentId);
   const frameTools = (deptTools?.tools ?? {}) as Record<string, Record<string, unknown>>;
-  const [connectionId, setConnectionId] = useState<Record<string, string>>({});
+  const [credentialId, setCredentialId] = useState<Record<string, string>>({});
   // Picking (or creating) a login happens inline via CredentialPicker --
   // the same "select or create new" control the Capa setup form uses, not
   // a stacked modal, and no free-text scopes field (live user feedback:
   // asking for raw tool-call names "das bekommt doch kein mitarbeiter hin").
-  // A login is a Credential paired 1:1 with a McpConnection (POST
-  // /mcp/logins), department-scoped by default here, so picking a
-  // credential still needs one created/reused behind the scenes --
-  // pinCredential below does that.
   const createLogin = useCreateMcpLogin();
 
   // Default the model / department selection once the lists load.
@@ -164,7 +149,7 @@ export function NewAgentDialog({
 
   function removeTool(id: string) {
     setTools((t) => t.filter((x) => x !== id));
-    setConnectionId((s) => {
+    setCredentialId((s) => {
       const next = { ...s };
       delete next[id];
       return next;
@@ -178,46 +163,37 @@ export function NewAgentDialog({
     setLlm(models[0]?.id ?? "");
     setTrigger("on-demand");
     setCronExpression(DEFAULT_CRON);
-    setConnectionId({});
+    setCredentialId({});
   }
 
-  // Resolves a picked/created credential to a login (McpConnection) and
-  // pins it for this tool key. Reuses an existing login already backed by
-  // this exact credential; otherwise creates one -- POST /mcp/logins 409s
-  // if a DIFFERENT credential already backs a login under this tool key,
-  // which surfaces as the toast below (switching credentials isn't
-  // supported yet, an edge case no capa here hits today).
-  async function pinCredential(toolKey: string, credentialType: string, credentialId: string) {
-    if (!credentialId) {
-      setConnectionId((s) => {
-        const next = { ...s };
-        delete next[toolKey];
-        return next;
-      });
-      return;
-    }
-    const existing = (loginsByKey[toolKey] ?? []).find((l) => l.credentialId === credentialId);
-    if (existing) {
-      setConnectionId((s) => ({ ...s, [toolKey]: existing.id }));
-      return;
-    }
-    try {
-      const login = await createLogin.mutateAsync({
-        name: toolKey,
-        credentialType,
-        credentialId,
-        scopes: [],
-        // Scoped to this agent's own department, not tenant-wide: lets a
-        // second department pin a different login under the same tool key
-        // (e.g. two distinct Odoo logins) instead of hitting the "already
-        // exists" conflict a tenant-wide login would.
-        departmentId: identity.departmentId || undefined,
-      });
-      setConnectionId((s) => ({ ...s, [toolKey]: login.id }));
-    } catch (err) {
-      toast.error("Could not link this credential", {
-        description: err instanceof Error ? err.message : String(err),
-      });
+  function pickCredential(toolKey: string, picked: string) {
+    setCredentialId((s) => {
+      const next = { ...s };
+      if (picked) next[toolKey] = picked;
+      else delete next[toolKey];
+      return next;
+    });
+  }
+
+  // The picked logins become the new agent's fixed access, one per tool.
+  async function fixLogins(agentId: string) {
+    for (const [toolKey, picked] of Object.entries(credentialId)) {
+      if (!tools.includes(toolKey)) continue;
+      const credentialType = connections.find((c) => c.name === toolKey)?.credentialType;
+      if (!credentialType) continue;
+      try {
+        await createLogin.mutateAsync({
+          name: toolKey,
+          credentialType,
+          credentialId: picked,
+          scopes: [],
+          agentId,
+        });
+      } catch (err) {
+        toast.error("Agent hired, but its login could not be set", {
+          description: `${toolKey}: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      }
     }
   }
 
@@ -230,13 +206,12 @@ export function NewAgentDialog({
     for (const key of tools) {
       const frame = frameTools[key];
       if (!frame || !frame.enabled) continue;
-      const hasLogins = (loginsByKey[key]?.length ?? 0) > 0;
       toolsPayload[key] = {
         enabled: true,
         read: !!frame.read,
         modify: !!frame.modify,
         approval_eur: (frame.approval_eur as number | null | undefined) ?? null,
-        connection_id: hasLogins ? connectionId[key] || null : null,
+        connection_id: null,
       };
     }
     return Object.keys(toolsPayload).length > 0 ? { tools: toolsPayload } : undefined;
@@ -245,15 +220,6 @@ export function NewAgentDialog({
   async function finish() {
     const model = models.find((m) => m.id === llm);
     const selectedTools = mcpTools.filter((i) => tools.includes(i.id));
-
-    for (const key of tools) {
-      const frame = frameTools[key];
-      const hasLogins = (loginsByKey[key]?.length ?? 0) > 0;
-      if (frame?.enabled && hasLogins && !connectionId[key]) {
-        toast.error("Pick a login before hiring", { description: key });
-        return;
-      }
-    }
 
     // A tool picked here only becomes real access once the department's own
     // frame already enables it -- buildNarrowing() silently leaves these out
@@ -282,6 +248,7 @@ export function NewAgentDialog({
           avatar_color: AVATAR_COLORS[identity.avatarIdx],
         },
       });
+      await fixLogins(agent.id);
 
       // A real cron trigger needs a real agent id, so it can't ride in the
       // creation request -- fire it right after, same endpoint the agent
@@ -475,10 +442,8 @@ export function NewAgentDialog({
                   .map((i) => {
                     const Icon = i.icon;
                     const inFrame = !!frameTools[i.id]?.enabled;
-                    const toolLogins = loginsByKey[i.id] ?? [];
                     const credentialType = connections.find((c) => c.name === i.id)?.credentialType;
-                    const pickedCredentialId =
-                      toolLogins.find((l) => l.id === connectionId[i.id])?.credentialId ?? "";
+                    const pickedCredentialId = credentialId[i.id] ?? "";
                     return (
                       <div
                         key={i.id}
@@ -508,9 +473,7 @@ export function NewAgentDialog({
                             <CredentialPicker
                               credentialType={credentialType}
                               value={pickedCredentialId}
-                              onChange={(credentialId) =>
-                                pinCredential(i.id, credentialType, credentialId)
-                              }
+                              onChange={(picked) => pickCredential(i.id, picked)}
                             />
                             {!inFrame && (
                               <p className="mt-1.5 text-[10px] text-muted-foreground">

@@ -1,5 +1,12 @@
 import { ApiError } from "@/lib/api";
-import type { Connection, CredentialCheck, Integration, OAuthErrorCode } from "@/lib/connections";
+import type {
+  Connection,
+  CredentialCheck,
+  CredentialUsedBy,
+  EffectiveLogin,
+  Integration,
+  OAuthErrorCode,
+} from "@/lib/connections";
 
 type T = (en: string, de: string) => string;
 
@@ -184,4 +191,168 @@ export function shortDate(iso: string, lang: string): string {
     day: "numeric",
     month: "short",
   });
+}
+
+/** `text` with each `{key}` replaced by `vars[key]`. The `{…}` placeholders
+ *  keep the English text a literal, so the translation catalogs carry it. */
+export function fill(text: string, vars: Record<string, string>): string {
+  return text.replace(/\{(\w+)\}/g, (whole, key: string) => vars[key] ?? whole);
+}
+
+/** "{name} is incomplete: {fields} missing", with the fields' labels. */
+export function incompleteText(t: T, name: string, fields: readonly string[]): string {
+  return fill(
+    t("{name} is incomplete: {fields} missing", "{name} ist unvollständig: {fields} fehlt"),
+    {
+      name,
+      fields: fields.join(", "),
+    },
+  );
+}
+
+/** "used by N agents" for a login's option or row, or "" when none. */
+export function usedByAgentsText(t: T, agents: number): string {
+  if (agents <= 0) return "";
+  return agents === 1
+    ? t("used by 1 agent", "von 1 Agenten genutzt")
+    : fill(t("used by {count} agents", "von {count} Agenten genutzt"), { count: String(agents) });
+}
+
+/** The line under an agent's tool: which login its chats use, and why --
+ *  or why none can be used. `label` turns a field key into its label. */
+export function effectiveLoginText(
+  login: EffectiveLogin,
+  t: T,
+  label: (key: string) => string = (key) => key,
+): string {
+  const name = login.credentialName ?? "";
+  if (login.reason === "incomplete") {
+    return incompleteText(t, name, login.missing.map(label));
+  }
+  if (login.reason === "ambiguous") {
+    return t(
+      "Several logins are enabled — choose one for this agent",
+      "Mehrere Zugänge freigegeben – wähle einen für diesen Agenten",
+    );
+  }
+  if (login.reason === "not_connected") {
+    return t(
+      "Uses the login of the person in the chat — you have none yet",
+      "Nutzt den Zugang der Person im Chat – du hast noch keinen",
+    );
+  }
+  if (login.reason === "binding_needs_confirmation") {
+    return t(
+      "The login chosen for this agent is not confirmed — runs refuse it",
+      "Der für diesen Agenten gewählte Zugang ist nicht bestätigt – Läufe lehnen ihn ab",
+    );
+  }
+  if (login.reason === "needs_reauth") {
+    return t(
+      "The chosen account must be connected again",
+      "Das gewählte Konto muss erneut verbunden werden",
+    );
+  }
+  if (login.reason === "not_configured" || (!login.reason && !login.source)) {
+    return t("No login set up yet", "Noch kein Zugang eingerichtet");
+  }
+  if (login.reason) {
+    return t(
+      "This tool cannot use a login in your chats right now",
+      "Dieses Werkzeug kann in deinen Chats gerade keinen Zugang nutzen",
+    );
+  }
+  switch (login.source) {
+    case "agent":
+      return fill(
+        t("Uses {name} — chosen for this agent", "Nutzt {name} – für diesen Agenten gewählt"),
+        { name },
+      );
+    case "own":
+      return fill(
+        t(
+          "Uses your own login {name} in your chats",
+          "Nutzt in deinen Chats deinen eigenen Zugang {name}",
+        ),
+        { name },
+      );
+    case "department":
+      return fill(
+        t(
+          "Uses {name} — enabled for the department",
+          "Nutzt {name} – für die Abteilung freigegeben",
+        ),
+        { name },
+      );
+    case "organisation":
+      return fill(
+        t("Uses {name} — the organisation's login", "Nutzt {name} – den Zugang der Organisation"),
+        { name },
+      );
+    default:
+      return name
+        ? fill(
+            t(
+              "Uses {name} — set up for the department before logins were shared",
+              "Nutzt {name} – für die Abteilung eingerichtet, bevor Zugänge geteilt wurden",
+            ),
+            { name },
+          )
+        : t("Uses the department's earlier setup", "Nutzt die frühere Einrichtung der Abteilung");
+  }
+}
+
+/** "Used by 2 agents · enabled for 3 departments", or "" when unused. */
+export function usedByText(t: T, usedBy: CredentialUsedBy | undefined): string {
+  const agents = usedByAgentsText(t, usedBy?.agents.length ?? 0);
+  const departments = usedBy?.departments.length ?? 0;
+  return [
+    agents,
+    departments === 1
+      ? t("used in 1 department", "in 1 Abteilung genutzt")
+      : departments > 1
+        ? fill(t("used in {count} departments", "in {count} Abteilungen genutzt"), {
+            count: String(departments),
+          })
+        : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** Why a credential cannot be deleted while data sources read it (the
+ *  server refuses even a forced delete), or null when none does. */
+export function dataSourceBlockText(
+  t: T,
+  name: string,
+  usedBy: CredentialUsedBy | undefined,
+): string | null {
+  const sources = usedBy?.dataSources ?? [];
+  if (!sources.length) return null;
+  return fill(
+    sources.length === 1
+      ? t(
+          "{name} is still read by the data source {sources}. Choose another credential there first, then delete it.",
+          "{name} wird noch von der Datenquelle {sources} gelesen. Wähl dort zuerst andere Zugangsdaten und lösch sie dann.",
+        )
+      : t(
+          "{name} is still read by the data sources {sources}. Choose another credential there first, then delete it.",
+          "{name} wird noch von den Datenquellen {sources} gelesen. Wähl dort zuerst andere Zugangsdaten und lösch sie dann.",
+        ),
+    { name, sources: sources.join(", ") },
+  );
+}
+
+/** What deleting a login still in use means, for the confirmation after the
+ *  server's 409: agents that chose it are left without one (never switched to
+ *  another), departments lose it. */
+export function inUseDescription(t: T, name: string, usedBy: CredentialUsedBy | undefined) {
+  const what = usedByText(t, usedBy);
+  return fill(
+    t(
+      "{name} is still in use ({what}). Delete it anyway? Agents that chose it then have no login until someone chooses another.",
+      "{name} wird noch genutzt ({what}). Trotzdem löschen? Agenten, die ihn gewählt haben, haben dann keinen Zugang, bis jemand einen anderen wählt.",
+    ),
+    { name, what: what || t("by a setup", "von einer Einrichtung") },
+  );
 }

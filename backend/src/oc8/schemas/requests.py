@@ -413,6 +413,10 @@ class CreateMcpLoginRequest(CamelModel):
     credential_id: uuid.UUID | None = None
     scopes: list[str] | dict[str, Any] = []
     department_id: uuid.UUID | None = None
+    #: The agent this login is chosen for (the new-agent dialog): it becomes
+    #: the agent's fixed access for the tool `name`, never a further
+    #: connection row.
+    agent_id: uuid.UUID | None = None
 
 
 class CreateMcpConnectionRequest(CamelModel):
@@ -664,6 +668,13 @@ class CreateConnectionCredentialRequest(CamelModel):
     owner: Literal["me", "organisation"] = "me"
     name: str | None = None
     field_values: dict[str, Any]
+
+
+class SetCredentialDepartmentsRequest(CamelModel):
+    """Enable an organisation login for these departments, or for all."""
+
+    department_ids: list[uuid.UUID] = Field(default_factory=list, max_length=1000)
+    all_departments: bool = False
 
 
 class CheckConnectionCredentialRequest(CamelModel):

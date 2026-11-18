@@ -8,12 +8,15 @@ const access = vi.fn();
 const options = vi.fn();
 const setAccess = vi.fn();
 const reset = vi.fn();
+const effective = vi.fn();
+const integrations = vi.fn();
 
 vi.mock("@/lib/connections", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/connections")>();
   return {
     ...actual,
-    useIntegrations: () => ({ data: [] }),
+    useIntegrations: () => integrations(),
+    useEffectiveLogin: (agentId: string, toolKey: string) => effective(agentId, toolKey),
     useAgentToolAccess: () => access(),
     useAgentToolAccessOptions: () => options(),
     useSetAgentToolAccess: () => ({ mutateAsync: setAccess, isPending: false }),
@@ -23,12 +26,12 @@ vi.mock("@/lib/connections", async (importOriginal) => {
 
 import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
 
-function renderPanel(mayManage = true) {
+function renderPanel(mayManage = true, toolKeys = ["microsoft365"]) {
   const qc = new QueryClient();
   render(
     <QueryClientProvider client={qc}>
       <LanguageProvider>
-        <AgentToolAccessPanel agentId="a1" toolKeys={["microsoft365"]} mayManage={mayManage} />
+        <AgentToolAccessPanel agentId="a1" toolKeys={toolKeys} mayManage={mayManage} />
       </LanguageProvider>
     </QueryClientProvider>,
   );
@@ -94,6 +97,9 @@ describe("AgentToolAccessPanel", () => {
     setAccess.mockReset();
     setAccess.mockResolvedValue({});
     reset.mockReset();
+    effective.mockReset();
+    effective.mockReturnValue({ data: undefined });
+    integrations.mockReturnValue({ data: [] });
   });
 
   it("shows only the agent's enabled tools, with the schedule hint", async () => {
@@ -302,5 +308,117 @@ describe("AgentToolAccessPanel", () => {
   it("is read-only without the right to change the agent", async () => {
     renderPanel(false);
     expect(await screen.findByLabelText("Zugang für Microsoft 365")).toBeDisabled();
+  });
+
+  it("shows the effective login with its source", async () => {
+    effective.mockImplementation((_agent: string, toolKey: string) => ({
+      data:
+        toolKey === "odoo"
+          ? {
+              credentialId: "c1",
+              credentialName: "Vertrieb",
+              source: "department",
+              reason: null,
+              missing: [],
+            }
+          : {
+              credentialId: "o1",
+              credentialName: "me@acme.de",
+              source: "own",
+              reason: null,
+              missing: [],
+            },
+    }));
+    renderPanel(true, ["microsoft365", "odoo"]);
+    expect(await screen.findByTestId("effective-login-odoo")).toHaveTextContent(
+      "Nutzt Vertrieb – für die Abteilung freigegeben",
+    );
+    expect(screen.getByTestId("effective-login-microsoft365")).toHaveTextContent(
+      "Nutzt in deinen Chats deinen eigenen Zugang me@acme.de",
+    );
+    expect(effective).toHaveBeenCalledWith("a1", "odoo");
+  });
+
+  it("names why no login can be used", async () => {
+    integrations.mockReturnValue({
+      data: [
+        {
+          name: "odoo_mcp",
+          label: "Odoo",
+          kind: "credential",
+          credentialFields: [{ key: "url", label: "Adresse", kind: "url" }],
+        },
+      ],
+    });
+    effective.mockImplementation((_agent: string, toolKey: string) => ({
+      data:
+        toolKey === "odoo"
+          ? {
+              credentialId: "c1",
+              credentialName: "Vertrieb",
+              source: "department",
+              reason: "incomplete",
+              missing: ["url"],
+            }
+          : {
+              credentialId: null,
+              credentialName: null,
+              source: null,
+              reason: "ambiguous",
+              missing: [],
+            },
+    }));
+    renderPanel(true, ["microsoft365", "odoo"]);
+    expect(await screen.findByTestId("effective-login-odoo")).toHaveTextContent(
+      "Vertrieb ist unvollständig: Adresse fehlt",
+    );
+    expect(screen.getByTestId("effective-login-microsoft365")).toHaveTextContent(
+      "Mehrere Zugänge freigegeben – wähle einen für diesen Agenten",
+    );
+  });
+
+  it("says in English which login is chosen and when none is set up", async () => {
+    window.localStorage.setItem("oc8-lang", "en");
+    effective.mockImplementation((_agent: string, toolKey: string) => ({
+      data:
+        toolKey === "odoo"
+          ? {
+              credentialId: "c9",
+              credentialName: "Shared",
+              source: "agent",
+              reason: null,
+              missing: [],
+            }
+          : {
+              credentialId: null,
+              credentialName: null,
+              source: null,
+              reason: "not_configured",
+              missing: [],
+            },
+    }));
+    renderPanel(true, ["microsoft365", "odoo"]);
+    expect(await screen.findByTestId("effective-login-odoo")).toHaveTextContent(
+      "Uses Shared — chosen for this agent",
+    );
+    expect(screen.getByTestId("effective-login-microsoft365")).toHaveTextContent(
+      "No login set up yet",
+    );
+  });
+
+  it("says when the runtime refuses the agent's chosen login", async () => {
+    effective.mockReturnValue({
+      data: {
+        credentialId: null,
+        credentialName: null,
+        source: null,
+        reason: "binding_needs_confirmation",
+        missing: [],
+      },
+    });
+    renderPanel(true, ["odoo"]);
+    expect(await screen.findByTestId("effective-login-odoo")).toHaveTextContent(
+      "Der für diesen Agenten gewählte Zugang ist nicht bestätigt – Läufe lehnen ihn ab",
+    );
   });
 });

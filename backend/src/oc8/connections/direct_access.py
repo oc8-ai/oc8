@@ -7,7 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ from oc8.audit import append_event
 from oc8.authz.pdp import Decision, ToolPolicy
 from oc8.connections.acting import ACTING_PERSON_WITHHELD
 from oc8.connections.integrations import integration_for_connection
+from oc8.connections.tool_connection import tool_connection
 from oc8.connections.usable import direct_connection, member_departments_for, tool_key_connected
 from oc8.copilot.tools import uuid_or_none
 
@@ -116,7 +117,10 @@ async def load_direct_access(
             db, member_id=direct.member_id, tool_key=row.tool_key
         )
         if departments and await tool_key_connected(
-            db, tool_key=row.tool_key, department_ids=[d for d, _p in departments]
+            db,
+            tool_key=row.tool_key,
+            department_ids=[d for d, _p in departments],
+            member_id=direct.member_id,
         ):
             granted[row.tool_key] = tuple(departments)
     return DirectAccessView(member_id=direct.member_id, granted=granted)
@@ -166,16 +170,8 @@ async def _strongest_connection(
             continue
         # Only a row that exists already: resolving for modify must never
         # materialise a fallback row while a reading department has one.
-        connected = await db.scalar(
-            select(m.McpConnection.id)
-            .where(
-                m.McpConnection.tenant_id == tenant_id,
-                m.McpConnection.name == tool_key,
-                m.McpConnection.connected.is_(True),
-                m.McpConnection.department_id.in_([d for d, _p in candidates])
-                | m.McpConnection.department_id.is_(None),
-            )
-            .limit(1)
+        connected = await tool_connection(
+            db, name=tool_key, department_id=[d for d, _p in candidates]
         )
         if connected is not None:
             return await direct_connection(
@@ -298,8 +294,13 @@ async def direct_hold(
         integration = integration_for_connection(conn)
         label = integration.label if integration is not None else conn.name
         try:
+            # The account the held call will use: a write needs a department
+            # granting modify (the decision's own right).
+            right: Literal["read", "modify"] = (
+                "modify" if decision.context.get("right") == "modify" else "read"
+            )
             account = account_of(
-                await resolve_direct_access(db, member_id=direct.member_id, conn=conn)
+                await resolve_direct_access(db, member_id=direct.member_id, conn=conn, right=right)
             )
         except (ConnectionRequired, PermissionError):
             account = None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import uuid
 from collections.abc import AsyncIterator
 
@@ -108,10 +109,19 @@ async def test_an_unknown_smtp_credential_is_rejected(
 
 
 async def test_a_credential_of_another_type_is_rejected(
-    app_session: AppSessionFactory, _client: AsyncClient
+    app_session: AppSessionFactory, _client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`list_credentials` filters on credential_type server-side, so an
     LLM-provider key can never be selected as the mail server."""
+    from oc8 import config
+
+    # The key is stored in the vault: a complete login needs it.
+    monkeypatch.setattr(
+        config.get_settings(),
+        "secret_kek",
+        base64.b64encode(bytes(range(32))).decode(),
+        raising=False,
+    )
     tenant = uuid.uuid4()
     await _org_with_smtp_credential(app_session, tenant)
     async with app_session(tenant) as db:
@@ -120,7 +130,7 @@ async def test_a_credential_of_another_type_is_rejected(
             tenant_id=tenant,
             name="not-smtp",
             credential_type="anthropic_api_key",
-            field_values={},
+            field_values={"api_key": "sk-ant-test"},
         )
         other_id = other.id
     response = await _client.put(

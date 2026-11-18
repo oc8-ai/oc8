@@ -9,7 +9,7 @@ kind = "url"
 # Odoo answers its JSON-RPC and XML-RPC at the root: an address copied from
 # the browser ("/odoo/crm", "/odoo/discuss?...") is cut to scheme and host.
 origin_only = true
-placeholder = "http://host.docker.internal:1000"
+placeholder = "https://your-company.odoo.com"
 
 [[fields]]
 key = "database"

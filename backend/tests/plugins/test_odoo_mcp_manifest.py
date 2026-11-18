@@ -161,7 +161,7 @@ def test_feeds_knowledge_bases_through_a_deferred_permission() -> None:
     assert found is not None and found.valid, found and found.error
     assert found.manifest is not None
     manifest = parse_manifest(found.manifest)
-    assert manifest.version == "1.10.0"
+    assert manifest.version == "1.11.0"
     assert manifest.permissions == ["mcp:connect", "secrets:use", "knowledge:write"]
     assert manifest.deferred_permissions == ["knowledge:write"]
     assert found.manifest["entry_points"]["connectors"] == "connector.connector:register"

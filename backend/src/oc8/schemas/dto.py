@@ -1305,6 +1305,10 @@ class RunDTO(CamelModel):
     #: (connections design). The chat and the run history show a "connect"
     #: call to action for it.
     connection_required: dict[str, Any] | None = None
+    #: Tools a listing skipped for an admin's configuration error (an
+    #: incomplete or ambiguous login): `[{tool, integration, label, reason,
+    #: missing}]`. Non-blocking; the chat shows a quiet line for each.
+    tool_notices: list[dict[str, Any]] = []
     #: A tool call the department frame (or the agent's own guardrails)
     #: withholds: `{connection, tool, label, right, reason, scope,
     #: departmentId, agentId}` (oc8.connections.tool_denied). The chat and the
@@ -1695,6 +1699,17 @@ class SecretDTO(CamelModel):
     created_at: str
 
 
+class ConnectionUsedByDTO(CamelModel):
+    """What a credential is used by: departments enabled for it or wired to
+    it, agents that chose it, and data sources that read it."""
+
+    departments: list[str] = []
+    agents: list[str] = []
+    #: Names of the data sources that read it (a deletion never overrides
+    #: them, not even forced).
+    data_sources: list[str] = []
+
+
 class CredentialDTO(CamelModel):
     """Credential metadata -- never the secret field values. Non-secret
     field values ARE included (they were never secret in the first place;
@@ -1708,6 +1723,12 @@ class CredentialDTO(CamelModel):
     last_test_ok: bool | None
     created_at: str
     updated_at: str
+    #: The departments this login is enabled for, or all of them.
+    department_ids: list[str] = []
+    all_departments: bool = False
+    #: Required field keys without a value.
+    incomplete: list[str] = []
+    used_by: ConnectionUsedByDTO = ConnectionUsedByDTO()
 
 
 class CredentialTypeDTO(CamelModel):
@@ -1824,6 +1845,12 @@ class ConnectionDTO(CamelModel):
     created_by_name: str | None = None
     last_tested_at: str | None = None
     last_test_ok: bool | None = None
+    #: A credential only: the departments it is enabled for, or all of them.
+    department_ids: list[str] = []
+    all_departments: bool = False
+    #: A credential only: required field keys without a value.
+    incomplete: list[str] = []
+    used_by: ConnectionUsedByDTO = ConnectionUsedByDTO()
 
 
 class CredentialCheckDTO(CamelModel):
@@ -1853,6 +1880,21 @@ class AgentToolAccessDTO(CamelModel):
     needs_confirmation: bool = False
     #: "not_confirmed" | "agent_changed" when `needs_confirmation`.
     confirmation_reason: str | None = None
+
+
+class EffectiveLoginDTO(CamelModel):
+    """The login an agent's tool uses for the person looking (their own
+    chat), and where it comes from -- or why there is none."""
+
+    #: The login's id (a credential, or for a sign-in tool the account).
+    credential_id: str | None = None
+    credential_name: str | None = None
+    #: "agent" | "own" | "department" | "organisation" | "legacy"
+    source: str | None = None
+    #: None | "not_configured" | "ambiguous" | "incomplete" | "not_connected"
+    reason: str | None = None
+    #: `incomplete`: the required field keys the login leaves empty.
+    missing: list[str] = []
 
 
 class AccessOptionDTO(CamelModel):

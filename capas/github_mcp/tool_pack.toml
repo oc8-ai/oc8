@@ -10,6 +10,12 @@ transport = "stdio"
 server_url = ""
 credential_type = "github_pat"
 
+# env var name -> the credential_type's own field key (github_pat.toml), so
+# the bridge is started from the chosen login itself (the setup only chooses
+# the login; nothing is copied onto the connection).
+[connections.credential_env_fields]
+GITHUB_PERSONAL_ACCESS_TOKEN = "token"
+
 # Right classification, restricted to the server's five DEFAULT toolsets
 # (context, issues, pull_requests, repos, users) -- see `GITHUB_TOOLSETS`
 # below. The `actions` (CI workflow runs) and `code_security` (secret/code

@@ -12,6 +12,13 @@ transport = "stdio"
 server_url = ""
 credential_type = "gitea_login"
 
+# env var name -> the credential_type's own field key (gitea_login.toml), so
+# the bridge is started from the chosen login itself (the setup only chooses
+# the login; nothing is copied onto the connection).
+[connections.credential_env_fields]
+GITEA_URL = "url"
+GITEA_TOKEN = "token"
+
 # Right classification. Reading a repository is harmless; opening an issue and
 # commenting on one change something a colleague will act on, so they are writes
 # and a department can withhold them on their own.

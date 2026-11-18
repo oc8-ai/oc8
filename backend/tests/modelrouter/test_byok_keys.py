@@ -208,13 +208,18 @@ async def test_resolve_model_base_url_is_none_when_the_field_was_never_set(
     credential, not raise."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        await create_credential(
-            db,
-            tenant_id=tenant,
-            name="opaas ai",
-            credential_type="openai_compatible_api_key",
-            field_values={"api_key": "sk-opaas"},
+        # Written as a row: saving a credential without its required
+        # `base_url` is refused now, so only an older row can lack it.
+        db.add(
+            m.Credential(
+                tenant_id=tenant,
+                name="opaas ai",
+                credential_type="openai_compatible_api_key",
+                field_values={},
+                secret_refs={},
+            )
         )
+        await db.flush()
         assert (
             await resolve_model_base_url(db, tenant_id=tenant, provider="openai_compatible") is None
         )

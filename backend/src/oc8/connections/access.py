@@ -1,13 +1,11 @@
 """Which account a run's tool call acts through (connections design).
 
 `legacy`: the McpConnection's own configuration, unchanged (a department's
-app-only setup, a pinned login, a tool that is no connectable integration).
-`oauth` / `credential`: one OAuth connection or credential, chosen by the
-agent's access row or the defaults below. Anything else raises
-ConnectionRequired: there is no fallback to another person's account or the
-organisation's -- except in a Copilot direct-access run (copilot direct access
-§4), where a person without a login of their own uses the organisation's
-account when `member_may_use` says they may.
+app-only setup, a pinned login, an unconsolidated department row, a tool that
+is no connectable integration). `oauth` / `credential`: one OAuth connection
+or credential, chosen in one order for agents and the Copilot
+(`connections.login.resolve_login`). Anything else raises ConnectionRequired:
+there is no fallback to another person's account.
 """
 
 from __future__ import annotations
@@ -15,8 +13,9 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import dataclass, replace
-from typing import Literal
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,14 +29,25 @@ from oc8.connections.integrations import (
     integration_for_connection,
 )
 
+if TYPE_CHECKING:
+    from oc8.connections.login import LoginChoice
+
+
+#: Reasons a listing reports as a notice (`ConnectionRequired.is_notice`).
+NOTICE_REASONS: frozenset[str] = frozenset({"incomplete", "ambiguous"})
+
 
 class ConnectionRequired(Exception):
     """The call needs an account that is not available. `str()` is for the
     model; `as_context()` is what the run records for the UI."""
 
-    def __init__(self, integration: Integration, reason: str) -> None:
+    def __init__(
+        self, integration: Integration, reason: str, *, missing: Sequence[str] = ()
+    ) -> None:
         self.integration = integration
         self.reason = reason
+        #: `incomplete`: the required field keys the login leaves empty.
+        self.missing = list(missing)
         super().__init__(self._message())
 
     def _message(self) -> str:
@@ -87,6 +97,23 @@ class ConnectionRequired(Exception):
                 "person's account and was not confirmed since the agent last changed. "
                 "The account's owner or an administrator must save the access setting again."
             )
+        if self.reason == "incomplete":
+            return (
+                f"connection_required: The {self.integration.label} login is incomplete: "
+                f"{', '.join(self.missing)} missing. "
+                "Ask an admin to complete it under Settings → Connections."
+            )
+        if self.reason == "read_only":
+            return (
+                f"connection_required: the {self.integration.label} login this conversation "
+                "uses was chosen for reading; no department of the person grants writing "
+                "through it."
+            )
+        if self.reason == "ambiguous":
+            return (
+                f"connection_required: Several {self.integration.label} logins are enabled "
+                "for this department and the agent has none chosen."
+            )
         if self.reason == "not_configured":
             return (
                 f"connection_required: no access to {self.integration.label} "
@@ -97,13 +124,33 @@ class ConnectionRequired(Exception):
             "Tell the user to connect it under Connections."
         )
 
-    def as_context(self) -> dict[str, str | None]:
+    @property
+    def is_notice(self) -> bool:
+        """An admin's configuration error (an incomplete login, several
+        logins and none chosen): stable for the run, so a listing reports
+        it as a quiet notice instead of a connect prompt."""
+        return self.reason in NOTICE_REASONS
+
+    def as_notice(self, tool: str) -> dict[str, Any]:
+        """What a run records under `tool_notices` for the tool `tool`."""
         return {
+            "tool": tool,
+            "integration": self.integration.name,
+            "label": self.integration.label,
+            "reason": self.reason,
+            "missing": list(self.missing),
+        }
+
+    def as_context(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "integration": self.integration.name,
             "provider": self.integration.provider,
             "label": self.integration.label,
             "reason": self.reason,
         }
+        if self.reason == "incomplete":
+            out["missing"] = list(self.missing)
+        return out
 
 
 @dataclass(frozen=True)
@@ -113,6 +160,10 @@ class ToolAccess:
     on_behalf_of: uuid.UUID | None
     oauth_connection: m.OAuthConnection | None = None
     credential: m.Credential | None = None
+    #: The right the account was resolved for. "read": a Copilot login lent by
+    #: a department granting only read -- no call needing more may use it. An
+    #: agent's account is not chosen per right ("modify").
+    right: Literal["read", "modify"] = "modify"
 
 
 async def single_organisation_credential(
@@ -136,9 +187,21 @@ async def single_organisation_credential(
 
 
 async def resolve_tool_access(
-    db: AsyncSession, *, run: m.AgentRun, agent: m.Agent, conn: m.McpConnection
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    conn: m.McpConnection,
+    tool: str | None = None,
+    right: Literal["read", "modify"] | None = None,
 ) -> ToolAccess:
-    # Deferred: direct_access -> usable -> access would be a cycle at import.
+    """`tool`: the call this access serves -- a Copilot direct-access write
+    needs a department granting `modify`. `"*"`: a bridge serving every call
+    of the run (`whole_bridge_access`). None: a listing or an env lookup
+    (`read`). `right` overrides what `tool` implies (a core tool reading
+    through the connection)."""
+    # Deferred: direct_access -> usable -> access would be a cycle at import;
+    # login imports this module.
     from oc8.connections.direct_access import active_grant, direct_access_run
 
     direct = direct_access_run(run, agent)
@@ -150,32 +213,116 @@ async def resolve_tool_access(
     # The grant must be this person's own (fail closed): a grant row of another
     # member never lends its account.
     if direct is not None and grant is not None and grant.member_id == direct.member_id:
-        return await resolve_direct_access(db, member_id=direct.member_id, conn=conn)
+        if right is None and tool == "*":
+            return await whole_bridge_access(db, member_id=direct.member_id, conn=conn)
+        return await resolve_direct_access(
+            db, member_id=direct.member_id, conn=conn, right=right or call_right(conn, tool)
+        )
+    acting, integration, choice = await agent_login(db, run=run, agent=agent, conn=conn)
+    if integration is None or choice is None:
+        return ToolAccess("legacy", None, acting.member_id)
+    return _to_access(choice, integration, acting.member_id)
+
+
+async def agent_login(
+    db: AsyncSession, *, run: m.AgentRun, agent: m.Agent, conn: m.McpConnection
+) -> tuple[ActingPerson, Integration | None, LoginChoice | None]:
+    """The login an agent's run uses through `conn` (no Copilot direct
+    access): who acts, the integration (None: not a connectable one, the
+    row's own config applies) and the resolver's choice. Raises
+    `ConnectionRequired` as the run would. The one path for the runtime and
+    for showing which login a tool uses."""
+    from oc8.connections.login import live_chat_member, resolve_login
+
     acting = await resolve_acting_person(db, run)
     integration = integration_for_connection(conn)
     if integration is None:
-        return ToolAccess("legacy", None, acting.member_id)
+        return acting, None, None
     if not await integration_enabled(db, integration):
         # Disabling keeps the plugin's rows (there is no uninstall): its tools
         # act through nobody's account until it is enabled again.
         raise ConnectionRequired(integration, "not_configured")
-    row = await db.scalar(
-        select(m.AgentToolAccess).where(
-            m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == conn.name
-        )
+    choice = await resolve_login(
+        db,
+        agent=agent,
+        integration=integration,
+        conn=conn,
+        live_member_id=live_chat_member(run, acting),
+        department_ids=[agent.department_id],
+        right="read",
+        run=run,
+        acting=acting,
     )
-    if row is not None and row.mode == "fixed":
-        return await _fixed(db, row, agent, run, conn.name, integration, acting)
-    if row is None:
-        if conn.credential_id is not None:
-            return ToolAccess("legacy", integration, acting.member_id)
-        default = await _default(db, conn, agent, integration, acting)
-        if default is not None:
-            return default
-    if acting.member_id is not None:
-        # The acting person's own account follows.
-        await _require_schedule_confirmed(db, run, integration, acting.member_id)
-    return await _user(db, integration, acting)
+    return acting, integration, choice
+
+
+def declared_scopes(conn: m.McpConnection) -> dict[str, Any] | None:
+    """The connection's read/modify classification: its manifest's, else a
+    dict stored on the row."""
+    from oc8.capas.discovery import resolve_tool_pack_connection
+
+    cfg = conn.config if isinstance(conn.config, dict) else {}
+    declared = resolve_tool_pack_connection(
+        str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
+    )
+    if declared is not None and isinstance(declared.scopes, dict):
+        return declared.scopes
+    return conn.scopes if isinstance(conn.scopes, dict) else None
+
+
+def call_right(conn: m.McpConnection, tool: str | None) -> Literal["read", "modify"]:
+    """The right a call of `tool` needs (the connection's declared scopes;
+    unknown: modify). No tool (a listing, an env lookup): read."""
+    from oc8.authz.pdp import required_right
+
+    if tool is None or tool == "*":
+        return "read"
+    return "modify" if required_right(tool, declared_scopes(conn)) == "modify" else "read"
+
+
+def can_write(conn: m.McpConnection) -> bool:
+    """Whether the connection declares a tool needing more than read (no
+    classification at all: every tool counts as modify)."""
+    scopes = declared_scopes(conn)
+    if not scopes:
+        return True
+    return any(right != "read" and names for right, names in scopes.items())
+
+
+async def whole_bridge_access(
+    db: AsyncSession, *, member_id: uuid.UUID, conn: m.McpConnection
+) -> ToolAccess:
+    """A Copilot bridge serving every call of the run: resolved for `modify`
+    when the tool can write, else -- or when no department of the person
+    grants modify -- for `read`. The access records the right; a call needing
+    more is refused on that bridge."""
+    if can_write(conn):
+        try:
+            return await resolve_direct_access(db, member_id=member_id, conn=conn, right="modify")
+        except (ConnectionRequired, PermissionError):
+            pass
+    return await resolve_direct_access(db, member_id=member_id, conn=conn, right="read")
+
+
+def _to_access(
+    choice: LoginChoice,
+    integration: Integration,
+    on_behalf_of: uuid.UUID | None,
+    right: Literal["read", "modify"] = "modify",
+) -> ToolAccess:
+    if choice.oauth_connection is not None:
+        return ToolAccess(
+            "oauth",
+            integration,
+            on_behalf_of,
+            oauth_connection=choice.oauth_connection,
+            right=right,
+        )
+    if choice.credential is not None:
+        return ToolAccess(
+            "credential", integration, on_behalf_of, credential=choice.credential, right=right
+        )
+    return ToolAccess("legacy", integration, on_behalf_of, right=right)
 
 
 async def _require_schedule_confirmed(
@@ -189,9 +336,16 @@ async def _require_schedule_confirmed(
 
 
 async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) -> list[uuid.UUID]:
-    """The accounts the agent's own department already set up for this tool
-    (its MCP connection's OAuth connection or pinned login)."""
-    conns = (
+    """The accounts the agent's own department already set up for this tool:
+    the organisation logins enabled for it, and -- while unconsolidated --
+    the OAuth connection or pinned login of a row it still owns."""
+    from oc8.connections.integrations import enabled_tool_pack_connection
+    from oc8.credentials.enablement import enabled_credentials
+
+    out: list[uuid.UUID] = []
+    if agent.department_id is None:
+        return out
+    owned = (
         await db.execute(
             select(m.McpConnection).where(
                 m.McpConnection.name == tool_key,
@@ -199,19 +353,37 @@ async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) ->
             )
         )
     ).scalars()
-    out: list[uuid.UUID] = []
-    for conn in conns:
+    integration: Integration | None = None
+    for conn in owned:
+        integration = integration or integration_for_connection(conn)
         cfg = conn.config if isinstance(conn.config, dict) else {}
         for raw in (cfg.get("oauth_connection_id"), conn.credential_id):
+            if raw is None:
+                continue
             try:
                 out.append(raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw)))
             except ValueError:
                 continue
+    if integration is None:
+        template = await enabled_tool_pack_connection(db, tool_key)
+        integration = template[2] if template is not None else None
+    if integration is not None and integration.credential_type:
+        out.extend(
+            cred.id
+            for cred in await enabled_credentials(
+                db, credential_type=integration.credential_type, department_id=agent.department_id
+            )
+        )
     return out
 
 
 async def binding_fingerprint(
-    db: AsyncSession, agent: m.Agent, tool_key: str | None, *, version_id: uuid.UUID | None
+    db: AsyncSession,
+    agent: m.Agent,
+    tool_key: str | None,
+    *,
+    version_id: uuid.UUID | None,
+    legacy: bool = False,
 ) -> str:
     """What the person who confirmed a binding to their own account saw: the
     agent version (or, for an agent without one, its working copy), the
@@ -220,7 +392,15 @@ async def binding_fingerprint(
     (status, routing hints) does not change it. The setup is hashed whole: the
     result is a digest, and the config holds references, not secret values.
     `tool_key` None: the department's setup of every tool (a trigger's runs
-    may use any of them)."""
+    may use any of them).
+
+    A tool the department owns no row of any more (consolidated: one shared
+    row, logins enabled for departments) is hashed through what the agent
+    reaches instead (`_shared_setup`): the shared row, the agent's access
+    row and the logins the resolver could pick. Otherwise a change to the
+    shared row or to the login used would leave a confirmation standing.
+    `legacy`: the digest without that part, as stored before (consolidation
+    accepts a confirmation stamped that way once, `connections.consolidate`)."""
     assignments = (
         await db.execute(
             select(m.SkillAssignment).where(
@@ -244,21 +424,124 @@ async def binding_fingerprint(
         for a in assignments
     )
     dept = await db.get(m.Department, agent.department_id)
+    # The rows the department owns, as before the one-row-per-tool change:
+    # a stored confirmation (a trigger's, a binding's) must stay valid for
+    # a tenant whose setups did not change. Consolidation re-stamps them.
     which = select(m.McpConnection).where(m.McpConnection.department_id == agent.department_id)
     if tool_key is not None:
         which = which.where(m.McpConnection.name == tool_key)
-    conns = (await db.execute(which)).scalars()
+    conns = list((await db.execute(which)).scalars())
     setup = sorted(
         [str(c.id), str(c.credential_id), c.server_url, c.transport, c.scopes, c.config]
         for c in conns
     )
-    payload = {
+    payload: dict[str, Any] = {
         "version": str(version_id) if version_id else await snapshot_agent(db, agent),
         "skills": skills,
         "department": None if dept is None else [dept.goal, dept.frame, dept.frame_capa_defaults],
         "setup": setup,
     }
+    if not legacy:
+        # Only present when non-empty: an unconsolidated department's digest
+        # stays exactly what it was.
+        shared = await _shared_setup(db, agent, dept, tool_key, owned={c.name for c in conns})
+        if shared:
+            payload["shared"] = shared
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _frame_tools(dept: m.Department | None) -> list[str]:
+    """The tool names the department's frame enables."""
+    frame = dept.frame if dept is not None and isinstance(dept.frame, dict) else {}
+    tools = frame.get("tools") if isinstance(frame.get("tools"), dict) else {}
+    return sorted(
+        key
+        for key, policy in (tools or {}).items()
+        if isinstance(policy, dict) and policy.get("enabled")
+    )
+
+
+async def _shared_setup(
+    db: AsyncSession,
+    agent: m.Agent,
+    dept: m.Department | None,
+    tool_key: str | None,
+    *,
+    owned: set[str],
+) -> list[Any]:
+    """What a consolidated tool's run uses, for each login tool the agent can
+    reach (`tool_key`, or every tool its department's frame enables) that its
+    department owns no row of: the tool's row (the shared one the run starts
+    on -- or, before a first run created it, the manifest's, which is what
+    that run creates) and the login the resolver uses (the agent's access
+    row; else the organisation logins enabled for the department, else the
+    organisation's single one). Definitions and ids only -- references,
+    never secret values."""
+    from oc8.capas.materialise import unbound_connection
+    from oc8.connections.integrations import enabled_tool_pack_connection
+    from oc8.connections.login import enabled_anywhere
+    from oc8.connections.tool_connection import not_retired
+    from oc8.credentials.enablement import enabled_credentials
+
+    names = [tool_key] if tool_key is not None else _frame_tools(dept)
+    out: list[Any] = []
+    for name in names:
+        if name in owned:
+            continue
+        row = await db.scalar(
+            select(m.McpConnection)
+            .where(
+                m.McpConnection.name == name,
+                m.McpConnection.department_id.is_(None),
+                m.McpConnection.credential_id.is_(None),
+                not_retired(),
+            )
+            .order_by(m.McpConnection.created_at, m.McpConnection.id)
+            .limit(1)
+        )
+        integration = integration_for_connection(row) if row is not None else None
+        if row is None or integration is None:
+            template = await enabled_tool_pack_connection(db, name)
+            if template is not None:
+                manifest, pack_conn, integration = template
+                if row is None:
+                    row = unbound_connection(
+                        tenant_id=agent.tenant_id, manifest=manifest, conn=pack_conn
+                    )
+        if integration is None or integration.kind != "credential":
+            # Only login tools: a sign-in tool's account is the person's own
+            # or its department's app-only row, hashed as before.
+            continue
+        assert integration.credential_type is not None
+        access = await db.scalar(
+            select(m.AgentToolAccess).where(
+                m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == name
+            )
+        )
+        used: list[Any]
+        if access is not None:
+            used = [access.mode, str(access.credential_id), str(access.oauth_connection_id)]
+        else:
+            used = []
+            if agent.department_id is not None:
+                used = [
+                    str(c.id)
+                    for c in await enabled_credentials(
+                        db,
+                        credential_type=integration.credential_type,
+                        department_id=agent.department_id,
+                    )
+                ]
+            if not used and not await enabled_anywhere(db, integration.credential_type):
+                only = await single_organisation_credential(db, integration.credential_type)
+                if only is not None:
+                    used = [str(only.id)]
+        definition = (
+            None if row is None else [row.server_url, row.transport, row.scopes, row.config]
+        )
+        if definition is not None or used:
+            out.append([name, definition, used])
+    return out
 
 
 async def trigger_fingerprint(
@@ -434,27 +717,6 @@ async def _fixed(
     raise ConnectionRequired(integration, "not_connected")
 
 
-async def _default(
-    db: AsyncSession,
-    conn: m.McpConnection,
-    agent: m.Agent,
-    integration: Integration,
-    acting: ActingPerson,
-) -> ToolAccess | None:
-    if department_setup(conn, agent, integration):
-        # The agent's own department's existing setup (app-only app
-        # registration, or the setup form's login): exactly what ran before
-        # connections existed. Never another department's.
-        return ToolAccess("legacy", integration, acting.member_id)
-    if integration.kind == "credential":
-        assert integration.credential_type is not None
-        only = await single_organisation_credential(db, integration.credential_type)
-        if only is not None:
-            return ToolAccess("credential", integration, acting.member_id, credential=only)
-        raise ConnectionRequired(integration, "not_configured")
-    return None  # an OAuth integration without a department setup: user mode
-
-
 def department_setup(conn: m.McpConnection, agent: m.Agent, integration: Integration) -> bool:
     """Whether `conn` is the agent's own department's setup of the integration
     (a login, or an app-only OAuth app) -- the default access when the agent
@@ -505,50 +767,48 @@ async def _user(db: AsyncSession, integration: Integration, acting: ActingPerson
 
 
 async def resolve_direct_access(
-    db: AsyncSession, *, member_id: uuid.UUID, conn: m.McpConnection
+    db: AsyncSession,
+    *,
+    member_id: uuid.UUID,
+    conn: m.McpConnection,
+    right: Literal["read", "modify"] = "read",
 ) -> ToolAccess:
-    """The account a Copilot direct-access call uses (§4): the person's own
-    login; with none at all, the organisation's -- only if they may read
-    through this connection. Another member's account, never."""
-    from oc8.connections.usable import member_may_use
+    """The account a Copilot direct-access call uses (§4, unified connections
+    "Resolver order (Copilot direct access)"): the person's own login; else a
+    login enabled for a department of theirs whose frame grants `right`
+    ("modify" for a write); else the organisation's single login. Another
+    member's account, never."""
+    from oc8.connections.login import resolve_login
+    from oc8.connections.usable import member_departments_for, member_may_use
 
     integration = integration_for_connection(conn)
-    may_read = await member_may_use(db, member_id=member_id, tool_key=conn.name, right="read")
     if integration is None:
         # Not a connectable integration: it has one account, the organisation's.
-        if may_read:
-            return ToolAccess("legacy", None, member_id)
+        if await member_may_use(db, member_id=member_id, tool_key=conn.name, right=right):
+            return ToolAccess("legacy", None, member_id, right=right)
         raise PermissionError(f"{conn.name!r} is not usable by the person this run acts for")
     if not await integration_enabled(db, integration):
         raise ConnectionRequired(integration, "not_configured")
-    try:
-        return await _user(db, integration, ActingPerson(member_id))
-    except ConnectionRequired as own:
-        if own.reason != "not_connected" or not may_read:
-            raise
-        organisation = await _organisation_account(db, conn, integration)
-        if organisation is None:
-            raise
-        return replace(organisation, on_behalf_of=member_id)
-
-
-async def _organisation_account(
-    db: AsyncSession, conn: m.McpConnection, integration: Integration
-) -> ToolAccess | None:
-    """The organisation's account for this row: its pinned login, a
-    department's own setup on it, or the tenant's single organisation login."""
-    cfg = conn.config if isinstance(conn.config, dict) else {}
-    if conn.credential_id is not None:
-        return ToolAccess("legacy", integration, None)
-    if conn.department_id is not None and (
-        integration.kind == "credential" or bool(cfg.get("oauth_connection_id"))
-    ):
-        return ToolAccess("legacy", integration, None)
-    if integration.kind == "credential" and integration.credential_type:
-        only = await single_organisation_credential(db, integration.credential_type)
-        if only is not None:
-            return ToolAccess("credential", integration, None, credential=only)
-    return None
+    # The departments of the person's whose frame grants `right` -- not
+    # gated on `member_may_use`, which already asks whether a login resolves:
+    # the resolver itself must say why not (`ambiguous`, ...).
+    granting = [
+        dept
+        for dept, policy in await member_departments_for(
+            db, member_id=member_id, tool_key=conn.name
+        )
+        if policy.has_right(right)
+    ]
+    choice = await resolve_login(
+        db,
+        agent=None,
+        integration=integration,
+        conn=conn,
+        live_member_id=member_id,
+        department_ids=granting,
+        right=right,
+    )
+    return _to_access(choice, integration, member_id, right)
 
 
 def account_of(access: ToolAccess) -> Literal["own", "organisation"]:

@@ -9,7 +9,16 @@ vi.mock("@/lib/hooks-agent-detail", async (importOriginal) => {
   return { ...actual, useUpdateNarrowing: () => ({ mutate: updateMutate, isPending: false }) };
 });
 
-const createLoginMutateAsync = vi.fn();
+const setAccessMutateAsync = vi.fn();
+vi.mock("@/lib/connections", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/connections")>();
+  return {
+    ...actual,
+    useAgentToolAccess: () => ({ data: [] }),
+    useSetAgentToolAccess: () => ({ mutateAsync: setAccessMutateAsync }),
+    useResetAgentToolAccess: () => ({ mutateAsync: vi.fn() }),
+  };
+});
 // A mutable ref so the regression test below can hand back a "github"
 // connection with a credentialType (needed to make AgentGuardrailsPanel
 // render a loginPicker at all), while the first test keeps the default
@@ -24,7 +33,6 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     ...actual,
     useMcpConnections: () => ({ data: mockConnectionsRef.current }),
     useMcpLogins: () => ({ data: [] }),
-    useCreateMcpLogin: () => ({ mutateAsync: createLoginMutateAsync }),
     useConnectionToolNames: () => ({ data: { names: [] } }),
   };
 });
@@ -122,8 +130,8 @@ describe("AgentGuardrailsPanel", () => {
     expect(screen.queryByText(/eingeschränkt|narrowed/i)).not.toBeInTheDocument();
   });
 
-  it("threads a newly picked login's connection id into the same save call", async () => {
-    createLoginMutateAsync.mockResolvedValue({ id: "login-abc" });
+  it("makes a newly picked login the agent's fixed access, not a pinned connection", async () => {
+    setAccessMutateAsync.mockResolvedValue({});
     mockConnectionsRef.current = [
       {
         id: "conn-1",
@@ -147,8 +155,12 @@ describe("AgentGuardrailsPanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "mock-credential-picker" }));
 
-    await waitFor(() => expect(updateMutate).toHaveBeenCalled());
-    const [payload] = updateMutate.mock.calls[updateMutate.mock.calls.length - 1];
-    expect(payload.narrowing.tools.github.connection_id).toBe("login-abc");
+    await waitFor(() =>
+      expect(setAccessMutateAsync).toHaveBeenCalledWith({
+        toolKey: "github",
+        body: { mode: "fixed", credentialId: "cred-999" },
+      }),
+    );
+    expect(updateMutate).not.toHaveBeenCalled();
   });
 });

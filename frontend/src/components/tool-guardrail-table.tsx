@@ -246,6 +246,7 @@ export function ToolGuardrailTable({
           addableNames={addableNames}
           connections={connections}
           departmentId={level === "agent" ? departmentId : undefined}
+          agentId={level === "agent" ? agentId : undefined}
           onAdd={(name, policy, connectionId) => {
             onAdd(name, policy, connectionId);
             setPickerOpen(false);

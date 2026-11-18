@@ -48,6 +48,10 @@ ALLOWED: dict[str, str] = {
     "api/v1/catalog.py": "a different permission (catalog:view), id-only reads",
     "api/v1/skills_write.py": "loads the agent it is about to assign a skill to",
     "metering/budget.py": "raises and reads its own tenant-scope incident; no human here",
+    "connections/consolidate.py": (
+        "the one-time fold of a tenant's tool setups (worker start, CLI): rewrites "
+        "every agent's and department's pins; no human caller, nothing shown"
+    ),
     "api/v1/contracts.py": "department-name resolution for the contract screen",
     "api/v1/handoffs.py": "department-name resolution for both sides of a handoff",
     "api/v1/members.py": "checks a department exists before a seat is written into it",

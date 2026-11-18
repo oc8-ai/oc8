@@ -1,5 +1,6 @@
-"""A department setup (the plugin's setup form) adopts the plugin's unbound
-connection. Agents in every OTHER department must still reach the
+"""A department setup (the plugin's setup form) chooses a login for the
+department and leaves the tool's one row free of it. Agents in every OTHER
+department must still reach the
 integration: in the user's context and through an organisation login bound
 by an administrator -- through the real setup path, not a hand-built row."""
 
@@ -14,7 +15,8 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.api.mcp_gateway import _connections
 from oc8.connections.access import ConnectionRequired
-from oc8.connections.runtime_env import run_mcp_env
+from oc8.connections.runtime_env import _without_identity, run_mcp_env
+from oc8.credentials.enablement import department_ids_by_credential
 from oc8.credentials.service import create_credential
 from oc8.secrets.service import store_secret
 from tests.conftest import AppSessionFactory
@@ -61,8 +63,11 @@ async def _tenant_with_sales_setup(
         assert r.status_code == 200, r.text
     async with app_session(tenant) as db:
         rows = (await db.execute(m.McpConnection.__table__.select())).all()
-        # The setup adopted the only materialised row: no unbound one is left.
-        assert [row.department_id for row in rows if row.name == "odoo"] == [sales_id]
+        # Unified connections "Storage": the setup chose the login for Sales;
+        # the tool keeps its one row, in no department, with no login values.
+        assert [row.department_id for row in rows if row.name == "odoo"] == [None]
+        enabled = await department_ids_by_credential(db, [org_id])
+        assert enabled[org_id] == [sales_id]
     return tenant, anna, marketing_id, org_id
 
 
@@ -109,6 +114,8 @@ async def test_another_department_acts_in_the_users_context(
         )
         cred = await db.get(m.Credential, mine)
         assert cred is not None
+        # Unified connections "Resolver order (agents)": an incomplete login is refused.
+        cred.field_values = {**cred.field_values, "database": "acme"}
         cred.secret_refs = {"password": f"credential/{mine}/pw"}
     run_id = await _marketing_run(
         app_session,
@@ -170,11 +177,7 @@ async def test_another_department_without_access_gets_nothing_of_the_setup(
         )
         db.add(run)
         await db.flush()
-        sales_row = await db.scalar(
-            select(m.McpConnection).where(
-                m.McpConnection.name == "odoo", m.McpConnection.department_id.is_not(None)
-            )
-        )
+        sales_row = await db.scalar(select(m.McpConnection).where(m.McpConnection.name == "odoo"))
         assert sales_row is not None
         template = m.McpConnection(
             tenant_id=tenant,
@@ -184,14 +187,18 @@ async def test_another_department_without_access_gets_nothing_of_the_setup(
             config={**sales_row.config},
             connected=False,
         )
-        # Whichever row the run is given -- Sales' own (a pinned run) or a
-        # copy of it without a department -- Sales' login is never used.
+        # Whichever row the run is given -- the tool's row or a copy of it --
+        # the login enabled for Sales is never used.
         for conn in (sales_row, template):
             with pytest.raises(ConnectionRequired) as exc:
                 await run_mcp_env(db, run=run, conn=conn, tool="search_records")
             assert exc.value.reason == "not_configured"
-            listed = await run_mcp_env(db, run=run, conn=conn, listing=True)
-            assert not SALES_VALUES & set(listed.env.values())
+            # Unified connections "Resolver order (agents)": a login tool without
+            # a usable login lists nothing -- no bridge starts -- and says why.
+            with pytest.raises(ConnectionRequired) as listing:
+                await run_mcp_env(db, run=run, conn=conn, listing=True)
+            assert listing.value.reason == "not_configured"
+            assert not SALES_VALUES & set(str(listing.value).split())
 
 
 async def test_a_bridge_that_only_lists_tools_gets_only_what_the_plugin_declares(
@@ -211,11 +218,7 @@ async def test_a_bridge_that_only_lists_tools_gets_only_what_the_plugin_declares
         await db.flush()
         run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, source="manual", context={})
         db.add(run)
-        sales_row = await db.scalar(
-            select(m.McpConnection).where(
-                m.McpConnection.name == "odoo", m.McpConnection.department_id.is_not(None)
-            )
-        )
+        sales_row = await db.scalar(select(m.McpConnection).where(m.McpConnection.name == "odoo"))
         assert sales_row is not None
         cfg = dict(sales_row.config)
         cfg["env"] = {
@@ -232,12 +235,18 @@ async def test_a_bridge_that_only_lists_tools_gets_only_what_the_plugin_declares
         cfg["auth_header_name"] = "odoo_password"
         sales_row.config = cfg
         await db.flush()
-        listed = await run_mcp_env(db, run=run, conn=sales_row, listing=True)
+        # Unified connections "Resolver order (agents)": a login tool lists
+        # nothing without its login; the allowlist still guards every
+        # identity-less listing bridge (sign-in tools).
+        with pytest.raises(ConnectionRequired):
+            await run_mcp_env(db, run=run, conn=sales_row, listing=True)
+        listed_cfg = _without_identity(sales_row)
     declared = resolve_tool_pack_connection("odoo_mcp", "primary")
     assert declared is not None
-    assert listed.env == {
+    assert listed_cfg["secret_env"] == {}
+    assert listed_cfg["env"] == {
         k: v for k, v in dict(declared.config.get("env") or {}).items() if isinstance(v, str)
     }
     assert not (SALES_VALUES | {"plain-dept-pw", "hidden-pw", "nested-dept-pw"}) & set(
-        str(v) for v in listed.env.values()
+        str(v) for v in listed_cfg["env"].values()
     )

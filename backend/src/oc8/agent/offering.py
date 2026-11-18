@@ -23,6 +23,18 @@ def unavailable_sentence(name: str, reason: str) -> str:
     )
 
 
+def connection_notes(unavailable: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One line per connection that offered no tools: a configuration
+    notice (an incomplete or ambiguous login) in the words a call would
+    raise; anything else as `unavailable_sentence`."""
+    return [
+        str(item["reason"])
+        if item.get("notice")
+        else unavailable_sentence(str(item.get("name", "")), str(item.get("reason", "")))
+        for item in unavailable
+    ]
+
+
 def notice_for_find(
     unavailable: Sequence[Mapping[str, Any]],
     query: str,

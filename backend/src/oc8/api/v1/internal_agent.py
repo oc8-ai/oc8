@@ -321,21 +321,16 @@ async def _load(
     conn = None
     mcp_id = run.context.get("mcp_connection_id")
     if mcp_id:
-        conn = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
-    elif dept is not None:
-        from sqlalchemy import select
+        from oc8.connections.tool_connection import connection_for_context
 
-        conn = (
-            await db.execute(
-                select(m.McpConnection)
-                .where(
-                    m.McpConnection.department_id == dept.id,
-                    m.McpConnection.connected.is_(True),
-                )
-                .order_by(m.McpConnection.created_at)
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        conn = await connection_for_context(db, mcp_id)
+    elif dept is not None:
+        # The executor's own fallback (`_resolve_mcp_connection`): a row the
+        # department still owns. Shared tool rows reach the run through the
+        # policy (`mcp_gateway._connections` -> `integration_connections`).
+        from oc8.connections.tool_connection import unconsolidated_connection
+
+        conn = await unconsolidated_connection(db, department_id=dept.id)
     return agent, dept, conn, cfg
 
 
@@ -593,6 +588,8 @@ async def _discover_connection_tools(
     """
     frame = dept.frame if dept is not None else {}
     policies = effective_tool_policies(frame, pinned["narrowing"] or {})
+    #: connection name -> the configuration notice its listing raised.
+    notices: dict[str, dict[str, Any]] = {}
 
     async def _one(
         conn: m.McpConnection,
@@ -630,6 +627,15 @@ async def _discover_connection_tools(
                 listed_prompts = await mcp_pool.prompt_names(
                     conn.id, command=command, args=args, env=env, reusable=reusable
                 )
+        except ConnectionRequired as exc:
+            if not exc.is_notice:
+                # No login at all: the tool is simply not there for this
+                # run (only a call asks for a connection).
+                return conn.name, [], None, [], []
+            # An incomplete or ambiguous login: told to the model in the
+            # words a call would raise, and recorded as a notice.
+            notices[conn.name] = exc.as_notice(conn.name)
+            return conn.name, [], str(exc), [], []
         except Exception as exc:
             logger.warning(
                 "connection %s (%s) offers no tools right now; the rest stay available",
@@ -659,7 +665,10 @@ async def _discover_connection_tools(
     for name, tools, reason, listed_resources, listed_prompts in found:
         discovered[name] = tools
         if reason:
-            unavailable.append({"name": name, "reason": reason})
+            item: dict[str, Any] = {"name": name, "reason": reason}
+            if name in notices:
+                item["notice"] = notices[name]
+            unavailable.append(item)
         for item in listed_resources:
             resources.append({**item, "connection": name})
         for prompt_name in listed_prompts:
@@ -1433,9 +1442,9 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 resources,
                 prompts,
             ) = await tools_fetch
-            from oc8.agent.offering import prompt_sentence, resource_sentence, unavailable_sentence
+            from oc8.agent.offering import connection_notes, prompt_sentence, resource_sentence
 
-            notes = [unavailable_sentence(item["name"], item["reason"]) for item in unavailable]
+            notes = connection_notes(unavailable)
             resource_line = resource_sentence(resources)
             prompt_line = prompt_sentence(prompts)
             if resource_line:
@@ -1447,6 +1456,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                     _from_message(NeutralMessage(role="user", content="\n".join(notes)))
                 )
             ctx["unavailable_connections"] = unavailable
+            listed_notices = [item["notice"] for item in unavailable if item.get("notice")]
+            if listed_notices:
+                # Written into this request's copy too: it is written back
+                # whole, over what the listing merged into the run.
+                ctx["tool_notices"] = listed_notices
         ctx["tool_schemas"] = tool_schemas_raw
 
     # Run inputs (spec §3.2), consumed in THIS request's transaction: the stamp

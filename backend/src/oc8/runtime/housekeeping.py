@@ -16,6 +16,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from oc8.connections.consolidate import consolidate_all_tenants
 from oc8.evidence.sweep import sweep_evidence
 from oc8.knowledge.reconcile import sweep_knowledge_deletions
 from oc8.notifications.service import prune_read_notifications
@@ -49,7 +50,10 @@ async def run_worker_startup() -> None:
     containers of FINISHED runs are removed, so this is safe with several
     workers. Then a run committed as queued whose stream entry never landed is
     published again -- the timer repeats it, this pass makes a restart the
-    recovery."""
+    recovery. First of all, old per-department tool setups are folded into
+    shared logins (`connections.consolidate`; once per tenant, a no-op after
+    that), so no run starts on a setup about to change."""
+    await _run("consolidate_connections", consolidate_all_tenants)
     await _run("reap_orphans", _reap_orphans)
     await _run("recover_stranded_runs", recover_stranded_runs)
 

@@ -27,6 +27,9 @@ from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
 from oc8.auth import get_identity_provider
 from oc8.config import get_settings
+from oc8.connections.credential_env import with_login
+from oc8.connections.integrations import integration_for_connection
+from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import create_credential
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
@@ -118,9 +121,19 @@ async def test_install_enable_and_configure_treg_creates_an_http_connection_with
         cfg = conn.config or {}
         assert cfg["auth_header_name"] == "X-Treg-Token"
 
+        # The setup only chose the login (unified connections "Storage"):
+        # the row carries no token reference of its own.
+        assert "X-Treg-Token" not in cfg.get("secret_env", {})
+        login = await db.get(m.Credential, uuid.UUID(cred_id))
+        assert login is not None and login.all_departments is True
+
         # 5. the exact boundary the runtime executor and a live connection
-        # test both cross before ever speaking MCP: resolve the stored secret
-        # and build the real request header from it.
+        # test both cross before ever speaking MCP: the chosen login put in
+        # place, the stored secret resolved and the real request header built.
+        integration = integration_for_connection(conn)
+        assert integration is not None
+        cred_type = await get_credential_type(db, tenant_id=tenant, name="treg_token")
+        cfg = with_login(cfg, login, cred_type, integration.credential_env_fields)
         env = await resolve_mcp_env(db, tenant_id=tenant, cfg=cfg, connection_name=conn.name)
         real_headers = resolve_auth_header(cfg, env)
         assert real_headers == {"X-Treg-Token": "s3cr3t-treg-token"}
@@ -128,8 +141,8 @@ async def test_install_enable_and_configure_treg_creates_an_http_connection_with
         # The plaintext only ever exists transiently in `env`/`real_headers`
         # above -- what's actually persisted is encrypted ciphertext.
         secrets_rows = (
-            await db.execute(select(m.Secret).where(m.Secret.tenant_id == tenant))
-        ).scalars().all()
+            (await db.execute(select(m.Secret).where(m.Secret.tenant_id == tenant))).scalars().all()
+        )
         assert secrets_rows
         for row in secrets_rows:
             assert b"s3cr3t-treg-token" not in row.ciphertext

@@ -156,7 +156,7 @@ describe("PermissionsPanel", () => {
     expect(screen.queryByText(/default login/i)).not.toBeInTheDocument();
   });
 
-  it("offers the same inline credential picker the Hire dialog uses for the department-wide default login, contained in the tile, and persists the choice", async () => {
+  it("offers the same inline credential picker the Hire dialog uses for the department-wide default login, contained in the tile, and enables the login for the department", async () => {
     getConnections.mockResolvedValue([
       {
         id: "conn-own",
@@ -221,14 +221,80 @@ describe("PermissionsPanel", () => {
         credentialType: "odoo_login",
         credentialId: "cred-1",
         scopes: [],
+        departmentId: dept.id,
       }),
     );
+    // The pick is the department's enabled login, not a pinned connection.
     await waitFor(() =>
-      expect(onChange).toHaveBeenCalledWith(
-        expect.objectContaining({
-          Odoo: expect.objectContaining({ defaultConnectionId: "login-new" }),
-        }),
-      ),
+      expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("cred-1"),
+    );
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("department picker shows the enabled login after reload", async () => {
+    // No pick in this session and no pinned login row: the picker reads the
+    // login enabled for this department from the credentials themselves.
+    getConnections.mockResolvedValue([
+      {
+        id: "conn-odoo",
+        name: "Odoo",
+        transport: "stdio",
+        serverUrl: "",
+        command: "",
+        args: [],
+        departmentId: null,
+        connected: true,
+        scopes: [],
+        health: {},
+        guardrailPresets: [],
+        guardrailLibrary: null,
+        hasValueSpec: false,
+        credentialType: "odoo_login",
+      },
+    ]);
+    getCredentials.mockReturnValue([
+      {
+        id: "cred-all",
+        name: "Everyone's",
+        credentialType: "odoo_login",
+        departmentIds: [],
+        allDepartments: true,
+      },
+      {
+        id: "cred-sales",
+        name: "Sales login",
+        credentialType: "odoo_login",
+        departmentIds: ["dept-1"],
+        allDepartments: false,
+      },
+      {
+        id: "cred-other",
+        name: "Other login",
+        credentialType: "odoo_login",
+        departmentIds: ["dept-2"],
+        allDepartments: false,
+      },
+    ]);
+    renderWithClient(
+      <PermissionsPanel
+        mode="department"
+        dept={dept}
+        deptPolicy={{
+          Odoo: {
+            enabled: true,
+            perms: { read: true, write: false, send: false },
+            approvalEUR: null,
+            defaultConnectionId: null,
+          },
+        }}
+        members={[] as Agent[]}
+        agentOverrides={{}}
+      />,
+    );
+
+    expect(await screen.findByText("Sales login")).toBeInTheDocument();
+    await waitFor(() =>
+      expect((screen.getByRole("combobox") as HTMLSelectElement).value).toBe("cred-sales"),
     );
   });
 

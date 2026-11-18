@@ -20,6 +20,12 @@ from oc8.connections.acting import (
     carried_person,
     resolve_acting_person,
 )
+from oc8.connections.login import login_chosen
+from oc8.connections.tool_connection import (
+    connection_for_context,
+    tool_connections,
+    unconsolidated_connection,
+)
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -602,7 +608,9 @@ async def _resolve_mcp_connection(
     """
     mcp_id = run_context.get("mcp_connection_id")
     if mcp_id:
-        conn = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
+        # Follows a row consolidation retired or folded (a run queued or
+        # suspended before it keeps working).
+        conn = await connection_for_context(db, mcp_id)
         if conn is None:
             return _ConnectionChoice(None, f"unknown MCP connection: {mcp_id}")
         return _ConnectionChoice(conn, None)
@@ -675,6 +683,15 @@ async def _resolve_mcp_connection(
     # `set_department_tools` already makes on this function's behalf ("an agent
     # cascaded to enabled without a connection_id is caught at runtime
     # resolution"). That promise has to hold for every enabled key.
+    # A login tool the agent chose a login for another way -- its access row
+    # (what a consolidated login pin became) or a login enabled for its
+    # department -- needs no pin: the login resolver picks it per call.
+    for key in sorted(needs_login):
+        if await login_chosen(
+            db, agent_id=agent.id, department_id=agent.department_id, tool_key=key
+        ):
+            needs_login.discard(key)
+
     for key in enabled:
         if key in needs_login and not tools[key].get("connection_id") and not _dept_default(key):
             return _ConnectionChoice(
@@ -740,26 +757,14 @@ async def _resolve_mcp_connection(
         pinned_names = {c.name for c in pinned_conns}
         shared_keys = [k for k in enabled if k not in pinned_names and k not in needs_login]
         if shared_keys and agent.department_id is not None:
-            shared_rows = (
-                (
-                    await db.execute(
-                        select(m.McpConnection)
-                        .where(
-                            m.McpConnection.department_id == agent.department_id,
-                            m.McpConnection.connected.is_(True),
-                            m.McpConnection.credential_id.is_(None),
-                            m.McpConnection.name.in_(shared_keys),
-                        )
-                        .order_by(m.McpConnection.created_at)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            seen: set[str] = set()
-            for row in shared_rows:
-                if row.name not in seen:
-                    seen.add(row.name)
+            # The tool's row (`tool_connection`). A shared row of an
+            # integration is left out here: it reaches the run through the
+            # policy and the login resolver (`integration_connections`, in
+            # both runtimes), exactly as for an unpinned agent.
+            for row in await tool_connections(
+                db, names=shared_keys, department_id=agent.department_id
+            ):
+                if row.department_id is not None:
                     pinned_conns.append(row)
         return _ConnectionChoice(
             pinned_conns[0], None, pinned=True, connections=tuple(pinned_conns)
@@ -770,18 +775,7 @@ async def _resolve_mcp_connection(
     # its tested connection without the caller knowing an internal MCP
     # connection id. An explicit run context above still wins for
     # advanced/manual use cases.
-    legacy = (
-        await db.execute(
-            select(m.McpConnection)
-            .where(
-                m.McpConnection.department_id == agent.department_id,
-                m.McpConnection.connected.is_(True),
-                m.McpConnection.credential_id.is_(None),
-            )
-            .order_by(m.McpConnection.created_at)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    legacy = await unconsolidated_connection(db, department_id=agent.department_id)
     return _ConnectionChoice(legacy, None)
 
 

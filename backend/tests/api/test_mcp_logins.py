@@ -9,12 +9,13 @@ import pytest
 from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.capas.manifest import CredentialTypeSpec, SetupFieldSpec
-from oc8.config import get_settings
 from oc8.credentials import registry
+from oc8.credentials.enablement import department_ids_by_credential
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
@@ -72,7 +73,11 @@ def _register_test_credential_type() -> Iterator[None]:
     registry.CORE_CREDENTIAL_TYPES.pop("other_login", None)
 
 
-async def test_creating_a_login_pairs_a_credential_and_a_tenant_global_connection() -> None:
+async def test_creating_a_login_creates_a_credential_and_no_connection(
+    app_session: AppSessionFactory,
+) -> None:
+    # Unified connections "Storage": a login is one Credential; the tool keeps
+    # its one connection row and no row is created per login.
     tenant = uuid.uuid4()
     app = create_app()
     async with LifespanManager(app):
@@ -102,7 +107,12 @@ async def test_creating_a_login_pairs_a_credential_and_a_tenant_global_connectio
                 "/api/v1/mcp/logins?credentialType=odoo_login", headers=_headers(tenant)
             )
             assert r.status_code == 200, r.text
-            assert [row["name"] for row in r.json()] == ["Odoo (User 1)"]
+            assert r.json() == []
+    async with app_session(tenant) as db:
+        cred = await db.get(m.Credential, uuid.UUID(body["credentialId"]))
+        assert cred is not None and cred.name == "Odoo (User 1)"
+        assert body["id"] == body["credentialId"]
+        assert (await db.execute(m.McpConnection.__table__.select())).first() is None
 
 
 async def test_creating_a_login_without_a_configured_kek_returns_503(
@@ -230,11 +240,8 @@ async def test_creating_a_login_with_a_mismatched_credential_type_is_rejected() 
 
 
 async def test_creating_a_second_login_with_the_same_name_is_rejected() -> None:
-    # A later by-name lookup (agents_write.py's login-backed connection
-    # resolution, Task 4) uses .scalar_one_or_none() filtered on
-    # (tenant_id, name, credential_id IS NOT NULL) -- two logins sharing a
-    # name would make that query raise MultipleResultsFound. This is
-    # prevented here, at creation time, rather than defensively downstream.
+    # A login's credential is named after the tool; credential names are
+    # unique per organisation, so a second one under the same name conflicts.
     tenant = uuid.uuid4()
     app = create_app()
     async with LifespanManager(app):
@@ -271,23 +278,15 @@ async def test_creating_a_second_login_with_the_same_name_is_rejected() -> None:
                 headers=_headers(tenant),
             )
             assert dup.status_code == 409, dup.text
-
-            r = await c.get(
-                "/api/v1/mcp/logins?credentialType=odoo_login", headers=_headers(tenant)
-            )
-            assert r.status_code == 200, r.text
-            rows = r.json()
-            assert [row["name"] for row in rows] == ["Odoo Login"]
-            assert rows[0]["id"] == first_id
+            assert first_id
 
 
 async def test_two_departments_can_each_have_their_own_login_under_the_same_name(
     app_session: AppSessionFactory,
 ) -> None:
     # Live user report: "ich habe jetzt erstmal zwei verschiedene odoo
-    # logins" -- one per department. department_id (NULL-safe) is what
-    # scopes the conflict check, so a second department's login under the
-    # same tool key no longer 409s.
+    # logins" -- one per department. Each login is named after its
+    # department and enabled for it (unified connections "Storage").
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         dept_a = m.Department(tenant_id=tenant, name="Sales", frame={})
@@ -334,16 +333,15 @@ async def test_two_departments_can_each_have_their_own_login_under_the_same_name
             )
             assert second.status_code == 201, second.text
             assert second.json()["departmentId"] == dept_b_id
-
-            r = await c.get(
-                "/api/v1/mcp/logins?credentialType=odoo_login", headers=_headers(tenant)
-            )
-            assert r.status_code == 200, r.text
-            names_and_depts = {(row["id"], row["departmentId"]) for row in r.json()}
-            assert names_and_depts == {
-                (first.json()["id"], dept_a_id),
-                (second.json()["id"], dept_b_id),
-            }
+    async with app_session(tenant) as db:
+        enabled = await department_ids_by_credential(
+            db, [uuid.UUID(first.json()["credentialId"]), uuid.UUID(second.json()["credentialId"])]
+        )
+        names = {c.name: c.id for c in (await db.execute(select(m.Credential))).scalars().all()}
+    assert enabled == {
+        names["odoo (Sales)"]: [uuid.UUID(dept_a_id)],
+        names["odoo (Support)"]: [uuid.UUID(dept_b_id)],
+    }
 
 
 async def test_a_second_login_for_the_same_department_and_name_still_conflicts(
@@ -417,61 +415,71 @@ async def test_creating_a_login_with_an_unknown_department_id_is_400() -> None:
             assert r.status_code == 400, r.text
 
 
-async def test_creating_a_login_inherits_the_spawn_command_and_renames_env_keys(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+async def test_choosing_another_login_for_a_department_replaces_the_old_one(
+    app_session: AppSessionFactory,
 ) -> None:
-    # Live bug report: a login created with no matching manifest connection's
-    # command/args reached the runtime as cfg.get("command", "") -> "" ->
-    # PermissionError(13, 'Permission denied') trying to spawn an empty path.
-    # Uses the REAL odoo_mcp plugin on disk (its tool_pack.toml now declares
-    # credential_env_fields) rather than a fake one, so this proves the wiring
-    # this fix actually depends on, not just the merge logic in isolation.
-    # Mutated directly on the already-cached settings singleton, like the
-    # module's own `_kek` fixture -- `get_settings.cache_clear()` would
-    # construct a fresh instance and lose that fixture's secret_kek mutation,
-    # which runs before this test body and would otherwise 503.
-    monkeypatch.setattr(get_settings(), "capas_path", str(_PLUGINS_DIR), raising=False)
-
-    # A credential type matching odoo_login.toml's REAL field keys (url/
-    # database/username/password) -- the module's own autouse fixture
-    # registers a same-named but differently-shaped test double (base_url,
-    # no database), which exists for the OTHER tests above and must not be
-    # changed for them.
-    registry.CORE_CREDENTIAL_TYPES["odoo_login"] = CredentialTypeSpec(
-        name="odoo_login",
-        display_name="Odoo system",
-        fields=[
-            SetupFieldSpec(key="url", label="URL", kind="url", required=True),
-            SetupFieldSpec(key="database", label="Database", kind="text", required=True),
-            SetupFieldSpec(key="username", label="Username", kind="text", required=True),
-            SetupFieldSpec(key="password", label="Password", kind="password", required=True),
-        ],
-    )
-
+    """`departmentId` names the department's one login: a second choice for
+    the same department replaces the first there (not both enabled)."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        # Stamped the way materialise.py stamps a real manifest connection --
-        # command/args/etc. plus the PLUGIN's own demo env, which the new
-        # login must inherit the shape of but NOT the values of.
-        source = m.McpConnection(
-            tenant_id=tenant,
-            name="odoo",
-            server_url="",
-            transport="stdio",
-            scopes=[],
-            config={
-                "_plugin_name": "odoo_mcp",
-                "_connection_key": "primary",
-                "command": "uv",
-                "args": ["tool", "run", "mcp-server-odoo"],
-                "env": {"ODOO_URL": "http://demo", "ODOO_DB": "demo", "ODOO_USER": "demo"},
-                "secret_env": {"ODOO_PASSWORD": "demo/password"},
-            },
-            connected=True,
-        )
-        db.add(source)
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={})
+        db.add(dept)
         await db.flush()
+        dept_id = dept.id
 
+    def _login(url: str) -> dict[str, object]:
+        return {
+            "name": "odoo",
+            "credentialType": "odoo_login",
+            "fieldValues": {"base_url": url, "username": "u", "password": "p"},
+            "scopes": {},
+        }
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            ids = []
+            for name, url in (("A", "https://a.test"), ("B", "https://b.test")):
+                r = await c.post(
+                    "/api/v1/credentials",
+                    json={**_login(url), "name": name},
+                    headers=_headers(tenant),
+                )
+                assert r.status_code == 201, r.text
+                ids.append(r.json()["id"])
+            for cred_id in ids:
+                r = await c.post(
+                    "/api/v1/mcp/logins",
+                    json={
+                        **_login("unused"),
+                        "credentialId": cred_id,
+                        "departmentId": str(dept_id),
+                    },
+                    headers=_headers(tenant),
+                )
+                assert r.status_code == 201, r.text
+    first, second = (uuid.UUID(i) for i in ids)
+    async with app_session(tenant) as db:
+        enabled = await department_ids_by_credential(db, [first, second])
+    assert enabled == {first: [], second: [dept_id]}
+
+
+async def test_reusing_an_incomplete_login_is_refused(app_session: AppSessionFactory) -> None:
+    """Reusing an existing login names its empty required fields (422
+    `credential_incomplete`) instead of enabling it for the department."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={})
+        half = m.Credential(
+            tenant_id=tenant,
+            name="Half",
+            credential_type="odoo_login",
+            field_values={"base_url": "https://odoo.example.com"},
+            secret_refs={},
+        )
+        db.add_all([dept, half])
+        await db.flush()
+        dept_id, half_id = dept.id, half.id
     app = create_app()
     async with LifespanManager(app):
         async with _client(app) as c:
@@ -480,119 +488,16 @@ async def test_creating_a_login_inherits_the_spawn_command_and_renames_env_keys(
                 json={
                     "name": "odoo",
                     "credentialType": "odoo_login",
-                    "fieldValues": {
-                        "url": "https://custom.example.com",
-                        "database": "custom_db",
-                        "username": "custom_user",
-                        "password": "custom_pass",
-                    },
-                    "scopes": [],
+                    "credentialId": str(half_id),
+                    "scopes": {},
+                    "departmentId": str(dept_id),
                 },
                 headers=_headers(tenant),
             )
-            assert r.status_code == 201, r.text
-            login_id = r.json()["id"]
-
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "code": "credential_incomplete",
+        "missing": ["username", "password"],
+    }
     async with app_session(tenant) as db:
-        conn = await db.get(m.McpConnection, uuid.UUID(login_id))
-        assert conn is not None
-        # Spawn shape inherited from the manifest connection.
-        assert conn.config["command"] == "uv"
-        assert conn.config["args"] == ["tool", "run", "mcp-server-odoo"]
-        # Env keys renamed via credential_env_fields to what mcp-server-odoo
-        # actually reads, carrying THIS login's own values -- not the source
-        # connection's demo ones.
-        assert conn.config["env"] == {
-            "ODOO_URL": "https://custom.example.com",
-            "ODOO_DB": "custom_db",
-            "ODOO_USER": "custom_user",
-        }
-        # ODOO_API_KEY carries the SAME `password` field value under a second
-        # env var name -- not a second secret -- so mcp-server-odoo can try
-        # its API-key auth path in addition to the password path (tool_pack.
-        # toml's own credential_env_fields comment explains why both names
-        # are needed).
-        assert set(conn.config["secret_env"]) == {"ODOO_PASSWORD", "ODOO_API_KEY"}
-
-
-async def test_creating_a_login_keeps_the_manifest_launch_env_and_only_the_credentials_secrets(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Live bug: a tool pack that launches `python -m <bridge>` needs a launch
-    # var in its manifest `env` (PYTHONPATH) that is NOT a credential field. The
-    # login connection's env used to be ONLY the credential's own values, so
-    # the per-agent login lost PYTHONPATH and every run died with "No module
-    # named ..." ("connection offers no tools right now"). The DECLARED launch
-    # env must survive; anything only the stored row carries (an org value the
-    # setup form wrote there) must not leak into a person's login; the
-    # credential-managed names carry the login's values, not the defaults; and
-    # secret_env stays the credential's own refs. Uses the REAL moodle manifest,
-    # which declares PYTHONPATH next to its credential-managed MOODLE_URL.
-    monkeypatch.setattr(get_settings(), "capas_path", str(_PLUGINS_DIR), raising=False)
-    monkeypatch.setitem(
-        registry.CORE_CREDENTIAL_TYPES,
-        "moodle_token",
-        CredentialTypeSpec(
-            name="moodle_token",
-            display_name="Moodle token",
-            fields=[
-                SetupFieldSpec(key="url", label="URL", kind="url", required=True),
-                SetupFieldSpec(key="token", label="Token", kind="password", required=True),
-            ],
-        ),
-    )
-
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        db.add(
-            m.McpConnection(
-                tenant_id=tenant,
-                name="moodle",
-                server_url="",
-                transport="stdio",
-                scopes=[],
-                config={
-                    "_plugin_name": "moodle",
-                    "_connection_key": "primary",
-                    "command": "python",
-                    "args": ["-m", "mcp_bridge"],
-                    "env": {
-                        "PYTHONPATH": "/app/capas/moodle",
-                        "MOODLE_URL": "https://org.example.org",
-                        "ORG_ONLY": "written-by-setup",
-                    },
-                    "secret_env": {"MOODLE_TOKEN": "moodle/token"},
-                },
-                connected=True,
-            )
-        )
-        await db.flush()
-
-    app = create_app()
-    async with LifespanManager(app):
-        async with _client(app) as c:
-            r = await c.post(
-                "/api/v1/mcp/logins",
-                json={
-                    "name": "moodle",
-                    "credentialType": "moodle_token",
-                    "fieldValues": {"url": "https://lms.example.org", "token": "person-token"},
-                    "scopes": [],
-                },
-                headers=_headers(tenant),
-            )
-            assert r.status_code == 201, r.text
-            login_id = r.json()["id"]
-
-    async with app_session(tenant) as db:
-        conn = await db.get(m.McpConnection, uuid.UUID(login_id))
-        assert conn is not None
-        # Exactly the declared launch env, with the login's own value for the
-        # credential-managed name; the row-only org value is not copied.
-        assert conn.config["env"] == {
-            "PYTHONPATH": "/app/capas/moodle",
-            "MOODLE_URL": "https://lms.example.org",
-        }
-        # secret_env is only this credential's refs, never the manifest's.
-        assert set(conn.config["secret_env"]) == {"MOODLE_TOKEN"}
-        assert "moodle/token" not in conn.config["secret_env"].values()
+        assert (await department_ids_by_credential(db, [half_id]))[half_id] == []

@@ -160,6 +160,80 @@ describe("ConnectDialog", () => {
   });
 });
 
+describe("credential assistant required fields", () => {
+  const REQUIRED_ODOO = {
+    ...ODOO,
+    credentialFields: [
+      {
+        key: "url",
+        label: "Odoo URL",
+        kind: "url",
+        required: true,
+        // What the pack once shipped: it looked like a value already filled in.
+        placeholder: "http://host.docker.internal:1000",
+      },
+      { key: "database", label: "Database", kind: "text", required: true, default: "main" },
+      { key: "password", label: "API key", kind: "password", required: true },
+    ],
+  };
+
+  beforeEach(() => {
+    integrations.mockReturnValue({ data: [MS, REQUIRED_ODOO], isLoading: false });
+    may.mockReturnValue(false);
+    capaIcon.mockReturnValue({ data: null });
+    toastError.mockReset();
+    create.mockReset();
+  });
+
+  it("credential assistant blocks saving a login without its required address", async () => {
+    create.mockResolvedValue({});
+    renderDialog("odoo_mcp");
+    const url = screen.getByLabelText("Odoo URL") as HTMLInputElement;
+    expect(url.value).toBe("");
+    expect(url.placeholder).toBe("https://your-company.example.com");
+    expect(url).toBeRequired();
+    expect(url).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Odoo URL").querySelector("[data-required-mark]")).not.toBeNull();
+
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "secret" } });
+    const save = screen.getByRole("button", { name: "Save" });
+    expect(save).toBeDisabled();
+    fireEvent.submit(save.closest("form") as HTMLFormElement);
+    expect(create).not.toHaveBeenCalled();
+
+    fireEvent.change(url, { target: { value: "https://odoo.acme.de" } });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith({
+        integration: "odoo_mcp",
+        owner: "me",
+        fieldValues: { url: "https://odoo.acme.de", database: "main", password: "secret" },
+      }),
+    );
+  });
+
+  it("marks the fields a refused save names", async () => {
+    const { ApiError } = await import("@/lib/api");
+    create.mockRejectedValue(
+      new ApiError("incomplete", 422, {
+        detail: { code: "credential_incomplete", missing: ["url"] },
+      }),
+    );
+    renderDialog("odoo_mcp");
+    fireEvent.change(screen.getByLabelText("Odoo URL"), {
+      target: { value: "https://odoo.acme.de" },
+    });
+    fireEvent.change(screen.getByLabelText("API key"), { target: { value: "secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Odoo is incomplete: Odoo URL missing",
+    );
+    expect(screen.getByLabelText("Odoo URL")).toHaveAttribute("aria-invalid", "true");
+    expect(toastError).not.toHaveBeenCalled();
+  });
+});
+
 describe("returnErrorText", () => {
   it("has a distinct German and English text for every error code", () => {
     for (const code of OAUTH_ERROR_CODES) {

@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from oc8 import __version__
 from oc8.config import Settings, get_settings
 from oc8.copilot.agent_templates import collect_edition_templates
+from oc8.credentials.service import IncompleteCredential
 from oc8.db.engine import dispose_engine
 from oc8.edition import EditionExtension
 from oc8.edition.runtime import (
@@ -144,6 +145,15 @@ def create_app(
         """`enqueue_run` refuses an organisation that may not run; every API
         route that starts a run answers the same way without its own check."""
         return JSONResponse(status_code=403, content={"detail": "tenant_inactive"})
+
+    @app.exception_handler(IncompleteCredential)
+    async def credential_incomplete(request: Request, exc: IncompleteCredential) -> JSONResponse:
+        """A login saved without a required field: the same 422 from every
+        route that creates or edits one, naming the missing field keys."""
+        return JSONResponse(
+            status_code=422,
+            content={"detail": {"code": "credential_incomplete", "missing": exc.missing}},
+        )
 
     @app.exception_handler(RequestValidationError)
     async def request_validation_failed(request: Request, exc: RequestValidationError) -> Response:
