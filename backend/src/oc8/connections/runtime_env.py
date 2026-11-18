@@ -9,6 +9,7 @@ people never share a bridge process.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Literal
@@ -31,13 +32,15 @@ from oc8.connections.access import (
     ToolAccess,
     resolve_tool_access,
 )
+from oc8.connections.acting import resolve_acting_person
 from oc8.connections.credential_env import credential_env_targets, credential_mcp_env
 from oc8.connections.integrations import (
     enabled_tool_pack_connection,
     integration_enabled,
     integration_for_connection,
 )
-from oc8.connections.usable import organisation_access_ready
+from oc8.connections.login import live_chat_member, offer_problem
+from oc8.connections.tool_connection import tool_connections
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import missing_required
 from oc8.oauth.errors import OAuthReauthRequired
@@ -283,44 +286,34 @@ async def run_mcp_env(
 
 
 async def integration_connections(
-    db: AsyncSession, *, agent: m.Agent, policies: Mapping[str, ToolPolicy], have: set[str]
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    policies: Mapping[str, ToolPolicy],
+    have: set[str],
+    run: m.AgentRun | None = None,
 ) -> list[m.McpConnection]:
     """The connection of each enabled tool the run has no system for yet --
     when it can act at all: an OAuth integration (user mode), a tool with an
-    access row, or a login type with exactly one organisation credential. The
-    frame and narrowing (`policies`) stay the ceiling.
+    access row (the agent's explicit choice), or a login type for which a
+    login resolves (`connections.login.offer_problem`: the person's own in a
+    live chat, one enabled for the agent's department, the organisation's
+    single one). The frame and narrowing (`policies`) stay the ceiling: they,
+    not the row's department, decide whether the agent reaches the tool.
 
-    Which row carries the server config: the agent's own department's, else
-    the tenant's department-less one, else one materialised now from the
-    enabled plugin's manifest. A department's setup form adopts the
-    department-less row, so without the last step every other department
-    would lose the tool. Another department's row is never used: it carries
-    that department's identity."""
+    Which row carries the server config: the tool's one row
+    (`tool_connection`; the agent's own department's while unconsolidated),
+    else one materialised now from the enabled plugin's manifest. Another
+    department's row is never used: it carries that department's identity."""
     wanted = sorted(key for key, policy in policies.items() if policy.enabled and key not in have)
     if not wanted:
         return []
-    rows = (
-        (
-            await db.execute(
-                select(m.McpConnection)
-                .where(
-                    m.McpConnection.name.in_(wanted),
-                    (m.McpConnection.department_id == agent.department_id)
-                    | (
-                        m.McpConnection.department_id.is_(None)
-                        & m.McpConnection.credential_id.is_(None)
-                    ),
-                )
-                .order_by(m.McpConnection.created_at)
-            )
+    found = {
+        conn.name: conn
+        for conn in await tool_connections(
+            db, names=wanted, department_id=agent.department_id, connected_only=False
         )
-        .scalars()
-        .all()
-    )
-    own: dict[str, m.McpConnection] = {}
-    unbound: dict[str, m.McpConnection] = {}
-    for row in rows:
-        (own if row.department_id is not None else unbound).setdefault(row.name, row)
+    }
     access_keys = set(
         (
             await db.execute(
@@ -330,9 +323,12 @@ async def integration_connections(
         .scalars()
         .all()
     )
+    live_member: uuid.UUID | None = None
+    if run is not None:
+        live_member = live_chat_member(run, await resolve_acting_person(db, run))
     out: list[m.McpConnection] = []
     for name in wanted:
-        conn = own.get(name) or unbound.get(name)
+        conn = found.get(name)
         template = None
         if conn is not None:
             integration = integration_for_connection(conn)
@@ -341,14 +337,29 @@ async def integration_connections(
             integration = template[2] if template is not None else None
         if integration is None:
             continue
-        # The builder offers exactly what passes here (connections.usable).
-        if not (name in access_keys or await organisation_access_ready(db, integration)):
-            continue
         if conn is None:
             assert template is not None
             manifest, pack_conn, _ = template
-            conn = unbound_connection(tenant_id=agent.tenant_id, manifest=manifest, conn=pack_conn)
-            db.add(conn)
+            candidate = unbound_connection(
+                tenant_id=agent.tenant_id, manifest=manifest, conn=pack_conn
+            )
+        else:
+            candidate = conn
+        # The builder and the Copilot offer exactly what passes here
+        # (connections.usable).
+        if name not in access_keys and integration.kind != "oauth":
+            problem = await offer_problem(
+                db,
+                integration=integration,
+                conn=candidate,
+                department_ids=[agent.department_id] if agent.department_id else [],
+                live_member_id=live_member,
+                agent=agent,
+            )
+            if problem is not None:
+                continue
+        if conn is None:
+            db.add(candidate)
             await db.flush()
-        out.append(conn)
+        out.append(candidate)
     return out

@@ -26,6 +26,7 @@ from oc8.connections.access import (
     unconfirmed_reason,
 )
 from oc8.connections.integrations import Integration, installed_integrations
+from oc8.connections.tool_connection import tool_connection
 from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO
 from oc8.schemas.requests import SetAgentToolAccessRequest
 
@@ -74,15 +75,12 @@ async def _default_mode(db: AsyncSession, agent: m.Agent, integ: Integration) ->
     reaching the organisation's accounts -- else the user's context."""
     if integ.kind != "oauth":
         return "organisation"
-    conns = (
-        await db.execute(
-            select(m.McpConnection).where(
-                m.McpConnection.name == integ.tool_key,
-                m.McpConnection.department_id == agent.department_id,
-            )
-        )
-    ).scalars()
-    return "organisation" if any(department_setup(c, agent, integ) for c in conns) else "user"
+    # The tool's row the agent runs on: a department's app-only setup lives
+    # on the row it still owns (unconsolidated); the shared row has none.
+    conn = await tool_connection(
+        db, name=integ.tool_key, department_id=agent.department_id, connected_only=False
+    )
+    return "organisation" if conn is not None and department_setup(conn, agent, integ) else "user"
 
 
 async def _dto(

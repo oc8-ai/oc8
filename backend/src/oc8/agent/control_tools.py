@@ -2449,14 +2449,16 @@ async def _execute_read_resource(
     tc: ToolCall,
     run_id: uuid.UUID | None = None,
     direct_row: m.McpConnection | None = None,
+    narrowing: Mapping[str, Any] | None = None,
 ) -> ControlOutcome:
     """One resource body, through the same pool as a tool call.
 
     `direct_row` is the connection the engine opened for the Copilot's grant:
     the Copilot's own department owns no system, so it is read through that
-    row, never looked up by the agent's department."""
-    from sqlalchemy import select
-
+    row, never looked up by the agent's department. An agent reads through
+    the tool's one row (`tool_connection`) when its frame and narrowing
+    (`narrowing`: the run's pinned version; None reads the live row) reach
+    the tool -- the row's department does not decide that."""
     from oc8.agent import mcp_pool
     from oc8.agent.mcp_env import has_oauth_ref, resolve_mcp_env
     from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -2468,13 +2470,24 @@ async def _execute_read_resource(
     if agent.is_tenant_assistant:
         row = direct_row if direct_row is not None and direct_row.name == connection else None
     else:
-        row = await db.scalar(
-            select(m.McpConnection).where(
-                m.McpConnection.department_id == agent.department_id,
-                m.McpConnection.name == connection,
-                m.McpConnection.connected.is_(True),
-            )
+        from oc8.authz.pdp import effective_tool_policies, reachable_connections
+        from oc8.connections.tool_connection import tool_connection
+
+        dept = await db.get(m.Department, agent.department_id)
+        policies = effective_tool_policies(
+            (dept.frame or {}) if dept is not None else {},
+            dict(narrowing) if narrowing is not None else (agent.narrowing or {}),
         )
+        from oc8.connections.usable import needs_department
+
+        row = (
+            await tool_connection(db, name=connection, department_id=agent.department_id)
+            if connection in reachable_connections(policies)
+            else None
+        )
+        if row is not None and needs_department(row):
+            # A custom server in no department reaches no agent run.
+            row = None
     if row is None:
         return ControlOutcome(output=f"ERROR: no connected system named {connection}")
     cfg = row.config if isinstance(row.config, dict) else {}
@@ -2930,6 +2943,7 @@ async def execute_control_tool(
             tc=tc,
             run_id=run_id,
             direct_row=direct_read_conn,
+            narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         )
 
     if tc.name == PROCEDURE_STEP_DONE.name:

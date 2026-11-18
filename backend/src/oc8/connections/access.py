@@ -300,9 +300,16 @@ async def _require_schedule_confirmed(
 
 
 async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) -> list[uuid.UUID]:
-    """The accounts the agent's own department already set up for this tool
-    (its MCP connection's OAuth connection or pinned login)."""
-    conns = (
+    """The accounts the agent's own department already set up for this tool:
+    the organisation logins enabled for it, and -- while unconsolidated --
+    the OAuth connection or pinned login of a row it still owns."""
+    from oc8.connections.integrations import enabled_tool_pack_connection
+    from oc8.credentials.enablement import enabled_credentials
+
+    out: list[uuid.UUID] = []
+    if agent.department_id is None:
+        return out
+    owned = (
         await db.execute(
             select(m.McpConnection).where(
                 m.McpConnection.name == tool_key,
@@ -310,14 +317,27 @@ async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) ->
             )
         )
     ).scalars()
-    out: list[uuid.UUID] = []
-    for conn in conns:
+    integration: Integration | None = None
+    for conn in owned:
+        integration = integration or integration_for_connection(conn)
         cfg = conn.config if isinstance(conn.config, dict) else {}
         for raw in (cfg.get("oauth_connection_id"), conn.credential_id):
+            if raw is None:
+                continue
             try:
                 out.append(raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw)))
             except ValueError:
                 continue
+    if integration is None:
+        template = await enabled_tool_pack_connection(db, tool_key)
+        integration = template[2] if template is not None else None
+    if integration is not None and integration.credential_type:
+        out.extend(
+            cred.id
+            for cred in await enabled_credentials(
+                db, credential_type=integration.credential_type, department_id=agent.department_id
+            )
+        )
     return out
 
 
@@ -354,11 +374,19 @@ async def binding_fingerprint(
         ]
         for a in assignments
     )
+    from oc8.connections.tool_connection import tool_connections, tool_names
+
     dept = await db.get(m.Department, agent.department_id)
-    which = select(m.McpConnection).where(m.McpConnection.department_id == agent.department_id)
-    if tool_key is not None:
-        which = which.where(m.McpConnection.name == tool_key)
-    conns = (await db.execute(which)).scalars()
+    names = (
+        [tool_key]
+        if tool_key is not None
+        else await tool_names(db, department_id=agent.department_id)
+    )
+    # The tool's row the agent runs on (its department's own while
+    # unconsolidated), whichever department it sits in.
+    conns = await tool_connections(
+        db, names=names, department_id=agent.department_id, connected_only=False
+    )
     setup = sorted(
         [str(c.id), str(c.credential_id), c.server_url, c.transport, c.scopes, c.config]
         for c in conns

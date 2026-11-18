@@ -323,19 +323,12 @@ async def _load(
     if mcp_id:
         conn = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
     elif dept is not None:
-        from sqlalchemy import select
+        # The executor's own fallback (`_resolve_mcp_connection`): a row the
+        # department still owns. Shared tool rows reach the run through the
+        # policy (`mcp_gateway._connections` -> `integration_connections`).
+        from oc8.connections.tool_connection import unconsolidated_connection
 
-        conn = (
-            await db.execute(
-                select(m.McpConnection)
-                .where(
-                    m.McpConnection.department_id == dept.id,
-                    m.McpConnection.connected.is_(True),
-                )
-                .order_by(m.McpConnection.created_at)
-                .limit(1)
-            )
-        ).scalar_one_or_none()
+        conn = await unconsolidated_connection(db, department_id=dept.id)
     return agent, dept, conn, cfg
 
 

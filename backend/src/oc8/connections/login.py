@@ -244,3 +244,33 @@ async def resolve_login(
     if conn.department_id in department_ids and holds_copied_login(conn, integration):
         return LoginChoice(None, "legacy", conn)
     raise ConnectionRequired(integration, "not_configured")
+
+
+async def offer_problem(
+    db: AsyncSession,
+    *,
+    integration: Integration,
+    conn: m.McpConnection,
+    department_ids: Sequence[uuid.UUID],
+    live_member_id: uuid.UUID | None = None,
+    agent: m.Agent | None = None,
+) -> ConnectionRequired | None:
+    """Why the tool may not be offered, or None when a login resolves (steps
+    2-5 of the order, without an agent's explicit choice -- a caller that has
+    one offers the tool anyway). One rule for every offer, so an offer is
+    never accepted and then refused for want of a login. An incomplete login
+    still resolves: the call names its missing fields
+    (`runtime_env._require_complete`) instead of hiding the tool."""
+    try:
+        await resolve_login(
+            db,
+            agent=agent,
+            integration=integration,
+            conn=conn,
+            live_member_id=live_member_id,
+            department_ids=department_ids,
+            right="read",
+        )
+    except ConnectionRequired as exc:
+        return exc
+    return None

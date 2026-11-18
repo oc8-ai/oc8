@@ -20,6 +20,7 @@ from oc8.connections.acting import (
     carried_person,
     resolve_acting_person,
 )
+from oc8.connections.tool_connection import tool_connections, unconsolidated_connection
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -740,26 +741,14 @@ async def _resolve_mcp_connection(
         pinned_names = {c.name for c in pinned_conns}
         shared_keys = [k for k in enabled if k not in pinned_names and k not in needs_login]
         if shared_keys and agent.department_id is not None:
-            shared_rows = (
-                (
-                    await db.execute(
-                        select(m.McpConnection)
-                        .where(
-                            m.McpConnection.department_id == agent.department_id,
-                            m.McpConnection.connected.is_(True),
-                            m.McpConnection.credential_id.is_(None),
-                            m.McpConnection.name.in_(shared_keys),
-                        )
-                        .order_by(m.McpConnection.created_at)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            seen: set[str] = set()
-            for row in shared_rows:
-                if row.name not in seen:
-                    seen.add(row.name)
+            # The tool's row (`tool_connection`). A shared row of an
+            # integration is left out here: it reaches the run through the
+            # policy and the login resolver (`integration_connections`, in
+            # both runtimes), exactly as for an unpinned agent.
+            for row in await tool_connections(
+                db, names=shared_keys, department_id=agent.department_id
+            ):
+                if row.department_id is not None:
                     pinned_conns.append(row)
         return _ConnectionChoice(
             pinned_conns[0], None, pinned=True, connections=tuple(pinned_conns)
@@ -770,18 +759,7 @@ async def _resolve_mcp_connection(
     # its tested connection without the caller knowing an internal MCP
     # connection id. An explicit run context above still wins for
     # advanced/manual use cases.
-    legacy = (
-        await db.execute(
-            select(m.McpConnection)
-            .where(
-                m.McpConnection.department_id == agent.department_id,
-                m.McpConnection.connected.is_(True),
-                m.McpConnection.credential_id.is_(None),
-            )
-            .order_by(m.McpConnection.created_at)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    legacy = await unconsolidated_connection(db, department_id=agent.department_id)
     return _ConnectionChoice(legacy, None)
 
 

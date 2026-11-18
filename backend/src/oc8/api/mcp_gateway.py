@@ -236,7 +236,7 @@ async def _with_integrations(
     pinned = await resolve_version(db, run, agent)
     policies = effective_tool_policies(dept.frame or {}, pinned["narrowing"] or {})
     return found + await integration_connections(
-        db, agent=agent, policies=policies, have={c.name for c in found}
+        db, agent=agent, policies=policies, have={c.name for c in found}, run=run
     )
 
 

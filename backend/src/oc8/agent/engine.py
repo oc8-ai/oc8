@@ -649,7 +649,11 @@ async def run_agent(
             # A tool in the user's context needs no department setup
             # (connections design): add its unbound connection.
             extra_conns += await integration_connections(
-                db, agent=agent, policies=tool_policies, have={c.name for c in extra_conns}
+                db,
+                agent=agent,
+                policies=tool_policies,
+                have={c.name for c in extra_conns},
+                run=run_row,
             )
         # Lazily: oc8.connections.direct_access reaches the copilot package,
         # which imports this module back (R9).

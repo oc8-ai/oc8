@@ -9,9 +9,12 @@ runtime cannot drift apart:
   connected one bound to no department reaches no run until it is given one
   (`needs_department`), so it is reported as missing, with that reason;
 - integration: the plugin is an enabled integration, the department's frame
-  does not switch its tool off, and an agent without an access row can act
-  through it (`organisation_access_ready`) -- exactly what
-  `runtime_env.integration_connections` accepts.
+  does not switch its tool off, and a login resolves for the department
+  (`connections.login.offer_problem`: enabled for it, or the organisation's
+  single login) -- exactly what `runtime_env.integration_connections` and the
+  Copilot's direct access accept. The tool's one row
+  (`connections.tool_connection`) carries no department; the frame decides
+  who reaches it.
 
 A frame that does not list a tool at all does not block it: that is an
 agent-exclusive grant (`authz.pdp.narrowing_within_frame`).
@@ -24,19 +27,22 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.authz.pdp import ToolPolicy
 from oc8.capas.materialise import unbound_connection
-from oc8.connections.access import single_organisation_credential
+from oc8.connections.access import ConnectionRequired
 from oc8.connections.integrations import (
     Integration,
     enabled_tool_pack_connection,
     installed_integrations,
+    integration_enabled,
     integration_for_connection,
 )
+from oc8.connections.login import offer_problem
+from oc8.connections.tool_connection import tool_connection
 from oc8.departments.repo import member_departments
 
 #: Why a connected system in no department is not usable (for the Copilot).
@@ -57,8 +63,10 @@ class DepartmentSystem:
 
 
 def department_connections(department_id: uuid.UUID) -> Select[tuple[m.McpConnection]]:
-    """The connected systems bound to one department, oldest first: what the
-    MCP gateway hands every run of an agent in it (integrations aside)."""
+    """The connected systems a department still owns, oldest first: a custom
+    server bound to it, or a tool setup not consolidated yet. What the MCP
+    gateway hands every run of an agent in it; an integration's shared row
+    reaches the run through the policy (`runtime_env.integration_connections`)."""
     return (
         select(m.McpConnection)
         .where(
@@ -80,15 +88,53 @@ def needs_department(conn: m.McpConnection) -> bool:
     )
 
 
-async def organisation_access_ready(db: AsyncSession, integration: Integration) -> bool:
-    """Whether an agent WITHOUT an access row can act through `integration`:
-    a sign-in integration always can (it acts as the person, user mode); a
-    login type only with exactly one organisation login to fall back on."""
+async def offer_connection(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    integration: Integration,
+    department_ids: Sequence[uuid.UUID],
+) -> m.McpConnection | None:
+    """The row a call of `integration` would run on for these departments
+    (`tool_connection`, connected or not), else an unsaved one from the
+    enabled plugin's manifest -- only to ask the resolver, never stored."""
+    conn = await tool_connection(
+        db, name=integration.tool_key, department_id=department_ids, connected_only=False
+    )
+    if conn is not None:
+        return conn
+    template = await enabled_tool_pack_connection(db, integration.tool_key)
+    if template is None:
+        return None
+    manifest, pack_conn, _ = template
+    return unbound_connection(tenant_id=tenant_id, manifest=manifest, conn=pack_conn)
+
+
+async def login_offer_problem(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    integration: Integration,
+    department_ids: Sequence[uuid.UUID],
+    live_member_id: uuid.UUID | None = None,
+) -> ConnectionRequired | None:
+    """Why an agent (or person) in `department_ids` without an explicit
+    choice cannot act through a login integration, None when a login
+    resolves. A sign-in integration is always offered: it acts as the person,
+    who is asked to sign in at the first call."""
     if integration.kind == "oauth":
-        return True
-    return bool(
-        integration.credential_type
-        and await single_organisation_credential(db, integration.credential_type)
+        return None
+    conn = await offer_connection(
+        db, tenant_id=tenant_id, integration=integration, department_ids=department_ids
+    )
+    if conn is None:
+        return ConnectionRequired(integration, "not_configured")
+    return await offer_problem(
+        db,
+        integration=integration,
+        conn=conn,
+        department_ids=department_ids,
+        live_member_id=live_member_id,
     )
 
 
@@ -109,27 +155,16 @@ def frame_switches_off(frame: dict[str, Any] | None, key: str) -> bool:
     return key in tools and not frame_enables(frame, key)
 
 
-async def _organisation_logins(db: AsyncSession, credential_type: str) -> int:
-    return int(
-        await db.scalar(
-            select(func.count())
-            .select_from(m.Credential)
-            .where(
-                m.Credential.credential_type == credential_type,
-                m.Credential.owner_member_id.is_(None),
-            )
-        )
-        or 0
-    )
-
-
-async def _why_not(db: AsyncSession, integration: Integration) -> str:
-    if integration.credential_type and await _organisation_logins(db, integration.credential_type):
+def _why_not(problem: ConnectionRequired) -> str:
+    if problem.reason == "ambiguous":
         return (
-            "installed, more than one organisation login -- an agent needs "
-            "one chosen on its page after it is created"
+            "installed, more than one organisation login enabled for this "
+            "department -- an agent needs one chosen on its page after it is created"
         )
-    return "installed, no organisation login yet -- connect it on /connections"
+    return (
+        "installed, no organisation login yet for this department -- connect it "
+        "on /connections and enable it for the department"
+    )
 
 
 def _plugin(conn: m.McpConnection) -> str | None:
@@ -171,10 +206,11 @@ async def department_systems(
             missing: str | None = "installed, not enabled -- enable it on /capas"
         elif frame_switches_off(frame, key):
             missing = "switched off for this department"
-        elif await organisation_access_ready(db, integration):
-            missing = None
         else:
-            missing = await _why_not(db, integration)
+            problem = await login_offer_problem(
+                db, tenant_id=tenant_id, integration=integration, department_ids=[department.id]
+            )
+            missing = None if problem is None else _why_not(problem)
         out[key] = DepartmentSystem(key, integration.name, usable=missing is None, missing=missing)
     return [out[key] for key in sorted(out)]
 
@@ -202,23 +238,50 @@ async def member_departments_for(
 
 
 async def tool_key_connected(
-    db: AsyncSession, *, tool_key: str, department_ids: Sequence[uuid.UUID]
+    db: AsyncSession,
+    *,
+    tool_key: str,
+    department_ids: Sequence[uuid.UUID],
+    member_id: uuid.UUID,
 ) -> bool:
-    """A connected row for the key in one of these departments or in none, or
-    an enabled integration that provides it."""
-    row = await db.scalar(
-        select(m.McpConnection.id)
-        .where(
-            m.McpConnection.name == tool_key,
-            m.McpConnection.connected.is_(True),
-            m.McpConnection.department_id.in_(list(department_ids))
-            | m.McpConnection.department_id.is_(None),
-        )
-        .limit(1)
-    )
-    if row is not None:
+    """Whether the member can act through `tool_key` lent by one of these
+    departments: a login integration only when a login resolves for them (the
+    resolver's order: their own, one enabled for these departments, the
+    organisation's single one) -- so an offer is never approved and then
+    refused; another system when it has a connected row the departments
+    reach (`tool_connection`)."""
+    if not department_ids:
+        return False
+    conn = await tool_connection(db, name=tool_key, department_id=department_ids)
+    integration = integration_for_connection(conn) if conn is not None else None
+    if conn is not None and integration is None:
         return True
-    return await enabled_tool_pack_connection(db, tool_key) is not None
+    if integration is None:
+        template = await enabled_tool_pack_connection(db, tool_key)
+        if template is None:
+            return False
+        integration = template[2]
+    elif not await integration_enabled(db, integration):
+        return False
+    if conn is None:
+        member = await db.get(m.OrgMember, member_id)
+        if member is None:
+            return False
+        conn = await offer_connection(
+            db, tenant_id=member.tenant_id, integration=integration, department_ids=department_ids
+        )
+        if conn is None:
+            return False
+    return (
+        await offer_problem(
+            db,
+            integration=integration,
+            conn=conn,
+            department_ids=department_ids,
+            live_member_id=member_id,
+        )
+        is None
+    )
 
 
 async def member_may_use(
@@ -241,7 +304,7 @@ async def member_may_use(
         if policy.has_right(right)
     ]
     return bool(granting) and await tool_key_connected(
-        db, tool_key=tool_key, department_ids=granting
+        db, tool_key=tool_key, department_ids=granting, member_id=member_id
     )
 
 
@@ -273,45 +336,25 @@ async def direct_connection(
 ) -> m.McpConnection | None:
     """The row a direct-access call of `right` launches for `tool_key`.
 
-    It must belong to a department whose policy grants `right` -- the one that
-    authorised the call -- never to another department of the member's, whose
-    connection carries that department's identity. Among those, the oldest
-    connected one wins (created_at, id: stable). Only when none of them has a
-    connected row does it fall back to a connected department-less
-    (organisation-wide) one, else the enabled integration's row: its own
-    department-less row, or one materialised now. None otherwise."""
+    The tool's one row (`tool_connection`): while unconsolidated, the oldest
+    connected row of a department whose policy grants `right` -- the one that
+    authorised the call -- never another department's of the member's, whose
+    row carries that department's identity; else the shared connected row;
+    else the enabled integration's own department-less row, or one
+    materialised now. None otherwise. Which login it runs with is the
+    resolver's (`resolve_direct_access`)."""
     granting = [dept for dept, policy in departments if policy.has_right(right)]
     if not granting:
         return None
-    candidates = (
-        (
-            await db.execute(
-                select(m.McpConnection)
-                .execution_options(populate_existing=True)
-                .where(
-                    m.McpConnection.tenant_id == tenant_id,
-                    m.McpConnection.name == tool_key,
-                    m.McpConnection.department_id.in_(granting)
-                    | m.McpConnection.department_id.is_(None),
-                )
-                .order_by(m.McpConnection.created_at, m.McpConnection.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    for conn in candidates:
-        if conn.connected and conn.department_id is not None:
-            return conn
-    for conn in candidates:
-        if conn.connected:
-            return conn
+    conn = await tool_connection(db, name=tool_key, department_id=granting)
+    if conn is not None:
+        return conn
     template = await enabled_tool_pack_connection(db, tool_key)
     if template is None:
         return None
-    for conn in candidates:
-        if conn.department_id is None and conn.credential_id is None:
-            return conn
+    shared = await tool_connection(db, name=tool_key, department_id=None, connected_only=False)
+    if shared is not None:
+        return shared
     manifest, pack_conn, _integration = template
     created = unbound_connection(tenant_id=tenant_id, manifest=manifest, conn=pack_conn)
     db.add(created)
