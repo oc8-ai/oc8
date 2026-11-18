@@ -56,6 +56,12 @@ msgstr ""
 msgid "{name} is still in use ({what}). Delete it anyway? Agents that chose it then have no login until someone chooses another."
 msgstr ""
 
+msgid "{name} is still read by the data source {sources}. Choose another credential there first, then delete it."
+msgstr ""
+
+msgid "{name} is still read by the data sources {sources}. Choose another credential there first, then delete it."
+msgstr ""
+
 msgid "/do carry out the plan above"
 msgstr ""
 
@@ -1452,6 +1458,9 @@ msgid "Could not remove source."
 msgstr ""
 
 msgid "Could not remove the binding"
+msgstr ""
+
+msgid "Could not remove this login"
 msgstr ""
 
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
@@ -4779,6 +4788,9 @@ msgid "Setup failed"
 msgstr ""
 
 msgid "Several logins are enabled — choose one for this agent"
+msgstr ""
+
+msgid "several logins are enabled for this department and the agent has none chosen."
 msgstr ""
 
 msgid "Shadow only"
