@@ -1805,6 +1805,14 @@ class ConnectableIntegrationDTO(CamelModel):
     permissions: list[str] = []
 
 
+class ConnectionUsedByDTO(CamelModel):
+    """What a credential is used by: departments enabled for it or wired to
+    it, and agents that chose it."""
+
+    departments: list[str] = []
+    agents: list[str] = []
+
+
 class ConnectionDTO(CamelModel):
     """One OAuth connection or credential as the Connections page shows it --
     metadata only, never a token, a secret ref or a secret value."""
@@ -1824,6 +1832,12 @@ class ConnectionDTO(CamelModel):
     created_by_name: str | None = None
     last_tested_at: str | None = None
     last_test_ok: bool | None = None
+    #: A credential only: the departments it is enabled for, or all of them.
+    department_ids: list[str] = []
+    all_departments: bool = False
+    #: A credential only: required field keys without a value.
+    incomplete: list[str] = []
+    used_by: ConnectionUsedByDTO = ConnectionUsedByDTO()
 
 
 class CredentialCheckDTO(CamelModel):

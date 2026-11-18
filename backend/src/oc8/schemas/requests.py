@@ -666,6 +666,13 @@ class CreateConnectionCredentialRequest(CamelModel):
     field_values: dict[str, Any]
 
 
+class SetCredentialDepartmentsRequest(CamelModel):
+    """Enable an organisation login for these departments, or for all."""
+
+    department_ids: list[uuid.UUID] = Field(default_factory=list, max_length=1000)
+    all_departments: bool = False
+
+
 class CheckConnectionCredentialRequest(CamelModel):
     integration: str
     field_values: dict[str, Any]

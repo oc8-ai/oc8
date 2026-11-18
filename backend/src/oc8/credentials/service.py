@@ -12,10 +12,10 @@ import datetime as dt
 import importlib
 import logging
 import uuid
-from urllib.parse import urlsplit
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -24,7 +24,7 @@ from oc8.connections.checks import reason_for_exception
 from oc8.credentials.errors import CredentialCheckFailed
 from oc8.credentials.registry import find_credential_type_owner, get_credential_type
 from oc8.net.outbound import OutboundBlocked, guard_outbound_host, guard_outbound_url
-from oc8.secrets.service import resolve_secret, store_secret
+from oc8.secrets.service import SecretNotFound, delete_secret, resolve_secret, store_secret
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,30 @@ class CredentialInUse(Exception):
         super().__init__(f"credential is in use by: {', '.join(references)}")
 
 
+class IncompleteCredential(ValueError):
+    """A required field of the credential's type is empty, or would become
+    empty. `missing` names the field keys, in the type's field order."""
+
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        super().__init__(f"required fields missing: {', '.join(missing)}")
+
+
+def missing_required(
+    cred_type: Any, values: dict[str, Any], secret_refs: dict[str, str]
+) -> list[str]:
+    """The required field keys of `cred_type` without a value: empty after
+    strip in `values`, and (for a secret) no stored ref in `secret_refs`."""
+    missing: list[str] = []
+    for field in cred_type.fields:
+        if not field.required or secret_refs.get(field.key):
+            continue
+        raw = values.get(field.key)
+        if raw is None or not str(raw).strip():
+            missing.append(field.key)
+    return missing
+
+
 def _secret_ref(credential_id: uuid.UUID, field_key: str) -> str:
     return f"credential/{credential_id}/{field_key}"
 
@@ -106,6 +130,10 @@ async def create_credential(
             continue
         if field.default:
             plain_values[field.key] = field.default
+    given_secrets = {k: field_values.get(k) for k in secret_keys}
+    missing = missing_required(cred_type, {**plain_values, **given_secrets}, {})
+    if missing:
+        raise IncompleteCredential(missing)
     cred = m.Credential(
         tenant_id=tenant_id,
         name=name,
@@ -178,7 +206,14 @@ async def update_credential(
         plain_updates = keep_origins(
             cred_type, {k: v for k, v in field_values.items() if k not in secret_keys}
         )
-        cred.field_values = {**cred.field_values, **plain_updates}
+        merged = {**cred.field_values, **plain_updates}
+        # A blank secret leaves the stored one in place, so only a new
+        # non-blank value or an existing ref makes a secret present.
+        new_secrets = {k: field_values.get(k) for k in secret_keys if field_values.get(k)}
+        missing = missing_required(cred_type, {**merged, **new_secrets}, dict(cred.secret_refs))
+        if missing:
+            raise IncompleteCredential(missing)
+        cred.field_values = merged
         secret_refs = dict(cred.secret_refs)
         for key in secret_keys:
             value = field_values.get(key)
@@ -200,13 +235,50 @@ async def delete_credential(
     tenant_id: uuid.UUID,
     credential_id: uuid.UUID,
     owner: OwnerFilter = "any",
+    force: bool = False,
 ) -> None:
+    """Delete the credential and the secrets only it refers to. Refused with
+    `CredentialInUse` while something references it, unless `force`: then an
+    agent's fixed choice of it is left naming nothing (the runtime refuses
+    rather than picking another login)."""
     cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id, owner=owner)
     references = await _find_references(db, tenant_id=tenant_id, credential_id=credential_id)
-    if references:
+    if references and not force:
         raise CredentialInUse(references)
+    if references:
+        await db.execute(
+            update(m.AgentToolAccess)
+            .where(
+                m.AgentToolAccess.tenant_id == tenant_id,
+                m.AgentToolAccess.credential_id == credential_id,
+            )
+            .values(credential_id=None)
+        )
+    refs = dict(cred.secret_refs or {}).values()
     await db.delete(cred)
     await db.flush()
+    await delete_unshared_secrets(db, tenant_id=tenant_id, refs=refs)
+
+
+async def delete_unshared_secrets(db: AsyncSession, *, tenant_id: uuid.UUID, refs: Any) -> None:
+    """Delete the secrets behind `refs` that no remaining credential of the
+    tenant still refers to (logins folded together may share one); a secret
+    already gone is fine. Call after the referring credential row is gone."""
+    wanted = set(refs)
+    if not wanted:
+        return
+    still_used: set[str] = set()
+    for row_refs in (
+        await db.execute(
+            select(m.Credential.secret_refs).where(m.Credential.tenant_id == tenant_id)
+        )
+    ).scalars():
+        still_used.update((row_refs or {}).values())
+    for ref in sorted(wanted - still_used):
+        try:
+            await delete_secret(db, tenant_id=tenant_id, ref=ref)
+        except SecretNotFound:
+            continue
 
 
 async def _find_references(
@@ -216,7 +288,9 @@ async def _find_references(
 
     Task 12 adds the first check here: a DataSource whose config names this
     credential (the unified credentials framework's `s3_source` migration,
-    `capas/s3_source/connector/connector.py`).
+    `capas/s3_source/connector/connector.py`). Also counted: an agent's
+    fixed choice (`AgentToolAccess.credential_id`), a login connection
+    (`McpConnection.credential_id`) and the departments it is enabled for.
 
     Task 13 (telegram_approvals) investigated adding a CapaInstallation check
     here and concluded none is needed for THIS migration's shape: a setup
@@ -247,6 +321,35 @@ async def _find_references(
     for source in sources:
         if (source.config or {}).get("credential") == cred_id_str:
             references.append(f"data source {source.name!r}")
+    agents = await db.scalar(
+        select(func.count())
+        .select_from(m.AgentToolAccess)
+        .where(
+            m.AgentToolAccess.tenant_id == tenant_id,
+            m.AgentToolAccess.credential_id == credential_id,
+        )
+    )
+    if agents:
+        references.append(f"{agents} agent(s)")
+    connections = (
+        await db.execute(
+            select(m.McpConnection.name).where(
+                m.McpConnection.tenant_id == tenant_id,
+                m.McpConnection.credential_id == credential_id,
+            )
+        )
+    ).scalars()
+    references.extend(f"connection {name!r}" for name in connections)
+    departments = await db.scalar(
+        select(func.count())
+        .select_from(m.CredentialDepartment)
+        .where(
+            m.CredentialDepartment.tenant_id == tenant_id,
+            m.CredentialDepartment.credential_id == credential_id,
+        )
+    )
+    if departments:
+        references.append(f"{departments} department(s)")
     return references
 
 

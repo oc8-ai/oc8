@@ -136,11 +136,15 @@ async def update_credential_endpoint(
     dependencies=[Depends(require_permission(perm(SECRET, MANAGE)))],
 )
 async def delete_credential_endpoint(
-    credential_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+    credential_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal, force: bool = False
 ) -> None:
     try:
         await delete_credential(
-            db, tenant_id=principal.tenant_id, credential_id=credential_id, owner="organisation"
+            db,
+            tenant_id=principal.tenant_id,
+            credential_id=credential_id,
+            owner="organisation",
+            force=force,
         )
     except CredentialNotFound as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found") from exc

@@ -9,17 +9,17 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.credentials.service import delete_unshared_secrets
 from oc8.oauth.errors import OAuthError
 from oc8.oauth.http import get_client
 from oc8.oauth.providers import get_provider
 from oc8.oauth.tokens import delete_tokens, invalidate_delegated_tokens
-from oc8.secrets.service import SecretNotFound, delete_secret, resolve_secret
+from oc8.secrets.service import resolve_secret
 
 logger = logging.getLogger(__name__)
 
@@ -49,23 +49,12 @@ async def revoke_oauth_connection(db: AsyncSession, conn: m.OAuthConnection) -> 
     await db.flush()
 
 
-async def delete_secret_refs(
-    db: AsyncSession, *, tenant_id: uuid.UUID, refs: Iterable[str]
-) -> None:
-    """Delete the secrets behind a credential's refs; one already gone is fine."""
-    for ref in refs:
-        try:
-            await delete_secret(db, tenant_id=tenant_id, ref=ref)
-        except SecretNotFound:
-            continue
-
-
 async def delete_credential_with_secrets(db: AsyncSession, cred: m.Credential) -> None:
-    await delete_secret_refs(
-        db, tenant_id=cred.tenant_id, refs=dict(cred.secret_refs or {}).values()
-    )
+    """Delete the row and the secrets no other credential still refers to."""
+    refs = list(dict(cred.secret_refs or {}).values())
     await db.delete(cred)
     await db.flush()
+    await delete_unshared_secrets(db, tenant_id=cred.tenant_id, refs=refs)
 
 
 async def purge_member_connections(

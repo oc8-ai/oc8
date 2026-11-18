@@ -26,26 +26,32 @@ from oc8.authz.permissions import CONNECTION_OWN, INTEGRATION, MANAGE, perm
 from oc8.authz.scope import scope_for_principal
 from oc8.connections.checks import classify_check_error
 from oc8.connections.integrations import InstalledIntegration, Integration, installed_integrations
-from oc8.connections.revoke import (
-    delete_credential_with_secrets,
-    delete_secret_refs,
-    revoke_oauth_connection,
-)
-from oc8.credentials.registry import get_credential_type, list_credential_types_with_i18n
+from oc8.connections.revoke import delete_credential_with_secrets, revoke_oauth_connection
+from oc8.credentials.enablement import department_ids_by_credential, set_departments
+from oc8.credentials.errors import CredentialCheckFailed
+from oc8.credentials.registry import list_credential_types, list_credential_types_with_i18n
 from oc8.credentials.service import (
-    CredentialCheckFailed,
     CredentialFieldNotSet,
     CredentialInUse,
     CredentialNotFound,
     check_credential_values,
-    collect_required_values,
     create_credential,
     delete_credential,
     get_credential,
+    missing_required,
     test_credential,
 )
-from oc8.schemas.dto import ConnectableIntegrationDTO, ConnectionDTO, CredentialCheckDTO
-from oc8.schemas.requests import CheckConnectionCredentialRequest, CreateConnectionCredentialRequest
+from oc8.schemas.dto import (
+    ConnectableIntegrationDTO,
+    ConnectionDTO,
+    ConnectionUsedByDTO,
+    CredentialCheckDTO,
+)
+from oc8.schemas.requests import (
+    CheckConnectionCredentialRequest,
+    CreateConnectionCredentialRequest,
+    SetCredentialDepartmentsRequest,
+)
 
 router = APIRouter()
 
@@ -117,6 +123,10 @@ def credential_dto(
     caller_id: uuid.UUID,
     names: dict[uuid.UUID, str],
     by_type: dict[str, str],
+    *,
+    department_ids: list[uuid.UUID] | None = None,
+    incomplete: list[str] | None = None,
+    used_by: ConnectionUsedByDTO | None = None,
 ) -> ConnectionDTO:
     return ConnectionDTO(
         id=str(cred.id),
@@ -133,7 +143,67 @@ def credential_dto(
         created_at=cred.created_at.isoformat(),
         last_tested_at=cred.last_tested_at.isoformat() if cred.last_tested_at else None,
         last_test_ok=cred.last_test_ok,
+        department_ids=[str(d) for d in department_ids or []],
+        all_departments=cred.all_departments,
+        incomplete=incomplete or [],
+        used_by=used_by or ConnectionUsedByDTO(),
     )
+
+
+async def credential_dtos(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    creds: list[m.Credential],
+    caller_id: uuid.UUID,
+    names: dict[uuid.UUID, str],
+    by_type: dict[str, str],
+) -> list[ConnectionDTO]:
+    """`credential_dto` for each row, with its enablement, the required
+    fields it lacks and what uses it, loaded in a few queries."""
+    if not creds:
+        return []
+    ids = [c.id for c in creds]
+    enabled = await department_ids_by_credential(db, ids)
+    types = {t.name: t for t in await list_credential_types(db, tenant_id=tenant_id)}
+    agents: dict[uuid.UUID, set[uuid.UUID]] = {i: set() for i in ids}
+    for credential_id, agent_id in await db.execute(
+        select(m.AgentToolAccess.credential_id, m.AgentToolAccess.agent_id).where(
+            m.AgentToolAccess.credential_id.in_(ids)
+        )
+    ):
+        agents[credential_id].add(agent_id)
+    wired: dict[uuid.UUID, set[uuid.UUID]] = {i: set() for i in ids}
+    for credential_id, department_id in await db.execute(
+        select(m.McpConnection.credential_id, m.McpConnection.department_id).where(
+            m.McpConnection.credential_id.in_(ids), m.McpConnection.department_id.is_not(None)
+        )
+    ):
+        wired[credential_id].add(department_id)
+    out: list[ConnectionDTO] = []
+    for cred in creds:
+        cred_type = types.get(cred.credential_type)
+        incomplete = (
+            missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
+            if cred_type is not None
+            else []
+        )
+        departments = list(dict.fromkeys([*enabled[cred.id], *sorted(wired[cred.id])]))
+        used_by = ConnectionUsedByDTO(
+            departments=[str(d) for d in departments],
+            agents=sorted(str(a) for a in agents[cred.id]),
+        )
+        out.append(
+            credential_dto(
+                cred,
+                caller_id,
+                names,
+                by_type,
+                department_ids=enabled[cred.id],
+                incomplete=incomplete,
+                used_by=used_by,
+            )
+        )
+    return out
 
 
 def _maps(items: list[InstalledIntegration]) -> tuple[dict[str, str], dict[str, str]]:
@@ -211,9 +281,9 @@ async def list_mine(db: DbSession, principal: CurrentPrincipal) -> list[Connecti
         .all()
     )
     names = await _names(db, {me.id})
-    return [_oauth_dto(c, me.id, names, by_provider) for c in conns] + [
-        credential_dto(c, me.id, names, by_type) for c in creds
-    ]
+    return [_oauth_dto(c, me.id, names, by_provider) for c in conns] + await credential_dtos(
+        db, principal.tenant_id, list(creds), me.id, names, by_type
+    )
 
 
 @router.get("/connections/organisation", response_model=list[ConnectionDTO], dependencies=_MANAGE)
@@ -250,9 +320,9 @@ async def list_organisation(db: DbSession, principal: CurrentPrincipal) -> list[
         .all()
     )
     names = await _names(db, {c.created_by_user_id for c in conns})
-    return [_oauth_dto(c, me.id, names, by_provider) for c in conns] + [
-        credential_dto(c, me.id, names, by_type) for c in creds
-    ]
+    return [_oauth_dto(c, me.id, names, by_provider) for c in conns] + await credential_dtos(
+        db, principal.tenant_id, list(creds), me.id, names, by_type
+    )
 
 
 @router.get("/connections/members", response_model=list[ConnectionDTO], dependencies=_MANAGE)
@@ -289,9 +359,9 @@ async def list_members(db: DbSession, principal: CurrentPrincipal) -> list[Conne
     names = await _names(
         db, {c.owner_member_id for c in conns} | {c.owner_member_id for c in creds}
     )
-    return [_oauth_dto(c, me.id, names, by_provider) for c in conns] + [
-        credential_dto(c, me.id, names, by_type) for c in creds
-    ]
+    return [_oauth_dto(c, me.id, names, by_provider) for c in conns] + await credential_dtos(
+        db, principal.tenant_id, list(creds), me.id, names, by_type
+    )
 
 
 async def _audit_revoked(
@@ -337,7 +407,11 @@ async def delete_oauth(
     dependencies=_OWN,
 )
 async def delete_credential_connection(
-    credential_id: uuid.UUID, request: Request, db: DbSession, principal: CurrentPrincipal
+    credential_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
+    force: bool = False,
 ) -> None:
     me = await caller_member(db, principal)
     cred = await db.get(m.Credential, credential_id)
@@ -347,16 +421,18 @@ async def delete_credential_connection(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found")
     owner = cred.owner_member_id
     if owner is None:
-        # The organisation's access may still be wired into a setup form or a
-        # login: the existing rule (409 while in use) applies unchanged.
-        refs = dict(cred.secret_refs or {})
+        # The organisation's access may still be wired into a setup form, an
+        # agent or a department: 409 while in use, unless `force`.
         try:
             await delete_credential(
-                db, tenant_id=principal.tenant_id, credential_id=credential_id, owner="organisation"
+                db,
+                tenant_id=principal.tenant_id,
+                credential_id=credential_id,
+                owner="organisation",
+                force=force,
             )
         except CredentialInUse as exc:
             raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-        await delete_secret_refs(db, tenant_id=principal.tenant_id, refs=refs.values())
     else:
         await delete_credential_with_secrets(db, cred)
     await _audit_revoked(db, principal, kind="credential", row_id=credential_id, owner=owner)
@@ -438,13 +514,8 @@ async def create_credential_connection(
     integration = await _credential_integration(db, body.integration)
     assert integration.credential_type is not None
     owner = None if body.owner == "organisation" else me.id
-    cred_type = await get_credential_type(
-        db, tenant_id=principal.tenant_id, name=integration.credential_type
-    )
-    try:
-        collect_required_values(cred_type, body.field_values)
-    except CredentialCheckFailed as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.detail) from exc
+    # A required field left empty: `create_credential` raises
+    # IncompleteCredential, answered as 422 `credential_incomplete`.
     base = (body.name or "").strip() or integration.label
     cred = None
     for _attempt in range(5):
@@ -475,7 +546,14 @@ async def create_credential_connection(
     # Before the commit: the tenant binding is transaction-local, so a read
     # after it would see nothing under RLS.
     names = await _names(db, {me.id})
-    dto = credential_dto(cred, me.id, names, {integration.credential_type: integration.name})
+    (dto,) = await credential_dtos(
+        db,
+        principal.tenant_id,
+        [cred],
+        me.id,
+        names,
+        {integration.credential_type: integration.name},
+    )
     await append_event(
         db,
         tenant_id=principal.tenant_id,
@@ -517,3 +595,66 @@ async def test_credential_connection(
         return _check_result(exc)
     await db.commit()
     return _check_result(None)
+
+
+@router.put(
+    "/connections/credentials/{credential_id}/departments",
+    response_model=ConnectionDTO,
+    dependencies=_MANAGE,
+)
+async def set_credential_departments(
+    credential_id: uuid.UUID,
+    body: SetCredentialDepartmentsRequest,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> ConnectionDTO:
+    """Enable the organisation's login for these departments, or for all of
+    them. A personal login is never enabled for a department (404 here, as
+    on every organisation surface)."""
+    me = await caller_member(db, principal)
+    try:
+        cred = await get_credential(
+            db, tenant_id=principal.tenant_id, credential_id=credential_id, owner="organisation"
+        )
+    except CredentialNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found") from exc
+    wanted = set(body.department_ids)
+    if wanted:
+        known = set(
+            (
+                await db.execute(
+                    select(m.Department.id).where(
+                        m.Department.tenant_id == principal.tenant_id,
+                        m.Department.id.in_(wanted),
+                        m.Department.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if unknown := wanted - known:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                {"code": "unknown_department", "department_ids": sorted(str(u) for u in unknown)},
+            )
+    await set_departments(db, cred, department_ids=wanted, all_departments=body.all_departments)
+    _by_provider, by_type = _maps(await installed_integrations(db))
+    (dto,) = await credential_dtos(db, principal.tenant_id, [cred], me.id, {}, by_type)
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="connection",
+        action="connection.departments_set",
+        resource={
+            "kind": "credential",
+            "id": str(cred.id),
+            "department_ids": dto.department_ids,
+            "all_departments": cred.all_departments,
+        },
+        principal=principal,
+    )
+    await db.commit()
+    return dto
