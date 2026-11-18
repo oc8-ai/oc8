@@ -20,6 +20,7 @@ from oc8.connections.acting import (
     carried_person,
     resolve_acting_person,
 )
+from oc8.connections.login import login_chosen
 from oc8.connections.tool_connection import tool_connections, unconsolidated_connection
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
@@ -676,6 +677,15 @@ async def _resolve_mcp_connection(
     # `set_department_tools` already makes on this function's behalf ("an agent
     # cascaded to enabled without a connection_id is caught at runtime
     # resolution"). That promise has to hold for every enabled key.
+    # A login tool the agent chose a login for another way -- its access row
+    # (what a consolidated login pin became) or a login enabled for its
+    # department -- needs no pin: the login resolver picks it per call.
+    for key in sorted(needs_login):
+        if await login_chosen(
+            db, agent_id=agent.id, department_id=agent.department_id, tool_key=key
+        ):
+            needs_login.discard(key)
+
     for key in enabled:
         if key in needs_login and not tools[key].get("connection_id") and not _dept_default(key):
             return _ConnectionChoice(

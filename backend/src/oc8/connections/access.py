@@ -342,7 +342,12 @@ async def department_targets(db: AsyncSession, agent: m.Agent, tool_key: str) ->
 
 
 async def binding_fingerprint(
-    db: AsyncSession, agent: m.Agent, tool_key: str | None, *, version_id: uuid.UUID | None
+    db: AsyncSession,
+    agent: m.Agent,
+    tool_key: str | None,
+    *,
+    version_id: uuid.UUID | None,
+    legacy: bool = False,
 ) -> str:
     """What the person who confirmed a binding to their own account saw: the
     agent version (or, for an agent without one, its working copy), the
@@ -351,7 +356,15 @@ async def binding_fingerprint(
     (status, routing hints) does not change it. The setup is hashed whole: the
     result is a digest, and the config holds references, not secret values.
     `tool_key` None: the department's setup of every tool (a trigger's runs
-    may use any of them)."""
+    may use any of them).
+
+    A tool the department owns no row of any more (consolidated: one shared
+    row, logins enabled for departments) is hashed through what the agent
+    reaches instead (`_shared_setup`): the shared row, the agent's access
+    row and the logins the resolver could pick. Otherwise a change to the
+    shared row or to the login used would leave a confirmation standing.
+    `legacy`: the digest without that part, as stored before (consolidation
+    accepts a confirmation stamped that way once, `connections.consolidate`)."""
     assignments = (
         await db.execute(
             select(m.SkillAssignment).where(
@@ -381,18 +394,116 @@ async def binding_fingerprint(
     which = select(m.McpConnection).where(m.McpConnection.department_id == agent.department_id)
     if tool_key is not None:
         which = which.where(m.McpConnection.name == tool_key)
-    conns = (await db.execute(which)).scalars()
+    conns = list((await db.execute(which)).scalars())
     setup = sorted(
         [str(c.id), str(c.credential_id), c.server_url, c.transport, c.scopes, c.config]
         for c in conns
     )
-    payload = {
+    payload: dict[str, Any] = {
         "version": str(version_id) if version_id else await snapshot_agent(db, agent),
         "skills": skills,
         "department": None if dept is None else [dept.goal, dept.frame, dept.frame_capa_defaults],
         "setup": setup,
     }
+    if not legacy:
+        # Only present when non-empty: an unconsolidated department's digest
+        # stays exactly what it was.
+        shared = await _shared_setup(db, agent, dept, tool_key, owned={c.name for c in conns})
+        if shared:
+            payload["shared"] = shared
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _frame_tools(dept: m.Department | None) -> list[str]:
+    """The tool names the department's frame enables."""
+    frame = dept.frame if dept is not None and isinstance(dept.frame, dict) else {}
+    tools = frame.get("tools") if isinstance(frame.get("tools"), dict) else {}
+    return sorted(
+        key
+        for key, policy in (tools or {}).items()
+        if isinstance(policy, dict) and policy.get("enabled")
+    )
+
+
+async def _shared_setup(
+    db: AsyncSession,
+    agent: m.Agent,
+    dept: m.Department | None,
+    tool_key: str | None,
+    *,
+    owned: set[str],
+) -> list[Any]:
+    """What a consolidated tool's run uses, for each login tool the agent can
+    reach (`tool_key`, or every tool its department's frame enables) that its
+    department owns no row of: the tool's row (the shared one the run starts
+    on -- or, before a first run created it, the manifest's, which is what
+    that run creates) and the login the resolver uses (the agent's access
+    row; else the organisation logins enabled for the department, else the
+    organisation's single one). Definitions and ids only -- references,
+    never secret values."""
+    from oc8.capas.materialise import unbound_connection
+    from oc8.connections.integrations import enabled_tool_pack_connection
+    from oc8.connections.login import enabled_anywhere
+    from oc8.credentials.enablement import enabled_credentials
+
+    names = [tool_key] if tool_key is not None else _frame_tools(dept)
+    out: list[Any] = []
+    for name in names:
+        if name in owned:
+            continue
+        row = await db.scalar(
+            select(m.McpConnection)
+            .where(
+                m.McpConnection.name == name,
+                m.McpConnection.department_id.is_(None),
+                m.McpConnection.credential_id.is_(None),
+            )
+            .order_by(m.McpConnection.created_at, m.McpConnection.id)
+            .limit(1)
+        )
+        integration = integration_for_connection(row) if row is not None else None
+        if row is None or integration is None:
+            template = await enabled_tool_pack_connection(db, name)
+            if template is not None:
+                manifest, pack_conn, integration = template
+                if row is None:
+                    row = unbound_connection(
+                        tenant_id=agent.tenant_id, manifest=manifest, conn=pack_conn
+                    )
+        if integration is None or integration.kind != "credential":
+            # Only login tools: a sign-in tool's account is the person's own
+            # or its department's app-only row, hashed as before.
+            continue
+        assert integration.credential_type is not None
+        access = await db.scalar(
+            select(m.AgentToolAccess).where(
+                m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == name
+            )
+        )
+        used: list[Any]
+        if access is not None:
+            used = [access.mode, str(access.credential_id), str(access.oauth_connection_id)]
+        else:
+            used = []
+            if agent.department_id is not None:
+                used = [
+                    str(c.id)
+                    for c in await enabled_credentials(
+                        db,
+                        credential_type=integration.credential_type,
+                        department_id=agent.department_id,
+                    )
+                ]
+            if not used and not await enabled_anywhere(db, integration.credential_type):
+                only = await single_organisation_credential(db, integration.credential_type)
+                if only is not None:
+                    used = [str(only.id)]
+        definition = (
+            None if row is None else [row.server_url, row.transport, row.scopes, row.config]
+        )
+        if definition is not None or used:
+            out.append([name, definition, used])
+    return out
 
 
 async def trigger_fingerprint(

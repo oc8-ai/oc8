@@ -274,3 +274,44 @@ async def offer_problem(
     except ConnectionRequired as exc:
         return exc
     return None
+
+
+async def login_chosen(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID | None,
+    department_id: uuid.UUID | None,
+    tool_key: str,
+    login_row: m.McpConnection | None = None,
+) -> bool:
+    """Whether a login tool needs no narrowing pin for this agent: it has an
+    explicit access row (`AgentToolAccess`, what a login-pinned row became
+    when consolidated), or an organisation login of the tool's type is
+    enabled for its department. The legacy "set connection_id" rule only
+    applies when neither is true."""
+    from oc8.connections.integrations import (
+        enabled_tool_pack_connection,
+        integration_for_connection,
+    )
+
+    if agent_id is not None:
+        found = await db.scalar(
+            select(m.AgentToolAccess.id).where(
+                m.AgentToolAccess.agent_id == agent_id, m.AgentToolAccess.tool_key == tool_key
+            )
+        )
+        if found is not None:
+            return True
+    if department_id is None:
+        return False
+    template = await enabled_tool_pack_connection(db, tool_key)
+    integration = template[2] if template is not None else None
+    if integration is None and login_row is not None:
+        integration = integration_for_connection(login_row)
+    if integration is None or integration.credential_type is None:
+        return False
+    return bool(
+        await enabled_credentials(
+            db, credential_type=integration.credential_type, department_id=department_id
+        )
+    )

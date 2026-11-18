@@ -20,11 +20,11 @@ from oc8.api.v1.connections import may_manage_integrations
 from oc8.audit import append_event
 from oc8.authz.scope import HumanActor
 from oc8.connections.access import (
-    binding_fingerprint,
     department_setup,
     department_targets,
     unconfirmed_reason,
 )
+from oc8.connections.access_write import write_tool_access
 from oc8.connections.integrations import Integration, installed_integrations
 from oc8.connections.tool_connection import tool_connection
 from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO
@@ -298,58 +298,27 @@ async def save_tool_access(
                 status.HTTP_403_FORBIDDEN,
                 "only its owner or an administrator may bind an agent to a person's account",
             )
-    row = await db.scalar(
-        select(m.AgentToolAccess).where(
-            m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == tool_key
-        )
-    )
-    previous = {
-        "mode": row.mode if row else None,
-        "oauth_connection_id": str(row.oauth_connection_id)
-        if row and row.oauth_connection_id
-        else None,
-        "credential_id": str(row.credential_id) if row and row.credential_id else None,
-        "set_by_member_id": str(row.set_by_member_id) if row and row.set_by_member_id else None,
-        "set_with_manage": row.set_with_manage if row else None,
-    }
-    if row is None:
-        row = m.AgentToolAccess(
-            tenant_id=agent.tenant_id, agent_id=agent.id, tool_key=tool_key, mode=body.mode
-        )
-        db.add(row)
-    row.mode = body.mode
-    row.oauth_connection_id = oauth_id
-    row.credential_id = credential_id
-    row.set_by_member_id = actor.member.id
     # An administrator's choice stands on its own (an organisation account or a
     # colleague's); otherwise it rests on the owner or the department's setup.
-    row.set_with_manage = consent in ("manage", "organisation") and admin
-    row.binding_fingerprint = await binding_fingerprint(
-        db, agent, tool_key, version_id=agent.current_version_id
-    )
-    await db.flush()
-    await append_event(
+    return await write_tool_access(
         db,
-        tenant_id=agent.tenant_id,
+        agent=agent,
+        tool_key=tool_key,
+        mode=body.mode,
+        oauth_connection_id=oauth_id,
+        credential_id=credential_id,
+        set_by_member_id=actor.member.id,
+        set_with_manage=consent in ("manage", "organisation") and admin,
         actor_type="operator",
         actor_id=actor.member.id,
-        category="authz",
-        action="agent.tool_access.updated",
-        resource={
-            "agent_id": str(agent.id),
-            "tool": tool_key,
-            "mode": body.mode,
-            "oauth_connection_id": str(oauth_id) if oauth_id else None,
-            "credential_id": str(credential_id) if credential_id else None,
+        principal=actor.principal,
+        audit={
             "target_label": target_label,
             "target_owner_member_id": str(owner) if owner else None,
-            "previous": previous,
             "consent": consent,
             "confirm_share": bool(body.confirm_share),
         },
-        principal=actor.principal,
     )
-    return row
 
 
 @router.put("/agents/{agent_id}/tool-access/{tool_key}", response_model=AgentToolAccessDTO)

@@ -38,6 +38,20 @@ def main() -> None:
         help="limit to this tenant (repeatable); default is every known tenant",
     )
 
+    consolidate_p = sub.add_parser(
+        "consolidate-connections",
+        help=(
+            "fold per-department tool setups into shared logins (the worker "
+            "also runs this once at start; safe to run twice)"
+        ),
+    )
+    consolidate_p.add_argument(
+        "--tenant", default=None, metavar="UUID", help="only this tenant; default every tenant"
+    )
+    consolidate_p.add_argument(
+        "--dry-run", action="store_true", help="report what would change, change nothing"
+    )
+
     sub.add_parser(
         "evidence-sweep",
         help=(
@@ -210,6 +224,26 @@ def main() -> None:
 
         targets = [_uuid.UUID(t) for t in args.tenant] if args.tenant else None
         print(f"adopted {asyncio.run(adopt_checkpoints(targets))} checkpoint(s)")
+    elif args.command == "consolidate-connections":
+        import json
+        import sys
+        import uuid as _uuid
+
+        from oc8.connections.consolidate import consolidate_all_tenants, consolidate_tenant
+        from oc8.db.session import tenant_session
+
+        async def _consolidate() -> int:
+            if args.tenant is None:
+                reports = await consolidate_all_tenants(dry_run=args.dry_run)
+            else:
+                tenant_id = _uuid.UUID(args.tenant)
+                async with tenant_session(tenant_id) as db:
+                    reports = [await consolidate_tenant(db, tenant_id, dry_run=args.dry_run)]
+            for report in reports:
+                print(json.dumps(report.as_dict(), sort_keys=True))
+            return 0
+
+        sys.exit(asyncio.run(_consolidate()))
     elif args.command == "evidence-sweep":
         from oc8.config import get_settings as _settings
         from oc8.evidence.sweep import sweep_evidence

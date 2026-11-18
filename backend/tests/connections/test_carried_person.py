@@ -595,19 +595,21 @@ async def test_a_withheld_run_refuses_a_fixed_personal_login_too(
         live = await db.get(m.Agent, agent.id)
         assert live is not None
         db.add(conn)
-        db.add(
-            m.AgentToolAccess(
-                tenant_id=tenant,
-                agent_id=agent.id,
-                tool_key="odoo",
-                mode="fixed",
-                credential_id=personal,
-                set_by_member_id=root,
-                set_with_manage=True,
-                binding_fingerprint=await binding_fingerprint(
-                    db, live, "odoo", version_id=live.current_version_id
-                ),
-            )
+        access = m.AgentToolAccess(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            tool_key="odoo",
+            mode="fixed",
+            credential_id=personal,
+            set_by_member_id=root,
+            set_with_manage=True,
+        )
+        db.add(access)
+        # Confirmed against the setup as it stands (the tool's row and the
+        # binding itself are part of what was confirmed).
+        await db.flush()
+        access.binding_fingerprint = await binding_fingerprint(
+            db, live, "odoo", version_id=live.current_version_id
         )
         await db.flush()
         for context, works in (

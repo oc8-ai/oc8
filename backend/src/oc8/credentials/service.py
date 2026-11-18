@@ -221,12 +221,31 @@ async def update_credential(
             # requires re-submitting every secret just to rename a credential.
             if not value:
                 continue
-            ref = secret_refs.get(key) or _secret_ref(cred.id, key)
+            # A login folded from an old setup may point at a secret another
+            # login shares: a new value goes under this login's own name and
+            # leaves the shared one to the others.
+            ref = secret_refs.get(key)
+            if not ref or await _ref_shared(db, tenant_id=tenant_id, ref=ref, but=cred.id):
+                ref = _secret_ref(cred.id, key)
             await store_secret(db, tenant_id=tenant_id, name=ref, value=value, kind="credential")
             secret_refs[key] = ref
         cred.secret_refs = secret_refs
     await db.flush()
     return cred
+
+
+async def _ref_shared(db: AsyncSession, *, tenant_id: uuid.UUID, ref: str, but: uuid.UUID) -> bool:
+    """Whether another credential of the tenant refers to the secret `ref`."""
+    for row_refs in (
+        await db.execute(
+            select(m.Credential.secret_refs).where(
+                m.Credential.tenant_id == tenant_id, m.Credential.id != but
+            )
+        )
+    ).scalars():
+        if ref in (row_refs or {}).values():
+            return True
+    return False
 
 
 async def delete_credential(

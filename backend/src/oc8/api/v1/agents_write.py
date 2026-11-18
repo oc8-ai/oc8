@@ -52,6 +52,7 @@ from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
+from oc8.connections.login import login_chosen
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     interpret_guardrail_definition,
@@ -176,7 +177,17 @@ async def enforce_narrowing_logins(
                     .limit(1)
                 )
             ).scalar_one_or_none()
-            if login_conn is not None and not policy.connection_id:
+            if (
+                login_conn is not None
+                and not policy.connection_id
+                and not await login_chosen(
+                    db,
+                    agent_id=agent.id,
+                    department_id=agent.department_id,
+                    tool_key=key,
+                    login_row=login_conn,
+                )
+            ):
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_ENTITY,
                     f"tool {key!r} needs a login: set connection_id before enabling it",

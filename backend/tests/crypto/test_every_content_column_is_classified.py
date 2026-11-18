@@ -131,6 +131,7 @@ EXEMPT: dict[str, str] = {
     "credential.credential_type": "dispatch-matched identifier naming a credential_types/*.toml entry (core-owned or capa-contributed), not customer content, design spec §6c",
     "credential.field_values": "content column to encrypt as-is, not yet migrated -- per-credential-type non-secret config (e.g. an S3 region/endpoint); the secret material itself lives only via secret_refs below, design spec §6a",
     "credential.secret_refs": "not the secret material itself -- reference strings into the existing tenant-DEK-encrypted secret vault (oc8.secrets.service), which already carries the sensitive material; structural/identifier column, same rationale as totp_credential.secret_ref",
+    "credential.consolidated_from": "not individually named in spec section 6; a list of former mcp_connection ids folded into this login (one-time migration bookkeeping), structural/identifier column like knowledge_base.source_ids, not customer free text -- see design spec §6",
     "data_source.connector_type": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
     "data_source.name": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",
     "data_source.config": "content column to encrypt as-is, not yet migrated, design spec §6a",
