@@ -125,7 +125,7 @@ async def test_settings_credential_list_shows_what_uses_a_login(
     """The login picker of a setup lists through `/credentials`: it shows the
     same enablement, missing fields and users as the Connections page."""
     tenant = uuid.uuid4()
-    cred = await credential_row(app_session, tenant, owner=None)
+    cred = await credential_row(app_session, tenant, owner=None, complete=False)
     sales = await _department(app_session, tenant, "Sales")
     async with app_session(tenant) as db:
         agent = m.Agent(tenant_id=tenant, department_id=sales, name="Ada")
@@ -155,5 +155,9 @@ async def test_settings_credential_list_shows_what_uses_a_login(
     (row,) = r.json()
     assert row["departmentIds"] == [str(sales)]
     assert row["allDepartments"] is False
-    assert row["usedBy"] == {"departments": [str(sales)], "agents": [str(agent_id)]}
+    assert row["usedBy"] == {
+        "departments": [str(sales)],
+        "agents": [str(agent_id)],
+        "dataSources": [],
+    }
     assert row["incomplete"] == ["database", "password"]
