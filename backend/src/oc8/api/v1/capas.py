@@ -57,7 +57,7 @@ from oc8.capas.service import (
 )
 from oc8.connections.credential_env import credential_env_targets
 from oc8.connections.tool_connection import not_retired, without_reserved
-from oc8.credentials.enablement import enable_for_department
+from oc8.credentials.enablement import choose_for_department, enable_for_department
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
     CredentialFieldNotSet,
@@ -914,7 +914,12 @@ async def _apply_plugin_setup(
         conn.connected = False
         conn.health = {}
     if chosen is not None:
-        await enable_for_department(db, chosen.credential, target_department_id)
+        if target_department_id is not None:
+            # The setup names THE department's login: it replaces any other
+            # of the type there (never two, which would be ambiguous).
+            await choose_for_department(db, chosen.credential, target_department_id)
+        else:
+            await enable_for_department(db, chosen.credential, None)
     await db.commit()
     return PluginSetupResult(
         connection_id=str(conn.id),

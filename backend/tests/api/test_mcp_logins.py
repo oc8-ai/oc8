@@ -413,3 +413,52 @@ async def test_creating_a_login_with_an_unknown_department_id_is_400() -> None:
                 headers=_headers(tenant),
             )
             assert r.status_code == 400, r.text
+
+
+async def test_choosing_another_login_for_a_department_replaces_the_old_one(
+    app_session: AppSessionFactory,
+) -> None:
+    """`departmentId` names the department's one login: a second choice for
+    the same department replaces the first there (not both enabled)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={})
+        db.add(dept)
+        await db.flush()
+        dept_id = dept.id
+
+    def _login(url: str) -> dict[str, object]:
+        return {
+            "name": "odoo",
+            "credentialType": "odoo_login",
+            "fieldValues": {"base_url": url, "username": "u", "password": "p"},
+            "scopes": {},
+        }
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            ids = []
+            for name, url in (("A", "https://a.test"), ("B", "https://b.test")):
+                r = await c.post(
+                    "/api/v1/credentials",
+                    json={**_login(url), "name": name},
+                    headers=_headers(tenant),
+                )
+                assert r.status_code == 201, r.text
+                ids.append(r.json()["id"])
+            for cred_id in ids:
+                r = await c.post(
+                    "/api/v1/mcp/logins",
+                    json={
+                        **_login("unused"),
+                        "credentialId": cred_id,
+                        "departmentId": str(dept_id),
+                    },
+                    headers=_headers(tenant),
+                )
+                assert r.status_code == 201, r.text
+    first, second = (uuid.UUID(i) for i in ids)
+    async with app_session(tenant) as db:
+        enabled = await department_ids_by_credential(db, [first, second])
+    assert enabled == {first: [], second: [dept_id]}

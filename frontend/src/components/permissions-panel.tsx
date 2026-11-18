@@ -16,7 +16,16 @@ import {
   type ToolPolicy,
   type McpTool,
 } from "@/lib/permissions";
-import { useCreateMcpLogin, useMcpConnections, useMcpLogins, type McpLoginDTO } from "@/lib/hooks";
+import {
+  useCreateMcpLogin,
+  useCredentials,
+  useMcpConnections,
+  useMcpLogins,
+  type CredentialDTO,
+  type McpLoginDTO,
+} from "@/lib/hooks";
+import { useSetCredentialDepartments } from "@/lib/connections";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 type Mode = "department" | "agent";
@@ -48,9 +57,16 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
   const tools = useMemo(() => mcpToolsFromConnections(connections), [connections]);
   // The default-login picker (department mode) is the same inline "select
   // existing credential or create new" control the Hire dialog uses. The
-  // pick enables that login for the department (POST /mcp/logins with the
-  // department); a login pinned as the department's default connection by an
+  // pick makes that login THE department's login for the tool (POST
+  // /mcp/logins with the department replaces any other there). What it shows
+  // is what applies: the login enabled for this department itself, else one
+  // enabled for all departments -- read from the credentials, so a reload
+  // shows it. A login pinned as the department's default connection by an
   // older version is still shown until the tenant's rows are consolidated.
+  // Several departments at once are edited on the Connections page.
+  const t = useT();
+  const { data: credentials = [] } = useCredentials();
+  const setDepartments = useSetCredentialDepartments();
   const logins = useMcpLogins();
   const loginsByKey: Record<string, McpLoginDTO[]> = {};
   for (const login of logins.data ?? []) {
@@ -127,8 +143,24 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
     const dTool = dPol[toolId];
     if (!dTool) return;
     if (!credentialId) {
+      // Cleared: the department no longer has a login of its own for the
+      // tool (one enabled for all departments still applies).
+      try {
+        for (const cred of directLogins(credentials, credentialType, dept.id)) {
+          await setDepartments.mutateAsync({
+            id: cred.id,
+            departmentIds: (cred.departmentIds ?? []).filter((id) => id !== dept.id),
+            allDepartments: !!cred.allDepartments,
+          });
+        }
+      } catch (err) {
+        toast.error(t("Could not remove this login", "Der Login konnte nicht entfernt werden"), {
+          description: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
       setEnabledPick((s) => ({ ...s, [toolId]: "" }));
-      setDeptTool(toolId, { ...dTool, defaultConnectionId: null });
+      if (dTool.defaultConnectionId) setDeptTool(toolId, { ...dTool, defaultConnectionId: null });
       return;
     }
     try {
@@ -252,7 +284,7 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
                 enabledPick[tool.id] ??
                 (loginsByKey[tool.id] ?? []).find((l) => l.id === dTool?.defaultConnectionId)
                   ?.credentialId ??
-                "";
+                (credentialType ? enabledLoginId(credentials, credentialType, dept.id) : "");
               return (
                 <ToolTile
                   key={tool.id}
@@ -507,6 +539,33 @@ export function PermissionsPanel(props: DeptProps | AgentProps) {
         })()}
     </div>
   );
+}
+
+/** The organisation logins of `credentialType` enabled for the department
+ *  itself (not through "all departments"). */
+function directLogins(
+  credentials: CredentialDTO[],
+  credentialType: string,
+  departmentId: string,
+): CredentialDTO[] {
+  return credentials.filter(
+    (c) => c.credentialType === credentialType && (c.departmentIds ?? []).includes(departmentId),
+  );
+}
+
+/** The login the department's agents use for a login type, as the resolver
+ *  picks it: the one enabled for the department itself, else the one
+ *  enabled for all departments; "" when none or several (ambiguous). */
+function enabledLoginId(
+  credentials: CredentialDTO[],
+  credentialType: string,
+  departmentId: string,
+): string {
+  const direct = directLogins(credentials, credentialType, departmentId);
+  const tier = direct.length
+    ? direct
+    : credentials.filter((c) => c.credentialType === credentialType && c.allDepartments);
+  return tier.length === 1 ? tier[0].id : "";
 }
 
 function SectionHeader({ title, hint }: { title: string; hint: string }) {

@@ -290,7 +290,7 @@ async def test_two_enabled_logins_without_a_choice_are_ambiguous(
 ) -> None:
     agent, _anna, conn, run = await _world(app_session)
     await _login(app_session, agent.tenant_id, name="One", departments={agent.department_id})
-    await _login(app_session, agent.tenant_id, name="Two", all_departments=True)
+    await _login(app_session, agent.tenant_id, name="Two", departments={agent.department_id})
     with pytest.raises(ConnectionRequired) as exc:
         await _access(app_session, agent, conn, run)
     assert exc.value.reason == "ambiguous"
@@ -298,6 +298,34 @@ async def test_two_enabled_logins_without_a_choice_are_ambiguous(
         "connection_required: Several Test Login logins are enabled for this department "
         "and the agent has none chosen."
     )
+
+
+async def test_a_direct_department_choice_wins_over_an_all_departments_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """A login chosen for the department itself beats one enabled for all
+    departments; only two of the same kind are ambiguous."""
+    agent, _anna, conn, run = await _world(app_session)
+    await _login(app_session, agent.tenant_id, name="Everyone", all_departments=True)
+    ours = await _login(
+        app_session, agent.tenant_id, name="Ours", departments={agent.department_id}
+    )
+    access = await _access(app_session, agent, conn, run)
+    assert access.credential.id == ours  # type: ignore[union-attr]
+    await _login(app_session, agent.tenant_id, name="Everyone too", all_departments=True)
+    access = await _access(app_session, agent, conn, run)
+    assert access.credential.id == ours  # type: ignore[union-attr]
+
+
+async def test_two_all_departments_logins_are_ambiguous(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, _anna, conn, run = await _world(app_session)
+    await _login(app_session, agent.tenant_id, name="One", all_departments=True)
+    await _login(app_session, agent.tenant_id, name="Two", all_departments=True)
+    with pytest.raises(ConnectionRequired) as exc:
+        await _access(app_session, agent, conn, run)
+    assert exc.value.reason == "ambiguous"
 
 
 async def test_single_organisation_login_is_used_when_nothing_is_enabled(

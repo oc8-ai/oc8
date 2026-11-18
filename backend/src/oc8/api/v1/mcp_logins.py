@@ -25,7 +25,7 @@ from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor, scope_for_principal
 from oc8.connections.integrations import Integration
 from oc8.connections.tool_connection import tool_connection
-from oc8.credentials.enablement import enable_for_department
+from oc8.credentials.enablement import choose_for_department
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import CredentialNotFound, create_credential, get_credential
 from oc8.schemas.dto import McpLoginDTO
@@ -139,9 +139,10 @@ async def create_login(
             SetAgentToolAccessRequest(mode="fixed", credential_id=cred.id),
         )
     elif dept is not None:
-        # A department's login (the department's default for the tool): the
-        # login is enabled for it, alongside any other department it serves.
-        await enable_for_department(db, cred, dept.id)
+        # A department's login (the department's default for the tool): it
+        # replaces any other login of the type there, and stays enabled for
+        # any other department it serves.
+        await choose_for_department(db, cred, dept.id)
     tool = await tool_connection(
         db,
         name=body.name,

@@ -6,8 +6,9 @@
    such a choice too, until it is consolidated.
 2. In a live chat a person runs: their own login, if they have one.
    Scheduled and triggered runs skip this (`live_member_id=None`).
-3. The organisation login enabled for one of `department_ids` (directly or
-   through "all departments"): exactly one -> it; several -> `ambiguous`.
+3. The organisation login enabled for one of `department_ids`: one enabled
+   for the department itself wins over one enabled for "all departments";
+   exactly one of the winning tier -> it; several -> `ambiguous`.
 4. An unconsolidated department row that still carries copied login values
    (complete or not) serves its department (`legacy`): a department's own
    account is never swapped for the organisation's single login.
@@ -40,7 +41,7 @@ from oc8.connections.access import (
 )
 from oc8.connections.acting import ACTING_PERSON_WITHHELD, ActingPerson, resolve_acting_person
 from oc8.connections.integrations import Integration
-from oc8.credentials.enablement import enabled_credentials
+from oc8.credentials.enablement import chosen_credentials, enabled_credentials
 
 Source = Literal["agent", "own", "department", "organisation", "legacy"]
 
@@ -229,14 +230,11 @@ async def resolve_login(
     if conn.credential_id is not None:
         # A pinned row reached without an agent's choice (a Copilot call).
         return LoginChoice(None, "legacy", conn)
-    enabled: dict[uuid.UUID, m.Credential] = {}
-    for department_id in department_ids:
-        for cred in await enabled_credentials(
-            db, credential_type=integration.credential_type, department_id=department_id
-        ):
-            enabled.setdefault(cred.id, cred)
+    enabled = await chosen_credentials(
+        db, credential_type=integration.credential_type, department_ids=list(department_ids)
+    )
     if len(enabled) == 1:
-        return LoginChoice(next(iter(enabled.values())), "department", None)
+        return LoginChoice(enabled[0], "department", None)
     if len(enabled) > 1:
         raise ConnectionRequired(integration, "ambiguous")
     if conn.department_id in department_ids and holds_copied_login(conn, integration):

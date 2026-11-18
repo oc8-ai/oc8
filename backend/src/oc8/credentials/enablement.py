@@ -60,6 +60,32 @@ async def enable_for_department(
         )
 
 
+async def choose_for_department(
+    db: AsyncSession, cred: m.Credential, department_id: uuid.UUID
+) -> None:
+    """Make `cred` THE login of its type for one department (a surface that
+    names a single login for it: a tool setup, a department's default): the
+    department is taken off every other organisation login of the same type
+    and `cred` is enabled for it. Logins enabled for all departments are
+    left alone -- the department's own choice wins over them in the
+    resolver. Raises `ValueError("personal")` for a personal login."""
+    if cred.owner_member_id is not None:
+        raise ValueError("personal")
+    others = select(m.Credential.id).where(
+        m.Credential.credential_type == cred.credential_type,
+        m.Credential.owner_member_id.is_(None),
+        m.Credential.id != cred.id,
+    )
+    await db.execute(
+        delete(m.CredentialDepartment).where(
+            m.CredentialDepartment.tenant_id == cred.tenant_id,
+            m.CredentialDepartment.department_id == department_id,
+            m.CredentialDepartment.credential_id.in_(others),
+        )
+    )
+    await enable_for_department(db, cred, department_id)
+
+
 async def department_ids_by_credential(
     db: AsyncSession, credential_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[uuid.UUID]]:
@@ -75,6 +101,33 @@ async def department_ids_by_credential(
     for credential_id, department_id in rows:
         out[credential_id].append(department_id)
     return out
+
+
+async def chosen_credentials(
+    db: AsyncSession, *, credential_type: str, department_ids: list[uuid.UUID]
+) -> list[m.Credential]:
+    """The logins of `credential_type` that apply to `department_ids`: those
+    enabled for one of them directly -- or, only when there is none, those
+    enabled for all departments. A department's own choice wins over an
+    "all departments" login; several of the same tier are for the caller to
+    report (ambiguous). Oldest first, no duplicates."""
+    direct: dict[uuid.UUID, m.Credential] = {}
+    everywhere: dict[uuid.UUID, m.Credential] = {}
+    for department_id in department_ids:
+        enabled_here = set(
+            (
+                await db.execute(
+                    select(m.CredentialDepartment.credential_id).where(
+                        m.CredentialDepartment.department_id == department_id
+                    )
+                )
+            ).scalars()
+        )
+        for cred in await enabled_credentials(
+            db, credential_type=credential_type, department_id=department_id
+        ):
+            (direct if cred.id in enabled_here else everywhere).setdefault(cred.id, cred)
+    return list((direct or everywhere).values())
 
 
 async def enabled_credentials(

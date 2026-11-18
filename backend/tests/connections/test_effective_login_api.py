@@ -89,8 +89,10 @@ async def test_effective_login_names_the_source(app_session: AppSessionFactory) 
 
 async def test_effective_login_reports_ambiguous(app_session: AppSessionFactory) -> None:
     agent, _anna, _conn, _run = await _world(app_session)
+    # Two of the same tier (a department's own choice wins over a login
+    # enabled for all departments).
     await _login(app_session, agent.tenant_id, name="One", departments={agent.department_id})
-    await _login(app_session, agent.tenant_id, name="Two", all_departments=True)
+    await _login(app_session, agent.tenant_id, name="Two", departments={agent.department_id})
     assert await _effective(agent) == {
         "credentialId": None,
         "credentialName": None,

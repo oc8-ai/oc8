@@ -524,3 +524,38 @@ async def test_setup_never_writes_to_a_retired_row(app_session: AppSessionFactor
         assert untouched.department_id is None and not untouched.connected
     live = [r for r in await _tool_rows(app_session, tenant) if RETIRED_KEY not in (r.config or {})]
     assert [r.id for r in live] == [tool.id]
+
+
+async def test_choosing_another_login_for_a_department_replaces_the_old_one(
+    app_session: AppSessionFactory,
+) -> None:
+    """The setup names ONE login for the department: choosing another one
+    replaces the first for that department (never both, which would make it
+    ambiguous). Another department keeps the first; a login enabled for all
+    departments is left alone."""
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    sales, marketing = await _departments(app_session, tenant, "Sales", "Marketing")
+    first = await _login(app_session, tenant, name="First")
+    second = await _login(app_session, tenant, name="Second", url="https://other.test")
+    everyone = await _login(app_session, tenant, name="Everyone", url="https://all.test")
+    async with app_session(tenant) as db:
+        cred = await db.get(m.Credential, everyone)
+        assert cred is not None
+        cred.all_departments = True
+    async with api() as c:
+        capa_id = await install(c, admin, PLUGIN)
+        for department, login in ((sales, first), (marketing, first), (sales, second)):
+            r = await c.post(
+                f"/api/v1/capas/{capa_id}/setup",
+                json={"values": {"department": str(department), "system": str(login)}},
+                headers=admin,
+            )
+            assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:
+        enabled = await department_ids_by_credential(db, [first, second, everyone])
+        cred = await db.get(m.Credential, everyone)
+        assert cred is not None and cred.all_departments is True
+    assert enabled[first] == [marketing]
+    assert enabled[second] == [sales]
+    assert enabled[everyone] == []
