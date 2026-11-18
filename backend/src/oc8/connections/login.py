@@ -8,10 +8,12 @@
    Scheduled and triggered runs skip this (`live_member_id=None`).
 3. The organisation login enabled for one of `department_ids` (directly or
    through "all departments"): exactly one -> it; several -> `ambiguous`.
-4. Only when no login of the type is enabled for any department at all (a
-   tenant that never used enablement): the organisation's single login.
-5. An unconsolidated department row that still carries copied login values
-   serves its department (`legacy`); otherwise `not_configured`.
+4. An unconsolidated department row that still carries copied login values
+   (complete or not) serves its department (`legacy`): a department's own
+   account is never swapped for the organisation's single login.
+5. Only when no login of the type is enabled for any department at all (a
+   tenant that never used enablement): the organisation's single login;
+   otherwise `not_configured`.
 
 A sign-in (OAuth) integration takes steps 1 and 2, then the department's
 app-only setup and user mode as before. Core-neutral: driven by the tool
@@ -237,12 +239,15 @@ async def resolve_login(
         return LoginChoice(next(iter(enabled.values())), "department", None)
     if len(enabled) > 1:
         raise ConnectionRequired(integration, "ambiguous")
+    if conn.department_id in department_ids and holds_copied_login(conn, integration):
+        # The department's own copied login (complete or not) keeps serving
+        # it until consolidation turns it into an enabled login: never
+        # silently replaced by the organisation's single one.
+        return LoginChoice(None, "legacy", conn)
     if not await enabled_anywhere(db, integration.credential_type):
         only = await single_organisation_credential(db, integration.credential_type)
         if only is not None:
             return LoginChoice(only, "organisation", None)
-    if conn.department_id in department_ids and holds_copied_login(conn, integration):
-        return LoginChoice(None, "legacy", conn)
     raise ConnectionRequired(integration, "not_configured")
 
 

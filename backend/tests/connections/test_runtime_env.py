@@ -178,7 +178,17 @@ async def test_a_persons_login_is_injected(app_session: AppSessionFactory) -> No
 
 
 async def test_a_departments_own_setup_stays_pooled(app_session: AppSessionFactory) -> None:
-    cfg = {**ODOO_CFG, "env": {"ODOO_URL": "https://erp"}, "secret_env": {}}
+    # A complete copied login (an incomplete one is refused, naming the fields).
+    cfg = {
+        **ODOO_CFG,
+        "env": {
+            "ODOO_URL": "https://erp",
+            "ODOO_DB": "erp",
+            "ODOO_USER": "bot",
+            "ODOO_PASSWORD": "pw",
+        },
+        "secret_env": {},
+    }
     tenant, _anna, conn_id, run_id = await _world(
         app_session, name="odoo", cfg=cfg, department=True
     )

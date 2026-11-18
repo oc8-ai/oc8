@@ -8,16 +8,24 @@ folds them, per tool, into the model the resolver now reads:
 
 1. Department rows that carry copied login values: grouped by equal values
    (plain values and secret refs); each group reuses an equal organisation
-   login or becomes a new one named "<Integration> — <first department>",
-   whose `secret_refs` point at the secrets already stored (no re-encryption),
-   and is enabled for the group's departments. Incomplete values are kept --
-   the login then shows as incomplete instead of failing silently.
-2. Rows pinned to a login become an agent's fixed access (`AgentToolAccess`)
+   login or becomes a new one named "<Integration> — <first department>".
+   A new login stores its own copy of each secret under its own ref (the
+   old setup's secret stays as it was, never shared or deleted). The login
+   is enabled for the group's departments. Incomplete values are kept --
+   the login then shows as incomplete instead of failing silently, and is
+   never replaced by another login.
+2. The organisation's single login, which the resolver handed out while no
+   login of the type was enabled anywhere, is enabled for every department
+   whose frame enables the tool -- except a department that had its own
+   copied login (step 1, folded first) or whose default names a login row.
+3. Rows pinned to a login become an agent's fixed access (`AgentToolAccess`)
    for every agent pinning them, written as a system change.
-3. The oldest row stays as the tool's one row (no department, no login, no
+4. The oldest row stays as the tool's one row (no department, no login, no
    copied values); narrowing pins and department defaults that named another
-   row now name it, and the other rows are deleted.
-4. A row some login's `consolidated_from` already names is left alone, so a
+   row now name it. The other rows are deleted -- or, while an unfinished
+   run still names one, retired (kept, disconnected, pointing at the tool
+   row) and removed by a later pass.
+5. A row some login's `consolidated_from` already names is left alone, so a
    second pass changes nothing.
 
 Confirmations of a person's account (a trigger's `access_fingerprint`, a
@@ -463,29 +471,36 @@ class _Pass:
         await enable_for_department(self.db, cred, department_id)
         self.report.enabled += 1
 
+    async def single_login_in_use(self, integration: Integration) -> m.Credential | None:
+        """The organisation's single login of the type, while resolver step 5
+        (no login of the type enabled anywhere) still hands it out; else
+        None. Read before anything is folded: the first enablement ends it."""
+        assert integration.credential_type is not None
+        if await enabled_anywhere(self.db, integration.credential_type):
+            return None
+        return await single_organisation_credential(self.db, integration.credential_type)
+
     async def keep_single_login(
         self,
         integration: Integration,
+        only: m.Credential | None,
         departments: dict[uuid.UUID, m.Department],
         login_rows: list[m.McpConnection],
+        own: set[uuid.UUID],
     ) -> None:
-        """Resolver step 4 -- the organisation's single login -- applies only
-        while no login of the type is enabled anywhere; the first enablement
-        below would end it. Every department that reached the tool through it
-        (its frame enables the tool) keeps it: enabled for each of them, not
-        for all departments, so a copied login enabled later for a new
-        department cannot make anyone ambiguous."""
-        assert integration.credential_type is not None
-        if await enabled_anywhere(self.db, integration.credential_type):
-            return
-        only = await single_organisation_credential(self.db, integration.credential_type)
+        """Every department that reached the tool through the organisation's
+        single login `only` (its frame enables the tool) keeps it: enabled
+        for each of them, not for all departments, so a copied login enabled
+        for another department cannot make anyone ambiguous. A department
+        with its own copied login (`own`, folded first) keeps that one, and
+        one whose default names a login row keeps that row's login."""
         if only is None:
             return
         # A department whose default names a login row keeps that login
         # (`bind_login_rows` enables it), not the single one.
         defaulted = {str(r.id) for r in login_rows}
         for dept in sorted(departments.values(), key=lambda d: d.id):
-            if _frame_default(dept, integration.tool_key) in defaulted:
+            if dept.id in own or _frame_default(dept, integration.tool_key) in defaulted:
                 continue
             if dept.deleted_at is None and _frame_enables(dept, integration.tool_key):
                 await enable_for_department(self.db, only, dept.id)
@@ -497,11 +512,13 @@ class _Pass:
         integration: Integration,
         rows: list[m.McpConnection],
         departments: dict[uuid.UUID, m.Department],
-    ) -> None:
+    ) -> set[uuid.UUID]:
         """Step 1. A login made here owns a copy of each secret under its own
-        name: the old setup's secret stays as it was."""
+        name: the old setup's secret stays as it was. Returns the departments
+        whose own copied login was folded."""
         cred_type = await self.cred_type(integration)
         groups: dict[_Copied, list[m.McpConnection]] = defaultdict(list)
+        own: set[uuid.UUID] = set()
         for row in rows:
             copied = _copied_login(row, cred_type, integration)
             if not copied.empty:
@@ -569,7 +586,9 @@ class _Pass:
             for department_id in dict.fromkeys(r.department_id for r in members):
                 if department_id is not None:
                     await self.enable(cred, department_id)
+                    own.add(department_id)
         await self.db.flush()
+        return own
 
     async def bind_login_rows(
         self,
@@ -809,8 +828,11 @@ async def _consolidate(db: AsyncSession, tenant_id: uuid.UUID, report: Consolida
         report.tools.append(tool.name)
         department_rows = [r for r in tool.fresh if r.credential_id is None]
         login_rows = [r for r in tool.fresh if r.credential_id is not None]
-        await work.keep_single_login(tool.integration, departments, login_rows)
-        await work.fold_department_rows(tool.integration, department_rows, departments)
+        # Folded first: a department's own copied login (complete or not)
+        # is what it used, never the organisation's single one.
+        only = await work.single_login_in_use(tool.integration)
+        own = await work.fold_department_rows(tool.integration, department_rows, departments)
+        await work.keep_single_login(tool.integration, only, departments, login_rows, own)
         await work.bind_login_rows(tool.integration, login_rows, agents, departments)
         shared = [r for r in tool.group if r.department_id is None and r.credential_id is None]
         await work.collapse(tool.integration, [*shared, *tool.fresh], agents, departments)

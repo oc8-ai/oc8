@@ -69,3 +69,26 @@ def with_login(
         secret_env.pop(target, None)
     cred_env, cred_secret_env = credential_mcp_env(cred, cred_type, credential_env_fields)
     return {**cfg, "env": {**env, **cred_env}, "secret_env": {**secret_env, **cred_secret_env}}
+
+
+def copied_missing(
+    cfg: dict[str, Any], cred_type: CredentialTypeSpec, credential_env_fields: dict[str, str]
+) -> list[str]:
+    """The required field keys a row's own copied login leaves empty: no env
+    name carrying the field has a value (`env`) or a secret ref
+    (`secret_env`). The unconsolidated counterpart of `missing_required`."""
+    by_field: dict[str, list[str]] = {}
+    for env_name, field_key in credential_env_fields.items():
+        by_field.setdefault(field_key, []).append(env_name)
+    env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    secret_env = cfg.get("secret_env") if isinstance(cfg.get("secret_env"), dict) else {}
+    missing: list[str] = []
+    for field in cred_type.fields:
+        if not field.required:
+            continue
+        targets = by_field.get(field.key, [field.key])
+        if not any(
+            str((env or {}).get(t) or "").strip() or (secret_env or {}).get(t) for t in targets
+        ):
+            missing.append(field.key)
+    return missing

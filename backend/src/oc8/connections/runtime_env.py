@@ -33,15 +33,15 @@ from oc8.connections.access import (
     resolve_tool_access,
 )
 from oc8.connections.acting import resolve_acting_person
-from oc8.connections.credential_env import with_login
+from oc8.connections.credential_env import copied_missing, with_login
 from oc8.connections.integrations import (
     enabled_tool_pack_connection,
     integration_enabled,
     integration_for_connection,
 )
-from oc8.connections.login import live_chat_member, offer_problem
+from oc8.connections.login import holds_copied_login, live_chat_member, offer_problem
 from oc8.connections.tool_connection import tool_connections
-from oc8.credentials.registry import get_credential_type
+from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import missing_required
 from oc8.oauth.errors import OAuthReauthRequired
 from oc8.runtime.run_context import merge_context
@@ -129,9 +129,30 @@ async def _effective(
     return out
 
 
-async def _require_complete(db: AsyncSession, access: ToolAccess, tenant_id: Any) -> None:
+async def _require_complete(
+    db: AsyncSession, access: ToolAccess, tenant_id: Any, conn: m.McpConnection | None = None
+) -> None:
     """Refuse a chosen login that leaves a required field empty -- before any
-    bridge starts -- naming the fields."""
+    bridge starts -- naming the fields. A department's own copied login
+    (`legacy`, unconsolidated) is checked the same way."""
+    integration = access.integration
+    if (
+        access.kind == "legacy"
+        and conn is not None
+        and integration is not None
+        and integration.credential_type
+        and holds_copied_login(conn, integration)
+    ):
+        try:
+            copied_type = await get_credential_type(
+                db, tenant_id=tenant_id, name=integration.credential_type
+            )
+        except CredentialTypeNotFound:
+            return
+        missing = copied_missing(_cfg(conn), copied_type, integration.credential_env_fields)
+        if missing:
+            raise ConnectionRequired(integration, "incomplete", missing=missing)
+        return
     if access.kind != "credential" or access.credential is None or access.integration is None:
         return
     cred = access.credential
@@ -203,7 +224,7 @@ async def run_mcp_env(
         access = await resolve_tool_access(
             db, run=run, agent=agent, conn=conn, tool=tool, right=right
         )
-        await _require_complete(db, access, run.tenant_id)
+        await _require_complete(db, access, run.tenant_id, conn)
     except ConnectionRequired as exc:
         if listing and exc.integration.kind == "credential":
             # A login integration's bridge cannot start without its login (it

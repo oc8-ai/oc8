@@ -851,9 +851,67 @@ async def test_a_waiting_run_survives_consolidation(app_session: AppSessionFacto
         assert choice.connection is not None and choice.connection.id == keep
 
 
-async def test_departments_on_the_single_org_login_keep_it_after_consolidation(
+async def _tool_conn(
+    db: Any, who: m.Agent
+) -> m.McpConnection:
+    """The row the agent's runs reach: its department's own while
+    unconsolidated, else the tool's one row."""
+    rows = list(
+        (
+            await db.execute(
+                select(m.McpConnection).where(
+                    m.McpConnection.name == KEY,
+                    (m.McpConnection.department_id == who.department_id)
+                    | m.McpConnection.department_id.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    own = [r for r in rows if r.department_id == who.department_id]
+    conn = (own or rows)[0]
+    return conn
+
+
+async def _used_url(app_session: AppSessionFactory, who: m.Agent) -> str | None:
+    """The URL the agent's run would act on (the login's, or -- while
+    unconsolidated -- the department row's own copy)."""
+    async with app_session(who.tenant_id) as db:
+        live = await db.get(m.Agent, who.id)
+        assert live is not None
+        conn = await _tool_conn(db, live)
+        run = m.AgentRun(tenant_id=who.tenant_id, agent_id=live.id, source="manual", context={})
+        db.add(run)
+        await db.flush()
+        access = await resolve_tool_access(db, run=run, agent=live, conn=conn)
+        if access.credential is not None:
+            return str(access.credential.field_values.get("url"))
+        assert access.kind == "legacy"
+        return str(conn.config["env"].get("FOLD_URL"))
+
+
+async def _refusal(app_session: AppSessionFactory, who: m.Agent) -> Any:
+    from oc8.connections.access import ConnectionRequired
+    from oc8.connections.runtime_env import run_mcp_env
+
+    async with app_session(who.tenant_id) as db:
+        live = await db.get(m.Agent, who.id)
+        assert live is not None
+        conn = await _tool_conn(db, live)
+        run = m.AgentRun(tenant_id=who.tenant_id, agent_id=live.id, source="manual", context={})
+        db.add(run)
+        await db.flush()
+        with pytest.raises(ConnectionRequired) as caught:
+            await run_mcp_env(db, run=run, conn=conn, tool="look")
+        return caught.value
+
+
+async def test_a_department_keeps_its_own_login_over_the_single_org_login_on_deploy(
     app_session: AppSessionFactory,
 ) -> None:
+    """Eng copied its own login into its setup; the tenant also has one
+    organisation login. Eng keeps acting through its own account -- before
+    consolidation (resolver) and after it -- and only Sales, which had none,
+    gets the single organisation login."""
     agent = await _tenant(app_session)
     tenant = agent.tenant_id
     only = await _login_cred(app_session, tenant, "The one", "https://only.test")
@@ -862,33 +920,41 @@ async def test_departments_on_the_single_org_login_keep_it_after_consolidation(
         seller = m.Agent(tenant_id=tenant, department_id=sales, name="Seller")
         db.add(seller)
         await db.flush()
-    # Eng still has its own row with other values; Sales has none.
     await _row(app_session, tenant, department_id=agent.department_id, url="https://eng.test")
 
-    async def _used(who: m.Agent) -> uuid.UUID | None:
-        async with app_session(tenant) as db:
-            live = await db.get(m.Agent, who.id)
-            assert live is not None
-            conn = await db.scalar(
-                select(m.McpConnection).where(
-                    m.McpConnection.name == KEY,
-                    (m.McpConnection.department_id == live.department_id)
-                    | m.McpConnection.department_id.is_(None),
-                )
-            )
-            assert conn is not None
-            run = m.AgentRun(tenant_id=tenant, agent_id=live.id, source="manual", context={})
-            db.add(run)
-            await db.flush()
-            access = await resolve_tool_access(db, run=run, agent=live, conn=conn)
-            return access.credential.id if access.credential is not None else None
+    assert await _used_url(app_session, agent) == "https://eng.test"
 
-    assert await _used(agent) == only
     report = await _consolidate(app_session, tenant)
-    assert await _used(agent) == only
-    assert await _used(seller) == only
-    assert await _enabled(app_session, tenant, only) == {agent.department_id, sales}
-    assert report.kept_single == 2
+
+    assert await _used_url(app_session, agent) == "https://eng.test"
+    assert await _used_url(app_session, seller) == "https://only.test"
+    assert await _enabled(app_session, tenant, only) == {sales}
+    folded = [c for c in await _creds(app_session, tenant) if c.id != only]
+    assert len(folded) == 1
+    assert folded[0].field_values == {"url": "https://eng.test"}
+    assert await _enabled(app_session, tenant, folded[0].id) == {agent.department_id}
+    assert report.kept_single == 1
+
+
+async def test_an_incomplete_department_copy_is_reported_not_replaced(
+    app_session: AppSessionFactory,
+) -> None:
+    """A department copy without its URL is not swapped for the single
+    complete organisation login: it stays the department's and is reported
+    as incomplete, naming the field."""
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    only = await _login_cred(app_session, tenant, "The one", "https://only.test")
+    await _row(app_session, tenant, department_id=agent.department_id, url="")
+
+    before = await _refusal(app_session, agent)
+    assert (before.reason, before.missing) == ("incomplete", ["url"])
+
+    await _consolidate(app_session, tenant)
+
+    after = await _refusal(app_session, agent)
+    assert (after.reason, after.missing) == ("incomplete", ["url"])
+    assert await _enabled(app_session, tenant, only) == set()
 
 
 async def test_a_second_pass_does_not_revive_an_invalidated_confirmation(
