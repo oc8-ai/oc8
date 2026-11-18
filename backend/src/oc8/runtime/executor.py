@@ -21,7 +21,11 @@ from oc8.connections.acting import (
     resolve_acting_person,
 )
 from oc8.connections.login import login_chosen
-from oc8.connections.tool_connection import tool_connections, unconsolidated_connection
+from oc8.connections.tool_connection import (
+    connection_for_context,
+    tool_connections,
+    unconsolidated_connection,
+)
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
@@ -604,7 +608,9 @@ async def _resolve_mcp_connection(
     """
     mcp_id = run_context.get("mcp_connection_id")
     if mcp_id:
-        conn = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
+        # Follows a row consolidation retired or folded (a run queued or
+        # suspended before it keeps working).
+        conn = await connection_for_context(db, mcp_id)
         if conn is None:
             return _ConnectionChoice(None, f"unknown MCP connection: {mcp_id}")
         return _ConnectionChoice(conn, None)

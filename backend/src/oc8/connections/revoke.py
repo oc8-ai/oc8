@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.credentials.service import delete_unshared_secrets
+from oc8.credentials.service import delete_unshared_secrets, owns_ref
 from oc8.oauth.errors import OAuthError
 from oc8.oauth.http import get_client
 from oc8.oauth.providers import get_provider
@@ -51,7 +51,7 @@ async def revoke_oauth_connection(db: AsyncSession, conn: m.OAuthConnection) -> 
 
 async def delete_credential_with_secrets(db: AsyncSession, cred: m.Credential) -> None:
     """Delete the row and the secrets no other credential still refers to."""
-    refs = list(dict(cred.secret_refs or {}).values())
+    refs = [ref for ref in dict(cred.secret_refs or {}).values() if owns_ref(cred.id, ref)]
     await db.delete(cred)
     await db.flush()
     await delete_unshared_secrets(db, tenant_id=cred.tenant_id, refs=refs)

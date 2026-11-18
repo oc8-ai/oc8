@@ -444,6 +444,7 @@ async def _shared_setup(
     from oc8.capas.materialise import unbound_connection
     from oc8.connections.integrations import enabled_tool_pack_connection
     from oc8.connections.login import enabled_anywhere
+    from oc8.connections.tool_connection import not_retired
     from oc8.credentials.enablement import enabled_credentials
 
     names = [tool_key] if tool_key is not None else _frame_tools(dept)
@@ -457,6 +458,7 @@ async def _shared_setup(
                 m.McpConnection.name == name,
                 m.McpConnection.department_id.is_(None),
                 m.McpConnection.credential_id.is_(None),
+                not_retired(),
             )
             .order_by(m.McpConnection.created_at, m.McpConnection.id)
             .limit(1)

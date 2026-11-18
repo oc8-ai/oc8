@@ -21,7 +21,7 @@ from oc8.credentials.service import (
     missing_required,
     update_credential,
 )
-from oc8.secrets.service import SecretNotFound, resolve_secret
+from oc8.secrets.service import resolve_secret
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -229,6 +229,7 @@ async def test_deleting_one_of_two_credentials_sharing_a_secret_ref_keeps_the_se
         await db.flush()
         await delete_credential(db, tenant_id=tenant, credential_id=first.id)
         assert await resolve_secret(db, tenant_id=tenant, ref=ref) == "s3cret"
+        # A credential deletes only secrets it owns (`credential/{its id}/...`):
+        # the first one's secret is not the second's to remove.
         await delete_credential(db, tenant_id=tenant, credential_id=second.id)
-        with pytest.raises(SecretNotFound):
-            await resolve_secret(db, tenant_id=tenant, ref=ref)
+        assert await resolve_secret(db, tenant_id=tenant, ref=ref) == "s3cret"

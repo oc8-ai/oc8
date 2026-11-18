@@ -86,6 +86,7 @@ from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, integration_connections, run_mcp_env
+from oc8.connections.tool_connection import connection_for_context
 from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.connections.usable import department_connections
 from oc8.copilot.door import chat_door
@@ -186,21 +187,15 @@ async def _connections(
         pinned_found: list[m.McpConnection] = []
         pinned_seen: set[uuid.UUID] = set()
         for raw in raw_ids:
-            try:
-                conn_id = uuid.UUID(str(raw))
-            except ValueError:
-                continue
-            if conn_id in pinned_seen:
-                continue
-            pinned = await db.get(m.McpConnection, conn_id)
-            if pinned is None:
+            pinned = await connection_for_context(db, raw)
+            if pinned is None or pinned.id in pinned_seen:
                 continue
             pinned_found.append(pinned)
-            pinned_seen.add(conn_id)
+            pinned_seen.add(pinned.id)
         return await _with_integrations(db, run, dept, pinned_found)
     mcp_id = run.context.get("mcp_connection_id")
     if mcp_id:
-        pinned = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
+        pinned = await connection_for_context(db, mcp_id)
         return [pinned] if pinned is not None else []
     if dept is None:
         return []

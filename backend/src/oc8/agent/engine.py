@@ -636,12 +636,11 @@ async def run_agent(
         if not extra_conns and run_row is not None:
             raw_ids = run_row.context.get("mcp_connection_ids")
             if isinstance(raw_ids, list):
+                from oc8.connections.tool_connection import connection_for_context
+
                 for raw in raw_ids:
-                    try:
-                        loaded = await db.get(m.McpConnection, uuid.UUID(str(raw)))
-                    except ValueError:
-                        continue
-                    if loaded is not None:
+                    loaded = await connection_for_context(db, raw)
+                    if loaded is not None and loaded not in extra_conns:
                         extra_conns.append(loaded)
         if not extra_conns and mcp_conn is not None:
             extra_conns = [mcp_conn]

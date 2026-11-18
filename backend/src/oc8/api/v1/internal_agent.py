@@ -321,7 +321,9 @@ async def _load(
     conn = None
     mcp_id = run.context.get("mcp_connection_id")
     if mcp_id:
-        conn = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
+        from oc8.connections.tool_connection import connection_for_context
+
+        conn = await connection_for_context(db, mcp_id)
     elif dept is not None:
         # The executor's own fallback (`_resolve_mcp_connection`): a row the
         # department still owns. Shared tool rows reach the run through the

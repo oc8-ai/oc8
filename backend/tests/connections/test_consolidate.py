@@ -23,9 +23,9 @@ from oc8.connections.access import binding_fingerprint, resolve_tool_access, tri
 from oc8.connections.consolidate import consolidate_tenant
 from oc8.credentials import registry
 from oc8.credentials.enablement import department_ids_by_credential, set_departments
-from oc8.credentials.service import delete_credential, missing_required
+from oc8.credentials.service import delete_credential, missing_required, update_credential
 from oc8.runtime.executor import _resolve_mcp_connection
-from oc8.secrets.service import resolve_secret, store_secret
+from oc8.secrets.service import SecretNotFound, resolve_secret, store_secret
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import api, enable_plugin_row, headers, member
 from tests.factories import _make_agent
@@ -227,8 +227,7 @@ async def test_two_departments_with_the_same_login_share_one_credential(
     assert cred.name == "Fold Tool — Eng"
     assert cred.owner_member_id is None
     assert cred.field_values == {"url": "https://svc.acme.test"}
-    # The existing secret, not a copy.
-    assert cred.secret_refs == {"token": TOKEN_REF}
+    assert cred.secret_refs == {"token": f"credential/{cred.id}/token"}
     assert sorted(cred.consolidated_from or []) == sorted([str(first), str(second)])
     assert await _enabled(app_session, tenant, cred.id) == {agent.department_id, sales}
     rows = await _rows(app_session, tenant)
@@ -296,14 +295,14 @@ async def test_an_empty_url_survives_as_an_incomplete_login(
     creds = await _creds(app_session, tenant)
     assert len(creds) == 1
     cred = creds[0]
-    assert cred.secret_refs == {"token": TOKEN_REF}
+    assert cred.secret_refs == {"token": f"credential/{cred.id}/token"}
     assert missing_required(
         registry.CORE_CREDENTIAL_TYPES[TYPE], cred.field_values, cred.secret_refs
     ) == ["url"]
     assert await _enabled(app_session, tenant, cred.id) == {agent.department_id}
 
 
-async def test_two_logins_sharing_a_secret_survive_deleting_one(
+async def test_consolidated_login_owns_a_copy_of_its_secret(
     app_session: AppSessionFactory,
 ) -> None:
     agent = await _tenant(app_session)
@@ -314,13 +313,54 @@ async def test_two_logins_sharing_a_secret_survive_deleting_one(
     await _row(app_session, tenant, department_id=sales, url="https://b.test")
     await _consolidate(app_session, tenant)
     first, second = await _creds(app_session, tenant)
-    assert first.secret_refs == second.secret_refs == {"token": TOKEN_REF}
+    assert first.secret_refs == {"token": f"credential/{first.id}/token"}
+    assert second.secret_refs == {"token": f"credential/{second.id}/token"}
 
     async with app_session(tenant) as db:
+        for cred in (first, second):
+            ref = cred.secret_refs["token"]
+            assert await resolve_secret(db, tenant_id=tenant, ref=ref) == "t0ken"
         await delete_credential(db, tenant_id=tenant, credential_id=first.id, force=True)
     async with app_session(tenant) as db:
+        # The old setup's secret is untouched, the other login keeps its copy.
         assert await resolve_secret(db, tenant_id=tenant, ref=TOKEN_REF) == "t0ken"
-        assert await db.get(m.Credential, second.id) is not None
+        ref = second.secret_refs["token"]
+        assert await resolve_secret(db, tenant_id=tenant, ref=ref) == "t0ken"
+        with pytest.raises(SecretNotFound):
+            await resolve_secret(db, tenant_id=tenant, ref=first.secret_refs["token"])
+
+
+async def test_deleting_a_login_never_deletes_a_secret_it_does_not_own(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    async with app_session(tenant) as db:
+        cred = m.Credential(
+            tenant_id=tenant,
+            name="Points elsewhere",
+            credential_type=TYPE,
+            field_values={"url": "https://svc.acme.test"},
+            secret_refs={"token": TOKEN_REF},
+        )
+        db.add(cred)
+        await db.flush()
+        cred_id = cred.id
+    async with app_session(tenant) as db:
+        # A new value goes under the login's own name ...
+        updated = await update_credential(
+            db, tenant_id=tenant, credential_id=cred_id, field_values={"token": "new"}
+        )
+        assert updated.secret_refs == {"token": f"credential/{cred_id}/token"}
+        assert await resolve_secret(db, tenant_id=tenant, ref=TOKEN_REF) == "t0ken"
+        # ... and deleting never removes the one it did not own.
+        updated.secret_refs = {"token": TOKEN_REF, "other": f"credential/{cred_id}/token"}
+        await db.flush()
+        await delete_credential(db, tenant_id=tenant, credential_id=cred_id, force=True)
+    async with app_session(tenant) as db:
+        assert await resolve_secret(db, tenant_id=tenant, ref=TOKEN_REF) == "t0ken"
+        with pytest.raises(SecretNotFound):
+            await resolve_secret(db, tenant_id=tenant, ref=f"credential/{cred_id}/token")
 
 
 # ------------------------------------------------------------------ steps 2-3
@@ -383,8 +423,12 @@ async def test_a_login_row_becomes_a_fixed_choice(app_session: AppSessionFactory
     )
     async with app_session(tenant) as db:
         live = await db.get(m.Agent, agent.id)
-        assert live is not None
+        assert live is not None and live.current_version_id is not None
         live.narrowing = {"tools": {KEY: {**NARROWING["tools"][KEY], "connection_id": str(login)}}}
+        # Published: what the agent's runs execute.
+        version = await db.get(m.AgentVersion, live.current_version_id)
+        assert version is not None
+        version.payload = {**version.payload, "narrowing": live.narrowing}
 
     report = await _consolidate(app_session, tenant)
 
@@ -426,6 +470,7 @@ async def test_consolidation_is_idempotent(app_session: AppSessionFactory) -> No
 
     assert not again.changed
     assert (again.created, again.enabled, again.collapsed, again.pins_rewritten) == (0, 0, 0, 0)
+    assert again.restamped == 0
     assert [(c.id, c.consolidated_from) for c in await _creds(app_session, tenant)] == creds
     assert [r.id for r in await _rows(app_session, tenant)] == rows
 
@@ -691,3 +736,233 @@ async def test_a_failing_tenant_does_not_stop_the_others(
     assert len(await _creds(app_session, agent.tenant_id)) == 1
     assert str(broken) in caplog.text
     assert "secret detail" not in caplog.text
+
+
+# ------------------------------------------------------------------ review fixes
+
+
+async def _login_cred(
+    app_session: AppSessionFactory, tenant: uuid.UUID, name: str, url: str
+) -> uuid.UUID:
+    async with app_session(tenant) as db:
+        cred = m.Credential(
+            tenant_id=tenant,
+            name=name,
+            credential_type=TYPE,
+            field_values={"url": url},
+            secret_refs={},
+        )
+        db.add(cred)
+        await db.flush()
+        return cred.id
+
+
+def _pinned(conn_id: uuid.UUID) -> dict[str, Any]:
+    return {"tools": {KEY: {**NARROWING["tools"][KEY], "connection_id": str(conn_id)}}}
+
+
+async def test_a_published_login_pin_becomes_the_fixed_access_not_the_draft(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    published = await _login_cred(app_session, tenant, "Published", "https://one.test")
+    drafted = await _login_cred(app_session, tenant, "Drafted", "https://two.test")
+    shared = await _row(app_session, tenant, department_id=None, url=None, token_ref=None, age=9)
+    row_one = await _row(
+        app_session, tenant, department_id=None, url=None, token_ref=None, credential_id=published
+    )
+    row_two = await _row(
+        app_session, tenant, department_id=None, url=None, token_ref=None, credential_id=drafted
+    )
+    async with app_session(tenant) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None and live.current_version_id is not None
+        version = await db.get(m.AgentVersion, live.current_version_id)
+        assert version is not None
+        version.payload = {**version.payload, "narrowing": _pinned(row_one)}
+        live.narrowing = _pinned(row_two)
+
+    report = await _consolidate(app_session, tenant)
+
+    async with app_session(tenant) as db:
+        access = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent.id)
+        )
+        assert access is not None and access.credential_id == published
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None and live.current_version_id is not None
+        assert live.narrowing["tools"][KEY]["connection_id"] == str(shared)
+        version = await db.get(m.AgentVersion, live.current_version_id)
+        assert version is not None
+        assert version.payload["narrowing"]["tools"][KEY]["connection_id"] == str(shared)
+    assert (report.fixed, report.draft_pins_ignored) == (1, 1)
+
+
+async def test_a_waiting_run_survives_consolidation(app_session: AppSessionFactory) -> None:
+    from oc8.connections.tool_connection import RETIRED_KEY
+
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    sales = await _department(app_session, tenant, "Sales")
+    keep = await _row(app_session, tenant, department_id=agent.department_id, age=10)
+    named = await _row(app_session, tenant, department_id=sales, age=5)
+    async with app_session(tenant) as db:
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            source="manual",
+            state="waiting_for_input",
+            context={"mcp_connection_id": str(named)},
+        )
+        db.add(run)
+        await db.flush()
+        run_id = run.id
+
+    report = await _consolidate(app_session, tenant)
+
+    assert (report.collapsed, report.retired) == (0, 1)
+    async with app_session(tenant) as db:
+        retired = await db.get(m.McpConnection, named)
+        assert retired is not None and not retired.connected
+        assert retired.config[RETIRED_KEY] == str(keep)
+        assert retired.department_id is None
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        choice = await _resolve_mcp_connection(
+            db, agent=live, run_context={"mcp_connection_id": str(named)}
+        )
+        assert choice.error is None and choice.connection is not None
+        assert choice.connection.id == keep
+        finished = await db.get(m.AgentRun, run_id)
+        assert finished is not None
+        finished.state = "done"
+
+    later = await _consolidate(app_session, tenant)
+
+    assert later.purged == 1 and later.restamped == 0
+    async with app_session(tenant) as db:
+        assert await db.get(m.McpConnection, named) is None
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        choice = await _resolve_mcp_connection(
+            db, agent=live, run_context={"mcp_connection_id": str(named)}
+        )
+        assert choice.connection is not None and choice.connection.id == keep
+
+
+async def test_departments_on_the_single_org_login_keep_it_after_consolidation(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    only = await _login_cred(app_session, tenant, "The one", "https://only.test")
+    sales = await _department(app_session, tenant, "Sales")
+    async with app_session(tenant) as db:
+        seller = m.Agent(tenant_id=tenant, department_id=sales, name="Seller")
+        db.add(seller)
+        await db.flush()
+    # Eng still has its own row with other values; Sales has none.
+    await _row(app_session, tenant, department_id=agent.department_id, url="https://eng.test")
+
+    async def _used(who: m.Agent) -> uuid.UUID | None:
+        async with app_session(tenant) as db:
+            live = await db.get(m.Agent, who.id)
+            assert live is not None
+            conn = await db.scalar(
+                select(m.McpConnection).where(
+                    m.McpConnection.name == KEY,
+                    (m.McpConnection.department_id == live.department_id)
+                    | m.McpConnection.department_id.is_(None),
+                )
+            )
+            assert conn is not None
+            run = m.AgentRun(tenant_id=tenant, agent_id=live.id, source="manual", context={})
+            db.add(run)
+            await db.flush()
+            access = await resolve_tool_access(db, run=run, agent=live, conn=conn)
+            return access.credential.id if access.credential is not None else None
+
+    assert await _used(agent) == only
+    report = await _consolidate(app_session, tenant)
+    assert await _used(agent) == only
+    assert await _used(seller) == only
+    assert await _enabled(app_session, tenant, only) == {agent.department_id, sales}
+    assert report.kept_single == 2
+
+
+async def test_a_second_pass_does_not_revive_an_invalidated_confirmation(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    await _row(app_session, tenant, department_id=agent.department_id)
+    anna = await member(app_session, tenant, "anna@acme.test")
+    await _consolidate(app_session, tenant)
+    async with app_session(tenant) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        legacy = await binding_fingerprint(
+            db, live, None, version_id=live.current_version_id, legacy=True
+        )
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="report",
+            cron_expression="0 9 * * *",
+            next_run_at=dt.datetime.now(dt.UTC),
+            created_by_member_id=anna,
+            # Stamped in the old form, no longer what the agent reaches.
+            access_fingerprint=legacy,
+        )
+        db.add(trigger)
+        await db.flush()
+        assert legacy != await trigger_fingerprint(db, trigger)
+        trigger_id = trigger.id
+    # A later pass folds another department's new row.
+    sales = await _department(app_session, tenant, "Sales")
+    await _row(app_session, tenant, department_id=sales, url="https://b.test")
+
+    again = await _consolidate(app_session, tenant)
+
+    assert again.created == 1
+    async with app_session(tenant) as db:
+        stored = await db.get(m.Trigger, trigger_id)
+        assert stored is not None and stored.access_fingerprint == legacy
+
+
+async def test_a_pass_that_consolidates_nothing_restamps_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    # A shared row only: nothing to fold, but the digest has a shared part.
+    await _row(app_session, tenant, department_id=None, url=None, token_ref=None)
+    async with app_session(tenant) as db:
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        legacy = await binding_fingerprint(
+            db, live, None, version_id=live.current_version_id, legacy=True
+        )
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="report",
+            cron_expression="0 9 * * *",
+            next_run_at=dt.datetime.now(dt.UTC),
+            created_by_member_id=anna,
+            access_fingerprint=legacy,
+        )
+        db.add(trigger)
+        await db.flush()
+        trigger_id = trigger.id
+
+    report = await _consolidate(app_session, tenant)
+
+    assert not report.changed and report.restamped == 0
+    async with app_session(tenant) as db:
+        stored = await db.get(m.Trigger, trigger_id)
+        assert stored is not None and stored.access_fingerprint == legacy

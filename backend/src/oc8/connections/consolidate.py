@@ -42,13 +42,21 @@ from oc8 import models as m
 from oc8.agents.versioning import META_KEY, payload_hash
 from oc8.audit import append_event
 from oc8.capas.manifest import CredentialTypeSpec
-from oc8.connections.access import binding_fingerprint, trigger_fingerprint
+from oc8.connections.access import (
+    binding_fingerprint,
+    single_organisation_credential,
+    trigger_fingerprint,
+)
 from oc8.connections.access_write import write_tool_access
 from oc8.connections.credential_env import credential_env_targets
 from oc8.connections.integrations import Integration, integration_for_connection
+from oc8.connections.login import enabled_anywhere
+from oc8.connections.tool_connection import FOLDED_KEY, RETIRED_KEY
 from oc8.credentials.enablement import enable_for_department, enabled_credentials
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
-from oc8.secrets.service import store_secret
+from oc8.credentials.service import secret_ref_for
+from oc8.runtime.states import TERMINAL
+from oc8.secrets.service import SecretNotFound, resolve_secret, store_secret
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +81,26 @@ class ConsolidationReport:
     fixed: int = 0
     #: Stored confirmations stamped again.
     restamped: int = 0
+    #: Rows kept (disconnected) because an unfinished run still names them.
+    retired: int = 0
+    #: Rows retired by an earlier pass, removed now that no run names them.
+    purged: int = 0
+    #: Departments given the organisation's single login they already used.
+    kept_single: int = 0
+    #: Agents whose unpublished pin differed from the published one (ignored).
+    draft_pins_ignored: int = 0
     tools: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
         return bool(
-            self.created or self.enabled or self.collapsed or self.pins_rewritten or self.fixed
+            self.created
+            or self.enabled
+            or self.collapsed
+            or self.pins_rewritten
+            or self.fixed
+            or self.retired
+            or self.purged
         )
 
     def as_dict(self) -> dict[str, Any]:
@@ -92,6 +114,10 @@ class ConsolidationReport:
             "skipped": self.skipped,
             "fixed": self.fixed,
             "restamped": self.restamped,
+            "retired": self.retired,
+            "purged": self.purged,
+            "kept_single": self.kept_single,
+            "draft_pins_ignored": self.draft_pins_ignored,
         }
 
 
@@ -213,21 +239,45 @@ def _rewrite(tools_holder: Any, key_name: str, moved: dict[str, str]) -> tuple[A
 
 
 async def _unique_name(db: AsyncSession, wanted: str) -> str:
-    taken = set(
-        (
-            await db.execute(
-                select(m.Credential.name).where(
-                    m.Credential.owner_member_id.is_(None), m.Credential.name.like(f"{wanted}%")
-                )
-            )
-        ).scalars()
-    )
+    """`wanted`, or `wanted (n)` when a login of any owner has that name."""
+    taken = set((await db.execute(select(m.Credential.name))).scalars())
     if wanted not in taken:
         return wanted
     n = 2
     while f"{wanted} ({n})" in taken:
         n += 1
     return f"{wanted} ({n})"
+
+
+async def _secret_values(
+    db: AsyncSession, tenant_id: uuid.UUID, refs: dict[str, str]
+) -> dict[str, str]:
+    """The values behind `refs` (field key -> secret ref); a secret that is
+    gone is left out -- the login then shows that field as missing."""
+    out: dict[str, str] = {}
+    for key, ref in sorted(refs.items()):
+        try:
+            out[key] = await resolve_secret(db, tenant_id=tenant_id, ref=ref)
+        except SecretNotFound:
+            continue
+    return out
+
+
+async def _live_run_references(db: AsyncSession) -> set[str]:
+    """Connection ids an unfinished run still names in its context."""
+    out: set[str] = set()
+    terminal = [state.value for state in TERMINAL]
+    for context in (
+        await db.execute(select(m.AgentRun.context).where(m.AgentRun.state.not_in(terminal)))
+    ).scalars():
+        if not isinstance(context, dict):
+            continue
+        if context.get("mcp_connection_id"):
+            out.add(str(context["mcp_connection_id"]))
+        ids = context.get("mcp_connection_ids")
+        if isinstance(ids, list):
+            out.update(str(i) for i in ids)
+    return out
 
 
 class _Stamps:
@@ -237,21 +287,29 @@ class _Stamps:
         self.triggers: list[m.Trigger] = []
         self.bindings: list[m.AgentToolAccess] = []
 
-    async def collect(self, db: AsyncSession) -> None:
-        agents = {a.id: a for a in (await db.execute(select(m.Agent))).scalars()}
+    async def collect(
+        self,
+        db: AsyncSession,
+        agents: dict[uuid.UUID, m.Agent],
+        legacy_departments: set[uuid.UUID],
+    ) -> None:
+        """A confirmation is valid when it equals the current digest; the
+        digest as stored before consolidated tools were part of it (legacy)
+        is accepted only for agents whose department's rows this pass folds
+        -- the one pass that changes what their digest covers."""
         for trigger in (
             await db.execute(select(m.Trigger).where(m.Trigger.access_fingerprint.is_not(None)))
         ).scalars():
             agent = agents.get(trigger.agent_id)
             if agent is None:
                 continue
-            accepted = {
-                await trigger_fingerprint(db, trigger),
-                # Stamped before consolidated tools were part of the digest.
-                await binding_fingerprint(
-                    db, agent, None, version_id=agent.current_version_id, legacy=True
-                ),
-            }
+            accepted = {await trigger_fingerprint(db, trigger)}
+            if agent.department_id in legacy_departments:
+                accepted.add(
+                    await binding_fingerprint(
+                        db, agent, None, version_id=agent.current_version_id, legacy=True
+                    )
+                )
             if trigger.access_fingerprint in accepted:
                 self.triggers.append(trigger)
         for row in (
@@ -262,22 +320,32 @@ class _Stamps:
             agent = agents.get(row.agent_id)
             if agent is None:
                 continue
+            legacy_too = (False, True) if agent.department_id in legacy_departments else (False,)
             accepted = {
                 await binding_fingerprint(
                     db, agent, row.tool_key, version_id=agent.current_version_id, legacy=legacy
                 )
-                for legacy in (False, True)
+                for legacy in legacy_too
             }
             if row.binding_fingerprint in accepted:
                 self.bindings.append(row)
 
-    async def restamp(self, db: AsyncSession, extra: list[m.AgentToolAccess]) -> int:
+    async def restamp(
+        self, db: AsyncSession, tenant_id: uuid.UUID, extra: list[m.AgentToolAccess]
+    ) -> int:
+        """Stamp the collected confirmations (and the accesses this pass
+        wrote) again; each change is audited (system, ids only)."""
         count = 0
         for trigger in self.triggers:
             current = await trigger_fingerprint(db, trigger)
             if current is not None and current != trigger.access_fingerprint:
                 trigger.access_fingerprint = current
                 count += 1
+                await _audit_restamp(
+                    db,
+                    tenant_id,
+                    {"trigger_id": str(trigger.id), "agent_id": str(trigger.agent_id)},
+                )
         for row in [*self.bindings, *extra]:
             agent = await db.get(m.Agent, row.agent_id)
             if agent is None:
@@ -288,15 +356,87 @@ class _Stamps:
             if current != row.binding_fingerprint:
                 row.binding_fingerprint = current
                 count += 1
+                await _audit_restamp(
+                    db,
+                    tenant_id,
+                    {
+                        "agent_tool_access_id": str(row.id),
+                        "agent_id": str(row.agent_id),
+                        "tool": row.tool_key,
+                    },
+                )
         await db.flush()
         return count
 
 
+async def _audit_restamp(db: AsyncSession, tenant_id: uuid.UUID, resource: dict[str, Any]) -> None:
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="system",
+        actor_id=None,
+        category="connection",
+        action="connections.confirmation_restamped",
+        resource=resource,
+    )
+
+
+@dataclass
+class _Agents:
+    """Each agent with what its runs execute: the published version's
+    narrowing (the working copy's when it has none published)."""
+
+    by_id: dict[uuid.UUID, m.Agent]
+    narrowing: dict[uuid.UUID, Any]
+    has_version: set[uuid.UUID]
+
+    def pins(self, agent_id: uuid.UUID) -> dict[str, str]:
+        return _pins(self.narrowing.get(agent_id))
+
+    def draft_pins(self, agent_id: uuid.UUID) -> dict[str, str]:
+        agent = self.by_id[agent_id]
+        return _pins(agent.narrowing)
+
+    def enables(self, agent_id: uuid.UUID, tool_key: str) -> bool:
+        narrowing = self.narrowing.get(agent_id)
+        tools = narrowing.get("tools") if isinstance(narrowing, dict) else None
+        policy = tools.get(tool_key) if isinstance(tools, dict) else None
+        return isinstance(policy, dict) and bool(policy.get("enabled"))
+
+
+async def _load_agents(db: AsyncSession) -> _Agents:
+    by_id = {a.id: a for a in (await db.execute(select(m.Agent))).scalars()}
+    narrowing: dict[uuid.UUID, Any] = {}
+    has_version: set[uuid.UUID] = set()
+    for agent in by_id.values():
+        narrowing[agent.id] = agent.narrowing
+        if agent.current_version_id is not None:
+            version = await db.get(m.AgentVersion, agent.current_version_id)
+            if version is not None and isinstance(version.payload, dict):
+                narrowing[agent.id] = version.payload.get("narrowing")
+                has_version.add(agent.id)
+    return _Agents(by_id=by_id, narrowing=narrowing, has_version=has_version)
+
+
+def _frame_enables(dept: m.Department, tool_key: str) -> bool:
+    frame = dept.frame if isinstance(dept.frame, dict) else {}
+    tools = frame.get("tools") if isinstance(frame.get("tools"), dict) else {}
+    entry = (tools or {}).get(tool_key)
+    return isinstance(entry, dict) and bool(entry.get("enabled"))
+
+
 class _Pass:
-    def __init__(self, db: AsyncSession, tenant_id: uuid.UUID, report: ConsolidationReport):
+    def __init__(
+        self,
+        db: AsyncSession,
+        tenant_id: uuid.UUID,
+        report: ConsolidationReport,
+        live_refs: set[str],
+    ):
         self.db = db
         self.tenant_id = tenant_id
         self.report = report
+        self.live_refs = live_refs
         self.new_access: list[m.AgentToolAccess] = []
 
     async def cred_type(self, integration: Integration) -> CredentialTypeSpec | None:
@@ -323,13 +463,35 @@ class _Pass:
         await enable_for_department(self.db, cred, department_id)
         self.report.enabled += 1
 
+    async def keep_single_login(
+        self, integration: Integration, departments: dict[uuid.UUID, m.Department]
+    ) -> None:
+        """Resolver step 4 -- the organisation's single login -- applies only
+        while no login of the type is enabled anywhere; the first enablement
+        below would end it. Every department that reached the tool through it
+        (its frame enables the tool) keeps it: enabled for each of them, not
+        for all departments, so a copied login enabled later for a new
+        department cannot make anyone ambiguous."""
+        assert integration.credential_type is not None
+        if await enabled_anywhere(self.db, integration.credential_type):
+            return
+        only = await single_organisation_credential(self.db, integration.credential_type)
+        if only is None:
+            return
+        for dept in sorted(departments.values(), key=lambda d: d.id):
+            if dept.deleted_at is None and _frame_enables(dept, integration.tool_key):
+                await enable_for_department(self.db, only, dept.id)
+                self.report.enabled += 1
+                self.report.kept_single += 1
+
     async def fold_department_rows(
         self,
         integration: Integration,
         rows: list[m.McpConnection],
         departments: dict[uuid.UUID, m.Department],
     ) -> None:
-        """Step 1."""
+        """Step 1. A login made here owns a copy of each secret under its own
+        name: the old setup's secret stays as it was."""
         cred_type = await self.cred_type(integration)
         groups: dict[_Copied, list[m.McpConnection]] = defaultdict(list)
         for row in rows:
@@ -350,16 +512,22 @@ class _Pass:
         )
         for copied, members in groups.items():
             members.sort(key=lambda r: (r.created_at, r.id))
-            cred = next(
-                (
-                    c
-                    for c in org
-                    if not copied.plain_secrets
-                    and dict(c.field_values or {}) == dict(copied.plain)
-                    and dict(c.secret_refs or {}) == dict(copied.refs)
-                ),
-                None,
-            )
+            secrets = {
+                **await _secret_values(self.db, self.tenant_id, dict(copied.refs)),
+                **dict(copied.plain_secrets),
+            }
+            cred = None
+            for candidate in org:
+                if dict(candidate.field_values or {}) != dict(copied.plain):
+                    continue
+                if set((candidate.secret_refs or {}).keys()) != set(secrets):
+                    continue
+                if (
+                    await _secret_values(self.db, self.tenant_id, dict(candidate.secret_refs))
+                    == secrets
+                ):
+                    cred = candidate
+                    break
             if cred is None:
                 first = members[0].department_id
                 dept = departments.get(first) if first is not None else None
@@ -372,24 +540,19 @@ class _Pass:
                     name=await _unique_name(self.db, label),
                     credential_type=integration.credential_type,
                     field_values=dict(copied.plain),
-                    secret_refs=dict(copied.refs),
+                    secret_refs={},
                     consolidated_from=[],
                 )
                 self.db.add(cred)
                 await self.db.flush()
-                if copied.plain_secrets:
-                    refs = dict(cred.secret_refs)
-                    for key, value in copied.plain_secrets:
-                        ref = f"credential/{cred.id}/{key}"
-                        await store_secret(
-                            self.db,
-                            tenant_id=self.tenant_id,
-                            name=ref,
-                            value=value,
-                            kind="credential",
-                        )
-                        refs[key] = ref
-                    cred.secret_refs = refs
+                refs: dict[str, str] = {}
+                for key, value in sorted(secrets.items()):
+                    ref = secret_ref_for(cred.id, key)
+                    await store_secret(
+                        self.db, tenant_id=self.tenant_id, name=ref, value=value, kind="credential"
+                    )
+                    refs[key] = ref
+                cred.secret_refs = refs
                 org.append(cred)
                 self.report.created += 1
             cred.consolidated_from = sorted(
@@ -404,29 +567,36 @@ class _Pass:
         self,
         integration: Integration,
         rows: list[m.McpConnection],
-        agents: list[m.Agent],
-        current_pins: dict[uuid.UUID, dict[str, str]],
+        agents: _Agents,
         departments: dict[uuid.UUID, m.Department],
     ) -> None:
-        """Step 2."""
+        """Step 2. What a run executes decides: the published version's pin
+        (a different pin in the unpublished working copy is only rewritten,
+        never made the agent's access), else the department default."""
         tool_key = integration.tool_key
         for row in rows:
             assert row.credential_id is not None
             cred = await self.db.get(m.Credential, row.credential_id)
-            if cred is None or cred.credential_type != integration.credential_type:
-                continue
+            assert cred is not None  # rows without a usable login are skipped earlier
             row_id = str(row.id)
             pinned_by: list[m.Agent] = []
-            for agent in agents:
-                own = current_pins.get(agent.id, {})
-                if own.get(tool_key) == row_id:
+            for agent_id, agent in agents.by_id.items():
+                pin = agents.pins(agent_id).get(tool_key)
+                draft = agents.draft_pins(agent_id).get(tool_key)
+                if agent_id in agents.has_version and draft == row_id and pin != row_id:
+                    self.report.draft_pins_ignored += 1
+                    logger.info(
+                        "connection consolidation: agent %s draft pin of %s not made its access",
+                        agent_id,
+                        row_id,
+                    )
+                if pin == row_id:
                     pinned_by.append(agent)
                     continue
-                if own.get(tool_key) or agent.department_id is None:
+                if pin or agent.department_id is None:
                     continue
-                dept = departments.get(agent.department_id)
-                default = _frame_default(dept, tool_key)
-                if default == row_id and _enables(agent, tool_key):
+                default = _frame_default(departments.get(agent.department_id), tool_key)
+                if default == row_id and agents.enables(agent_id, tool_key):
                     pinned_by.append(agent)
             for dept in departments.values():
                 if _frame_default(dept, tool_key) == row_id:
@@ -467,26 +637,42 @@ class _Pass:
         self,
         integration: Integration,
         rows: list[m.McpConnection],
-        agents: list[m.Agent],
+        agents: _Agents,
         departments: dict[uuid.UUID, m.Department],
     ) -> None:
-        """Step 3."""
+        """Step 3. A row an unfinished run still names is retired (kept,
+        disconnected, pointing at the tool row) and removed by a later pass."""
         shared = [r for r in rows if r.department_id is None and r.credential_id is None]
         keep = min(shared or rows, key=lambda r: (r.created_at, r.id))
         cred_type = await self.cred_type(integration)
+        moved = {str(r.id): str(keep.id) for r in rows if r.id != keep.id}
         keep.department_id = None
         keep.credential_id = None
-        keep.config = _stripped_config(keep, cred_type, integration)
+        cfg = _stripped_config(keep, cred_type, integration)
+        folded = cfg.get(FOLDED_KEY) if isinstance(cfg.get(FOLDED_KEY), list) else []
+        if moved:
+            cfg[FOLDED_KEY] = sorted({*(str(i) for i in folded or []), *moved})
+        keep.config = cfg
         keep.connected = any(r.connected for r in rows)
-        moved = {str(r.id): str(keep.id) for r in rows if r.id != keep.id}
         for row in rows:
-            if row.id != keep.id:
+            if row.id == keep.id:
+                continue
+            if str(row.id) in self.live_refs:
+                row.department_id = None
+                row.credential_id = None
+                row.connected = False
+                row.config = {
+                    **_stripped_config(row, cred_type, integration),
+                    RETIRED_KEY: str(keep.id),
+                }
+                self.report.retired += 1
+            else:
                 await self.db.delete(row)
                 self.report.collapsed += 1
         await self.db.flush()
         if not moved:
             return
-        for agent in agents:
+        for agent in agents.by_id.values():
             narrowing, count = _rewrite(agent.narrowing, "connection_id", moved)
             if count:
                 agent.narrowing = narrowing
@@ -519,25 +705,12 @@ def _frame_default(dept: m.Department | None, tool_key: str) -> str | None:
     return str(value) if value else None
 
 
-def _enables(agent: m.Agent, tool_key: str) -> bool:
-    tools = (agent.narrowing or {}).get("tools") if isinstance(agent.narrowing, dict) else None
-    policy = tools.get(tool_key) if isinstance(tools, dict) else None
-    return isinstance(policy, dict) and bool(policy.get("enabled"))
-
-
-async def _current_pins(db: AsyncSession, agents: list[m.Agent]) -> dict[uuid.UUID, dict[str, str]]:
-    """Each agent's pins: its working copy's, and its published version's
-    where the working copy has none for a key (the run uses the version)."""
-    out: dict[uuid.UUID, dict[str, str]] = {}
-    for agent in agents:
-        pins = _pins(agent.narrowing)
-        if agent.current_version_id is not None:
-            version = await db.get(m.AgentVersion, agent.current_version_id)
-            if version is not None and isinstance(version.payload, dict):
-                for key, value in _pins(version.payload.get("narrowing")).items():
-                    pins.setdefault(key, value)
-        out[agent.id] = pins
-    return out
+@dataclass
+class _Tool:
+    name: str
+    integration: Integration
+    group: list[m.McpConnection]
+    fresh: list[m.McpConnection]
 
 
 async def _consolidate(db: AsyncSession, tenant_id: uuid.UUID, report: ConsolidationReport) -> None:
@@ -554,9 +727,7 @@ async def _consolidate(db: AsyncSession, tenant_id: uuid.UUID, report: Consolida
         )
     ).scalars():
         done.update(str(i) for i in ids or [])
-
-    stamps = _Stamps()
-    await stamps.collect(db)
+    live_refs = await _live_run_references(db)
 
     rows = list(
         (
@@ -567,15 +738,17 @@ async def _consolidate(db: AsyncSession, tenant_id: uuid.UUID, report: Consolida
             )
         ).scalars()
     )
+    # Rows an earlier pass retired: removed once no unfinished run names them.
     by_name: dict[str, list[m.McpConnection]] = defaultdict(list)
     for row in rows:
+        if RETIRED_KEY in _cfg(row):
+            if str(row.id) not in live_refs:
+                await db.delete(row)
+                report.purged += 1
+            continue
         by_name[row.name].append(row)
 
-    agents = list((await db.execute(select(m.Agent))).scalars())
-    departments = {d.id: d for d in (await db.execute(select(m.Department))).scalars()}
-    current_pins = await _current_pins(db, agents)
-    work = _Pass(db, tenant_id, report)
-
+    plan: list[_Tool] = []
     for name in sorted(by_name):
         group = by_name[name]
         candidates = [
@@ -591,29 +764,66 @@ async def _consolidate(db: AsyncSession, tenant_id: uuid.UUID, report: Consolida
             # server its department.
             report.skipped += len(candidates)
             continue
-        fresh = [r for r in candidates if str(r.id) not in done]
-        report.skipped += len(candidates) - len(fresh)
-        if not fresh:
-            continue
-        report.tools.append(name)
-        department_rows = [r for r in fresh if r.credential_id is None]
-        login_rows = [r for r in fresh if r.credential_id is not None]
-        await work.fold_department_rows(integration, department_rows, departments)
-        await work.bind_login_rows(integration, login_rows, agents, current_pins, departments)
-        shared = [r for r in group if r.department_id is None and r.credential_id is None]
-        await work.collapse(integration, [*shared, *fresh], agents, departments)
+        fresh: list[m.McpConnection] = []
+        for row in candidates:
+            if str(row.id) in done:
+                report.skipped += 1
+                continue
+            if row.credential_id is not None:
+                cred = await db.get(m.Credential, row.credential_id)
+                if cred is None or cred.credential_type != integration.credential_type:
+                    # No usable login behind the pin: left as it is, so no
+                    # agent pinning it loses that pin without a replacement.
+                    report.skipped += 1
+                    continue
+            fresh.append(row)
+        if fresh:
+            plan.append(_Tool(name, integration, group, fresh))
 
-    report.restamped = await stamps.restamp(db, work.new_access)
+    if not plan:
+        # Nothing folded: nothing the digests cover changed, so nothing is
+        # stamped again.
+        await db.flush()
+        if report.purged:
+            await _audit_report(db, tenant_id, report)
+        return
+
+    agents = await _load_agents(db)
+    departments = {d.id: d for d in (await db.execute(select(m.Department))).scalars()}
+    folded_departments = {
+        r.department_id for tool in plan for r in tool.fresh if r.department_id is not None
+    }
+    stamps = _Stamps()
+    await stamps.collect(db, agents.by_id, folded_departments)
+    work = _Pass(db, tenant_id, report, live_refs)
+
+    for tool in plan:
+        report.tools.append(tool.name)
+        department_rows = [r for r in tool.fresh if r.credential_id is None]
+        login_rows = [r for r in tool.fresh if r.credential_id is not None]
+        await work.keep_single_login(tool.integration, departments)
+        await work.fold_department_rows(tool.integration, department_rows, departments)
+        await work.bind_login_rows(tool.integration, login_rows, agents, departments)
+        shared = [r for r in tool.group if r.department_id is None and r.credential_id is None]
+        await work.collapse(tool.integration, [*shared, *tool.fresh], agents, departments)
+
+    report.restamped = await stamps.restamp(db, tenant_id, work.new_access)
     if report.changed:
-        await append_event(
-            db,
-            tenant_id=tenant_id,
-            actor_type="system",
-            actor_id=None,
-            category="connection",
-            action="connections.consolidated",
-            resource=report.as_dict(),
-        )
+        await _audit_report(db, tenant_id, report)
+
+
+async def _audit_report(
+    db: AsyncSession, tenant_id: uuid.UUID, report: ConsolidationReport
+) -> None:
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="system",
+        actor_id=None,
+        category="connection",
+        action="connections.consolidated",
+        resource=report.as_dict(),
+    )
 
 
 async def consolidate_tenant(

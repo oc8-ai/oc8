@@ -211,10 +211,12 @@ async def test_revoking_a_personal_credential_deletes_its_secrets(
     anna = await member(app_session, tenant, "anna@acme.test")
     cred = await credential_row(app_session, tenant, owner=anna)
     async with app_session(tenant) as db:
-        await store_secret(db, tenant_id=tenant, name="cred/pw", value="hunter2", kind="credential")
+        # The credential's own secret (the name the credential service gives it).
+        own = f"credential/{cred}/password"
+        await store_secret(db, tenant_id=tenant, name=own, value="hunter2", kind="credential")
         row = await db.get(m.Credential, cred)
         assert row is not None
-        row.secret_refs = {"password": "cred/pw"}
+        row.secret_refs = {"password": own}
     async with api() as c:
         r = await c.delete(
             f"/api/v1/connections/credentials/{cred}", headers=headers(tenant, "anna@acme.test")

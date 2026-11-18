@@ -100,6 +100,10 @@ def _secret_ref(credential_id: uuid.UUID, field_key: str) -> str:
     return f"credential/{credential_id}/{field_key}"
 
 
+#: The secret name a credential's own field is stored under.
+secret_ref_for = _secret_ref
+
+
 async def create_credential(
     db: AsyncSession,
     *,
@@ -221,12 +225,9 @@ async def update_credential(
             # requires re-submitting every secret just to rename a credential.
             if not value:
                 continue
-            # A login folded from an old setup may point at a secret another
-            # login shares: a new value goes under this login's own name and
-            # leaves the shared one to the others.
-            ref = secret_refs.get(key)
-            if not ref or await _ref_shared(db, tenant_id=tenant_id, ref=ref, but=cred.id):
-                ref = _secret_ref(cred.id, key)
+            # Always under the login's own name: a ref it does not own (one
+            # an older setup wrote) is never overwritten.
+            ref = _secret_ref(cred.id, key)
             await store_secret(db, tenant_id=tenant_id, name=ref, value=value, kind="credential")
             secret_refs[key] = ref
         cred.secret_refs = secret_refs
@@ -234,18 +235,11 @@ async def update_credential(
     return cred
 
 
-async def _ref_shared(db: AsyncSession, *, tenant_id: uuid.UUID, ref: str, but: uuid.UUID) -> bool:
-    """Whether another credential of the tenant refers to the secret `ref`."""
-    for row_refs in (
-        await db.execute(
-            select(m.Credential.secret_refs).where(
-                m.Credential.tenant_id == tenant_id, m.Credential.id != but
-            )
-        )
-    ).scalars():
-        if ref in (row_refs or {}).values():
-            return True
-    return False
+def owns_ref(credential_id: uuid.UUID, ref: str) -> bool:
+    """Whether `ref` is a secret name this service creates for the credential
+    (`credential/{id}/{field}`). Only such a secret may be overwritten or
+    deleted through the credential; any other ref belongs to someone else."""
+    return ref.startswith(f"credential/{credential_id}/")
 
 
 async def delete_credential(
@@ -273,7 +267,7 @@ async def delete_credential(
             )
             .values(credential_id=None)
         )
-    refs = dict(cred.secret_refs or {}).values()
+    refs = [ref for ref in dict(cred.secret_refs or {}).values() if owns_ref(cred.id, ref)]
     await db.delete(cred)
     await db.flush()
     await delete_unshared_secrets(db, tenant_id=tenant_id, refs=refs)
@@ -281,8 +275,9 @@ async def delete_credential(
 
 async def delete_unshared_secrets(db: AsyncSession, *, tenant_id: uuid.UUID, refs: Any) -> None:
     """Delete the secrets behind `refs` that no remaining credential of the
-    tenant still refers to (logins folded together may share one); a secret
-    already gone is fine. Call after the referring credential row is gone."""
+    tenant still refers to; a secret already gone is fine. Call after the
+    referring credential row is gone, with only the refs it owned
+    (`owns_ref`)."""
     wanted = set(refs)
     if not wanted:
         return

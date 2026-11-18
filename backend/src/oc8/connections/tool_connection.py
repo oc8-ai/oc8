@@ -26,6 +26,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 
+#: Config key of a row consolidation took out of use while a run still named
+#: it: the id of the tool row that replaced it. Such a row is never a tool
+#: row; it is deleted once no unfinished run names it.
+RETIRED_KEY = "_retired_into"
+#: Config key on a tool row: the ids of the rows folded into it.
+FOLDED_KEY = "_consolidated_from"
+
+
+def not_retired() -> ColumnElement[bool]:
+    retired: ColumnElement[bool] = m.McpConnection.config.has_key(RETIRED_KEY)
+    return ~retired
+
 
 def _department_list(
     department_id: uuid.UUID | Sequence[uuid.UUID] | None,
@@ -49,6 +61,7 @@ async def _pick(
     where = [
         m.McpConnection.name.in_(list(names)),
         m.McpConnection.credential_id.is_(None),
+        not_retired(),
     ]
     if connected_only:
         where.append(m.McpConnection.connected.is_(True))
@@ -128,7 +141,7 @@ async def tool_names(db: AsyncSession, *, department_id: uuid.UUID | None) -> li
     names = (
         await db.execute(
             select(m.McpConnection.name)
-            .where(placed, m.McpConnection.credential_id.is_(None))
+            .where(placed, m.McpConnection.credential_id.is_(None), not_retired())
             .distinct()
         )
     ).scalars()
@@ -155,3 +168,30 @@ async def unconsolidated_connection(
         .limit(1)
     )
     return row
+
+
+async def connection_for_context(db: AsyncSession, raw_id: object) -> m.McpConnection | None:
+    """The row a run's `context` names (`mcp_connection_id`, an entry of
+    `mcp_connection_ids`), following consolidation: a retired row leads to the
+    tool row that replaced it, and a row already removed to the tool row it
+    was folded into. None when the id names nothing (or is unreadable)."""
+    try:
+        conn_id = raw_id if isinstance(raw_id, uuid.UUID) else uuid.UUID(str(raw_id))
+    except ValueError:
+        return None
+    row = await db.get(m.McpConnection, conn_id)
+    if row is not None:
+        cfg = row.config if isinstance(row.config, dict) else {}
+        successor = cfg.get(RETIRED_KEY)
+        if not successor:
+            return row
+        try:
+            return await db.get(m.McpConnection, uuid.UUID(str(successor)))
+        except ValueError:
+            return None
+    found: m.McpConnection | None = await db.scalar(
+        select(m.McpConnection)
+        .where(m.McpConnection.config.contains({FOLDED_KEY: [str(conn_id)]}))
+        .limit(1)
+    )
+    return found
