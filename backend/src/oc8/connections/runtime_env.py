@@ -39,6 +39,7 @@ from oc8.connections.integrations import (
 )
 from oc8.connections.usable import organisation_access_ready
 from oc8.credentials.registry import get_credential_type
+from oc8.credentials.service import missing_required
 from oc8.oauth.errors import OAuthReauthRequired
 from oc8.runtime.run_context import merge_context
 
@@ -124,6 +125,18 @@ async def _effective(
     return out
 
 
+async def _require_complete(db: AsyncSession, access: ToolAccess, tenant_id: Any) -> None:
+    """Refuse a chosen login that leaves a required field empty -- before any
+    bridge starts -- naming the fields."""
+    if access.kind != "credential" or access.credential is None or access.integration is None:
+        return
+    cred = access.credential
+    cred_type = await get_credential_type(db, tenant_id=tenant_id, name=cred.credential_type)
+    missing = missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
+    if missing:
+        raise ConnectionRequired(access.integration, "incomplete", missing=missing)
+
+
 async def _clear_connection_required(
     db: AsyncSession, run: m.AgentRun, integration: str, ctx: dict[str, Any] | None
 ) -> None:
@@ -159,8 +172,10 @@ async def run_mcp_env(
     ctx: dict[str, Any] | None = None,
 ) -> McpLaunchEnv:
     """`tool`: the call this launch serves (audited). `listing`: only listing
-    tools -- without an account the bridge starts without it, so the tools
-    stay visible and the first real call explains what is missing. `ctx`: a
+    tools -- without a sign-in account the bridge starts without it, so the
+    tools stay visible and the first real call explains what is missing; a
+    login integration without a usable login lists nothing and raises its
+    reason (recorded on the run), so the chat shows why. `ctx`: a
     caller's in-request copy of the run context that it writes back whole
     (the isolated-runtime step endpoint); the CTA is merged into it too."""
     cfg = _cfg(conn)
@@ -178,9 +193,14 @@ async def run_mcp_env(
         env = await resolve_mcp_env(db, tenant_id=run.tenant_id, cfg=cfg, connection_name=conn.name)
         return McpLaunchEnv(env, reusable=not has_oauth_ref(cfg))
     try:
-        access = await resolve_tool_access(db, run=run, agent=agent, conn=conn)
+        access = await resolve_tool_access(db, run=run, agent=agent, conn=conn, tool=tool)
+        await _require_complete(db, access, run.tenant_id)
     except ConnectionRequired as exc:
-        if listing:
+        if listing and exc.integration.kind != "credential":
+            # A sign-in integration's tools stay listed; the first call shows
+            # the call to action. A login integration's bridge cannot start
+            # without its login (it would only report "Connection closed"):
+            # it lists nothing, and the reason is raised and recorded instead.
             env = await resolve_mcp_env(
                 db,
                 tenant_id=run.tenant_id,

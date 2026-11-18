@@ -14,7 +14,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.api.mcp_gateway import _connections
 from oc8.connections.access import ConnectionRequired
-from oc8.connections.runtime_env import run_mcp_env
+from oc8.connections.runtime_env import _without_identity, run_mcp_env
 from oc8.credentials.service import create_credential
 from oc8.secrets.service import store_secret
 from tests.conftest import AppSessionFactory
@@ -109,6 +109,8 @@ async def test_another_department_acts_in_the_users_context(
         )
         cred = await db.get(m.Credential, mine)
         assert cred is not None
+        # Unified connections "Resolver order (agents)": an incomplete login is refused.
+        cred.field_values = {**cred.field_values, "database": "acme"}
         cred.secret_refs = {"password": f"credential/{mine}/pw"}
     run_id = await _marketing_run(
         app_session,
@@ -190,8 +192,12 @@ async def test_another_department_without_access_gets_nothing_of_the_setup(
             with pytest.raises(ConnectionRequired) as exc:
                 await run_mcp_env(db, run=run, conn=conn, tool="search_records")
             assert exc.value.reason == "not_configured"
-            listed = await run_mcp_env(db, run=run, conn=conn, listing=True)
-            assert not SALES_VALUES & set(listed.env.values())
+            # Unified connections "Resolver order (agents)": a login tool without
+            # a usable login lists nothing -- no bridge starts -- and says why.
+            with pytest.raises(ConnectionRequired) as listing:
+                await run_mcp_env(db, run=run, conn=conn, listing=True)
+            assert listing.value.reason == "not_configured"
+            assert not SALES_VALUES & set(str(listing.value).split())
 
 
 async def test_a_bridge_that_only_lists_tools_gets_only_what_the_plugin_declares(
@@ -232,12 +238,18 @@ async def test_a_bridge_that_only_lists_tools_gets_only_what_the_plugin_declares
         cfg["auth_header_name"] = "odoo_password"
         sales_row.config = cfg
         await db.flush()
-        listed = await run_mcp_env(db, run=run, conn=sales_row, listing=True)
+        # Unified connections "Resolver order (agents)": a login tool lists
+        # nothing without its login; the allowlist still guards every
+        # identity-less listing bridge (sign-in tools).
+        with pytest.raises(ConnectionRequired):
+            await run_mcp_env(db, run=run, conn=sales_row, listing=True)
+        listed_cfg = _without_identity(sales_row)
     declared = resolve_tool_pack_connection("odoo_mcp", "primary")
     assert declared is not None
-    assert listed.env == {
+    assert listed_cfg["secret_env"] == {}
+    assert listed_cfg["env"] == {
         k: v for k, v in dict(declared.config.get("env") or {}).items() if isinstance(v, str)
     }
     assert not (SALES_VALUES | {"plain-dept-pw", "hidden-pw", "nested-dept-pw"}) & set(
-        str(v) for v in listed.env.values()
+        str(v) for v in listed_cfg["env"].values()
     )

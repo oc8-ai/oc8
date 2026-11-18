@@ -7,7 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -298,8 +298,13 @@ async def direct_hold(
         integration = integration_for_connection(conn)
         label = integration.label if integration is not None else conn.name
         try:
+            # The account the held call will use: a write needs a department
+            # granting modify (the decision's own right).
+            right: Literal["read", "modify"] = (
+                "modify" if decision.context.get("right") == "modify" else "read"
+            )
             account = account_of(
-                await resolve_direct_access(db, member_id=direct.member_id, conn=conn)
+                await resolve_direct_access(db, member_id=direct.member_id, conn=conn, right=right)
             )
         except (ConnectionRequired, PermissionError):
             account = None

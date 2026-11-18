@@ -157,6 +157,8 @@ async def test_a_persons_login_is_injected(app_session: AppSessionFactory) -> No
         )
         cred = await db.get(m.Credential, mine)
         assert cred is not None
+        # Unified connections "Resolver order (agents)": an incomplete login is refused.
+        cred.field_values = {**cred.field_values, "database": "acme"}
         cred.secret_refs = {"password": f"credential/{mine}/password"}
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
@@ -207,8 +209,10 @@ async def test_a_persons_login_replaces_the_departments_identity_whole(
     app_session: AppSessionFactory,
 ) -> None:
     """A person's login never mixes with the department's: every identity
-    variable the department stored is dropped, even one the person's own
-    login leaves empty (here: no password, no database)."""
+    variable the department stored is dropped. (A login that leaves a
+    required field empty is refused before launch -- unified connections
+    "Resolver order (agents)", `incomplete` -- so the person's login here is
+    complete and must replace each department value.)"""
     cfg = {
         **ODOO_CFG,
         "env": {
@@ -220,8 +224,19 @@ async def test_a_persons_login_replaces_the_departments_identity_whole(
         "secret_env": {"ODOO_PASSWORD": "dept/pw", "ODOO_API_KEY": "dept/key"},
     }
     tenant, anna, conn_id, run_id = await _world(app_session, name="odoo", cfg=cfg, department=True)
-    await credential_row(app_session, tenant, owner=anna)  # url + username only
+    mine = await credential_row(app_session, tenant, owner=anna)
     async with app_session(tenant) as db:
+        cred = await db.get(m.Credential, mine)
+        assert cred is not None
+        cred.field_values = {**cred.field_values, "database": "anna-db"}
+        cred.secret_refs = {"password": f"credential/{mine}/password"}
+        await store_secret(
+            db,
+            tenant_id=tenant,
+            name=f"credential/{mine}/password",
+            value="anna-pw",
+            kind="credential",
+        )
         await store_secret(db, tenant_id=tenant, name="dept/pw", value="dept-pw", kind="credential")
         await store_secret(
             db, tenant_id=tenant, name="dept/key", value="dept-key", kind="credential"
@@ -235,9 +250,12 @@ async def test_a_persons_login_replaces_the_departments_identity_whole(
         conn = await db.get(m.McpConnection, conn_id)
         assert conn is not None
         launch = await run_mcp_env(db, run=run, conn=conn, tool="search_records")
-    assert (launch.env["ODOO_URL"], launch.env["ODOO_USER"]) == ("https://odoo.acme.test", "anna")
-    for name in ("ODOO_DB", "ODOO_PASSWORD", "ODOO_API_KEY"):
-        assert name not in launch.env
+    assert (launch.env["ODOO_URL"], launch.env["ODOO_USER"], launch.env["ODOO_DB"]) == (
+        "https://odoo.acme.test",
+        "anna",
+        "anna-db",
+    )
+    assert (launch.env["ODOO_PASSWORD"], launch.env["ODOO_API_KEY"]) == ("anna-pw", "anna-pw")
     assert not {"dept-pw", "dept-key", "dept-db", "dept-bot", "https://dept-erp"} & set(
         launch.env.values()
     )
