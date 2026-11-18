@@ -462,3 +462,42 @@ async def test_choosing_another_login_for_a_department_replaces_the_old_one(
     async with app_session(tenant) as db:
         enabled = await department_ids_by_credential(db, [first, second])
     assert enabled == {first: [], second: [dept_id]}
+
+
+async def test_reusing_an_incomplete_login_is_refused(app_session: AppSessionFactory) -> None:
+    """Reusing an existing login names its empty required fields (422
+    `credential_incomplete`) instead of enabling it for the department."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={})
+        half = m.Credential(
+            tenant_id=tenant,
+            name="Half",
+            credential_type="odoo_login",
+            field_values={"base_url": "https://odoo.example.com"},
+            secret_refs={},
+        )
+        db.add_all([dept, half])
+        await db.flush()
+        dept_id, half_id = dept.id, half.id
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/api/v1/mcp/logins",
+                json={
+                    "name": "odoo",
+                    "credentialType": "odoo_login",
+                    "credentialId": str(half_id),
+                    "scopes": {},
+                    "departmentId": str(dept_id),
+                },
+                headers=_headers(tenant),
+            )
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {
+        "code": "credential_incomplete",
+        "missing": ["username", "password"],
+    }
+    async with app_session(tenant) as db:
+        assert (await department_ids_by_credential(db, [half_id]))[half_id] == []

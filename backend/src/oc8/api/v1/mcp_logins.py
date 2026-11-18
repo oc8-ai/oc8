@@ -27,7 +27,12 @@ from oc8.connections.integrations import Integration
 from oc8.connections.tool_connection import tool_connection
 from oc8.credentials.enablement import choose_for_department
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
-from oc8.credentials.service import CredentialNotFound, create_credential, get_credential
+from oc8.credentials.service import (
+    CredentialNotFound,
+    create_credential,
+    get_credential,
+    require_complete,
+)
 from oc8.schemas.dto import McpLoginDTO
 from oc8.schemas.requests import CreateMcpLoginRequest, SetAgentToolAccessRequest
 from oc8.secrets.keyprovider import SecretStoreUnavailable
@@ -108,6 +113,9 @@ async def create_login(
                 f"credential {cred.name!r} is a {cred.credential_type!r}, "
                 f"not a {body.credential_type!r}",
             )
+        # An incomplete login is refused, naming its empty fields (422
+        # `credential_incomplete`), as the tool setup does.
+        await require_complete(db, cred)
     else:
         # `Credential.name` is unique per tenant (uq_credential_tenant_name):
         # a login created for a department is suffixed with the department's

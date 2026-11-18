@@ -222,3 +222,24 @@ async def test_effective_login_needs_rights_on_the_agent(app_session: AppSession
             headers=headers(agent.tenant_id, "nobody@acme.test", "member"),
         )
     assert r.status_code in (403, 404), r.text
+
+
+async def test_effective_login_reports_an_incomplete_department_copy(
+    app_session: AppSessionFactory,
+) -> None:
+    """A department's own copied login (unconsolidated) without its URL is
+    shown as incomplete -- as its run refuses it -- not as a working one."""
+    agent, _anna, conn, _run = await _world(app_session)
+    await _login(app_session, agent.tenant_id, name="The one")
+    async with app_session(agent.tenant_id) as db:
+        row = await db.get(m.McpConnection, conn)
+        assert row is not None
+        row.department_id = agent.department_id
+        row.config = {**CFG, "env": {**CFG["env"], "LOGIN_TOKEN": "t0ken"}}
+    assert await _effective(agent) == {
+        "credentialId": None,
+        "credentialName": None,
+        "source": "legacy",
+        "reason": "incomplete",
+        "missing": ["url"],
+    }

@@ -99,18 +99,28 @@ async def credential_row(
     owner: uuid.UUID | None,
     credential_type: str = "odoo_login",
     name: str = "Odoo",
+    complete: bool = True,
 ) -> uuid.UUID:
+    """A login row. `complete`: every required field of an Odoo login has a
+    value (the password as a ref only -- nothing is stored); otherwise only
+    url and username, an incomplete login."""
     async with app_session(tenant) as db:
+        values = {"url": "https://odoo.acme.test", "username": "anna"}
+        if complete:
+            values["database"] = "acme"
         row = m.Credential(
             tenant_id=tenant,
             name=name,
             credential_type=credential_type,
-            field_values={"url": "https://odoo.acme.test", "username": "anna"},
+            field_values=values,
             secret_refs={},
             owner_member_id=owner,
         )
         db.add(row)
         await db.flush()
+        if complete:
+            row.secret_refs = {"password": f"credential/{row.id}/password"}
+            await db.flush()
         return row.id
 
 

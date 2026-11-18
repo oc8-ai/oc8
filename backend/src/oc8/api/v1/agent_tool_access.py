@@ -27,10 +27,12 @@ from oc8.connections.access import (
     unconfirmed_reason,
 )
 from oc8.connections.access_write import write_tool_access
+from oc8.connections.credential_env import copied_missing
 from oc8.connections.integrations import Integration, installed_integrations
+from oc8.connections.login import holds_copied_login
 from oc8.connections.tool_connection import connection_for_context, tool_connection
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
-from oc8.credentials.service import missing_required
+from oc8.credentials.service import missing_required, require_complete
 from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO, EffectiveLoginDTO
 from oc8.schemas.requests import SetAgentToolAccessRequest
 
@@ -299,6 +301,22 @@ async def effective_login(
         # A row pinned to one login, not yet consolidated: that login.
         cred = await db.get(m.Credential, choice.legacy_conn.credential_id)
     if cred is None:
+        legacy = choice.legacy_conn
+        if legacy is not None and integ.credential_type and holds_copied_login(legacy, integ):
+            # A department's own copied login, not yet consolidated: shown as
+            # incomplete when it is, as the run would refuse it.
+            try:
+                copied_type = await get_credential_type(
+                    db, tenant_id=agent.tenant_id, name=integ.credential_type
+                )
+            except CredentialTypeNotFound:
+                return EffectiveLoginDTO(source=choice.source)
+            cfg = legacy.config if isinstance(legacy.config, dict) else {}
+            missing = copied_missing(cfg, copied_type, integ.credential_env_fields)
+            if missing:
+                return EffectiveLoginDTO(
+                    source=choice.source, reason="incomplete", missing=missing
+                )
         return EffectiveLoginDTO(source=choice.source)
     out = EffectiveLoginDTO(
         credential_id=str(cred.id), credential_name=cred.name, source=choice.source
@@ -372,6 +390,9 @@ async def save_tool_access(
             cred = await db.get(m.Credential, body.credential_id)
             if cred is None or cred.credential_type != integ.credential_type:
                 raise HTTPException(unprocessable, "not a login of this integration")
+            # An incomplete login is refused as a choice, naming its empty
+            # fields (422 `credential_incomplete`), as the tool setup does.
+            await require_complete(db, cred)
             credential_id, owner, target_label = cred.id, cred.owner_member_id, cred.name
         else:
             raise HTTPException(unprocessable, "a fixed access names exactly one matching target")

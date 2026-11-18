@@ -237,6 +237,35 @@ async def test_a_fixed_login_binding_and_input_rules(app_session: AppSessionFact
         assert unknown.status_code == 404
 
 
+async def test_a_fixed_choice_of_an_incomplete_login_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """The Tools tab and the new-agent dialog refuse an incomplete login as
+    a fixed choice, naming its empty fields (as the tool setup does)."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    half = await credential_row(app_session, tenant, owner=None, name="Half", complete=False)
+    async with api() as c:
+        admin = headers(tenant, "root@acme.test", ADMIN)
+        await install(c, admin, "odoo_mcp")
+        refused = await c.put(
+            f"/api/v1/agents/{agent.id}/tool-access/odoo",
+            json={"mode": "fixed", "credentialId": str(half)},
+            headers=admin,
+        )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["detail"] == {
+        "code": "credential_incomplete",
+        "missing": ["database", "password"],
+    }
+    async with app_session(tenant) as db:
+        assert (
+            await db.scalar(
+                select(m.AgentToolAccess.id).where(m.AgentToolAccess.agent_id == agent.id)
+            )
+        ) is None
+
+
 async def test_other_tenants_ids_are_not_found_and_nothing_secret_is_returned(
     app_session: AppSessionFactory,
 ) -> None:

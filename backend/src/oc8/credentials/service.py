@@ -96,6 +96,23 @@ def missing_required(
     return missing
 
 
+async def require_complete(db: AsyncSession, cred: m.Credential) -> None:
+    """Raise `IncompleteCredential` (422 `credential_incomplete`) when the
+    login leaves a required field of its type empty -- for a surface that
+    chooses an existing login. A type that is gone is not checked here."""
+    from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
+
+    try:
+        cred_type = await get_credential_type(
+            db, tenant_id=cred.tenant_id, name=cred.credential_type
+        )
+    except CredentialTypeNotFound:
+        return
+    missing = missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
+    if missing:
+        raise IncompleteCredential(missing)
+
+
 def _secret_ref(credential_id: uuid.UUID, field_key: str) -> str:
     return f"credential/{credential_id}/{field_key}"
 
