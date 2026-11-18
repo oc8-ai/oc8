@@ -1,7 +1,7 @@
 import { KeyRound } from "lucide-react";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { useDepartments, type PluginSetupSpec } from "@/lib/hooks";
-import { CredentialPicker } from "@/components/credential-picker";
+import { CredentialPicker, URL_PLACEHOLDER } from "@/components/credential-picker";
 
 /** Generic field renderer for the declarative setup contract in a plugin
  * manifest. It contains no provider, product, command, environment-variable,
@@ -12,10 +12,14 @@ export function PluginSetupFields({
   setup,
   values,
   onChange,
+  loginMissing,
 }: {
   setup: PluginSetupSpec;
   values: Record<string, string>;
   onChange: (values: Record<string, string>) => void;
+  /** The chosen login's empty required fields, as the server refused it
+   *  (422 `credential_incomplete`): marked at the login picker. */
+  loginMissing?: readonly string[];
 }) {
   const t = useT();
   const { lang } = useLang();
@@ -37,6 +41,9 @@ export function PluginSetupFields({
             <span className="flex items-center gap-1.5">
               {field.kind === "password" && <KeyRound className="h-3 w-3 text-primary" />}
               {label}
+              {field.required && field.kind !== "department" && (
+                <span aria-hidden data-required-mark className="after:content-['*']" />
+              )}
             </span>
             {field.kind === "department" ? (
               <select
@@ -69,6 +76,7 @@ export function PluginSetupFields({
                   credentialType={field.credential_type ?? ""}
                   value={values[field.key] ?? ""}
                   onChange={(credentialId) => onChange({ ...values, [field.key]: credentialId })}
+                  missing={loginMissing}
                 />
               </div>
             ) : (
@@ -77,8 +85,11 @@ export function PluginSetupFields({
                   field.kind === "password" ? "password" : field.kind === "url" ? "url" : "text"
                 }
                 value={values[field.key] ?? ""}
+                required={field.required}
                 onChange={(event) => onChange({ ...values, [field.key]: event.target.value })}
-                placeholder={field.placeholder}
+                // A `url` field never shows an address that could pass for a
+                // value already filled in.
+                placeholder={field.kind === "url" ? URL_PLACEHOLDER : field.placeholder}
                 className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground"
               />
             )}

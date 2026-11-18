@@ -20,6 +20,7 @@ import {
   type Owner,
   OAuthCompleteError,
   connectionStateOf,
+  isCredentialInUse,
   useAdminConsentUrl,
   useCompleteOAuth,
   useDisconnect,
@@ -31,14 +32,22 @@ import {
 } from "@/lib/connections";
 import { useMay } from "@/lib/governance-hooks";
 import { useEnablePlugin } from "@/lib/hooks";
-import { useLang, useT } from "@/lib/i18n";
+import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { ConnectDialog } from "./connect-dialog";
 import { ConnectionRow, RowList, RowMenu } from "./connection-row";
 import { IntegrationIcon } from "./integration-icon";
 import { MemberConnections } from "./member-connections";
-import { OrganisationCredentials } from "./organisation-credentials";
+import { LoginDepartmentsDialog, OrganisationCredentials } from "./organisation-credentials";
 import { ReturnError } from "./return-error";
-import { checkErrorText, isBroken, providerName, shortDate } from "./texts";
+import {
+  checkErrorText,
+  inUseDescription,
+  incompleteText,
+  isBroken,
+  providerName,
+  shortDate,
+  usedByText,
+} from "./texts";
 
 export const CONNECTIONS_TABS = ["mine", "organisation", "members"] as const;
 export type ConnectionsTab = (typeof CONNECTIONS_TABS)[number];
@@ -103,6 +112,7 @@ export function ConnectionsPage({
   const mayEnable = may("plugin:manage");
   const { confirm, ConfirmDialog } = useConfirm();
   const [customOpen, setCustomOpen] = useState(false);
+  const [departmentsOf, setDepartmentsOf] = useState<Connection | null>(null);
   useNoReferrer();
   // Captured once: the URL is cleaned right away, and a refetch must not
   // close what the return or a call to action opened.
@@ -204,16 +214,32 @@ export function ConnectionsPage({
       cancelLabel: t("Cancel", "Abbrechen"),
     });
     if (!ok) return;
-    try {
-      await disconnect.mutateAsync(c);
-      toast.success(t("Done.", "Erledigt."));
-    } catch {
+    const failed = () =>
       toast.error(
         t(
           "That did not work. Please try again.",
           "Das hat nicht geklappt. Bitte versuch es erneut.",
         ),
       );
+    try {
+      await disconnect.mutateAsync(c);
+      toast.success(t("Done.", "Erledigt."));
+    } catch (err: unknown) {
+      if (!isCredentialInUse(err)) return failed();
+      // A login still in use: say by what, and remove it only on a second yes.
+      const anyway = await confirm({
+        title: t("Still in use", "Wird noch genutzt"),
+        description: inUseDescription(t, c.accountLabel, c.usedBy),
+        confirmLabel: t("Delete anyway", "Trotzdem löschen"),
+        cancelLabel: t("Cancel", "Abbrechen"),
+      });
+      if (!anyway) return;
+      try {
+        await disconnect.mutateAsync({ ...c, force: true });
+        toast.success(t("Done.", "Erledigt."));
+      } catch {
+        failed();
+      }
     }
   };
 
@@ -316,6 +342,7 @@ export function ConnectionsPage({
                 onEdit={(c) => open(c.integration as string, "organisation", c.id)}
                 onReconnect={(c) => open(c.integration as string, "organisation")}
                 onTest={runTest}
+                onDepartments={setDepartmentsOf}
                 onRemove={(c) => revoke(c, null)}
                 onAddCustom={mayEnable ? () => setCustomOpen(true) : undefined}
               />
@@ -350,6 +377,10 @@ export function ConnectionsPage({
         />
       )}
       {customOpen && <CustomMcpWizard open={customOpen} onOpenChange={setCustomOpen} />}
+      <LoginDepartmentsDialog
+        login={departmentsOf && { ...departmentsOf, name: departmentsOf.accountLabel }}
+        onOpenChange={(next) => !next && setDepartmentsOf(null)}
+      />
       {ConfirmDialog}
     </div>
   );
@@ -543,6 +574,23 @@ function statusText(c: Connection, t: (en: string, de: string) => string): strin
   return t("Active", "Aktiv");
 }
 
+/** Which departments an organisation login is enabled for, in a few words. */
+function enabledText(c: Connection, t: (en: string, de: string) => string): string {
+  if (c.kind !== "credential") return "";
+  if (c.allDepartments) return t("all departments", "alle Abteilungen");
+  const n = c.departmentIds?.length ?? 0;
+  if (n === 0) return t("no department yet", "noch keine Abteilung");
+  return n === 1
+    ? t("1 department", "1 Abteilung")
+    : t("{count} departments", "{count} Abteilungen").replace("{count}", String(n));
+}
+
+/** A login field's label in the viewer's language, else its key. */
+function fieldLabel(integration: Integration | undefined, key: string, lang: string): string {
+  const field = integration?.credentialFields.find((f) => f.key === key);
+  return field ? resolveTranslation(field.label, field.label_translations, lang) : key;
+}
+
 function OrganisationAccesses({
   rows,
   available,
@@ -553,6 +601,7 @@ function OrganisationAccesses({
   onEdit,
   onReconnect,
   onTest,
+  onDepartments,
   onRemove,
   onAddCustom,
 }: {
@@ -565,6 +614,8 @@ function OrganisationAccesses({
   onEdit: (c: Connection) => void;
   onReconnect: (c: Connection) => void;
   onTest: (c: Connection) => void;
+  /** An organisation login: choose the departments it is enabled for. */
+  onDepartments: (c: Connection) => void;
   onRemove: (c: Connection) => void;
   /** Set for plugin:manage: adds a custom MCP server or REST API. */
   onAddCustom?: () => void;
@@ -617,6 +668,9 @@ function OrganisationAccesses({
               ...(c.kind === "credential" && c.integration
                 ? [{ label: t("Edit", "Bearbeiten"), onSelect: () => onEdit(c) }]
                 : []),
+              ...(c.kind === "credential" && c.owner === "organisation"
+                ? [{ label: t("Departments", "Abteilungen"), onSelect: () => onDepartments(c) }]
+                : []),
               ...(c.kind === "oauth" && c.status === "needs_reauth" && c.integration
                 ? [{ label: t("Reconnect", "Erneut verbinden"), onSelect: () => onReconnect(c) }]
                 : []),
@@ -627,10 +681,28 @@ function OrganisationAccesses({
                 key={c.id}
                 icon={integration ? <IntegrationIcon integration={integration} size={20} /> : null}
                 title={label}
-                detail={[c.accountLabel, c.createdByName, shortDate(c.createdAt, lang)]
+                detail={[
+                  c.accountLabel,
+                  enabledText(c, t),
+                  usedByText(t, c.usedBy),
+                  c.createdByName,
+                  shortDate(c.createdAt, lang),
+                ]
                   .filter(Boolean)
                   .join(" · ")}
-                aside={<span className={isBroken(c) ? WARN : undefined}>{statusText(c, t)}</span>}
+                aside={
+                  (c.incomplete ?? []).length > 0 ? (
+                    <span className={WARN}>
+                      {incompleteText(
+                        t,
+                        c.accountLabel,
+                        (c.incomplete ?? []).map((key) => fieldLabel(integration, key, lang)),
+                      )}
+                    </span>
+                  ) : (
+                    <span className={isBroken(c) ? WARN : undefined}>{statusText(c, t)}</span>
+                  )
+                }
               >
                 <RowMenu
                   label={t(

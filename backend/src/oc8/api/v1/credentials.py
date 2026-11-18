@@ -6,18 +6,23 @@ secret field values are write-only, exactly like /secrets already is.
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import MANAGE, SECRET, VIEW, perm
 from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import SetupFieldSpec
+from oc8.credentials.enablement import department_ids_by_credential
 from oc8.credentials.registry import (
     CredentialTypeI18n,
     CredentialTypeNotFound,
+    list_credential_types,
     list_credential_types_with_i18n,
 )
 from oc8.credentials.service import (
@@ -27,24 +32,89 @@ from oc8.credentials.service import (
     create_credential,
     delete_credential,
     list_credentials,
+    missing_required,
     test_credential,
     update_credential,
 )
-from oc8.schemas.dto import CredentialDTO, CredentialTypeDTO
+from oc8.schemas.dto import ConnectionUsedByDTO, CredentialDTO, CredentialTypeDTO
 from oc8.schemas.requests import CreateCredentialRequest, UpdateCredentialRequest
 from oc8.secrets.keyprovider import SecretStoreUnavailable
 
 router = APIRouter()
 
 
-def _to_dto(cred: m.Credential) -> CredentialDTO:
+@dataclass(frozen=True)
+class CredentialFacts:
+    """What a login listing shows besides the row: the departments it is
+    enabled for, the required fields it lacks and what uses it."""
+
+    department_ids: list[uuid.UUID]
+    incomplete: list[str]
+    used_by: ConnectionUsedByDTO
+
+
+async def credential_facts(
+    db: AsyncSession, tenant_id: uuid.UUID, creds: list[m.Credential]
+) -> dict[uuid.UUID, CredentialFacts]:
+    """`CredentialFacts` for each row, loaded in a few queries."""
+    if not creds:
+        return {}
+    ids = [c.id for c in creds]
+    enabled = await department_ids_by_credential(db, ids)
+    types = {t.name: t for t in await list_credential_types(db, tenant_id=tenant_id)}
+    agents: dict[uuid.UUID, set[uuid.UUID]] = {i: set() for i in ids}
+    for credential_id, agent_id in await db.execute(
+        select(m.AgentToolAccess.credential_id, m.AgentToolAccess.agent_id).where(
+            m.AgentToolAccess.credential_id.in_(ids)
+        )
+    ):
+        agents[credential_id].add(agent_id)
+    wired: dict[uuid.UUID, set[uuid.UUID]] = {i: set() for i in ids}
+    for credential_id, department_id in await db.execute(
+        select(m.McpConnection.credential_id, m.McpConnection.department_id).where(
+            m.McpConnection.credential_id.in_(ids), m.McpConnection.department_id.is_not(None)
+        )
+    ):
+        wired[credential_id].add(department_id)
+    out: dict[uuid.UUID, CredentialFacts] = {}
+    for cred in creds:
+        cred_type = types.get(cred.credential_type)
+        incomplete = (
+            missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
+            if cred_type is not None
+            else []
+        )
+        departments = list(dict.fromkeys([*enabled[cred.id], *sorted(wired[cred.id])]))
+        out[cred.id] = CredentialFacts(
+            department_ids=enabled[cred.id],
+            incomplete=incomplete,
+            used_by=ConnectionUsedByDTO(
+                departments=[str(d) for d in departments],
+                agents=sorted(str(a) for a in agents[cred.id]),
+            ),
+        )
+    return out
+
+
+def _to_dto(cred: m.Credential, facts: CredentialFacts | None = None) -> CredentialDTO:
+    extra: dict[str, Any] = (
+        {}
+        if facts is None
+        else {
+            "department_ids": [str(d) for d in facts.department_ids],
+            "incomplete": facts.incomplete,
+            "used_by": facts.used_by,
+        }
+    )
     return CredentialDTO(
+        **extra,
         id=str(cred.id),
         name=cred.name,
         credential_type=cred.credential_type,
         field_values=cred.field_values,
         last_tested_at=cred.last_tested_at.isoformat() if cred.last_tested_at else None,
         last_test_ok=cred.last_test_ok,
+        all_departments=cred.all_departments,
         created_at=cred.created_at.isoformat(),
         updated_at=cred.updated_at.isoformat(),
     )
@@ -94,7 +164,8 @@ async def list_credentials_endpoint(
     rows = await list_credentials(
         db, tenant_id=principal.tenant_id, credential_type=type, owner="organisation"
     )
-    return [_to_dto(r) for r in rows]
+    facts = await credential_facts(db, principal.tenant_id, rows)
+    return [_to_dto(r, facts[r.id]) for r in rows]
 
 
 @router.patch(

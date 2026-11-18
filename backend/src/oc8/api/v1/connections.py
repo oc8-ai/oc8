@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
-from oc8.api.v1.credentials import translate_field
+from oc8.api.v1.credentials import credential_facts, translate_field
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
 from oc8.authz.authority import authority_for_principal
@@ -27,9 +27,9 @@ from oc8.authz.scope import scope_for_principal
 from oc8.connections.checks import classify_check_error
 from oc8.connections.integrations import InstalledIntegration, Integration, installed_integrations
 from oc8.connections.revoke import delete_credential_with_secrets, revoke_oauth_connection
-from oc8.credentials.enablement import department_ids_by_credential, set_departments
+from oc8.credentials.enablement import set_departments
 from oc8.credentials.errors import CredentialCheckFailed
-from oc8.credentials.registry import list_credential_types, list_credential_types_with_i18n
+from oc8.credentials.registry import list_credential_types_with_i18n
 from oc8.credentials.service import (
     CredentialFieldNotSet,
     CredentialInUse,
@@ -38,7 +38,6 @@ from oc8.credentials.service import (
     create_credential,
     delete_credential,
     get_credential,
-    missing_required,
     test_credential,
 )
 from oc8.schemas.dto import (
@@ -158,52 +157,20 @@ async def credential_dtos(
     names: dict[uuid.UUID, str],
     by_type: dict[str, str],
 ) -> list[ConnectionDTO]:
-    """`credential_dto` for each row, with its enablement, the required
-    fields it lacks and what uses it, loaded in a few queries."""
-    if not creds:
-        return []
-    ids = [c.id for c in creds]
-    enabled = await department_ids_by_credential(db, ids)
-    types = {t.name: t for t in await list_credential_types(db, tenant_id=tenant_id)}
-    agents: dict[uuid.UUID, set[uuid.UUID]] = {i: set() for i in ids}
-    for credential_id, agent_id in await db.execute(
-        select(m.AgentToolAccess.credential_id, m.AgentToolAccess.agent_id).where(
-            m.AgentToolAccess.credential_id.in_(ids)
+    """`credential_dto` for each row, with its `CredentialFacts`."""
+    facts = await credential_facts(db, tenant_id, creds)
+    return [
+        credential_dto(
+            cred,
+            caller_id,
+            names,
+            by_type,
+            department_ids=facts[cred.id].department_ids,
+            incomplete=facts[cred.id].incomplete,
+            used_by=facts[cred.id].used_by,
         )
-    ):
-        agents[credential_id].add(agent_id)
-    wired: dict[uuid.UUID, set[uuid.UUID]] = {i: set() for i in ids}
-    for credential_id, department_id in await db.execute(
-        select(m.McpConnection.credential_id, m.McpConnection.department_id).where(
-            m.McpConnection.credential_id.in_(ids), m.McpConnection.department_id.is_not(None)
-        )
-    ):
-        wired[credential_id].add(department_id)
-    out: list[ConnectionDTO] = []
-    for cred in creds:
-        cred_type = types.get(cred.credential_type)
-        incomplete = (
-            missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
-            if cred_type is not None
-            else []
-        )
-        departments = list(dict.fromkeys([*enabled[cred.id], *sorted(wired[cred.id])]))
-        used_by = ConnectionUsedByDTO(
-            departments=[str(d) for d in departments],
-            agents=sorted(str(a) for a in agents[cred.id]),
-        )
-        out.append(
-            credential_dto(
-                cred,
-                caller_id,
-                names,
-                by_type,
-                department_ids=enabled[cred.id],
-                incomplete=incomplete,
-                used_by=used_by,
-            )
-        )
-    return out
+        for cred in creds
+    ]
 
 
 def _maps(items: list[InstalledIntegration]) -> tuple[dict[str, str], dict[str, str]]:

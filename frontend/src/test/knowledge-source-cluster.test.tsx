@@ -816,6 +816,10 @@ describe("SourceWizard credential-backed connector fields", () => {
     fireEvent.change(screen.getByLabelText("Access key"), {
       target: { value: "AKIA_X" },
     });
+    // Every required field of the login is filled, or Save stays disabled.
+    fireEvent.change(screen.getByLabelText("Secret key"), {
+      target: { value: "SECRET_X" },
+    });
     fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "New S3 credential" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await vi.waitFor(() => expect(createCredentialMock).toHaveBeenCalled());

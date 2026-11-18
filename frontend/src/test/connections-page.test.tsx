@@ -70,6 +70,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 });
 vi.mock("@/components/connections/organisation-credentials", () => ({
   OrganisationCredentials: () => <div>further-credentials</div>,
+  LoginDepartmentsDialog: ({ login }: { login: { name: string } | null }) =>
+    login ? <div role="dialog">departments of {login.name}</div> : null,
 }));
 vi.mock("@/components/custom-mcp-wizard", () => ({
   CustomMcpWizard: ({ open }: { open: boolean }) =>
@@ -548,12 +550,81 @@ describe("ConnectionsPage", () => {
     renderPage({ tab: "organisation" });
     const orgPanel = screen.getByRole("tabpanel", { name: "Organisation" });
     // Account, who added it and when, on one line.
-    expect(within(orgPanel).getByText("Loose login · Admin Anna · 8. Nov.")).toBeInTheDocument();
+    expect(
+      within(orgPanel).getByText("Loose login · noch keine Abteilung · Admin Anna · 8. Nov."),
+    ).toBeInTheDocument();
     expect(within(orgPanel).getByText("Aktiv")).toBeInTheDocument();
     openMenu(/Aktionen für .*Loose login/);
     expect(await screen.findByRole("menuitem", { name: "Testen" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Bearbeiten" })).not.toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Entfernen" })).toBeInTheDocument();
+  });
+
+  describe("an organisation login", () => {
+    const login = () =>
+      row({
+        id: "o3",
+        owner: "organisation",
+        accountLabel: "Firmenzugang",
+        kind: "credential",
+        integration: "odoo_mcp",
+        credentialType: "odoo_login",
+        status: "ok",
+        departmentIds: ["d1", "d2"],
+        allDepartments: false,
+        incomplete: [],
+        usedBy: { departments: ["d1", "d2"], agents: ["a1"] },
+      });
+
+    it("shows where it is enabled and what uses it, and edits its departments", async () => {
+      may.mockImplementation(ADMIN);
+      org.mockReturnValue({ data: [login()], isLoading: false });
+      renderPage({ tab: "organisation" });
+      const orgPanel = screen.getByRole("tabpanel", { name: "Organisation" });
+      expect(
+        within(orgPanel).getByText(
+          "Firmenzugang · 2 Abteilungen · von 1 Agenten genutzt · in 2 Abteilungen genutzt · 8. Nov.",
+        ),
+      ).toBeInTheDocument();
+      openMenu(/Aktionen für .*Firmenzugang/);
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Abteilungen" }));
+      expect(await screen.findByRole("dialog")).toHaveTextContent("departments of Firmenzugang");
+    });
+
+    it("names its missing fields", () => {
+      may.mockImplementation(ADMIN);
+      org.mockReturnValue({ data: [{ ...login(), incomplete: ["url"] }], isLoading: false });
+      renderPage({ tab: "organisation" });
+      expect(
+        screen.getByText("Firmenzugang ist unvollständig: url fehlt", { exact: false }),
+      ).toBeInTheDocument();
+    });
+
+    it("deletes a login still in use only after a second yes, then with force", async () => {
+      may.mockImplementation(ADMIN);
+      org.mockReturnValue({ data: [login()], isLoading: false });
+      const { ApiError } = await import("@/lib/api");
+      disconnect
+        .mockRejectedValueOnce(new ApiError("credential is in use by: …", 409))
+        .mockResolvedValueOnce(undefined);
+      renderPage({ tab: "organisation" });
+      openMenu(/Aktionen für .*Firmenzugang/);
+      fireEvent.click(await screen.findByRole("menuitem", { name: "Entfernen" }));
+      fireEvent.click(
+        within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Trennen" }),
+      );
+      const inUse = await screen.findByText(/Firmenzugang wird noch genutzt/);
+      expect(inUse).toHaveTextContent(
+        "Firmenzugang wird noch genutzt (von 1 Agenten genutzt · in 2 Abteilungen genutzt)",
+      );
+      expect(disconnect).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: "Trotzdem löschen" }));
+      await waitFor(() =>
+        expect(disconnect).toHaveBeenLastCalledWith(
+          expect.objectContaining({ id: "o3", force: true }),
+        ),
+      );
+    });
   });
 
   describe("members tab", () => {

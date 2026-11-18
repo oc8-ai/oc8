@@ -3,7 +3,9 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { type DiscoveredCapa, useConfigurePlugin, useTestMcpConnectionById } from "@/lib/hooks";
 import { PluginSetupFields } from "@/components/plugin-setup-fields";
-import { resolveTranslation, useLang } from "@/lib/i18n";
+import { fill } from "@/components/connections/texts";
+import { incompleteFields } from "@/lib/connections";
+import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 
 /** Generic renderer for the declarative setup contract in a plugin manifest.
  * It contains no provider, product, command, environment-variable, or field
@@ -16,6 +18,7 @@ export function CapaSetupDialog({
   onClose: () => void;
 }) {
   const setup = plugin.setup;
+  const t = useT();
   const { lang } = useLang();
   const configure = useConfigurePlugin(plugin.databaseId ?? "");
   const test = useTestMcpConnectionById();
@@ -25,6 +28,8 @@ export function CapaSetupDialog({
     [setup],
   );
   const [values, setValues] = useState<Record<string, string>>(defaults);
+  // The chosen login's empty required fields, when the server refused it.
+  const [loginMissing, setLoginMissing] = useState<string[]>([]);
 
   if (!setup) return null;
 
@@ -33,9 +38,17 @@ export function CapaSetupDialog({
       (field) => field.required && !(values[field.key] ?? field.default ?? "").trim(),
     );
     if (missing) {
-      toast.error(`${missing.label} is required.`);
+      const label = resolveTranslation(
+        missing.label,
+        setup.translations?.fields?.[missing.key]?.label,
+        lang,
+      );
+      toast.error(
+        fill(t("{field} is required.", "{field} ist ein Pflichtfeld."), { field: label }),
+      );
       return;
     }
+    setLoginMissing([]);
     try {
       const result = await configure.mutateAsync(values);
       // No `mcp` block means no connection to test -- the plugin's own
@@ -49,13 +62,36 @@ export function CapaSetupDialog({
         if (!tested.connected) {
           const detail =
             typeof tested.health?.error === "string" ? tested.health.error : "unknown error";
-          throw new Error(`Connection test failed: ${detail}`);
+          throw new Error(
+            fill(
+              t("Connection test failed: {detail}", "Verbindungstest fehlgeschlagen: {detail}"),
+              {
+                detail,
+              },
+            ),
+          );
         }
       }
-      toast.success(`${plugin.name} configured.`);
+      toast.success(fill(t("{name} configured.", "{name} eingerichtet."), { name: plugin.name }));
       onClose();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Plugin setup failed.");
+      const fieldsMissing = incompleteFields(error);
+      if (fieldsMissing) {
+        // Mark the login's empty fields at the picker; nothing was saved.
+        setLoginMissing(fieldsMissing);
+        toast.error(
+          t(
+            "The chosen login is incomplete. Complete it first.",
+            "Der gewählte Zugang ist unvollständig. Vervollständige ihn zuerst.",
+          ),
+        );
+        return;
+      }
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : t("Plugin setup failed.", "Einrichtung fehlgeschlagen."),
+      );
     }
   };
 
@@ -81,16 +117,24 @@ export function CapaSetupDialog({
               )}
             </div>
           </div>
-          <button onClick={onClose} aria-label="Close">
+          <button onClick={onClose} aria-label={t("Close", "Schließen")}>
             <X className="h-4 w-4" />
           </button>
         </header>
         <div className="mt-5">
-          <PluginSetupFields setup={setup} values={values} onChange={setValues} />
+          <PluginSetupFields
+            setup={setup}
+            values={values}
+            onChange={(next) => {
+              setValues(next);
+              setLoginMissing([]);
+            }}
+            loginMissing={loginMissing}
+          />
         </div>
         <footer className="mt-5 flex justify-end gap-2">
           <button onClick={onClose} className="rounded-md border border-border px-3 py-1.5 text-xs">
-            Cancel
+            {t("Cancel", "Abbrechen")}
           </button>
           <button
             onClick={submit}

@@ -2918,6 +2918,13 @@ export interface CredentialDTO {
   lastTestOk: boolean | null;
   createdAt: string;
   updatedAt: string;
+  /** The departments this login is enabled for, or all of them. */
+  departmentIds?: string[];
+  allDepartments?: boolean;
+  /** Required field keys without a value. */
+  incomplete?: string[];
+  /** Departments enabled for (or wired to) it and agents that chose it. */
+  usedBy?: { departments: string[]; agents: string[] };
 }
 
 export function useCredentials(credentialType?: string) {
@@ -2964,10 +2971,16 @@ export function useUpdateCredential() {
   });
 }
 
+/** Deletes a credential: the id, or `{credentialId, force}` to delete one
+ *  still in use (the server answers 409 without `force`). */
 export function useDeleteCredential() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (credentialId: string) => api.delete<void>(`/credentials/${credentialId}`),
+    mutationFn: (target: string | { credentialId: string; force?: boolean }) => {
+      const { credentialId, force } =
+        typeof target === "string" ? { credentialId: target, force: false } : target;
+      return api.delete<void>(`/credentials/${credentialId}${force ? "?force=true" : ""}`);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["credentials"] }),
   });
 }

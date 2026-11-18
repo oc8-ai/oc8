@@ -29,6 +29,12 @@ msgstr ""
 msgid "(requires settings:manage)"
 msgstr ""
 
+msgid "{count} departments"
+msgstr ""
+
+msgid "{field} is required."
+msgstr ""
+
 msgid "{from}–{to} of {total}"
 msgstr ""
 
@@ -41,6 +47,15 @@ msgstr ""
 msgid "{n} skipped: {reasons}"
 msgstr ""
 
+msgid "{name} configured."
+msgstr ""
+
+msgid "{name} is incomplete: {fields} missing"
+msgstr ""
+
+msgid "{name} is still in use ({what}). Delete it anyway? Agents that chose it then have no login until someone chooses another."
+msgstr ""
+
 msgid "/do carry out the plan above"
 msgstr ""
 
@@ -48,6 +63,9 @@ msgid "/summarise this conversation"
 msgstr ""
 
 msgid "1 block"
+msgstr ""
+
+msgid "1 department"
 msgstr ""
 
 msgid "1 record"
@@ -348,6 +366,9 @@ msgid "Agents"
 msgstr ""
 
 msgid "Agents in this department get its tools; agents in other departments don't."
+msgstr ""
+
+msgid "Agents of these departments use this login, unless an agent has chosen another."
 msgstr ""
 
 msgid "Alerts"
@@ -815,6 +836,9 @@ msgstr ""
 msgid "Building preview…"
 msgstr ""
 
+msgid "by a setup"
+msgstr ""
+
 msgid "By Agent"
 msgstr ""
 
@@ -1097,6 +1121,9 @@ msgstr ""
 msgid "Compare"
 msgstr ""
 
+msgid "Complete it under Settings → Connections."
+msgstr ""
+
 msgid "Complete these live checks before inviting pilot users."
 msgstr ""
 
@@ -1194,6 +1221,9 @@ msgid "Connection error"
 msgstr ""
 
 msgid "Connection log"
+msgstr ""
+
+msgid "Connection test failed: {detail}"
 msgstr ""
 
 msgid "Connection works."
@@ -1829,6 +1859,9 @@ msgstr ""
 msgid "Delete agent"
 msgstr ""
 
+msgid "Delete anyway"
+msgstr ""
+
 msgid "Delete chat?"
 msgstr ""
 
@@ -1950,6 +1983,12 @@ msgid "Departments"
 msgstr ""
 
 msgid "departments · jointly coordinated"
+msgstr ""
+
+msgid "Departments for {name}"
+msgstr ""
+
+msgid "Departments saved."
 msgstr ""
 
 msgid "Describe roughly what this agent should do"
@@ -2174,6 +2213,12 @@ msgstr ""
 msgid "Enabled"
 msgstr ""
 
+msgid "Enabled for {count} department(s)"
+msgstr ""
+
+msgid "Enabled for all departments"
+msgstr ""
+
 msgid "Enabling…"
 msgstr ""
 
@@ -2346,6 +2391,9 @@ msgid "Fetching models…"
 msgstr ""
 
 msgid "Field"
+msgstr ""
+
+msgid "Fields marked * are required."
 msgstr ""
 
 msgid "File"
@@ -3398,6 +3446,9 @@ msgstr ""
 msgid "No department seats yet."
 msgstr ""
 
+msgid "no department yet"
+msgstr ""
+
 msgid "No departments available"
 msgstr ""
 
@@ -3444,6 +3495,9 @@ msgid "No locally authored skills to export."
 msgstr ""
 
 msgid "No login"
+msgstr ""
+
+msgid "No login set up yet"
 msgstr ""
 
 msgid "No longer updated"
@@ -3597,6 +3651,9 @@ msgid "Not delivered: this run now acts for someone else"
 msgstr ""
 
 msgid "Not enabled"
+msgstr ""
+
+msgid "Not enabled for any department yet"
 msgstr ""
 
 msgid "not for people"
@@ -4721,6 +4778,9 @@ msgstr ""
 msgid "Setup failed"
 msgstr ""
 
+msgid "Several logins are enabled — choose one for this agent"
+msgstr ""
+
 msgid "Shadow only"
 msgstr ""
 
@@ -4950,6 +5010,9 @@ msgid "Step detail is not available for this run."
 msgstr ""
 
 msgid "Steps"
+msgstr ""
+
+msgid "Still in use"
 msgstr ""
 
 msgid "Stop"
@@ -5205,6 +5268,9 @@ msgid "The chat was not renamed. Try again."
 msgstr ""
 
 msgid "The check failed. Please try again."
+msgstr ""
+
+msgid "The chosen login is incomplete. Complete it first."
 msgstr ""
 
 msgid "The code expired before it was confirmed. Start again to get a new one."
@@ -5909,6 +5975,18 @@ msgstr ""
 msgid "Used by"
 msgstr ""
 
+msgid "used by {count} agents"
+msgstr ""
+
+msgid "used by 1 agent"
+msgstr ""
+
+msgid "used in {count} departments"
+msgstr ""
+
+msgid "used in 1 department"
+msgstr ""
+
 msgid "used this month"
 msgstr ""
 
@@ -5934,6 +6012,27 @@ msgid "Username and password (Basic)"
 msgstr ""
 
 msgid "Users"
+msgstr ""
+
+msgid "Uses {name} — chosen for this agent"
+msgstr ""
+
+msgid "Uses {name} — enabled for the department"
+msgstr ""
+
+msgid "Uses {name} — set up for the department before logins were shared"
+msgstr ""
+
+msgid "Uses {name} — the organisation's login"
+msgstr ""
+
+msgid "Uses the department's earlier setup"
+msgstr ""
+
+msgid "Uses the login of the person in the chat — you have none yet"
+msgstr ""
+
+msgid "Uses your own login {name} in your chats"
 msgstr ""
 
 msgid "Uses your personal subscription — agents on it can only be started manually."

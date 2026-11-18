@@ -54,6 +54,19 @@ export interface Connection {
   createdByName: string | null;
   lastTestedAt: string | null;
   lastTestOk: boolean | null;
+  /** A credential only: the departments it is enabled for, or all of them. */
+  departmentIds?: string[];
+  allDepartments?: boolean;
+  /** A credential only: required field keys without a value. */
+  incomplete?: string[];
+  usedBy?: CredentialUsedBy;
+}
+
+/** What uses a login: departments it is enabled for (or wired to) and
+ *  agents that chose it. */
+export interface CredentialUsedBy {
+  departments: string[];
+  agents: string[];
 }
 
 export interface CredentialCheck {
@@ -75,7 +88,21 @@ export interface ConnectionRequiredInfo {
     | "trigger_without_person"
     | "binding_needs_confirmation"
     | "personal_account_withheld"
-    | "not_configured";
+    | "not_configured"
+    | "ambiguous"
+    | "incomplete";
+  /** `incomplete`: the required field keys the login leaves empty. */
+  missing?: string[];
+}
+
+/** The login an agent's tool uses in the viewer's own chat, and where it
+ *  comes from -- or why there is none (`GET …/tool-access/{key}/effective`). */
+export interface EffectiveLogin {
+  credentialId: string | null;
+  credentialName: string | null;
+  source: "agent" | "own" | "department" | "organisation" | "legacy" | null;
+  reason: "not_configured" | "ambiguous" | "incomplete" | "not_connected" | null;
+  missing: string[];
 }
 
 export interface AgentToolAccess {
@@ -246,15 +273,57 @@ export function useCompleteOAuth() {
   });
 }
 
+/** Removes a connection. A login still in use answers 409 unless `force`
+ *  (then agents that chose it are left without one, never switched). */
 export function useDisconnect() {
   const invalidate = useInvalidateConnections();
   return useMutation({
-    mutationFn: (c: Pick<Connection, "id" | "kind">) =>
+    mutationFn: (c: Pick<Connection, "id" | "kind"> & { force?: boolean }) =>
       api.delete(
-        c.kind === "oauth" ? `/connections/oauth/${c.id}` : `/connections/credentials/${c.id}`,
+        c.kind === "oauth"
+          ? `/connections/oauth/${c.id}`
+          : `/connections/credentials/${c.id}${c.force ? "?force=true" : ""}`,
       ),
     onSuccess: invalidate,
   });
+}
+
+/** Enables an organisation login for departments (or all of them). */
+export function useSetCredentialDepartments() {
+  const invalidate = useInvalidateConnections();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      departmentIds,
+      allDepartments,
+    }: {
+      id: string;
+      departmentIds: string[];
+      allDepartments: boolean;
+    }) =>
+      api.put<Connection>(`/connections/credentials/${id}/departments`, {
+        departmentIds,
+        allDepartments,
+      }),
+    onSuccess: () =>
+      Promise.all([invalidate(), qc.invalidateQueries({ queryKey: ["credentials"] })]),
+  });
+}
+
+/** Whether `err` is the 409 a login still in use answers on delete. */
+export function isCredentialInUse(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409;
+}
+
+/** The missing field keys of a 422 `credential_incomplete`, else null. */
+export function incompleteFields(err: unknown): string[] | null {
+  if (!(err instanceof ApiError) || err.status !== 422) return null;
+  const detail = (err.body as { detail?: unknown } | undefined)?.detail as
+    | { code?: unknown; missing?: unknown }
+    | undefined;
+  if (detail?.code !== "credential_incomplete" || !Array.isArray(detail.missing)) return null;
+  return detail.missing.filter((k): k is string => typeof k === "string");
 }
 
 export function useCheckCredential() {
@@ -330,6 +399,14 @@ export function useAgentToolAccessOptions(agentId: string, toolKey: string, enab
     queryKey: [...accessKey(agentId), toolKey, "options"],
     queryFn: () => api.get<AccessOption[]>(`/agents/${agentId}/tool-access/${toolKey}/options`),
     enabled: enabled && !!agentId,
+  });
+}
+
+export function useEffectiveLogin(agentId: string, toolKey: string) {
+  return useQuery({
+    queryKey: [...accessKey(agentId), toolKey, "effective"],
+    queryFn: () => api.get<EffectiveLogin>(`/agents/${agentId}/tool-access/${toolKey}/effective`),
+    enabled: !!agentId,
   });
 }
 

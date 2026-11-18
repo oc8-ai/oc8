@@ -24,7 +24,7 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useCredentialTypes: () => credentialTypesMock(),
     useCreateCredential: () => ({ mutateAsync: vi.fn(), isPending: false }),
     useUpdateCredential: () => ({ mutate: updateCredentialMock, isPending: false }),
-    useDeleteCredential: () => ({ mutate: deleteCredentialMock, isPending: false }),
+    useDeleteCredential: () => ({ mutateAsync: deleteCredentialMock, isPending: false }),
     useTestCredential: () => ({ mutate: testCredentialMock, isPending: false }),
   };
 });
@@ -98,9 +98,7 @@ describe("Further credentials (organisation)", () => {
     choose(/^delete$/i);
     expect(deleteCredentialMock).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
-    await vi.waitFor(() =>
-      expect(deleteCredentialMock).toHaveBeenCalledWith("c1", expect.anything()),
-    );
+    await vi.waitFor(() => expect(deleteCredentialMock).toHaveBeenCalledWith("c1"));
   });
 
   it("delete does nothing when the confirmation dialog is cancelled", async () => {
@@ -228,9 +226,7 @@ describe("Further credentials (organisation)", () => {
     });
 
     it("when deleting fails", async () => {
-      deleteCredentialMock.mockImplementation(
-        (_id: string, opts: { onError: (e: unknown) => void }) => opts.onError(raw),
-      );
+      deleteCredentialMock.mockRejectedValue(raw);
       renderPage();
       choose(/^delete$/i);
       fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
@@ -247,5 +243,39 @@ describe("Further credentials (organisation)", () => {
       fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
       expect(toastError).toHaveBeenCalledWith("You are not allowed to do this.");
     });
+  });
+
+  it("names what still uses a login and deletes it only on a second yes", async () => {
+    credentialsMock.mockReturnValue({
+      data: [
+        {
+          id: "c1",
+          name: "Prod S3",
+          credentialType: "s3_api",
+          fieldValues: {},
+          lastTestedAt: null,
+          lastTestOk: null,
+          createdAt: "2026-01-01T00:00:00Z",
+          updatedAt: "2026-01-01T00:00:00Z",
+          usedBy: { departments: ["d1"], agents: ["a1", "a2"] },
+        },
+      ],
+    });
+    deleteCredentialMock
+      .mockRejectedValueOnce(new ApiError("credential is in use by: …", 409))
+      .mockResolvedValueOnce(undefined);
+    renderPage();
+    choose(/^delete$/i);
+    fireEvent.click(await screen.findByRole("button", { name: /^delete$/i }));
+    expect(
+      await screen.findByText(
+        /Prod S3 is still in use \(used by 2 agents · used in 1 department\)/,
+      ),
+    ).toBeInTheDocument();
+    expect(deleteCredentialMock).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /delete anyway/i }));
+    await vi.waitFor(() =>
+      expect(deleteCredentialMock).toHaveBeenLastCalledWith({ credentialId: "c1", force: true }),
+    );
   });
 });

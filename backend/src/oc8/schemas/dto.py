@@ -1695,6 +1695,14 @@ class SecretDTO(CamelModel):
     created_at: str
 
 
+class ConnectionUsedByDTO(CamelModel):
+    """What a credential is used by: departments enabled for it or wired to
+    it, and agents that chose it."""
+
+    departments: list[str] = []
+    agents: list[str] = []
+
+
 class CredentialDTO(CamelModel):
     """Credential metadata -- never the secret field values. Non-secret
     field values ARE included (they were never secret in the first place;
@@ -1708,6 +1716,12 @@ class CredentialDTO(CamelModel):
     last_test_ok: bool | None
     created_at: str
     updated_at: str
+    #: The departments this login is enabled for, or all of them.
+    department_ids: list[str] = []
+    all_departments: bool = False
+    #: Required field keys without a value.
+    incomplete: list[str] = []
+    used_by: ConnectionUsedByDTO = ConnectionUsedByDTO()
 
 
 class CredentialTypeDTO(CamelModel):
@@ -1805,14 +1819,6 @@ class ConnectableIntegrationDTO(CamelModel):
     permissions: list[str] = []
 
 
-class ConnectionUsedByDTO(CamelModel):
-    """What a credential is used by: departments enabled for it or wired to
-    it, and agents that chose it."""
-
-    departments: list[str] = []
-    agents: list[str] = []
-
-
 class ConnectionDTO(CamelModel):
     """One OAuth connection or credential as the Connections page shows it --
     metadata only, never a token, a secret ref or a secret value."""
@@ -1867,6 +1873,21 @@ class AgentToolAccessDTO(CamelModel):
     needs_confirmation: bool = False
     #: "not_confirmed" | "agent_changed" when `needs_confirmation`.
     confirmation_reason: str | None = None
+
+
+class EffectiveLoginDTO(CamelModel):
+    """The login an agent's tool uses for the person looking (their own
+    chat), and where it comes from -- or why there is none."""
+
+    #: The login's id (a credential, or for a sign-in tool the account).
+    credential_id: str | None = None
+    credential_name: str | None = None
+    #: "agent" | "own" | "department" | "organisation" | "legacy"
+    source: str | None = None
+    #: None | "not_configured" | "ambiguous" | "incomplete" | "not_connected"
+    reason: str | None = None
+    #: `incomplete`: the required field keys the login leaves empty.
+    missing: list[str] = []
 
 
 class AccessOptionDTO(CamelModel):

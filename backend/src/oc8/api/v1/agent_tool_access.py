@@ -20,14 +20,18 @@ from oc8.api.v1.connections import may_manage_integrations
 from oc8.audit import append_event
 from oc8.authz.scope import HumanActor
 from oc8.connections.access import (
+    ConnectionRequired,
     department_setup,
     department_targets,
     unconfirmed_reason,
 )
 from oc8.connections.access_write import write_tool_access
 from oc8.connections.integrations import Integration, installed_integrations
+from oc8.connections.login import LoginChoice, own_login, resolve_login
 from oc8.connections.tool_connection import tool_connection
-from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO
+from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
+from oc8.credentials.service import missing_required
+from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO, EffectiveLoginDTO
 from oc8.schemas.requests import SetAgentToolAccessRequest
 
 router = APIRouter()
@@ -214,6 +218,94 @@ async def list_options(
                     owner_name=names.get(owner) if owner is not None else None,
                 )
             )
+    return out
+
+
+async def _choice(
+    db: AsyncSession, agent: m.Agent, integ: Integration, viewer: uuid.UUID
+) -> LoginChoice:
+    """What a chat of `viewer` with `agent` would use (resolver order), or
+    `ConnectionRequired` naming why nothing is."""
+    row = await db.scalar(
+        select(m.AgentToolAccess).where(
+            m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == integ.tool_key
+        )
+    )
+    if row is not None and row.mode == "fixed":
+        oauth = (
+            await db.get(m.OAuthConnection, row.oauth_connection_id)
+            if row.oauth_connection_id is not None
+            else None
+        )
+        cred = (
+            await db.get(m.Credential, row.credential_id) if row.credential_id is not None else None
+        )
+        if oauth is None and cred is None:
+            raise ConnectionRequired(integ, "not_configured")
+        return LoginChoice(cred, "agent", None, oauth_connection=oauth)
+    if row is not None:  # mode "user": the person's own login
+        own = await own_login(db, integ, viewer)
+        if own is None:
+            raise ConnectionRequired(integ, "not_connected")
+        return own
+    conn = await tool_connection(
+        db, name=integ.tool_key, department_id=agent.department_id, connected_only=False
+    )
+    if conn is None:
+        raise ConnectionRequired(integ, "not_configured")
+    return await resolve_login(
+        db,
+        agent=agent,
+        integration=integ,
+        conn=conn,
+        live_member_id=viewer,
+        department_ids=[agent.department_id],
+        right="read",
+    )
+
+
+@router.get("/agents/{agent_id}/tool-access/{tool_key}/effective", response_model=EffectiveLoginDTO)
+async def effective_login(
+    agent_id: uuid.UUID,
+    tool_key: str,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_agent_write())],
+) -> EffectiveLoginDTO:
+    """The login the tool uses in the caller's own chat with this agent,
+    where it comes from, and -- when none can be used -- why."""
+    agent = await _agent(request, db, actor, agent_id)
+    integ = (await _integrations(db)).get(tool_key)
+    if integ is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
+    try:
+        choice = await _choice(db, agent, integ, actor.member.id)
+    except ConnectionRequired as exc:
+        return EffectiveLoginDTO(reason=exc.reason, missing=exc.missing)
+    if choice.oauth_connection is not None:
+        return EffectiveLoginDTO(
+            credential_id=str(choice.oauth_connection.id),
+            credential_name=choice.oauth_connection.account_label,
+            source=choice.source,
+        )
+    cred = choice.credential
+    if cred is None and choice.legacy_conn is not None and choice.legacy_conn.credential_id:
+        # A row pinned to one login, not yet consolidated: that login.
+        cred = await db.get(m.Credential, choice.legacy_conn.credential_id)
+    if cred is None:
+        return EffectiveLoginDTO(source=choice.source)
+    out = EffectiveLoginDTO(
+        credential_id=str(cred.id), credential_name=cred.name, source=choice.source
+    )
+    try:
+        cred_type = await get_credential_type(
+            db, tenant_id=agent.tenant_id, name=cred.credential_type
+        )
+    except CredentialTypeNotFound:
+        return out
+    missing = missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
+    if missing:
+        return out.model_copy(update={"reason": "incomplete", "missing": missing})
     return out
 
 

@@ -117,3 +117,43 @@ async def test_creating_an_incomplete_login_names_what_is_missing(
         )
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == {"code": "credential_incomplete", "missing": ["url"]}
+
+
+async def test_settings_credential_list_shows_what_uses_a_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """The login picker of a setup lists through `/credentials`: it shows the
+    same enablement, missing fields and users as the Connections page."""
+    tenant = uuid.uuid4()
+    cred = await credential_row(app_session, tenant, owner=None)
+    sales = await _department(app_session, tenant, "Sales")
+    async with app_session(tenant) as db:
+        agent = m.Agent(tenant_id=tenant, department_id=sales, name="Ada")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=tenant,
+                agent_id=agent_id,
+                tool_key="odoo",
+                mode="fixed",
+                credential_id=cred,
+            )
+        )
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    async with api() as c:
+        await install(c, admin, "odoo_mcp")
+        r = await c.put(
+            f"/api/v1/connections/credentials/{cred}/departments",
+            json={"departmentIds": [str(sales)], "allDepartments": False},
+            headers=admin,
+        )
+        assert r.status_code == 200, r.text
+        r = await c.get("/api/v1/credentials?type=odoo_login", headers=admin)
+    assert r.status_code == 200, r.text
+    (row,) = r.json()
+    assert row["departmentIds"] == [str(sales)]
+    assert row["allDepartments"] is False
+    assert row["usedBy"] == {"departments": [str(sales)], "agents": [str(agent_id)]}
+    assert row["incomplete"] == ["database", "password"]

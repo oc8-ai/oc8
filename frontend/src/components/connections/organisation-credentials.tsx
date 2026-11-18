@@ -8,6 +8,7 @@ import {
   useCredentials,
   useCredentialTypes,
   useDeleteCredential,
+  useDepartments,
   useTestCredential,
   useUpdateCredential,
   type CredentialDTO,
@@ -17,8 +18,117 @@ import { useMay } from "@/lib/governance-hooks";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { useConfirm } from "@/hooks/use-confirm";
 import { ApiError } from "@/lib/api";
+import {
+  type CredentialUsedBy,
+  isCredentialInUse,
+  useSetCredentialDepartments,
+} from "@/lib/connections";
 import { ConnectionRow, RowList, RowMenu } from "./connection-row";
-import { checkErrorText, saveErrorText } from "./texts";
+import { checkErrorText, fill, inUseDescription, saveErrorText, usedByText } from "./texts";
+
+/** Enables an organisation login for departments, or for all of them: the
+ *  one place a login is shared (setups only choose it). */
+interface DepartmentsLogin {
+  id: string;
+  name: string;
+  departmentIds?: string[];
+  allDepartments?: boolean;
+  usedBy?: CredentialUsedBy;
+}
+
+export function LoginDepartmentsDialog({
+  login,
+  onOpenChange,
+}: {
+  login: DepartmentsLogin | null;
+  onOpenChange: (open: boolean) => void;
+}) {
+  // Keyed by the login: its choice starts from what is saved, and a
+  // background refetch never resets what is being edited.
+  if (!login) return null;
+  return <DepartmentsForm key={login.id} login={login} onOpenChange={onOpenChange} />;
+}
+
+function DepartmentsForm({
+  login,
+  onOpenChange,
+}: {
+  login: DepartmentsLogin;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const t = useT();
+  const { data: page } = useDepartments({ pageSize: 200 });
+  const departments = page?.items ?? [];
+  const save = useSetCredentialDepartments();
+  const [all, setAll] = useState(() => !!login.allDepartments);
+  const [chosen, setChosen] = useState<string[]>(() => login.departmentIds ?? []);
+
+  const toggle = (id: string) =>
+    setChosen((cur) => (cur.includes(id) ? cur.filter((d) => d !== id) : [...cur, id]));
+  const submit = () =>
+    save.mutate(
+      { id: login.id, departmentIds: all ? [] : chosen, allDepartments: all },
+      {
+        onSuccess: () => {
+          toast.success(t("Departments saved.", "Abteilungen gespeichert."));
+          onOpenChange(false);
+        },
+        onError: (e: unknown) => toast.error(saveErrorText(e, t)),
+      },
+    );
+  const used = usedByText(t, login.usedBy);
+
+  return (
+    <Dialog open onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {fill(t("Departments for {name}", "Abteilungen für {name}"), { name: login.name })}
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-sm text-muted-foreground">
+          {t(
+            "Agents of these departments use this login, unless an agent has chosen another.",
+            "Agenten dieser Abteilungen nutzen diesen Zugang, außer ein Agent hat einen anderen gewählt.",
+          )}
+        </p>
+        {used && <p className="text-xs text-muted-foreground">{used}</p>}
+        <div className="grid gap-2 text-sm">
+          <label className="flex items-center gap-2 font-medium">
+            <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)} />
+            {t("All departments", "Alle Abteilungen")}
+          </label>
+          {departments.map((d) => (
+            <label key={d.id} className="flex items-center gap-2 pl-5">
+              <input
+                type="checkbox"
+                disabled={all}
+                checked={all || chosen.includes(d.id)}
+                onChange={() => toggle(d.id)}
+              />
+              {d.name}
+            </label>
+          ))}
+        </div>
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={() => onOpenChange(false)}
+            className="rounded-md border border-border px-3 py-1.5 text-xs"
+          >
+            {t("Cancel", "Abbrechen")}
+          </button>
+          <button
+            onClick={submit}
+            disabled={save.isPending}
+            className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
+          >
+            {save.isPending ? t("Saving…", "Wird gespeichert…") : t("Save", "Speichern")}
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 /** The organisation's other credentials (storage, mail server, model keys):
  *  the former Credentials page, now a section of the Connections page. */
@@ -76,15 +186,32 @@ export function OrganisationCredentials({
       cancelLabel: t("Cancel", "Abbrechen"),
     });
     if (!ok) return;
-    deleteCredential.mutate(cred.id, {
-      onSuccess: () => toast.success(t("Deleted", "Gelöscht")),
-      onError: (e: unknown) =>
-        toast.error(
-          e instanceof ApiError && e.status === 403
-            ? saveErrorText(e, t)
-            : t("Could not delete.", "Konnte nicht gelöscht werden."),
-        ),
-    });
+    const failed = (e: unknown) =>
+      toast.error(
+        e instanceof ApiError && e.status === 403
+          ? saveErrorText(e, t)
+          : t("Could not delete.", "Konnte nicht gelöscht werden."),
+      );
+    try {
+      await deleteCredential.mutateAsync(cred.id);
+      toast.success(t("Deleted", "Gelöscht"));
+    } catch (e: unknown) {
+      if (!isCredentialInUse(e)) return failed(e);
+      // Still in use: say by what, and delete only on a second yes.
+      const anyway = await confirm({
+        title: t("Still in use", "Wird noch genutzt"),
+        description: inUseDescription(t, cred.name, cred.usedBy),
+        confirmLabel: t("Delete anyway", "Trotzdem löschen"),
+        cancelLabel: t("Cancel", "Abbrechen"),
+      });
+      if (!anyway) return;
+      try {
+        await deleteCredential.mutateAsync({ credentialId: cred.id, force: true });
+        toast.success(t("Deleted", "Gelöscht"));
+      } catch (again: unknown) {
+        failed(again);
+      }
+    }
   };
 
   return (
@@ -121,7 +248,9 @@ export function OrganisationCredentials({
               <ConnectionRow
                 key={cred.id}
                 title={cred.name}
-                detail={typeLabel(cred.credentialType)}
+                detail={[typeLabel(cred.credentialType), usedByText(t, cred.usedBy)]
+                  .filter(Boolean)
+                  .join(" · ")}
                 aside={
                   <span className={failed ? "text-amber-600 dark:text-amber-400" : undefined}>
                     {cred.lastTestedAt == null
