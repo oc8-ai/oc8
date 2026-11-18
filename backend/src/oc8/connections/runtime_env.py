@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -52,6 +52,9 @@ OAUTH_ACCOUNT_ENV: Final = "OC8_OAUTH_ACCOUNT"
 class McpLaunchEnv:
     env: dict[str, str]
     reusable: bool
+    #: The right the bridge's account was resolved for (`ToolAccess.right`):
+    #: a "read" bridge must refuse every call that needs more.
+    right: Literal["read", "modify"] = "modify"
 
 
 def _cfg(conn: m.McpConnection) -> dict[str, Any]:
@@ -170,12 +173,15 @@ async def run_mcp_env(
     tool: str | None = None,
     listing: bool = False,
     ctx: dict[str, Any] | None = None,
+    right: Literal["read", "modify"] | None = None,
 ) -> McpLaunchEnv:
     """`tool`: the call this launch serves (audited). `listing`: only listing
     tools -- without a sign-in account the bridge starts without it, so the
     tools stay visible and the first real call explains what is missing; a
-    login integration without a usable login lists nothing and raises its
-    reason (recorded on the run), so the chat shows why. `ctx`: a
+    login integration without a usable login starts no bridge: the reason is
+    raised (the caller skips the tool) but not recorded on the run -- only an
+    actual call asks for a connection. `right`: the right the call needs, when
+    `tool` does not say (a core tool reading through the connection). `ctx`: a
     caller's in-request copy of the run context that it writes back whole
     (the isolated-runtime step endpoint); the CTA is merged into it too."""
     cfg = _cfg(conn)
@@ -193,21 +199,27 @@ async def run_mcp_env(
         env = await resolve_mcp_env(db, tenant_id=run.tenant_id, cfg=cfg, connection_name=conn.name)
         return McpLaunchEnv(env, reusable=not has_oauth_ref(cfg))
     try:
-        access = await resolve_tool_access(db, run=run, agent=agent, conn=conn, tool=tool)
+        access = await resolve_tool_access(
+            db, run=run, agent=agent, conn=conn, tool=tool, right=right
+        )
         await _require_complete(db, access, run.tenant_id)
     except ConnectionRequired as exc:
-        if listing and exc.integration.kind != "credential":
+        if listing and exc.integration.kind == "credential":
+            # A login integration's bridge cannot start without its login (it
+            # would only report "Connection closed"): the tool is skipped. Not
+            # recorded on the run -- an agent that merely has the tool enabled
+            # must not ask for a connection on every run.
+            raise
+        if listing:
             # A sign-in integration's tools stay listed; the first call shows
-            # the call to action. A login integration's bridge cannot start
-            # without its login (it would only report "Connection closed"):
-            # it lists nothing, and the reason is raised and recorded instead.
+            # the call to action.
             env = await resolve_mcp_env(
                 db,
                 tenant_id=run.tenant_id,
                 cfg=_without_identity(conn),
                 connection_name=conn.name,
             )
-            return McpLaunchEnv(env, reusable=False)
+            return McpLaunchEnv(env, reusable=False, right="read")
         patch = {"connection_required": exc.as_context()}
         await merge_context(db, run, patch)
         if ctx is not None:
@@ -238,7 +250,7 @@ async def run_mcp_env(
                 cfg=_without_identity(conn),
                 connection_name=conn.name,
             )
-            return McpLaunchEnv(env, reusable=False)
+            return McpLaunchEnv(env, reusable=False, right="read")
         patch = {"connection_required": required.as_context()}
         await merge_context(db, run, patch)
         if ctx is not None:
@@ -263,7 +275,11 @@ async def run_mcp_env(
                 "run_id": str(run.id),
             },
         )
-    return McpLaunchEnv(env, reusable=access.kind == "legacy" and not has_oauth_ref(effective))
+    return McpLaunchEnv(
+        env,
+        reusable=access.kind == "legacy" and not has_oauth_ref(effective),
+        right=access.right,
+    )
 
 
 async def integration_connections(

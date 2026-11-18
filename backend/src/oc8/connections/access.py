@@ -99,6 +99,12 @@ class ConnectionRequired(Exception):
                 f"{', '.join(self.missing)} missing. "
                 "Ask an admin to complete it under Settings → Connections."
             )
+        if self.reason == "read_only":
+            return (
+                f"connection_required: the {self.integration.label} login this conversation "
+                "uses was chosen for reading; no department of the person grants writing "
+                "through it."
+            )
         if self.reason == "ambiguous":
             return (
                 f"connection_required: Several {self.integration.label} logins are enabled "
@@ -133,6 +139,10 @@ class ToolAccess:
     on_behalf_of: uuid.UUID | None
     oauth_connection: m.OAuthConnection | None = None
     credential: m.Credential | None = None
+    #: The right the account was resolved for. "read": a Copilot login lent by
+    #: a department granting only read -- no call needing more may use it. An
+    #: agent's account is not chosen per right ("modify").
+    right: Literal["read", "modify"] = "modify"
 
 
 async def single_organisation_credential(
@@ -162,9 +172,13 @@ async def resolve_tool_access(
     agent: m.Agent,
     conn: m.McpConnection,
     tool: str | None = None,
+    right: Literal["read", "modify"] | None = None,
 ) -> ToolAccess:
     """`tool`: the call this access serves -- a Copilot direct-access write
-    needs a department granting `modify` (listing and unknown calls: `read`)."""
+    needs a department granting `modify`. `"*"`: a bridge serving every call
+    of the run (`whole_bridge_access`). None: a listing or an env lookup
+    (`read`). `right` overrides what `tool` implies (a core tool reading
+    through the connection)."""
     # Deferred: direct_access -> usable -> access would be a cycle at import;
     # login imports this module.
     from oc8.connections.direct_access import active_grant, direct_access_run
@@ -179,8 +193,10 @@ async def resolve_tool_access(
     # The grant must be this person's own (fail closed): a grant row of another
     # member never lends its account.
     if direct is not None and grant is not None and grant.member_id == direct.member_id:
+        if right is None and tool == "*":
+            return await whole_bridge_access(db, member_id=direct.member_id, conn=conn)
         return await resolve_direct_access(
-            db, member_id=direct.member_id, conn=conn, right=call_right(conn, tool)
+            db, member_id=direct.member_id, conn=conn, right=right or call_right(conn, tool)
         )
     acting = await resolve_acting_person(db, run)
     integration = integration_for_connection(conn)
@@ -204,38 +220,73 @@ async def resolve_tool_access(
     return _to_access(choice, integration, acting.member_id)
 
 
-def call_right(conn: m.McpConnection, tool: str | None) -> Literal["read", "modify"]:
-    """The right a call of `tool` needs (the connection's declared scopes;
-    unknown: modify). No tool (a listing, a whole bridge): read."""
-    from oc8.authz.pdp import required_right
+def declared_scopes(conn: m.McpConnection) -> dict[str, Any] | None:
+    """The connection's read/modify classification: its manifest's, else a
+    dict stored on the row."""
     from oc8.capas.discovery import resolve_tool_pack_connection
 
-    if tool is None or tool == "*":
-        return "read"
     cfg = conn.config if isinstance(conn.config, dict) else {}
     declared = resolve_tool_pack_connection(
         str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
     )
-    scopes = (
-        declared.scopes
-        if declared is not None and isinstance(declared.scopes, dict)
-        else conn.scopes
-        if isinstance(conn.scopes, dict)
-        else None
-    )
-    return "modify" if required_right(tool, scopes) == "modify" else "read"
+    if declared is not None and isinstance(declared.scopes, dict):
+        return declared.scopes
+    return conn.scopes if isinstance(conn.scopes, dict) else None
+
+
+def call_right(conn: m.McpConnection, tool: str | None) -> Literal["read", "modify"]:
+    """The right a call of `tool` needs (the connection's declared scopes;
+    unknown: modify). No tool (a listing, an env lookup): read."""
+    from oc8.authz.pdp import required_right
+
+    if tool is None or tool == "*":
+        return "read"
+    return "modify" if required_right(tool, declared_scopes(conn)) == "modify" else "read"
+
+
+def can_write(conn: m.McpConnection) -> bool:
+    """Whether the connection declares a tool needing more than read (no
+    classification at all: every tool counts as modify)."""
+    scopes = declared_scopes(conn)
+    if not scopes:
+        return True
+    return any(right != "read" and names for right, names in scopes.items())
+
+
+async def whole_bridge_access(
+    db: AsyncSession, *, member_id: uuid.UUID, conn: m.McpConnection
+) -> ToolAccess:
+    """A Copilot bridge serving every call of the run: resolved for `modify`
+    when the tool can write, else -- or when no department of the person
+    grants modify -- for `read`. The access records the right; a call needing
+    more is refused on that bridge."""
+    if can_write(conn):
+        try:
+            return await resolve_direct_access(db, member_id=member_id, conn=conn, right="modify")
+        except (ConnectionRequired, PermissionError):
+            pass
+    return await resolve_direct_access(db, member_id=member_id, conn=conn, right="read")
 
 
 def _to_access(
-    choice: LoginChoice, integration: Integration, on_behalf_of: uuid.UUID | None
+    choice: LoginChoice,
+    integration: Integration,
+    on_behalf_of: uuid.UUID | None,
+    right: Literal["read", "modify"] = "modify",
 ) -> ToolAccess:
     if choice.oauth_connection is not None:
         return ToolAccess(
-            "oauth", integration, on_behalf_of, oauth_connection=choice.oauth_connection
+            "oauth",
+            integration,
+            on_behalf_of,
+            oauth_connection=choice.oauth_connection,
+            right=right,
         )
     if choice.credential is not None:
-        return ToolAccess("credential", integration, on_behalf_of, credential=choice.credential)
-    return ToolAccess("legacy", integration, on_behalf_of)
+        return ToolAccess(
+            "credential", integration, on_behalf_of, credential=choice.credential, right=right
+        )
+    return ToolAccess("legacy", integration, on_behalf_of, right=right)
 
 
 async def _require_schedule_confirmed(
@@ -563,7 +614,7 @@ async def resolve_direct_access(
     if integration is None:
         # Not a connectable integration: it has one account, the organisation's.
         if may:
-            return ToolAccess("legacy", None, member_id)
+            return ToolAccess("legacy", None, member_id, right=right)
         raise PermissionError(f"{conn.name!r} is not usable by the person this run acts for")
     if not await integration_enabled(db, integration):
         raise ConnectionRequired(integration, "not_configured")
@@ -587,7 +638,7 @@ async def resolve_direct_access(
         department_ids=granting,
         right=right,
     )
-    return _to_access(choice, integration, member_id)
+    return _to_access(choice, integration, member_id, right)
 
 
 def account_of(access: ToolAccess) -> Literal["own", "organisation"]:

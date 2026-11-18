@@ -26,6 +26,7 @@ from oc8.connections.access import (
 )
 from oc8.connections.integrations import integration_for_connection
 from oc8.connections.login import resolve_login
+from oc8.connections.read_only import ReadOnlyBridge
 from oc8.connections.runtime_env import run_mcp_env
 from oc8.credentials import registry
 from oc8.credentials.enablement import set_departments
@@ -475,3 +476,174 @@ async def test_copilot_write_needs_a_department_granting_modify(
     write_login = await _login(app_session, tenant, name="Write", departments={writing})
     access = await _direct("modify")
     assert (access.credential.id, access.on_behalf_of) == (write_login, anna)  # type: ignore[union-attr]
+
+
+async def _copilot_run(
+    app_session: AppSessionFactory, *, seats: dict[str, dict[str, Any]]
+) -> tuple[uuid.UUID, uuid.UUID, dict[str, uuid.UUID], uuid.UUID, uuid.UUID]:
+    """A live Copilot web turn of Anna's holding a direct-access grant for the
+    tool. `seats`: department name -> frame; Anna sits in each. Returns
+    (tenant, anna, department ids by name, connection, run)."""
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    departments = {
+        name: await _department(app_session, tenant, name, frame) for name, frame in seats.items()
+    }
+    async with app_session(tenant) as db:
+        copilot = await get_or_create_assistant(db, tenant_id=tenant)
+        for dept in departments.values():
+            db.add(
+                m.OrgMemberDepartment(
+                    tenant_id=tenant, member_id=anna, department_id=dept, seat_role="dept_viewer"
+                )
+            )
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name=KEY,
+            server_url="",
+            transport="stdio",
+            connected=True,
+            config=dict(CFG),
+        )
+        session = m.ChatSession(tenant_id=tenant, agent_id=copilot.id, member_id=anna)
+        db.add_all([conn, session])
+        await db.flush()
+        approval = m.ApprovalRequest(
+            tenant_id=tenant,
+            agent_id=copilot.id,
+            action_type="direct_access",
+            title="t",
+            status="approved",
+            payload={},
+        )
+        db.add(approval)
+        await db.flush()
+        db.add(
+            m.DirectAccessGrant(
+                tenant_id=tenant,
+                chat_session_id=session.id,
+                member_id=anna,
+                tool_key=KEY,
+                approval_id=approval.id,
+            )
+        )
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=copilot.id,
+            source="chat",
+            context={"chat_session_id": str(session.id), "door": "web", "on_behalf_of": str(anna)},
+        )
+        db.add(run)
+        await db.flush()
+        conn_id, run_id = conn.id, run.id
+    await enable_plugin_row(app_session, tenant, PLUGIN)
+    return tenant, anna, departments, conn_id, run_id
+
+
+READ_ONLY = {"tools": {KEY: {"enabled": True, "read": True, "modify": False}}}
+
+
+class _FakeSession:
+    def __init__(self) -> None:
+        self.tools = [type("T", (), {"name": n})() for n in ("look", "change")]
+        self.calls: list[str] = []
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        return None
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        self.calls.append(name)
+        return "ok"
+
+
+async def test_copilot_cannot_write_through_a_login_resolved_for_reading(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, _anna, depts, conn, run = await _copilot_run(app_session, seats={"Reading": READ_ONLY})
+    read_login = await _login(app_session, tenant, name="Read", departments={depts["Reading"]})
+    async with app_session(tenant) as db:
+        run_row = await db.get(m.AgentRun, run)
+        conn_row = await db.get(m.McpConnection, conn)
+        assert run_row is not None and conn_row is not None
+        # The whole-run bridge falls back to the reading department's login,
+        # and says it was resolved for reading only.
+        bridge = await run_mcp_env(db, run=run_row, conn=conn_row, tool="*")
+        assert (bridge.env["LOGIN_URL"], bridge.right) == ("https://svc.acme.test", "read")
+        # A single write call is resolved for modify: nothing lends it a login.
+        with pytest.raises(ConnectionRequired):
+            await run_mcp_env(db, run=run_row, conn=conn_row, tool="change")
+        assert (await run_mcp_env(db, run=run_row, conn=conn_row, tool="look")).right == "read"
+        inner = _FakeSession()
+        async with ReadOnlyBridge(inner, conn_row) as session:
+            assert [t.name for t in session.tools] == ["look"]
+            assert await session.call("look", {}) == "ok"
+            with pytest.raises(ConnectionRequired) as refused:
+                await session.call("change", {})
+    assert refused.value.reason == "read_only"
+    assert inner.calls == ["look"]  # the write never reached the bridge
+    assert read_login
+
+
+async def test_a_whole_run_bridge_resolves_with_modify_when_the_tool_can_write(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, _anna, depts, conn, run = await _copilot_run(
+        app_session, seats={"Reading": READ_ONLY, "Writing": FRAME}
+    )
+    await _login(
+        app_session,
+        tenant,
+        name="Read",
+        url="https://read.acme.test",
+        departments={depts["Reading"]},
+    )
+    await _login(
+        app_session,
+        tenant,
+        name="Write",
+        url="https://write.acme.test",
+        departments={depts["Writing"]},
+    )
+    async with app_session(tenant) as db:
+        run_row = await db.get(m.AgentRun, run)
+        conn_row = await db.get(m.McpConnection, conn)
+        assert run_row is not None and conn_row is not None
+        bridge = await run_mcp_env(db, run=run_row, conn=conn_row, tool="*")
+    assert (bridge.env["LOGIN_URL"], bridge.right) == ("https://write.acme.test", "modify")
+
+
+async def test_listing_without_a_login_does_not_ask_for_a_connection(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started: list[Any] = []
+
+    async def _never(*args: Any, **kwargs: Any) -> dict[str, str]:
+        started.append(kwargs)
+        return {}
+
+    monkeypatch.setattr(runtime_env, "resolve_mcp_env", _never)
+    agent, _anna, conn, run = await _world(app_session)  # no login at all
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        conn_row = await db.get(m.McpConnection, conn)
+        assert run_row is not None and conn_row is not None
+        with pytest.raises(ConnectionRequired) as listing:
+            await run_mcp_env(db, run=run_row, conn=conn_row, listing=True)
+    assert listing.value.reason == "not_configured"
+    assert started == []  # no bridge
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        assert run_row is not None
+        assert "connection_required" not in (run_row.context or {})
+        conn_row = await db.get(m.McpConnection, conn)
+        assert conn_row is not None
+        # Only an actual call asks for the connection.
+        with pytest.raises(ConnectionRequired):
+            await run_mcp_env(db, run=run_row, conn=conn_row, tool="look")
+    async with app_session(agent.tenant_id) as db:
+        run_row = await db.get(m.AgentRun, run)
+        assert run_row is not None
+        assert run_row.context["connection_required"]["reason"] == "not_configured"
