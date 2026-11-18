@@ -12,6 +12,7 @@ import datetime as dt
 import importlib
 import logging
 import uuid
+from urllib.parse import urlsplit
 from typing import Any, Literal
 
 from sqlalchemy import select
@@ -86,7 +87,9 @@ async def create_credential(
 ) -> m.Credential:
     cred_type = await get_credential_type(db, tenant_id=tenant_id, name=credential_type)
     secret_keys = {f.key for f in cred_type.fields if f.kind == "password"}
-    plain_values = {k: v for k, v in field_values.items() if k not in secret_keys}
+    plain_values = keep_origins(
+        cred_type, {k: v for k, v in field_values.items() if k not in secret_keys}
+    )
     # Backfill a non-secret field's TOML-declared `default` when the caller's
     # `field_values` omits it entirely. A `CredentialPicker` create-form only
     # ever shows `field.default` as a placeholder -- it never commits that
@@ -172,7 +175,9 @@ async def update_credential(
     if field_values is not None:
         cred_type = await get_credential_type(db, tenant_id=tenant_id, name=cred.credential_type)
         secret_keys = {f.key for f in cred_type.fields if f.kind == "password"}
-        plain_updates = {k: v for k, v in field_values.items() if k not in secret_keys}
+        plain_updates = keep_origins(
+            cred_type, {k: v for k, v in field_values.items() if k not in secret_keys}
+        )
         cred.field_values = {**cred.field_values, **plain_updates}
         secret_refs = dict(cred.secret_refs)
         for key in secret_keys:
@@ -270,6 +275,24 @@ async def resolve_credential_field(
     return str(value)
 
 
+def _origin(url: str) -> str:
+    """`scheme://host[:port]` of `url`; a value that is no absolute URL is
+    left as it is for the URL check to refuse."""
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return url
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def keep_origins(cred_type: Any, values: dict[str, Any]) -> dict[str, Any]:
+    """`values` with each `origin_only` field cut down to its origin."""
+    fields = {f.key for f in cred_type.fields if f.kind == "url" and f.origin_only}
+    return {
+        key: _origin(value.strip()) if key in fields and isinstance(value, str) else value
+        for key, value in values.items()
+    }
+
+
 def _guard_url_fields(cred_type: Any, values: dict[str, str]) -> None:
     """Refuse an address field that points at an internal or non-http target,
     before any validator makes a connection with it: `url` fields as URLs, a
@@ -363,7 +386,7 @@ def collect_required_values(cred_type: Any, field_values: dict[str, Any]) -> dic
             values[field.key] = value
         elif field.required:
             raise CredentialCheckFailed(f"{field.label} is required", reason="invalid")
-    return values
+    return keep_origins(cred_type, values)
 
 
 async def test_credential(

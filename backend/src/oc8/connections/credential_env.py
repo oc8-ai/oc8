@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from oc8 import models as m
 from oc8.capas.manifest import CredentialTypeSpec
+from oc8.credentials.service import keep_origins
 
 
 def credential_mcp_env(
@@ -19,6 +20,8 @@ def credential_mcp_env(
     for env_name, field_key in credential_env_fields.items():
         by_field.setdefault(field_key, []).append(env_name)
     secret_keys = {f.key for f in cred_type.fields if f.kind == "password"}
+    # A credential saved before its address was cut to the origin.
+    plain_values = keep_origins(cred_type, cred.field_values or {})
     env: dict[str, str] = {}
     secret_env: dict[str, str] = {}
     for field in cred_type.fields:
@@ -29,7 +32,7 @@ def credential_mcp_env(
                 for target in targets:
                     secret_env[target] = ref
         else:
-            value = (cred.field_values or {}).get(field.key)
+            value = plain_values.get(field.key)
             if value:
                 for target in targets:
                     env[target] = str(value)

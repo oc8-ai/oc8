@@ -58,6 +58,7 @@ from oc8.credentials.service import (
     CredentialFieldNotSet,
     CredentialNotFound,
     get_credential,
+    keep_origins,
     resolve_credential_field,
 )
 from oc8.knowledge.connectors.base import ConnectorError
@@ -686,11 +687,13 @@ async def _apply_plugin_setup(
                     status.HTTP_422_UNPROCESSABLE_CONTENT,
                     f"setup field {field.key!r}: no such credential",
                 ) from exc
+            # A credential saved before its address was cut to the origin.
+            stored = keep_origins(cred_type, cred_row.field_values or {})
             for other in cred_type.fields:
                 values[other.key] = (
                     resolved_value
                     if other.key == secret_fields[0].key
-                    else str(cred_row.field_values.get(other.key, ""))
+                    else str(stored.get(other.key, ""))
                 )
             credential_plain_keys.update(
                 other.key for other in cred_type.fields if other.kind != "password"
