@@ -44,6 +44,22 @@ async def set_departments(
     await db.flush()
 
 
+async def enable_for_department(
+    db: AsyncSession, cred: m.Credential, department_id: uuid.UUID | None
+) -> None:
+    """Add one department to the login's enablement, never taking it from
+    another; `None` enables it for all departments (the department rows are
+    kept). Raises `ValueError("personal")` for a personal login."""
+    current = set((await department_ids_by_credential(db, [cred.id])).get(cred.id, []))
+    if department_id is None:
+        if not cred.all_departments:
+            await set_departments(db, cred, department_ids=current, all_departments=True)
+    elif department_id not in current:
+        await set_departments(
+            db, cred, department_ids=current | {department_id}, all_departments=cred.all_departments
+        )
+
+
 async def department_ids_by_credential(
     db: AsyncSession, credential_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, list[uuid.UUID]]:

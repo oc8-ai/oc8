@@ -8,24 +8,28 @@ versions created, until the tenant's rows are consolidated."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
-from oc8.audit import append_event
+from oc8.api.v1.agent_tool_access import (
+    authorized_agent,
+    connectable_integration,
+    save_tool_access,
+)
 from oc8.auth import Principal
 from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
-from oc8.connections.access import binding_fingerprint
-from oc8.connections.integrations import installed_integrations
+from oc8.authz.scope import HumanActor, scope_for_principal
+from oc8.connections.integrations import Integration
 from oc8.connections.tool_connection import tool_connection
-from oc8.credentials.enablement import department_ids_by_credential, set_departments
+from oc8.credentials.enablement import enable_for_department
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import CredentialNotFound, create_credential, get_credential
 from oc8.schemas.dto import McpLoginDTO
-from oc8.schemas.requests import CreateMcpLoginRequest
+from oc8.schemas.requests import CreateMcpLoginRequest, SetAgentToolAccessRequest
 from oc8.secrets.keyprovider import SecretStoreUnavailable
 
 router = APIRouter()
@@ -50,7 +54,7 @@ def _to_dto(c: m.McpConnection) -> McpLoginDTO:
     dependencies=[Depends(require_permission(perm(INTEGRATION, MANAGE)))],
 )
 async def create_login(
-    body: CreateMcpLoginRequest, db: DbSession, principal: CurrentPrincipal
+    body: CreateMcpLoginRequest, request: Request, db: DbSession, principal: CurrentPrincipal
 ) -> McpLoginDTO:
     """Create (or reuse) an organisation login for the tool `name`. With an
     `agent_id` the login becomes that agent's fixed access for the tool --
@@ -68,16 +72,18 @@ async def create_login(
         if dept is None or dept.deleted_at is not None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown department")
     agent: m.Agent | None = None
+    actor: HumanActor | None = None
+    integ: Integration | None = None
     if body.agent_id is not None:
-        agent = await db.get(m.Agent, body.agent_id)
-        if agent is None or agent.deleted_at is not None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
-        if not any(
-            i.available
-            and i.integration.tool_key == body.name
-            and i.integration.kind == "credential"
-            and i.integration.credential_type == body.credential_type
-            for i in await installed_integrations(db)
+        # The same door as `PUT /agents/{id}/tool-access/{key}`: the right to
+        # change THIS agent, checked before anything is written.
+        actor = await _human_actor(db, principal)
+        agent = await authorized_agent(request, db, actor, body.agent_id)
+        integ = await connectable_integration(db, body.name)
+        if (
+            integ is None
+            or integ.kind != "credential"
+            or integ.credential_type != body.credential_type
         ):
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -123,18 +129,19 @@ async def create_login(
             ) from exc
         await db.flush()
     if agent is not None:
-        await _fix_agent_login(db, principal, agent, body.name, cred)
+        assert actor is not None and integ is not None
+        await save_tool_access(
+            request,
+            db,
+            actor,
+            agent,
+            integ,
+            SetAgentToolAccessRequest(mode="fixed", credential_id=cred.id),
+        )
     elif dept is not None:
         # A department's login (the department's default for the tool): the
         # login is enabled for it, alongside any other department it serves.
-        current = set((await department_ids_by_credential(db, [cred.id])).get(cred.id, []))
-        if dept.id not in current:
-            await set_departments(
-                db,
-                cred,
-                department_ids=current | {dept.id},
-                all_departments=cred.all_departments,
-            )
+        await enable_for_department(db, cred, dept.id)
     tool = await tool_connection(
         db,
         name=body.name,
@@ -154,66 +161,16 @@ async def create_login(
     return dto
 
 
-async def _fix_agent_login(
-    db: AsyncSession,
-    principal: Principal,
-    agent: m.Agent,
-    tool_key: str,
-    cred: m.Credential,
-) -> None:
-    """The agent's fixed access to `tool_key` through the organisation login
-    `cred`, set by an administrator (integration:manage) -- written like
-    `PUT /agents/{id}/tool-access/{key}` writes it, fingerprint included."""
-    member_id = await db.scalar(
-        select(m.OrgMember.id).where(m.OrgMember.subject == principal.subject)
-    )
-    row = await db.scalar(
-        select(m.AgentToolAccess).where(
-            m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == tool_key
-        )
-    )
-    previous = {
-        "mode": row.mode if row else None,
-        "oauth_connection_id": str(row.oauth_connection_id)
-        if row and row.oauth_connection_id
-        else None,
-        "credential_id": str(row.credential_id) if row and row.credential_id else None,
-    }
-    if row is None:
-        row = m.AgentToolAccess(
-            tenant_id=agent.tenant_id, agent_id=agent.id, tool_key=tool_key, mode="fixed"
-        )
-        db.add(row)
-    row.mode = "fixed"
-    row.oauth_connection_id = None
-    row.credential_id = cred.id
-    row.set_by_member_id = member_id
-    row.set_with_manage = True
-    row.binding_fingerprint = await binding_fingerprint(
-        db, agent, tool_key, version_id=agent.current_version_id
-    )
-    await db.flush()
-    await append_event(
-        db,
-        tenant_id=agent.tenant_id,
-        actor_type="operator",
-        actor_id=member_id,
-        category="authz",
-        action="agent.tool_access.updated",
-        resource={
-            "agent_id": str(agent.id),
-            "tool": tool_key,
-            "mode": "fixed",
-            "oauth_connection_id": None,
-            "credential_id": str(cred.id),
-            "target_label": cred.name,
-            "target_owner_member_id": None,
-            "previous": previous,
-            "consent": "organisation",
-            "confirm_share": False,
-        },
-        principal=principal,
-    )
+async def _human_actor(db: AsyncSession, principal: Principal) -> HumanActor:
+    """The caller as a person with a seat scope, resolved the way
+    `require_agent_write` does."""
+    try:
+        member, scope = await scope_for_principal(db, principal, upsert=True)
+    except PermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    if member is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "requires a person")
+    return HumanActor(principal=principal, member=member, scope=scope)
 
 
 @router.get(

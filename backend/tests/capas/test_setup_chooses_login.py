@@ -390,3 +390,93 @@ async def test_testing_the_tool_with_a_chosen_login_leaves_its_row_to_the_others
         assert tested.json()["health"]["status"] == "error"
     (after,) = await _tool_rows(app_session, tenant)
     assert after.connected is True
+
+
+async def test_binding_a_new_login_to_an_agent_needs_the_right_to_edit_that_agent(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`POST /mcp/logins` with an agent is the same door as the agent's own
+    tool-access write: integration rights alone do not let a caller change an
+    agent they may not edit."""
+    import dataclasses
+
+    from oc8.api import deps
+    from oc8.authz.permissions import AGENT, MANAGE, perm
+
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    (sales,) = await _departments(app_session, tenant, "Sales")
+    login = await _login(app_session, tenant, name="Company system")
+    async with app_session(tenant) as db:
+        agent = m.Agent(tenant_id=tenant, department_id=sales, name="Mia")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+    real = deps._authority
+
+    async def without_agent_manage(request: Any, db: Any, principal: Any) -> Any:
+        authority = await real(request, db, principal)
+        return dataclasses.replace(
+            authority, tenant_wide=authority.tenant_wide - {perm(AGENT, MANAGE)}
+        )
+
+    async with api() as c:
+        await install(c, admin, PLUGIN)
+        monkeypatch.setattr(deps, "_authority", without_agent_manage)
+        r = await c.post(
+            "/api/v1/mcp/logins",
+            json={
+                "name": KEY,
+                "credentialType": TYPE,
+                "fieldValues": {"url": "https://x.test", "token": "t"},
+                "agentId": str(agent_id),
+            },
+            headers=admin,
+        )
+    assert r.status_code in (403, 404), r.text
+    async with app_session(tenant) as db:
+        rows = (
+            await db.execute(
+                select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent_id)
+            )
+        ).all()
+        assert rows == []
+        creds = (await db.execute(select(m.Credential.id))).scalars().all()
+        assert creds == [login]  # no login was created either
+
+
+async def test_testing_a_shared_tool_row_without_a_login_does_not_disconnect_it(
+    app_session: AppSessionFactory,
+) -> None:
+    """The Connections page "Test" names no login: the shared row of a login
+    tool is tested with the login it would use, asks which one when several
+    could be, and a failure never takes the row away from every department."""
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    async with api() as c:
+        await install(c, admin, PLUGIN)
+        (row,) = await _tool_rows(app_session, tenant)
+        async with app_session(tenant) as db:
+            live = await db.get(m.McpConnection, row.id)
+            assert live is not None
+            live.connected = True
+
+        # No login at all: nothing to test with.
+        none = await c.post(f"/api/v1/mcp/connections/{row.id}/test", headers=admin)
+        assert none.status_code == 422, none.text
+        assert none.json()["detail"]["code"] == "login_required"
+
+        # The only login: tested with it; the failure stays in the answer.
+        await _login(app_session, tenant, name="Company system")
+        tested = await c.post(f"/api/v1/mcp/connections/{row.id}/test", headers=admin)
+        assert tested.status_code == 200, tested.text
+        assert tested.json()["connected"] is False
+        assert tested.json()["health"]["status"] == "error"
+
+        # Several logins, none enabled: the caller has to choose.
+        await _login(app_session, tenant, name="Second system")
+        several = await c.post(f"/api/v1/mcp/connections/{row.id}/test", headers=admin)
+        assert several.status_code == 422, several.text
+        assert several.json()["detail"]["code"] == "login_required"
+    (after,) = await _tool_rows(app_session, tenant)
+    assert after.connected is True

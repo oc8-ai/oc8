@@ -28,6 +28,7 @@ from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
 from oc8.capas.service import _artifact_hash
 from oc8.connections.credential_env import with_login
 from oc8.connections.integrations import integration_for_connection
+from oc8.connections.login import holds_copied_login
 from oc8.connections.usable import needs_department
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
@@ -467,13 +468,19 @@ async def test_connection(
 ) -> McpConnectionDTO:
     """Start the connection's bridge once and list its tools. `credentialId`
     tests the tool's row with that organisation login -- the login a setup
-    just chose (the row holds none of its values). A failure with a login is
-    that login's, not the bridge's: the row, shared by every department,
-    keeps its state and only the answer carries the error."""
+    just chose (the row holds none of its values). Without it, a tool that
+    takes a login is tested with the organisation login it would use when
+    there is exactly one (the one enabled for departments, else the only
+    one); with several the caller is asked which (422 `login_required`). A
+    tool row is never tested without a login. A test with a login only marks
+    the shared row connected: a failure is the login's, so the row keeps its
+    state for every department and only the answer carries the error."""
     conn = await db.get(m.McpConnection, conn_id)
     if conn is None or conn.tenant_id != principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
     cfg = conn.config or {}
+    if credential_id is None:
+        credential_id = await _default_test_login(db, conn)
     if credential_id is not None:
         cfg = await _with_test_login(db, principal.tenant_id, conn, credential_id)
     now = _utcnow_iso()
@@ -547,6 +554,57 @@ async def test_connection(
         conn.health = failed
     await db.commit()
     return _to_dto(conn)
+
+
+async def _default_test_login(db: DbSession, conn: m.McpConnection) -> uuid.UUID | None:
+    """The organisation login a test of `conn` runs with when none was named:
+    None for a row that is no login tool's shared row (a custom server, a
+    sign-in tool, an older row that still holds its own login); the only
+    login enabled for departments, else the only organisation login; 422
+    when the caller has to choose."""
+    integration = integration_for_connection(conn)
+    if integration is None or integration.kind != "credential":
+        return None
+    if conn.credential_id is not None or holds_copied_login(conn, integration):
+        return None
+    creds = (
+        (
+            await db.execute(
+                select(m.Credential)
+                .where(
+                    m.Credential.credential_type == integration.credential_type,
+                    m.Credential.owner_member_id.is_(None),
+                )
+                .order_by(m.Credential.created_at, m.Credential.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    enabled_ids = set(
+        (
+            await db.execute(
+                select(m.CredentialDepartment.credential_id).where(
+                    m.CredentialDepartment.credential_id.in_([c.id for c in creds])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    enabled = [c for c in creds if c.all_departments or c.id in enabled_ids]
+    pool = enabled or list(creds)
+    if len(pool) == 1:
+        return pool[0].id
+    raise HTTPException(
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        {
+            "code": "login_required",
+            "message": "this tool takes a login: choose which one to test"
+            if pool
+            else "this tool takes a login and none is set up yet",
+        },
+    )
 
 
 async def _with_test_login(

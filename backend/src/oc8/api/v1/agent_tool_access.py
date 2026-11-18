@@ -217,19 +217,31 @@ async def list_options(
     return out
 
 
-@router.put("/agents/{agent_id}/tool-access/{tool_key}", response_model=AgentToolAccessDTO)
-async def set_tool_access(
-    agent_id: uuid.UUID,
-    tool_key: str,
-    body: SetAgentToolAccessRequest,
+async def connectable_integration(db: AsyncSession, tool_key: str) -> Integration | None:
+    """The available connectable integration of `tool_key`, if any."""
+    return (await _integrations(db)).get(tool_key)
+
+
+async def authorized_agent(
+    request: Request, db: AsyncSession, actor: HumanActor, agent_id: uuid.UUID
+) -> m.Agent:
+    """The agent, when `actor` may change it (404/403 otherwise)."""
+    return await _agent(request, db, actor, agent_id)
+
+
+async def save_tool_access(
     request: Request,
-    db: DbSession,
-    actor: Annotated[HumanActor, Depends(require_agent_write())],
-) -> AgentToolAccessDTO:
-    agent = await _agent(request, db, actor, agent_id)
-    integ = (await _integrations(db)).get(tool_key)
-    if integ is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
+    db: AsyncSession,
+    actor: HumanActor,
+    agent: m.Agent,
+    integ: Integration,
+    body: SetAgentToolAccessRequest,
+) -> m.AgentToolAccess:
+    """Validate and write the agent's access to `integ`'s tool: who may bind
+    which account, the binding fingerprint, and the audit event. The one
+    writer of `AgentToolAccess` for every route; the caller authorized the
+    agent (`authorized_agent`) and commits. Flushes, never commits."""
+    tool_key = integ.tool_key
     unprocessable = status.HTTP_422_UNPROCESSABLE_CONTENT
     oauth_id: uuid.UUID | None = None
     credential_id: uuid.UUID | None = None
@@ -337,6 +349,23 @@ async def set_tool_access(
         },
         principal=actor.principal,
     )
+    return row
+
+
+@router.put("/agents/{agent_id}/tool-access/{tool_key}", response_model=AgentToolAccessDTO)
+async def set_tool_access(
+    agent_id: uuid.UUID,
+    tool_key: str,
+    body: SetAgentToolAccessRequest,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_agent_write())],
+) -> AgentToolAccessDTO:
+    agent = await _agent(request, db, actor, agent_id)
+    integ = (await _integrations(db)).get(tool_key)
+    if integ is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
+    row = await save_tool_access(request, db, actor, agent, integ, body)
     dto = await _dto(db, agent, integ, row)
     await db.commit()
     return dto

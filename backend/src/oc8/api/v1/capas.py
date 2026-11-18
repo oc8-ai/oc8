@@ -56,7 +56,7 @@ from oc8.capas.service import (
     validate_setup_values,
 )
 from oc8.connections.credential_env import credential_env_targets
-from oc8.credentials.enablement import department_ids_by_credential, set_departments
+from oc8.credentials.enablement import enable_for_department
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
     CredentialFieldNotSet,
@@ -913,7 +913,7 @@ async def _apply_plugin_setup(
         conn.connected = False
         conn.health = {}
     if chosen is not None:
-        await _enable_chosen_login(db, chosen.credential, target_department_id)
+        await enable_for_department(db, chosen.credential, target_department_id)
     await db.commit()
     return PluginSetupResult(
         connection_id=str(conn.id),
@@ -1007,23 +1007,6 @@ async def _chosen_login(
         credential=cred,
         env_targets=frozenset(credential_env_targets(cred_type, conn.credential_env_fields)),
     )
-
-
-async def _enable_chosen_login(
-    db: AsyncSession, cred: m.Credential, department_id: uuid.UUID | None
-) -> None:
-    """Add the department to the login's enablement -- never taking it from
-    another department; no department enables it for all of them."""
-    current = set((await department_ids_by_credential(db, [cred.id])).get(cred.id, []))
-    if department_id is None:
-        await set_departments(db, cred, department_ids=current, all_departments=True)
-    elif department_id not in current:
-        await set_departments(
-            db,
-            cred,
-            department_ids=current | {department_id},
-            all_departments=cred.all_departments,
-        )
 
 
 async def _new_row(
