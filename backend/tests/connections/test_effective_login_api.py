@@ -15,8 +15,9 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.capas.discovery import find_plugin
 from tests.conftest import AppSessionFactory
-from tests.connections.helpers import api, headers
+from tests.connections.helpers import api, headers, member
 from tests.connections.test_login_resolver import (  # noqa: F401  (fixture)
+    CFG,
     FRAME,
     KEY,
     PLUGIN,
@@ -147,3 +148,75 @@ async def test_effective_login_without_any_login(app_session: AppSessionFactory)
         None,
         "not_configured",
     )
+
+
+async def test_effective_login_matches_the_runtime_for_a_pinned_legacy_connection(
+    app_session: AppSessionFactory,
+) -> None:
+    """An agent pinned to an older login row (`/mcp/logins`, unconsolidated)
+    runs on that login -- even when the person looking has their own."""
+    agent, _anna, _conn, _run = await _world(app_session)
+    root = await member(app_session, agent.tenant_id, "root@acme.test")
+    await _login(app_session, agent.tenant_id, name="Mine", owner=root)
+    pinned = await _login(app_session, agent.tenant_id, name="Pinned")
+    async with app_session(agent.tenant_id) as db:
+        row = m.McpConnection(
+            tenant_id=agent.tenant_id,
+            name=KEY,
+            server_url="",
+            transport="stdio",
+            connected=True,
+            config=dict(CFG),
+            credential_id=pinned,
+        )
+        db.add(row)
+        await db.flush()
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        live.narrowing = {"tools": {KEY: {"enabled": True, "connection_id": str(row.id)}}}
+    body = await _effective(agent)
+    assert (body["credentialId"], body["credentialName"], body["source"], body["reason"]) == (
+        str(pinned),
+        "Pinned",
+        "legacy",
+        None,
+    )
+
+
+async def test_effective_login_reports_a_refused_agent_choice(
+    app_session: AppSessionFactory,
+) -> None:
+    """A fixed choice of a person's own login nobody confirmed: the runtime
+    refuses it, so the line names that instead of the login."""
+    agent, anna, _conn, _run = await _world(app_session)
+    await _login(app_session, agent.tenant_id, name="Dept", departments={agent.department_id})
+    annas = await _login(app_session, agent.tenant_id, name="Anna's", owner=anna)
+    async with app_session(agent.tenant_id) as db:
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                tool_key=KEY,
+                mode="fixed",
+                credential_id=annas,
+                set_with_manage=False,
+                set_by_member_id=None,
+            )
+        )
+    assert await _effective(agent) == {
+        "credentialId": None,
+        "credentialName": None,
+        "source": None,
+        "reason": "binding_needs_confirmation",
+        "missing": [],
+    }
+
+
+async def test_effective_login_needs_rights_on_the_agent(app_session: AppSessionFactory) -> None:
+    agent, _anna, _conn, _run = await _world(app_session)
+    async with api() as c:
+        r = await c.get(
+            f"/api/v1/agents/{agent.id}/tool-access/{KEY}/effective",
+            headers=headers(agent.tenant_id, "nobody@acme.test", "member"),
+        )
+    assert r.status_code in (403, 404), r.text

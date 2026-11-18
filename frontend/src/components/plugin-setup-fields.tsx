@@ -1,7 +1,9 @@
 import { KeyRound } from "lucide-react";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import { useDepartments, type PluginSetupSpec } from "@/lib/hooks";
-import { CredentialPicker, URL_PLACEHOLDER } from "@/components/credential-picker";
+import { CredentialPicker } from "@/components/credential-picker";
+import { URL_PLACEHOLDER } from "@/components/connections/login-fields";
+import { RequiredMark } from "@/components/connections/required-mark";
 
 /** Generic field renderer for the declarative setup contract in a plugin
  * manifest. It contains no provider, product, command, environment-variable,
@@ -41,9 +43,7 @@ export function PluginSetupFields({
             <span className="flex items-center gap-1.5">
               {field.kind === "password" && <KeyRound className="h-3 w-3 text-primary" />}
               {label}
-              {field.required && field.kind !== "department" && (
-                <span aria-hidden data-required-mark className="after:content-['*']" />
-              )}
+              {field.required && field.kind !== "department" && <RequiredMark />}
             </span>
             {field.kind === "department" ? (
               <select

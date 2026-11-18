@@ -182,7 +182,6 @@ async def resolve_tool_access(
     # Deferred: direct_access -> usable -> access would be a cycle at import;
     # login imports this module.
     from oc8.connections.direct_access import active_grant, direct_access_run
-    from oc8.connections.login import live_chat_member, resolve_login
 
     direct = direct_access_run(run, agent)
     grant = (
@@ -198,10 +197,26 @@ async def resolve_tool_access(
         return await resolve_direct_access(
             db, member_id=direct.member_id, conn=conn, right=right or call_right(conn, tool)
         )
+    acting, integration, choice = await agent_login(db, run=run, agent=agent, conn=conn)
+    if integration is None or choice is None:
+        return ToolAccess("legacy", None, acting.member_id)
+    return _to_access(choice, integration, acting.member_id)
+
+
+async def agent_login(
+    db: AsyncSession, *, run: m.AgentRun, agent: m.Agent, conn: m.McpConnection
+) -> tuple[ActingPerson, Integration | None, LoginChoice | None]:
+    """The login an agent's run uses through `conn` (no Copilot direct
+    access): who acts, the integration (None: not a connectable one, the
+    row's own config applies) and the resolver's choice. Raises
+    `ConnectionRequired` as the run would. The one path for the runtime and
+    for showing which login a tool uses."""
+    from oc8.connections.login import live_chat_member, resolve_login
+
     acting = await resolve_acting_person(db, run)
     integration = integration_for_connection(conn)
     if integration is None:
-        return ToolAccess("legacy", None, acting.member_id)
+        return acting, None, None
     if not await integration_enabled(db, integration):
         # Disabling keeps the plugin's rows (there is no uninstall): its tools
         # act through nobody's account until it is enabled again.
@@ -217,7 +232,7 @@ async def resolve_tool_access(
         run=run,
         acting=acting,
     )
-    return _to_access(choice, integration, acting.member_id)
+    return acting, integration, choice
 
 
 def declared_scopes(conn: m.McpConnection) -> dict[str, Any] | None:

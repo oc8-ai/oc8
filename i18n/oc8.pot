@@ -5270,6 +5270,9 @@ msgstr ""
 msgid "The check failed. Please try again."
 msgstr ""
 
+msgid "The chosen account must be connected again"
+msgstr ""
+
 msgid "The chosen login is incomplete. Complete it first."
 msgstr ""
 
@@ -5334,6 +5337,9 @@ msgid "The last sync failed."
 msgstr ""
 
 msgid "The link doesn't fill the code in for you — type or paste it yourself."
+msgstr ""
+
+msgid "The login chosen for this agent is not confirmed — runs refuse it"
 msgstr ""
 
 msgid "The login is incomplete: fill in every field and the secret."
@@ -5712,6 +5718,9 @@ msgid "This source is no longer available to you. Go back and pick another."
 msgstr ""
 
 msgid "This step used its whole answer budget."
+msgstr ""
+
+msgid "This tool cannot use a login in your chats right now"
 msgstr ""
 
 msgid "This tool needs a login before it can be enabled."

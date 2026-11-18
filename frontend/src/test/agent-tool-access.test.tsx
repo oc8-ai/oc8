@@ -405,4 +405,20 @@ describe("AgentToolAccessPanel", () => {
       "No login set up yet",
     );
   });
+
+  it("says when the runtime refuses the agent's chosen login", async () => {
+    effective.mockReturnValue({
+      data: {
+        credentialId: null,
+        credentialName: null,
+        source: null,
+        reason: "binding_needs_confirmation",
+        missing: [],
+      },
+    });
+    renderPanel(true, ["odoo"]);
+    expect(await screen.findByTestId("effective-login-odoo")).toHaveTextContent(
+      "Der für diesen Agenten gewählte Zugang ist nicht bestätigt – Läufe lehnen ihn ab",
+    );
+  });
 });

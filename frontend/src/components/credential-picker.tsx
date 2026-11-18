@@ -11,19 +11,16 @@ import {
   type CredentialTypeFieldDTO,
 } from "@/lib/hooks";
 import { fill, incompleteText, usedByAgentsText } from "@/components/connections/texts";
+import {
+  URL_PLACEHOLDER,
+  emptyRequiredFields,
+  initialLoginValues,
+  loginFieldLabel,
+  loginFieldPlaceholder,
+} from "@/components/connections/login-fields";
+import { RequiredMark } from "@/components/connections/required-mark";
 
-/** A `url` field's placeholder: an address that cannot be mistaken for a
- *  value already filled in (a local address looked like one, and an empty
- *  URL got saved). */
-export const URL_PLACEHOLDER = "https://your-company.example.com";
-
-/** The defaults a new login starts with: what the form shows is what is
- *  sent, never a value only drawn into the field. */
-function initialValues(fields: readonly CredentialTypeFieldDTO[]): Record<string, string> {
-  return Object.fromEntries(
-    fields.filter((f) => f.default).map((f) => [f.key, String(f.default)] as const),
-  );
-}
+export { URL_PLACEHOLDER };
 
 /** Dropdown of existing credentials of one type, plus an inline "Create
  * new" form -- the unified credentials framework's single reusable picker
@@ -62,13 +59,13 @@ export function CredentialPicker({
 
   const labelOf = (key: string) => {
     const field = fields.find((f) => f.key === key);
-    return field ? resolveTranslation(field.label, field.label_translations, lang) : key;
+    return field ? loginFieldLabel(field, lang) : key;
   };
   const isEmpty = (field: CredentialTypeFieldDTO) => !(fieldValues[field.key] ?? "").trim();
-  const emptyRequired = fields.filter((f) => f.required && isEmpty(f));
+  const emptyRequired = emptyRequiredFields(fields, fieldValues);
 
   const startCreating = () => {
-    setFieldValues(initialValues(fields));
+    setFieldValues(initialLoginValues(fields));
     setRefused([]);
     setCreating(true);
   };
@@ -104,7 +101,7 @@ export function CredentialPicker({
         <label className="block text-xs text-muted-foreground">
           <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
             {t("Name", "Name")}
-            <span aria-hidden data-required-mark className="ml-1 after:content-['*']" />
+            <RequiredMark className="ml-1" />
           </span>
           <input
             value={name}
@@ -118,21 +115,16 @@ export function CredentialPicker({
           />
         </label>
         {fields.map((field: CredentialTypeFieldDTO) => {
-          const label = resolveTranslation(field.label, field.label_translations, lang);
-          const placeholder =
-            field.kind === "url"
-              ? URL_PLACEHOLDER
-              : resolveTranslation(field.placeholder, field.placeholder_translations, lang);
+          const label = loginFieldLabel(field, lang);
+          const placeholder = loginFieldPlaceholder(field, lang);
           const help = resolveTranslation(field.help, field.help_translations, lang);
-          const invalid = isEmpty(field) && (field.required || refused.includes(field.key));
+          const invalid = (isEmpty(field) && field.required) || refused.includes(field.key);
           return (
             <label key={field.key} className="block text-xs text-muted-foreground">
               <span className="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
                 {field.kind === "password" && <KeyRound className="h-3 w-3 text-primary" />}
                 {label}
-                {field.required && (
-                  <span aria-hidden data-required-mark className="after:content-['*']" />
-                )}
+                {field.required && <RequiredMark />}
               </span>
               <input
                 type={
@@ -141,7 +133,10 @@ export function CredentialPicker({
                 required={field.required}
                 aria-invalid={invalid || undefined}
                 value={fieldValues[field.key] ?? ""}
-                onChange={(e) => setFieldValues((cur) => ({ ...cur, [field.key]: e.target.value }))}
+                onChange={(e) => {
+                  setFieldValues((cur) => ({ ...cur, [field.key]: e.target.value }));
+                  setRefused((cur) => cur.filter((k) => k !== field.key));
+                }}
                 placeholder={placeholder}
                 className={`w-full rounded-md border bg-background/40 px-3 py-2 text-sm text-foreground outline-none placeholder:italic placeholder:text-muted-foreground/60 focus:border-primary/50 ${
                   invalid ? "border-amber-500/70" : "border-border"

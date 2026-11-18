@@ -101,7 +101,15 @@ export interface EffectiveLogin {
   credentialId: string | null;
   credentialName: string | null;
   source: "agent" | "own" | "department" | "organisation" | "legacy" | null;
-  reason: "not_configured" | "ambiguous" | "incomplete" | "not_connected" | null;
+  /** Why no login is used: the resolver's reasons, or any other refusal
+   *  the runtime gives (e.g. `binding_needs_confirmation`). */
+  reason:
+    | "not_configured"
+    | "ambiguous"
+    | "incomplete"
+    | "not_connected"
+    | ConnectionRequiredInfo["reason"]
+    | null;
   missing: string[];
 }
 

@@ -241,8 +241,26 @@ export function effectiveLoginText(
       "Nutzt den Zugang der Person im Chat – du hast noch keinen",
     );
   }
-  if (login.reason === "not_configured" || !login.source) {
+  if (login.reason === "binding_needs_confirmation") {
+    return t(
+      "The login chosen for this agent is not confirmed — runs refuse it",
+      "Der für diesen Agenten gewählte Zugang ist nicht bestätigt – Läufe lehnen ihn ab",
+    );
+  }
+  if (login.reason === "needs_reauth") {
+    return t(
+      "The chosen account must be connected again",
+      "Das gewählte Konto muss erneut verbunden werden",
+    );
+  }
+  if (login.reason === "not_configured" || (!login.reason && !login.source)) {
     return t("No login set up yet", "Noch kein Zugang eingerichtet");
+  }
+  if (login.reason) {
+    return t(
+      "This tool cannot use a login in your chats right now",
+      "Dieses Werkzeug kann in deinen Chats gerade keinen Zugang nutzen",
+    );
   }
   switch (login.source) {
     case "agent":

@@ -21,14 +21,14 @@ from oc8.audit import append_event
 from oc8.authz.scope import HumanActor
 from oc8.connections.access import (
     ConnectionRequired,
+    agent_login,
     department_setup,
     department_targets,
     unconfirmed_reason,
 )
 from oc8.connections.access_write import write_tool_access
 from oc8.connections.integrations import Integration, installed_integrations
-from oc8.connections.login import LoginChoice, own_login, resolve_login
-from oc8.connections.tool_connection import tool_connection
+from oc8.connections.tool_connection import connection_for_context, tool_connection
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import missing_required
 from oc8.schemas.dto import AccessOptionDTO, AgentToolAccessDTO, EffectiveLoginDTO
@@ -221,46 +221,42 @@ async def list_options(
     return out
 
 
-async def _choice(
-    db: AsyncSession, agent: m.Agent, integ: Integration, viewer: uuid.UUID
-) -> LoginChoice:
-    """What a chat of `viewer` with `agent` would use (resolver order), or
-    `ConnectionRequired` naming why nothing is."""
-    row = await db.scalar(
-        select(m.AgentToolAccess).where(
-            m.AgentToolAccess.agent_id == agent.id, m.AgentToolAccess.tool_key == integ.tool_key
-        )
+async def _run_connection(
+    db: AsyncSession, agent: m.Agent, tool_key: str
+) -> m.McpConnection | None:
+    """The row an agent's run reaches `tool_key` through, as the executor
+    picks it: the agent's own narrowing pin, else its department's default
+    connection, else the tool's row. A pin that names nothing or another
+    tool: None (the run would fail)."""
+    tools = (agent.narrowing or {}).get("tools")
+    policy = tools.get(tool_key) if isinstance(tools, dict) else None
+    pinned = policy.get("connection_id") if isinstance(policy, dict) else None
+    if not pinned and agent.department_id is not None:
+        dept = await db.get(m.Department, agent.department_id)
+        frame_tools = (dept.frame or {}).get("tools") if dept is not None else None
+        entry = frame_tools.get(tool_key) if isinstance(frame_tools, dict) else None
+        pinned = entry.get("default_connection_id") if isinstance(entry, dict) else None
+    if pinned:
+        conn = await connection_for_context(db, pinned)
+        return conn if conn is not None and conn.name == tool_key else None
+    return await tool_connection(
+        db, name=tool_key, department_id=agent.department_id, connected_only=False
     )
-    if row is not None and row.mode == "fixed":
-        oauth = (
-            await db.get(m.OAuthConnection, row.oauth_connection_id)
-            if row.oauth_connection_id is not None
-            else None
-        )
-        cred = (
-            await db.get(m.Credential, row.credential_id) if row.credential_id is not None else None
-        )
-        if oauth is None and cred is None:
-            raise ConnectionRequired(integ, "not_configured")
-        return LoginChoice(cred, "agent", None, oauth_connection=oauth)
-    if row is not None:  # mode "user": the person's own login
-        own = await own_login(db, integ, viewer)
-        if own is None:
-            raise ConnectionRequired(integ, "not_connected")
-        return own
-    conn = await tool_connection(
-        db, name=integ.tool_key, department_id=agent.department_id, connected_only=False
-    )
-    if conn is None:
-        raise ConnectionRequired(integ, "not_configured")
-    return await resolve_login(
-        db,
-        agent=agent,
-        integration=integ,
-        conn=conn,
-        live_member_id=viewer,
-        department_ids=[agent.department_id],
-        right="read",
+
+
+def _live_chat(agent: m.Agent, viewer: uuid.UUID) -> m.AgentRun:
+    """A run like the viewer's own live web chat with the agent -- never
+    stored -- so the login is chosen exactly as such a run would."""
+    return m.AgentRun(
+        tenant_id=agent.tenant_id,
+        agent_id=agent.id,
+        agent_version_id=agent.current_version_id,
+        source="chat",
+        context={
+            "on_behalf_of": str(viewer),
+            "chat_session_id": str(uuid.uuid4()),
+            "door": "web",
+        },
     )
 
 
@@ -278,10 +274,20 @@ async def effective_login(
     integ = (await _integrations(db)).get(tool_key)
     if integ is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no connectable integration for this tool")
+    conn = await _run_connection(db, agent, tool_key)
+    if conn is None:
+        return EffectiveLoginDTO(reason="not_configured")
     try:
-        choice = await _choice(db, agent, integ, actor.member.id)
+        # The runtime's own path (`resolve_tool_access`), for a live chat of
+        # the person looking: the agent's choice with its consent checks, an
+        # older pinned login row, their own login, the department's.
+        _acting, _integration, choice = await agent_login(
+            db, run=_live_chat(agent, actor.member.id), agent=agent, conn=conn
+        )
     except ConnectionRequired as exc:
         return EffectiveLoginDTO(reason=exc.reason, missing=exc.missing)
+    if choice is None:
+        return EffectiveLoginDTO(source="legacy")
     if choice.oauth_connection is not None:
         return EffectiveLoginDTO(
             credential_id=str(choice.oauth_connection.id),
