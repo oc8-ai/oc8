@@ -309,6 +309,29 @@ async def test_a_fixed_choice_of_an_incomplete_login_is_refused(
         ) is None
 
 
+async def test_an_unauthorised_caller_cannot_learn_whether_a_login_is_complete(
+    app_session: AppSessionFactory,
+) -> None:
+    """A person who may not bind an organisation login gets the same refusal
+    for an incomplete one as for a complete one: nothing about its fields."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    await member(app_session, tenant, "ben@acme.test", name="Ben")
+    half = await credential_row(app_session, tenant, owner=None, name="Half", complete=False)
+    whole = await credential_row(app_session, tenant, owner=None, name="Whole")
+    async with api() as c:
+        await install(c, headers(tenant, "root@acme.test", ADMIN), "odoo_mcp")
+        url = f"/api/v1/agents/{agent.id}/tool-access/odoo"
+        ben = headers(tenant, "ben@acme.test", MANAGER)
+        answers = [
+            await c.put(url, json={"mode": "fixed", "credentialId": str(cred)}, headers=ben)
+            for cred in (half, whole)
+        ]
+    assert [r.status_code for r in answers] == [403, 403]
+    assert answers[0].json() == answers[1].json()
+    assert "missing" not in answers[0].text
+
+
 async def test_other_tenants_ids_are_not_found_and_nothing_secret_is_returned(
     app_session: AppSessionFactory,
 ) -> None:

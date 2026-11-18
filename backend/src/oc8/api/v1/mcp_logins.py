@@ -113,9 +113,6 @@ async def create_login(
                 f"credential {cred.name!r} is a {cred.credential_type!r}, "
                 f"not a {body.credential_type!r}",
             )
-        # An incomplete login is refused, naming its empty fields (422
-        # `credential_incomplete`), as the tool setup does.
-        await require_complete(db, cred)
     else:
         # `Credential.name` is unique per tenant (uq_credential_tenant_name):
         # a login created for a department is suffixed with the department's
@@ -147,6 +144,12 @@ async def create_login(
             SetAgentToolAccessRequest(mode="fixed", credential_id=cred.id),
         )
     elif dept is not None:
+        if body.credential_id is not None:
+            # An existing login that is incomplete is refused, naming its
+            # empty fields (422 `credential_incomplete`), as the tool setup
+            # does. (An agent's choice is checked by `save_tool_access`,
+            # after its own authorization.)
+            await require_complete(db, cred)
         # A department's login (the department's default for the tool): it
         # replaces any other login of the type there, and stays enabled for
         # any other department it serves.

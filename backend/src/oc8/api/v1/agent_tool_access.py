@@ -365,6 +365,7 @@ async def save_tool_access(
     target_label: str | None = None
     admin = await may_manage_integrations(request, db, actor.principal)
     consent: str | None = None
+    chosen_login: m.Credential | None = None
     if body.mode == "user":
         if body.oauth_connection_id is not None or body.credential_id is not None:
             raise HTTPException(unprocessable, "user mode names no target")
@@ -390,10 +391,8 @@ async def save_tool_access(
             cred = await db.get(m.Credential, body.credential_id)
             if cred is None or cred.credential_type != integ.credential_type:
                 raise HTTPException(unprocessable, "not a login of this integration")
-            # An incomplete login is refused as a choice, naming its empty
-            # fields (422 `credential_incomplete`), as the tool setup does.
-            await require_complete(db, cred)
             credential_id, owner, target_label = cred.id, cred.owner_member_id, cred.name
+            chosen_login = cred
         else:
             raise HTTPException(unprocessable, "a fixed access names exactly one matching target")
         target_id = oauth_id or credential_id
@@ -417,6 +416,12 @@ async def save_tool_access(
                 status.HTTP_403_FORBIDDEN,
                 "only its owner or an administrator may bind an agent to a person's account",
             )
+    if chosen_login is not None:
+        # An incomplete login is refused as a choice, naming its empty fields
+        # (422 `credential_incomplete`), as the tool setup does -- only after
+        # every check above, so a caller who may not bind the login learns
+        # nothing about it.
+        await require_complete(db, chosen_login)
     # An administrator's choice stands on its own (an organisation account or a
     # colleague's); otherwise it rests on the owner or the department's setup.
     return await write_tool_access(
