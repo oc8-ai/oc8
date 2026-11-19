@@ -375,6 +375,16 @@ export function useUpdateOrganisationCredential() {
   });
 }
 
+/** A person's own login ("Bearbeiten"): owner-only; an empty secret is kept. */
+export function useUpdateMyCredential() {
+  const invalidate = useInvalidateConnections();
+  return useMutation({
+    mutationFn: ({ id, fieldValues }: { id: string; fieldValues: Record<string, string> }) =>
+      api.patch<Connection>(`/connections/credentials/${id}`, { fieldValues }),
+    onSuccess: invalidate,
+  });
+}
+
 export function useTestConnection() {
   const invalidate = useInvalidateConnections();
   return useMutation({

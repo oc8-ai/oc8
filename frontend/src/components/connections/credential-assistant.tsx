@@ -7,6 +7,7 @@ import {
   incompleteFields,
   useCheckCredential,
   useCreateCredentialConnection,
+  useUpdateMyCredential,
   useUpdateOrganisationCredential,
 } from "@/lib/connections";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
@@ -54,7 +55,9 @@ export function CredentialAssistant({
   };
   const check = useCheckCredential();
   const create = useCreateCredentialConnection();
-  const update = useUpdateOrganisationCredential();
+  const updateOrganisation = useUpdateOrganisationCredential();
+  const updateMine = useUpdateMyCredential();
+  const update = owner === "me" ? updateMine : updateOrganisation;
   const busy = check.isPending || create.isPending || update.isPending;
 
   const setValue = (key: string, value: string) => {
