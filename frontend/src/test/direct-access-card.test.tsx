@@ -160,7 +160,7 @@ describe("direct access in the chat", () => {
     const { unmount } = render(<DirectAccessCard approval={localized} />);
     expect(screen.getByText(/Copilot on behalf of Anna: read Odoo/)).toBeInTheDocument();
     unmount();
-    window.window.localStorage.setItem("oc8-lang", "de");
+    window.localStorage.setItem("oc8-lang", "de");
     try {
       render(
         <LanguageProvider>
@@ -169,7 +169,7 @@ describe("direct access in the chat", () => {
       );
       expect(screen.getByText(/Copilot im Auftrag von Anna: Odoo lesen/)).toBeInTheDocument();
     } finally {
-      window.window.localStorage.removeItem("oc8-lang");
+      window.localStorage.removeItem("oc8-lang");
     }
   });
 
