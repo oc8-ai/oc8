@@ -54,6 +54,7 @@ from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pac
 from oc8.capas.manifest import GuardrailAttribute
 from oc8.connections.login import login_chosen
 from oc8.connections.tool_connection import not_retired
+from oc8.connections.usable import system_tool_scopes
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     interpret_guardrail_definition,
@@ -573,28 +574,7 @@ async def _connection_tool_catalog(
     `GET /mcp/connections/{name}/tool-names` does -- the batch interpreter
     below must never trust a client-supplied function list, since that list
     also becomes the closed enum the LLM tool call is validated against."""
-    mcp_conn = (
-        await db.execute(
-            select(m.McpConnection)
-            .where(
-                m.McpConnection.tenant_id == tenant_id,
-                m.McpConnection.name == connection_name,
-                m.McpConnection.credential_id.is_(None),
-                not_retired(),
-            )
-            .order_by(m.McpConnection.created_at)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    cfg: dict[str, Any] = {}
-    if mcp_conn is not None and isinstance(mcp_conn.config, dict):
-        cfg = mcp_conn.config
-    manifest_conn = resolve_tool_pack_connection(
-        str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
-    )
-    if manifest_conn is None:
-        return []
-    scopes = manifest_conn.scopes if isinstance(manifest_conn.scopes, dict) else {}
+    scopes = await system_tool_scopes(db, tenant_id=tenant_id, key=connection_name)
     return sorted({*scopes.get("read", []), *scopes.get("modify", [])})
 
 

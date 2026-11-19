@@ -2978,3 +2978,17 @@ async def test_kpi_overview_dispatch_is_refused_for_a_non_assistant_agent(
         agent, task = await _dept_agent_task(db, tenant, is_team_lead=True)
         outcome = await _kpi_overview(db, tenant, agent, task, {})
         assert outcome.output.startswith("ERROR")
+
+
+def test_propose_agent_asks_for_a_full_mission_and_a_run_text() -> None:
+    from oc8.agent.control_tools import PROPOSE_AGENT
+
+    props = PROPOSE_AGENT.parameters["properties"]
+    assert "full working instructions" in props["mission"]["description"]
+    assert "mission guide" in props["mission"]["description"]
+    assert "Not a copy of the mission" in props["taskText"]["description"]
+    step = props["operations"]["items"]["properties"]
+    assert "mission guide" in step["mission"]["description"]
+    assert "Not a copy of the mission" in step["taskText"]["description"]
+    assert "Pass taskText with it" in props["schedule"]["description"]
+    assert "Pass taskText with it" in props["eventType"]["description"]

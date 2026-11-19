@@ -114,3 +114,16 @@ def test_agent_mode_tells_the_copilot_how_to_answer_a_refused_create() -> None:
     assert NOTICE_PREFIX.strip().rstrip(":") in text
     assert "propose_agent once with the corrected agent" in text
     assert "Never propose the same agent unchanged" in text
+
+
+def test_agent_mode_asks_about_the_job_and_wants_a_full_mission() -> None:
+    """The mission is the only job-specific part of the new agent's prompt, so
+    the mode has the Copilot ask about the job and write it out by the guide."""
+    text = AGENT.instruction
+    assert "what result the agent delivers and who reads" in text
+    assert "what counts as noteworthy" in text
+    assert "when it finds nothing" in text
+    assert "mission guide builder_options" in text
+    assert "never as a one-paragraph summary" in text
+    assert "always pass taskText" in text and "not a copy of" in text
+    assert "at most 6 per round, at most 3" in text

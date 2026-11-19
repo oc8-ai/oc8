@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.authz.pdp import ToolPolicy
+from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.capas.materialise import unbound_connection
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.integrations import (
@@ -42,7 +43,7 @@ from oc8.connections.integrations import (
     integration_for_connection,
 )
 from oc8.connections.login import offer_problem
-from oc8.connections.tool_connection import tool_connection
+from oc8.connections.tool_connection import not_retired, tool_connection
 from oc8.departments.repo import member_departments
 
 #: Why a connected system in no department is not usable (for the Copilot).
@@ -213,6 +214,40 @@ async def department_systems(
             missing = None if problem is None else _why_not(problem)
         out[key] = DepartmentSystem(key, integration.name, usable=missing is None, missing=missing)
     return [out[key] for key in sorted(out)]
+
+
+async def system_tool_scopes(
+    db: AsyncSession, *, tenant_id: uuid.UUID, key: str
+) -> dict[str, list[str]]:
+    """A system's tool names by what they do (`read`, `modify`, ...), from its
+    plugin manifest -- no call to the system. `credential_id.is_(None)` picks
+    the manifest row, never a login sharing the name (as
+    `GET /mcp/connections/{name}/tool-names` does). Empty when the plugin is
+    gone or ships no tool pack."""
+    conn = (
+        await db.execute(
+            select(m.McpConnection)
+            .where(
+                m.McpConnection.tenant_id == tenant_id,
+                m.McpConnection.name == key,
+                m.McpConnection.credential_id.is_(None),
+                not_retired(),
+            )
+            .order_by(m.McpConnection.created_at)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    cfg = conn.config if conn is not None and isinstance(conn.config, dict) else {}
+    manifest_conn = resolve_tool_pack_connection(
+        str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
+    )
+    if manifest_conn is None or not isinstance(manifest_conn.scopes, dict):
+        return {}
+    return {
+        str(scope): [str(name) for name in names]
+        for scope, names in manifest_conn.scopes.items()
+        if isinstance(names, list)
+    }
 
 
 # ------------------------------------------------------------------ a member's
