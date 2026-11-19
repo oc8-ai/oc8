@@ -232,7 +232,7 @@ async def agent_login(
     row's own config applies) and the resolver's choice. Raises
     `ConnectionRequired` as the run would. The one path for the runtime and
     for showing which login a tool uses."""
-    from oc8.connections.login import live_chat_member, resolve_login
+    from oc8.connections.login import live_member_for, resolve_login
 
     acting = await resolve_acting_person(db, run)
     integration = integration_for_connection(conn)
@@ -247,7 +247,7 @@ async def agent_login(
         agent=agent,
         integration=integration,
         conn=conn,
-        live_member_id=live_chat_member(run, acting),
+        live_member_id=await live_member_for(db, run, acting),
         department_ids=[agent.department_id],
         right="read",
         run=run,

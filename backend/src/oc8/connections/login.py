@@ -4,8 +4,9 @@
 1. The agent's explicit choice (`AgentToolAccess`: a fixed login, or "the
    person's own"). A row pinned to a login (`McpConnection.credential_id`) is
    such a choice too, until it is consolidated.
-2. In a live chat a person runs, or a delegation started from such a turn:
-   their own login, if they have one. Scheduled and triggered runs skip this
+2. In a live chat a person runs, or a delegation started from such a turn
+   to an agent they may run (`live_member_for`): their own login, if they
+   have one. Scheduled and triggered runs skip this
    (`live_member_id=None`).
 3. The organisation login enabled for one of `department_ids`: one enabled
    for the department itself wins over one enabled for "all departments";
@@ -59,29 +60,73 @@ class LoginChoice:
 def live_chat_member(run: m.AgentRun | None, acting: ActingPerson) -> uuid.UUID | None:
     """The person present in a live web chat of any agent, or None.
 
-    A chat turn through the web door, never a follow-up, a triggered run, a
-    messenger turn or one whose person was withheld -- or a delegation
-    started from such a turn (`delegate_task`, the offer card's "Run
-    agent"), however many hops down: the delegating run's chat, door and
-    person keys travel with it (`control_tools._create_delegation`) and
-    `parent_run_id` is the server-written causal link. The person is the one
+    The same test as `direct_access.direct_access_run`, for every agent: a
+    chat turn through the web door, never a follow-up, a triggered or
+    delegated run, or one whose person was withheld. The person is the one
     the run acts for (`on_behalf_of`, else the session's own member writing
-    their own words -- `resolve_acting_person`).
-
-    Only the login choice widens to delegations: Copilot direct access stays
-    a live web turn of the Copilot itself (`direct_access.direct_access_run`)."""
-    if run is None or run.source not in ("chat", "delegation"):
+    their own words -- `resolve_acting_person`). A delegation needs the
+    database: `live_member_for`."""
+    if run is None or run.source != "chat":
         return None
     ctx = run.context if isinstance(run.context, dict) else {}
     if ctx.get(ACTING_PERSON_WITHHELD) or ctx.get("followup") or ctx.get("trigger_id"):
         return None
-    if ctx.get("door") != "web" or not ctx.get("chat_session_id"):
-        return None
-    if run.source == "chat" and ctx.get("parent_task_id"):
-        return None
-    if run.source == "delegation" and not ctx.get("parent_run_id"):
+    if ctx.get("parent_task_id") or ctx.get("door") != "web" or not ctx.get("chat_session_id"):
         return None
     return acting.member_id
+
+
+async def live_member_for(
+    db: AsyncSession, run: m.AgentRun | None, acting: ActingPerson
+) -> uuid.UUID | None:
+    """Step 2's person: the one present in a live web chat
+    (`live_chat_member`), or -- for a delegation started from such a turn
+    (`delegate_task`, the offer card's "Run agent"), however many hops down --
+    that person, when all of this holds:
+
+    - the run's carried keys say so: the web door, a chat session, a causal
+      link (`parent_run_id`), no follow-up or trigger, a person not withheld;
+    - the server-side causal chain (`causal.causal_web_origin`) reaches that
+      person's own live web turn, at most a day old -- carried keys alone are
+      never trusted;
+    - the person may run the delegated agent (`member_may_run_agent`, with
+      the role claim of that web turn): their own login is lent only to an
+      agent they could have started themselves.
+
+    Anything else: None, and the department's or organisation's login
+    applies. Copilot direct access stays a live web turn of the Copilot
+    itself (`direct_access.direct_access_run`)."""
+    if run is None:
+        return None
+    if run.source == "chat":
+        return live_chat_member(run, acting)
+    if run.source != "delegation" or acting.member_id is None:
+        return None
+    ctx = run.context if isinstance(run.context, dict) else {}
+    if ctx.get(ACTING_PERSON_WITHHELD) or ctx.get("followup") or ctx.get("trigger_id"):
+        return None
+    if ctx.get("door") != "web" or not ctx.get("chat_session_id") or not ctx.get("parent_run_id"):
+        return None
+    # Deferred: both reach modules that import this one.
+    from oc8.connections.causal import causal_web_origin
+    from oc8.copilot.agent_match import member_may_run_agent
+
+    person = await db.get(m.OrgMember, acting.member_id)
+    if person is None or person.deleted_at is not None or person.tenant_id != run.tenant_id:
+        return None
+    root = await causal_web_origin(db, run, person)
+    if root is None or live_chat_member(root, await resolve_acting_person(db, root)) != person.id:
+        return None
+    agent = await db.get(m.Agent, run.agent_id)
+    claim = (root.context or {}).get("operator_role")
+    if agent is None or not await member_may_run_agent(
+        db,
+        member_id=person.id,
+        agent=agent,
+        token_role=claim if isinstance(claim, str) and claim else None,
+    ):
+        return None
+    return person.id
 
 
 async def own_login(

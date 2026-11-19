@@ -39,7 +39,7 @@ from oc8.connections.integrations import (
     integration_enabled,
     integration_for_connection,
 )
-from oc8.connections.login import holds_copied_login, live_chat_member, offer_problem
+from oc8.connections.login import holds_copied_login, live_member_for, offer_problem
 from oc8.connections.tool_connection import tool_connections
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
 from oc8.credentials.service import missing_required
@@ -419,7 +419,7 @@ async def integration_connections(
     )
     live_member: uuid.UUID | None = None
     if run is not None:
-        live_member = live_chat_member(run, await resolve_acting_person(db, run))
+        live_member = await live_member_for(db, run, await resolve_acting_person(db, run))
     out: list[m.McpConnection] = []
     for name in wanted:
         conn = found.get(name)

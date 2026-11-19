@@ -5,6 +5,7 @@ Built on a throwaway tool pack and login type, so no vendor is involved."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,6 +17,7 @@ from oc8 import config
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
 from oc8.agent.control_tools import _create_delegation
+from oc8.authz.permissions import RUN_START
 from oc8.capas.discovery import invalidate_discovery_cache
 from oc8.capas.manifest import CredentialTypeSpec, SetupFieldSpec
 from oc8.connections import runtime_env
@@ -278,12 +280,12 @@ DELEGATED_FROM_LIVE_CHAT = {
 async def test_a_delegation_from_a_live_web_chat_uses_the_persons_own_login(
     app_session: AppSessionFactory,
 ) -> None:
-    agent, anna, conn, run = await _world(
-        app_session, context=DELEGATED_FROM_LIVE_CHAT, source="delegation"
-    )
+    agent, anna, conn, chat_run = await _world(app_session, context=LIVE_CHAT, source="chat")
+    await _may_run(app_session, agent, anna)
     await _login(app_session, agent.tenant_id, name="Dept", departments={agent.department_id})
     own = await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
-    access = await _access(app_session, agent, conn, run)
+    sub_run = await _delegate_from(app_session, agent, chat_run, 1)
+    access = await _access(app_session, agent, conn, sub_run)
     assert (access.credential.id, access.on_behalf_of) == (own, anna)  # type: ignore[union-attr]
 
 
@@ -378,24 +380,52 @@ async def test_a_delegation_acting_for_nobody_does_not_use_any_own_login(
     assert (access.credential.id, access.on_behalf_of) == (dept, None)  # type: ignore[union-attr]
 
 
+async def _may_run(app_session: AppSessionFactory, agent: m.Agent, who: uuid.UUID) -> None:
+    """Give `who` a role that may start runs, and a seat in the agent's
+    department (`member_may_run_agent`)."""
+    async with app_session(agent.tenant_id) as db:
+        role = m.Role(tenant_id=agent.tenant_id, name=f"r-{uuid.uuid4().hex[:8]}", kind="human")
+        db.add(role)
+        await db.flush()
+        db.add(m.RolePermission(tenant_id=agent.tenant_id, role_id=role.id, permission=RUN_START))
+        row = await db.get(m.OrgMember, who)
+        assert row is not None
+        row.role_id = role.id
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=agent.tenant_id,
+                member_id=who,
+                department_id=agent.department_id,
+                seat_role="dept_viewer",
+            )
+        )
+
+
+async def _task(db: Any, agent: m.Agent) -> m.Task:
+    task = m.Task(
+        tenant_id=agent.tenant_id,
+        department_id=agent.department_id,
+        assigned_agent_id=agent.id,
+        title="look it up",
+    )
+    db.add(task)
+    await db.flush()
+    return task
+
+
 async def _delegate_from(
     app_session: AppSessionFactory, agent: m.Agent, parent_run_id: uuid.UUID, hops: int
 ) -> uuid.UUID:
     """Delegate `hops` times down from `parent_run_id` along the real
     delegation path (`_create_delegation`); the last sub-run's id."""
     async with app_session(agent.tenant_id) as db:
-        task = m.Task(
-            tenant_id=agent.tenant_id,
-            department_id=agent.department_id,
-            assigned_agent_id=agent.id,
-            title="look it up",
-        )
-        db.add(task)
-        await db.flush()
         current = await db.get(m.AgentRun, parent_run_id)
         live = await db.get(m.Agent, agent.id)
         assert current is not None and live is not None
-        current.task_id = task.id
+        if current.task_id is None:
+            current.task_id = (await _task(db, agent)).id
+        task = await db.get(m.Task, current.task_id)
+        assert task is not None
         for _ in range(hops):
             current = await _create_delegation(
                 db,
@@ -414,6 +444,7 @@ async def test_a_nested_delegation_from_a_live_web_chat_uses_the_persons_own_log
     app_session: AppSessionFactory, hops: int
 ) -> None:
     agent, anna, conn, chat_run = await _world(app_session, context=LIVE_CHAT, source="chat")
+    await _may_run(app_session, agent, anna)
     await _login(app_session, agent.tenant_id, name="Dept", departments={agent.department_id})
     own = await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
     sub_run = await _delegate_from(app_session, agent, chat_run, hops)
@@ -432,6 +463,7 @@ async def test_a_delegation_from_a_messenger_chat_turn_keeps_the_department_logi
         "chat_channel_external_id": "4711",
     }
     agent, anna, conn, chat_run = await _world(app_session, context=ctx, source="chat")
+    await _may_run(app_session, agent, anna)
     dept = await _login(
         app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
     )
@@ -439,6 +471,122 @@ async def test_a_delegation_from_a_messenger_chat_turn_keeps_the_department_logi
     sub_run = await _delegate_from(app_session, agent, chat_run, 2)
     access = await _access(app_session, agent, conn, sub_run)
     assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+async def test_a_delegation_whose_chain_does_not_reach_a_live_web_turn_uses_no_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """Every carried key forged to look live, but `parent_run_id` names no
+    run: the server-side chain decides, not the keys."""
+    agent, anna, conn, run = await _world(
+        app_session, context=DELEGATED_FROM_LIVE_CHAT, source="delegation"
+    )
+    await _may_run(app_session, agent, anna)
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    access = await _access(app_session, agent, conn, run)
+    assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+async def test_a_delegation_from_a_web_turn_older_than_a_day_uses_no_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, chat_run = await _world(app_session, context=LIVE_CHAT, source="chat")
+    await _may_run(app_session, agent, anna)
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    async with app_session(agent.tenant_id) as db:
+        root = await db.get(m.AgentRun, chat_run)
+        assert root is not None
+        root.created_at = dt.datetime.now(dt.UTC) - dt.timedelta(hours=25)
+    sub_run = await _delegate_from(app_session, agent, chat_run, 1)
+    access = await _access(app_session, agent, conn, sub_run)
+    assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+async def test_a_delegation_to_an_agent_the_person_may_not_run_uses_no_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, chat_run = await _world(app_session, context=LIVE_CHAT, source="chat")
+    # No `_may_run`: anna holds no role that starts runs.
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    sub_run = await _delegate_from(app_session, agent, chat_run, 1)
+    access = await _access(app_session, agent, conn, sub_run)
+    assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+async def test_a_delegation_from_another_persons_web_turn_uses_no_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ben's web turn delegates; the sub-run claims to act for Anna. Her own
+    login is not lent: the chain's root is not her turn."""
+    agent, anna, conn, chat_run = await _world(
+        app_session,
+        context={**LIVE_CHAT, "originating_operator": "ben@acme.test"},
+        source="chat",
+    )
+    ben = await member(app_session, agent.tenant_id, "ben@acme.test")
+    await _may_run(app_session, agent, anna)
+    async with app_session(agent.tenant_id) as db:
+        root = await db.get(m.AgentRun, chat_run)
+        assert root is not None
+        session = await db.get(m.ChatSession, uuid.UUID(root.context["chat_session_id"]))
+        assert session is not None
+        session.member_id = ben
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    sub_run = await _delegate_from(app_session, agent, chat_run, 1)
+    async with app_session(agent.tenant_id) as db:
+        row = await db.get(m.AgentRun, sub_run)
+        assert row is not None and row.context["on_behalf_of"] == str(ben)
+        row.context = {**row.context, "on_behalf_of": str(anna)}
+    access = await _access(app_session, agent, conn, sub_run)
+    assert (access.credential.id, access.on_behalf_of) == (dept, anna)  # type: ignore[union-attr]
+
+
+async def test_a_delegation_after_a_wake_up_of_a_live_turn_uses_the_persons_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """Web turn -> delegation -> the lead's wake-up with its result -> a
+    further delegation: the wake-up is a hop on the way to the web turn."""
+    agent, anna, conn, chat_run = await _world(app_session, context=LIVE_CHAT, source="chat")
+    await _may_run(app_session, agent, anna)
+    await _login(app_session, agent.tenant_id, name="Dept", departments={agent.department_id})
+    own = await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    first = await _delegate_from(app_session, agent, chat_run, 1)
+    async with app_session(agent.tenant_id) as db:
+        root = await db.get(m.AgentRun, chat_run)
+        assert root is not None
+        wake = m.AgentRun(
+            tenant_id=agent.tenant_id,
+            agent_id=agent.id,
+            task_id=root.task_id,
+            source="chat",
+            context={
+                "task": "Sub-task completed.",
+                "parent_task_id": str(root.task_id),
+                "delegation_depth": 1,
+                "wake_of_run_id": str(first),
+                "chat_session_id": root.context["chat_session_id"],
+                "door": "web",
+                "on_behalf_of": str(anna),
+            },
+        )
+        db.add(wake)
+        await db.flush()
+        wake_id = wake.id
+    sub_run = await _delegate_from(app_session, agent, wake_id, 1)
+    access = await _access(app_session, agent, conn, sub_run)
+    assert (access.credential.id, access.on_behalf_of) == (own, anna)  # type: ignore[union-attr]
 
 
 async def test_the_login_enabled_for_the_agents_department_is_used(

@@ -52,6 +52,7 @@ from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
 from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.config import get_settings
+from oc8.connections.causal import causal_ancestors
 from oc8.copilot.notes import member_behind_run_task
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.edition.tools import (
@@ -1858,25 +1859,10 @@ async def person_token_role(
     role = await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id)
     if role is not None or run_id is None:
         return role
-    current = await db.get(m.AgentRun, run_id)
-    if current is None or current.tenant_id != tenant_id:
+    start = await db.get(m.AgentRun, run_id)
+    if start is None or start.tenant_id != tenant_id:
         return None
-    seen = {current.id}
-    # Each delegation hop is a sub-run plus the wake-up it causes.
-    for _hop in range(2 * MAX_DELEGATION_DEPTH + 2):
-        context = current.context or {}
-        link = context.get("wake_of_run_id") or context.get("parent_run_id")
-        try:
-            next_id = uuid.UUID(str(link)) if link else None
-        except (ValueError, TypeError):
-            return None
-        if next_id is None or next_id in seen:
-            return None
-        seen.add(next_id)
-        found = await db.get(m.AgentRun, next_id)
-        if found is None or found.tenant_id != tenant_id:
-            return None
-        current = found
+    async for current in causal_ancestors(db, start):
         context = current.context or {}
         claim = context.get("operator_role")
         if current.source != "chat" or not isinstance(claim, str) or not claim:
