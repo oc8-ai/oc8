@@ -4,8 +4,9 @@
 1. The agent's explicit choice (`AgentToolAccess`: a fixed login, or "the
    person's own"). A row pinned to a login (`McpConnection.credential_id`) is
    such a choice too, until it is consolidated.
-2. In a live chat a person runs: their own login, if they have one.
-   Scheduled and triggered runs skip this (`live_member_id=None`).
+2. In a live chat a person runs, or a delegation started from such a turn:
+   their own login, if they have one. Scheduled and triggered runs skip this
+   (`live_member_id=None`).
 3. The organisation login enabled for one of `department_ids`: one enabled
    for the department itself wins over one enabled for "all departments";
    exactly one of the winning tier -> it; several -> `ambiguous`.
@@ -58,17 +59,27 @@ class LoginChoice:
 def live_chat_member(run: m.AgentRun | None, acting: ActingPerson) -> uuid.UUID | None:
     """The person present in a live web chat of any agent, or None.
 
-    The same test as `direct_access.direct_access_run`, for every agent: a
-    chat turn through the web door, never a follow-up, a triggered or
-    delegated run, or one whose person was withheld. The person is the one
+    A chat turn through the web door, never a follow-up, a triggered run, a
+    messenger turn or one whose person was withheld -- or a delegation
+    started from such a turn (`delegate_task`, the offer card's "Run
+    agent"), however many hops down: the delegating run's chat, door and
+    person keys travel with it (`control_tools._create_delegation`) and
+    `parent_run_id` is the server-written causal link. The person is the one
     the run acts for (`on_behalf_of`, else the session's own member writing
-    their own words -- `resolve_acting_person`)."""
-    if run is None or run.source != "chat":
+    their own words -- `resolve_acting_person`).
+
+    Only the login choice widens to delegations: Copilot direct access stays
+    a live web turn of the Copilot itself (`direct_access.direct_access_run`)."""
+    if run is None or run.source not in ("chat", "delegation"):
         return None
     ctx = run.context if isinstance(run.context, dict) else {}
     if ctx.get(ACTING_PERSON_WITHHELD) or ctx.get("followup") or ctx.get("trigger_id"):
         return None
-    if ctx.get("parent_task_id") or ctx.get("door") != "web" or not ctx.get("chat_session_id"):
+    if ctx.get("door") != "web" or not ctx.get("chat_session_id"):
+        return None
+    if run.source == "chat" and ctx.get("parent_task_id"):
+        return None
+    if run.source == "delegation" and not ctx.get("parent_run_id"):
         return None
     return acting.member_id
 
