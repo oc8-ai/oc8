@@ -18,7 +18,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import ValidationError
 from sqlalchemy import case, select
@@ -1352,7 +1352,9 @@ OFFER_DIRECT_ACCESS = NeutralTool(
         "through one connection from your direct-access list. The person sees an "
         "approval card naming the connection and the account; nothing happens "
         "until they allow it. Once allowed, you can read through it for the "
-        "rest of this conversation; every change asks them again."
+        "rest of this conversation; every change asks them again. oc8 checks "
+        "for agents that fit and lets the person choose one; you do not need to "
+        "search yourself."
     ),
     parameters={
         "type": "object",
@@ -1710,6 +1712,20 @@ async def _member_behind_task(
     return await db.get(m.OrgMember, session.member_id)
 
 
+async def copilot_person(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task: m.Task | None
+) -> m.OrgMember | None:
+    """The person a Copilot turn acts for: the member of the conversation
+    behind `task`, on every door (web, follow-up, messenger). None only when
+    nobody is behind it (a scheduled or system run). A departed member is
+    still returned: they may run nothing, which is the fail-closed answer.
+    `_delegate` and the roster (`preamble.roster_block`) both ask this, so the
+    agents the Copilot is told about are the ones it is let delegate to."""
+    if task is None:
+        return None
+    return await _member_behind_task(db, tenant_id=tenant_id, task=task)
+
+
 async def _member_may_reach_department(
     db: AsyncSession,
     *,
@@ -1809,6 +1825,68 @@ async def _acting_token_role(
         return None
     role = (run.context or {}).get("operator_role")
     return str(role) if isinstance(role, str) and role else None
+
+
+#: How old the person's web turn may be for a later turn of its causal chain
+#: to judge with its role claim: a token lives for a request, a claim recorded
+#: from it is trusted for a day at most, never for as long as a chain lasts.
+INHERITED_ROLE_MAX_AGE: Final = dt.timedelta(hours=24)
+
+
+async def person_token_role(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID | None,
+    person: m.OrgMember,
+) -> str | None:
+    """The role claim a Copilot turn acting for `person` judges their run
+    right with (`_delegate`, the roster, the agent match).
+
+    First the executing run's own claim (`_acting_token_role`), a live web
+    turn. A wake-up after a delegated result carries none
+    (`executor._maybe_wake_parent` never copies `operator_role`), so it
+    inherits the claim along its explicit causal chain only: wake-up ->
+    `wake_of_run_id` (the sub-run that finished) -> `parent_run_id` (the run
+    that delegated) -> ... up to the first run that carries a claim, which must
+    be that person's own web turn (`originating_operator`) and at most
+    `INHERITED_ROLE_MAX_AGE` old. Nothing else in the conversation lends a
+    claim: a follow-up, a messenger turn or any run with no causal web parent
+    gets None, and the assigned role decides alone (fail closed). Never
+    anything the model said.
+    """
+    role = await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id)
+    if role is not None or run_id is None:
+        return role
+    current = await db.get(m.AgentRun, run_id)
+    if current is None or current.tenant_id != tenant_id:
+        return None
+    seen = {current.id}
+    # Each delegation hop is a sub-run plus the wake-up it causes.
+    for _hop in range(2 * MAX_DELEGATION_DEPTH + 2):
+        context = current.context or {}
+        link = context.get("wake_of_run_id") or context.get("parent_run_id")
+        try:
+            next_id = uuid.UUID(str(link)) if link else None
+        except (ValueError, TypeError):
+            return None
+        if next_id is None or next_id in seen:
+            return None
+        seen.add(next_id)
+        found = await db.get(m.AgentRun, next_id)
+        if found is None or found.tenant_id != tenant_id:
+            return None
+        current = found
+        context = current.context or {}
+        claim = context.get("operator_role")
+        if current.source != "chat" or not isinstance(claim, str) or not claim:
+            continue
+        if context.get("originating_operator") != person.subject:
+            return None
+        if current.created_at < dt.datetime.now(dt.UTC) - INHERITED_ROLE_MAX_AGE:
+            return None
+        return claim
+    return None
 
 
 async def _context_kb_ids(
@@ -2182,12 +2260,104 @@ async def _delegate(
                 "ERROR: the person you are acting for does not have access to that department",
                 None,
             )
+    if agent.is_tenant_assistant:
+        # The Copilot acting for a person starts only what that person could
+        # start themselves (`POST /agents/{id}/run`): seeing a department is
+        # not running its agents. Every turn that acts for them -- web,
+        # follow-up, messenger -- not only the live web one, or a follow-up
+        # scheduled on a refused turn would start the agent anyway. A door
+        # with no token role decides on the assigned role alone (fail closed).
+        # Only a run with nobody behind its task keeps the rule above alone.
+        # Deferred import, as for the executor below.
+        from oc8.copilot.agent_match import member_may_run_agent
 
+        person = await copilot_person(db, tenant_id=tenant_id, task=task)
+        if person is not None and not await member_may_run_agent(
+            db,
+            member_id=person.id,
+            agent=target,
+            token_role=await person_token_role(
+                db, tenant_id=tenant_id, run_id=run_id, person=person
+            ),
+        ):
+            return f"refused: the person may not run {target.name}", None
+
+    executing_run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    sub_run = await _create_delegation(
+        db,
+        tenant_id=tenant_id,
+        task=task,
+        executing_run=executing_run,
+        target=target,
+        task_text=str(tc.arguments["task_text"]),
+        mcp_conn=mcp_conn,
+    )
+    return f"delegated to {target.name} (run {sub_run.id})", sub_run.id
+
+
+class DelegationDepthExceeded(Exception):
+    """A delegation would go past `MAX_DELEGATION_DEPTH`."""
+
+
+async def start_delegation(
+    db: AsyncSession,
+    *,
+    parent_run: m.AgentRun,
+    delegator: m.Agent,
+    target: m.Agent,
+    task_text: str,
+    mcp_conn: m.McpConnection | None = None,
+) -> m.AgentRun:
+    """Start `target` on `task_text` as a delegation of `parent_run`, the run
+    of `delegator` -- the same queued sub-run `delegate_task` creates, so
+    the delegator is woken with its result (`executor._maybe_wake_parent`).
+
+    Checks only the delegation depth: the caller has decided the delegation is allowed
+    (`_delegate`'s checks, or the person's own choice on a direct-access
+    offer with their run right re-checked). Neither commits nor publishes;
+    the caller publishes the returned run after its commit."""
+    if parent_run.agent_id != delegator.id or parent_run.task_id is None:
+        raise ValueError("a delegation starts from a run of the delegating agent's task")
+    task = await db.get(m.Task, parent_run.task_id)
+    if task is None:
+        raise ValueError("the delegating run's task is gone")
+    # The limit `delegate_task` meets in `_authorize`: every door that starts
+    # a delegation keeps it.
+    if task.delegation_depth + 1 > MAX_DELEGATION_DEPTH:
+        raise DelegationDepthExceeded(DEPTH_LIMIT_REASON)
+    return await _create_delegation(
+        db,
+        tenant_id=parent_run.tenant_id,
+        task=task,
+        executing_run=parent_run,
+        target=target,
+        task_text=task_text,
+        mcp_conn=mcp_conn,
+    )
+
+
+async def _create_delegation(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    task: m.Task,
+    executing_run: m.AgentRun | None,
+    target: m.Agent,
+    task_text: str,
+    mcp_conn: m.McpConnection | None,
+) -> m.AgentRun:
+    """The sub-run of a delegation: what `_delegate` and `start_delegation`
+    share. `executing_run` is the delegating run, whose chat and person keys
+    the sub-run carries."""
     context: dict[str, Any] = {
-        "task": str(tc.arguments["task_text"]),
+        "task": task_text,
         "parent_task_id": str(task.id),
         "delegation_depth": task.delegation_depth + 1,
     }
+    if executing_run is not None:
+        # The causal link up to the run that delegated: read by
+        # `person_token_role` to find the person's own web turn, nothing else.
+        context["parent_run_id"] = str(executing_run.id)
     # Carried from the executing run so a wake-up all the way back at the top
     # of the delegation chain can be recognised as a CHAT continuation
     # (executor._maybe_wake_parent reads it off the finishing sub-run's own
@@ -2196,9 +2366,8 @@ async def _delegate(
     # record_assistant_reply's `if run.source == "chat"` gate at all -- the
     # lead's real conclusion sat in the run row forever, unseen on web or on
     # whichever channel the human was using.
-    if run_id is not None:
-        executing_run = await db.get(m.AgentRun, run_id)
-        if executing_run is not None and executing_run.context:
+    if executing_run is not None:
+        if executing_run.context:
             chat_session_id = executing_run.context.get("chat_session_id")
             if chat_session_id:
                 context["chat_session_id"] = chat_session_id
@@ -2252,10 +2421,9 @@ async def _delegate(
         and not await agent_has_own_login_binding(db, target)
     ):
         context["mcp_connection_id"] = str(mcp_conn.id)
-    sub_run = await RunRepository(db).create(
+    return await RunRepository(db).create(
         tenant_id=tenant_id, agent_id=target.id, context=context, source="delegation"
     )
-    return f"delegated to {target.name} (run {sub_run.id})", sub_run.id
 
 
 async def _department_frame(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:

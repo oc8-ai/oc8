@@ -387,6 +387,9 @@ class ApprovalDecisionRequest(CamelModel):
     #: `reason` stays free text and travels either way, so an operator can pick
     #: an option, write an instruction, or do both.
     option: str | None = None
+    #: On a direct-access offer: run this one of the card's agents instead of
+    #: the direct grant. Only `decision="approve"` reads it.
+    agent_id: uuid.UUID | None = None
 
 
 class CreateMcpLoginRequest(CamelModel):

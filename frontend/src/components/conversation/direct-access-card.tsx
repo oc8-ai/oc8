@@ -6,6 +6,7 @@ import { useState } from "react";
 
 import { isHttpUrl, RecordLink } from "@/components/dashboard/widgets/approvals-widget";
 import { Button } from "@/components/ui/button";
+import { ApiError } from "@/lib/api";
 import {
   useDecideDirectAccess,
   useDirectAccessGrants,
@@ -13,6 +14,18 @@ import {
 } from "@/lib/direct-access-api";
 import type { Approval } from "@/lib/hooks";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
+
+import { isPlainClick, objectHref } from "./object-links";
+import { useObjectNavigation } from "./use-object-navigation";
+
+type Chosen = NonNullable<NonNullable<Approval["directAccess"]>["chosenAgent"]>;
+
+/** The backend's typed refusal (`detail: {code}`), if the error is one. */
+function refusalCode(error: Error): string | null {
+  if (!(error instanceof ApiError)) return null;
+  const detail = (error.body as { detail?: { code?: unknown } } | undefined)?.detail;
+  return typeof detail?.code === "string" ? detail.code : null;
+}
 
 export function DirectAccessCard({ approval }: { approval: Approval }) {
   const t = useT();
@@ -22,7 +35,13 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
   const revoke = useRevokeDirectAccess(info?.sessionId ?? "");
   const { data: grants } = useDirectAccessGrants(info?.sessionId ?? null);
   const [decided, setDecided] = useState<"approved" | "rejected" | "awaiting" | null>(null);
+  const [started, setStarted] = useState<Chosen | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const openObject = useObjectNavigation();
   if (!info) return null;
+  const agents = info.agents ?? [];
+  const chosen = info.chosenAgent ?? started;
+  const offersAgents = agents.length > 0 && !chosen;
   const isOffer = approval.actionType === "direct_access";
   // Person first, then the department (spec §1): the person's approval of a
   // write a department's policy holds leaves it waiting for that department.
@@ -30,27 +49,90 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
     decided ??
     (approval.status === "approved" && info.awaitingDepartment ? "awaiting" : approval.status);
   const grant = isOffer ? grants?.find((g) => g.approvalId === approval.id) : undefined;
-  const title = resolveTranslation(approval.title, approval.titleTranslations, lang);
+  const title = offersAgents
+    ? t(`${agents[0].name} does this — run it?`, `${agents[0].name} erledigt das – starten?`)
+    : resolveTranslation(approval.title, approval.titleTranslations, lang);
   const account =
     info.account === "own"
       ? t("Using your own login", "Mit deinem eigenen Login")
       : info.account === "organisation"
         ? t("Using the organisation account", "Mit dem Organisationskonto")
         : t("The account could not be determined.", "Das Konto konnte nicht ermittelt werden.");
-  const answer = (decision: "approve" | "reject") =>
+  // A refusal shown for an earlier answer must not stand next to a later
+  // answer's outcome: cleared on every new answer and on its success.
+  const answer = (decision: "approve" | "reject") => {
+    setProblem(null);
     decide.mutate(
       { approvalId: approval.id, decision },
       {
-        onSuccess: (dto) =>
+        onError: (error) => setProblem(error.message),
+        onSuccess: (dto) => {
+          setProblem(null);
           setDecided(
             decision === "reject"
               ? "rejected"
               : dto?.directAccess?.awaitingDepartment
                 ? "awaiting"
                 : "approved",
+          );
+        },
+      },
+    );
+  };
+
+  const runAgent = (agent: { id: string; name: string }) => {
+    setProblem(null);
+    decide.mutate(
+      { approvalId: approval.id, decision: "approve", agentId: agent.id },
+      {
+        onSuccess: (dto) => {
+          setProblem(null);
+          const next = dto?.directAccess?.chosenAgent;
+          if (next) setStarted(next);
+          else setDecided("approved");
+        },
+        onError: (error) =>
+          setProblem(
+            refusalCode(error) === "agent_not_runnable"
+              ? t(
+                  `You can no longer run ${agent.name}.`,
+                  `Du darfst ${agent.name} nicht mehr starten.`,
+                )
+              : refusalCode(error)
+                ? t(
+                    "That did not work. Please try again.",
+                    "Das hat nicht geklappt. Bitte versuch es erneut.",
+                  )
+                : error.message,
           ),
       },
     );
+  };
+
+  if (chosen) {
+    const href = objectHref("run", chosen.runId);
+    return (
+      <div className="rounded-lg border border-border bg-card p-4 text-sm">
+        <div className="flex items-center gap-2 font-medium">
+          <KeyRound className="size-4 text-primary" aria-hidden />
+          <span>{title}</span>
+        </div>
+        <p className="mt-2">
+          <a
+            href={href ?? undefined}
+            onClick={(e) => {
+              if (!href || !openObject || !isPlainClick(e)) return;
+              e.preventDefault();
+              openObject(href);
+            }}
+            className="text-primary hover:underline"
+          >
+            {t(`${chosen.name} is on it.`, `${chosen.name} kümmert sich darum.`)}
+          </a>
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="rounded-lg border border-border bg-card p-4 text-sm">
@@ -58,8 +140,15 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
         <KeyRound className="size-4 text-primary" aria-hidden />
         <span>{title}</span>
       </div>
+      {offersAgents && info.request && (
+        <p className="mt-1 text-xs italic text-muted-foreground">
+          {t("Hands over:", "Übergibt:")} “{info.request}”
+        </p>
+      )}
       <p className="mt-1 text-xs text-muted-foreground">{account}</p>
-      {approval.detail && <p className="mt-2">{approval.detail}</p>}
+      {approval.detail && !(offersAgents && approval.detail === info.request) && (
+        <p className="mt-2">{approval.detail}</p>
+      )}
       {isOffer && (
         <p className="mt-2 text-xs text-muted-foreground">
           {t(
@@ -88,7 +177,33 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
         </RecordLink>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        {status === "pending" && info.decider === "member" && (
+        {status === "pending" && info.decider === "member" && offersAgents && (
+          <>
+            <Button size="sm" disabled={decide.isPending} onClick={() => runAgent(agents[0])}>
+              {t("Run agent", "Agent starten")}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={decide.isPending}
+              onClick={() => answer("approve")}
+            >
+              {t(
+                `Do it myself with ${info.loginName || info.label}`,
+                `Selbst machen mit ${info.loginName || info.label}`,
+              )}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={decide.isPending}
+              onClick={() => answer("reject")}
+            >
+              {t("Reject", "Ablehnen")}
+            </Button>
+          </>
+        )}
+        {status === "pending" && info.decider === "member" && !offersAgents && (
           <>
             <Button size="sm" disabled={decide.isPending} onClick={() => answer("approve")}>
               {isOffer ? t("Allow", "Erlauben") : t("Approve", "Zustimmen")}
@@ -125,6 +240,29 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
           </Button>
         )}
       </div>
+      {offersAgents && agents.length > 1 && status === "pending" && info.decider === "member" && (
+        <div className="mt-2 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+          <span>{t("Also fits: ", "Passt auch: ")}</span>
+          {agents.slice(1).map((agent) => (
+            <Button
+              key={agent.id}
+              size="sm"
+              variant="ghost"
+              className="h-6 px-2 text-xs"
+              disabled={decide.isPending}
+              aria-label={t(`Run ${agent.name}`, `${agent.name} starten`)}
+              onClick={() => runAgent(agent)}
+            >
+              {agent.name}
+            </Button>
+          ))}
+        </div>
+      )}
+      {problem && (
+        <p role="alert" className="mt-2 text-xs text-destructive">
+          {problem}
+        </p>
+      )}
     </div>
   );
 }

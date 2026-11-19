@@ -65,7 +65,7 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
+def cosine_similarity(a: list[float], b: list[float]) -> float:
     dot = sum(x * y for x, y in zip(a, b, strict=True))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(y * y for y in b))
@@ -166,7 +166,7 @@ async def _search_internal(
     for c in chunks:
         score = 0.0
         if c.embedding is not None:
-            score = _cosine_similarity(c.embedding, query_embedding)
+            score = cosine_similarity(c.embedding, query_embedding)
         hits.append(
             _Hit(
                 kb_id=kb.id,
@@ -430,7 +430,7 @@ async def similar_chunks(
                 classification=c.classification,
                 chunk_metadata=c.chunk_metadata,
                 created_at=c.created_at,
-                similarity=_cosine_similarity(source.embedding, c.embedding),
+                similarity=cosine_similarity(source.embedding, c.embedding),
             )
         )
     return result

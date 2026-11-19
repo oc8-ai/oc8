@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.harness.caps import ModelCaps
@@ -204,6 +205,205 @@ async def test_the_tenant_assistant_is_excluded_from_its_own_roster(
 
     joined = "\n".join(msg.content for msg in pre.messages)
     assert str(assistant.id) not in joined, "the Assistant is not a delegation target for itself"
+
+
+ON: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
+OFF: dict[str, Any] = {"enabled": False, "read": False, "modify": False}
+
+
+async def _copilot_with_person(
+    db: Any, tenant: uuid.UUID, *, seats: list[m.Department], door: dict[str, Any] | None = None
+) -> tuple[m.Agent, m.Task, m.AgentRun]:
+    """The Copilot on a live web turn its own member wrote (`on_behalf_of`),
+    for a person whose role holds `run:start` -- reaching the departments they
+    hold a seat in, not every agent (no tenant-wide `agent:view`)."""
+    from oc8.authz.permissions import COPILOT_USE, RUN_START
+
+    assistant, task = await _assistant_dept_task(db, tenant)
+    role = m.Role(tenant_id=tenant, name=f"r-{uuid.uuid4().hex[:8]}", kind="human")
+    db.add(role)
+    await db.flush()
+    for permission in (COPILOT_USE, RUN_START):
+        db.add(m.RolePermission(tenant_id=tenant, role_id=role.id, permission=permission))
+    member = m.OrgMember(
+        tenant_id=tenant, subject=f"anna-{uuid.uuid4()}", subject_uuid=uuid.uuid4(),
+        role_id=role.id,
+    )
+    db.add(member)
+    await db.flush()
+    for dept in seats:
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant, member_id=member.id, department_id=dept.id,
+                seat_role="dept_viewer",
+            )
+        )
+    session = m.ChatSession(
+        tenant_id=tenant, agent_id=assistant.id, member_id=member.id, task_id=task.id
+    )
+    db.add(session)
+    await db.flush()
+    context: dict[str, Any] = (
+        {"chat_session_id": str(session.id), **door}
+        if door is not None
+        else {"door": "web", "on_behalf_of": str(member.id), "chat_session_id": str(session.id)}
+    )
+    run = m.AgentRun(
+        tenant_id=tenant, agent_id=assistant.id, task_id=task.id, source="chat",
+        state="running", context=context,
+    )
+    db.add(run)
+    await db.flush()
+    return assistant, task, run
+
+
+async def _roster_of(db: Any, tenant: uuid.UUID, assistant: m.Agent, **kw: Any) -> str:
+    pre = await build_run_preamble(
+        db, agent=assistant, tenant_id=tenant, task_text="hi", frame={},
+        model_locality="cloud", caps=ModelCaps(), max_steps=40, **kw,
+    )
+    return "\n".join(msg.content for msg in pre.messages if isinstance(msg.content, str))
+
+
+async def test_the_copilot_roster_names_each_agents_tools(
+    app_session: AppSessionFactory,
+) -> None:
+    """Each line says which tools the agent has -- enabled in its department's
+    frame and not switched off by its own narrowing; keys, sorted, at most 8."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, _task = await _assistant_dept_task(db, tenant)
+        helpdesk = m.Department(
+            tenant_id=tenant, name="Helpdesk",
+            frame={"tools": {"things": ON, "mail": ON, "ledger": OFF, "files": ON}},
+        )
+        wide = m.Department(
+            tenant_id=tenant, name="Zentrale",
+            frame={"tools": {f"t{i:02d}": ON for i in range(10)}},
+        )
+        db.add_all([helpdesk, wide])
+        await db.flush()
+        lennart = m.Agent(
+            tenant_id=tenant, department_id=helpdesk.id, name="Lennart",
+            role_title="First Level IT Support", status="idle", definition={},
+            presentation={}, narrowing={"tools": {"files": OFF}},
+        )
+        bare = m.Agent(
+            tenant_id=tenant, department_id=wide.id, name="Wim", status="idle",
+            definition={}, presentation={},
+        )
+        db.add_all([lennart, bare])
+        await db.flush()
+
+        joined = await _roster_of(db, tenant, assistant)
+
+    assert (
+        f"- {lennart.id}: Lennart (Helpdesk, First Level IT Support) — tools: mail, things"
+        in joined
+    )
+    eight = ", ".join(f"t{i:02d}" for i in range(8))
+    assert f"- {bare.id}: Wim (Zentrale) — tools: {eight}, …" in joined
+
+
+@pytest.mark.parametrize(
+    "door",
+    [
+        None,
+        {"door": "followup", "followup": {"id": "f1"}},
+        {"door": "telegram", "chat_channel": "telegram", "chat_channel_external_id": "42"},
+    ],
+    ids=["web", "followup", "telegram"],
+)
+async def test_the_copilot_roster_hides_agents_the_person_may_not_run(
+    app_session: AppSessionFactory, door: dict[str, Any] | None
+) -> None:
+    """On every turn that acts for a person, only the agents that person may
+    start are named -- what `_delegate` lets through: the Copilot itself
+    crosses departments, the person may not."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        helpdesk = m.Department(tenant_id=tenant, name="Helpdesk", frame={})
+        ledger = m.Department(tenant_id=tenant, name="Buchhaltung", frame={})
+        db.add_all([helpdesk, ledger])
+        await db.flush()
+        assistant, task, run = await _copilot_with_person(
+            db, tenant, seats=[helpdesk], door=door
+        )
+        lennart = m.Agent(
+            tenant_id=tenant, department_id=helpdesk.id, name="Lennart", status="idle",
+            definition={}, presentation={},
+        )
+        fremd = m.Agent(
+            tenant_id=tenant, department_id=ledger.id, name="Fremd", status="idle",
+            definition={}, presentation={},
+        )
+        db.add_all([lennart, fremd])
+        await db.flush()
+
+        joined = await _roster_of(db, tenant, assistant, task=task, run_id=run.id)
+
+    assert f"- {lennart.id}: Lennart (Helpdesk)" in joined
+    assert str(fremd.id) not in joined
+    assert "Fremd" not in joined
+
+
+async def test_the_roster_of_a_wake_up_uses_the_role_of_the_persons_chat_run(
+    app_session: AppSessionFactory,
+) -> None:
+    """No assigned role: the Copilot's wake-up after a delegated result names
+    the agents the role claim on the person's own web turn -- its causal
+    parent -- lets them run: the claim `_delegate` judges with, not an empty
+    roster."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        helpdesk = m.Department(tenant_id=tenant, name="Helpdesk", frame={})
+        db.add(helpdesk)
+        await db.flush()
+        assistant, task, wake = await _copilot_with_person(
+            db,
+            tenant,
+            seats=[helpdesk],
+            door={"door": "web", "parent_task_id": "", "delegation_depth": 1},
+        )
+        session = await db.scalar(select(m.ChatSession).where(m.ChatSession.task_id == task.id))
+        member = await db.get(m.OrgMember, session.member_id)
+        member.role_id = None
+        web = m.AgentRun(
+            tenant_id=tenant, agent_id=assistant.id, task_id=task.id, source="chat",
+            state="done",
+            context={
+                "door": "web", "chat_session_id": str(session.id),
+                "originating_operator": member.subject, "operator_role": OPERATOR,
+            },
+        )
+        db.add(web)
+        await db.flush()
+        # The causal chain the executor records: the sub-run the web turn
+        # delegated, and the wake-up its result caused.
+        sub = m.AgentRun(
+            tenant_id=tenant, agent_id=assistant.id, source="delegation", state="done",
+            context={"parent_task_id": str(task.id), "parent_run_id": str(web.id)},
+        )
+        db.add(sub)
+        await db.flush()
+        wake.context = {
+            **wake.context,
+            "parent_task_id": str(task.id),
+            "originating_operator": member.subject,
+            "wake_of_run_id": str(sub.id),
+        }
+        lennart = m.Agent(
+            tenant_id=tenant, department_id=helpdesk.id, name="Lennart", status="idle",
+            definition={}, presentation={},
+        )
+        db.add(lennart)
+        await db.flush()
+
+        joined = await _roster_of(db, tenant, assistant, task=task, run_id=wake.id)
+
+    assert f"- {lennart.id}: Lennart (Helpdesk)" in joined
 
 
 async def test_has_knowledge_is_true_once_a_kb_is_granted_to_the_department(

@@ -8,18 +8,21 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.api.deps import DbSession, require_departmental
 from oc8.api.v1._serializers import approval_to_dto, resolve_approval_names
 from oc8.approvals import (
+    AgentNotOffered,
+    AgentNotRunnable,
     AlreadyDecided,
     EffectRefused,
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
+    UnknownOption,
     awaiting_department,
     decide_approval,
     department_after_person,
@@ -50,8 +53,12 @@ async def _own_session(db: DbSession, actor: HumanActor, session_id: uuid.UUID) 
 
 
 @router.get("/chat/direct-access/approvals", response_model=list[ApprovalDTO])
-async def my_direct_access_approvals(db: DbSession, actor: _ChatActor) -> list[ApprovalDTO]:
-    rows = await member_direct_access_cards(db, member_id=actor.member.id)
+async def my_direct_access_approvals(
+    db: DbSession,
+    actor: _ChatActor,
+    session_id: Annotated[uuid.UUID | None, Query(alias="sessionId")] = None,
+) -> list[ApprovalDTO]:
+    rows = await member_direct_access_cards(db, member_id=actor.member.id, session_id=session_id)
     grants = {
         g.approval_id: g
         for g in (
@@ -95,6 +102,7 @@ async def decide_direct_access(
             tenant_id=actor.principal.tenant_id,
             actor=actor,
             reason=body.reason or None,
+            agent_id=body.agent_id if body.decision == "approve" else None,
         )
     except NotYourDepartment as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "approval not found") from exc
@@ -104,6 +112,14 @@ async def decide_direct_access(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown decision") from exc
     except AlreadyDecided as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except AgentNotRunnable as exc:
+        # Nothing started, the offer stays open: the request rolls back.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, {"code": exc.code}) from exc
+    except AgentNotOffered as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, {"code": exc.code}) from exc
+    except UnknownOption as exc:
+        # An agentId on a card that is no agent offer (a held write).
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except EffectRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     dto = approval_to_dto(result.approval)
@@ -116,10 +132,12 @@ async def decide_direct_access(
         # Approved by the person: the department is asked now.
         dto.direct_access.awaiting_department = True
     await db.commit()
-    if result.resumed_run_id is not None:
-        # After the commit: a stream entry whose run is not yet visible is a
-        # run a worker picks up and cannot find.
-        await publish_run(run_id=result.resumed_run_id, tenant_id=actor.principal.tenant_id)
+    # After the commit: a stream entry whose run is not yet visible is a run a
+    # worker picks up and cannot find. The chosen agent's run first, so the
+    # Copilot's resumed turn finds it under way.
+    for run_id in (result.started_run_id, result.resumed_run_id):
+        if run_id is not None:
+            await publish_run(run_id=run_id, tenant_id=actor.principal.tenant_id)
     return dto
 
 

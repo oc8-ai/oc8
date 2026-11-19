@@ -6075,3 +6075,12 @@ msgstr "Deine Arbeit liegt nebenan"
 
 msgid "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it."
 msgstr "Hier zählt nur eine Verbindung der Organisation. Eine Datenquelle füttert Wissen, das alle in der Organisation nutzen, deshalb wird deine persönliche Anmeldung dafür nie verwendet."
+
+msgid "Also fits: "
+msgstr "Passt auch: "
+
+msgid "Hands over:"
+msgstr "Übergibt:"
+
+msgid "Run agent"
+msgstr "Agent starten"

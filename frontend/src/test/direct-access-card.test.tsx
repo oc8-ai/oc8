@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError } from "@/lib/api";
 import type { Approval } from "@/lib/hooks";
 
 const m = vi.hoisted(() => ({
@@ -183,5 +184,142 @@ describe("direct access in the chat", () => {
   it("shows no banner without a grant", () => {
     const { container } = render(<DirectAccessBanner sessionId="s1" />);
     expect(container).toBeEmptyDOMElement();
+  });
+  describe("with a fitting agent", () => {
+    const withAgents: Approval = {
+      ...offer,
+      directAccess: {
+        ...offer.directAccess!,
+        loginName: "Shared login",
+        request: "Find the quotation for XYZ GmbH",
+        agents: [
+          { id: "a1", name: "Sales Agent", department: "Sales", score: 0.9 },
+          { id: "a2", name: "Quote Agent", department: "Sales", score: 0.7 },
+        ],
+      },
+    };
+
+    it("shows the fitting agent and runs it", () => {
+      render(<DirectAccessCard approval={withAgents} />);
+      expect(screen.getByText("Sales Agent does this — run it?")).toBeInTheDocument();
+      expect(screen.getByText(/Hands over:/)).toBeInTheDocument();
+      expect(screen.getByText(/Find the quotation for XYZ GmbH/)).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^allow$/i })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Run agent" }));
+      expect(m.decide).toHaveBeenCalledWith(
+        { approvalId: "ap1", decision: "approve", agentId: "a1" },
+        expect.anything(),
+      );
+    });
+
+    it("does it itself with the named login", () => {
+      render(<DirectAccessCard approval={withAgents} />);
+      fireEvent.click(screen.getByRole("button", { name: "Do it myself with Shared login" }));
+      const [vars] = m.decide.mock.calls[0];
+      expect(vars).toEqual({ approvalId: "ap1", decision: "approve" });
+      expect(vars).not.toHaveProperty("agentId");
+    });
+
+    it("offers the other fitting agents", () => {
+      render(<DirectAccessCard approval={withAgents} />);
+      expect(screen.getByText(/Also fits:/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Run Quote Agent" }));
+      expect(m.decide).toHaveBeenCalledWith(
+        { approvalId: "ap1", decision: "approve", agentId: "a2" },
+        expect.anything(),
+      );
+    });
+
+    it("shows that the chosen agent is on it after reload", () => {
+      render(
+        <DirectAccessCard
+          approval={{
+            ...withAgents,
+            status: "approved",
+            directAccess: {
+              ...withAgents.directAccess!,
+              chosenAgent: { id: "a1", name: "Sales Agent", runId: "run9" },
+            },
+          }}
+        />,
+      );
+      const link = screen.getByRole("link", { name: /Sales Agent is on it\./ });
+      expect(link).toHaveAttribute("href", "/activity?run=run9");
+      expect(screen.queryByRole("button")).toBeNull();
+    });
+
+    it("explains when the agent can no longer be run", () => {
+      m.decide.mockImplementation((_vars: unknown, opts: { onError: (e: Error) => void }) =>
+        opts.onError(
+          new ApiError('{"code":"agent_not_runnable"}', 403, {
+            detail: { code: "agent_not_runnable" },
+          }),
+        ),
+      );
+      render(<DirectAccessCard approval={withAgents} />);
+      fireEvent.click(screen.getByRole("button", { name: "Run agent" }));
+      expect(screen.getByText("You can no longer run Sales Agent.")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Run agent" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /reject/i })).toBeInTheDocument();
+    });
+
+    it("names the agent each other button runs, in German too", () => {
+      window.localStorage.setItem("oc8-lang", "de");
+      try {
+        render(
+          <LanguageProvider>
+            <DirectAccessCard approval={withAgents} />
+          </LanguageProvider>,
+        );
+        expect(screen.getByRole("button", { name: "Quote Agent starten" })).toBeInTheDocument();
+      } finally {
+        window.localStorage.removeItem("oc8-lang");
+      }
+    });
+
+    it("clears the refusal once a later answer succeeds", () => {
+      m.decide.mockImplementationOnce((_vars: unknown, opts: { onError: (e: Error) => void }) =>
+        opts.onError(
+          new ApiError('{"code":"agent_not_runnable"}', 403, {
+            detail: { code: "agent_not_runnable" },
+          }),
+        ),
+      );
+      m.decide.mockImplementationOnce(
+        (_vars: unknown, opts: { onSuccess: (dto: unknown) => void }) =>
+          opts.onSuccess({ directAccess: {} }),
+      );
+      render(<DirectAccessCard approval={withAgents} />);
+      fireEvent.click(screen.getByRole("button", { name: "Run agent" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("You can no longer run Sales Agent.");
+      fireEvent.click(screen.getByRole("button", { name: "Do it myself with Shared login" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText("Approved")).toBeInTheDocument();
+    });
+
+    it("shows the backend message when the offer was already decided", () => {
+      m.decide.mockImplementation((_vars: unknown, opts: { onError: (e: Error) => void }) =>
+        opts.onError(new ApiError("already decided", 409, { detail: "already decided" })),
+      );
+      render(<DirectAccessCard approval={withAgents} />);
+      fireEvent.click(screen.getByRole("button", { name: "Run agent" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("already decided");
+    });
+  });
+
+  it("looks as before without fitting agents", () => {
+    render(
+      <DirectAccessCard
+        approval={{
+          ...offer,
+          title: "Copilot on behalf of Anna: read things",
+          directAccess: { ...offer.directAccess!, toolKey: "things", label: "things", agents: [] },
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /allow/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Run agent" })).toBeNull();
+    expect(screen.queryByText(/Hands over:/)).toBeNull();
+    expect(screen.getByText("Copilot on behalf of Anna: read things")).toBeInTheDocument();
   });
 });

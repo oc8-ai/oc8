@@ -23,7 +23,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agent.control_tools import _acting_token_role, _resolve_agent_actor
+from oc8.agent.control_tools import (
+    _acting_token_role,
+    _resolve_agent_actor,
+    copilot_person,
+    person_token_role,
+)
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import (
     TENANT_ASSISTANT_OPENER,
@@ -151,7 +156,55 @@ class RunPreamble:
     tz: str = "UTC"
 
 
-async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
+#: How many tool keys one roster line names before it says "…".
+ROSTER_TOOL_LIMIT = 8
+
+
+async def _published_narrowings(
+    db: AsyncSession, agents: list[m.Agent]
+) -> dict[uuid.UUID, Mapping[str, Any]]:
+    """Each agent's PUBLISHED narrowing (`resolve_version`'s source, a draft
+    grants nothing), in one query for the whole roster. An agent never
+    published, or a version that predates the column, reads its row -- the
+    same fallback `resolve_version` takes."""
+    from oc8.agents.versioning import version_payload
+
+    version_ids = [a.current_version_id for a in agents if a.current_version_id is not None]
+    versions: dict[uuid.UUID, m.AgentVersion] = {}
+    if version_ids:
+        versions = {
+            v.id: v
+            for v in (
+                await db.execute(select(m.AgentVersion).where(m.AgentVersion.id.in_(version_ids)))
+            ).scalars()
+        }
+    out: dict[uuid.UUID, Mapping[str, Any]] = {}
+    for a in agents:
+        version = versions.get(a.current_version_id) if a.current_version_id else None
+        payload = version_payload(version) if version is not None else {}
+        out[a.id] = (payload["narrowing"] if "narrowing" in payload else a.narrowing) or {}
+    return out
+
+
+def _tools_note(department: m.Department, narrowing: Mapping[str, Any]) -> str:
+    """` — tools: a, b` -- the tool keys enabled for the agent (its
+    department's frame intersected with its narrowing), sorted, at most
+    `ROSTER_TOOL_LIMIT`. Keys, not labels: the model calls tools by key."""
+    policies = effective_tool_policies(dict(department.frame or {}), dict(narrowing))
+    keys = sorted(key for key, policy in policies.items() if policy.enabled)
+    if not keys:
+        return ""
+    shown = ", ".join(keys[:ROSTER_TOOL_LIMIT])
+    return f" — tools: {shown}" + (", …" if len(keys) > ROSTER_TOOL_LIMIT else "")
+
+
+async def roster_block(
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    task: m.Task | None = None,
+    run: m.AgentRun | None = None,
+) -> str | None:
     """The agent's department colleagues, or None if it has none.
 
     A team lead can only name a real agent_id if it knows its colleagues, so
@@ -174,11 +227,19 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
     every turn instead of ever delegating. It gets the full tenant roster
     (grouped by department) instead of its own department's -- naming the same
     agents its own delegation guard would actually let it reach.
+
+    On a turn that acts for a person (`copilot_person` behind `task`, on any
+    door) it names only the agents that person may run -- exactly what
+    `_delegate` lets through --
+    and every line says which tools the agent has, so the Copilot can offer an
+    agent that already does the job instead of doing it itself.
     """
     if agent.is_tenant_assistant:
-        rows = (
+        from oc8.copilot.agent_match import member_run_reach, runnable_with
+
+        result = (
             await db.execute(
-                select(m.Agent, m.Department.name)
+                select(m.Agent, m.Department)
                 .join(m.Department, m.Department.id == m.Agent.department_id)
                 .where(
                     m.Agent.tenant_id == agent.tenant_id,
@@ -190,12 +251,35 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
                 .order_by(m.Department.name, m.Agent.name)
             )
         ).all()
+        rows: list[tuple[m.Agent, m.Department]] = [(a, dept) for a, dept in result]
+        person = await copilot_person(db, tenant_id=agent.tenant_id, task=task)
+        if person is not None:
+            reach = await member_run_reach(
+                db,
+                member_id=person.id,
+                tenant_id=agent.tenant_id,
+                token_role=await person_token_role(
+                    db,
+                    tenant_id=agent.tenant_id,
+                    run_id=run.id if run is not None else None,
+                    person=person,
+                ),
+            )
+            rows = [(a, dept) for a, dept in rows if runnable_with(reach, a)]
         if not rows:
             return None
+        narrowings = await _published_narrowings(db, [a for a, _ in rows])
         lines = [
-            f"- {a.id}: {a.name} ({dept}" + (f", {a.role_title})" if a.role_title else ")")
+            f"- {a.id}: {a.name} ({dept.name}"
+            + (f", {a.role_title})" if a.role_title else ")")
+            + _tools_note(dept, narrowings[a.id])
             for a, dept in rows
         ]
+        if person is not None:
+            return (
+                "Every agent the person you are acting for may run, by department -- "
+                "delegate_task may reach any of them:\n" + "\n".join(lines)
+            )
         return (
             "Every agent in this tenant, by department -- delegate_task may reach any "
             "of them if the person you are acting for can:\n" + "\n".join(lines)
@@ -420,7 +504,7 @@ async def build_run_preamble(
     if is_team_lead:
         # Appended as its own system message (like memory/KB context) because
         # system_prompt is a pure sync function and this needs the DB.
-        roster = await roster_block(db, agent=agent)
+        roster = await roster_block(db, agent=agent, task=task, run=run)
         if roster is not None:
             messages.append(NeutralMessage(role="system", content=roster))
 
