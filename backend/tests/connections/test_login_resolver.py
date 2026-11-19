@@ -15,6 +15,7 @@ import pytest
 from oc8 import config
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
+from oc8.agent.control_tools import _create_delegation
 from oc8.capas.discovery import invalidate_discovery_cache
 from oc8.capas.manifest import CredentialTypeSpec, SetupFieldSpec
 from oc8.connections import runtime_env
@@ -24,6 +25,7 @@ from oc8.connections.access import (
     resolve_direct_access,
     resolve_tool_access,
 )
+from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
 from oc8.connections.integrations import integration_for_connection
 from oc8.connections.login import resolve_login
 from oc8.connections.read_only import ReadOnlyBridge
@@ -147,7 +149,10 @@ async def _world(
         db.add(session)
         await db.flush()
         ctx = context if context is not None else {"originating_operator": "anna@acme.test"}
-        ctx = {k: (str(session.id) if v == "<session>" else v) for k, v in ctx.items()}
+        ctx = {
+            k: (str(session.id) if v == "<session>" else str(anna) if v == "<anna>" else v)
+            for k, v in ctx.items()
+        }
         run = m.AgentRun(tenant_id=agent.tenant_id, agent_id=agent.id, source=source, context=ctx)
         db.add(run)
         await db.flush()
@@ -253,6 +258,186 @@ async def test_a_scheduled_run_ignores_the_persons_own_login(
     )
     await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
     access = await _access(app_session, agent, conn, run)
+    assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+# A delegation from a person's live web chat turn, as `_create_delegation`
+# writes it: the causal link, the carried chat and door keys, the person.
+DELEGATED_FROM_LIVE_CHAT = {
+    "task": "look it up",
+    "parent_task_id": str(uuid.uuid4()),
+    "delegation_depth": 1,
+    "parent_run_id": str(uuid.uuid4()),
+    "chat_session_id": "<session>",
+    "door": "web",
+    "originating_operator": "anna@acme.test",
+    "on_behalf_of": "<anna>",
+}
+
+
+async def test_a_delegation_from_a_live_web_chat_uses_the_persons_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, run = await _world(
+        app_session, context=DELEGATED_FROM_LIVE_CHAT, source="delegation"
+    )
+    await _login(app_session, agent.tenant_id, name="Dept", departments={agent.department_id})
+    own = await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    access = await _access(app_session, agent, conn, run)
+    assert (access.credential.id, access.on_behalf_of) == (own, anna)  # type: ignore[union-attr]
+
+
+async def test_the_agents_fixed_login_still_wins_over_the_persons_own_in_a_delegation(
+    app_session: AppSessionFactory,
+) -> None:
+    agent, anna, conn, run = await _world(
+        app_session, context=DELEGATED_FROM_LIVE_CHAT, source="delegation"
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    chosen = await _login(app_session, agent.tenant_id, name="Chosen")
+    async with app_session(agent.tenant_id) as db:
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=agent.tenant_id,
+                agent_id=agent.id,
+                tool_key=KEY,
+                mode="fixed",
+                credential_id=chosen,
+                set_with_manage=True,
+            )
+        )
+    access = await _access(app_session, agent, conn, run)
+    assert (access.kind, access.credential.id) == ("credential", chosen)  # type: ignore[union-attr]
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"door": "followup", "followup": {"id": "f1"}},
+        {"followup": {"id": "f1"}},
+        {"trigger_id": str(uuid.uuid4())},
+    ],
+    ids=["followup-door", "followup", "trigger"],
+)
+async def test_a_delegation_from_a_followup_or_trigger_does_not_use_the_persons_own_login(
+    app_session: AppSessionFactory, extra: dict[str, Any]
+) -> None:
+    agent, anna, conn, run = await _world(
+        app_session, context={**DELEGATED_FROM_LIVE_CHAT, **extra}, source="delegation"
+    )
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    access = await _access(app_session, agent, conn, run)
+    assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+async def test_a_delegation_from_a_messenger_turn_does_not_use_the_persons_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    ctx = {
+        **DELEGATED_FROM_LIVE_CHAT,
+        "door": "telegram",
+        "chat_channel": "telegram",
+        "chat_channel_external_id": "4711",
+    }
+    agent, anna, conn, run = await _world(app_session, context=ctx, source="delegation")
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    access = await _access(app_session, agent, conn, run)
+    assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+async def test_a_delegation_without_its_causal_link_does_not_use_the_persons_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    ctx = {k: v for k, v in DELEGATED_FROM_LIVE_CHAT.items() if k != "parent_run_id"}
+    agent, anna, conn, run = await _world(app_session, context=ctx, source="delegation")
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    access = await _access(app_session, agent, conn, run)
+    assert access.credential.id == dept  # type: ignore[union-attr]
+
+
+async def test_a_delegation_acting_for_nobody_does_not_use_any_own_login(
+    app_session: AppSessionFactory,
+) -> None:
+    ctx = {k: v for k, v in DELEGATED_FROM_LIVE_CHAT.items() if k != "on_behalf_of"}
+    ctx[ACTING_PERSON_WITHHELD] = SOMEONE_ELSES_WORDS
+    agent, anna, conn, run = await _world(app_session, context=ctx, source="delegation")
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    access = await _access(app_session, agent, conn, run)
+    assert (access.credential.id, access.on_behalf_of) == (dept, None)  # type: ignore[union-attr]
+
+
+async def _delegate_from(
+    app_session: AppSessionFactory, agent: m.Agent, parent_run_id: uuid.UUID, hops: int
+) -> uuid.UUID:
+    """Delegate `hops` times down from `parent_run_id` along the real
+    delegation path (`_create_delegation`); the last sub-run's id."""
+    async with app_session(agent.tenant_id) as db:
+        task = m.Task(
+            tenant_id=agent.tenant_id,
+            department_id=agent.department_id,
+            assigned_agent_id=agent.id,
+            title="look it up",
+        )
+        db.add(task)
+        await db.flush()
+        current = await db.get(m.AgentRun, parent_run_id)
+        live = await db.get(m.Agent, agent.id)
+        assert current is not None and live is not None
+        current.task_id = task.id
+        for _ in range(hops):
+            current = await _create_delegation(
+                db,
+                tenant_id=agent.tenant_id,
+                task=task,
+                executing_run=current,
+                target=live,
+                task_text="look it up",
+                mcp_conn=None,
+            )
+        return current.id
+
+
+@pytest.mark.parametrize("hops", [1, 2], ids=["delegation", "nested"])
+async def test_a_nested_delegation_from_a_live_web_chat_uses_the_persons_own_login(
+    app_session: AppSessionFactory, hops: int
+) -> None:
+    agent, anna, conn, chat_run = await _world(app_session, context=LIVE_CHAT, source="chat")
+    await _login(app_session, agent.tenant_id, name="Dept", departments={agent.department_id})
+    own = await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    sub_run = await _delegate_from(app_session, agent, chat_run, hops)
+    access = await _access(app_session, agent, conn, sub_run)
+    assert (access.credential.id, access.on_behalf_of) == (own, anna)  # type: ignore[union-attr]
+
+
+async def test_a_delegation_from_a_messenger_chat_turn_keeps_the_department_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """Through the real delegation path: the carried door decides."""
+    ctx = {
+        **LIVE_CHAT,
+        "door": "telegram",
+        "chat_channel": "telegram",
+        "chat_channel_external_id": "4711",
+    }
+    agent, anna, conn, chat_run = await _world(app_session, context=ctx, source="chat")
+    dept = await _login(
+        app_session, agent.tenant_id, name="Dept", departments={agent.department_id}
+    )
+    await _login(app_session, agent.tenant_id, name="Mine", owner=anna)
+    sub_run = await _delegate_from(app_session, agent, chat_run, 2)
+    access = await _access(app_session, agent, conn, sub_run)
     assert access.credential.id == dept  # type: ignore[union-attr]
 
 
