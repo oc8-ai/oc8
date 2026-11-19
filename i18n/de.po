@@ -2710,6 +2710,9 @@ msgstr "Leer lassen, um es unverändert zu lassen"
 msgid "Leave empty to allow any origin."
 msgstr "Leer lassen, um jede Origin zuzulassen."
 
+msgid "Leave empty to keep the stored password"
+msgstr "Leer lassen, um das gespeicherte Passwort zu behalten"
+
 msgid "Leave empty to never expire."
 msgstr "Leer lassen, damit der Key nie abläuft."
 
@@ -5154,6 +5157,9 @@ msgstr "Die Quelle hat nicht geantwortet. Versuch es noch einmal."
 
 msgid "The status of an agent handoff changed."
 msgstr "Der Status einer Agenten-Übergabe hat sich geändert."
+
+msgid "The stored values could not be loaded. Please try again later."
+msgstr "Die gespeicherten Werte konnten nicht geladen werden. Bitte versuch es später erneut."
 
 msgid "The task board could not be loaded"
 msgstr "Das Aufgaben-Board konnte nicht geladen werden"

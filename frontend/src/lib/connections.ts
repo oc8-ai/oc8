@@ -385,6 +385,43 @@ export function useUpdateMyCredential() {
   });
 }
 
+/**
+ * The non-secret values stored on a login, to prefill its edit form. A
+ * personal login has an owner-only read; an organisation login is read from
+ * the organisation list (the right that editing it needs anyway).
+ */
+export function useStoredLoginValues(
+  id: string | undefined,
+  owner: Owner,
+  credentialType: string | null,
+) {
+  return useQuery({
+    queryKey: ["connections", "stored-values", owner, id],
+    enabled: !!id,
+    // The form owns the values once it shows them: never refetch under it.
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
+    queryFn: async (): Promise<Record<string, string>> => {
+      let stored: { fieldValues?: Record<string, unknown> } | undefined;
+      if (owner === "me") {
+        stored = await api.get<{ fieldValues?: Record<string, unknown> }>(
+          `/connections/credentials/${id}`,
+        );
+      } else {
+        const rows = await api.get<{ id: string; fieldValues?: Record<string, unknown> }[]>(
+          credentialType
+            ? `/credentials?type=${encodeURIComponent(credentialType)}`
+            : "/credentials",
+        );
+        stored = rows.find((r) => r.id === id);
+      }
+      return Object.fromEntries(
+        Object.entries(stored?.fieldValues ?? {}).map(([k, v]) => [k, v == null ? "" : String(v)]),
+      );
+    },
+  });
+}
+
 export function useTestConnection() {
   const invalidate = useInvalidateConnections();
   return useMutation({

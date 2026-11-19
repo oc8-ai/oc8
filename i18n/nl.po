@@ -3474,6 +3474,10 @@ msgid "Leave empty to allow any origin."
 msgstr "Laat leeg om elke origin toe te staan."
 
 #, fuzzy
+msgid "Leave empty to keep the stored password"
+msgstr "Laat leeg om het opgeslagen wachtwoord te behouden"
+
+#, fuzzy
 msgid "Leave empty to never expire."
 msgstr "Laat leeg om nooit te laten verlopen."
 
@@ -6732,6 +6736,10 @@ msgstr "De bron antwoordde niet. Probeer het opnieuw."
 #, fuzzy
 msgid "The status of an agent handoff changed."
 msgstr "De status van de agentoverdracht is gewijzigd."
+
+#, fuzzy
+msgid "The stored values could not be loaded. Please try again later."
+msgstr "De opgeslagen waarden konden niet worden geladen. Probeer het later opnieuw."
 
 #, fuzzy
 msgid "The task board could not be loaded"
