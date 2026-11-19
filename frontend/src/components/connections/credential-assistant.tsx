@@ -7,6 +7,7 @@ import {
   incompleteFields,
   useCheckCredential,
   useCreateCredentialConnection,
+  useStoredLoginValues,
   useUpdateMyCredential,
   useUpdateOrganisationCredential,
 } from "@/lib/connections";
@@ -23,24 +24,55 @@ const SECONDARY =
 const PRIMARY =
   "inline-flex min-h-11 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-50";
 
-export function CredentialAssistant({
-  integration,
-  owner,
-  editCredentialId,
-  onDone,
-}: {
+type AssistantProps = {
   integration: Integration;
   owner: Owner;
   editCredentialId?: string;
   onDone: () => void;
-}) {
+};
+
+/** Editing waits for the login's stored values, so the form never starts
+ *  half empty and a late answer can never overwrite what was typed. */
+export function CredentialAssistant(props: AssistantProps) {
+  const t = useT();
+  const stored = useStoredLoginValues(
+    props.editCredentialId,
+    props.owner,
+    props.integration.credentialType,
+  );
+  if (!props.editCredentialId) return <CredentialForm {...props} />;
+  if (stored.isError)
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        {t(
+          "The stored values could not be loaded. Please try again later.",
+          "Die gespeicherten Werte konnten nicht geladen werden. Bitte versuch es später erneut.",
+        )}
+      </p>
+    );
+  if (!stored.data)
+    return (
+      <p role="status" className="text-sm text-muted-foreground">
+        {t("Loading…", "Wird geladen…")}
+      </p>
+    );
+  return <CredentialForm {...props} stored={stored.data} />;
+}
+
+function CredentialForm({
+  integration,
+  owner,
+  editCredentialId,
+  stored,
+  onDone,
+}: AssistantProps & { stored?: Record<string, string> }) {
   const t = useT();
   const { lang } = useLang();
   const [values, setValues] = useState<Record<string, string>>(() =>
     Object.fromEntries(
       integration.credentialFields
         .filter((f) => f.kind !== "password")
-        .map((f) => [f.key, f.default ?? ""]),
+        .map((f) => [f.key, stored ? (stored[f.key] ?? "") : (f.default ?? "")]),
     ),
   );
   const [result, setResult] = useState<CredentialCheck | null>(null);
@@ -125,6 +157,14 @@ export function CredentialAssistant({
               placeholder={loginFieldPlaceholder(field, lang)}
               onChange={(event) => setValue(field.key, event.target.value)}
             />
+            {editCredentialId && field.kind === "password" && (
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  "Leave empty to keep the stored password",
+                  "Leer lassen, um das gespeicherte Passwort zu behalten",
+                )}
+              </p>
+            )}
             {hint && (
               <details className="text-xs text-muted-foreground">
                 <summary className="cursor-pointer">

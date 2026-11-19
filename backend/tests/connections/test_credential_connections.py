@@ -245,3 +245,39 @@ async def test_an_empty_password_keeps_the_stored_one(
     values, refs = await _stored(app_session, tenant, mine)
     assert values["url"] == "https://new.acme.test"
     assert refs == {"password": f"credential/{mine}/password"}
+
+
+async def test_a_person_reads_their_own_login_without_secrets(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    mine = await credential_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        r = await c.get(
+            f"/api/v1/connections/credentials/{mine}", headers=headers(tenant, "anna@acme.test")
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["id"] == str(mine)
+    assert body["fieldValues"]["url"] == "https://odoo.acme.test"
+    assert "password" not in body["fieldValues"]
+    assert "secret" not in r.text.lower().replace("secretrefs", "")
+
+
+async def test_a_person_cannot_read_someone_elses_login(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    await member(app_session, tenant, "ben@acme.test")
+    annas = await credential_row(app_session, tenant, owner=anna)
+    shared = await credential_row(app_session, tenant, owner=None)
+    async with api() as c:
+        for who, cred in (
+            (headers(tenant, "ben@acme.test"), annas),
+            (headers(tenant, "anna@acme.test"), shared),
+            (headers(tenant, "admin@acme.test", "org_admin"), shared),
+        ):
+            r = await c.get(f"/api/v1/connections/credentials/{cred}", headers=who)
+            assert r.status_code == 404

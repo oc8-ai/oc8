@@ -3612,6 +3612,10 @@ msgid "Leave empty to allow any origin."
 msgstr "Déjalo vacío para permitir cualquier origen."
 
 #, fuzzy
+msgid "Leave empty to keep the stored password"
+msgstr "Déjalo vacío para conservar la contraseña guardada"
+
+#, fuzzy
 msgid "Leave empty to never expire."
 msgstr "Déjalo vacío para que no caduque nunca."
 
@@ -6870,6 +6874,10 @@ msgstr "La fuente no respondió. Inténtalo de nuevo."
 #, fuzzy
 msgid "The status of an agent handoff changed."
 msgstr "Cambió el estado de un traspaso de agente."
+
+#, fuzzy
+msgid "The stored values could not be loaded. Please try again later."
+msgstr "No se pudieron cargar los valores guardados. Inténtalo de nuevo más tarde."
 
 #, fuzzy
 msgid "The task board could not be loaded"

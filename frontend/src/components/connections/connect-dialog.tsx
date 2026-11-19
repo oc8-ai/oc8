@@ -23,7 +23,7 @@ export interface ConnectDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   defaultOwner?: Owner;
-  /** Edit an organisation access's values instead of creating one. */
+  /** Edit this login's values instead of creating one; `defaultOwner` is its owner. */
   editCredentialId?: string;
   /** Where the browser goes for the provider's sign-in (tests inject it). */
   redirect?: (url: string) => void;
@@ -41,7 +41,12 @@ export function ConnectDialog({
   const may = useMay();
   const mayChooseOwner = may("integration:manage") && !editCredentialId;
   const [chosen, setChosen] = useState<Owner | null>(null);
-  const owner: Owner = mayChooseOwner ? (chosen ?? defaultOwner) : "me";
+  // Editing never changes whose login it is: the caller passes the real owner.
+  const owner: Owner = editCredentialId
+    ? defaultOwner
+    : mayChooseOwner
+      ? (chosen ?? defaultOwner)
+      : "me";
   const setOwner = setChosen;
   const { data: integrations = [], isLoading, isError } = useIntegrations();
   const integration = integrations.find((i) => i.name === name);
