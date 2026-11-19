@@ -293,6 +293,8 @@ export function ConnectionsPage({
       enabling={enable.isPending}
       lang={lang}
       onConnect={(name) => open(name, "me")}
+      onEdit={(c) => open(c.integration as string, "me", c.id)}
+      onTest={runTest}
       onDisconnect={(c) => revoke(c, null)}
       onMakeAvailable={makeAvailable}
       onAddCustom={() => setCustomOpen(true)}
@@ -411,6 +413,8 @@ function MineList({
   enabling,
   lang,
   onConnect,
+  onEdit,
+  onTest,
   onDisconnect,
   onMakeAvailable,
   onAddCustom,
@@ -425,6 +429,8 @@ function MineList({
   enabling: boolean;
   lang: string;
   onConnect: (integration: string) => void;
+  onEdit: (c: Connection) => void;
+  onTest: (c: Connection) => void;
   onDisconnect: (c: Connection) => void;
   onMakeAvailable: (i: Integration) => void;
   onAddCustom: () => void;
@@ -465,12 +471,25 @@ function MineList({
             }
             return connections.map((c) => {
               const broken = isBroken(c);
+              const editable = c.kind === "credential" && !!c.integration;
+              const incomplete = c.incomplete ?? [];
               return (
                 <ConnectionRow
                   key={c.id}
                   icon={icon}
                   title={integration.label}
                   warn={broken}
+                  aside={
+                    incomplete.length > 0 ? (
+                      <span className={WARN}>
+                        {incompleteText(
+                          t,
+                          c.accountLabel,
+                          incomplete.map((key) => fieldLabel(integration, key, lang)),
+                        )}
+                      </span>
+                    ) : undefined
+                  }
                   detail={
                     broken
                       ? `${c.accountLabel} · ${t("Needs reconnecting", "Erneut verbinden nötig")}`
@@ -480,6 +499,26 @@ function MineList({
                         )
                   }
                 >
+                  {c.kind === "credential" && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      aria-label={t(`Test ${c.accountLabel}`, `${c.accountLabel} testen`)}
+                      onClick={() => onTest(c)}
+                    >
+                      {t("Test", "Testen")}
+                    </Button>
+                  )}
+                  {editable && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      aria-label={t(`Edit ${c.accountLabel}`, `${c.accountLabel} bearbeiten`)}
+                      onClick={() => onEdit(c)}
+                    >
+                      {t("Edit", "Bearbeiten")}
+                    </Button>
+                  )}
                   {broken && (
                     <Button size="sm" onClick={() => onConnect(integration.name)}>
                       {t("Reconnect", "Erneut verbinden")}

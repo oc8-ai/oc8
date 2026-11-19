@@ -560,6 +560,44 @@ describe("ConnectionsPage", () => {
     expect(screen.getByRole("menuitem", { name: "Entfernen" })).toBeInTheDocument();
   });
 
+  describe("a personal login", () => {
+    const login = (over: Record<string, unknown> = {}) =>
+      row({
+        id: "p1",
+        kind: "credential",
+        integration: "odoo_mcp",
+        provider: null,
+        credentialType: "odoo_login",
+        accountLabel: "Mein Odoo",
+        status: "ok",
+        incomplete: [],
+        ...over,
+      });
+
+    it("a personal login can be edited", () => {
+      mine.mockReturnValue({ data: [login()], isLoading: false });
+      renderPage();
+      expect(screen.getByRole("button", { name: "Mein Odoo testen" })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Mein Odoo bearbeiten" }));
+      expect(screen.getByRole("dialog")).toHaveTextContent("dialog:odoo_mcp");
+    });
+
+    it("a personal login shows what is missing", () => {
+      mine.mockReturnValue({ data: [login({ incomplete: ["url"] })], isLoading: false });
+      renderPage();
+      expect(
+        screen.getByText("Mein Odoo ist unvollständig: url fehlt", { exact: false }),
+      ).toBeInTheDocument();
+    });
+
+    it("a personal sign-in account offers no edit", () => {
+      renderPage();
+      expect(screen.getByRole("button", { name: "anna@acme.de trennen" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /bearbeiten/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /testen/ })).toBeNull();
+    });
+  });
+
   describe("an organisation login", () => {
     const login = () =>
       row({

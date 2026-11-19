@@ -39,6 +39,7 @@ from oc8.credentials.service import (
     delete_credential,
     get_credential,
     test_credential,
+    update_credential,
 )
 from oc8.schemas.dto import (
     ConnectableIntegrationDTO,
@@ -50,6 +51,7 @@ from oc8.schemas.requests import (
     CheckConnectionCredentialRequest,
     CreateConnectionCredentialRequest,
     SetCredentialDepartmentsRequest,
+    UpdateCredentialRequest,
 )
 
 router = APIRouter()
@@ -562,6 +564,55 @@ async def test_credential_connection(
         return _check_result(exc)
     await db.commit()
     return _check_result(None)
+
+
+@router.patch(
+    "/connections/credentials/{credential_id}",
+    response_model=ConnectionDTO,
+    dependencies=_OWN,
+)
+async def update_own_credential_connection(
+    credential_id: uuid.UUID,
+    body: UpdateCredentialRequest,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> ConnectionDTO:
+    """A person edits their OWN login. Anyone else's, and every organisation
+    login (which has `PATCH /credentials/{id}`), answers 404. The merge,
+    the completeness check and the secret handling are the organisation
+    update's: a blank secret keeps the stored one."""
+    me = await caller_member(db, principal)
+    try:
+        cred = await update_credential(
+            db,
+            tenant_id=principal.tenant_id,
+            credential_id=credential_id,
+            owner=me.id,
+            name=body.name,
+            field_values=body.field_values,
+        )
+    except CredentialNotFound as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "credential not found") from exc
+    # What the stored test result vouched for has changed.
+    cred.last_tested_at = None
+    cred.last_test_ok = None
+    await db.flush()
+    await db.refresh(cred)
+    _by_provider, by_type = _maps(await installed_integrations(db))
+    names = await _names(db, {me.id})
+    (dto,) = await credential_dtos(db, principal.tenant_id, [cred], me.id, names, by_type)
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="connection",
+        action="connection.updated",
+        resource={"kind": "credential", "id": str(cred.id), "owner_member_id": str(me.id)},
+        principal=principal,
+    )
+    await db.commit()
+    return dto
 
 
 @router.put(

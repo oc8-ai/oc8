@@ -141,3 +141,107 @@ async def test_testing_another_members_login_is_not_found(
             headers=headers(tenant, "ben@acme.test"),
         )
     assert r.status_code == 404
+
+
+async def _edit(c: Any, who: dict[str, str], cred: uuid.UUID, values: dict[str, str]) -> Any:
+    return await c.patch(
+        f"/api/v1/connections/credentials/{cred}", json={"fieldValues": values}, headers=who
+    )
+
+
+async def _stored(app_session: AppSessionFactory, tenant: uuid.UUID, cred: uuid.UUID) -> Any:
+    from oc8 import models as m
+
+    async with app_session(tenant) as db:
+        row = await db.get(m.Credential, cred)
+        assert row is not None
+        return dict(row.field_values), dict(row.secret_refs)
+
+
+async def test_a_person_edits_their_own_login(
+    app_session: AppSessionFactory, odoo_validator: list[dict[str, str]]
+) -> None:
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    mine = await credential_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "admin@acme.test", "org_admin"), "odoo_mcp")
+        r = await _edit(
+            c,
+            headers(tenant, "anna@acme.test"),
+            mine,
+            {**ODOO, "url": "https://new.acme.test", "password": "n3w"},
+        )
+    assert r.status_code == 200, r.text
+    assert (r.json()["id"], r.json()["owner"]) == (str(mine), "me")
+    assert "n3w" not in r.text
+    values, refs = await _stored(app_session, tenant, mine)
+    assert values["url"] == "https://new.acme.test"
+    assert refs["password"] == f"credential/{mine}/password"
+
+
+async def test_a_person_cannot_edit_someone_elses_login(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    await member(app_session, tenant, "ben@acme.test")
+    annas = await credential_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        r = await _edit(c, headers(tenant, "ben@acme.test"), annas, {"url": "https://x.test"})
+    assert r.status_code == 404
+    values, _ = await _stored(app_session, tenant, annas)
+    assert values["url"] == "https://odoo.acme.test"
+
+
+async def test_the_personal_route_refuses_an_organisation_login(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await member(app_session, tenant, "anna@acme.test")
+    shared = await credential_row(app_session, tenant, owner=None)
+    async with api() as c:
+        for who in (
+            headers(tenant, "anna@acme.test"),
+            headers(tenant, "admin@acme.test", "org_admin"),
+        ):
+            r = await _edit(c, who, shared, {"url": "https://x.test"})
+            assert r.status_code == 404
+    values, _ = await _stored(app_session, tenant, shared)
+    assert values["url"] == "https://odoo.acme.test"
+
+
+async def test_an_edit_that_empties_a_required_field_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    mine = await credential_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "admin@acme.test", "org_admin"), "odoo_mcp")
+        r = await _edit(c, headers(tenant, "anna@acme.test"), mine, {"url": ""})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "credential_incomplete"
+    assert "url" in r.json()["detail"]["missing"]
+    values, _ = await _stored(app_session, tenant, mine)
+    assert values["url"] == "https://odoo.acme.test"
+
+
+async def test_an_empty_password_keeps_the_stored_one(
+    app_session: AppSessionFactory, odoo_validator: list[dict[str, str]]
+) -> None:
+    tenant = uuid.uuid4()
+    anna = await member(app_session, tenant, "anna@acme.test")
+    mine = await credential_row(app_session, tenant, owner=anna)
+    async with api() as c:
+        await install(c, headers(tenant, "admin@acme.test", "org_admin"), "odoo_mcp")
+        r = await _edit(
+            c,
+            headers(tenant, "anna@acme.test"),
+            mine,
+            {"url": "https://new.acme.test", "password": ""},
+        )
+    assert r.status_code == 200, r.text
+    values, refs = await _stored(app_session, tenant, mine)
+    assert values["url"] == "https://new.acme.test"
+    assert refs == {"password": f"credential/{mine}/password"}
