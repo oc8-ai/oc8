@@ -35,7 +35,7 @@ from oc8.authz.scope import AgentActor
 from oc8.boards.repo import visible_boards
 from oc8.chat.model_choice import chat_enabled_model_ids
 from oc8.chat.modes import AGENT, mode_directive, mode_from_context, mode_refusal
-from oc8.connections.usable import department_systems
+from oc8.connections.usable import department_systems, system_tool_scopes
 from oc8.copilot.builder import (
     create_builder_proposal,
     may_create_agent,
@@ -186,6 +186,61 @@ _DESIGN = (
 )
 
 
+#: How to write the mission. An agent's prompt is its name, its mission and a
+#: generic block (harness/prompts.render_system_prompt), so the mission alone
+#: carries the job; without this the model writes two sentences.
+_MISSION_GUIDE = (
+    "Mission guide: the mission is the agent's full working instructions and the "
+    "only part of its prompt that describes this job, so a short summary leaves "
+    "it guessing. Write it in the person's language, addressed to the agent "
+    '("you"), 150-400 words, with these sections in this order, each under a '
+    "short heading: "
+    "1. Goal -- what the agent is for and who gets the result. "
+    "2. Procedure -- the numbered steps of one run, in order. "
+    "3. Data -- which system, which records and fields, which filters (period, "
+    "status). "
+    "4. Rules -- what counts as noteworthy, thresholds, priorities. "
+    "5. Result -- format and length of the answer, what to link. "
+    "6. Special cases -- nothing found, data missing, a system unreachable, an "
+    "ambiguous match. "
+    "7. Limits -- what it must never do and what needs approval. "
+    "Take thresholds and rules from the person; where they gave none, ask, or "
+    "write a sensible default into the mission and mark it with the word "
+    "default (in their language), so they see it on the card. Name a tool only "
+    "when the tools list has it for that system, and never invent a field "
+    "name: describe the data in business terms and let the agent look the "
+    "fields up. Never put a password, a key or a record id into the mission. "
+    "The agent never estimates or guesses a missing figure: Special cases says "
+    "it reports what is missing. With a dashboard, Procedure names each "
+    "dataset and field of the spec and the figure that goes into it, one row "
+    "per period. Leave out what every agent is told anyway: read before "
+    "changing, link records, report at the end."
+)
+#: Tool names listed per system and kind; the rest is counted, not dropped silently.
+_TOOLS_SHOWN = 40
+
+
+def _tool_names(names: list[str]) -> str:
+    shown = ", ".join(one_line(n, 60) for n in sorted(names)[:_TOOLS_SHOWN]) or "-"
+    more = len(names) - _TOOLS_SHOWN
+    return f"{shown} (+{more} more)" if more > 0 else shown
+
+
+async def _tool_lines(db: AsyncSession, tenant_id: uuid.UUID, keys: set[str]) -> list[str]:
+    """What each usable system can do, so a mission names real steps. From
+    the plugin manifests; a system without one gets no line."""
+    lines = []
+    for key in sorted(keys):
+        scopes = await system_tool_scopes(db, tenant_id=tenant_id, key=key)
+        reads = scopes.get("read", [])
+        changes = [name for scope, names in scopes.items() if scope != "read" for name in names]
+        if reads or changes:
+            lines.append(f"- {one_line(key, 60)} | {_tool_names(reads)} | {_tool_names(changes)}")
+    if not lines:
+        return []
+    return ["Tools per system (system | reads | changes):", *lines]
+
+
 async def _board_lines(
     db: AsyncSession,
     *,
@@ -276,6 +331,7 @@ async def builder_options_text(
         "Departments (id | name | how | connected systems | not usable yet, and why):",
     ]
     own = actor.scope.viewable
+    usable: set[str] = set()
     for dept in sorted(departments, key=lambda d: d.name.lower()):
         if not actor.scope.may_view(dept.id):
             # Only where a proposal may land (create_builder_proposal's check).
@@ -286,6 +342,7 @@ async def builder_options_text(
             else "needs approval"
         )
         systems = await department_systems(db, tenant_id=tenant_id, department=dept)
+        usable.update(s.key for s in systems if s.usable)
         mine = " (their department)" if dept.id in own else ""
         listed = ", ".join(one_line(s.key, 60) for s in systems if s.usable) or "none"
         missing = (
@@ -294,6 +351,7 @@ async def builder_options_text(
         lines.append(
             f"- {dept.id} | {one_line(dept.name, 80)}{mine} | {how} | {listed} | {missing}"
         )
+    lines.extend(await _tool_lines(db, tenant_id, usable))
     model_ids = await chat_enabled_model_ids(db, tenant_id=tenant_id)
     models = (
         (await db.execute(select(m.ModelConfig).where(m.ModelConfig.id.in_(model_ids))))
@@ -326,6 +384,7 @@ async def builder_options_text(
     lines.extend(f"- {s.current_version_id} | {one_line(s.name, 80)}" for s in skills)
     lines.append(await _schedule_line(db, tenant_id))
     lines.extend(await _board_lines(db, tenant_id=tenant_id, actor=actor, authority=authority))
+    lines.append(_MISSION_GUIDE)
     return fence("\n".join(lines), tag="builder_options")
 
 

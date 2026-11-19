@@ -826,6 +826,16 @@ BUILDER_OPTIONS = NeutralTool(
 _ID = {"type": "string"}
 _NEW_REF = {"type": "string", "enum": ["$new"]}
 _TEXT = {"type": "string", "maxLength": 10_000}
+#: The mission is the only job-specific part of an agent's prompt
+#: (harness/prompts.render_system_prompt), so the builder is told to write it out.
+_MISSION_FIELD = (
+    "The agent's full working instructions, written by the mission guide "
+    "builder_options gives (its sections, 150-400 words)."
+)
+_TASK_TEXT_FIELD = (
+    "The concrete instruction for one scheduled or event run: period, scope, "
+    "what to deliver. Not a copy of the mission; defaults to it when left out."
+)
 _GUARDRAIL_DECISION = {
     "type": "string",
     "enum": ["self_sufficient", "with_limits", "approval_required", "not_allowed"],
@@ -883,11 +893,14 @@ _BUILDER_OPERATION = {
         "departmentId": {**_ID, "description": "agent.create: id from builder_options."},
         "name": {"type": "string", "maxLength": 200, "description": "agent.create."},
         "roleTitle": {"type": "string", "maxLength": 200, "description": "agent.create."},
-        "mission": {**_TEXT, "description": "agent.create or agent.mission.set."},
+        "mission": {
+            **_TEXT,
+            "description": "agent.create or agent.mission.set. " + _MISSION_FIELD,
+        },
         "modelConfigId": {**_ID, "description": "agent.model.switch: id from builder_options."},
         "skillVersionId": {**_ID, "description": "agent.skill.assign: id from builder_options."},
         "kind": {"type": "string", "enum": ["cron", "event"], "description": "trigger.create."},
-        "taskText": {**_TEXT, "description": "trigger.create: what each run does."},
+        "taskText": {**_TEXT, "description": "trigger.create. " + _TASK_TEXT_FIELD},
         "cronExpression": {
             "type": "string",
             "description": "trigger.create, kind cron; in the person's local time.",
@@ -967,7 +980,7 @@ PROPOSE_AGENT = NeutralTool(
             },
             "name": {"type": "string", "maxLength": 200, "description": "The agent's name."},
             "roleTitle": {"type": "string", "maxLength": 200, "description": "e.g. Accounting"},
-            "mission": {**_TEXT, "description": "What the agent does, in a few sentences."},
+            "mission": {**_TEXT, "description": _MISSION_FIELD},
             "modelId": {**_ID, "description": "A modelConfigId from builder_options."},
             "skillIds": {
                 "type": "array",
@@ -979,7 +992,8 @@ PROPOSE_AGENT = NeutralTool(
                 "type": "string",
                 "description": (
                     "When it runs on its own, as a cron expression in the person's "
-                    "local time, e.g. 0 7 * * 1-5 for weekdays at 7:00."
+                    "local time, e.g. 0 7 * * 1-5 for weekdays at 7:00. Pass "
+                    "taskText with it."
                 ),
             },
             "timezone": {
@@ -991,10 +1005,13 @@ PROPOSE_AGENT = NeutralTool(
                 ),
             },
             "eventSource": {"type": "string", "description": "Runs when this source reports"},
-            "eventType": {"type": "string", "description": "...this event type."},
+            "eventType": {
+                "type": "string",
+                "description": "...this event type. Pass taskText with it.",
+            },
             "taskText": {
                 **_TEXT,
-                "description": "What each scheduled or event run does; defaults to the mission.",
+                "description": _TASK_TEXT_FIELD,
             },
             "systems": {
                 "type": "array",

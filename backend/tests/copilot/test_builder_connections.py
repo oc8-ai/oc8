@@ -503,3 +503,60 @@ async def test_a_builder_agent_runs_with_the_integration_it_was_created_with(
         assert "odoo" not in {c.name for c in conns}
         policies = effective_tool_policies(dept.frame, pinned["narrowing"])
         assert _odoo_decision(policies, "search_records", odoo) is Effect.DENY
+
+
+async def test_builder_options_list_a_usable_systems_tools_and_the_mission_guide(
+    app_session: AppSessionFactory,
+) -> None:
+    """The Copilot writes the mission from what the system can really do: its
+    read and change tools, from the plugin manifest."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office_without_legacy(db, tenant)
+        await _install(db, tenant, "odoo_mcp")
+        await _org_login(db, tenant)
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(db, office, run, task, "builder_options")
+        lines = outcome.output.splitlines()
+        assert "Tools per system (system | reads | changes):" in lines
+        tools = next(ln for ln in lines if ln.startswith("- odoo | "))
+        _system, reads, changes = (part.strip() for part in tools.split("|"))
+        assert "search_records" in reads and "create_record" not in reads
+        assert "create_record" in changes and "search_records" not in changes
+        guide = next(ln for ln in lines if ln.startswith("Mission guide:"))
+        for section in (
+            "1. Goal",
+            "2. Procedure",
+            "3. Data",
+            "4. Rules",
+            "5. Result",
+            "6. Special cases",
+            "7. Limits",
+        ):
+            assert section in guide, section
+        assert "150-400 words" in guide and "person's language" in guide
+        # Inside the fence: tenant data, never instructions.
+        assert lines.index(tools) < lines.index(guide) < len(lines) - 1
+
+
+async def test_builder_options_list_no_tools_for_a_system_that_is_not_usable(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await _office_without_legacy(db, tenant)
+        await _install(db, tenant, "odoo_mcp")  # no organisation login yet
+        run, task = await _run(db, office, chat_mode="agent")
+        outcome = await _call(db, office, run, task, "builder_options")
+        assert "Tools per system" not in outcome.output
+        assert "search_records" not in outcome.output
+
+
+def test_a_long_tool_list_is_cut_and_counted() -> None:
+    from oc8.copilot.builder_tools import _tool_names
+
+    names = [f"tool_{i:02d}" for i in range(43)]
+    shown = _tool_names(names)
+    assert "tool_39" in shown and "tool_40" not in shown
+    assert shown.endswith("(+3 more)")
+    assert _tool_names([]) == "-"
