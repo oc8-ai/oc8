@@ -550,11 +550,13 @@ async def test_choosing_an_agent_the_person_may_no_longer_run_is_refused(
         assert await _delegations(db) == [] and await _grants(db) == []
 
 
-async def test_the_run_right_is_judged_with_the_role_on_the_copilot_run(
+async def test_the_run_right_is_judged_with_the_callers_live_role(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
-    """No assigned role: the claim recorded on the Copilot run that made the
-    offer decides, as on every turn that acts for the person."""
+    """No assigned role: the role on the deciding person's live token decides
+    at the click, not the claim recorded on the Copilot run when the offer was
+    made -- the card may wait for days and the claim may have been withdrawn
+    since (as `POST /agents/{id}/run` judges it)."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         office = await direct_office(db, tenant)
@@ -562,11 +564,30 @@ async def test_the_run_right_is_judged_with_the_role_on_the_copilot_run(
         member = await db.get(m.OrgMember, office.member_id)
         assert member is not None
         member.role_id = None
+        # Recorded at offer time: a role that could run the agent then.
         run.context = {**run.context, "operator_role": "operator"}
         await db.flush()
-        anna = await _human(db, tenant, "anna", "member")
+        withdrawn = await _human(db, tenant, "anna", "member")
+        with pytest.raises(AgentNotRunnable):
+            # A savepoint stands in for the request's rollback on a refusal.
+            async with db.begin_nested():
+                await decide_approval(
+                    db,
+                    offer,
+                    decision="approve",
+                    tenant_id=tenant,
+                    actor=withdrawn,
+                    agent_id=writer.id,
+                )
+        assert await _delegations(db) == []
+        await db.refresh(offer)
+        await db.refresh(run)
+        # And the other way round: no claim on the run, a live one that may.
+        run.context = {k: v for k, v in run.context.items() if k != "operator_role"}
+        await db.flush()
+        live = await _human(db, tenant, "anna", "operator")
         result = await decide_approval(
-            db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+            db, offer, decision="approve", tenant_id=tenant, actor=live, agent_id=writer.id
         )
         assert result.started_run_id is not None
 

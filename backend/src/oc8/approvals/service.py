@@ -791,7 +791,15 @@ async def decide_approval(
         # either way the parked run woken and told. Raises EffectRefused when
         # the conversation, the person's right or their run right is gone.
         resumed_run = await resolve_direct_access_approval(
-            db, approval=approval, decision=decision, agent_id=agent_id
+            db,
+            approval=approval,
+            decision=decision,
+            agent_id=agent_id,
+            # The run right is judged with the deciding person's live token,
+            # like `POST /agents/{id}/run`: the owner check above made them the
+            # card's own member, and a claim recorded when the offer was made
+            # may have been withdrawn since.
+            token_role=actor.principal.role if isinstance(actor, HumanActor) else None,
         )
         chosen = ((approval.payload or {}).get("direct_access") or {}).get("chosen_agent")
         if decision == "approve" and agent_id is not None and isinstance(chosen, dict):

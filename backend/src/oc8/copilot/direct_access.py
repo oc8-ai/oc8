@@ -428,10 +428,11 @@ async def _choose_agent(
     session: m.ChatSession,
     member_id: uuid.UUID,
     agent_id: uuid.UUID,
+    token_role: str | None,
 ) -> dict[str, str]:
     """The person ran an agent the offer named instead of letting the Copilot
-    do it: their run right re-checked now, with the role claim of the
-    Copilot run that made the offer, and the agent started as that run's
+    do it: their run right re-checked now, with the role on their live token
+    (`token_role`, the deciding request's), and the agent started as that run's
     delegation -- it waits on the sub-run like after `delegate_task`. No
     grant. Returns the `chosen_agent` record."""
     offered = info.get("agents")
@@ -455,9 +456,7 @@ async def _choose_agent(
             db,
             member_id=member_id,
             agent=target,
-            token_role=await _acting_token_role(
-                db, tenant_id=approval.tenant_id, run_id=parent_run.id
-            ),
+            token_role=token_role,
         )
     ):
         name = one_line(target.name, 120) if target is not None else ""
@@ -500,10 +499,12 @@ async def resolve_direct_access_approval(
     approval: m.ApprovalRequest,
     decision: str,
     agent_id: uuid.UUID | None = None,
+    token_role: str | None = None,
 ) -> m.AgentRun | None:
     """The offer's effect: on approve, the grant (§5) -- its conversation and
     the person's right re-checked now -- or, with `agent_id`, the agent the
-    person chose to run instead (`_choose_agent`); either way, the parked run
+    person chose to run instead (`_choose_agent`, judged with `token_role`,
+    the role on the deciding person's live token); either way, the parked run
     is woken and told. Raises EffectRefused (the caller rolls back) when the
     grant can no longer be given or the agent no longer be started.
 
@@ -533,6 +534,7 @@ async def resolve_direct_access_approval(
                 session=session,
                 member_id=member_id,
                 agent_id=agent_id,
+                token_role=token_role,
             )
         else:
             if not await member_may_use(db, member_id=member_id, tool_key=key, right="read"):
