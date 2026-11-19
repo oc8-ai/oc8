@@ -160,7 +160,7 @@ describe("direct access in the chat", () => {
     const { unmount } = render(<DirectAccessCard approval={localized} />);
     expect(screen.getByText(/Copilot on behalf of Anna: read Odoo/)).toBeInTheDocument();
     unmount();
-    window.localStorage.setItem("oc8-lang", "de");
+    window.window.localStorage.setItem("oc8-lang", "de");
     try {
       render(
         <LanguageProvider>
@@ -169,7 +169,7 @@ describe("direct access in the chat", () => {
       );
       expect(screen.getByText(/Copilot im Auftrag von Anna: Odoo lesen/)).toBeInTheDocument();
     } finally {
-      window.localStorage.removeItem("oc8-lang");
+      window.window.localStorage.removeItem("oc8-lang");
     }
   });
 
@@ -223,7 +223,7 @@ describe("direct access in the chat", () => {
     it("offers the other fitting agents", () => {
       render(<DirectAccessCard approval={withAgents} />);
       expect(screen.getByText(/Also fits:/)).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Quote Agent" }));
+      fireEvent.click(screen.getByRole("button", { name: "Run Quote Agent" }));
       expect(m.decide).toHaveBeenCalledWith(
         { approvalId: "ap1", decision: "approve", agentId: "a2" },
         expect.anything(),
@@ -263,6 +263,40 @@ describe("direct access in the chat", () => {
       expect(screen.getByRole("button", { name: /reject/i })).toBeInTheDocument();
     });
 
+    it("names the agent each other button runs, in German too", () => {
+      window.localStorage.setItem("oc8-lang", "de");
+      try {
+        render(
+          <LanguageProvider>
+            <DirectAccessCard approval={withAgents} />
+          </LanguageProvider>,
+        );
+        expect(screen.getByRole("button", { name: "Quote Agent starten" })).toBeInTheDocument();
+      } finally {
+        window.localStorage.removeItem("oc8-lang");
+      }
+    });
+
+    it("clears the refusal once a later answer succeeds", () => {
+      m.decide.mockImplementationOnce((_vars: unknown, opts: { onError: (e: Error) => void }) =>
+        opts.onError(
+          new ApiError('{"code":"agent_not_runnable"}', 403, {
+            detail: { code: "agent_not_runnable" },
+          }),
+        ),
+      );
+      m.decide.mockImplementationOnce(
+        (_vars: unknown, opts: { onSuccess: (dto: unknown) => void }) =>
+          opts.onSuccess({ directAccess: {} }),
+      );
+      render(<DirectAccessCard approval={withAgents} />);
+      fireEvent.click(screen.getByRole("button", { name: "Run agent" }));
+      expect(screen.getByRole("alert")).toHaveTextContent("You can no longer run Sales Agent.");
+      fireEvent.click(screen.getByRole("button", { name: "Do it myself with Shared login" }));
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText("Approved")).toBeInTheDocument();
+    });
+
     it("shows the backend message when the offer was already decided", () => {
       m.decide.mockImplementation((_vars: unknown, opts: { onError: (e: Error) => void }) =>
         opts.onError(new ApiError("already decided", 409, { detail: "already decided" })),
@@ -276,12 +310,16 @@ describe("direct access in the chat", () => {
   it("looks as before without fitting agents", () => {
     render(
       <DirectAccessCard
-        approval={{ ...offer, directAccess: { ...offer.directAccess!, agents: [] } }}
+        approval={{
+          ...offer,
+          title: "Copilot on behalf of Anna: read things",
+          directAccess: { ...offer.directAccess!, toolKey: "things", label: "things", agents: [] },
+        }}
       />,
     );
     expect(screen.getByRole("button", { name: /allow/i })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Run agent" })).toBeNull();
     expect(screen.queryByText(/Hands over:/)).toBeNull();
-    expect(screen.getByText("Copilot on behalf of Anna: read Odoo")).toBeInTheDocument();
+    expect(screen.getByText("Copilot on behalf of Anna: read things")).toBeInTheDocument();
   });
 });

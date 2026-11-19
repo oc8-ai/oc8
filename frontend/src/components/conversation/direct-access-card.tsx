@@ -58,21 +58,27 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
       : info.account === "organisation"
         ? t("Using the organisation account", "Mit dem Organisationskonto")
         : t("The account could not be determined.", "Das Konto konnte nicht ermittelt werden.");
-  const answer = (decision: "approve" | "reject") =>
+  // A refusal shown for an earlier answer must not stand next to a later
+  // answer's outcome: cleared on every new answer and on its success.
+  const answer = (decision: "approve" | "reject") => {
+    setProblem(null);
     decide.mutate(
       { approvalId: approval.id, decision },
       {
         onError: (error) => setProblem(error.message),
-        onSuccess: (dto) =>
+        onSuccess: (dto) => {
+          setProblem(null);
           setDecided(
             decision === "reject"
               ? "rejected"
               : dto?.directAccess?.awaitingDepartment
                 ? "awaiting"
                 : "approved",
-          ),
+          );
+        },
       },
     );
+  };
 
   const runAgent = (agent: { id: string; name: string }) => {
     setProblem(null);
@@ -80,6 +86,7 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
       { approvalId: approval.id, decision: "approve", agentId: agent.id },
       {
         onSuccess: (dto) => {
+          setProblem(null);
           const next = dto?.directAccess?.chosenAgent;
           if (next) setStarted(next);
           else setDecided("approved");
@@ -243,6 +250,7 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
               variant="ghost"
               className="h-6 px-2 text-xs"
               disabled={decide.isPending}
+              aria-label={t(`Run ${agent.name}`, `${agent.name} starten`)}
               onClick={() => runAgent(agent)}
             >
               {agent.name}
