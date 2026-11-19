@@ -1352,7 +1352,9 @@ OFFER_DIRECT_ACCESS = NeutralTool(
         "through one connection from your direct-access list. The person sees an "
         "approval card naming the connection and the account; nothing happens "
         "until they allow it. Once allowed, you can read through it for the "
-        "rest of this conversation; every change asks them again."
+        "rest of this conversation; every change asks them again. oc8 checks "
+        "for agents that fit and lets the person choose one; you do not need to "
+        "search yourself."
     ),
     parameters={
         "type": "object",
@@ -2216,8 +2218,67 @@ async def _delegate(
         ):
             return f"refused: the person may not run {target.name}", None
 
+    executing_run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    sub_run = await _create_delegation(
+        db,
+        tenant_id=tenant_id,
+        task=task,
+        executing_run=executing_run,
+        target=target,
+        task_text=str(tc.arguments["task_text"]),
+        mcp_conn=mcp_conn,
+    )
+    return f"delegated to {target.name} (run {sub_run.id})", sub_run.id
+
+
+async def start_delegation(
+    db: AsyncSession,
+    *,
+    parent_run: m.AgentRun,
+    delegator: m.Agent,
+    target: m.Agent,
+    task_text: str,
+    mcp_conn: m.McpConnection | None = None,
+) -> m.AgentRun:
+    """Start `target` on `task_text` as a delegation of `parent_run`, the run
+    of `delegator` -- the same queued sub-run `delegate_task` creates, so
+    the delegator is woken with its result (`executor._maybe_wake_parent`).
+
+    Checks nothing: the caller has decided the delegation is allowed
+    (`_delegate`'s checks, or the person's own choice on a direct-access
+    offer with their run right re-checked). Neither commits nor publishes;
+    the caller publishes the returned run after its commit."""
+    if parent_run.agent_id != delegator.id or parent_run.task_id is None:
+        raise ValueError("a delegation starts from a run of the delegating agent's task")
+    task = await db.get(m.Task, parent_run.task_id)
+    if task is None:
+        raise ValueError("the delegating run's task is gone")
+    return await _create_delegation(
+        db,
+        tenant_id=parent_run.tenant_id,
+        task=task,
+        executing_run=parent_run,
+        target=target,
+        task_text=task_text,
+        mcp_conn=mcp_conn,
+    )
+
+
+async def _create_delegation(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    task: m.Task,
+    executing_run: m.AgentRun | None,
+    target: m.Agent,
+    task_text: str,
+    mcp_conn: m.McpConnection | None,
+) -> m.AgentRun:
+    """The sub-run of a delegation: what `_delegate` and `start_delegation`
+    share. `executing_run` is the delegating run, whose chat and person keys
+    the sub-run carries."""
     context: dict[str, Any] = {
-        "task": str(tc.arguments["task_text"]),
+        "task": task_text,
         "parent_task_id": str(task.id),
         "delegation_depth": task.delegation_depth + 1,
     }
@@ -2229,9 +2290,8 @@ async def _delegate(
     # record_assistant_reply's `if run.source == "chat"` gate at all -- the
     # lead's real conclusion sat in the run row forever, unseen on web or on
     # whichever channel the human was using.
-    if run_id is not None:
-        executing_run = await db.get(m.AgentRun, run_id)
-        if executing_run is not None and executing_run.context:
+    if executing_run is not None:
+        if executing_run.context:
             chat_session_id = executing_run.context.get("chat_session_id")
             if chat_session_id:
                 context["chat_session_id"] = chat_session_id
@@ -2285,10 +2345,9 @@ async def _delegate(
         and not await agent_has_own_login_binding(db, target)
     ):
         context["mcp_connection_id"] = str(mcp_conn.id)
-    sub_run = await RunRepository(db).create(
+    return await RunRepository(db).create(
         tenant_id=tenant_id, agent_id=target.id, context=context, source="delegation"
     )
-    return f"delegated to {target.name} (run {sub_run.id})", sub_run.id
 
 
 async def _department_frame(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:

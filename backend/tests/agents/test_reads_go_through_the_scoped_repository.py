@@ -115,6 +115,11 @@ ALLOWED: dict[str, str] = {
         "predicate, built off-request with scope_for_member) -- a reach no wider than "
         "their agent view; reads each kept agent's department for its frame and name"
     ),
+    "copilot/direct_access.py": (
+        "the person's decision on their own direct-access card loads the Copilot that "
+        "made the offer and the agent they chose from the card's own list, then starts "
+        "it only if member_may_run_agent says they may START it (the run route's predicate)"
+    ),
     "copilot/builder.py": (
         "apply re-reads the department a proposal names after may_view/may_create_agent "
         "or the approval funnel decided reach, and reloads the agent it just created in "

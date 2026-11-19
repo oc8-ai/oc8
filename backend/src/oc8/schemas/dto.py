@@ -122,6 +122,23 @@ class ApprovalOptionDTO(CamelModel):
     detail: str = ""
 
 
+class DirectAccessAgentDTO(CamelModel):
+    """An agent that fits the offer's request and the person may run."""
+
+    id: str
+    name: str
+    department: str
+    score: float
+
+
+class DirectAccessChosenAgentDTO(CamelModel):
+    """The agent the person chose to run instead, and its run."""
+
+    id: str
+    name: str
+    run_id: str
+
+
 class DirectAccessInfoDTO(CamelModel):
     """What a direct-access approval is about (copilot direct access §8). The
     localized title is `ApprovalDTO.title_translations`, as for every card."""
@@ -139,6 +156,12 @@ class DirectAccessInfoDTO(CamelModel):
     #: The person approved; the department whose own policy holds the write
     #: still has to (person first, then the department -- spec §1).
     awaiting_department: bool = False
+    #: Fitting agents the person may run instead, best first (may be empty).
+    agents: list[DirectAccessAgentDTO] = []
+    #: The login the direct path would use ("Do it myself with {login}").
+    login_name: str = ""
+    #: Set once the person chose one of `agents`: the card shows it is on it.
+    chosen_agent: DirectAccessChosenAgentDTO | None = None
 
 
 class DirectAccessGrantDTO(CamelModel):

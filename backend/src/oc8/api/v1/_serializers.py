@@ -28,6 +28,8 @@ from oc8.schemas.dto import (
     ClarificationDTO,
     DataSourceDTO,
     DepartmentDTO,
+    DirectAccessAgentDTO,
+    DirectAccessChosenAgentDTO,
     DirectAccessInfoDTO,
     IngestionJobDTO,
     IntegrationDTO,
@@ -275,6 +277,41 @@ def _direct_access_dto(raw: Any) -> DirectAccessInfoDTO | None:
         member_name=str(raw.get("member_name") or ""),
         account=str(account) if account in ("own", "organisation") else None,
         decider="department" if department_stage else "member",
+        # The person's own choice, never a department stage's: its approvers
+        # decide a held write, not which agent the person runs.
+        agents=[] if department_stage else _offered_agents(raw.get("agents")),
+        login_name="" if department_stage else str(raw.get("login_name") or ""),
+        chosen_agent=None if department_stage else _chosen_agent(raw.get("chosen_agent")),
+    )
+
+
+def _offered_agents(raw: Any) -> list[DirectAccessAgentDTO]:
+    if not isinstance(raw, list):
+        return []
+    out: list[DirectAccessAgentDTO] = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        try:
+            score = float(entry.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        out.append(
+            DirectAccessAgentDTO(
+                id=str(entry["id"]),
+                name=str(entry.get("name") or ""),
+                department=str(entry.get("department") or ""),
+                score=score,
+            )
+        )
+    return out
+
+
+def _chosen_agent(raw: Any) -> DirectAccessChosenAgentDTO | None:
+    if not isinstance(raw, dict) or not raw.get("id") or not raw.get("run_id"):
+        return None
+    return DirectAccessChosenAgentDTO(
+        id=str(raw["id"]), name=str(raw.get("name") or ""), run_id=str(raw["run_id"])
     )
 
 

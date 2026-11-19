@@ -11,6 +11,8 @@ from oc8.approvals.repo import (
 from oc8.approvals.service import (
     DERIVE,
     EFFECT_PERMISSIONS,
+    AgentNotOffered,
+    AgentNotRunnable,
     AlreadyDecided,
     ApprovalError,
     DecisionResult,
@@ -27,6 +29,8 @@ from oc8.approvals.service import (
 __all__ = [
     "DERIVE",
     "EFFECT_PERMISSIONS",
+    "AgentNotOffered",
+    "AgentNotRunnable",
     "AlreadyDecided",
     "ApprovalError",
     "DecisionResult",

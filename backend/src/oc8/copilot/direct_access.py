@@ -3,6 +3,7 @@ what the Copilot is told it may offer, and the approval's effect."""
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Mapping
 from typing import Any, Final
@@ -11,11 +12,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agent.control_tools import OFFER_DIRECT_ACCESS, ControlOutcome
+from oc8.agent.control_tools import (
+    OFFER_DIRECT_ACCESS,
+    ControlOutcome,
+    _acting_token_role,
+    start_delegation,
+)
 from oc8.agent.harness.stages.b_direct_access import DirectAccessView, offers_direct
-from oc8.approvals import EffectRefused, raise_approval
+from oc8.approvals import AgentNotOffered, AgentNotRunnable, EffectRefused, raise_approval
 from oc8.audit import append_event
-from oc8.connections.access import ConnectionRequired, account_of, resolve_direct_access
+from oc8.connections.access import (
+    ConnectionRequired,
+    ToolAccess,
+    account_of,
+    resolve_direct_access,
+)
 from oc8.connections.direct_access import DirectAccessRun, active_grant, direct_access_run
 from oc8.connections.usable import (
     direct_connection,
@@ -24,6 +35,7 @@ from oc8.connections.usable import (
     member_usable_tool_keys,
     tool_key_label,
 )
+from oc8.copilot.agent_match import AgentMatch, matching_agents, member_may_run_agent
 from oc8.copilot.tools import uuid_or_none
 from oc8.modelrouter import ToolCall
 from oc8.runtime.fencing import one_line
@@ -31,7 +43,13 @@ from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import record_direct_access_answer
 from oc8.runtime.states import RunState
 
+logger = logging.getLogger(__name__)
+
 DIRECT_ACCESS_ACTION: Final = "direct_access"
+
+#: How much of the request is matched against the agents (and handed to the
+#: one the person chooses).
+_REQUEST_LIMIT: Final = 2000
 
 _ACCOUNT_TEXT: Final = {"own": "their own login", "organisation": "the organisation account"}
 
@@ -111,6 +129,63 @@ async def _copilot_may_read(
         scopes=scopes,
         narrowing=narrowing,
     )
+
+
+async def _last_request(db: AsyncSession, *, session_id: uuid.UUID, run: m.AgentRun) -> str:
+    """The person's last message in the conversation -- the request the
+    offer is for. The run's own task text when none is stored."""
+    content = await db.scalar(
+        select(m.ChatMessage.content)
+        .where(m.ChatMessage.session_id == session_id, m.ChatMessage.role == "user")
+        .order_by(m.ChatMessage.created_at.desc())
+        .limit(1)
+    )
+    if isinstance(content, str) and content.strip():
+        return content.strip()
+    task_text = (run.context or {}).get("task")
+    return task_text.strip() if isinstance(task_text, str) else ""
+
+
+def _request_text(purpose: str, request: str) -> str:
+    return "\n".join(part for part in (purpose, request) if part)[:_REQUEST_LIMIT]
+
+
+async def _fitting_agents(
+    db: AsyncSession,
+    *,
+    copilot: m.Agent,
+    member_id: uuid.UUID,
+    tool_key: str,
+    request: str,
+    run_id: uuid.UUID,
+) -> list[AgentMatch]:
+    """The agents to offer instead (Copilot: existing agent first). Never
+    fails the offer: anything going wrong here costs the matches only, in a
+    savepoint so the offer's own transaction is untouched."""
+    try:
+        async with db.begin_nested():
+            return await matching_agents(
+                db,
+                member_id=member_id,
+                tool_key=tool_key,
+                request=request,
+                copilot=copilot,
+                token_role=await _acting_token_role(db, tenant_id=copilot.tenant_id, run_id=run_id),
+            )
+    except Exception:
+        logger.warning("no agent match for a direct-access offer", exc_info=True)
+        return []
+
+
+async def _login_name(db: AsyncSession, access: ToolAccess, tool_key: str) -> str:
+    """The login the direct path would use, as the card names it: the
+    credential's name, an OAuth account's integration label, else the
+    connection's own label."""
+    if access.credential is not None and access.credential.name:
+        return one_line(access.credential.name, 120)
+    if access.integration is not None and access.integration.label:
+        return one_line(access.integration.label, 120)
+    return one_line(await tool_key_label(db, tool_key), 120)
 
 
 async def execute_direct_access_tool(
@@ -204,6 +279,24 @@ async def execute_direct_access_tool(
     name = one_line((member.display_name or member.subject) if member else "", 120)
     label = one_line(await tool_key_label(db, key), 120)
     account = account_of(access)
+    # Last, once every guard above has passed: a refused offer costs no
+    # embedding call.
+    request = await _last_request(db, session_id=direct.session_id, run=run)
+    matches = await _fitting_agents(
+        db,
+        copilot=agent,
+        member_id=direct.member_id,
+        tool_key=key,
+        request=_request_text(purpose, request),
+        run_id=run.id,
+    )
+    if matches:
+        top = one_line(matches[0].name, 120)
+        title = f"{top} does this — run it?"
+        title_de = f"{top} erledigt das – starten?"  # noqa: RUF001 -- the copy table's dash
+    else:
+        title = f"Copilot on behalf of {name}: read {label}"
+        title_de = f"Copilot im Auftrag von {name}: {label} lesen"
     approval = await raise_approval(
         db,
         tenant_id=tenant_id,
@@ -214,7 +307,7 @@ async def execute_direct_access_tool(
         # see and decide it (`approvals.repo.is_member_owned`).
         department_id=None,
         announce_to_member=direct.member_id,
-        title=f"Copilot on behalf of {name}: read {label}",
+        title=title,
         detail=purpose,
         payload={
             "tool": OFFER_DIRECT_ACCESS.name,
@@ -230,8 +323,19 @@ async def execute_direct_access_tool(
                 "purpose": purpose,
                 "decider": "member",
                 "department_id": None,
+                "request": request[:_REQUEST_LIMIT],
+                "login_name": await _login_name(db, access, key),
+                "agents": [
+                    {
+                        "id": str(match.agent_id),
+                        "name": match.name,
+                        "department": match.department_name,
+                        "score": round(match.score, 4),
+                    }
+                    for match in matches
+                ],
             },
-            "i18n": {"de": {"title": f"Copilot im Auftrag von {name}: {label} lesen"}},
+            "i18n": {"de": {"title": title_de}},
         },
     )
     await append_event(
@@ -247,11 +351,19 @@ async def execute_direct_access_tool(
             "chat_session_id": str(direct.session_id),
             "on_behalf_of": str(direct.member_id),
             "account": account,
+            "agent_ids": [str(match.agent_id) for match in matches],
         },
     )
+    offered = (
+        " The card also offers to run "
+        + ", ".join(one_line(match.name, 120) for match in matches)
+        + " instead."
+        if matches
+        else ""
+    )
     return ControlOutcome(
-        output=f"Asked {name} to allow reading {label} through {_ACCOUNT_TEXT[account]}. "
-        "Wait for their decision.",
+        output=f"Asked {name} to allow reading {label} through {_ACCOUNT_TEXT[account]}."
+        f"{offered} Wait for their decision.",
         suspend="waiting_for_approval",
     )
 
@@ -296,13 +408,89 @@ async def direct_access_block(
     return "\n".join(lines)
 
 
+async def _choose_agent(
+    db: AsyncSession,
+    *,
+    approval: m.ApprovalRequest,
+    info: Mapping[str, Any],
+    session: m.ChatSession,
+    member_id: uuid.UUID,
+    agent_id: uuid.UUID,
+) -> dict[str, str]:
+    """The person ran an agent the offer named instead of letting the Copilot
+    do it: their run right re-checked now, with the role claim of the
+    Copilot run that made the offer, and the agent started as that run's
+    delegation -- it waits on the sub-run like after `delegate_task`. No
+    grant. Returns the `chosen_agent` record."""
+    offered = info.get("agents")
+    offered_ids = {
+        str(entry.get("id"))
+        for entry in (offered if isinstance(offered, list) else [])
+        if isinstance(entry, dict)
+    }
+    if str(agent_id) not in offered_ids:
+        raise AgentNotOffered()
+    run_id = uuid_or_none((approval.payload or {}).get("run_id"))
+    parent_run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    copilot = await db.get(m.Agent, approval.agent_id)
+    target = await db.get(m.Agent, agent_id)
+    if parent_run is None or parent_run.task_id != approval.task_id or copilot is None:
+        raise EffectRefused("direct_access_run_gone")
+    if (
+        target is None
+        or target.tenant_id != approval.tenant_id
+        or not await member_may_run_agent(
+            db,
+            member_id=member_id,
+            agent=target,
+            token_role=await _acting_token_role(
+                db, tenant_id=approval.tenant_id, run_id=parent_run.id
+            ),
+        )
+    ):
+        name = target.name if target is not None else ""
+        raise AgentNotRunnable(name)
+    purpose = str(info.get("purpose") or "")
+    request = str(info.get("request") or "")
+    task_text = "\n\n".join(part for part in (request, purpose) if part) or purpose
+    sub_run = await start_delegation(
+        db, parent_run=parent_run, delegator=copilot, target=target, task_text=task_text
+    )
+    chosen = {"id": str(target.id), "name": target.name, "run_id": str(sub_run.id)}
+    approval.payload = {
+        **(approval.payload or {}),
+        "direct_access": {**info, "chosen_agent": chosen},
+    }
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=approval.tenant_id,
+        actor_type="operator",
+        actor_id=member_id,
+        category="copilot",
+        action="direct_access.agent_chosen",
+        resource={
+            "approval_id": str(approval.id),
+            "chat_session_id": str(session.id),
+            "agent_id": str(target.id),
+            "run_id": str(sub_run.id),
+        },
+    )
+    return chosen
+
+
 async def resolve_direct_access_approval(
-    db: AsyncSession, *, approval: m.ApprovalRequest, decision: str
+    db: AsyncSession,
+    *,
+    approval: m.ApprovalRequest,
+    decision: str,
+    agent_id: uuid.UUID | None = None,
 ) -> m.AgentRun | None:
     """The offer's effect: on approve, the grant (§5) -- its conversation and
-    the person's right re-checked now; either way, the parked run is woken
-    and told. Raises EffectRefused (the caller rolls back) when the grant can
-    no longer be given.
+    the person's right re-checked now -- or, with `agent_id`, the agent the
+    person chose to run instead (`_choose_agent`); either way, the parked run
+    is woken and told. Raises EffectRefused (the caller rolls back) when the
+    grant can no longer be given or the agent no longer be started.
 
     One grant at most: `decide_approval` holds the approval row locked and
     refuses a second decision, the conversation row is locked here like the
@@ -313,6 +501,7 @@ async def resolve_direct_access_approval(
     session_id = uuid_or_none(info.get("session_id"))
     member_id = uuid_or_none(info.get("member_id"))
     key = str(info.get("tool_key") or "")
+    chosen: dict[str, str] | None = None
     if decision == "approve":
         session = (
             await db.execute(
@@ -321,41 +510,54 @@ async def resolve_direct_access_approval(
         ).scalar_one_or_none()
         if session is None or member_id is None or session.member_id != member_id or not key:
             raise EffectRefused("direct_access_conversation_gone")
-        if not await member_may_use(db, member_id=member_id, tool_key=key, right="read"):
-            raise EffectRefused("direct_access_not_allowed")
-        if await active_grant(db, session_id=session.id, tool_key=key) is None:
-            db.add(
-                m.DirectAccessGrant(
-                    tenant_id=approval.tenant_id,
-                    chat_session_id=session.id,
-                    member_id=member_id,
-                    tool_key=key,
-                    approval_id=approval.id,
-                )
+        if agent_id is not None:
+            chosen = await _choose_agent(
+                db,
+                approval=approval,
+                info=info,
+                session=session,
+                member_id=member_id,
+                agent_id=agent_id,
             )
-            await db.flush()
-        await append_event(
-            db,
-            tenant_id=approval.tenant_id,
-            actor_type="operator",
-            actor_id=member_id,
-            category="copilot",
-            action="direct_access.granted",
-            resource={
-                "approval_id": str(approval.id),
-                "chat_session_id": str(session.id),
-                "tool_key": key,
-            },
-        )
+        else:
+            if not await member_may_use(db, member_id=member_id, tool_key=key, right="read"):
+                raise EffectRefused("direct_access_not_allowed")
+            if await active_grant(db, session_id=session.id, tool_key=key) is None:
+                db.add(
+                    m.DirectAccessGrant(
+                        tenant_id=approval.tenant_id,
+                        chat_session_id=session.id,
+                        member_id=member_id,
+                        tool_key=key,
+                        approval_id=approval.id,
+                    )
+                )
+                await db.flush()
+            await append_event(
+                db,
+                tenant_id=approval.tenant_id,
+                actor_type="operator",
+                actor_id=member_id,
+                category="copilot",
+                action="direct_access.granted",
+                resource={
+                    "approval_id": str(approval.id),
+                    "chat_session_id": str(session.id),
+                    "tool_key": key,
+                },
+            )
     run_id = uuid_or_none(payload.get("run_id"))
     run = await db.get(m.AgentRun, run_id) if run_id else None
     if run is None or run.task_id != approval.task_id:
         return None
-    await record_direct_access_answer(
-        db,
-        run,
-        {"tool_key": key, "label": str(info.get("label") or key), "decision": decision},
-    )
+    entry: dict[str, Any] = {
+        "tool_key": key,
+        "label": str(info.get("label") or key),
+        "decision": decision,
+    }
+    if chosen is not None:
+        entry["chosen_agent"] = {"name": chosen["name"], "run_id": chosen["run_id"]}
+    await record_direct_access_answer(db, run, entry)
     # Re-read, not the identity-mapped copy: see `resolve_tool_approval`.
     run = await db.get(m.AgentRun, run.id, populate_existing=True)
     if run is None or run.state != RunState.WAITING_FOR_APPROVAL.value:
@@ -371,7 +573,15 @@ def direct_access_resume_text(task_text: str, entry: Mapping[str, Any]) -> str:
     request -- that is what the access was asked for."""
     label = one_line(str(entry.get("label") or entry.get("tool_key") or ""), 120)
     key = one_line(str(entry.get("tool_key") or ""), 200)
-    if entry.get("decision") == "approve":
+    chosen = entry.get("chosen_agent")
+    if isinstance(chosen, dict):
+        agent = one_line(str(chosen.get("name") or ""), 120)
+        run_id = one_line(str(chosen.get("run_id") or ""), 64)
+        note = (
+            f"[oc8] The person chose to run {agent} instead (run {run_id}). Wait for "
+            "its result; do not do the task yourself."
+        )
+    elif entry.get("decision") == "approve":
         note = (
             f"[oc8] The person approved reading {label} ({key}) in this conversation. "
             "Its tools are now available: carry on with their request. Every change "

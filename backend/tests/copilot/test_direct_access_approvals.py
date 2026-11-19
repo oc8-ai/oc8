@@ -13,17 +13,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.api.v1._serializers import approval_to_dto
 from oc8.approvals import (
+    AgentNotOffered,
+    AgentNotRunnable,
     AlreadyDecided,
     EffectRefused,
     NotYourDepartment,
     NotYourSayAtAll,
+    UnknownOption,
     decide_approval,
     direct_access_owner,
     expire_approval,
 )
 from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.auth.principal import Principal
-from oc8.authz.permissions import MEMBER_ROLE, SEAT_APPROVER
+from oc8.authz.permissions import COPILOT_USE, MEMBER_ROLE, RUN_START, SEAT_APPROVER
 from oc8.authz.scope import (
     AgentActor,
     HumanActor,
@@ -401,3 +404,256 @@ def test_the_resumed_run_is_told_the_outcome() -> None:
     assert direct_access_resume_text("find it", yes).startswith("find it")
     assert "approved" in direct_access_resume_text("find it", yes)
     assert "declined" in direct_access_resume_text("find it", no)
+
+
+# ---------------------------------------------- Copilot: existing agent first
+
+
+async def _may_run(db: AsyncSession, office: DirectOffice) -> m.Role:
+    """Anna's own role: she may use the Copilot and start runs where she sits."""
+    role = m.Role(tenant_id=office.tenant, name=f"r-{uuid.uuid4().hex[:8]}", kind="human")
+    db.add(role)
+    await db.flush()
+    for permission in (COPILOT_USE, RUN_START):
+        db.add(m.RolePermission(tenant_id=office.tenant, role_id=role.id, permission=permission))
+    member = await db.get(m.OrgMember, office.member_id)
+    assert member is not None
+    member.role_id = role.id
+    await db.flush()
+    return role
+
+
+async def _offer_with_agent(
+    db: AsyncSession, office: DirectOffice
+) -> tuple[m.ApprovalRequest, m.AgentRun, m.Agent]:
+    """Anna may run the Quote Writer in Sales; her parked offer names it."""
+    await _may_run(db, office)
+    writer = m.Agent(
+        tenant_id=office.tenant,
+        department_id=office.department_id,
+        name="Quote Writer",
+        role_title="",
+        mission="Writes quotations",
+        narrowing={},
+        status="idle",
+    )
+    db.add(writer)
+    await db.flush()
+    offer, run = await _parked_offer(db, office)
+    offer.payload = {
+        **offer.payload,
+        "direct_access": {
+            **offer.payload["direct_access"],
+            "purpose": "find the quotation",
+            "request": "Draft the quotation for Miller",
+            "login_name": "things",
+            "agents": [
+                {"id": str(writer.id), "name": "Quote Writer", "department": "Sales", "score": 0.9}
+            ],
+        },
+    }
+    await db.flush()
+    return offer, run, writer
+
+
+async def _delegations(db: AsyncSession) -> list[m.AgentRun]:
+    return list(
+        (await db.execute(select(m.AgentRun).where(m.AgentRun.source == "delegation"))).scalars()
+    )
+
+
+async def test_choosing_an_agent_starts_it_as_a_delegation_and_grants_nothing(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, run, writer = await _offer_with_agent(db, office)
+        anna = await _human(db, tenant, "anna", "member")
+        result = await decide_approval(
+            db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+        )
+        assert await _grants(db) == []
+        (sub,) = await _delegations(db)
+        assert result.started_run_id == sub.id and result.resumed_run_id == run.id
+        assert sub.agent_id == writer.id and sub.state == RunState.QUEUED.value
+        # The Copilot's delegation: its task is woken with the result, in the
+        # person's conversation.
+        assert sub.context["parent_task_id"] == str(office.task_id)
+        assert sub.context["chat_session_id"] == str(office.session_id)
+        assert "Draft the quotation for Miller" in sub.context["task"]
+        assert "find the quotation" in sub.context["task"]
+        assert offer.status == "approved"
+        assert offer.payload["direct_access"]["chosen_agent"] == {
+            "id": str(writer.id),
+            "name": "Quote Writer",
+            "run_id": str(sub.id),
+        }
+        await db.refresh(run)
+        assert run.state == RunState.QUEUED.value
+        told = direct_access_resume_text("find it", run.context["resolved_direct_access"])
+        assert told.endswith(
+            f"[oc8] The person chose to run Quote Writer instead (run {sub.id}). Wait for "
+            "its result; do not do the task yourself."
+        )
+        offer_id, sub_id, writer_id = offer.id, sub.id, writer.id
+        await db.commit()  # an audit event is written to the chain on commit
+    async with app_session(tenant) as db:
+        (event,) = (
+            await db.execute(
+                select(m.AuditEvent).where(m.AuditEvent.action == "direct_access.agent_chosen")
+            )
+        ).scalars()
+        assert event.resource == {
+            "approval_id": str(offer_id),
+            "chat_session_id": str(office.session_id),
+            "agent_id": str(writer_id),
+            "run_id": str(sub_id),
+        }
+
+
+@pytest.mark.parametrize("change", ["agent_paused", "role_reduced", "agent_pending"])
+async def test_choosing_an_agent_the_person_may_no_longer_run_is_refused(
+    app_session: AppSessionFactory, redis_url: str, change: str
+) -> None:
+    """Review Focus 1: the run right is checked again at the click."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _run, writer = await _offer_with_agent(db, office)
+        if change == "agent_paused":
+            writer.status = "paused"
+        elif change == "agent_pending":
+            writer.status = "pending_approval"
+        else:
+            member = await db.get(m.OrgMember, office.member_id)
+            assert member is not None and member.role_id is not None
+            (grant_row,) = (
+                await db.execute(
+                    select(m.RolePermission).where(
+                        m.RolePermission.role_id == member.role_id,
+                        m.RolePermission.permission == RUN_START,
+                    )
+                )
+            ).scalars()
+            await db.delete(grant_row)
+        await db.flush()
+        anna = await _human(db, tenant, "anna", "member")
+        with pytest.raises(AgentNotRunnable) as refused:
+            await decide_approval(
+                db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+            )
+        assert refused.value.code == "agent_not_runnable"
+        assert refused.value.agent_name == "Quote Writer"
+        assert await _delegations(db) == [] and await _grants(db) == []
+
+
+async def test_the_run_right_is_judged_with_the_role_on_the_copilot_run(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """No assigned role: the claim recorded on the Copilot run that made the
+    offer decides, as on every turn that acts for the person."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, run, writer = await _offer_with_agent(db, office)
+        member = await db.get(m.OrgMember, office.member_id)
+        assert member is not None
+        member.role_id = None
+        run.context = {**run.context, "operator_role": "operator"}
+        await db.flush()
+        anna = await _human(db, tenant, "anna", "member")
+        result = await decide_approval(
+            db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+        )
+        assert result.started_run_id is not None
+
+
+async def test_choosing_an_agent_not_on_the_card_is_refused(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _run, _writer = await _offer_with_agent(db, office)
+        other = m.Agent(
+            tenant_id=tenant,
+            department_id=office.department_id,
+            name="Other",
+            role_title="",
+            mission="",
+            narrowing={},
+            status="idle",
+        )
+        db.add(other)
+        await db.flush()
+        anna = await _human(db, tenant, "anna", "member")
+        with pytest.raises(AgentNotOffered):
+            await decide_approval(
+                db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=other.id
+            )
+        assert await _delegations(db) == [] and await _grants(db) == []
+
+
+async def test_a_decided_offer_cannot_start_a_second_run(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Review Focus 5: a second click -- with the agent again, or for the
+    direct grant -- is the same 409 as any decided card."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _run, writer = await _offer_with_agent(db, office)
+        anna = await _human(db, tenant, "anna", "member")
+        await decide_approval(
+            db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+        )
+        with pytest.raises(AlreadyDecided):
+            await decide_approval(
+                db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+            )
+        with pytest.raises(AlreadyDecided):
+            await decide_approval(db, offer, decision="approve", tenant_id=tenant, actor=anna)
+        assert len(await _delegations(db)) == 1 and await _grants(db) == []
+
+
+async def test_a_chosen_agent_only_answers_a_direct_access_offer(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        parked = await chat_run(db, office, state="waiting_for_approval")
+        held = await _held_write(db, office, parked, decider="member")
+        anna = await _human(db, tenant, "anna", "member")
+        with pytest.raises(UnknownOption):
+            await decide_approval(
+                db, held, decision="approve", tenant_id=tenant, actor=anna, agent_id=uuid.uuid4()
+            )
+
+
+async def test_the_dto_carries_agents_login_and_chosen_agent(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _run, writer = await _offer_with_agent(db, office)
+        dto = approval_to_dto(offer)
+        assert dto.direct_access is not None
+        assert [(a.id, a.name, a.department, a.score) for a in dto.direct_access.agents] == [
+            (str(writer.id), "Quote Writer", "Sales", 0.9)
+        ]
+        assert dto.direct_access.login_name == "things"
+        assert dto.direct_access.chosen_agent is None
+        anna = await _human(db, tenant, "anna", "member")
+        result = await decide_approval(
+            db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+        )
+        chosen = approval_to_dto(result.approval).direct_access
+        assert chosen is not None and chosen.chosen_agent is not None
+        assert (chosen.chosen_agent.id, chosen.chosen_agent.name, chosen.chosen_agent.run_id) == (
+            str(writer.id),
+            "Quote Writer",
+            str(result.started_run_id),
+        )

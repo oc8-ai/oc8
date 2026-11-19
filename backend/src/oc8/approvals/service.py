@@ -102,6 +102,25 @@ class EffectRefused(ApprovalError):
         self.code = code
 
 
+class AgentNotOffered(EffectRefused):
+    """The person chose an agent their direct-access offer never named: the
+    card's agents are the only ones its decision may start."""
+
+    def __init__(self) -> None:
+        super().__init__("agent_not_offered")
+
+
+class AgentNotRunnable(EffectRefused):
+    """The agent the person chose on their direct-access offer can no longer
+    be started by them -- paused, deleted or pending since the offer, or
+    their own run right reduced. Raised after the status flip like every
+    `EffectRefused`: the caller rolls back and the offer stays open."""
+
+    def __init__(self, agent_name: str) -> None:
+        super().__init__("agent_not_runnable")
+        self.agent_name = agent_name
+
+
 class NotYourSayAtAll(ApprovalError):
     """The actor may decide in this department, but not THIS kind of approval.
 
@@ -243,6 +262,9 @@ class DecisionResult:
     #: commits: a stream entry whose run row is not yet visible is a run a worker
     #: picks up and cannot find.
     resumed_run_id: uuid.UUID | None = None
+    #: A run the decision started (the agent a person chose on a
+    #: direct-access offer). Published by the caller after it commits, too.
+    started_run_id: uuid.UUID | None = None
 
 
 async def raise_approval(
@@ -599,6 +621,7 @@ async def decide_approval(
     actor: DecisionActor,
     reason: str | None = None,
     option: str | None = None,
+    agent_id: uuid.UUID | None = None,
 ) -> DecisionResult:
     """Record a human's answer and set whatever it unblocks in motion.
 
@@ -677,6 +700,9 @@ async def decide_approval(
     if approval.action_type == "decision" and option is not None:
         if option not in option_labels(approval):
             raise UnknownOption(f"unknown option {option!r} for this decision")
+    # Choosing an agent is an answer to a direct-access offer only.
+    if agent_id is not None and approval.action_type != "direct_access":
+        raise UnknownOption("only a direct-access offer starts a chosen agent")
 
     approval.status = _STATUS[decision]
     approval.decided_at = dt.datetime.now(tz=dt.UTC)
@@ -701,6 +727,7 @@ async def decide_approval(
     )
 
     resumed_run: m.AgentRun | None = None
+    started_run_id: uuid.UUID | None = None
     if approval.action_type == "memory_write":
         from oc8.memory.router import resolve_memory_write_approval
 
@@ -760,9 +787,15 @@ async def decide_approval(
     elif approval.action_type == "direct_access":
         from oc8.copilot.direct_access import resolve_direct_access_approval
 
-        # The grant (on approve), and either way the parked run woken and told.
-        # Raises EffectRefused when the conversation or the person's right is gone.
-        resumed_run = await resolve_direct_access_approval(db, approval=approval, decision=decision)
+        # The grant (on approve) or the agent the person chose instead, and
+        # either way the parked run woken and told. Raises EffectRefused when
+        # the conversation, the person's right or their run right is gone.
+        resumed_run = await resolve_direct_access_approval(
+            db, approval=approval, decision=decision, agent_id=agent_id
+        )
+        chosen = ((approval.payload or {}).get("direct_access") or {}).get("chosen_agent")
+        if decision == "approve" and agent_id is not None and isinstance(chosen, dict):
+            started_run_id = uuid.UUID(str(chosen["run_id"]))
 
     await _close_out(db, approval)
     await append_event(
@@ -793,4 +826,8 @@ async def decide_approval(
         # `member_id IS NULL` decides nothing.
         principal=actor.principal if isinstance(actor, HumanActor) else None,
     )
-    return DecisionResult(approval=approval, resumed_run_id=resumed_run.id if resumed_run else None)
+    return DecisionResult(
+        approval=approval,
+        resumed_run_id=resumed_run.id if resumed_run else None,
+        started_run_id=started_run_id,
+    )

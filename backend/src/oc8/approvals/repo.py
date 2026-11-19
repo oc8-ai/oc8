@@ -271,7 +271,8 @@ async def member_direct_access_cards(
     """A member's own direct-access cards, oldest first: the ones the member
     decides (`decider == "member"`, filed under their id) that are still pending,
     back a live grant, or -- approved -- wait for the department that decides
-    after them (`awaiting_department`). Never another member's, from any seat,
+    after them (`awaiting_department`) or were answered by running a fitting
+    agent (`chosen_agent`). Never another member's, from any seat,
     and never the department's own card."""
     from oc8.models.direct_access import DirectAccessGrant
 
@@ -293,6 +294,12 @@ async def member_direct_access_cards(
                 and_(
                     ApprovalRequest.status == "approved",
                     ApprovalRequest.id.in_(_department_stages_pending()),
+                ),
+                # Answered by running a fitting agent: the card says it is on
+                # it after a reload, and offers nothing to click again.
+                and_(
+                    ApprovalRequest.status == "approved",
+                    ApprovalRequest.payload["direct_access"].has_key("chosen_agent"),
                 ),
             ),
         )

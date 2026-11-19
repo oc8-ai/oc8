@@ -10,11 +10,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agent.control_tools import offered_tools
+from oc8.agent.control_tools import OFFER_DIRECT_ACCESS, offered_tools
 from oc8.agent.harness.stages.b_authorize import authorize
 from oc8.agent.harness.stages.b_direct_access import DirectAccessView
 from oc8.authz.pdp import Effect
 from oc8.chat.modes import MODES
+from oc8.copilot.agent_match import AgentMatch
 from oc8.copilot.direct_access import direct_access_block, execute_direct_access_tool
 from oc8.modelrouter import NeutralTool, ToolCall
 from tests.conftest import AppSessionFactory
@@ -388,3 +389,164 @@ async def test_a_declined_key_later_allowed_is_not_declined(
         assert agent is not None
         block = await direct_access_block(db, run=await chat_run(db, office), agent=agent)
         assert block is not None and "declined" not in block
+
+
+# ---------------------------------------------- Copilot: existing agent first
+
+
+class _Matcher:
+    """Stands in for `matching_agents`: records each call, returns `found`."""
+
+    def __init__(self, found: list[AgentMatch] | Exception) -> None:
+        self.found = found
+        self.calls: list[dict[str, Any]] = []
+
+    async def __call__(self, db: AsyncSession, **kw: Any) -> list[AgentMatch]:
+        self.calls.append(kw)
+        if isinstance(self.found, Exception):
+            raise self.found
+        return list(self.found)
+
+
+def _match(name: str, score: float) -> AgentMatch:
+    return AgentMatch(
+        agent_id=uuid.uuid4(),
+        name=name,
+        department_id=uuid.uuid4(),
+        department_name="Sales",
+        score=score,
+    )
+
+
+def _stub(monkeypatch: pytest.MonkeyPatch, found: list[AgentMatch] | Exception) -> _Matcher:
+    matcher = _Matcher(found)
+    monkeypatch.setattr("oc8.copilot.direct_access.matching_agents", matcher)
+    return matcher
+
+
+async def _said(db: AsyncSession, office: DirectOffice, text: str) -> None:
+    db.add(
+        m.ChatMessage(
+            tenant_id=office.tenant,
+            session_id=office.session_id,
+            role="user",
+            content=text,
+            author_member_id=office.member_id,
+        )
+    )
+    await db.flush()
+
+
+@pytest.mark.asyncio
+async def test_an_offer_lists_fitting_agents_best_first(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    best, next_ = _match("Quote Writer", 0.91), _match("Sales Helper", 0.72)
+    matcher = _stub(monkeypatch, [best, next_])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _said(db, office, "Draft the quotation for Miller")
+        run = await chat_run(db, office, extra={"operator_role": "operator"})
+        outcome = await _offer(db, office, run)
+        assert outcome.suspend == "waiting_for_approval"
+        assert "Quote Writer" in outcome.output
+        (offer,) = await _offers(db)
+        info = offer.payload["direct_access"]
+        assert [a["id"] for a in info["agents"]] == [str(best.agent_id), str(next_.agent_id)]
+        assert info["agents"][0] == {
+            "id": str(best.agent_id),
+            "name": "Quote Writer",
+            "department": "Sales",
+            "score": 0.91,
+        }
+        assert info["login_name"] == "things"
+        assert offer.title == "Quote Writer does this — run it?"
+        assert offer.payload["i18n"]["de"]["title"] == "Quote Writer erledigt das – starten?"  # noqa: RUF001
+        # The request is the purpose plus the person's last message, and the
+        # run's own role claim decides what they may run.
+        (call,) = matcher.calls
+        assert call["tool_key"] == "things" and call["member_id"] == office.member_id
+        assert "find the quotation" in call["request"]
+        assert "Draft the quotation for Miller" in call["request"]
+        assert call["token_role"] == "operator"
+
+
+@pytest.mark.asyncio
+async def test_the_request_matched_is_cut_at_2000_characters(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    matcher = _stub(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _said(db, office, "x" * 5000)
+        await _offer(db, office, await chat_run(db, office))
+        assert len(matcher.calls[0]["request"]) == 2000
+
+
+@pytest.mark.asyncio
+async def test_an_offer_without_fitting_agents_looks_as_before(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        outcome = await _offer(db, office, await chat_run(db, office))
+        assert outcome.suspend == "waiting_for_approval"
+        (offer,) = await _offers(db)
+        assert offer.title == "Copilot on behalf of Anna: read things"
+        assert offer.payload["i18n"]["de"]["title"] == "Copilot im Auftrag von Anna: things lesen"
+        assert offer.payload["direct_access"]["agents"] == []
+        assert "instead" not in outcome.output
+
+
+@pytest.mark.asyncio
+async def test_a_failing_matcher_never_fails_the_offer(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _stub(monkeypatch, RuntimeError("embedding service down"))
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        outcome = await _offer(db, office, await chat_run(db, office))
+        assert outcome.suspend == "waiting_for_approval"
+        (offer,) = await _offers(db)
+        assert offer.payload["direct_access"]["agents"] == []
+        assert offer.title.startswith("Copilot on behalf of Anna")
+
+
+@pytest.mark.asyncio
+async def test_no_second_card_while_one_waits_even_with_matches(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review Focus 4: the existing guards still come first -- a waiting card
+    or a decline in this run raises no second card, and costs no match."""
+    matcher = _stub(monkeypatch, [_match("Quote Writer", 0.9)])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        run = await chat_run(db, office)
+        await _offer(db, office, run)
+        again = await _offer(db, office, run)
+        other = await _offer(db, office, await chat_run(db, office))
+        assert again.suspend == "waiting_for_approval"
+        assert other.suspend is None and "already" in other.output
+        assert len(await _offers(db)) == 1
+        assert len(matcher.calls) == 1
+        declined = await chat_run(
+            db,
+            office,
+            extra={"resolved_direct_access": {"tool_key": "things", "decision": "reject"}},
+        )
+        refused = await _offer(db, office, declined)
+        assert refused.output.startswith("ERROR")
+        assert len(await _offers(db)) == 1 and len(matcher.calls) == 1
+
+
+def test_the_tool_tells_the_copilot_oc8_looks_for_agents() -> None:
+    assert (
+        "oc8 checks for agents that fit and lets the person choose one; you do not need "
+        "to search yourself." in " ".join(OFFER_DIRECT_ACCESS.description.split())
+    )
