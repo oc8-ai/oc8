@@ -22,6 +22,7 @@ from oc8.approvals import (
     NotYourDepartment,
     NotYourSayAtAll,
     UnknownDecision,
+    UnknownOption,
     awaiting_department,
     decide_approval,
     department_after_person,
@@ -116,6 +117,9 @@ async def decide_direct_access(
         raise HTTPException(status.HTTP_403_FORBIDDEN, {"code": exc.code}) from exc
     except AgentNotOffered as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, {"code": exc.code}) from exc
+    except UnknownOption as exc:
+        # An agentId on a card that is no agent offer (a held write).
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except EffectRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     dto = approval_to_dto(result.approval)
