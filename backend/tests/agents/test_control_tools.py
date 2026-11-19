@@ -1155,6 +1155,111 @@ async def test_a_telegram_turn_cannot_delegate_to_an_agent_the_person_may_not_ru
         assert await _delegations(db, tenant) == []
 
 
+async def _persons_web_turn(
+    db: Any,
+    tenant: uuid.UUID,
+    lead: m.Agent,
+    task: m.Task,
+    member: m.OrgMember,
+    operator_role: str | None,
+    *,
+    subject: str | None = None,
+) -> m.AgentRun:
+    """A web turn `subject` (default: the member) wrote, as `send_message`
+    records it: the acting subject and, from the live token, its role."""
+    context: dict[str, Any] = {
+        "door": "web",
+        "originating_operator": subject or member.subject,
+        "reply_to_message_id": str(uuid.uuid4()),
+    }
+    if operator_role is not None:
+        context["operator_role"] = operator_role
+    run = await _turn_for(db, tenant, lead, task, context)
+    run.state = "done"
+    await db.flush()
+    return run
+
+
+async def _wake_up(
+    db: Any, tenant: uuid.UUID, lead: m.Agent, task: m.Task, member: m.OrgMember
+) -> m.AgentRun:
+    """The Copilot's wake-up after a delegated result, as
+    `executor._maybe_wake_parent` creates it: a chat run, never with
+    `operator_role`."""
+    return await _turn_for(
+        db,
+        tenant,
+        lead,
+        task,
+        {
+            "task": 'Sub-task "x" completed.\n\nResult: done',
+            "parent_task_id": str(task.id),
+            "delegation_depth": 1,
+            "door": "web",
+            "originating_operator": member.subject,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_roleless_member_can_still_delegate_after_a_wake_up_turn(
+    app_session: Any,
+) -> None:
+    """No assigned role, a role claim on their own web turn: the Copilot's
+    wake-up after the first delegated result still acts with that claim, so a
+    second step can be delegated."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        await _persons_web_turn(db, tenant, lead, task, member, OPERATOR)
+        wake = await _wake_up(db, tenant, lead, task, member)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=wake.id)
+        assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Fremd" in outcome.output
+
+
+@pytest.mark.asyncio
+async def test_a_followup_uses_the_role_of_the_persons_chat_run(app_session: Any) -> None:
+    """A follow-up carries no token: the role recorded on the person's latest
+    web turn in the conversation decides, not nothing."""
+    from oc8.authz.permissions import MEMBER_ROLE, OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        await _persons_web_turn(db, tenant, lead, task, member, MEMBER_ROLE)
+        await _persons_web_turn(db, tenant, lead, task, member, OPERATOR)
+        run = await _turn_for(
+            db, tenant, lead, task, {"door": "followup", "followup": {"id": str(uuid.uuid4())}}
+        )
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is not None, outcome.output
+
+
+@pytest.mark.asyncio
+async def test_no_recorded_role_anywhere_fails_closed(app_session: Any) -> None:
+    """The person's own turns carry no role claim; another subject's turn in
+    the same conversation (an admin overseeing it) does: that claim is not the
+    person's, so the wake-up decides on the assigned role alone -- none."""
+    from oc8.authz.permissions import ORG_ADMIN
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        await _persons_web_turn(db, tenant, lead, task, member, None)
+        await _persons_web_turn(db, tenant, lead, task, member, ORG_ADMIN, subject="admin")
+        wake = await _wake_up(db, tenant, lead, task, member)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=wake.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
 @pytest.mark.asyncio
 async def test_a_copilot_run_without_a_person_delegates_as_before(app_session: Any) -> None:
     """Nobody behind the task at all (no chat session): no run-right check,

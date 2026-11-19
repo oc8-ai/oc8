@@ -23,7 +23,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agent.control_tools import _acting_token_role, _resolve_agent_actor, copilot_person
+from oc8.agent.control_tools import (
+    _acting_token_role,
+    _resolve_agent_actor,
+    copilot_person,
+    person_token_role,
+)
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import (
     TENANT_ASSISTANT_OPENER,
@@ -253,8 +258,11 @@ async def roster_block(
                 db,
                 member_id=person.id,
                 tenant_id=agent.tenant_id,
-                token_role=await _acting_token_role(
-                    db, tenant_id=agent.tenant_id, run_id=run.id if run is not None else None
+                token_role=await person_token_role(
+                    db,
+                    tenant_id=agent.tenant_id,
+                    run_id=run.id if run is not None else None,
+                    person=person,
                 ),
             )
             rows = [(a, dept) for a, dept in rows if runnable_with(reach, a)]

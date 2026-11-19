@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
-from sqlalchemy import case, select
+from sqlalchemy import case, or_, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
@@ -1827,6 +1827,62 @@ async def _acting_token_role(
     return str(role) if isinstance(role, str) and role else None
 
 
+async def person_token_role(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    run_id: uuid.UUID | None,
+    person: m.OrgMember,
+) -> str | None:
+    """The role claim a Copilot turn acting for `person` judges their run
+    right with (`_delegate`, the roster, the agent match): the claim recorded
+    on that person's own chat turn.
+
+    First the executing run's own claim (`_acting_token_role`), a live web
+    turn. A turn without one -- the Copilot's wake-up after a delegated result
+    (`executor._maybe_wake_parent` never copies `operator_role`), a follow-up,
+    a messenger turn -- continues a conversation the person opened: the claim
+    of their latest web turn there, found through the run's chain (its
+    `parent_task_id`, the Copilot's task) or its chat session. Only that
+    person's turns count (`originating_operator`): an admin overseeing the
+    conversation lends it no role. None when no such turn carries a claim --
+    the assigned role then decides alone (fail closed). Never anything the
+    model said.
+    """
+    role = await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id)
+    if role is not None or run_id is None:
+        return role
+    run = await db.get(m.AgentRun, run_id)
+    if run is None or run.tenant_id != tenant_id:
+        return None
+    context = run.context or {}
+    task_ids = {run.task_id} if run.task_id is not None else set()
+    try:
+        task_ids.add(uuid.UUID(str(context["parent_task_id"])))
+    except (KeyError, ValueError, TypeError):
+        pass
+    session_id = context.get("chat_session_id")
+    belongs = [m.AgentRun.task_id.in_(task_ids)] if task_ids else []
+    if isinstance(session_id, str) and session_id:
+        belongs.append(m.AgentRun.context["chat_session_id"].astext == session_id)
+    if not belongs:
+        return None
+    claim = await db.scalar(
+        select(m.AgentRun.context["operator_role"].astext)
+        .where(
+            m.AgentRun.tenant_id == tenant_id,
+            m.AgentRun.source == "chat",
+            m.AgentRun.context["originating_operator"].astext == person.subject,
+            m.AgentRun.context["operator_role"].astext.is_not(None),
+            m.AgentRun.context["operator_role"].astext != "",
+            or_(*belongs),
+        )
+        .order_by(m.AgentRun.created_at.desc(), m.AgentRun.id.desc())
+        .limit(1)
+    )
+    return claim or None
+
+
 async def _context_kb_ids(
     db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID | None
 ) -> frozenset[uuid.UUID] | None:
@@ -2214,7 +2270,9 @@ async def _delegate(
             db,
             member_id=person.id,
             agent=target,
-            token_role=await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id),
+            token_role=await person_token_role(
+                db, tenant_id=tenant_id, run_id=run_id, person=person
+            ),
         ):
             return f"refused: the person may not run {target.name}", None
 

@@ -16,7 +16,7 @@ from oc8.agent.control_tools import (
     OFFER_DIRECT_ACCESS,
     ControlOutcome,
     DelegationDepthExceeded,
-    _acting_token_role,
+    person_token_role,
     start_delegation,
 )
 from oc8.agent.harness.stages.b_direct_access import DirectAccessView, offers_direct
@@ -161,7 +161,7 @@ async def _fitting_agents(
     db: AsyncSession,
     *,
     copilot: m.Agent,
-    member_id: uuid.UUID,
+    member: m.OrgMember,
     tool_key: str,
     request: str,
     run_id: uuid.UUID,
@@ -173,11 +173,13 @@ async def _fitting_agents(
         async with db.begin_nested():
             return await matching_agents(
                 db,
-                member_id=member_id,
+                member_id=member.id,
                 tool_key=tool_key,
                 request=request,
                 copilot=copilot,
-                token_role=await _acting_token_role(db, tenant_id=copilot.tenant_id, run_id=run_id),
+                token_role=await person_token_role(
+                    db, tenant_id=copilot.tenant_id, run_id=run_id, person=member
+                ),
             )
     except Exception:
         logger.warning("no agent match for a direct-access offer", exc_info=True)
@@ -293,12 +295,12 @@ async def execute_direct_access_tool(
         await _fitting_agents(
             db,
             copilot=agent,
-            member_id=direct.member_id,
+            member=member,
             tool_key=key,
             request=_request_text(purpose, request),
             run_id=run.id,
         )
-        if request
+        if request and member is not None
         else []
     )
     # Neutral even when agents fit: the row's title is what every other door

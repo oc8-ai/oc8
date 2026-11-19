@@ -13,6 +13,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.harness.caps import ModelCaps
@@ -344,6 +345,55 @@ async def test_the_copilot_roster_hides_agents_the_person_may_not_run(
     assert f"- {lennart.id}: Lennart (Helpdesk)" in joined
     assert str(fremd.id) not in joined
     assert "Fremd" not in joined
+
+
+async def test_the_roster_of_a_wake_up_uses_the_role_of_the_persons_chat_run(
+    app_session: AppSessionFactory,
+) -> None:
+    """No assigned role: the Copilot's wake-up after a delegated result names
+    the agents the role claim on the person's own web turn lets them run --
+    the same claim `_delegate` judges with, not an empty roster."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        helpdesk = m.Department(tenant_id=tenant, name="Helpdesk", frame={})
+        db.add(helpdesk)
+        await db.flush()
+        assistant, task, wake = await _copilot_with_person(
+            db,
+            tenant,
+            seats=[helpdesk],
+            door={"door": "web", "parent_task_id": "", "delegation_depth": 1},
+        )
+        session = await db.scalar(select(m.ChatSession).where(m.ChatSession.task_id == task.id))
+        member = await db.get(m.OrgMember, session.member_id)
+        member.role_id = None
+        wake.context = {
+            **wake.context,
+            "parent_task_id": str(task.id),
+            "originating_operator": member.subject,
+        }
+        db.add(
+            m.AgentRun(
+                tenant_id=tenant, agent_id=assistant.id, task_id=task.id, source="chat",
+                state="done",
+                context={
+                    "door": "web", "chat_session_id": str(session.id),
+                    "originating_operator": member.subject, "operator_role": OPERATOR,
+                },
+            )
+        )
+        lennart = m.Agent(
+            tenant_id=tenant, department_id=helpdesk.id, name="Lennart", status="idle",
+            definition={}, presentation={},
+        )
+        db.add(lennart)
+        await db.flush()
+
+        joined = await _roster_of(db, tenant, assistant, task=task, run_id=wake.id)
+
+    assert f"- {lennart.id}: Lennart (Helpdesk)" in joined
 
 
 async def test_has_knowledge_is_true_once_a_kb_is_granted_to_the_department(
