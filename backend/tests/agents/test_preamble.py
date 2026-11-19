@@ -351,8 +351,9 @@ async def test_the_roster_of_a_wake_up_uses_the_role_of_the_persons_chat_run(
     app_session: AppSessionFactory,
 ) -> None:
     """No assigned role: the Copilot's wake-up after a delegated result names
-    the agents the role claim on the person's own web turn lets them run --
-    the same claim `_delegate` judges with, not an empty roster."""
+    the agents the role claim on the person's own web turn -- its causal
+    parent -- lets them run: the claim `_delegate` judges with, not an empty
+    roster."""
     from oc8.authz.permissions import OPERATOR
 
     tenant = uuid.uuid4()
@@ -369,21 +370,30 @@ async def test_the_roster_of_a_wake_up_uses_the_role_of_the_persons_chat_run(
         session = await db.scalar(select(m.ChatSession).where(m.ChatSession.task_id == task.id))
         member = await db.get(m.OrgMember, session.member_id)
         member.role_id = None
+        web = m.AgentRun(
+            tenant_id=tenant, agent_id=assistant.id, task_id=task.id, source="chat",
+            state="done",
+            context={
+                "door": "web", "chat_session_id": str(session.id),
+                "originating_operator": member.subject, "operator_role": OPERATOR,
+            },
+        )
+        db.add(web)
+        await db.flush()
+        # The causal chain the executor records: the sub-run the web turn
+        # delegated, and the wake-up its result caused.
+        sub = m.AgentRun(
+            tenant_id=tenant, agent_id=assistant.id, source="delegation", state="done",
+            context={"parent_task_id": str(task.id), "parent_run_id": str(web.id)},
+        )
+        db.add(sub)
+        await db.flush()
         wake.context = {
             **wake.context,
             "parent_task_id": str(task.id),
             "originating_operator": member.subject,
+            "wake_of_run_id": str(sub.id),
         }
-        db.add(
-            m.AgentRun(
-                tenant_id=tenant, agent_id=assistant.id, task_id=task.id, source="chat",
-                state="done",
-                context={
-                    "door": "web", "chat_session_id": str(session.id),
-                    "originating_operator": member.subject, "operator_role": OPERATOR,
-                },
-            )
-        )
         lennart = m.Agent(
             tenant_id=tenant, department_id=helpdesk.id, name="Lennart", status="idle",
             definition={}, presentation={},

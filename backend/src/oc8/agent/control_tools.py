@@ -18,10 +18,10 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from pydantic import ValidationError
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
@@ -1827,6 +1827,12 @@ async def _acting_token_role(
     return str(role) if isinstance(role, str) and role else None
 
 
+#: How old the person's web turn may be for a later turn of its causal chain
+#: to judge with its role claim: a token lives for a request, a claim recorded
+#: from it is trusted for a day at most, never for as long as a chain lasts.
+INHERITED_ROLE_MAX_AGE: Final = dt.timedelta(hours=24)
+
+
 async def person_token_role(
     db: AsyncSession,
     *,
@@ -1835,52 +1841,52 @@ async def person_token_role(
     person: m.OrgMember,
 ) -> str | None:
     """The role claim a Copilot turn acting for `person` judges their run
-    right with (`_delegate`, the roster, the agent match): the claim recorded
-    on that person's own chat turn.
+    right with (`_delegate`, the roster, the agent match).
 
     First the executing run's own claim (`_acting_token_role`), a live web
-    turn. A turn without one -- the Copilot's wake-up after a delegated result
-    (`executor._maybe_wake_parent` never copies `operator_role`), a follow-up,
-    a messenger turn -- continues a conversation the person opened: the claim
-    of their latest web turn there, found through the run's chain (its
-    `parent_task_id`, the Copilot's task) or its chat session. Only that
-    person's turns count (`originating_operator`): an admin overseeing the
-    conversation lends it no role. None when no such turn carries a claim --
-    the assigned role then decides alone (fail closed). Never anything the
-    model said.
+    turn. A wake-up after a delegated result carries none
+    (`executor._maybe_wake_parent` never copies `operator_role`), so it
+    inherits the claim along its explicit causal chain only: wake-up ->
+    `wake_of_run_id` (the sub-run that finished) -> `parent_run_id` (the run
+    that delegated) -> ... up to the first run that carries a claim, which must
+    be that person's own web turn (`originating_operator`) and at most
+    `INHERITED_ROLE_MAX_AGE` old. Nothing else in the conversation lends a
+    claim: a follow-up, a messenger turn or any run with no causal web parent
+    gets None, and the assigned role decides alone (fail closed). Never
+    anything the model said.
     """
     role = await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id)
     if role is not None or run_id is None:
         return role
-    run = await db.get(m.AgentRun, run_id)
-    if run is None or run.tenant_id != tenant_id:
+    current = await db.get(m.AgentRun, run_id)
+    if current is None or current.tenant_id != tenant_id:
         return None
-    context = run.context or {}
-    task_ids = {run.task_id} if run.task_id is not None else set()
-    try:
-        task_ids.add(uuid.UUID(str(context["parent_task_id"])))
-    except (KeyError, ValueError, TypeError):
-        pass
-    session_id = context.get("chat_session_id")
-    belongs = [m.AgentRun.task_id.in_(task_ids)] if task_ids else []
-    if isinstance(session_id, str) and session_id:
-        belongs.append(m.AgentRun.context["chat_session_id"].astext == session_id)
-    if not belongs:
-        return None
-    claim = await db.scalar(
-        select(m.AgentRun.context["operator_role"].astext)
-        .where(
-            m.AgentRun.tenant_id == tenant_id,
-            m.AgentRun.source == "chat",
-            m.AgentRun.context["originating_operator"].astext == person.subject,
-            m.AgentRun.context["operator_role"].astext.is_not(None),
-            m.AgentRun.context["operator_role"].astext != "",
-            or_(*belongs),
-        )
-        .order_by(m.AgentRun.created_at.desc(), m.AgentRun.id.desc())
-        .limit(1)
-    )
-    return claim or None
+    seen = {current.id}
+    # Each delegation hop is a sub-run plus the wake-up it causes.
+    for _hop in range(2 * MAX_DELEGATION_DEPTH + 2):
+        context = current.context or {}
+        link = context.get("wake_of_run_id") or context.get("parent_run_id")
+        try:
+            next_id = uuid.UUID(str(link)) if link else None
+        except (ValueError, TypeError):
+            return None
+        if next_id is None or next_id in seen:
+            return None
+        seen.add(next_id)
+        found = await db.get(m.AgentRun, next_id)
+        if found is None or found.tenant_id != tenant_id:
+            return None
+        current = found
+        context = current.context or {}
+        claim = context.get("operator_role")
+        if current.source != "chat" or not isinstance(claim, str) or not claim:
+            continue
+        if context.get("originating_operator") != person.subject:
+            return None
+        if current.created_at < dt.datetime.now(dt.UTC) - INHERITED_ROLE_MAX_AGE:
+            return None
+        return claim
+    return None
 
 
 async def _context_kb_ids(
@@ -2348,6 +2354,10 @@ async def _create_delegation(
         "parent_task_id": str(task.id),
         "delegation_depth": task.delegation_depth + 1,
     }
+    if executing_run is not None:
+        # The causal link up to the run that delegated: read by
+        # `person_token_role` to find the person's own web turn, nothing else.
+        context["parent_run_id"] = str(executing_run.id)
     # Carried from the executing run so a wake-up all the way back at the top
     # of the delegation chain can be recognised as a CHAT continuation
     # (executor._maybe_wake_parent reads it off the finishing sub-run's own

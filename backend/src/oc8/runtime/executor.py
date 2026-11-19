@@ -409,6 +409,7 @@ async def _maybe_wake_parent(
     acting: ActingPerson | None = None,
     trigger_id: str | None = None,
     for_person: str | None = None,
+    finished_run_id: uuid.UUID | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -446,6 +447,12 @@ async def _maybe_wake_parent(
         "parent_task_id": str(parent.id),
         "delegation_depth": delegation_depth,
     }
+    if finished_run_id is not None:
+        # The causal link back: wake-up -> the sub-run that finished -> its
+        # `parent_run_id`, the run that delegated. The only way a turn without
+        # a token reaches the role claim of the person's own web turn
+        # (`control_tools.person_token_role`); never the claim itself.
+        context["wake_of_run_id"] = str(finished_run_id)
     # The lead's wake-up acts for the same person as the sub-run (connections
     # design), whether or not the chain started in a chat -- and for nobody
     # when the sub-run acted for nobody, or the trigger and chat keys carried
@@ -1255,6 +1262,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         acting=await _acting_person(db, run),
                         trigger_id=(run.context or {}).get("trigger_id"),
                         for_person=(run.context or {}).get(FOR_PERSON),
+                        finished_run_id=run.id,
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
@@ -1412,6 +1420,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 acting=await _acting_person(db, run),
                                 trigger_id=(run.context or {}).get("trigger_id"),
                                 for_person=(run.context or {}).get(FOR_PERSON),
+                                finished_run_id=run.id,
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -1543,6 +1552,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             acting=await _acting_person(db, run),
                             trigger_id=(run.context or {}).get("trigger_id"),
                             for_person=(run.context or {}).get(FOR_PERSON),
+                            finished_run_id=run.id,
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
