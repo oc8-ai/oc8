@@ -440,6 +440,9 @@ msgstr ""
 msgid "Already running"
 msgstr ""
 
+msgid "Also fits: "
+msgstr ""
+
 msgid "Also require approval for a specific tool (optional)"
 msgstr ""
 
@@ -2609,6 +2612,9 @@ msgstr ""
 msgid "Handoffs"
 msgstr ""
 
+msgid "Hands over:"
+msgstr ""
+
 msgid "hard"
 msgstr ""
 
@@ -4461,6 +4467,9 @@ msgid "run"
 msgstr ""
 
 msgid "Run"
+msgstr ""
+
+msgid "Run agent"
 msgstr ""
 
 msgid "Run details"

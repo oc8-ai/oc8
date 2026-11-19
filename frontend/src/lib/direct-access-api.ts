@@ -17,10 +17,22 @@ export interface DirectAccessGrant {
 const ROOT = ["direct-access"] as const;
 
 /** The caller's own direct-access approvals: a TURN_APPROVAL_CARDS source. */
-export function useMyDirectAccessApprovals({ poll }: { poll: number | false }) {
+export function useMyDirectAccessApprovals({
+  poll,
+  sessionId,
+}: {
+  poll: number | false;
+  /** Narrows the list to this chat, so a chosen-agent note stays in its own. */
+  sessionId?: string | null;
+}) {
   return useQuery({
-    queryKey: [...ROOT, "approvals"],
-    queryFn: () => api.get<Approval[]>("/chat/direct-access/approvals"),
+    queryKey: [...ROOT, "approvals", sessionId ?? ""],
+    queryFn: () =>
+      api.get<Approval[]>(
+        sessionId
+          ? `/chat/direct-access/approvals?sessionId=${encodeURIComponent(sessionId)}`
+          : "/chat/direct-access/approvals",
+      ),
     refetchInterval: poll,
   });
 }
@@ -43,14 +55,17 @@ export function useDecideDirectAccess() {
       approvalId,
       decision,
       reason,
+      agentId,
     }: {
       approvalId: string;
       decision: "approve" | "reject";
       reason?: string;
+      /** Approve by running this offered agent instead of granting direct access. */
+      agentId?: string;
     }) =>
       api.post<Approval>(
         `/chat/direct-access/approvals/${encodeURIComponent(approvalId)}/decision`,
-        { decision, reason: reason ?? "" },
+        { decision, reason: reason ?? "", ...(agentId ? { agentId } : {}) },
       ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ROOT }),
   });

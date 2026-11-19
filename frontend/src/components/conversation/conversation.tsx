@@ -1029,7 +1029,7 @@ function ConversationBody(props: ConversationProps) {
     // card (TURN_APPROVAL_CARDS); a turn of nobody's registry renders nothing.
     const approvals =
       turnRunId && Object.keys(TURN_APPROVAL_CARDS).length > 0 ? (
-        <TurnApprovalCards runId={turnRunId} live={!!turn.liveRunId} />
+        <TurnApprovalCards runId={turnRunId} live={!!turn.liveRunId} sessionId={props.sessionId} />
       ) : null;
     // The builder card (Copilot Agent Builder §3.3) rides on the answer that
     // proposed it, as a core part; editions never render it (CORE_PART_TYPES).

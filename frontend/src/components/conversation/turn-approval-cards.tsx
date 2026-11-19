@@ -12,12 +12,20 @@ const LIVE_POLL_MS = 3000;
 
 /** Every registered card for the approvals held on `runId`. Nothing for a
  *  turn without a run. */
-export function TurnApprovalCards({ runId, live }: { runId: string | null; live: boolean }) {
+export function TurnApprovalCards({
+  runId,
+  live,
+  sessionId,
+}: {
+  runId: string | null;
+  live: boolean;
+  sessionId?: string | null;
+}) {
   if (!runId) return null;
   return (
     <>
       {Object.entries(TURN_APPROVAL_CARDS).map(([key, entry]) => (
-        <EntryCards key={key} entry={entry} runId={runId} live={live} />
+        <EntryCards key={key} entry={entry} runId={runId} live={live} sessionId={sessionId} />
       ))}
     </>
   );
@@ -27,12 +35,14 @@ function EntryCards({
   entry,
   runId,
   live,
+  sessionId,
 }: {
   entry: TurnApprovalCardEntry;
   runId: string;
   live: boolean;
+  sessionId?: string | null;
 }) {
-  const { data } = entry.useApprovals({ poll: live ? LIVE_POLL_MS : false });
+  const { data } = entry.useApprovals({ poll: live ? LIVE_POLL_MS : false, sessionId });
   // Kept once seen: a decided approval leaves the pending list, and its card
   // stays to say what happened next. Decisions are DecisionCard's.
   const [shown, setShown] = useState<Approval[]>([]);

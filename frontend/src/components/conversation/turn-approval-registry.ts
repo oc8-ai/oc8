@@ -20,8 +20,11 @@ export interface TurnApprovalCardEntry {
   /** The approvals this card answers, pending ones. Called as a hook, once
    *  per turn that has a run; `poll` is set while that run is live. It must
    *  return only approvals the viewer may see -- the slot shows whatever
-   *  comes back that holds the turn's run, and checks nothing itself. */
-  useApprovals: (options: { poll: number | false }) => { data?: Approval[] | undefined };
+   *  comes back that holds the turn's run, and checks nothing itself.
+   *  `sessionId` is the current chat's, for sources that scope by it. */
+  useApprovals: (options: { poll: number | false; sessionId?: string | null }) => {
+    data?: Approval[] | undefined;
+  };
   Card: ComponentType<{ approval: Approval }>;
 }
 

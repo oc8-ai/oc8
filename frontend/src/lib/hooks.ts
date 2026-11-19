@@ -95,6 +95,14 @@ export interface DirectAccessInfo {
   grantActive: boolean;
   /** The person approved; the department whose policy holds the write still has to. */
   awaitingDepartment?: boolean;
+  /** Existing agents that fit the request, best first; empty or absent when none. */
+  agents?: { id: string; name: string; department: string; score: number }[];
+  /** The name of the login the direct path would use. */
+  loginName?: string;
+  /** The person's own message that an agent would be handed. */
+  request?: string;
+  /** Set once the person chose an agent: the run it started. */
+  chosenAgent?: { id: string; name: string; runId: string } | null;
 }
 
 export interface Approval {
