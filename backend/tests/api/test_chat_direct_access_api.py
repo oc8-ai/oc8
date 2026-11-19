@@ -368,3 +368,51 @@ async def test_the_card_dto_carries_agents_login_and_chosen_agent(
             assert reloaded["status"] == "approved"
             assert reloaded["directAccess"]["chosenAgent"]["id"] == writer_id
             assert reloaded["directAccess"]["chosenAgent"]["runId"]
+
+
+async def test_choosing_an_agent_deleted_after_the_offer_is_refused(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    import datetime as dt
+
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            anna = _h(tenant, "anna")
+            copilot_id, sid = await _anna_chat(c, anna)
+            offer_id, _run_id = await _seed(app_session, tenant, sid, copilot_id)
+            writer_id = await _with_agent(app_session, tenant, offer_id)
+            async with app_session(tenant) as db:
+                writer = await db.get(m.Agent, uuid.UUID(writer_id))
+                assert writer is not None
+                writer.deleted_at = dt.datetime.now(dt.UTC)
+                await db.commit()
+
+            url = f"/api/v1/chat/direct-access/approvals/{offer_id}/decision"
+            refused = await c.post(
+                url, json={"decision": "approve", "agentId": writer_id}, headers=anna
+            )
+            assert refused.status_code == 403, refused.text
+            assert refused.json()["detail"] == {"code": "agent_not_runnable"}
+            mine = (await c.get("/api/v1/chat/direct-access/approvals", headers=anna)).json()
+            assert [(a["id"], a["status"]) for a in mine] == [(str(offer_id), "pending")]
+
+
+async def test_the_listing_narrows_to_one_chat(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            anna = _h(tenant, "anna")
+            copilot_id, sid = await _anna_chat(c, anna)
+            offer_id, _run_id = await _seed(app_session, tenant, sid, copilot_id)
+            other = (
+                await c.post("/api/v1/chat/sessions", json={"agentId": copilot_id}, headers=anna)
+            ).json()["id"]
+            url = "/api/v1/chat/direct-access/approvals"
+            own = (await c.get(url, params={"sessionId": sid}, headers=anna)).json()
+            assert [a["id"] for a in own] == [str(offer_id)]
+            assert (await c.get(url, params={"sessionId": other}, headers=anna)).json() == []

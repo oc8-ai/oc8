@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.control_tools import MAX_DELEGATION_DEPTH
 from oc8.api.v1._serializers import approval_to_dto
 from oc8.approvals import (
     AgentNotOffered,
@@ -24,7 +25,7 @@ from oc8.approvals import (
     direct_access_owner,
     expire_approval,
 )
-from oc8.approvals.repo import load_for_actor, visible_approvals
+from oc8.approvals.repo import load_for_actor, member_direct_access_cards, visible_approvals
 from oc8.auth.principal import Principal
 from oc8.authz.permissions import COPILOT_USE, MEMBER_ROLE, RUN_START, SEAT_APPROVER
 from oc8.authz.scope import (
@@ -34,6 +35,7 @@ from oc8.authz.scope import (
     scope_for_principal,
     subject_uuid_for,
 )
+from oc8.chat.service import delete_session
 from oc8.copilot.direct_access import (
     _declined_in_this_run,
     direct_access_resume_text,
@@ -657,3 +659,90 @@ async def test_the_dto_carries_agents_login_and_chosen_agent(
             "Quote Writer",
             str(result.started_run_id),
         )
+
+
+async def _chosen(db: AsyncSession, office: DirectOffice) -> tuple[m.ApprovalRequest, m.Agent]:
+    offer, _run, writer = await _offer_with_agent(db, office)
+    anna = await _human(db, office.tenant, "anna", "member")
+    await decide_approval(
+        db, offer, decision="approve", tenant_id=office.tenant, actor=anna, agent_id=writer.id
+    )
+    return offer, writer
+
+
+async def test_a_chosen_agent_card_disappears_with_its_chat(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _writer = await _chosen(db, office)
+        listed = await member_direct_access_cards(db, member_id=office.member_id)
+        assert [r.id for r in listed] == [offer.id]
+        session = await db.get(m.ChatSession, office.session_id)
+        assert session is not None
+        await delete_session(db, tenant_id=tenant, session=session)
+        await db.flush()
+        assert await member_direct_access_cards(db, member_id=office.member_id) == []
+
+
+async def test_a_chosen_agent_card_shows_only_in_its_own_chat(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _writer = await _chosen(db, office)
+        other = m.ChatSession(
+            tenant_id=tenant, agent_id=office.copilot_id, member_id=office.member_id
+        )
+        db.add(other)
+        await db.flush()
+        own = await member_direct_access_cards(
+            db, member_id=office.member_id, session_id=office.session_id
+        )
+        assert [r.id for r in own] == [offer.id]
+        assert (
+            await member_direct_access_cards(db, member_id=office.member_id, session_id=other.id)
+            == []
+        )
+
+
+async def test_choosing_an_agent_past_the_delegation_depth_is_refused(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The same depth limit `delegate_task` has: this door starts a delegation too."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _run, writer = await _offer_with_agent(db, office)
+        task = await db.get(m.Task, office.task_id)
+        assert task is not None
+        task.delegation_depth = MAX_DELEGATION_DEPTH
+        await db.flush()
+        anna = await _human(db, tenant, "anna", "member")
+        with pytest.raises(EffectRefused) as refused:
+            await decide_approval(
+                db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+            )
+        assert refused.value.code == "delegation_depth_limit"
+        assert await _delegations(db) == []
+
+
+async def test_choosing_an_agent_deleted_after_the_offer_is_refused(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    import datetime as dt
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _run, writer = await _offer_with_agent(db, office)
+        writer.deleted_at = dt.datetime.now(dt.UTC)
+        await db.flush()
+        anna = await _human(db, tenant, "anna", "member")
+        with pytest.raises(AgentNotRunnable):
+            await decide_approval(
+                db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
+            )
+        assert await _delegations(db) == []

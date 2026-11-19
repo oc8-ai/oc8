@@ -281,6 +281,7 @@ def _direct_access_dto(raw: Any) -> DirectAccessInfoDTO | None:
         # decide a held write, not which agent the person runs.
         agents=[] if department_stage else _offered_agents(raw.get("agents")),
         login_name="" if department_stage else str(raw.get("login_name") or ""),
+        request="" if department_stage else str(raw.get("request") or "")[:2000],
         chosen_agent=None if department_stage else _chosen_agent(raw.get("chosen_agent")),
     )
 

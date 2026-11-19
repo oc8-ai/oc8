@@ -160,6 +160,8 @@ class DirectAccessInfoDTO(CamelModel):
     agents: list[DirectAccessAgentDTO] = []
     #: The login the direct path would use ("Do it myself with {login}").
     login_name: str = ""
+    #: The person's own request a chosen agent is handed (with the purpose).
+    request: str = ""
     #: Set once the person chose one of `agents`: the card shows it is on it.
     chosen_agent: DirectAccessChosenAgentDTO | None = None
 

@@ -25,7 +25,19 @@ import datetime as dt
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, Select, and_, cast, extract, false, func, not_, or_, select
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    Text,
+    and_,
+    cast,
+    extract,
+    false,
+    func,
+    not_,
+    or_,
+    select,
+)
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import aliased
 
@@ -266,15 +278,28 @@ async def load_for_actor(
 
 
 async def member_direct_access_cards(
-    db: AsyncSession, *, member_id: uuid.UUID
+    db: AsyncSession, *, member_id: uuid.UUID, session_id: uuid.UUID | None = None
 ) -> list[ApprovalRequest]:
     """A member's own direct-access cards, oldest first: the ones the member
     decides (`decider == "member"`, filed under their id) that are still pending,
     back a live grant, or -- approved -- wait for the department that decides
     after them (`awaiting_department`) or were answered by running a fitting
-    agent (`chosen_agent`). Never another member's, from any seat,
-    and never the department's own card."""
+    agent (`chosen_agent`) in a conversation of theirs that still exists --
+    that note belongs to its chat and goes with it. `session_id` narrows the
+    list to one conversation. Never another member's, from any seat, and
+    never the department's own card."""
+    from oc8.models.chat import ChatSession
     from oc8.models.direct_access import DirectAccessGrant
+
+    card_session = ApprovalRequest.payload["direct_access"]["session_id"].astext
+    own_live_chat = (
+        select(ChatSession.id)
+        .where(
+            cast(ChatSession.id, Text) == card_session,
+            ChatSession.member_id == member_id,
+        )
+        .exists()
+    )
 
     live_grants = select(DirectAccessGrant.approval_id).where(
         DirectAccessGrant.member_id == member_id,
@@ -300,11 +325,14 @@ async def member_direct_access_cards(
                 and_(
                     ApprovalRequest.status == "approved",
                     ApprovalRequest.payload["direct_access"].has_key("chosen_agent"),
+                    own_live_chat,
                 ),
             ),
         )
         .order_by(ApprovalRequest.created_at)
     )
+    if session_id is not None:
+        stmt = stmt.where(card_session == str(session_id))
     return list((await db.execute(stmt)).scalars().all())
 
 

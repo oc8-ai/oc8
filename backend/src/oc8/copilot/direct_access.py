@@ -15,6 +15,7 @@ from oc8 import models as m
 from oc8.agent.control_tools import (
     OFFER_DIRECT_ACCESS,
     ControlOutcome,
+    DelegationDepthExceeded,
     _acting_token_role,
     start_delegation,
 )
@@ -131,19 +132,25 @@ async def _copilot_may_read(
     )
 
 
-async def _last_request(db: AsyncSession, *, session_id: uuid.UUID, run: m.AgentRun) -> str:
-    """The person's last message in the conversation -- the request the
-    offer is for. The run's own task text when none is stored."""
-    content = await db.scalar(
-        select(m.ChatMessage.content)
-        .where(m.ChatMessage.session_id == session_id, m.ChatMessage.role == "user")
-        .order_by(m.ChatMessage.created_at.desc())
-        .limit(1)
-    )
-    if isinstance(content, str) and content.strip():
-        return content.strip()
-    task_text = (run.context or {}).get("task")
-    return task_text.strip() if isinstance(task_text, str) else ""
+async def _own_request(db: AsyncSession, *, direct: DirectAccessRun, run: m.AgentRun) -> str:
+    """The person's own words this run answers: the chat message its turn
+    replies to (`reply_to_message_id`, written only for a person's turn),
+    in this conversation, written by this person. Never the newest message
+    of the conversation -- in a shared chat it may be someone else's -- and
+    never a wake-up's text, which carries another agent's result. Empty when
+    there is no such turn: then no agent is offered."""
+    message_id = uuid_or_none((run.context or {}).get("reply_to_message_id"))
+    if message_id is None:
+        return ""
+    message = await db.get(m.ChatMessage, message_id)
+    if (
+        message is None
+        or message.session_id != direct.session_id
+        or message.role != "user"
+        or message.author_member_id != direct.member_id
+    ):
+        return ""
+    return message.content.strip()
 
 
 def _request_text(purpose: str, request: str) -> str:
@@ -281,14 +288,18 @@ async def execute_direct_access_tool(
     account = account_of(access)
     # Last, once every guard above has passed: a refused offer costs no
     # embedding call.
-    request = await _last_request(db, session_id=direct.session_id, run=run)
-    matches = await _fitting_agents(
-        db,
-        copilot=agent,
-        member_id=direct.member_id,
-        tool_key=key,
-        request=_request_text(purpose, request),
-        run_id=run.id,
+    request = (await _own_request(db, direct=direct, run=run))[:_REQUEST_LIMIT]
+    matches = (
+        await _fitting_agents(
+            db,
+            copilot=agent,
+            member_id=direct.member_id,
+            tool_key=key,
+            request=_request_text(purpose, request),
+            run_id=run.id,
+        )
+        if request
+        else []
     )
     if matches:
         top = one_line(matches[0].name, 120)
@@ -323,13 +334,15 @@ async def execute_direct_access_tool(
                 "purpose": purpose,
                 "decider": "member",
                 "department_id": None,
-                "request": request[:_REQUEST_LIMIT],
+                # What the chosen agent is handed (with the purpose), and
+                # what the card shows it will be handed.
+                "request": request,
                 "login_name": await _login_name(db, access, key),
                 "agents": [
                     {
                         "id": str(match.agent_id),
-                        "name": match.name,
-                        "department": match.department_name,
+                        "name": one_line(match.name, 120),
+                        "department": one_line(match.department_name, 120),
                         "score": round(match.score, 4),
                     }
                     for match in matches
@@ -448,15 +461,18 @@ async def _choose_agent(
             ),
         )
     ):
-        name = target.name if target is not None else ""
+        name = one_line(target.name, 120) if target is not None else ""
         raise AgentNotRunnable(name)
     purpose = str(info.get("purpose") or "")
     request = str(info.get("request") or "")
     task_text = "\n\n".join(part for part in (request, purpose) if part) or purpose
-    sub_run = await start_delegation(
-        db, parent_run=parent_run, delegator=copilot, target=target, task_text=task_text
-    )
-    chosen = {"id": str(target.id), "name": target.name, "run_id": str(sub_run.id)}
+    try:
+        sub_run = await start_delegation(
+            db, parent_run=parent_run, delegator=copilot, target=target, task_text=task_text
+        )
+    except DelegationDepthExceeded as exc:
+        raise EffectRefused("delegation_depth_limit") from exc
+    chosen = {"id": str(target.id), "name": one_line(target.name, 120), "run_id": str(sub_run.id)}
     approval.payload = {
         **(approval.payload or {}),
         "direct_access": {**info, "chosen_agent": chosen},

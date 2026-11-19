@@ -2231,6 +2231,10 @@ async def _delegate(
     return f"delegated to {target.name} (run {sub_run.id})", sub_run.id
 
 
+class DelegationDepthExceeded(Exception):
+    """A delegation would go past `MAX_DELEGATION_DEPTH`."""
+
+
 async def start_delegation(
     db: AsyncSession,
     *,
@@ -2244,7 +2248,7 @@ async def start_delegation(
     of `delegator` -- the same queued sub-run `delegate_task` creates, so
     the delegator is woken with its result (`executor._maybe_wake_parent`).
 
-    Checks nothing: the caller has decided the delegation is allowed
+    Checks only the delegation depth: the caller has decided the delegation is allowed
     (`_delegate`'s checks, or the person's own choice on a direct-access
     offer with their run right re-checked). Neither commits nor publishes;
     the caller publishes the returned run after its commit."""
@@ -2253,6 +2257,10 @@ async def start_delegation(
     task = await db.get(m.Task, parent_run.task_id)
     if task is None:
         raise ValueError("the delegating run's task is gone")
+    # The limit `delegate_task` meets in `_authorize`: every door that starts
+    # a delegation keeps it.
+    if task.delegation_depth + 1 > MAX_DELEGATION_DEPTH:
+        raise DelegationDepthExceeded(DEPTH_LIMIT_REASON)
     return await _create_delegation(
         db,
         tenant_id=parent_run.tenant_id,
