@@ -104,7 +104,7 @@ def _paused(agent: m.Agent) -> bool:
     return agent.status == "paused" or agent.pause_reason is not None
 
 
-async def _member_run_reach(
+async def member_run_reach(
     db: AsyncSession, *, member_id: uuid.UUID, tenant_id: uuid.UUID, token_role: str | None
 ) -> RunReach | None:
     """The person's `run:start` reach, built from the stored member alone --
@@ -118,7 +118,9 @@ async def _member_run_reach(
     return run_reach(authority=authority, scope=scope, permission=RUN_START)
 
 
-def _runnable(reach: RunReach | None, agent: m.Agent) -> bool:
+def runnable_with(reach: RunReach | None, agent: m.Agent) -> bool:
+    """`member_may_run_agent` for a caller that already holds the person's
+    reach (`member_run_reach`) -- one lookup for a whole roster."""
     if reach is None or agent.is_tenant_assistant or _paused(agent):
         return False
     return agent_runnable_in(reach, agent)
@@ -136,10 +138,10 @@ async def member_may_run_agent(
     without it the stored row decides alone, which fails closed."""
     if agent.deleted_at is not None or agent.is_tenant_assistant or _paused(agent):
         return False
-    reach = await _member_run_reach(
+    reach = await member_run_reach(
         db, member_id=member_id, tenant_id=agent.tenant_id, token_role=token_role
     )
-    return _runnable(reach, agent)
+    return runnable_with(reach, agent)
 
 
 # ------------------------------------------------------------------ has tool
@@ -233,7 +235,7 @@ async def matching_agents(
         .scalars()
         .all()
     )
-    reach = await _member_run_reach(
+    reach = await member_run_reach(
         db, member_id=member_id, tenant_id=copilot.tenant_id, token_role=token_role
     )
     if reach is None:
@@ -245,7 +247,7 @@ async def matching_agents(
         department = await _frame(db, agent)
         if not _tool_enabled(department, published.get("narrowing"), tool_key):
             continue
-        if not _runnable(reach, agent):
+        if not runnable_with(reach, agent):
             continue
         role_title = published.get("role_title") or ""
         mission = published.get("mission") or ""

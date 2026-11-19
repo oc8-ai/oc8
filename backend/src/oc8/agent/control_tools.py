@@ -2182,6 +2182,22 @@ async def _delegate(
                 "ERROR: the person you are acting for does not have access to that department",
                 None,
             )
+    if agent.is_tenant_assistant and run_id is not None:
+        # The Copilot acting for a present person starts only what that person
+        # could start themselves (`POST /agents/{id}/run`): seeing a department
+        # is not running its agents. A run with nobody present keeps the rule
+        # above alone. Deferred imports, as for the executor below.
+        from oc8.connections.direct_access import direct_access_run
+        from oc8.copilot.agent_match import member_may_run_agent
+
+        direct = direct_access_run(await db.get(m.AgentRun, run_id), agent)
+        if direct is not None and not await member_may_run_agent(
+            db,
+            member_id=direct.member_id,
+            agent=target,
+            token_role=await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id),
+        ):
+            return f"refused: the person may not run {target.name}", None
 
     context: dict[str, Any] = {
         "task": str(tc.arguments["task_text"]),

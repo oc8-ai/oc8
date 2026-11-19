@@ -993,6 +993,126 @@ async def test_an_ordinary_team_lead_still_cannot_cross_departments(app_session:
         assert "your own department" in outcome.output
 
 
+# ------------------------- the Copilot delegates only to agents the person may run
+
+
+async def _web_turn_for(
+    db: Any,
+    tenant: uuid.UUID,
+    lead: m.Agent,
+    task: m.Task,
+    member: m.OrgMember,
+    *,
+    operator_role: str | None = None,
+) -> m.AgentRun:
+    """A live web turn the conversation's own member wrote -- the one shape of
+    run that acts for a present person (`direct_access_run`)."""
+    session = await db.scalar(select(m.ChatSession).where(m.ChatSession.task_id == task.id))
+    context: dict[str, Any] = {
+        "door": "web",
+        "on_behalf_of": str(member.id),
+        "chat_session_id": str(session.id),
+    }
+    if operator_role is not None:
+        context["operator_role"] = operator_role
+    run = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=lead.id,
+        task_id=task.id,
+        source="chat",
+        state="running",
+        context=context,
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+async def _delegations(db: Any, tenant: uuid.UUID) -> list[m.AgentRun]:
+    return list(
+        (
+            await db.execute(
+                select(m.AgentRun).where(
+                    m.AgentRun.tenant_id == tenant, m.AgentRun.source == "delegation"
+                )
+            )
+        ).scalars()
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_copilot_cannot_delegate_to_an_agent_the_person_may_not_run(
+    app_session: Any,
+) -> None:
+    """The person may SEE the department (a seat), but holds no `run:start`:
+    asking the Copilot must not start what they could not start themselves."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _web_turn_for(db, tenant, lead, task, member)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is None
+        assert outcome.output.startswith("refused:")
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
+@pytest.mark.asyncio
+async def test_the_copilot_delegates_to_an_agent_the_person_may_run(app_session: Any) -> None:
+    """`run:start` from the acting token's role, a seat in the target's
+    department: exactly what `POST /agents/{id}/run` would admit."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _web_turn_for(db, tenant, lead, task, member, operator_role=OPERATOR)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Fremd" in outcome.output
+        assert [r.id for r in await _delegations(db, tenant)] == [outcome.pending_run]
+
+
+@pytest.mark.asyncio
+async def test_the_copilot_without_a_present_person_delegates_as_before(
+    app_session: Any,
+) -> None:
+    """A Copilot run acting for nobody present (here: no `on_behalf_of`)
+    keeps today's rule -- the department reach of the human behind the task."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        await _human_behind(db, tenant, task, all_departments=True)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger)
+        assert outcome.pending_run is not None, outcome.output
+
+
+@pytest.mark.asyncio
+async def test_a_department_lead_delegates_as_before(app_session: Any) -> None:
+    """No person check for an ordinary lead: even on a web turn of a person
+    who may run nothing, it delegates to its own department as it always did."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task = await _dept_agent_task(db, tenant, is_team_lead=True)
+        mate = m.Agent(
+            tenant_id=tenant,
+            department_id=lead.department_id,
+            name="Rico",
+            status="idle",
+            definition={},
+            presentation={},
+        )
+        db.add(mate)
+        await db.flush()
+        member = await _human_behind(db, tenant, task)
+        run = await _web_turn_for(db, tenant, lead, task, member)
+        outcome = await _try_delegate(db, tenant, lead, task, mate, run_id=run.id)
+        assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Rico" in outcome.output
+
+
 @pytest.mark.asyncio
 async def test_the_depth_limit_deny_warns_an_operator(app_session: Any) -> None:
     """A runaway delegation chain must be visible to a human, not only to the
