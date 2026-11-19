@@ -109,6 +109,12 @@ ALLOWED: dict[str, str] = {
     ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",
+    "copilot/agent_match.py": (
+        "lists the tenant's agents to match a Copilot request, then keeps only those "
+        "the person may START (run_reach + agent_runnable_in, the run route's own "
+        "predicate, built off-request with scope_for_member) -- a reach no wider than "
+        "their agent view; reads each kept agent's department for its frame and name"
+    ),
     "copilot/builder.py": (
         "apply re-reads the department a proposal names after may_view/may_create_agent "
         "or the approval funnel decided reach, and reloads the agent it just created in "

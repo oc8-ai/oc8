@@ -21,7 +21,7 @@ from sqlalchemy import false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.repo import RunReach, run_reach
+from oc8.agents.repo import agent_runnable_in, run_reach
 from oc8.api.deps import (
     DbSession,
     authorize_agent_write,
@@ -110,23 +110,13 @@ async def _summaries(
                 record_count=count,
                 last_recorded_at=last.isoformat() if last is not None else None,
                 may_delete=may_delete,
-                may_run=_may_run(reach, agent),
+                may_run=agent_runnable_in(reach, agent),
                 may_share=may_delete,
                 # Admitted, but not by the caller's own reach: only a share.
                 shared_with_me=not tenant_wide and b.department_id not in actor.scope.viewable,
             )
         )
     return out
-
-
-def _may_run(reach: RunReach, agent: m.Agent | None) -> bool:
-    """What `POST /agents/{agent_id}/run` admits (`api/v1/run.py`): a live agent
-    not awaiting hire approval, inside the caller's `run:start` reach."""
-    if agent is None or agent.deleted_at is not None or agent.status == "pending_approval":
-        return False
-    if reach.every_agent:
-        return True
-    return agent.department_id in reach.departments and not agent.is_tenant_assistant
 
 
 async def _admitted(

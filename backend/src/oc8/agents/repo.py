@@ -235,6 +235,22 @@ def run_reach(*, authority: Authority, scope: DepartmentScope, permission: str) 
     return RunReach(every_agent=False, departments=scope.viewable if held else frozenset())
 
 
+def agent_runnable_in(reach: RunReach, agent: Agent | None) -> bool:
+    """What `POST /agents/{agent_id}/run` admits (`api/v1/run.py`): a live agent
+    not awaiting hire approval, inside the caller's `run:start` reach.
+
+    The one answer to "may this caller start this agent" for code that already
+    holds a `RunReach` -- the boards listing's `may_run` and the Copilot's
+    agent match (`copilot/agent_match.py`) both ask it, so the two cannot drift
+    from each other or from the run route.
+    """
+    if agent is None or agent.deleted_at is not None or agent.status == "pending_approval":
+        return False
+    if reach.every_agent:
+        return True
+    return agent.department_id in reach.departments and not agent.is_tenant_assistant
+
+
 async def resolve_run_reach(
     request: Request, db: AsyncSession, actor: HumanActor, permission: str
 ) -> RunReach:
