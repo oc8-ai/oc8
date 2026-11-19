@@ -301,13 +301,12 @@ async def execute_direct_access_tool(
         if request
         else []
     )
-    if matches:
-        top = one_line(matches[0].name, 120)
-        title = f"{top} does this — run it?"
-        title_de = f"{top} erledigt das – starten?"  # noqa: RUF001 -- the copy table's dash
-    else:
-        title = f"Copilot on behalf of {name}: read {label}"
-        title_de = f"Copilot im Auftrag von {name}: {label} lesen"
+    # Neutral even when agents fit: the row's title is what every other door
+    # shows (the approvals inbox, the realtime event) next to a plain Approve,
+    # which grants direct access and starts no agent. Only the chat card, which
+    # can start one, asks "run it?" -- built from `direct_access.agents`.
+    title = f"Copilot on behalf of {name}: read {label}"
+    title_de = f"Copilot im Auftrag von {name}: {label} lesen"
     approval = await raise_approval(
         db,
         tenant_id=tenant_id,

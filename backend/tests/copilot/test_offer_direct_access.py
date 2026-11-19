@@ -471,8 +471,6 @@ async def test_an_offer_lists_fitting_agents_best_first(
             "score": 0.91,
         }
         assert info["login_name"] == "things"
-        assert offer.title == "Quote Writer does this — run it?"
-        assert offer.payload["i18n"]["de"]["title"] == "Quote Writer erledigt das – starten?"  # noqa: RUF001
         # The request is the purpose plus the person's last message, and the
         # run's own role claim decides what they may run.
         (call,) = matcher.calls
@@ -480,6 +478,25 @@ async def test_an_offer_lists_fitting_agents_best_first(
         assert "find the quotation" in call["request"]
         assert "Draft the quotation for Miller" in call["request"]
         assert call["token_role"] == "operator"
+
+
+@pytest.mark.asyncio
+async def test_the_stored_title_stays_neutral_when_agents_are_offered(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The row's title is what every other door shows (the inbox, the
+    realtime event) next to a plain Approve, which grants direct access and
+    runs no agent: it never asks "run it?". Only the chat card, which can
+    start the agent, builds that title from `direct_access.agents`."""
+    _stub(monkeypatch, [_match("Quote Writer", 0.91)])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _offer(db, office, await _turn(db, office))
+        (offer,) = await _offers(db)
+        assert offer.payload["direct_access"]["agents"][0]["name"] == "Quote Writer"
+        assert offer.title == "Copilot on behalf of Anna: read things"
+        assert offer.payload["i18n"]["de"]["title"] == "Copilot im Auftrag von Anna: things lesen"
 
 
 @pytest.mark.asyncio
@@ -628,4 +645,3 @@ async def test_agent_names_on_the_card_are_cleaned_like_the_title(
         (offer,) = await _offers(db)
         name = offer.payload["direct_access"]["agents"][0]["name"]
         assert name == "Quote Writer"
-        assert offer.title == f"{name} does this — run it?"
