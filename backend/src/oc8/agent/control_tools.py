@@ -1710,6 +1710,20 @@ async def _member_behind_task(
     return await db.get(m.OrgMember, session.member_id)
 
 
+async def copilot_person(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task: m.Task | None
+) -> m.OrgMember | None:
+    """The person a Copilot turn acts for: the member of the conversation
+    behind `task`, on every door (web, follow-up, messenger). None only when
+    nobody is behind it (a scheduled or system run). A departed member is
+    still returned: they may run nothing, which is the fail-closed answer.
+    `_delegate` and the roster (`preamble.roster_block`) both ask this, so the
+    agents the Copilot is told about are the ones it is let delegate to."""
+    if task is None:
+        return None
+    return await _member_behind_task(db, tenant_id=tenant_id, task=task)
+
+
 async def _member_may_reach_department(
     db: AsyncSession,
     *,
@@ -2182,18 +2196,21 @@ async def _delegate(
                 "ERROR: the person you are acting for does not have access to that department",
                 None,
             )
-    if agent.is_tenant_assistant and run_id is not None:
-        # The Copilot acting for a present person starts only what that person
-        # could start themselves (`POST /agents/{id}/run`): seeing a department
-        # is not running its agents. A run with nobody present keeps the rule
-        # above alone. Deferred imports, as for the executor below.
-        from oc8.connections.direct_access import direct_access_run
+    if agent.is_tenant_assistant:
+        # The Copilot acting for a person starts only what that person could
+        # start themselves (`POST /agents/{id}/run`): seeing a department is
+        # not running its agents. Every turn that acts for them -- web,
+        # follow-up, messenger -- not only the live web one, or a follow-up
+        # scheduled on a refused turn would start the agent anyway. A door
+        # with no token role decides on the assigned role alone (fail closed).
+        # Only a run with nobody behind its task keeps the rule above alone.
+        # Deferred import, as for the executor below.
         from oc8.copilot.agent_match import member_may_run_agent
 
-        direct = direct_access_run(await db.get(m.AgentRun, run_id), agent)
-        if direct is not None and not await member_may_run_agent(
+        person = await copilot_person(db, tenant_id=tenant_id, task=task)
+        if person is not None and not await member_may_run_agent(
             db,
-            member_id=direct.member_id,
+            member_id=person.id,
             agent=target,
             token_role=await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id),
         ):

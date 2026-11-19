@@ -583,13 +583,22 @@ async def test_oversight_survives_delegation_and_wake_up(app_session: AppSession
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
-        cop, _seat, task, run = await _setup(
+        from oc8.authz.permissions import OPERATOR
+
+        cop, seat, task, run = await _setup(
             db, tenant, door="web", originating_operator="admin@example.com"
         )
         worker = m.Agent(
             id=uuid.uuid4(), tenant_id=tenant, department_id=cop.department_id, name="Worker"
         )
         db.add(worker)
+        # The Copilot delegates only to agents the person behind it may run.
+        role = m.Role(tenant_id=tenant, name=OPERATOR, builtin=True, kind="human")
+        db.add(role)
+        await db.flush()
+        member = await db.get(m.OrgMember, seat.member_id)
+        assert member is not None
+        member.role_id = role.id
         await db.flush()
         _out, sub_id = await _delegate(
             db, tenant_id=tenant, agent=cop, task=task, mcp_conn=None, run_id=run.id,

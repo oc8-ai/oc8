@@ -23,7 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agent.control_tools import _acting_token_role, _resolve_agent_actor
+from oc8.agent.control_tools import _acting_token_role, _resolve_agent_actor, copilot_person
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import (
     TENANT_ASSISTANT_OPENER,
@@ -194,7 +194,11 @@ def _tools_note(department: m.Department, narrowing: Mapping[str, Any]) -> str:
 
 
 async def roster_block(
-    db: AsyncSession, *, agent: m.Agent, run: m.AgentRun | None = None
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    task: m.Task | None = None,
+    run: m.AgentRun | None = None,
 ) -> str | None:
     """The agent's department colleagues, or None if it has none.
 
@@ -219,13 +223,13 @@ async def roster_block(
     (grouped by department) instead of its own department's -- naming the same
     agents its own delegation guard would actually let it reach.
 
-    On a turn for a present person (`direct_access_run` on `run`) it names only
-    the agents that person may run -- what `_delegate` would let through --
+    On a turn that acts for a person (`copilot_person` behind `task`, on any
+    door) it names only the agents that person may run -- exactly what
+    `_delegate` lets through --
     and every line says which tools the agent has, so the Copilot can offer an
     agent that already does the job instead of doing it itself.
     """
     if agent.is_tenant_assistant:
-        from oc8.connections.direct_access import direct_access_run
         from oc8.copilot.agent_match import member_run_reach, runnable_with
 
         result = (
@@ -243,11 +247,11 @@ async def roster_block(
             )
         ).all()
         rows: list[tuple[m.Agent, m.Department]] = [(a, dept) for a, dept in result]
-        direct = direct_access_run(run, agent)
-        if direct is not None:
+        person = await copilot_person(db, tenant_id=agent.tenant_id, task=task)
+        if person is not None:
             reach = await member_run_reach(
                 db,
-                member_id=direct.member_id,
+                member_id=person.id,
                 tenant_id=agent.tenant_id,
                 token_role=await _acting_token_role(
                     db, tenant_id=agent.tenant_id, run_id=run.id if run is not None else None
@@ -263,7 +267,7 @@ async def roster_block(
             + _tools_note(dept, narrowings[a.id])
             for a, dept in rows
         ]
-        if direct is not None:
+        if person is not None:
             return (
                 "Every agent the person you are acting for may run, by department -- "
                 "delegate_task may reach any of them:\n" + "\n".join(lines)
@@ -492,7 +496,7 @@ async def build_run_preamble(
     if is_team_lead:
         # Appended as its own system message (like memory/KB context) because
         # system_prompt is a pure sync function and this needs the DB.
-        roster = await roster_block(db, agent=agent, run=run)
+        roster = await roster_block(db, agent=agent, task=task, run=run)
         if roster is not None:
             messages.append(NeutralMessage(role="system", content=roster))
 

@@ -211,7 +211,7 @@ OFF: dict[str, Any] = {"enabled": False, "read": False, "modify": False}
 
 
 async def _copilot_with_person(
-    db: Any, tenant: uuid.UUID, *, seats: list[m.Department]
+    db: Any, tenant: uuid.UUID, *, seats: list[m.Department], door: dict[str, Any] | None = None
 ) -> tuple[m.Agent, m.Task, m.AgentRun]:
     """The Copilot on a live web turn its own member wrote (`on_behalf_of`),
     for a person whose role holds `run:start` -- reaching the departments they
@@ -242,9 +242,11 @@ async def _copilot_with_person(
     )
     db.add(session)
     await db.flush()
-    context: dict[str, Any] = {
-        "door": "web", "on_behalf_of": str(member.id), "chat_session_id": str(session.id),
-    }
+    context: dict[str, Any] = (
+        {"chat_session_id": str(session.id), **door}
+        if door is not None
+        else {"door": "web", "on_behalf_of": str(member.id), "chat_session_id": str(session.id)}
+    )
     run = m.AgentRun(
         tenant_id=tenant, agent_id=assistant.id, task_id=task.id, source="chat",
         state="running", context=context,
@@ -302,11 +304,21 @@ async def test_the_copilot_roster_names_each_agents_tools(
     assert f"- {bare.id}: Wim (Zentrale) — tools: {eight}, …" in joined
 
 
+@pytest.mark.parametrize(
+    "door",
+    [
+        None,
+        {"door": "followup", "followup": {"id": "f1"}},
+        {"door": "telegram", "chat_channel": "telegram", "chat_channel_external_id": "42"},
+    ],
+    ids=["web", "followup", "telegram"],
+)
 async def test_the_copilot_roster_hides_agents_the_person_may_not_run(
-    app_session: AppSessionFactory,
+    app_session: AppSessionFactory, door: dict[str, Any] | None
 ) -> None:
-    """On a turn for a present person, only the agents that person may start
-    are named: the Copilot itself crosses departments, the person may not."""
+    """On every turn that acts for a person, only the agents that person may
+    start are named -- what `_delegate` lets through: the Copilot itself
+    crosses departments, the person may not."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         helpdesk = m.Department(tenant_id=tenant, name="Helpdesk", frame={})
@@ -314,7 +326,7 @@ async def test_the_copilot_roster_hides_agents_the_person_may_not_run(
         db.add_all([helpdesk, ledger])
         await db.flush()
         assistant, task, run = await _copilot_with_person(
-            db, tenant, seats=[helpdesk]
+            db, tenant, seats=[helpdesk], door=door
         )
         lennart = m.Agent(
             tenant_id=tenant, department_id=helpdesk.id, name="Lennart", status="idle",

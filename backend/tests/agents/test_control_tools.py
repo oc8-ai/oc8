@@ -672,6 +672,21 @@ async def _human_behind(
     return member
 
 
+async def _may_start_runs(db: Any, tenant: uuid.UUID, member: m.OrgMember) -> None:
+    """Give `member` a tenant-defined role holding `run:start` -- reaching the
+    departments they hold a seat in, as `POST /agents/{id}/run` would. Since
+    the Copilot delegates only to agents its person may run, seeing a
+    department alone no longer lets it cross."""
+    from oc8.authz.permissions import RUN_START
+
+    role = m.Role(tenant_id=tenant, name=f"r-{uuid.uuid4().hex[:8]}", kind="human")
+    db.add(role)
+    await db.flush()
+    db.add(m.RolePermission(tenant_id=tenant, role_id=role.id, permission=RUN_START))
+    member.role_id = role.id
+    await db.flush()
+
+
 async def _try_delegate(
     db: Any,
     tenant: uuid.UUID,
@@ -714,7 +729,12 @@ async def test_assistant_may_delegate_cross_department_when_member_has_access(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
-        await _human_behind(db, tenant, task, all_departments=True)
+        from oc8.authz.permissions import OPERATOR
+
+        member = await _human_behind(db, tenant, task, all_departments=True)
+        # The right to run, company-wide: a built-in role (`tenant_wide_read`).
+        member.role_id = (await _builtin_role(db, tenant, OPERATOR)).id
+        await db.flush()
         outcome = await _try_delegate(db, tenant, lead, task, stranger)
         assert outcome.pending_run is not None
         assert "delegated to Fremd" in outcome.output
@@ -727,7 +747,8 @@ async def test_a_live_seat_in_the_target_department_is_enough(app_session: Any) 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
-        await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        await _may_start_runs(db, tenant, member)
         outcome = await _try_delegate(db, tenant, lead, task, stranger)
         assert outcome.pending_run is not None
 
@@ -1053,7 +1074,6 @@ async def test_the_copilot_cannot_delegate_to_an_agent_the_person_may_not_run(
         run = await _web_turn_for(db, tenant, lead, task, member)
         outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
         assert outcome.pending_run is None
-        assert outcome.output.startswith("refused:")
         assert outcome.output == "refused: the person may not run Fremd"
         assert await _delegations(db, tenant) == []
 
@@ -1075,18 +1095,87 @@ async def test_the_copilot_delegates_to_an_agent_the_person_may_run(app_session:
         assert [r.id for r in await _delegations(db, tenant)] == [outcome.pending_run]
 
 
+async def _turn_for(
+    db: Any, tenant: uuid.UUID, lead: m.Agent, task: m.Task, context: dict[str, Any]
+) -> m.AgentRun:
+    """A Copilot chat run on `task`'s conversation through another door."""
+    session = await db.scalar(select(m.ChatSession).where(m.ChatSession.task_id == task.id))
+    run = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=lead.id,
+        task_id=task.id,
+        source="chat",
+        state="running",
+        context={"chat_session_id": str(session.id), **context},
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
 @pytest.mark.asyncio
-async def test_the_copilot_without_a_present_person_delegates_as_before(
+async def test_a_copilot_followup_cannot_delegate_to_an_agent_the_person_may_not_run(
     app_session: Any,
 ) -> None:
-    """A Copilot run acting for nobody present (here: no `on_behalf_of`)
-    keeps today's rule -- the department reach of the human behind the task."""
+    """A follow-up the Copilot scheduled on a refused web turn still acts for
+    that person: it must not start what the web turn could not."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
-        await _human_behind(db, tenant, task, all_departments=True)
-        outcome = await _try_delegate(db, tenant, lead, task, stranger)
+        await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _turn_for(
+            db, tenant, lead, task, {"door": "followup", "followup": {"id": str(uuid.uuid4())}}
+        )
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_turn_cannot_delegate_to_an_agent_the_person_may_not_run(
+    app_session: Any,
+) -> None:
+    """A messenger turn has no token role; only an assigned role counts, and
+    a seat alone (view) is not the right to run."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _turn_for(
+            db,
+            tenant,
+            lead,
+            task,
+            {"door": "telegram", "chat_channel": "telegram", "chat_channel_external_id": "42"},
+        )
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
+@pytest.mark.asyncio
+async def test_a_copilot_run_without_a_person_delegates_as_before(app_session: Any) -> None:
+    """Nobody behind the task at all (no chat session): no run-right check,
+    today's rule alone -- a target in the Copilot's own department is reached."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task = await _dept_agent_task(db, tenant, is_team_lead=True)
+        lead.is_tenant_assistant = True
+        mate = m.Agent(
+            tenant_id=tenant,
+            department_id=lead.department_id,
+            name="Rico",
+            status="idle",
+            definition={},
+            presentation={},
+        )
+        db.add(mate)
+        await db.flush()
+        outcome = await _try_delegate(db, tenant, lead, task, mate)
         assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Rico" in outcome.output
 
 
 @pytest.mark.asyncio
