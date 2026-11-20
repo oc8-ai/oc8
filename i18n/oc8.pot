@@ -23,6 +23,9 @@ msgstr ""
 msgid "(empty)"
 msgstr ""
 
+msgid "(no longer allowed by your organisation)"
+msgstr ""
+
 msgid "(optional)"
 msgstr ""
 
@@ -302,6 +305,12 @@ msgstr ""
 msgid "Administrator"
 msgstr ""
 
+msgid "Administrators"
+msgstr ""
+
+msgid "Administrators must set one up within the grace period."
+msgstr ""
+
 msgid "Advanced: exact role override"
 msgstr ""
 
@@ -426,6 +435,9 @@ msgid "allowed"
 msgstr ""
 
 msgid "Allowed"
+msgstr ""
+
+msgid "Allowed methods"
 msgstr ""
 
 msgid "Allowed origins (optional, comma-separated)"
@@ -722,6 +734,9 @@ msgstr ""
 msgid "Auditor"
 msgstr ""
 
+msgid "Authenticator app"
+msgstr ""
+
 msgid "Author"
 msgstr ""
 
@@ -794,6 +809,9 @@ msgstr ""
 msgid "Backup and restore"
 msgstr ""
 
+msgid "Backup code"
+msgstr ""
+
 msgid "Backup downloaded"
 msgstr ""
 
@@ -810,6 +828,9 @@ msgid "Basic details of your workspace."
 msgstr ""
 
 msgid "Basics"
+msgstr ""
+
+msgid "Between 0 and 30. How long a member may still sign in without a second factor once it is required of them."
 msgstr ""
 
 msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
@@ -1106,10 +1127,16 @@ msgstr ""
 msgid "Code"
 msgstr ""
 
+msgid "Code by email"
+msgstr ""
+
 msgid "Collaboration"
 msgstr ""
 
 msgid "Collapse sidebar"
+msgstr ""
+
+msgid "Coming soon."
 msgstr ""
 
 msgid "commands"
@@ -1472,7 +1499,13 @@ msgstr ""
 msgid "Could not remove the binding"
 msgstr ""
 
+msgid "Could not remove the method."
+msgstr ""
+
 msgid "Could not remove this login"
+msgstr ""
+
+msgid "Could not reset two-factor authentication."
 msgstr ""
 
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
@@ -1517,6 +1550,9 @@ msgstr ""
 msgid "Could not save the endpoints."
 msgstr ""
 
+msgid "Could not save the policy."
+msgstr ""
+
 msgid "Could not save the preset."
 msgstr ""
 
@@ -1536,6 +1572,9 @@ msgid "Could not save. Try again."
 msgstr ""
 
 msgid "Could not send the answer"
+msgstr ""
+
+msgid "Could not send the code."
 msgstr ""
 
 msgid "Could not set password."
@@ -2273,6 +2312,9 @@ msgstr ""
 msgid "Enter manually instead"
 msgstr ""
 
+msgid "Enter one of the backup codes you saved when you set up two-factor authentication."
+msgstr ""
+
 msgid "Enter room"
 msgstr ""
 
@@ -2345,10 +2387,16 @@ msgstr ""
 msgid "Every installable capability — connectors, tools, guardrails, templates."
 msgstr ""
 
+msgid "Every member must set one up within the grace period."
+msgstr ""
+
 msgid "Every minute"
 msgstr ""
 
 msgid "Every save is kept — nothing is pruned."
+msgstr ""
+
+msgid "Everyone"
 msgstr ""
 
 msgid "Everything"
@@ -2492,6 +2540,9 @@ msgstr ""
 msgid "For scheduled runs the account of the person who created the schedule is used."
 msgstr ""
 
+msgid "For someone who lost their phone or can no longer reach their email: removes their second factors so they can set one up again."
+msgstr ""
+
 msgid "For task-specific instructions, assign a skill instead — this field is only the agent's base mission."
 msgstr ""
 
@@ -2552,6 +2603,9 @@ msgstr ""
 msgid "Generating…"
 msgstr ""
 
+msgid "Get codes by email"
+msgstr ""
+
 msgid "Get notified even when this tab isn't open."
 msgstr ""
 
@@ -2580,6 +2634,9 @@ msgid "Goes to the running answer"
 msgstr ""
 
 msgid "Good answer"
+msgstr ""
+
+msgid "Grace period (days)"
 msgstr ""
 
 msgid "Granted company-wide access"
@@ -3137,6 +3194,9 @@ msgstr ""
 msgid "MCP Connections"
 msgstr ""
 
+msgid "Members who set up a second factor are asked for it at sign-in."
+msgstr ""
+
 msgid "memories"
 msgstr ""
 
@@ -3156,6 +3216,9 @@ msgid "Messenger"
 msgstr ""
 
 msgid "metered by the platform"
+msgstr ""
+
+msgid "Method"
 msgstr ""
 
 msgid "Mine"
@@ -3264,6 +3327,9 @@ msgid "Name your workspace"
 msgstr ""
 
 msgid "Narrowed"
+msgstr ""
+
+msgid "Needs a mail server. Set one up under Mail server first."
 msgstr ""
 
 msgid "Needs an organisation connection"
@@ -3665,7 +3731,13 @@ msgstr ""
 msgid "Nobody holds this role yet."
 msgstr ""
 
+msgid "Nobody is asked for a second factor. Set-ups are kept."
+msgstr ""
+
 msgid "Nobody left to assign. People appear here after they have signed in once."
+msgstr ""
+
+msgid "Nobody will be asked for a second factor at sign-in. Set-ups are kept, and switching back on asks for them again at once."
 msgstr ""
 
 msgid "None (disable)"
@@ -3794,6 +3866,9 @@ msgstr ""
 msgid "of which from cache"
 msgstr ""
 
+msgid "Off"
+msgstr ""
+
 msgid "Office"
 msgstr ""
 
@@ -3822,6 +3897,9 @@ msgid "Only an organisation connection counts here. A data source feeds knowledg
 msgstr ""
 
 msgid "Only for me"
+msgstr ""
+
+msgid "Only members who set up a second factor will be asked for it; the others will no longer be asked to set one up."
 msgstr ""
 
 msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
@@ -3873,6 +3951,9 @@ msgid "Opening a web page"
 msgstr ""
 
 msgid "Operator"
+msgstr ""
+
+msgid "Optional"
 msgstr ""
 
 msgid "optional, e.g. up to 100 units on its own, above that approval"
@@ -3939,6 +4020,9 @@ msgid "Overview"
 msgstr ""
 
 msgid "Page "
+msgstr ""
+
+msgid "Passkey or security key"
 msgstr ""
 
 msgid "Passphrase"
@@ -4403,7 +4487,19 @@ msgstr ""
 msgid "Reports"
 msgstr ""
 
+msgid "Required by your organisation"
+msgstr ""
+
 msgid "Required tools (MCP)"
+msgstr ""
+
+msgid "Reset"
+msgstr ""
+
+msgid "Reset their two-factor authentication?"
+msgstr ""
+
+msgid "Reset two-factor"
 msgstr ""
 
 msgid "Resetting…"
@@ -4721,6 +4817,9 @@ msgstr ""
 msgid "Seat updated"
 msgstr ""
 
+msgid "Security"
+msgstr ""
+
 msgid "Sees and decides in every department, including ones created later."
 msgstr ""
 
@@ -4766,6 +4865,9 @@ msgstr ""
 msgid "Send answers"
 msgstr ""
 
+msgid "Send code"
+msgstr ""
+
 msgid "Send e-mail from Gmail"
 msgstr ""
 
@@ -4809,6 +4911,9 @@ msgid "Set up a new agent together, step by step. Changes nothing until you conf
 msgstr ""
 
 msgid "Set up now →"
+msgstr ""
+
+msgid "Set up two-factor authentication"
 msgstr ""
 
 msgid "Set up your first administrator account to get started."
@@ -5738,6 +5843,9 @@ msgstr ""
 msgid "This question needs an answer."
 msgstr ""
 
+msgid "This removes every second factor and backup code they have. If your organisation requires two-factor authentication from them, they set it up again at their next sign-in, within the grace period."
+msgstr ""
+
 msgid "This replaces your current arrangement. You can switch back at any time."
 msgstr ""
 
@@ -5936,6 +6044,12 @@ msgstr ""
 msgid "Two-factor authentication enabled"
 msgstr ""
 
+msgid "Two-factor authentication reset"
+msgstr ""
+
+msgid "Two-factor policy updated"
+msgstr ""
+
 msgid "Type"
 msgstr ""
 
@@ -6023,6 +6137,9 @@ msgstr ""
 msgid "USD per 1M tokens — managed by your platform operator"
 msgstr ""
 
+msgid "Use a backup code"
+msgstr ""
+
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr ""
 
@@ -6030,6 +6147,9 @@ msgid "Use sign-in default"
 msgstr ""
 
 msgid "Use the built-in default"
+msgstr ""
+
+msgid "Use the code by email instead"
 msgstr ""
 
 msgid "use the department's"
@@ -6203,6 +6323,12 @@ msgstr ""
 msgid "We recommend an API key instead of a password."
 msgstr ""
 
+msgid "We send a 6-digit code to your sign-in email."
+msgstr ""
+
+msgid "We send a 6-digit code to your sign-in email. Enter it to confirm the address."
+msgstr ""
+
 msgid "webhook"
 msgstr ""
 
@@ -6288,6 +6414,9 @@ msgid "Where this person stands, and at which level."
 msgstr ""
 
 msgid "Who may do what — and why you were refused."
+msgstr ""
+
+msgid "Who must confirm their sign-in with a second factor, and how."
 msgstr ""
 
 msgid "Who watches the thinking of"
@@ -6480,6 +6609,12 @@ msgid "Your name"
 msgstr ""
 
 msgid "Your office is open!"
+msgstr ""
+
+msgid "Your organisation asks for a second factor. Choose how you want to confirm it is you."
+msgstr ""
+
+msgid "Your organisation requires a second factor. Add another method first."
 msgstr ""
 
 msgid "Your own answer replaces the ticked options."
