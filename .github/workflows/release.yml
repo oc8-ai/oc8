@@ -1,0 +1,104 @@
+name: Release
+
+# Publishes a release whenever main carries a version that has no tag yet.
+#
+# The version is read from backend/pyproject.toml (bumped together with
+# frontend/package.json in every change set). When vX.Y.Z does not exist, this
+# tags the pushed commit, creates the GitHub release and starts the agent image
+# build for the tag. A push to main without a new version does nothing.
+#
+# Release notes: the description of the pull request that brought the commit
+# into main (the "Release X.Y.Z: merge dev into main" PR) comes first, so its
+# highlights and upgrade notes become the release text. GitHub's generated
+# list of merged pull requests since the previous tag follows.
+#
+# A tag pushed with GITHUB_TOKEN starts no other workflow, so the image build
+# for the tag is started explicitly (workflow_dispatch is the exception GitHub
+# allows).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Two pushes in a row must not both try to create the same release.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.repository == 'oc8-ai/oc8'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      SHA: ${{ github.sha }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Read the version
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' backend/pyproject.toml | head -n 1)
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::backend/pyproject.toml has no plain X.Y.Z version (got '$version')"
+            exit 1
+          fi
+          frontend=$(node -p 'require("./frontend/package.json").version')
+          if [ "$frontend" != "$version" ]; then
+            echo "::error::backend is $version but frontend/package.json is $frontend"
+            exit 1
+          fi
+          tag="v$version"
+          if gh api "repos/$REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+            echo "$tag already exists; nothing to release."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Write the release notes
+        if: steps.version.outputs.new == 'true'
+        run: |
+          # Only the pull request whose merge into main produced this very
+          # commit, opened by a maintainer. An open or unmerged PR that merely
+          # contains the commit (a fork's, say) never writes the release text.
+          # Without such a PR the release carries the generated list only.
+          gh api "repos/$REPO/commits/$SHA/pulls" > pulls.json
+          jq -r --arg sha "$SHA" '
+            [ .[]
+              | select(.base.ref == "main"
+                  and .merged_at != null
+                  and .merge_commit_sha == $sha
+                  and (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")))
+            ][0].body // ""' pulls.json > notes.md
+          if [ -s notes.md ]; then printf '\n\n' >> notes.md; fi
+
+      - name: Create the tag and the release
+        if: steps.version.outputs.new == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            --generate-notes \
+            --latest
+
+      - name: Build the agent images for the tag
+        if: steps.version.outputs.new == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh workflow run agent-images.yml --repo "$REPO" --ref "$TAG"
