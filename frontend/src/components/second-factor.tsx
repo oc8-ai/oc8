@@ -1,7 +1,8 @@
 // frontend/src/components/second-factor.tsx
 // What the login challenge, the login enrolment step and the profile page
 // share about second factors other than the authenticator app: the method
-// picker, the 60-second resend cooldown, and enrolling the code by email.
+// picker, the 60-second resend cooldown, and enrolling the code by email or
+// a passkey.
 import { useState } from "react";
 import { toast } from "sonner";
 import { BackupCodesReveal } from "@/components/totp-backup-codes";
@@ -10,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { confirmEmailCode, enrollEmailCode, type TwoFactorMethod } from "@/lib/totp";
 import { methodLabel } from "@/lib/two-factor";
+import { passkeyErrorMessage, passkeySupported, registerPasskey } from "@/lib/passkey";
 import { useResendCooldown } from "@/hooks/use-resend-cooldown";
 
 /** One button per method; renders nothing for a single method. */
@@ -179,6 +181,76 @@ export function EmailEnroll({ token, onDone }: { token: string; onDone: () => vo
   );
 }
 
+/** Register a passkey under a name the member chooses, then show backup
+ *  codes if this is their first method. Used at login and on the profile. */
+export function PasskeyEnroll({ token, onDone }: { token: string; onDone: () => void }) {
+  const t = useT();
+  const [label, setLabel] = useState("");
+  const [backupCodes, setBackupCodes] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const supported = passkeySupported();
+
+  const create = async () => {
+    setBusy(true);
+    try {
+      const result = await registerPasskey(token, label.trim());
+      if (result.backupCodes.length > 0) {
+        setBackupCodes(result.backupCodes);
+      } else {
+        onDone();
+      }
+    } catch (e: unknown) {
+      toast.error(passkeyErrorMessage(e, t));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (backupCodes.length > 0) {
+    return <BackupCodesReveal codes={backupCodes} onAcknowledge={onDone} />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold">{t("Add a passkey", "Passkey hinzufügen")}</h3>
+      <p className="text-sm text-muted-foreground">
+        {supported
+          ? t(
+              "Use your device's screen lock or a security key to confirm it is you. Give it a name so you can tell your passkeys apart.",
+              "Bestätige mit der Bildschirmsperre deines Geräts oder einem Sicherheitsschlüssel, dass du es bist. Gib ihm einen Namen, damit du deine Passkeys unterscheiden kannst.",
+            )
+          : t(
+              "This browser cannot use passkeys. Try another browser or method.",
+              "Dieser Browser kann keine Passkeys verwenden. Versuche einen anderen Browser oder eine andere Methode.",
+            )}
+      </p>
+      <div>
+        <label htmlFor="passkey-label" className="block text-sm font-medium">
+          {t("Name this passkey", "Name für diesen Passkey")}
+        </label>
+        <input
+          id="passkey-label"
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          maxLength={64}
+          placeholder={t("e.g. Work laptop", "z. B. Arbeitslaptop")}
+          className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
+        />
+      </div>
+      <button
+        type="button"
+        disabled={busy || !supported || label.trim() === ""}
+        onClick={create}
+        className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+      >
+        {busy
+          ? t("Waiting for the passkey…", "Warte auf den Passkey…")
+          : t("Create passkey", "Passkey erstellen")}
+      </button>
+    </div>
+  );
+}
+
 /** Enrol in one of `methods`, letting the member choose when there are
  *  several. Each method's own component starts its enrolment on its own, so
  *  only the chosen one is mounted. */
@@ -197,6 +269,7 @@ export function SecondFactorEnroll({
   );
   if (chosen === "totp") return <TotpEnroll token={token} onDone={onDone} />;
   if (chosen === "email") return <EmailEnroll token={token} onDone={onDone} />;
+  if (chosen === "passkey") return <PasskeyEnroll token={token} onDone={onDone} />;
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">

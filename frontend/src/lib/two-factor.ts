@@ -8,7 +8,9 @@ type T = (en: string, de: string) => string;
 /** The methods a sign-in may use, from the login response. An older or
  *  TOTP-only response carries none: the authenticator app it is. */
 export function loginMethods(methods: string[] | undefined): TwoFactorMethod[] {
-  const known = (methods ?? []).filter((m): m is TwoFactorMethod => m === "totp" || m === "email");
+  const known = (methods ?? []).filter(
+    (m): m is TwoFactorMethod => m === "totp" || m === "email" || m === "passkey",
+  );
   return known.length > 0 ? known : ["totp"];
 }
 

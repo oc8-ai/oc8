@@ -275,6 +275,7 @@ describe("TwoFactorPolicyPanel", () => {
     methods: ["totp", "email", "passkey"],
     graceDays: 7,
     emailAvailable: true,
+    passkeyAvailable: true,
   };
 
   function renderPanel() {
@@ -301,8 +302,6 @@ describe("TwoFactorPolicyPanel", () => {
     fireEvent.change(screen.getByLabelText(/grace period \(days\)/i), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: /save/i }));
 
-    // Passkey is not offered yet, but a stored value is kept rather than
-    // silently dropped by a save.
     await waitFor(() =>
       expect(putTwoFactorMock).toHaveBeenCalledWith({
         requirement: "everyone",
@@ -336,7 +335,7 @@ describe("TwoFactorPolicyPanel", () => {
     ).toBeInTheDocument();
   });
 
-  it("disables email with the reason when outgoing mail is missing, and passkey as coming soon", async () => {
+  it("disables email with the reason when outgoing mail is missing", async () => {
     getTwoFactorMock.mockResolvedValue({
       ...POLICY,
       methods: ["totp"],
@@ -346,7 +345,46 @@ describe("TwoFactorPolicyPanel", () => {
 
     expect(await screen.findByRole("checkbox", { name: /code by email/i })).toBeDisabled();
     expect(screen.getByText(/needs a mail server/i)).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: /passkey/i })).toBeDisabled();
-    expect(screen.getByText(/coming soon/i)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /passkey/i })).toBeEnabled();
+  });
+
+  it("enables passkeys when the public URL can carry them", async () => {
+    getTwoFactorMock.mockResolvedValue({ ...POLICY, methods: ["totp"] });
+    putTwoFactorMock.mockResolvedValue(POLICY);
+    renderPanel();
+
+    const passkey = await screen.findByRole("checkbox", { name: /passkey/i });
+    expect(passkey).toBeEnabled();
+    expect(passkey).not.toBeChecked();
+    expect(screen.queryByText(/coming soon/i)).toBeNull();
+    fireEvent.click(passkey);
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() =>
+      expect(putTwoFactorMock).toHaveBeenCalledWith({
+        requirement: "admins",
+        methods: ["totp", "passkey"],
+        graceDays: 7,
+      }),
+    );
+  });
+
+  it("disables passkeys with the reason when the public URL cannot carry them", async () => {
+    getTwoFactorMock.mockResolvedValue({ ...POLICY, methods: ["totp"], passkeyAvailable: false });
+    renderPanel();
+
+    expect(await screen.findByRole("checkbox", { name: /passkey/i })).toBeDisabled();
+    expect(screen.getByText(/needs https/i)).toBeInTheDocument();
+  });
+
+  it("lets a stored passkey be turned off while unavailable, never on", async () => {
+    getTwoFactorMock.mockResolvedValue({ ...POLICY, passkeyAvailable: false });
+    renderPanel();
+
+    const passkey = await screen.findByRole("checkbox", { name: /passkey/i });
+    expect(passkey).toBeEnabled();
+    fireEvent.click(passkey);
+    expect(passkey).not.toBeChecked();
+    expect(passkey).toBeDisabled();
   });
 });

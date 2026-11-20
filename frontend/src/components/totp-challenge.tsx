@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { MethodChoice, ResendButton } from "@/components/second-factor";
 import { useResendCooldown } from "@/hooks/use-resend-cooldown";
 import { loginMethods } from "@/lib/two-factor";
+import { passkeyErrorMessage, signInWithPasskey } from "@/lib/passkey";
 import { useT } from "@/lib/i18n";
 import { sendEmailCode, verifyEmailCode, verifyTotp, type TwoFactorMethod } from "@/lib/totp";
 
@@ -67,6 +68,18 @@ export function TotpChallenge({
     }
   };
 
+  const handlePasskey = async () => {
+    setVerifying(true);
+    try {
+      const result = await signInWithPasskey(token);
+      onVerified(result.token);
+    } catch (e: unknown) {
+      toast.error(passkeyErrorMessage(e, t));
+    } finally {
+      setVerifying(false);
+    }
+  };
+
   const emailWaiting = answer === "email" && sentTo === null;
 
   let hint: string;
@@ -86,6 +99,11 @@ export function TotpChallenge({
             `We sent a code to ${sentTo}. It is valid for 10 minutes.`,
             `Wir haben einen Code an ${sentTo} gesendet. Er ist 10 Minuten gültig.`,
           );
+  } else if (answer === "passkey") {
+    hint = t(
+      "Use your passkey or security key: your browser asks you to confirm it is you.",
+      "Verwende deinen Passkey oder Sicherheitsschlüssel: Dein Browser bittet dich, zu bestätigen, dass du es bist.",
+    );
   } else {
     hint = t(
       "Use your authenticator app, or a backup code.",
@@ -96,11 +114,24 @@ export function TotpChallenge({
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">
-        {t("Enter your authentication code", "Gib deinen Authentifizierungscode ein")}
+        {answer === "passkey"
+          ? t("Confirm your sign-in", "Bestätige deine Anmeldung")
+          : t("Enter your authentication code", "Gib deinen Authentifizierungscode ein")}
       </h3>
       <MethodChoice methods={offered} value={method} onChange={pick} />
       <p className="text-sm text-muted-foreground">{hint}</p>
-      {emailWaiting ? (
+      {answer === "passkey" ? (
+        <button
+          type="button"
+          disabled={verifying}
+          onClick={handlePasskey}
+          className="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+        >
+          {verifying
+            ? t("Waiting for the passkey…", "Warte auf den Passkey…")
+            : t("Use passkey", "Passkey verwenden")}
+        </button>
+      ) : emailWaiting ? (
         <button
           type="button"
           disabled={sending}
@@ -133,9 +164,9 @@ export function TotpChallenge({
           </button>
         </>
       )}
-      {method === "email" && (
-        // The authenticator input above already takes a backup code; the
-        // email one needs its own way there.
+      {method !== "totp" && (
+        // The authenticator input above already takes a backup code; email
+        // and passkey need their own way there.
         <div className="flex flex-wrap items-center justify-between gap-2">
           {answer === "email" && sentTo !== null ? (
             <ResendButton remaining={cooldown.remaining} busy={sending} onClick={handleSend} />
@@ -145,14 +176,16 @@ export function TotpChallenge({
           <button
             type="button"
             onClick={() => {
-              setAnswer(answer === "backup" ? "email" : "backup");
+              setAnswer(answer === "backup" ? method : "backup");
               setCode("");
             }}
             className="text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
           >
-            {answer === "backup"
-              ? t("Use the code by email instead", "Stattdessen den Code per E-Mail verwenden")
-              : t("Use a backup code", "Backup-Code verwenden")}
+            {answer !== "backup"
+              ? t("Use a backup code", "Backup-Code verwenden")
+              : method === "passkey"
+                ? t("Use your passkey instead", "Stattdessen deinen Passkey verwenden")
+                : t("Use the code by email instead", "Stattdessen den Code per E-Mail verwenden")}
           </button>
         </div>
       )}
