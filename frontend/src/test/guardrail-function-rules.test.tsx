@@ -612,7 +612,7 @@ describe("GuardrailFunctionRules", () => {
     expect(interpretFromInstructionMutateAsync).toHaveBeenCalledWith({ connectionName: "odoo" });
 
     await waitFor(() => expect(screen.getByText("Delete Record")).toBeInTheDocument());
-    expect(screen.getByText(/not allowed/i)).toBeInTheDocument();
+    expect(screen.getByText(/not allowed/i, { ignore: "textarea" })).toBeInTheDocument();
     // A preview only -- nothing applied to the draft until it's accepted.
     expect(onChange).not.toHaveBeenCalled();
 
@@ -663,5 +663,54 @@ describe("GuardrailFunctionRules", () => {
     await waitFor(() => expect(interpretFromInstructionMutateAsync).toHaveBeenCalled());
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /accept/i })).toBeNull();
+  });
+
+  it("opens the definition in a larger editor and keeps the text in step", () => {
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="odoo"
+        toolCatalog={["post_message", "create_ticket"]}
+        value={baseValue()}
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /new guardrail/i }));
+    const row = screen.getByRole("combobox").closest("tr")!;
+    const field = within(row).getByRole("textbox") as HTMLTextAreaElement;
+    expect(field.tagName).toBe("TEXTAREA");
+
+    fireEvent.click(within(row).getByRole("button", { name: /larger editor/i }));
+    const dialog = screen.getByRole("dialog");
+    const large = within(dialog).getByRole("textbox") as HTMLTextAreaElement;
+    const text = "up to 100 units on its own,\nabove that approval by the team lead";
+    fireEvent.change(large, { target: { value: text } });
+    fireEvent.click(within(dialog).getByRole("button", { name: /done/i }));
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect((within(row).getByRole("textbox") as HTMLTextAreaElement).value).toBe(text);
+  });
+
+  it("applies on Enter and starts a new line on Shift+Enter", async () => {
+    interpretMutateAsync.mockResolvedValueOnce({ decision: "not_allowed", conditions: [] });
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="odoo"
+        toolCatalog={["post_message", "create_ticket"]}
+        value={baseValue()}
+        onChange={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /new guardrail/i }));
+    const row = screen.getByRole("combobox").closest("tr")!;
+    const field = within(row).getByRole("textbox");
+    fireEvent.change(field, { target: { value: "never send on weekends" } });
+
+    fireEvent.keyDown(field, { key: "Enter", shiftKey: true });
+    expect(interpretMutateAsync).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(field, { key: "Enter" });
+    await waitFor(() => expect(interpretMutateAsync).toHaveBeenCalledTimes(1));
   });
 });
