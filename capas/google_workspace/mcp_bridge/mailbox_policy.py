@@ -11,7 +11,13 @@ this file by path). Pure: no environment, no network, no other import.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
+
+#: Commas, semicolons and whitespace (newlines included): the same split as
+#: core's `oc8.events.sources.setup_list`, which checks the trigger setting.
+_SEPARATORS = re.compile(r"[\s,;]+")
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
 class MailboxRefused(RuntimeError):
@@ -19,8 +25,14 @@ class MailboxRefused(RuntimeError):
 
 
 def mailbox_list(raw: str) -> list[str]:
-    """The comma-joined list the core keeps the delegated mailboxes in."""
-    return [m.strip() for m in raw.split(",") if m.strip()]
+    """The list the core keeps the delegated mailboxes in."""
+    return [m for m in _SEPARATORS.split(raw) if m]
+
+
+def same_address(a: str, b: str) -> bool:
+    """Equal but for ASCII case: no Unicode folding, so two different
+    addresses (STRAßE, strasse) never compare equal."""
+    return a.translate(_ASCII_LOWER) == b.translate(_ASCII_LOWER)
 
 
 def authorized_mailbox(
@@ -34,7 +46,7 @@ def authorized_mailbox(
     original casing, never the casefolded form -- Gmail and Calendar URLs
     and attendee matching want the real address."""
     if personal is not None:
-        if mailbox and mailbox.casefold() != personal.casefold():
+        if mailbox and not same_address(mailbox, personal):
             raise MailboxRefused(
                 f"this connection acts as {personal} only; omit mailbox or pass {personal}"
             )
@@ -45,7 +57,7 @@ def authorized_mailbox(
             "no mailbox given and no default_mailbox configured for this connection -- "
             "pass mailbox, or set a default mailbox in the plugin's setup form"
         )
-    if target.casefold() not in {m.casefold() for m in delegated}:
+    if not any(same_address(target, m) for m in delegated):
         raise MailboxRefused(
             f"mailbox {target!r} is not one of this connection's authorized delegated "
             f"mailboxes ({', '.join(delegated) or 'none configured'})"

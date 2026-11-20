@@ -31,7 +31,7 @@ from typing import Any
 
 import httpx
 
-from .mailbox_policy import authorized_mailbox, mailbox_list
+from .mailbox_policy import authorized_mailbox, mailbox_list, same_address
 
 API_GMAIL = "https://gmail.googleapis.com/gmail/v1"
 API_CALENDAR = "https://www.googleapis.com/calendar/v3"
@@ -81,8 +81,7 @@ def resolve_mailbox_token(mailbox: str | None) -> str:
         return self_token()
     target = resolve_mailbox_address(mailbox)
     mailboxes = _delegated_mailboxes()
-    folded = {m.casefold(): i for i, m in enumerate(mailboxes)}
-    index = folded[target.casefold()]
+    index = next(i for i, m in enumerate(mailboxes) if same_address(m, target))
     token = os.environ.get(f"GOOGLE_DELEGATED_TOKEN_{index}", "")
     if not token:
         raise RuntimeError(f"no token available for mailbox {target!r}")

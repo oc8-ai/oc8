@@ -369,6 +369,21 @@ async def test_an_expired_history_id_takes_a_new_baseline(gmail: FakeGmail) -> N
     assert [e.delivery_id for e in after.events] == [fresh]
 
 
+async def test_a_history_id_that_went_backwards_takes_a_new_baseline(gmail: FakeGmail) -> None:
+    """The mailbox's history id is below the cursor's (a restored or moved
+    mailbox): start over from now rather than wait for it to catch up."""
+    cursor = await baseline()
+    gmail.history = 400
+    gmail.add(subject="after the restore")
+    result = await source.poll(FIELDS, CONFIG, cursor)
+    assert result.events == []
+    assert "rebaselined_at" in result.next_cursor
+    assert result.next_cursor["history_id"] == str(gmail.history)
+    fresh = gmail.add(subject="new")
+    after = await source.poll(FIELDS, CONFIG, result.next_cursor)
+    assert [e.delivery_id for e in after.events] == [fresh]
+
+
 async def test_another_mailbox_or_label_takes_a_new_baseline(gmail: FakeGmail) -> None:
     cursor = await baseline()
     gmail.add(subject="new", labels=["INBOX", "Label_1"])

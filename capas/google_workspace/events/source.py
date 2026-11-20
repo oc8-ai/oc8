@@ -28,7 +28,8 @@ the label), oldest first. A mail is new when it still carries the label, is
 not a draft, and is not among `seen`, the ids of the last 5,000 mails
 handled. The cursor moves to the last history record fully handled, so a
 poll that stops early goes on there next time; when Gmail no longer has the
-history (HTTP 404, about a week), a new baseline is taken and the gap fires
+history (HTTP 404, about a week), or the mailbox's history id is below the
+cursor's (a restored mailbox), a new baseline is taken and the gap fires
 nothing.
 
 What a poll hands over follows the `email` capa's rules: one event per mail
@@ -300,6 +301,11 @@ def _usable(cursor: Mapping[str, Any] | None, mailbox: str, label: str) -> dict[
     return {"history_id": history_id, "seen": seen}
 
 
+class _HistoryBehind(Exception):
+    """The mailbox's history id is below the cursor's: a restored or moved
+    mailbox. The cursor would wait for ids that may never come."""
+
+
 def _later(a: str, b: Any) -> str:
     """The later of two history ids (`b` may be anything Gmail sent)."""
     other = str(b) if isinstance(b, (str, int)) else ""
@@ -330,6 +336,10 @@ async def _round(
     page_token: str | None = None
     while True:
         page = await gmail.history(start, page_token)
+        current = page.get("historyId")
+        current = str(current) if isinstance(current, (str, int)) else ""
+        if _HISTORY_ID.fullmatch(current) and int(current) < int(start):
+            raise _HistoryBehind
         records = page.get("history")
         for record in records if isinstance(records, list) else []:
             for msg in _added(record):
@@ -375,11 +385,11 @@ async def poll(
             return PollResult(next_cursor=_cursor(gmail, await gmail.history_id(), []))
         try:
             next_cursor, events = await _round(gmail, state, deadline, starved, MAX_EVENTS_PER_TICK)
-        except GmailError as exc:
-            if exc.status != 404:
+        except (GmailError, _HistoryBehind) as exc:
+            if isinstance(exc, GmailError) and exc.status != 404:
                 raise
-            # Gmail keeps history for about a week: start over from now,
-            # firing nothing for the gap.
+            # Gmail keeps history for about a week, and a restored mailbox
+            # starts lower: start over from now, firing nothing for the gap.
             logger.warning("mail.received: the history of a mailbox expired; new baseline")
             fresh = _cursor(
                 gmail,
