@@ -25,7 +25,12 @@ from typing import Any, Protocol, runtime_checkable
 import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body
-from oc8.modelrouter.reasoning import ThinkTagSplitter, reasoning_field, reasoning_tokens_from
+from oc8.modelrouter.reasoning import (
+    ThinkTagSplitter,
+    cached_tokens_from,
+    reasoning_field,
+    reasoning_tokens_from,
+)
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
@@ -69,6 +74,7 @@ def _chunk_from_openai(data: dict[str, Any]) -> CompletionChunk | None:
             tokens_in=int(usage_raw.get("prompt_tokens", 0) or 0),
             tokens_out=int(usage_raw.get("completion_tokens", 0) or 0),
             reasoning_tokens=reasoning_tokens_from(usage_raw, "completion_tokens_details"),
+            cache_read_tokens=cached_tokens_from(usage_raw, "prompt_tokens_details"),
         )
         carries = True
 

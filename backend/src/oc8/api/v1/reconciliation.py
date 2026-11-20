@@ -66,6 +66,7 @@ async def _oc8_calculated_cost_for_day(
                 tokens_out,
                 cache_read_tokens=cache_read,
                 cache_write_tokens=cache_write,
+                model=model,
             )
     return total
 

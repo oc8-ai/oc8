@@ -128,7 +128,7 @@ import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
 from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
-from oc8.modelrouter.reasoning import reasoning_tokens_from
+from oc8.modelrouter.reasoning import cached_tokens_from, reasoning_tokens_from
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
@@ -370,6 +370,7 @@ def _usage_from(raw: Any) -> Usage | None:
         tokens_in=int(raw.get("input_tokens", 0) or 0),
         tokens_out=int(raw.get("output_tokens", 0) or 0),
         reasoning_tokens=reasoning_tokens_from(raw, "output_tokens_details"),
+        cache_read_tokens=cached_tokens_from(raw, "input_tokens_details"),
     )
 
 

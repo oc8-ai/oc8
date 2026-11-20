@@ -209,6 +209,7 @@ async def usage(
                 int(tokens_out),
                 cache_read_tokens=int(cache_read),
                 cache_write_tokens=int(cache_write),
+                model=model,
             )
             if price
             else 0
@@ -398,6 +399,7 @@ async def export_usage(
                         rec.tokens_out,
                         cache_read_tokens=rec.cache_read_tokens,
                         cache_write_tokens=rec.cache_write_tokens,
+                        model=rec.model,
                     )
                     if price
                     else None
