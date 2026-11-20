@@ -208,3 +208,59 @@ def test_guardrail_only_lists_reference_real_tool_names() -> None:
             assert name in actual, f"guardrails/{path.name} names unknown tool {name!r}"
         checked += 1
     assert checked == 10, f"expected 5 presets + 5 library entries, found {checked}"
+
+
+def test_the_capa_is_at_version_one_two() -> None:
+    assert _manifest().version == "1.2.0"
+
+
+def test_it_declares_mail_received_as_a_polled_event_on_the_default_mailbox() -> None:
+    from oc8.capas.manifest import TriggerConfigField, TriggerDecl
+
+    manifest = _manifest()
+    assert manifest.entry_points["event_sources"] == "events.source:register"
+    [decl] = manifest.triggers
+    assert isinstance(decl, TriggerDecl)
+    assert (decl.type, decl.label, decl.polled, decl.editor_label) == (
+        "mail.received",
+        "New email",
+        True,
+        "On new email",
+    )
+    assert decl.description
+    assert decl.config == [
+        TriggerConfigField(key="mailbox", label="Mailbox", default_from="default_user"),
+        TriggerConfigField(key="folder", label="Folder", default="inbox"),
+    ]
+    # The default mailbox is read from the setup's plain `default_user`
+    # field, which the connection keeps in its env (and not as a secret).
+    assert manifest.setup is not None and manifest.setup.mcp is not None
+    assert manifest.setup.mcp.env_fields["MICROSOFT365_DEFAULT_USER"] == "default_user"
+    assert "default_user" not in manifest.setup.mcp.secret_env_fields.values()
+    kinds = {f.key: f.kind for f in manifest.setup.fields}
+    assert kinds["default_user"] == "text"
+
+
+def test_loading_the_capa_registers_the_poller_for_the_app_login() -> None:
+    from oc8.capas.contributions import pollers_for
+    from oc8.capas.loader import load_plugin
+
+    discovered = find_plugin("microsoft365", [str(PLUGINS_ROOT)])
+    assert discovered is not None
+    assert load_plugin(discovered)
+    registered = pollers_for("microsoft365")["mail.received"]
+    assert registered.credential_type == "ms365_app"
+    assert callable(registered.poller)
+
+
+def test_the_trigger_strings_have_a_german_translation() -> None:
+    import polib
+
+    catalog = {e.msgid: e.msgstr for e in polib.pofile(str(PLUGIN_ROOT / "i18n" / "de.po"))}
+    shown: list[str] = []
+    for trigger in _load_toml("plugin.toml")["plugin"]["triggers"]:
+        shown += [trigger["label"], trigger["description"], trigger["editor_label"]]
+        shown += [setting["label"] for setting in trigger.get("config", [])]
+    assert [s for s in shown if not catalog.get(s)] == []
+    for msgstr in catalog.values():
+        assert " Sie " not in f" {msgstr} " and "Ihr" not in msgstr, msgstr
