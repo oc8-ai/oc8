@@ -64,6 +64,9 @@ msgstr ""
 "Wie „Freigabe vor dem Senden“, nur dass E-Mails gar nicht gelöscht werden "
 "können."
 
+msgid "Folder"
+msgstr "Ordner"
+
 msgid "Mailbox"
 msgstr "Postfach"
 

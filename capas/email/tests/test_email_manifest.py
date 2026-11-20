@@ -14,7 +14,7 @@ import polib
 from oc8.capas.contributions import pollers_for
 from oc8.capas.discovery import find_plugin
 from oc8.capas.loader import load_plugin
-from oc8.capas.manifest import Manifest, TriggerDecl, parse_manifest
+from oc8.capas.manifest import Manifest, TriggerConfigField, TriggerDecl, parse_manifest
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 CAPAS_ROOT = PLUGIN_ROOT.parent
@@ -48,6 +48,7 @@ def test_it_declares_mail_received_as_a_polled_event() -> None:
             label="New email",
             description=manifest.triggers[0].description,  # type: ignore[union-attr]
             polled=True,
+            config=[TriggerConfigField(key="folder", label="Folder", default="INBOX")],
         )
     ]
     decl = manifest.triggers[0]
