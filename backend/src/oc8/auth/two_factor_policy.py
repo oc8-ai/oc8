@@ -87,6 +87,18 @@ async def load_policy(db: AsyncSession, tenant_id: uuid.UUID) -> TwoFactorPolicy
     return policy_for(await db.get(m.Organization, tenant_id))
 
 
+def current_address(member: m.OrgMember) -> str | None:
+    """The address the member signs in with, if it is one."""
+    address = (member.email or member.subject or "").strip().lower()
+    return address if "@" in address else None
+
+
+def confirmed_address(data: object) -> str | None:
+    """The address an email factor was confirmed for, normalised."""
+    raw = data.get("address") if isinstance(data, dict) else None
+    return raw.strip().lower() if isinstance(raw, str) and "@" in raw else None
+
+
 async def enrolled_methods(db: AsyncSession, member_id: uuid.UUID) -> list[str]:
     """Every method the member has enrolled, allowed by the policy or not."""
     found: set[str] = set()
@@ -99,16 +111,21 @@ async def enrolled_methods(db: AsyncSession, member_id: uuid.UUID) -> list[str]:
         found.add("totp")
     # Only methods a member can enrol today: passkey rows cannot exist yet,
     # and until passkey assertion ships one must never answer a challenge.
-    found.update(
-        (
-            await db.execute(
-                select(m.SecondFactor.method).where(
-                    m.SecondFactor.member_id == member_id,
-                    m.SecondFactor.method.in_(ENROLLABLE_METHODS),
-                )
-            )
-        ).scalars()
+    member = await db.get(m.OrgMember, member_id)
+    rows = await db.execute(
+        select(m.SecondFactor.method, m.SecondFactor.data).where(
+            m.SecondFactor.member_id == member_id,
+            m.SecondFactor.method.in_(ENROLLABLE_METHODS),
+        )
     )
+    for method, data in rows:
+        # An email factor counts only for the address it was confirmed for:
+        # a code must never go to an address nobody proved they read.
+        if method == "email" and (
+            member is None or confirmed_address(data) != current_address(member)
+        ):
+            continue
+        found.add(method)
     return [x for x in METHODS if x in found]
 
 

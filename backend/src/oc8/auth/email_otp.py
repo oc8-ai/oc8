@@ -2,7 +2,8 @@
 
 A code is valid for ten minutes, accepted once, stored Argon2id-hashed and
 refused after five wrong attempts; a new one can be asked for once a minute
-and replaces the previous one. The plaintext exists only in the return value
+and replaces the previous one. Twenty wrong codes in a rolling day stop the
+method for that member until the day has passed. The plaintext exists only in the return value
 of `issue_code`, which the caller mails and forgets.
 """
 
@@ -14,7 +15,7 @@ import uuid
 from enum import Enum
 from typing import Literal
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -25,17 +26,45 @@ Purpose = Literal["enrol", "login"]
 CODE_TTL = dt.timedelta(minutes=10)
 MAX_ATTEMPTS = 5
 RESEND_SECONDS = 60
+#: Wrong codes a member may enter across all their codes in a rolling day.
+DAILY_FAILED_ATTEMPTS = 20
+DAILY_WINDOW = dt.timedelta(hours=24)
 
 
 class CoolingDown(Exception):
     """A code of this purpose was issued less than a minute ago."""
 
 
+class Capped(Exception):
+    """The member entered too many wrong codes in the last day."""
+
+
 class CheckResult(Enum):
     OK = "ok"
     REFUSED = "refused"
-    #: Refused, and this attempt was the fifth wrong one: the code is now dead.
+    #: Refused, and this attempt was the fifth wrong one for this code, or the
+    #: one that reached the daily cap: audited once, here.
     LOCKED = "locked"
+    #: Refused without looking: the daily cap was already reached.
+    CAPPED = "capped"
+
+
+async def failed_attempts_today(db: AsyncSession, member_id: uuid.UUID) -> int:
+    """Wrong codes the member entered in the rolling day, across every code.
+
+    Five attempts per code alone would allow five guesses a minute for ever,
+    since a new code can be asked for every minute.
+    """
+    since = dt.datetime.now(tz=dt.UTC) - DAILY_WINDOW
+    total = (
+        await db.execute(
+            select(func.coalesce(func.sum(m.EmailOtpChallenge.attempts), 0)).where(
+                m.EmailOtpChallenge.member_id == member_id,
+                m.EmailOtpChallenge.created_at > since,
+            )
+        )
+    ).scalar_one()
+    return int(total)
 
 
 def _generate_code() -> str:
@@ -47,10 +76,13 @@ async def issue_code(
 ) -> tuple[uuid.UUID, str]:
     """Store a fresh code and return (challenge id, plaintext code).
 
-    Raises `CoolingDown` when a code of this purpose went out less than a
-    minute ago. Every older unused code of the same purpose is spent, so only
-    the newest one can be answered.
+    Raises `Capped` once the member reached the daily cap on wrong codes, and
+    `CoolingDown` when a code of this purpose went out less than a minute ago.
+    Every older unused code of the same purpose is spent, so only the newest
+    one can be answered.
     """
+    if await failed_attempts_today(db, member_id) >= DAILY_FAILED_ATTEMPTS:
+        raise Capped
     now = dt.datetime.now(tz=dt.UTC)
     recent = (
         await db.execute(
@@ -108,6 +140,9 @@ async def check_code(
     accept it or both count one attempt. The caller must commit even when
     this refuses, or the attempt it counted is rolled back.
     """
+    failed = await failed_attempts_today(db, member_id)
+    if failed >= DAILY_FAILED_ATTEMPTS:
+        return CheckResult.CAPPED
     now = dt.datetime.now(tz=dt.UTC)
     row = (
         await db.execute(
@@ -130,16 +165,9 @@ async def check_code(
         row.used_at = now
         return CheckResult.OK
     row.attempts += 1
-    return CheckResult.LOCKED if row.attempts >= MAX_ATTEMPTS else CheckResult.REFUSED
-
-
-async def drop_email_factor(db: AsyncSession, member_id: uuid.UUID) -> None:
-    """Remove the email method: the address it was confirmed for changed."""
-    await db.execute(
-        delete(m.SecondFactor).where(
-            m.SecondFactor.member_id == member_id, m.SecondFactor.method == "email"
-        )
-    )
+    if row.attempts >= MAX_ATTEMPTS or failed + 1 >= DAILY_FAILED_ATTEMPTS:
+        return CheckResult.LOCKED
+    return CheckResult.REFUSED
 
 
 def code_mail(code: str, purpose: Purpose) -> tuple[str, str]:

@@ -28,9 +28,9 @@ from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1._serializers import member_to_dto
 from oc8.audit import append_event
 from oc8.auth import Principal
-from oc8.auth.email_otp import drop_email_factor
 from oc8.auth.password import PasswordHashingError, hash_password
 from oc8.auth.second_factors import audit as audit_two_factor
+from oc8.auth.second_factors import lock_member, sign_in_address_changed
 from oc8.auth.second_factors import remove_all as remove_all_second_factors
 from oc8.authz.permissions import MANAGE, MEMBER, MEMBER_ROLE, VIEW, perm
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
@@ -486,6 +486,7 @@ async def reset_member_two_factor(
             "You cannot reset your own two-factor authentication. Remove a method from "
             "your profile instead.",
         )
+    await lock_member(db, member.id)
     await remove_all_second_factors(db, tenant_id=principal.tenant_id, member=member)
     await audit_two_factor(
         db,
@@ -548,7 +549,9 @@ async def rename_member_subject(
         # subject IS the address.
         member.email = new_subject if looks_like_email(new_subject) else None
         # A code by email was confirmed for the old address only.
-        await drop_email_factor(db, member.id)
+        await sign_in_address_changed(
+            db, member, actor_id=await _acting_member_id(db, principal), principal=principal
+        )
         await append_event(
             db,
             tenant_id=principal.tenant_id,

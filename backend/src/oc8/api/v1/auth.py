@@ -26,8 +26,8 @@ from oc8.api.v1._serializers import member_to_dto, seat_to_dto
 from oc8.api.v1.members import _member_dto
 from oc8.audit import append_event
 from oc8.auth import Principal, get_identity_provider
-from oc8.auth.email_otp import drop_email_factor
 from oc8.auth.password import PasswordHashingError, hash_password, verify_password
+from oc8.auth.second_factors import sign_in_address_changed
 from oc8.auth.totp_gate import second_factor_gate
 from oc8.authz.permissions import MEMBER_ROLE
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
@@ -636,7 +636,7 @@ async def change_own_email(
         member.subject_uuid = subject_uuid_for(new_email)
         member.email = new_email
         # A code by email was confirmed for the old address only.
-        await drop_email_factor(db, member.id)
+        await sign_in_address_changed(db, member, actor_id=member.id, principal=principal)
         await append_event(
             db,
             tenant_id=principal.tenant_id,
@@ -1434,7 +1434,7 @@ async def confirm_email_change(body: ConfirmEmailChangeRequest) -> MemberDTO:
         member.subject_uuid = subject_uuid_for(row.new_email)
         member.email = row.new_email
         # A code by email was confirmed for the old address only.
-        await drop_email_factor(db, member.id)
+        await sign_in_address_changed(db, member, actor_id=member.id)
         await append_event(
             db,
             tenant_id=org.id,

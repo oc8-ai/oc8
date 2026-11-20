@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
+from oc8.auth.second_factors import sign_in_address_changed
 from oc8.authz.permissions import SEAT_PERMISSIONS
 from oc8.db.base import uuid7
 from oc8.models.core import Department, Role
@@ -359,8 +360,9 @@ async def upsert_member(
             existing.display_name = display_name
         if all_departments is not None:
             existing.all_departments = all_departments
-        if email:
+        if email and existing.email != email:
             existing.email = email
+            await sign_in_address_changed(db, existing)
         await db.flush()
         return existing, False
 
@@ -423,8 +425,9 @@ async def upsert_member(
             minted.display_name = display_name
         if all_departments is not None:
             minted.all_departments = all_departments
-        if email:
+        if email and minted.email != email:
             minted.email = email
+            await sign_in_address_changed(db, minted)
         await db.flush()
     return minted, inserted is not None
 

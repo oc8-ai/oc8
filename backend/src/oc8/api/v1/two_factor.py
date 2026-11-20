@@ -25,6 +25,7 @@ from oc8.api.v1.auth import PasswordSessionResponse
 from oc8.api.v1.totp import mint_full_session
 from oc8.auth import Principal
 from oc8.auth.email_otp import (
+    Capped,
     CheckResult,
     CoolingDown,
     Purpose,
@@ -34,11 +35,12 @@ from oc8.auth.email_otp import (
     spend,
 )
 from oc8.auth.password import verify_password
-from oc8.auth.second_factors import audit, remove_method
+from oc8.auth.second_factors import audit, lock_member, remove_method
 from oc8.auth.totp import generate_backup_codes, hash_backup_code
 from oc8.auth.totp_gate import member_id_for_principal
 from oc8.auth.two_factor_policy import (
     METHODS,
+    confirmed_address,
     enrollable_methods,
     enrolled_methods,
     is_org_admin,
@@ -69,6 +71,19 @@ _CHALLENGE_REASON = (
     "challenge routes by deny_totp_pending_principals, and a full session only "
     "re-mints its own session"
 )
+
+
+_CAPPED_MESSAGE = (
+    "Too many wrong codes today. Sign in with a backup code or another method, "
+    "or try again tomorrow."
+)
+
+
+def _refuse_unless_ok(result: CheckResult) -> None:
+    if result is CheckResult.CAPPED:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, _CAPPED_MESSAGE)
+    if result is not CheckResult.OK:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired code.")
 
 
 class EmailCodeSentResponse(CamelModel):
@@ -104,11 +119,10 @@ def _address(member: m.OrgMember) -> str:
 
 
 async def _mail_code(
-    db: DbSession, principal: Principal, member: m.OrgMember, purpose: Purpose
+    db: DbSession, principal: Principal, member: m.OrgMember, purpose: Purpose, address: str
 ) -> EmailCodeSentResponse:
     """Issue a code, commit, then mail it with no connection checked out
     (`oc8.mail.send`'s rule). A code whose mail failed is spent at once."""
-    address = _address(member)
     smtp = await resolve_smtp_config(db, tenant_id=principal.tenant_id)
     if smtp is None:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "Outgoing mail is not configured.")
@@ -116,6 +130,8 @@ async def _mail_code(
         challenge_id, code = await issue_code(
             db, tenant_id=principal.tenant_id, member_id=member.id, purpose=purpose
         )
+    except Capped as exc:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, _CAPPED_MESSAGE) from exc
     except CoolingDown as exc:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
@@ -179,7 +195,7 @@ async def email_enroll(principal: CurrentPrincipal, db: DbSession) -> EmailCodeS
     ).scalar_one_or_none()
     if already is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Codes by email are already turned on.")
-    return await _mail_code(db, principal, member, "enrol")
+    return await _mail_code(db, principal, member, "enrol", _address(member))
 
 
 @router.post(
@@ -201,8 +217,7 @@ async def email_confirm(
     member = await _own_member(db, principal)
     address = _address(member)
     tenant_id, member_id = principal.tenant_id, member.id
-    if await _answer(db, principal, member, "enrol", body.code) is not CheckResult.OK:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired code.")
+    _refuse_unless_ok(await _answer(db, principal, member, "enrol", body.code))
 
     # `_answer` committed; a fresh, tenant-bound session for the enrolment.
     async with tenant_session(tenant_id) as tx:
@@ -282,7 +297,21 @@ async def email_send(principal: CurrentPrincipal, db: DbSession) -> EmailCodeSen
     """Mail a login code to a member whose allowed method is email."""
     member = await _own_member(db, principal)
     await _refuse_unless_email_answers(db, member)
-    return await _mail_code(db, principal, member, "login")
+    # Only ever the address the factor was confirmed for; `member_methods`
+    # above already refused a factor whose address no longer matches.
+    data = (
+        await db.execute(
+            select(m.SecondFactor.data).where(
+                m.SecondFactor.member_id == member.id, m.SecondFactor.method == "email"
+            )
+        )
+    ).scalar_one()
+    address = confirmed_address(data)
+    if address is None:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Codes by email are not a method you can use."
+        )
+    return await _mail_code(db, principal, member, "login", address)
 
 
 @router.post(
@@ -299,8 +328,7 @@ async def email_verify(
     if "email" not in await member_methods(db, member):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired code.")
     member_id = member.id
-    if await _answer(db, principal, member, "login", body.code) is not CheckResult.OK:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired code.")
+    _refuse_unless_ok(await _answer(db, principal, member, "login", body.code))
     async with tenant_session(principal.tenant_id) as tx:
         await tx.execute(
             update(m.SecondFactor)
@@ -391,6 +419,8 @@ async def remove_second_factor(
     """Remove one of the caller's own methods. Refused while it is the last
     allowed one and the policy requires two-factor from the caller."""
     member = await _own_member(db, principal)
+    # Locked before anything is counted: see `lock_member`.
+    await lock_member(db, member.id)
     if member.password_hash is None or not verify_password(
         body.current_password, member.password_hash
     ):

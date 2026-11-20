@@ -133,7 +133,14 @@ async def _seed(
         db.add(member)
         await db.flush()
         if email_enrolled:
-            db.add(m.SecondFactor(tenant_id=tenant, member_id=member.id, method="email"))
+            db.add(
+                m.SecondFactor(
+                    tenant_id=tenant,
+                    member_id=member.id,
+                    method="email",
+                    data={"address": subject},
+                )
+            )
         return Seeded(tenant=tenant, member_id=member.id, subject=subject)
 
 
@@ -348,7 +355,14 @@ async def test_an_enrolment_code_is_useless_for_login(
         await http.post(_ENROLL, headers=s.token())
         enrol_code = outbox.last_code()
     async with app_session(s.tenant) as db:
-        db.add(m.SecondFactor(tenant_id=s.tenant, member_id=s.member_id, method="email"))
+        db.add(
+            m.SecondFactor(
+                tenant_id=s.tenant,
+                member_id=s.member_id,
+                method="email",
+                data={"address": s.subject},
+            )
+        )
     async with _http() as http:
         r = await http.post(_VERIFY, json={"code": enrol_code}, headers=s.token("totp:challenge"))
     assert r.status_code == 401, r.text

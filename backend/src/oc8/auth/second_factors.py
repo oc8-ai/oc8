@@ -20,7 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
-from oc8.auth.two_factor_policy import enrolled_methods, is_org_admin
+from oc8.auth.two_factor_policy import (
+    enrolled_methods,
+    is_org_admin,
+    load_policy,
+    member_methods,
+    requires_member,
+)
 from oc8.secrets.service import SecretNotFound, delete_secret
 
 #: The existing audit category for actions on a member's own account
@@ -37,6 +43,7 @@ async def audit(
     member_id: uuid.UUID,
     method: str | None = None,
     principal: Principal | None = None,
+    reason: str | None = None,
 ) -> None:
     resource: dict[str, object] = {"member_id": str(member_id)}
     if method is not None:
@@ -49,8 +56,78 @@ async def audit(
         category=CATEGORY,
         action=action,
         resource=resource,
+        reason=reason,
         principal=principal,
     )
+
+
+async def lock_member(db: AsyncSession, member_id: uuid.UUID) -> m.OrgMember | None:
+    """`SELECT ... FOR UPDATE` on the member row.
+
+    Every change to a member's set of second factors takes this lock first,
+    so "is this the last method the policy requires?" and the removal happen
+    against one state: two concurrent removals of two different methods would
+    otherwise each see the other still present, and both succeed.
+    """
+    return (
+        await db.execute(select(m.OrgMember).where(m.OrgMember.id == member_id).with_for_update())
+    ).scalar_one_or_none()
+
+
+async def sign_in_address_changed(
+    db: AsyncSession,
+    member: m.OrgMember,
+    *,
+    actor_id: uuid.UUID | None = None,
+    principal: Principal | None = None,
+) -> None:
+    """The member's sign-in address changed: the email factor was confirmed
+    for the old one and goes.
+
+    If the policy requires a second factor from them and nothing allowed is
+    left, the grace period is set to have run out already: their next login
+    demands an enrolment instead of handing them a fresh week, or none at
+    all. Fail closed, because the change may not have been theirs.
+    """
+    # Flush first: the caller's address change must be what the policy
+    # check below sees, and nothing here may read the row from before it.
+    await db.flush()
+    if await lock_member(db, member.id) is None:
+        return
+    # An enrolment code mailed to the old address must not confirm the new one.
+    await db.execute(
+        update(m.EmailOtpChallenge)
+        .where(m.EmailOtpChallenge.member_id == member.id, m.EmailOtpChallenge.used_at.is_(None))
+        .values(used_at=dt.datetime.now(tz=dt.UTC))
+    )
+    removed = (
+        await db.execute(
+            delete(m.SecondFactor)
+            .where(m.SecondFactor.member_id == member.id, m.SecondFactor.method == "email")
+            .returning(m.SecondFactor.id)
+        )
+    ).first()
+    if removed is None:
+        return
+    policy = await load_policy(db, member.tenant_id)
+    required = policy.requirement != "off" and requires_member(
+        policy, admin=await is_org_admin(db, member)
+    )
+    if required and not await member_methods(db, member, policy):
+        member.totp_grace_started_at = dt.datetime.now(tz=dt.UTC) - dt.timedelta(
+            days=policy.grace_days, seconds=1
+        )
+    await audit(
+        db,
+        tenant_id=member.tenant_id,
+        actor_id=actor_id,
+        action="two_factor.removed",
+        member_id=member.id,
+        method="email",
+        principal=principal,
+        reason="email_changed",
+    )
+    await db.flush()
 
 
 async def _drop_totp_secret(db: AsyncSession, tenant_id: uuid.UUID, cred: m.TotpCredential) -> None:

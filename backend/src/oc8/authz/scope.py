@@ -447,6 +447,10 @@ async def _upsert_member(
     if existing is not None:
         if email and existing.email != email:
             existing.email = email
+            # Rare (the claim changed), so the hot path above stays write-free.
+            from oc8.auth.second_factors import sign_in_address_changed
+
+            await sign_in_address_changed(db, existing)
         return existing
 
     await db.execute(
