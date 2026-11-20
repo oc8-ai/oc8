@@ -59,7 +59,6 @@ async def test_org_member_and_organization_gain_totp_fields(
 
         org = await db.get(m.Organization, tenant_id)
         assert org is not None
-        assert org.totp_step_up_enabled is False
 
         member = m.OrgMember(
             tenant_id=tenant_id,

@@ -2,16 +2,30 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
 from oc8 import models as m
 from oc8.agents.hire import require_hire_approval, set_require_hire_approval
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.audit import append_event
+from oc8.auth.totp_gate import member_id_for_principal
+from oc8.auth.two_factor_policy import (
+    MAX_GRACE_DAYS,
+    METHODS,
+    SETTINGS_KEY,
+    TwoFactorPolicy,
+    enrolled_methods,
+    is_org_admin,
+    policy_for,
+    requires_member,
+)
 from oc8.authz.permissions import MANAGE, SETTINGS, VIEW, perm
 from oc8.copilot.followups import max_active_followups
 from oc8.credentials.service import list_credentials
+from oc8.mail.send import active_smtp_credential
 from oc8.schemas.base import CamelModel
 from oc8.triggers.zones import valid_timezone
 
@@ -24,6 +38,17 @@ class HireApprovalSetting(BaseModel):
 
 class CopilotSettings(CamelModel):
     max_active_followups: int = Field(ge=1, le=100)
+
+
+class TwoFactorSettingsUpdate(CamelModel):
+    requirement: Literal["off", "optional", "admins", "everyone"]
+    methods: list[Literal["totp", "email", "passkey"]]
+    grace_days: int = Field(ge=0, le=MAX_GRACE_DAYS)
+
+
+class TwoFactorSettings(TwoFactorSettingsUpdate):
+    #: Whether outgoing mail is configured; `email` cannot be allowed without it.
+    email_available: bool
 
 
 class OrganizationSettings(BaseModel):
@@ -208,3 +233,98 @@ async def put_copilot_settings(
     )
     await db.commit()
     return body
+
+
+async def _two_factor_dto(
+    db: DbSession, organization: m.Organization, policy: TwoFactorPolicy
+) -> TwoFactorSettings:
+    mail = await active_smtp_credential(db, tenant_id=organization.id) is not None
+    return TwoFactorSettings(
+        requirement=policy.requirement,
+        methods=list(policy.methods),
+        grace_days=policy.grace_days,
+        email_available=mail,
+    )
+
+
+@router.get(
+    "/settings/organization/two-factor",
+    response_model=TwoFactorSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, VIEW)))],
+)
+async def get_two_factor_settings(db: DbSession, principal: CurrentPrincipal) -> TwoFactorSettings:
+    organization = await db.get(m.Organization, principal.tenant_id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="organization not found")
+    return await _two_factor_dto(db, organization, policy_for(organization))
+
+
+@router.put(
+    "/settings/organization/two-factor",
+    response_model=TwoFactorSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, MANAGE)))],
+)
+async def put_two_factor_settings(
+    body: TwoFactorSettingsUpdate, db: DbSession, principal: CurrentPrincipal
+) -> TwoFactorSettings:
+    """Save the organisation's two-factor policy.
+
+    Refused when it would leave nothing to sign in with: no method while 2FA
+    is on, email without a mail server to send the code, or a policy that
+    requires the saving admin to use a method they do not hold. The last one
+    is what keeps a save from locking every admin out: whoever tightens the
+    policy has already proven they can satisfy it.
+    """
+    organization = await db.get(m.Organization, principal.tenant_id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="organization not found")
+    wanted = set(body.methods)
+    new = TwoFactorPolicy(
+        requirement=body.requirement,
+        methods=tuple(x for x in METHODS if x in wanted),
+        grace_days=body.grace_days,
+    )
+    if new.requirement != "off" and not new.methods:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Allow at least one method, or turn two-factor authentication off.",
+        )
+    if (
+        "email" in new.methods
+        and await active_smtp_credential(db, tenant_id=principal.tenant_id) is None
+    ):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "A code by email needs outgoing mail. Configure a mail server first.",
+        )
+    member_id = await member_id_for_principal(db, principal)
+    member = await db.get(m.OrgMember, member_id) if member_id is not None else None
+    admin = member is not None and await is_org_admin(db, member)
+    if requires_member(new, admin=admin):
+        held = await enrolled_methods(db, member.id) if member is not None else []
+        if not any(x in new.methods for x in held):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "This policy would require you to use a second factor you have not set up. "
+                "Set up one of the allowed methods first.",
+            )
+
+    old = policy_for(organization)
+    organization.settings = {**organization.settings, SETTINGS_KEY: new.as_settings()}
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="organization.settings.updated",
+        resource={
+            "organization_id": str(organization.id),
+            "by": principal.subject,
+            "two_factor": {"from": old.as_settings(), "to": new.as_settings()},
+        },
+        principal=principal,
+    )
+    dto = await _two_factor_dto(db, organization, new)
+    await db.commit()
+    return dto
