@@ -20,6 +20,8 @@ export interface Skill {
    * did not, so the assign button had nothing to send and faked success. */
   currentVersionId?: string | null;
   usedByAgents: number;
+  /** Live assignments (any scope) across every version of the skill. */
+  assignmentCount?: number;
   installs?: number;
   price?: "free" | number;
   updatedAt: string;

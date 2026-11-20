@@ -2842,14 +2842,39 @@ export function useImportSkills() {
   });
 }
 
+/** What publishing a version did to the skill's existing assignments. */
+export interface SkillVersionPublished extends Skill {
+  assignmentsUpdated: number;
+  assignmentsSkipped: number;
+}
+
+export interface PublishSkillVersionBody {
+  skillId: string;
+  /** Omitted: the server picks the next patch version. */
+  semver?: string;
+  instructions: string;
+  tools?: string[];
+  knowledge?: string[];
+  guardrails?: string[];
+  /** Move live assignments to the new version (those that still satisfy it). */
+  updateAssignments?: boolean;
+}
+
 export function usePublishSkillVersion() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      skillId,
-      ...body
-    }: { skillId: string; semver: string; instructions: string } & Partial<CreateSkillBody>) =>
-      api.post<Skill>(`/skills/${skillId}/versions`, body),
+    mutationFn: ({ skillId, ...body }: PublishSkillVersionBody) =>
+      api.post<SkillVersionPublished>(`/skills/${skillId}/versions`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.skills }),
+  });
+}
+
+/** A new local skill from the source's current version; no assignments copied. */
+export function useDuplicateSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name?: string }) =>
+      api.post<Skill>(`/skills/${id}/duplicate`, { name }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.skills }),
   });
 }

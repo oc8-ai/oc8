@@ -627,10 +627,23 @@ async def list_skills(
             .all()
         )
         by_id = {v.id: v for v in versions}
-    items = [
-        skill_to_dto(s, by_id.get(s.current_version_id) if s.current_version_id else None)
-        for s in rows
-    ]
+    counts: dict[uuid.UUID, int] = {}
+    if rows:
+        counted = await db.execute(
+            select(m.SkillVersion.skill_id, func.count(m.SkillAssignment.id))
+            .join(m.SkillAssignment, m.SkillAssignment.skill_version_id == m.SkillVersion.id)
+            .where(
+                m.SkillVersion.skill_id.in_([s.id for s in rows]),
+                m.SkillAssignment.deleted_at.is_(None),
+            )
+            .group_by(m.SkillVersion.skill_id)
+        )
+        counts = {skill_id: n for skill_id, n in counted.all()}
+    items = []
+    for s in rows:
+        dto = skill_to_dto(s, by_id.get(s.current_version_id) if s.current_version_id else None)
+        dto.assignment_count = counts.get(s.id, 0)
+        items.append(dto)
     return Page(items=items, total_count=total)
 
 

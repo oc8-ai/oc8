@@ -3,6 +3,7 @@ import {
   Blocks,
   BookOpen,
   Check,
+  Copy,
   Download,
   Plus,
   Search,
@@ -21,6 +22,8 @@ import {
   type CreateSkillBody,
   type ImportCandidate,
   useCreateSkill,
+  useDuplicateSkill,
+  usePublishSkillVersion,
   useImportSkills,
   usePreviewSkillImport,
   useAgents,
@@ -120,6 +123,7 @@ export function SkillsPage() {
   );
 
   const createSkill = useCreateSkill();
+  const duplicateAction = useDuplicateAction(setSelected);
   const restoreSkill = useRestoreSkill();
 
   const handleCreate = async (draft: SkillDraft) => {
@@ -234,6 +238,8 @@ export function SkillsPage() {
                   archived={queryState.includeArchived && Boolean(s.deletedAt)}
                   onRestore={() => handleRestore(s)}
                   restoring={restoreSkill.isPending}
+                  onDuplicate={() => duplicateAction.run(s)}
+                  duplicating={duplicateAction.pending}
                 />
               ))}
             </div>
@@ -248,7 +254,9 @@ export function SkillsPage() {
 
       {selectedLive && (
         <SkillDrawer
+          key={selectedLive.id}
           skill={selectedLive}
+          onDuplicated={setSelected}
           categoryLabel={catLabel(selectedLive.category)}
           onClose={() => setSelected(null)}
         />
@@ -289,6 +297,41 @@ function StatCard({
   );
 }
 
+const splitList = (raw: string, sep: RegExp) =>
+  raw
+    .split(sep)
+    .map((x) => x.trim())
+    .filter(Boolean);
+const splitComma = (raw: string) => splitList(raw, /,/);
+const splitLines = (raw: string) => splitList(raw, /\n/);
+const sameList = (a: string[], b: string[]) =>
+  a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** Duplicates a skill under the localized default name and reports the copy. */
+function useDuplicateAction(onDuplicated?: (copy: Skill) => void) {
+  const t = useT();
+  const duplicate = useDuplicateSkill();
+  return {
+    pending: duplicate.isPending,
+    run: (skill: Skill) =>
+      duplicate.mutate(
+        { id: skill.id, name: t(`${skill.name} (copy)`, `${skill.name} (Kopie)`) },
+        {
+          onSuccess: (copy) => {
+            toast.success(t("Skill duplicated", "Skill dupliziert"), { description: copy.name });
+            onDuplicated?.(copy);
+          },
+          onError: (e: unknown) =>
+            toast.error(
+              e instanceof Error
+                ? e.message
+                : t("Could not duplicate the skill.", "Skill konnte nicht dupliziert werden."),
+            ),
+        },
+      ),
+  };
+}
+
 function SkillCard({
   skill,
   categoryLabel,
@@ -296,6 +339,8 @@ function SkillCard({
   archived = false,
   onRestore,
   restoring = false,
+  onDuplicate,
+  duplicating = false,
 }: {
   skill: Skill;
   categoryLabel: string;
@@ -303,6 +348,8 @@ function SkillCard({
   archived?: boolean;
   onRestore?: () => void;
   restoring?: boolean;
+  onDuplicate?: () => void;
+  duplicating?: boolean;
 }) {
   const t = useT();
   return (
@@ -378,13 +425,23 @@ function SkillCard({
               : t("Restore", "Wiederherstellen")}
           </button>
         ) : (
-          <button
-            type="button"
-            onClick={onOpen}
-            className="rounded-md border border-border px-2.5 py-1 text-xs transition hover:border-primary/50 hover:text-foreground"
-          >
-            {t("Open", "Öffnen")}
-          </button>
+          <div className="flex gap-1.5">
+            <button
+              type="button"
+              onClick={onDuplicate}
+              disabled={duplicating}
+              className="inline-flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs transition hover:border-primary/50 hover:text-foreground disabled:opacity-50"
+            >
+              <Copy className="h-3 w-3" /> {t("Duplicate", "Duplizieren")}
+            </button>
+            <button
+              type="button"
+              onClick={onOpen}
+              className="rounded-md border border-border px-2.5 py-1 text-xs transition hover:border-primary/50 hover:text-foreground"
+            >
+              {t("Open", "Öffnen")}
+            </button>
+          </div>
         )}
       </div>
     </Panel>
@@ -395,10 +452,12 @@ export function SkillDrawer({
   skill,
   categoryLabel,
   onClose,
+  onDuplicated,
 }: {
   skill: Skill;
   categoryLabel: string;
   onClose: () => void;
+  onDuplicated?: (copy: Skill) => void;
 }) {
   const t = useT();
   const { lang } = useLang();
@@ -407,25 +466,87 @@ export function SkillDrawer({
   const agents = agentsPage?.items ?? [];
   const assign = useAssignSkill();
   const updateSkill = useUpdateSkill();
+  const publish = usePublishSkillVersion();
+  const duplicateAction = useDuplicateAction(onDuplicated);
   const [target, setTarget] = useState("");
   const [name, setName] = useState(skill.name);
   const [description, setDescription] = useState(skill.description);
   const [category, setCategory] = useState(skill.category);
+  const [instructions, setInstructions] = useState(skill.instructions);
+  const [toolsText, setToolsText] = useState(skill.tools.join(", "));
+  const [knowledgeText, setKnowledgeText] = useState((skill.knowledge ?? []).join("\n"));
+  const [guardrailsText, setGuardrailsText] = useState(skill.guardrails.join("\n"));
+  const [updateAssignments, setUpdateAssignments] = useState(true);
 
-  const handleSave = () => {
-    if (!name.trim()) return;
+  // Only a skill we authored may be changed in place; anything imported or
+  // shipped is changed by duplicating it.
+  const editable = skill.origin === "local";
+  const contentChanged =
+    editable &&
+    (instructions.trim() !== skill.instructions.trim() ||
+      !sameList(splitComma(toolsText), skill.tools) ||
+      !sameList(splitLines(knowledgeText), skill.knowledge ?? []) ||
+      !sameList(splitLines(guardrailsText), skill.guardrails));
+  const assignedCount = skill.assignmentCount ?? 0;
+
+  const saveError = (e: unknown) =>
+    toast.error(
+      e instanceof Error
+        ? e.message
+        : t("Could not save changes.", "Änderungen konnten nicht gespeichert werden."),
+    );
+
+  const patchMeta = (onDone?: () => void) =>
     updateSkill.mutate(
       { id: skill.id, name: name.trim(), description: description.trim(), category },
       {
         onSuccess: () => {
-          toast.success(t("Skill updated", "Skill aktualisiert"), { description: name.trim() });
+          if (onDone) onDone();
+          else
+            toast.success(t("Skill updated", "Skill aktualisiert"), { description: name.trim() });
         },
-        onError: (e: unknown) =>
-          toast.error(
-            e instanceof Error
-              ? e.message
-              : t("Could not save changes.", "Änderungen konnten nicht gespeichert werden."),
-          ),
+        onError: saveError,
+      },
+    );
+
+  const handleSave = () => {
+    if (!name.trim()) return;
+    if (!contentChanged) {
+      patchMeta();
+      return;
+    }
+    publish.mutate(
+      {
+        skillId: skill.id,
+        instructions: instructions.trim(),
+        tools: splitComma(toolsText),
+        knowledge: splitLines(knowledgeText),
+        guardrails: splitLines(guardrailsText),
+        updateAssignments: assignedCount > 0 && updateAssignments,
+      },
+      {
+        onSuccess: (res) => {
+          const skipped = res.assignmentsSkipped ?? 0;
+          toast.success(
+            t(`Saved as version ${res.version}`, `Als Version ${res.version} gespeichert`),
+            {
+              description:
+                skipped > 0
+                  ? t(
+                      `${skipped} agents stayed on the old version because they lack a tool or knowledge base the skill needs.`,
+                      `${skipped} Agenten bleiben auf der alten Version, weil ihnen ein Tool oder eine Wissensdatenbank fehlt, die der Skill braucht.`,
+                    )
+                  : name.trim(),
+            },
+          );
+          if (
+            name.trim() !== skill.name ||
+            description.trim() !== skill.description ||
+            category !== skill.category
+          )
+            patchMeta(() => undefined);
+        },
+        onError: saveError,
       },
     );
   };
@@ -440,6 +561,14 @@ export function SkillDrawer({
         <>
           <button
             type="button"
+            disabled={duplicateAction.pending}
+            onClick={() => duplicateAction.run(skill)}
+            className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-50"
+          >
+            <Copy className="h-3.5 w-3.5" /> {t("Duplicate", "Duplizieren")}
+          </button>
+          <button
+            type="button"
             onClick={onClose}
             className="rounded-md border border-border px-3 py-2 text-sm text-muted-foreground transition hover:text-foreground"
           >
@@ -447,11 +576,13 @@ export function SkillDrawer({
           </button>
           <button
             type="button"
-            disabled={!name.trim() || updateSkill.isPending}
+            disabled={!name.trim() || updateSkill.isPending || publish.isPending}
             onClick={handleSave}
             className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
-            {updateSkill.isPending ? t("Saving…", "Speichern …") : t("Save", "Speichern")}
+            {updateSkill.isPending || publish.isPending
+              ? t("Saving…", "Speichern …")
+              : t("Save", "Speichern")}
           </button>
         </>
       }
@@ -497,45 +628,104 @@ export function SkillDrawer({
         </div>
       </Section>
 
-      <Section icon={BookOpen} title={t("Instructions", "Anweisungen")}>
-        <p className="text-sm text-muted-foreground">{skill.instructions}</p>
-      </Section>
-
-      <Section icon={Wrench} title={t("Required tools (MCP)", "Benötigte Tools (MCP)")}>
-        <div className="flex flex-wrap gap-1.5">
-          {skill.tools.map((tool) => (
-            <span
-              key={tool}
-              className="rounded border border-border bg-background/50 px-2 py-1 text-xs"
+      {editable ? (
+        <Section icon={BookOpen} title={t("Content", "Inhalt")}>
+          <div className="space-y-3">
+            <Field label={t("Instructions", "Anweisungen")}>
+              <textarea
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+                rows={10}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary/60"
+              />
+            </Field>
+            <Field label={t("Tools (comma-separated)", "Tools (kommagetrennt)")}>
+              <input
+                value={toolsText}
+                onChange={(e) => setToolsText(e.target.value)}
+                placeholder="Accounting, ERP, OCR"
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
+              />
+            </Field>
+            <Field
+              label={t("Knowledge bases (one per line)", "Wissensdatenbanken (eine pro Zeile)")}
             >
-              {tool}
-            </span>
-          ))}
-        </div>
-      </Section>
-
-      {skill.knowledge && skill.knowledge.length > 0 && (
-        <Section icon={BookOpen} title={t("Knowledge bases", "Wissensdatenbanken")}>
-          <ul className="space-y-1 text-sm text-muted-foreground">
-            {skill.knowledge.map((k) => (
-              <li key={k} className="flex items-center gap-2">
-                <Check className="h-3.5 w-3.5 text-primary" /> {k}
-              </li>
-            ))}
-          </ul>
+              <textarea
+                value={knowledgeText}
+                onChange={(e) => setKnowledgeText(e.target.value)}
+                rows={3}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
+              />
+            </Field>
+            <Field label={t("Guardrails (one per line)", "Guardrails (eine pro Zeile)")}>
+              <textarea
+                value={guardrailsText}
+                onChange={(e) => setGuardrailsText(e.target.value)}
+                rows={4}
+                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
+              />
+            </Field>
+            {contentChanged && assignedCount > 0 && (
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={updateAssignments}
+                  onChange={(e) => setUpdateAssignments(e.target.checked)}
+                />
+                {t(
+                  `Also update the ${assignedCount} agents that use this skill`,
+                  `Auch die ${assignedCount} Agenten aktualisieren, die diesen Skill nutzen`,
+                )}
+              </label>
+            )}
+          </div>
         </Section>
-      )}
+      ) : (
+        <>
+          <p className="mt-5 rounded-md border border-border bg-background/50 px-3 py-2 text-xs text-muted-foreground">
+            {t("Duplicate this skill to change it", "Dupliziere diesen Skill, um ihn anzupassen")}
+          </p>
+          <Section icon={BookOpen} title={t("Instructions", "Anweisungen")}>
+            <p className="text-sm text-muted-foreground">{skill.instructions}</p>
+          </Section>
 
-      <Section icon={ShieldAlert} title={t("Guardrails", "Guardrails")}>
-        <ul className="space-y-1 text-sm text-muted-foreground">
-          {skill.guardrails.map((g) => (
-            <li key={g} className="flex items-start gap-2">
-              <ShieldAlert className="mt-0.5 h-3.5 w-3.5 text-[color:var(--status-warning)]" />
-              <span>{g}</span>
-            </li>
-          ))}
-        </ul>
-      </Section>
+          <Section icon={Wrench} title={t("Required tools (MCP)", "Benötigte Tools (MCP)")}>
+            <div className="flex flex-wrap gap-1.5">
+              {skill.tools.map((tool) => (
+                <span
+                  key={tool}
+                  className="rounded border border-border bg-background/50 px-2 py-1 text-xs"
+                >
+                  {tool}
+                </span>
+              ))}
+            </div>
+          </Section>
+
+          {skill.knowledge && skill.knowledge.length > 0 && (
+            <Section icon={BookOpen} title={t("Knowledge bases", "Wissensdatenbanken")}>
+              <ul className="space-y-1 text-sm text-muted-foreground">
+                {skill.knowledge.map((k) => (
+                  <li key={k} className="flex items-center gap-2">
+                    <Check className="h-3.5 w-3.5 text-primary" /> {k}
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
+
+          <Section icon={ShieldAlert} title={t("Guardrails", "Guardrails")}>
+            <ul className="space-y-1 text-sm text-muted-foreground">
+              {skill.guardrails.map((g) => (
+                <li key={g} className="flex items-start gap-2">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 text-[color:var(--status-warning)]" />
+                  <span>{g}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        </>
+      )}
 
       <Section icon={Users2} title={t("Assign to agent", "An Agent zuweisen")}>
         {/* This used to be a button that showed "Skill assigned" and closed
