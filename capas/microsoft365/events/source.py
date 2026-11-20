@@ -19,12 +19,14 @@ The mailbox and the folder are checked and quoted before they go into a path.
 The cursor is `{mailbox, folder, link, since, seen}`: `link` is where the
 next delta request goes (Graph's `@odata.nextLink` or `@odata.deltaLink`),
 `since` the time the baseline was taken (less a margin for clock skew), and
-`seen` the ids of the last 5,000 messages already handled. A delta round
+`seen` the (id, received) pairs of the last 5,000 messages already handled
+(`since` moves past what is trimmed from it). A delta round
 lists new and changed messages alike: a message counts as new when it is not
 removed, not a draft, received at or after `since`, and not seen before. The
 baseline drains the first delta round without events, over several polls if
 it has to (`baseline: true`), and marks what arrived meanwhile as seen. An
-expired delta link (HTTP 410) takes a new baseline.
+expired delta link (HTTP 410, or 400 with a sync-state code) takes a new
+baseline.
 
 What a poll hands over follows the `email` capa's rules: one event per mail
 with the Graph message id as its delivery id (never the Message-ID, which
@@ -69,6 +71,8 @@ POLL_BUDGET_SECONDS = 40.0
 MAX_TEXT_CHARS: Final = 20_000
 #: Message ids remembered as handled (changed later: still not new).
 MAX_SEEN: Final = 5_000
+#: A handled mail in the cursor: its id and when it was received.
+Seen = tuple[str, str]
 #: Delta page size asked for.
 PAGE_SIZE: Final = 100
 #: How far before the baseline a message may say it was received and still
@@ -90,6 +94,9 @@ _ADDRESS = re.compile(
     r"[^@\s<>()\[\],;:\"/\\?#%]+@[^@\s<>()\[\],;:\"/\\?#%]+\.[^@\s<>()\[\],;:\"/\\?#%]+"
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
+#: Mailboxes compare equal but for ASCII case only, as the tools do.
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+_SYNC_STATE_CODES: Final = frozenset({"syncstatenotfound", "syncstateinvalid", "resyncrequired"})
 _CODE = re.compile(r"[A-Za-z0-9_.]{1,64}")
 #: Senders of delivery reports, whatever their content type says: Exchange
 #: writes its own reports without internet headers.
@@ -114,6 +121,13 @@ class GraphError(MailboxError):
         named = f" ({code})" if code else ""
         super().__init__(f"Microsoft Graph answered HTTP {status}{named}{hint}.")
         self.status = status
+        self.code = code
+
+    @property
+    def sync_state_lost(self) -> bool:
+        """Graph no longer has the delta link's sync state: 410, or 400 with
+        one of its sync-state codes."""
+        return self.status == 410 or (self.status == 400 and self.code.lower() in _SYNC_STATE_CODES)
 
 
 # --- settings --------------------------------------------------------------------
@@ -133,7 +147,12 @@ def _mailbox(value: Any) -> str:
 
 def _folder(value: Any) -> str:
     folder = value if isinstance(value, str) and value else DEFAULT_FOLDER
-    if len(folder) > 255 or _CONTROL.search(folder) or folder.strip() != folder:
+    if (
+        len(folder) > 255
+        or _CONTROL.search(folder)
+        or folder.strip() != folder
+        or folder in (".", "..")
+    ):
         raise MailboxError("The folder must be a folder name such as inbox, or a folder ID.")
     return folder
 
@@ -162,7 +181,7 @@ def _own_mailbox(login: Mapping[str, str], mailbox: str) -> str:
     if login.get("grant_type") != "authorization_code":
         return mailbox
     own = str(login.get("account_label") or "").strip()
-    if not own or mailbox.casefold() != own.casefold():
+    if not own or mailbox.translate(_ASCII_LOWER) != own.translate(_ASCII_LOWER):
         who = own or "its connected person"
         raise MailboxError(f"This connection acts as {who} only: set that mailbox.")
     return own
@@ -280,14 +299,14 @@ def _received(item: Mapping[str, Any]) -> datetime | None:
     return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
 
 
-def _candidate(item: Mapping[str, Any], since: datetime) -> str | None:
-    """The id of a message that may be new mail: not removed, not a draft,
-    received at or after `since`."""
+def _candidate(item: Mapping[str, Any], since: datetime) -> tuple[str, datetime] | None:
+    """The id and receive time of a message that may be new mail: not
+    removed, not a draft, received at or after `since`."""
     mid = item.get("id")
     if not isinstance(mid, str) or not mid or "@removed" in item or item.get("isDraft") is True:
         return None
     received = _received(item)
-    return mid if received is not None and received >= since else None
+    return (mid, received) if received is not None and received >= since else None
 
 
 def _out_of_time(deadline: float, done: int, starved: bool) -> bool:
@@ -300,16 +319,37 @@ def _out_of_time(deadline: float, done: int, starved: bool) -> bool:
 
 
 def _cursor(
-    graph: _Graph, link: str, since: datetime, seen: Sequence[str], **extra: Any
+    graph: _Graph, link: str, since: datetime, seen: Sequence[Seen], **extra: Any
 ) -> dict[str, Any]:
+    """`seen` keeps the last MAX_SEEN (id, received) pairs. What is trimmed
+    is forgotten, so `since` moves past the latest receive time trimmed: a
+    later change to such a mail is never taken for new mail. (Graph gives
+    whole seconds; a mail received in that very second also counts as old.)"""
+    kept = list(seen)[-MAX_SEEN:]
+    trimmed = list(seen)[: max(len(seen) - MAX_SEEN, 0)]
+    if trimmed:
+        latest = max(datetime.fromisoformat(received) for _mid, received in trimmed)
+        since = max(since, latest + timedelta(seconds=1))
     return {
         "mailbox": graph.mailbox,
         "folder": graph.folder,
         "link": link,
         "since": since.isoformat(),
-        "seen": list(seen)[-MAX_SEEN:],
+        "seen": [list(pair) for pair in kept],
         **extra,
     }
+
+
+def _seen_pair(value: Any) -> bool:
+    if not (isinstance(value, list) and len(value) == 2):
+        return False
+    mid, received = value
+    if not (isinstance(mid, str) and isinstance(received, str)):
+        return False
+    try:
+        return datetime.fromisoformat(received).tzinfo is not None
+    except ValueError:
+        return False
 
 
 def _usable(cursor: Mapping[str, Any] | None, mailbox: str, folder: str) -> dict[str, Any] | None:
@@ -325,7 +365,7 @@ def _usable(cursor: Mapping[str, Any] | None, mailbox: str, folder: str) -> dict
         or cursor.get("mailbox") != mailbox
         or cursor.get("folder") != folder
         or not isinstance(seen, list)
-        or not all(isinstance(s, str) for s in seen)
+        or not all(_seen_pair(s) for s in seen)
         or not isinstance(since, str)
     ):
         return None
@@ -335,7 +375,8 @@ def _usable(cursor: Mapping[str, Any] | None, mailbox: str, folder: str) -> dict
         return None
     if when.tzinfo is None:
         return None
-    return {"link": link, "since": when, "seen": seen, "baseline": cursor.get("baseline") is True}
+    pairs = [(mid, received) for mid, received in seen]
+    return {"link": link, "since": when, "seen": pairs, "baseline": cursor.get("baseline") is True}
 
 
 async def _baseline(
@@ -343,7 +384,7 @@ async def _baseline(
     deadline: float,
     link: str | None = None,
     since: datetime | None = None,
-    seen: Sequence[str] = (),
+    seen: Sequence[Seen] = (),
 ) -> dict[str, Any]:
     """Drain the first delta round without events, up to the delta link, or
     as far as the time allows (the next poll goes on). What arrived since
@@ -356,7 +397,11 @@ async def _baseline(
     while True:
         page = await graph.page(current, first=first)
         first = False
-        marked += [mid for item in _items(page) if (mid := _candidate(item, since))]
+        marked += [
+            (found[0], found[1].isoformat())
+            for item in _items(page)
+            if (found := _candidate(item, since))
+        ]
         current, done = _next(page)
         if done:
             return _cursor(graph, current, since, marked)
@@ -369,16 +414,17 @@ async def _round(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     link: str = state["link"]
     since: datetime = state["since"]
-    seen: list[str] = list(state["seen"])
-    known = set(seen)
+    seen: list[Seen] = list(state["seen"])
+    known = {mid for mid, _received in seen}
     events: list[dict[str, Any]] = []
     done = 0
     while True:
         page = await graph.page(link)
         for item in _items(page):
-            mid = _candidate(item, since)
-            if mid is None or mid in known:
+            found = _candidate(item, since)
+            if found is None or found[0] in known:
                 continue
+            mid, received = found
             if done >= limit or _out_of_time(deadline, done, starved):
                 # Stop inside this page: the next poll asks for it again and
                 # skips what is seen.
@@ -387,7 +433,7 @@ async def _round(
             event = await _event(graph, mid)
             if event is not None:
                 events.append(event)
-            seen.append(mid)
+            seen.append((mid, received.isoformat()))
             known.add(mid)
             done += 1
         link, finished = _next(page)
@@ -417,7 +463,7 @@ async def poll(
         try:
             next_cursor, events = await _round(graph, state, deadline, starved, MAX_EVENTS_PER_TICK)
         except GraphError as exc:
-            if exc.status != 410:
+            if not exc.sync_state_lost:
                 raise
             # The delta link expired (Graph keeps its sync state for a limited
             # time): start over from now, firing nothing for the gap.

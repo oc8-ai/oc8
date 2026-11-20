@@ -10,7 +10,7 @@ import asyncio
 import sys
 import time
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -80,6 +80,9 @@ class FakeGraph:
         self.fail_get: dict[str, int] = {}
         self.fail_header_get: set[str] = set()
         self.expired = False
+        #: How an expired delta link is answered: Graph uses 410, or 400 with
+        #: one of its sync-state codes.
+        self.expired_answer: tuple[int, str] = (410, "SyncStateNotFound")
         self.graph_status = 200
         self.next_link_host = "graph.microsoft.com"
         self._ids = 0
@@ -155,7 +158,8 @@ class FakeGraph:
     def _delta(self, query: dict[str, list[str]]) -> httpx.Response:
         if "$deltatoken" in query:
             if self.expired:
-                return httpx.Response(410, json={"error": {"code": "SyncStateNotFound"}})
+                status, code = self.expired_answer
+                return httpx.Response(status, json={"error": {"code": code}})
             items = self._since(int(query["$deltatoken"][0]))
         elif "$skiptoken" in query:
             kind, start, offset = query["$skiptoken"][0].split("-")
@@ -294,6 +298,31 @@ async def test_new_mail_fires_once_with_payload_and_summary(graph: FakeGraph) ->
     assert again.events == []
 
 
+async def test_a_mail_trimmed_from_seen_never_fires_again(
+    graph: FakeGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Past MAX_SEEN ids the oldest are forgotten; `since` moves past them, so
+    a later change to one (marked read, moved back) is not new mail."""
+    monkeypatch.setattr(source, "MAX_SEEN", 3)
+    cursor = await baseline(graph)
+    start = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def at(i: int) -> str:
+        return (start + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    mails = [graph.add(subject=f"m{i}", received=at(i)) for i in range(5)]
+    events, cursor = await drain(cursor, rounds=2)
+    assert [e.delivery_id for e in events] == mails
+    assert len(cursor["seen"]) == 3
+    graph.touch(mails[0])  # evicted from `seen`
+    graph.touch(mails[1])  # evicted too
+    result = await source.poll(FIELDS, CONFIG, cursor)
+    assert result.events == []
+    later = graph.add(subject="later", received=at(10))
+    result = await source.poll(FIELDS, CONFIG, result.next_cursor)
+    assert [e.delivery_id for e in result.events] == [later]
+
+
 async def test_changed_and_removed_items_do_not_fire(graph: FakeGraph) -> None:
     old = graph.add(subject="old", received=OLD)
     gone = graph.add(subject="old too", received=OLD)
@@ -379,6 +408,26 @@ async def test_an_expired_delta_link_takes_a_new_baseline(graph: FakeGraph) -> N
     fresh = graph.add(subject="after")
     after = await source.poll(FIELDS, CONFIG, result.next_cursor)
     assert [e.delivery_id for e in after.events] == [fresh]
+
+
+@pytest.mark.parametrize("code", ["syncStateNotFound", "SyncStateInvalid", "RESYNCREQUIRED"])
+async def test_a_400_for_an_expired_sync_state_takes_a_new_baseline(
+    graph: FakeGraph, code: str
+) -> None:
+    cursor = await baseline(graph)
+    graph.add(subject="lost in the gap")
+    graph.expired = True
+    graph.expired_answer = (400, code)
+    result = await source.poll(FIELDS, CONFIG, cursor)
+    assert result.events == [] and "rebaselined_at" in result.next_cursor
+
+
+async def test_another_400_is_an_error(graph: FakeGraph) -> None:
+    cursor = await baseline(graph)
+    graph.expired = True
+    graph.expired_answer = (400, "BadRequest")
+    with pytest.raises(source.MailboxError, match="400"):
+        await source.poll(FIELDS, CONFIG, cursor)
 
 
 async def test_another_mailbox_or_folder_takes_a_new_baseline(graph: FakeGraph) -> None:
@@ -571,6 +620,13 @@ async def test_a_mailbox_that_is_not_an_address_or_guid_is_refused_before_any_re
 ) -> None:
     with pytest.raises(source.MailboxError):
         await source.poll(FIELDS, {"mailbox": mailbox, "folder": "inbox"}, None)
+    assert graph.requests == []
+
+
+@pytest.mark.parametrize("folder", [".", ".."])
+async def test_a_dot_folder_is_refused_before_any_request(graph: FakeGraph, folder: str) -> None:
+    with pytest.raises(source.MailboxError, match="folder"):
+        await source.poll(FIELDS, {"mailbox": MAILBOX, "folder": folder}, None)
     assert graph.requests == []
 
 

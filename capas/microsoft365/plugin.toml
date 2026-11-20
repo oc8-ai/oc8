@@ -37,8 +37,11 @@ editor_label = "On new email"
 # The mailbox watched: a UPN or Graph object ID, by default the setup's
 # default mailbox. No allowed_from: the setup keeps no list of mailboxes, and
 # an app registration with Mail.Read reads every mailbox of the tenant, as
-# its tools may (userId) -- the trigger widens nothing. An account signed in
-# for the organisation watches its own mailbox only.
+# its tools may (userId) -- the trigger widens nothing. To narrow that reach,
+# an Exchange admin can scope the app to a mail-enabled group with an
+# Application Access Policy (or RBAC for Applications); Graph then refuses
+# mailboxes outside it, for the tools and the trigger alike. An account signed
+# in for the organisation watches its own mailbox only.
 #
 # Known limits:
 # - Loop protection compares senders with this setting, so with a Graph
