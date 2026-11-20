@@ -8,6 +8,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -15,7 +17,10 @@ import httpx
 from oc8.modelrouter.http_errors import raise_for_status_with_body
 from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.reasoning import reasoning_field, reasoning_tokens_from, split_think_tags
+from oc8.modelrouter.reasoning_support import openai_thinks
+from oc8.modelrouter.streaming import stream_openai_sse
 from oc8.modelrouter.types import (
+    CompletionChunk,
     CompletionRequest,
     CompletionResult,
     ImagePart,
@@ -200,13 +205,24 @@ def _merge_consecutive_turns(out: list[dict[str, Any]]) -> list[dict[str, Any]]:
 _RESERVED_PAYLOAD_KEYS = frozenset({"model", "messages", "temperature", "max_tokens", "tools"})
 
 
-def build_payload(req: CompletionRequest) -> dict[str, Any]:
+def build_payload(req: CompletionRequest, *, openai_api: bool = False) -> dict[str, Any]:
+    """The Chat Completions body. `openai_api` is api.openai.com itself: it
+    takes `max_completion_tokens` for every model (`max_tokens` is deprecated
+    there and refused by the reasoning models), and its reasoning models take
+    no `temperature`. A gateway keeps `max_tokens`, the only name vLLM,
+    LiteLLM and older servers know; `adapt_refused_payload` covers the ones
+    that have moved on."""
     payload: dict[str, Any] = {
         "model": req.model,
         "messages": to_openai_messages(req.messages),
-        "temperature": req.params.temperature,
-        "max_tokens": req.params.max_tokens,
     }
+    if openai_api:
+        payload["max_completion_tokens"] = req.params.max_tokens
+        if not openai_thinks(req.model):
+            payload["temperature"] = req.params.temperature
+    else:
+        payload["temperature"] = req.params.temperature
+        payload["max_tokens"] = req.params.max_tokens
     # Only a level is mapped. A free-form `effort` alone was never sent here
     # and still is not (spec §6: no level keeps today's behaviour).
     if req.params.reasoning is not None:
@@ -228,6 +244,10 @@ def build_payload(req: CompletionRequest) -> dict[str, Any]:
     if req.params.extra:
         for key, value in req.params.extra.items():
             if key in _RESERVED_PAYLOAD_KEYS:
+                continue
+            # api.openai.com gets its budget under this name from the adapter;
+            # on a gateway it stays the operator's own key, as before.
+            if openai_api and key == "max_completion_tokens":
                 continue
             # A level sets `reasoning_effort` itself; without one the operator's
             # own key passes through exactly as before.
@@ -279,11 +299,77 @@ def parse_response(data: dict[str, Any], *, provider: str, model: str) -> Comple
     )
 
 
+#: The provider says `max_tokens` is the wrong name. Not any complaint about
+#: its value ("max_tokens too large", "must be at least 1"): those are a
+#: budget problem, which trim.py and the length retry answer.
+_MAX_TOKENS_REFUSED = re.compile(
+    r"max_completion_tokens"
+    r"|(?:unsupported|not supported)[^.]*\bmax_tokens\b"
+    r"|\bmax_tokens\b[^.]*(?:unsupported|not supported)",
+    re.IGNORECASE,
+)
+_TEMPERATURE_REFUSED = re.compile(r"temperature", re.IGNORECASE)
+#: Only a malformed or unprocessable request can be a refused parameter.
+_PARAM_REFUSAL_STATUSES = frozenset({400, 422})
+
+
+def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, Any] | None:
+    """`payload` without the parameter the provider just refused, or None if
+    this error is not that. Read from the provider's own words, like the
+    reasoning retry in router.py: no list of model names could keep up with
+    which server wants `max_completion_tokens` or refuses `temperature`.
+    Each call removes one key, so retrying on it always ends."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    if exc.response.status_code not in _PARAM_REFUSAL_STATUSES:
+        return None
+    try:
+        text = exc.response.text
+    except Exception:
+        text = str(exc).split(": ", 1)[-1]
+    if "max_tokens" in payload and _MAX_TOKENS_REFUSED.search(text):
+        adapted = {k: v for k, v in payload.items() if k != "max_tokens"}
+        adapted["max_completion_tokens"] = payload["max_tokens"]
+        return adapted
+    if "temperature" in payload and _TEMPERATURE_REFUSED.search(text):
+        return {k: v for k, v in payload.items() if k != "temperature"}
+    return None
+
+
 async def post_completion(
     url: str, payload: dict[str, Any], headers: dict[str, str]
 ) -> dict[str, Any]:
+    """POST the completion, once more per parameter the provider refuses."""
     async with httpx.AsyncClient(timeout=180.0) as client:
-        resp = await client.post(url, json=payload, headers=headers)
-        raise_for_status_with_body(resp)
-        result: dict[str, Any] = resp.json()
-        return result
+        while True:
+            resp = await client.post(url, json=payload, headers=headers)
+            try:
+                raise_for_status_with_body(resp)
+            except httpx.HTTPStatusError as exc:
+                adapted = adapt_refused_payload(payload, exc)
+                if adapted is None:
+                    raise
+                payload = adapted
+                continue
+            result: dict[str, Any] = resp.json()
+            return result
+
+
+async def stream_completion(
+    url: str, payload: dict[str, Any], headers: dict[str, str]
+) -> AsyncIterator[CompletionChunk]:
+    """`stream_openai_sse`, once more per parameter the provider refuses. A
+    refusal arrives before any SSE line, so nothing has reached the caller;
+    after the first chunk an error is passed on untouched."""
+    while True:
+        emitted = False
+        try:
+            async for chunk in stream_openai_sse(url, payload, headers):
+                emitted = True
+                yield chunk
+            return
+        except httpx.HTTPStatusError as exc:
+            adapted = None if emitted else adapt_refused_payload(payload, exc)
+            if adapted is None:
+                raise
+            payload = adapted

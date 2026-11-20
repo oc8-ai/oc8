@@ -80,7 +80,8 @@ async def test_no_extra_configured_adds_nothing(monkeypatch: pytest.MonkeyPatch)
 
     await adapter.complete(_req(None))
 
-    assert set(calls[0]) == {"model", "max_tokens", "messages", "temperature"}
+    # claude-sonnet-5 refuses `temperature`, so it is not sent at all.
+    assert set(calls[0]) == {"model", "max_tokens", "messages"}
 
 
 def _openai_req(extra: dict[str, Any] | None) -> CompletionRequest:
