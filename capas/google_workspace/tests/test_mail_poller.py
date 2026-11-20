@@ -1,8 +1,8 @@
 """The `mail.received` poller (events/source.py) against a fake Gmail behind
-core's provider transport seam (`oc8.oauth.http`): the delegated token, the
-history baseline, new mail, paging, an expired history id, loop protection, a
-poison message, the summary the agent gets, the time budget, and that no
-secret ever reaches an error."""
+core's provider transport seam (`oc8.oauth.http`): the token core hands over,
+the mailbox the login may act as, the history baseline, new mail, paging, an
+expired history id, loop protection, a poison message, the summary the agent
+gets, the time budget, and that no secret ever reaches an error."""
 
 from __future__ import annotations
 
@@ -11,17 +11,13 @@ import base64
 import json
 import sys
 import time
-import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import httpx
-import jwt
 import pytest
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from oc8.oauth import http as oauth_http
 
@@ -48,32 +44,18 @@ _evict()
 
 pytestmark = pytest.mark.asyncio
 
-_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-PRIVATE_PEM = _KEY.private_bytes(
-    serialization.Encoding.PEM,
-    serialization.PrivateFormat.PKCS8,
-    serialization.NoEncryption(),
-).decode()
-PUBLIC_PEM = (
-    _KEY.public_key()
-    .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
-    .decode()
-)
-CLIENT_EMAIL = "oc8-bot@project.iam.gserviceaccount.com"
-KEY_JSON = json.dumps(
-    {
-        "type": "service_account",
-        "client_email": CLIENT_EMAIL,
-        "private_key": PRIVATE_PEM,
-        "private_key_id": "kid-1",
-        # Never followed: the token always comes from Google's own endpoint.
-        "token_uri": "https://evil.example.com/token",
-    }
-)
-FIELDS = {"service_account_key": KEY_JSON}
 TOKEN = "ya29.delegated-access-token-XYZ"
 MAILBOX = "info@example.com"
 CONFIG = {"mailbox": MAILBOX, "label": "INBOX"}
+#: What core hands a poll on the service account (`oc8.events.sources`): a
+#: token it minted for the trigger's mailbox, and the setup's list.
+FIELDS = {
+    "access_token": TOKEN,
+    "grant_type": "service_account",
+    "provider": "google",
+    "account_label": "oc8-bot@project.iam.gserviceaccount.com",
+    "allowed_mailbox": f"sales@example.com,{MAILBOX.upper()}",
+}
 GMAIL = "/gmail/v1/users"
 
 
@@ -93,10 +75,8 @@ class FakeGmail:
         self.messages: dict[str, dict[str, Any]] = {}
         self.page_size = 100
         self.requests: list[httpx.Request] = []
-        self.claims: list[dict[str, Any]] = []
         self.fail_full: dict[str, int] = {}
         self.fail_metadata: set[str] = set()
-        self.denied: set[str] = set()
         self.api_status = 200
         self._ids = 0
 
@@ -163,8 +143,6 @@ class FakeGmail:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         url = urlsplit(str(request.url))
-        if url.netloc == "oauth2.googleapis.com":
-            return self._token(request)
         assert url.netloc == "gmail.googleapis.com", url.netloc
         assert request.headers["Authorization"] == f"Bearer {TOKEN}"
         if self.api_status != 200:
@@ -183,26 +161,6 @@ class FakeGmail:
         if path.startswith(f"{prefix}/messages/"):
             return self._message(path.rsplit("/", 1)[1], query)
         return httpx.Response(404, json={"error": {"code": 404, "message": "Not Found"}})
-
-    def _token(self, request: httpx.Request) -> httpx.Response:
-        form = parse_qs(request.content.decode())
-        assert form["grant_type"] == ["urn:ietf:params:oauth:grant-type:jwt-bearer"]
-        claims = jwt.decode(
-            form["assertion"][0],
-            PUBLIC_PEM,
-            algorithms=["RS256"],
-            audience="https://oauth2.googleapis.com/token",
-        )
-        self.claims.append(claims)
-        if claims["sub"] in self.denied:
-            return httpx.Response(
-                401,
-                json={
-                    "error": "unauthorized_client",
-                    "error_description": f"Client unauthorized {PRIVATE_PEM[30:60]}",
-                },
-            )
-        return httpx.Response(200, json={"access_token": TOKEN, "expires_in": 3599})
 
     def _history(self, query: dict[str, list[str]]) -> httpx.Response:
         assert query["historyTypes"] == ["messageAdded"]
@@ -260,21 +218,46 @@ async def baseline(config: dict[str, str] = CONFIG) -> dict[str, Any]:
     return cursor
 
 
-# --- the token --------------------------------------------------------------------------
+# --- the login -----------------------------------------------------------------------------
 
 
-async def test_the_token_is_delegated_to_the_mailbox_with_the_setups_scope(
+async def test_the_poll_reads_with_the_token_core_hands_over(gmail: FakeGmail) -> None:
+    await baseline()
+    assert gmail.requests and all(r.url.host == "gmail.googleapis.com" for r in gmail.requests)
+
+
+async def test_a_mailbox_outside_the_setups_list_is_never_read(
     gmail: FakeGmail,
 ) -> None:
-    await baseline()
-    [claims] = gmail.claims
-    assert claims["iss"] == CLIENT_EMAIL
-    assert claims["sub"] == MAILBOX
-    provision = tomllib.loads((PLUGIN_ROOT / "setup" / "oauth_provision.toml").read_text())
-    # Byte for byte the scope the admin authorized for the tools.
-    assert claims["scope"] == provision["delegated_scope"]
-    assert claims["exp"] - claims["iat"] <= 3600
-    assert all(r.url.host != "evil.example.com" for r in gmail.requests)
+    """Defence in depth behind core's own check: the same rule as the tools
+    (`mailbox_policy`), the list core passes, before any request."""
+    for allowed in ("sales@example.com", ""):
+        with pytest.raises(source.MailboxError, match="authorized delegated mailboxes"):
+            await source.poll({**FIELDS, "allowed_mailbox": allowed}, CONFIG, None)
+    missing = {k: v for k, v in FIELDS.items() if k != "allowed_mailbox"}
+    with pytest.raises(source.MailboxError):
+        await source.poll(missing, CONFIG, None)
+    assert gmail.requests == []
+
+
+async def test_a_persons_own_sign_in_reads_that_account_only(gmail: FakeGmail) -> None:
+    own = {
+        "access_token": TOKEN,
+        "grant_type": "authorization_code",
+        "account_label": MAILBOX,
+    }
+    await source.poll(own, {"mailbox": MAILBOX.upper(), "label": "INBOX"}, None)
+    assert gmail.requests
+    gmail.requests.clear()
+    with pytest.raises(source.MailboxError, match="acts as"):
+        await source.poll(own, {"mailbox": "sales@example.com"}, None)
+    assert gmail.requests == []
+
+
+async def test_a_login_without_a_token_is_refused(gmail: FakeGmail) -> None:
+    with pytest.raises(source.MailboxError, match="token"):
+        await source.poll({**FIELDS, "access_token": ""}, CONFIG, None)
+    assert gmail.requests == []
 
 
 # --- baseline and new mail ----------------------------------------------------------------
@@ -518,18 +501,9 @@ async def test_the_text_is_truncated_at_twenty_thousand_characters(gmail: FakeGm
 # --- secrets and errors -------------------------------------------------------------------
 
 
-async def test_a_refused_delegation_names_neither_the_key_nor_the_server_text(
+async def test_a_gmail_401_names_the_status_but_never_the_token(
     gmail: FakeGmail,
 ) -> None:
-    gmail.denied.add(MAILBOX)
-    with pytest.raises(source.MailboxError) as caught:
-        await source.poll(FIELDS, CONFIG, None)
-    text = str(caught.value)
-    assert "401" in text and "delegation" in text
-    assert "Client unauthorized" not in text and PRIVATE_PEM[30:60] not in text
-
-
-async def test_a_gmail_401_names_the_status_but_never_the_token(gmail: FakeGmail) -> None:
     cursor = await baseline()
     gmail.api_status = 401
     with pytest.raises(source.MailboxError) as caught:
@@ -538,27 +512,14 @@ async def test_a_gmail_401_names_the_status_but_never_the_token(gmail: FakeGmail
     assert "401" in text and TOKEN not in text
 
 
-async def test_a_key_that_is_not_a_service_account_key_is_refused_without_echo(
-    gmail: FakeGmail,
-) -> None:
-    for key in ("{not json " + PRIVATE_PEM[30:60], json.dumps({"client_email": CLIENT_EMAIL})):
-        with pytest.raises(source.MailboxError) as caught:
-            await source.poll({"service_account_key": key}, CONFIG, None)
-        assert PRIVATE_PEM[30:60] not in str(caught.value)
-    broken = json.dumps({"client_email": CLIENT_EMAIL, "private_key": "-----BEGIN junk"})
-    with pytest.raises(source.MailboxError):
-        await source.poll({"service_account_key": broken}, CONFIG, None)
-    assert gmail.requests == []
-
-
 async def test_a_network_failure_names_no_secret(gmail: FakeGmail) -> None:
     def down(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError(f"cannot connect {request.content!r}")
+        raise httpx.ConnectError(f"cannot connect {request.headers['Authorization']}")
 
     oauth_http.set_transport_override(httpx.MockTransport(down))
     with pytest.raises(source.MailboxError) as caught:
         await source.poll(FIELDS, CONFIG, None)
-    assert "assertion" not in str(caught.value)
+    assert TOKEN not in str(caught.value)
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
 
 
@@ -637,12 +598,13 @@ async def test_a_poll_leaves_the_event_loop_free(
     assert gaps and max(gaps) < 0.3
 
 
-async def test_register_contributes_the_poller_for_the_service_account() -> None:
+async def test_register_contributes_the_poller_for_the_oauth_login() -> None:
     calls: list[tuple[Any, ...]] = []
 
     class Contrib:
-        def add_poller(self, event_type: str, poller: Any, *, credential_type: str) -> None:
-            calls.append((event_type, poller, credential_type))
+        def add_poller(self, event_type: str, poller: Any, **kwargs: Any) -> None:
+            calls.append((event_type, poller, kwargs))
 
     source.register(Contrib())
-    assert calls == [("mail.received", source.poll, "google_service_account")]
+    # No credential type: the trigger listens on the capa's Google connection.
+    assert calls == [("mail.received", source.poll, {})]

@@ -2,17 +2,24 @@
 and starts the agent for each new mail (`oc8.events.sources`).
 
 Runs in the core process, with the login the agent is fixed to for this
-capa's tools: the service account (`google_service_account`, its JSON key).
-Every poll mints a token for the trigger's mailbox (`event_config["mailbox"]`,
-by default the setup's `default_mailbox`) by domain-wide delegation, with the
-very scope the setup asks the admin to authorize (`DELEGATED_SCOPE`, the
-setup's `delegated_scope`: Google checks the scope string exactly), and
-reads the mailbox's history of added messages on one label.
+capa's tools: the organisation's Google connection. Core hands over a fresh
+access token (`login_fields["access_token"]`): for a service account one it
+minted by domain-wide delegation for the trigger's mailbox
+(`event_config["mailbox"]`, by default the setup's `default_mailbox`; the
+setting is `acts_as` in plugin.toml) with the setup's `delegated_scope`; for
+an account signed in for the organisation, that account's own token. The
+poller reads the mailbox's history of added messages on one label.
 
-Only two fixed hosts are ever called, Google's token endpoint and the Gmail
-API, through core's provider client (`oc8.oauth.http`); the `token_uri` a key
-file names is not followed. The mailbox and the label are checked before
-they go into a path or a query.
+The mailbox is the trigger's setting, which core checked against the setup's
+`delegated_mailboxes` on save and checks again before every poll. The poller
+checks it once more by the rule the tools use (`mcp_bridge/mailbox_policy.py`,
+loaded by path under a name of its own, `_load_policy`): a person's own
+sign-in reads that account only, and a service account only a mailbox in the
+list core passes (`allowed_mailbox`; an empty list allows none).
+
+Only one fixed host is ever called, the Gmail API, through core's provider
+client (`oc8.oauth.http`). The mailbox and the label are checked before they
+go into a path or a query.
 
 The cursor is `{mailbox, label, history_id, seen}`. A baseline takes the
 mailbox's current history id (`users.getProfile`) and fires nothing. A poll
@@ -31,8 +38,8 @@ sent mail, `Auto-Submitted` other than "no", `Precedence: bulk/junk/list`
 and delivery reports; a mail that cannot be read becomes an event from its
 headers alone, or none, and the cursor moves past it; at most
 `MAX_EVENTS_PER_TICK` mails a poll, and no new mail is started after
-`POLL_BUDGET_SECONDS`. Signing and rendering run in a thread. Errors name
-the HTTP status, never a token, the key or the text of Google's answer.
+`POLL_BUDGET_SECONDS`. Rendering runs in a thread. Errors name the HTTP
+status, never a token or the text of Google's answer.
 """
 
 from __future__ import annotations
@@ -41,19 +48,21 @@ import asyncio
 import base64
 import binascii
 import codecs
-import json
+import importlib.util
 import logging
 import re
+import sys
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parseaddr
 from html.parser import HTMLParser
+from pathlib import Path
+from types import ModuleType
 from typing import Any, Final
 from urllib.parse import quote
 
 import httpx
-import jwt
 
 from oc8.events.sources import MAX_EVENTS_PER_TICK, PolledEvent, PollResult
 from oc8.oauth.http import get_client
@@ -61,15 +70,8 @@ from oc8.oauth.http import get_client
 logger = logging.getLogger(__name__)
 
 EVENT_TYPE: Final = "mail.received"
-CREDENTIAL_TYPE: Final = "google_service_account"
 
 GMAIL: Final = "https://gmail.googleapis.com/gmail/v1"
-TOKEN_URL: Final = "https://oauth2.googleapis.com/token"
-#: Byte for byte the setup's `delegated_scope` (setup/oauth_provision.toml):
-#: what the admin authorizes for the tools covers the poller too.
-DELEGATED_SCOPE: Final = (
-    "https://www.googleapis.com/auth/gmail.modify https://www.googleapis.com/auth/calendar"
-)
 
 #: One HTTP request, at most. With the budget below a poll ends well inside
 #: core's 60 s: the last mail started at 40 s takes two requests at most.
@@ -143,85 +145,61 @@ def _label(value: Any) -> str:
     return label
 
 
-# --- the token ---------------------------------------------------------------------------------
+# --- the login -------------------------------------------------------------------------------
+
+_POLICY: Final = "_oc8_google_workspace_mailbox_policy"
 
 
-def _key(fields: Mapping[str, str]) -> tuple[str, str]:
-    """The key file's client email and private key. Nothing of the key is
-    repeated in an error."""
+def _load_policy() -> ModuleType:
+    """`mcp_bridge/mailbox_policy.py` under a name of its own: importing it as
+    `mcp_bridge.mailbox_policy` would leave the generic name `mcp_bridge`
+    cached in the core process, where another capa's bridge package of the
+    same name could be handed ours (see `oc8.capas.loader`)."""
+    loaded = sys.modules.get(_POLICY)
+    if loaded is not None:
+        return loaded
+    path = Path(__file__).resolve().parents[1] / "mcp_bridge" / "mailbox_policy.py"
+    spec = importlib.util.spec_from_file_location(_POLICY, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_POLICY] = module
     try:
-        data = json.loads(str(fields.get("service_account_key") or ""))
-    except ValueError:
-        data = None
-    email = data.get("client_email") if isinstance(data, dict) else None
-    private_key = data.get("private_key") if isinstance(data, dict) else None
-    if not isinstance(email, str) or "@" not in email or not isinstance(private_key, str):
-        raise MailboxError(
-            "The login is not a Google service account key: it needs the key file's JSON "
-            "with client_email and private_key."
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(_POLICY, None)
+        raise
+    return module
+
+
+def _authorized(login: Mapping[str, str], mailbox: str) -> str:
+    """The mailbox, if this login may act as it (`mailbox_policy`)."""
+    policy = _load_policy()
+    personal = (
+        str(login.get("account_label") or "").strip() or None
+        if login.get("grant_type") == "authorization_code"
+        else None
+    )
+    try:
+        return str(
+            policy.authorized_mailbox(
+                mailbox,
+                delegated=policy.mailbox_list(str(login.get("allowed_mailbox") or "")),
+                personal=personal,
+            )
         )
-    return email, private_key
+    except policy.MailboxRefused as exc:
+        raise MailboxError(f"The mailbox setting is refused: {exc}.") from None
 
 
-def _assertion(email: str, private_key: str, subject: str) -> str:
-    now = int(time.time())
-    claims = {
-        "iss": email,
-        "sub": subject,
-        "scope": DELEGATED_SCOPE,
-        "aud": TOKEN_URL,
-        "iat": now,
-        "exp": now + 3600,
-    }
-    try:
-        return jwt.encode(claims, private_key, algorithm="RS256")
-    except Exception:
-        raise MailboxError("The service account key could not sign a sign-in request.") from None
+def _token(login: Mapping[str, str]) -> str:
+    token = login.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise MailboxError("The login gave no access token: connect it again.")
+    return token
 
 
 async def _send(client: httpx.AsyncClient, method: str, url: str, **kwargs: Any) -> httpx.Response:
     return await asyncio.wait_for(client.request(method, url, **kwargs), timeout=REQUEST_SECONDS)
-
-
-async def _token(client: httpx.AsyncClient, fields: Mapping[str, str], mailbox: str) -> str:
-    email, private_key = _key(fields)
-    assertion = await asyncio.to_thread(_assertion, email, private_key, mailbox)
-    try:
-        resp = await _send(
-            client,
-            "POST",
-            TOKEN_URL,
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
-                "assertion": assertion,
-            },
-        )
-    except (httpx.HTTPError, TimeoutError) as exc:
-        raise MailboxError(
-            f"Google's sign-in service could not be reached ({type(exc).__name__})."
-        ) from None
-    if resp.status_code != 200:
-        try:
-            code = resp.json().get("error")
-        except (ValueError, AttributeError):
-            code = None
-        if code in ("unauthorized_client", "access_denied"):
-            raise MailboxError(
-                f"Google refused domain-wide delegation for this mailbox (HTTP "
-                f"{resp.status_code}): authorize the service account's client ID for the "
-                "Gmail scope in the Workspace Admin Console."
-            )
-        raise MailboxError(
-            f"Google refused the service account's sign-in for this mailbox (HTTP "
-            f"{resp.status_code}): check the key and the mailbox."
-        )
-    try:
-        token = resp.json().get("access_token")
-    except (ValueError, AttributeError):
-        token = None
-    if not isinstance(token, str) or not token:
-        raise MailboxError("Google's sign-in service answered without a token.")
-    return token
 
 
 # --- Gmail -----------------------------------------------------------------------------------
@@ -385,12 +363,13 @@ async def _round(
 async def poll(
     login_fields: dict[str, str], event_config: dict[str, Any], cursor: dict[str, Any] | None
 ) -> PollResult:
-    mailbox = _mailbox(event_config.get("mailbox"))
+    mailbox = _authorized(login_fields, _mailbox(event_config.get("mailbox")))
     label = _label(event_config.get("label"))
+    token = _token(login_fields)
     deadline = time.monotonic() + POLL_BUDGET_SECONDS
     starved = isinstance(cursor, Mapping) and cursor.get("starved") is True
     async with get_client() as client:
-        gmail = _Gmail(client, await _token(client, login_fields, mailbox), mailbox, label)
+        gmail = _Gmail(client, token, mailbox, label)
         state = _usable(cursor, mailbox, label)
         if state is None:
             return PollResult(next_cursor=_cursor(gmail, await gmail.history_id(), []))
@@ -413,7 +392,9 @@ async def poll(
 
 
 def register(contrib: Any) -> None:
-    contrib.add_poller(EVENT_TYPE, poll, credential_type=CREDENTIAL_TYPE)
+    # No credential type: the trigger listens on the organisation's Google
+    # connection the agent is fixed to (`oc8.events.sources.LoginTarget`).
+    contrib.add_poller(EVENT_TYPE, poll)
 
 
 # --- one mail ----------------------------------------------------------------------------------
