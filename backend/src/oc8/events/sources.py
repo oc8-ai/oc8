@@ -351,8 +351,18 @@ _LIST_SEPARATORS = re.compile(r"[\s,;]+")
 
 def setup_list(value: str) -> list[str]:
     """A setup field holding a list: comma, semicolon, newline or space
-    separated."""
+    separated -- the same split as the google capa's tools
+    (`mcp_bridge/mailbox_policy.mailbox_list`)."""
     return [part for part in _LIST_SEPARATORS.split(value) if part]
+
+
+_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def ascii_lower(value: str) -> str:
+    """`value` with only A-Z lowered: no Unicode folding, so no two
+    different addresses (STRAßE, strasse) ever compare equal."""
+    return value.translate(_ASCII_LOWER)
 
 
 async def allowed_values(
@@ -417,7 +427,7 @@ def refused_setting(
                 )
             continue
         value = str(config.get(item.key) or "")
-        if value.casefold() not in {v.casefold() for v in values}:
+        if ascii_lower(value) not in {ascii_lower(v) for v in values}:
             return (
                 f"the setting {item.key!r} must be one the setup lists in "
                 f"{item.allowed_from!r} ({', '.join(values)})"
@@ -555,12 +565,11 @@ async def _login_fields(
     resolved; or an OAuth connection's fresh access token with the facts
     about it a poller needs (`_oauth_login_fields`)."""
     if target.kind == "oauth":
-        return await _oauth_login_fields(db, tenant_id, target.id, spec, config)
+        return await _oauth_login_fields(tenant_id, target.id, spec, config)
     return await _credential_fields(db, tenant_id, target.id)
 
 
 async def _oauth_login_fields(
-    db: AsyncSession,
     tenant_id: uuid.UUID,
     connection_id: uuid.UUID,
     spec: PolledEventSpec,
@@ -571,51 +580,59 @@ async def _oauth_login_fields(
     when set, `azure_tenant_id`. A login that delegates (a service account)
     gets a token for the value of the trigger's `acts_as` setting instead of
     its own, with the setup's delegated scope -- that value was checked
-    against the setup's list before (`refused_setting`)."""
+    against the setup's list before (`refused_setting`).
+
+    In a session of its own, committed before the poller runs: a refresh
+    locks the connection row (`FOR UPDATE`), and the tools and other polls on
+    that login must not wait while this poll talks to a far system. What the
+    refresh wrote (a new token, `needs_reauth`) is kept even when it fails."""
     from oc8.oauth import tokens
     from oc8.oauth.errors import OAuthError, OAuthReauthRequired
 
-    conn = await db.get(m.OAuthConnection, connection_id)
-    if conn is None or conn.owner_member_id is not None:
-        raise PollLoginUnavailable("the login this trigger listens on is gone")
-    if conn.status != "active":
-        raise PollLoginUnavailable(
-            f"the login {conn.account_label!r} must be connected again (it is {conn.status})"
-        )
-    acted = next((item for item in spec.config if item.acts_as), None)
-    try:
-        if conn.grant_type == "service_account" and acted is not None:
-            subject = str(config.get(acted.key) or "")
-            if not subject or not spec.delegated_scope:
-                raise PollLoginUnavailable(
-                    f"the login acts as the setting {acted.key!r}, and it is empty"
-                )
-            token = await tokens.mint_delegated_token(
-                db,
-                tenant_id=tenant_id,
-                connection_id=conn.id,
-                subject=subject,
-                scope=spec.delegated_scope,
+    refused: str | None = None
+    token = ""
+    async with tenant_session(tenant_id) as db:
+        conn = await db.get(m.OAuthConnection, connection_id)
+        if conn is None or conn.owner_member_id is not None:
+            raise PollLoginUnavailable("the login this trigger listens on is gone")
+        if conn.status != "active":
+            raise PollLoginUnavailable(
+                f"the login {conn.account_label!r} must be connected again (it is {conn.status})"
             )
-        else:
-            token = await tokens.get_access_token(db, tenant_id=tenant_id, connection_id=conn.id)
-    except OAuthReauthRequired:
-        raise PollLoginUnavailable(
-            f"the login {conn.account_label!r} must be connected again"
-        ) from None
-    except OAuthError as exc:
-        # The provider's own words may quote what it was sent: the class only.
-        raise PollLoginUnavailable(
-            f"the login {conn.account_label!r} got no token ({type(exc).__name__})"
-        ) from None
-    fields = {
-        "access_token": token,
-        "account_label": conn.account_label,
-        "grant_type": conn.grant_type,
-        "provider": conn.provider,
-    }
-    if conn.azure_tenant_id:
-        fields["azure_tenant_id"] = conn.azure_tenant_id
+        acted = next((item for item in spec.config if item.acts_as), None)
+        try:
+            if conn.grant_type == "service_account" and acted is not None:
+                subject = str(config.get(acted.key) or "")
+                if not subject or not spec.delegated_scope:
+                    raise PollLoginUnavailable(
+                        f"the login acts as the setting {acted.key!r}, and it is empty"
+                    )
+                token = await tokens.mint_delegated_token(
+                    db,
+                    tenant_id=tenant_id,
+                    connection_id=conn.id,
+                    subject=subject,
+                    scope=spec.delegated_scope,
+                )
+            else:
+                token = await tokens.get_access_token(
+                    db, tenant_id=tenant_id, connection_id=conn.id
+                )
+        except OAuthReauthRequired:
+            refused = f"the login {conn.account_label!r} must be connected again"
+        except OAuthError as exc:
+            # The provider's own words may quote what it was sent: the class only.
+            refused = f"the login {conn.account_label!r} got no token ({type(exc).__name__})"
+        fields = {
+            "access_token": token,
+            "account_label": conn.account_label,
+            "grant_type": conn.grant_type,
+            "provider": conn.provider,
+        }
+        if conn.azure_tenant_id:
+            fields["azure_tenant_id"] = conn.azure_tenant_id
+    if refused is not None:
+        raise PollLoginUnavailable(refused)
     return fields, _secret_forms(fields, [token])
 
 

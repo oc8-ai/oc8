@@ -18,7 +18,13 @@ from sqlalchemy.exc import IntegrityError
 
 from oc8 import models as m
 from oc8.events import sources
-from oc8.events.sources import EVENT_TARGET_CHANGED, LoginTarget, PollResult, poll_tick
+from oc8.events.sources import (
+    EVENT_TARGET_CHANGED,
+    LoginTarget,
+    PollResult,
+    poll_tick,
+    register_poller,
+)
 from oc8.runtime.queue import RunQueue
 from oc8.triggers.service import (
     InvalidTriggerConfig,
@@ -443,3 +449,105 @@ async def test_a_list_shrunk_after_saving_stops_the_poll(
     _trigger_row, cursor = await _row(app_session, polled.tenant, trigger_id)
     assert cursor.last_error is not None
     assert "mailbox" in cursor.last_error and "delegated_mailboxes" in cursor.last_error
+
+
+def test_a_setup_list_splits_like_the_tools_list() -> None:
+    """One parser on both sides: commas, semicolons, spaces and newlines
+    (the google capa's `mailbox_policy.mailbox_list` splits the same way)."""
+    assert sources.setup_list("a@x; b@x") == ["a@x", "b@x"]
+    assert sources.setup_list(" a@x,\nb@x\tc@x ;;") == ["a@x", "b@x", "c@x"]
+
+
+def test_the_list_compares_ascii_case_only() -> None:
+    """ASCII letters match in any case; nothing else is folded, so a value
+    that only casefolds to a listed one ("STRAßE" -> "strasse") is refused."""
+    from dataclasses import replace
+
+    from oc8.capas.manifest import TriggerConfigField
+
+    field = TriggerConfigField(key="mailbox", label="Mailbox", allowed_from="list")
+    spec = replace(_spec_stub(), config=[field])
+    allowed = {"mailbox": ["strasse@acme.test", "Info@Acme.test"]}
+    assert sources.refused_setting(spec, {"mailbox": "INFO@acme.TEST"}, allowed) is None
+    assert sources.refused_setting(spec, {"mailbox": "STRAßE@acme.test"}, allowed) is not None
+
+
+def _spec_stub() -> sources.PolledEventSpec:
+    import dataclasses
+
+    values: dict[str, Any] = {}
+    for f in dataclasses.fields(sources.PolledEventSpec):
+        if f.default is not dataclasses.MISSING or f.default_factory is not dataclasses.MISSING:
+            continue
+        values[f.name] = None
+    return sources.PolledEventSpec(**values)
+
+
+async def test_a_refresh_never_holds_the_login_row_during_the_poll(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The token is fetched in its own short session, committed before the
+    poller runs: a refresh locks the connection row (`FOR UPDATE`), and the
+    tools and other polls on that login must not wait for a far system."""
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import text
+
+    config = [{"key": "mailbox", "label": "Mailbox", "default_from": "default_mailbox"}]
+    polled = await oauth_polled_setup(
+        app_session, provider="microsoft", grant_type="client_credentials", config=config
+    )
+    async with app_session(polled.tenant) as db:
+        conn = await db.get(m.OAuthConnection, polled.connection_id)
+        assert conn is not None
+        conn.expires_at = datetime.now(tz=UTC) - timedelta(minutes=5)  # due a refresh
+    refreshed: list[uuid.UUID] = []
+
+    async def remint(db: Any, conn: m.OAuthConnection) -> str:
+        refreshed.append(conn.id)
+        return "fresh-app-token"
+
+    monkeypatch.setattr("oc8.oauth.tokens._mint_client_credentials", remint)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def blocking(login: dict[str, str], _config: Any, _cursor: Any) -> PollResult:
+        assert login["access_token"] == "fresh-app-token"
+        entered.set()
+        await release.wait()
+        return PollResult(next_cursor={"pos": 0})
+
+    register_poller(polled.source, polled.event_type, blocking)
+    await _trigger(app_session, polled)
+    tick = asyncio.create_task(poll_tick())
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        async with app_session(polled.tenant) as db:
+            locked = await db.scalar(
+                text("SELECT id FROM oauth_connection WHERE id = :id FOR UPDATE NOWAIT"),
+                {"id": polled.connection_id},
+            )
+        assert locked == polled.connection_id
+    finally:
+        release.set()
+        await tick
+    assert refreshed == [polled.connection_id]
+
+
+async def test_a_connection_of_another_organisation_is_never_a_target(
+    app_session: AppSessionFactory,
+) -> None:
+    polled = await oauth_polled_setup(app_session)
+    foreign = (await oauth_polled_setup(app_session)).connection_id  # another tenant's
+    async with app_session(polled.tenant) as db:
+        with pytest.raises(InvalidTriggerConfig):
+            await create_trigger(
+                db,
+                tenant_id=polled.tenant,
+                agent_id=polled.agent_id,
+                kind="event",
+                task_text="x",
+                event_source=polled.source,
+                event_type=polled.event_type,
+                event_target_oauth_connection_id=foreign,
+            )
