@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Text, Uuid
+from sqlalchemy import CheckConstraint, DateTime, Integer, Text, UniqueConstraint, Uuid
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -70,6 +72,17 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     #: through the creator's own account only while it still matches; NULL
     #: (saved before migration 0110) never does.
     access_fingerprint: Mapped[str | None] = mapped_column(Text)
+    #: kind='event' on a polled event only (`oc8.events.sources`): the
+    #: organisation login the event is polled from. It is always the login the
+    #: agent is fixed to for the event capa's tools, so the run's tools reach
+    #: the same account; the trigger is switched off when that changes. A
+    #: deleted login leaves it NULL (ON DELETE SET NULL) and the tick switches
+    #: the trigger off.
+    event_target_credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: The poller's settings for this trigger, handed to it unread by core.
+    event_config: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default="{}"
+    )
 
     __table_args__ = (
         CheckConstraint("kind IN ('cron','event','webhook','once')", name="ck_trigger_kind"),
@@ -90,3 +103,29 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
             name="ck_trigger_followup_fields",
         ),
     )
+
+
+class EventSourceCursor(Base, PkMixin, TenantMixin, TimestampMixin):
+    """Where a polled trigger's poller left off (`oc8.events.sources`), one row
+    per trigger. `cursor` is the poller's own opaque state; NULL means "take a
+    baseline": the next poll records where the source is now and fires
+    nothing, so a backlog is never caught up. Reset on creating and on
+    re-enabling the trigger.
+
+    The poll outcome lives here too, shown on the trigger: `last_error` is the
+    exception class and a short message with the login's secrets removed.
+    `failures` drives the back-off, `next_poll_at` when the tick may poll the
+    trigger again. Never backed up (`oc8.backup.tables.EXCLUDED_TABLES`)."""
+
+    __tablename__ = "event_source_cursor"
+
+    trigger_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    cursor: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+    last_polled_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_ok_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(Text)
+    last_error_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    next_poll_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (UniqueConstraint("trigger_id", name="uq_event_source_cursor_trigger"),)

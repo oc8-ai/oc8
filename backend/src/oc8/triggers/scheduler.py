@@ -10,7 +10,7 @@ import json
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,9 @@ from oc8.runtime.cancellation import AGENT_ARCHIVED
 from oc8.runtime.intake import enqueue_run
 from oc8.tenants.activity import TenantInactive, tenant_may_run
 from oc8.triggers.service import compute_next_run
+
+if TYPE_CHECKING:
+    from oc8.events.sources import PolledEvent
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +82,8 @@ async def fire_trigger(
     tenant_id: uuid.UUID,
     idempotency_key: str | None = None,
     payload: dict[str, Any] | None = None,
+    event: PolledEvent | None = None,
+    event_label: str = "",
 ) -> bool:
     """Enqueue an AgentRun for `trigger` -- the same durable intake path
     POST /agents/{id}/run uses. Records last_run_at for any kind, and
@@ -96,6 +101,12 @@ async def fire_trigger(
     from it -- unlike kind='event', a webhook can carry literally anything --
     so it is folded straight into the task text the model reads, the only
     context field build_run_preamble actually surfaces (agent/preamble.py).
+
+    `event` (a polled event, `oc8.events.sources`) appends the event's summary
+    to the task text inside a block that marks it as data from outside, never
+    instructions, labelled `event_label`; its payload is stored on the run as
+    `context["event_payload"]` for the agent to look things up by id with the
+    capa's tools. Core reads neither.
 
     `trigger_id` lets a tool in the user's context act through the trigger
     creator's account.
@@ -122,11 +133,18 @@ async def fire_trigger(
     task = trigger.task_text
     if payload is not None:
         task = f"{task}\n\nWebhook payload:\n{json.dumps(payload, indent=2, default=str)}"
+    context: dict[str, Any] = {"task": task, "trigger_id": str(trigger.id)}
+    if event is not None:
+        from oc8.events.sources import event_block
+
+        label = event_label or trigger.event_type or "event"
+        context["task"] = f"{task}\n\n{event_block(label, event.summary)}"
+        context["event_payload"] = event.payload
     await enqueue_run(
         db,
         tenant_id=tenant_id,
         agent_id=trigger.agent_id,
-        context={"task": task, "trigger_id": str(trigger.id)},
+        context=context,
         source=trigger.kind,
         coalesce_key=f"trigger:{trigger.id}",
         idempotency_key=idempotency_key,

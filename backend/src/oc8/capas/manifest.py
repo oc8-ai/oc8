@@ -866,6 +866,20 @@ class PluginSetupSpec(BaseModel):
         return self
 
 
+class TriggerDecl(BaseModel):
+    """An event a capa declares as a table: how it is shown in the trigger
+    editor and whether core polls for it. `polled` events need a poller the
+    capa registers through its `event_sources` entry point
+    (`oc8.events.sources`); a plain string entry in `triggers` is an event
+    pushed to core and keeps its old meaning."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: str = Field(min_length=1)
+    label: str = ""
+    description: str = ""
+    polled: bool = False
+
+
 class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
@@ -942,7 +956,7 @@ class Manifest(BaseModel):
     tools: list[str] = []
     mcp: list[dict[str, Any]] = []
     skills: list[str] = []
-    triggers: list[str] = []
+    triggers: list[str | TriggerDecl] = []
     policy: dict[str, Any] = {}
     io: dict[str, Any] = {}
     phases: list[dict[str, Any]] = []

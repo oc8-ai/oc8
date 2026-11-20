@@ -20,6 +20,9 @@ class AutomationEventDescriptor:
     type: str
     label: str
     description: str = ""
+    #: Core polls an outside system for this event (`oc8.events.sources`);
+    #: the trigger editor offers it as its own tab.
+    polled: bool = False
 
 
 class DuplicateAutomationEvent(ValueError):
@@ -63,10 +66,17 @@ def _descriptor_from_manifest(plugin_name: str, value: Any) -> AutomationEventDe
     source = value.get("source", plugin_name)
     label = value.get("label", event_type)
     description = value.get("description", "")
+    polled = value.get("polled", False)
     if not all(isinstance(item, str) for item in (source, label, description)):
         return None
+    if not isinstance(polled, bool):
+        return None
     return AutomationEventDescriptor(
-        source=source, type=event_type, label=label, description=description
+        source=source,
+        type=event_type,
+        label=label or event_type,
+        description=description,
+        polled=polled,
     )
 
 

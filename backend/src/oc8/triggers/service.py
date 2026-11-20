@@ -6,6 +6,7 @@ import random
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from croniter import CroniterBadCronError
 from sqlalchemy import select
@@ -14,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8.connections.access import trigger_fingerprint
 from oc8.modelrouter.subscription_guard import assert_manual_only_compatible
 from oc8.models.core import Agent
+from oc8.models.credentials import Credential
 from oc8.models.triggers import Trigger
 from oc8.triggers.zones import (
     UnknownTimezone,
@@ -68,6 +70,47 @@ async def _cron_timezone(db: AsyncSession, tenant_id: uuid.UUID, timezone: str |
     return await organisation_timezone(db, tenant_id)
 
 
+async def _check_polled_target(
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    event_source: str,
+    event_type: str,
+    target: uuid.UUID | None,
+) -> bool:
+    """For an event this tenant's capas declare as polled
+    (`oc8.events.sources`): refuse a target that is not the organisation login
+    the agent is fixed to for the capa's tools. Returns whether the event is
+    polled; a pushed event takes no target."""
+    from oc8.events.sources import fixed_login, polled_event_spec
+
+    spec = await polled_event_spec(db, event_source, event_type)
+    if spec is None:
+        if target is not None:
+            raise InvalidTriggerConfig("only a polled event listens on a login")
+        return False
+    if spec.registered is None:
+        raise InvalidTriggerConfig("no poller is available for this event")
+    if spec.tool_key is None:
+        raise InvalidTriggerConfig("the event's capa has no login tool")
+    if target is None:
+        raise InvalidTriggerConfig("a polled event needs the login it listens on")
+    credential = await db.get(Credential, target)
+    if credential is None:
+        raise InvalidTriggerConfig("the login it listens on does not exist")
+    if credential.owner_member_id is not None:
+        raise InvalidTriggerConfig("a polled event listens on an organisation login only")
+    if credential.credential_type != spec.registered.credential_type:
+        raise InvalidTriggerConfig(
+            f"a polled event of this kind listens on a {spec.registered.credential_type} login"
+        )
+    if await fixed_login(db, agent_id, spec.tool_key) != target:
+        raise InvalidTriggerConfig(
+            "a polled event listens on the login the agent is fixed to for its tools"
+        )
+    return True
+
+
 async def create_trigger(
     db: AsyncSession,
     *,
@@ -83,8 +126,15 @@ async def create_trigger(
     jitter_seconds: int = 60,
     created_by_member_id: uuid.UUID | None = None,
     acts_for_creator: bool = False,
+    event_target_credential_id: uuid.UUID | None = None,
+    event_config: dict[str, Any] | None = None,
 ) -> Trigger:
+    """`event_target_credential_id` and `event_config` are for a polled event
+    only (`oc8.events.sources`): the organisation login the agent is fixed to
+    for the event capa's tools, required; and the poller's settings. An agent
+    has at most one trigger per polled event."""
     next_run_at = None
+    polled = False
     zone: str | None = None
     if kind == "cron":
         if cron_expression is None:
@@ -100,13 +150,29 @@ async def create_trigger(
         )
     elif kind == "event":
         if event_source is None or event_type is None:
-            raise InvalidTriggerConfig(
-                "event_source and event_type are required for kind='event'"
-            )
+            raise InvalidTriggerConfig("event_source and event_type are required for kind='event'")
         if declared_events is not None and (event_source, event_type) not in declared_events:
             raise InvalidTriggerConfig("event_source and event_type must name a declared event")
+        polled = await _check_polled_target(
+            db,
+            agent_id=agent_id,
+            event_source=event_source,
+            event_type=event_type,
+            target=event_target_credential_id,
+        )
+        if polled and await db.scalar(
+            select(Trigger.id).where(
+                Trigger.agent_id == agent_id,
+                Trigger.kind == "event",
+                Trigger.event_source == event_source,
+                Trigger.event_type == event_type,
+            )
+        ):
+            raise InvalidTriggerConfig("the agent already has a trigger on this polled event")
     elif kind != "webhook":
         raise InvalidTriggerConfig(f"unknown trigger kind: {kind!r}")
+    if not polled and (event_target_credential_id is not None or event_config):
+        raise InvalidTriggerConfig("only a polled event listens on a login")
 
     # Generated here, never client-supplied -- a caller naming its own token
     # would defeat the "unguessable" half of the auth model. Collision odds
@@ -127,9 +193,16 @@ async def create_trigger(
         event_source=event_source,
         event_type=event_type,
         webhook_token=webhook_token,
+        event_target_credential_id=event_target_credential_id if polled else None,
+        event_config=dict(event_config or {}) if polled else {},
     )
     db.add(trigger)
     await db.flush()
+    if polled:
+        from oc8.events.sources import reset_cursor
+
+        # The first poll only records where the source is now.
+        await reset_cursor(db, trigger)
     if created_by_member_id is not None:
         # Its creator saves it: their own account may serve it while the
         # agent stays as they see it now (connections.access.schedule_confirmed).
@@ -200,6 +273,27 @@ async def update_trigger(
     triggers carried one stays in UTC until someone names a zone."""
     if task_text is not None:
         trigger.task_text = task_text
+    if (
+        enabled is True
+        and not trigger.enabled
+        and trigger.kind == "event"
+        and trigger.event_source is not None
+        and trigger.event_type is not None
+        and await _check_polled_target(
+            db,
+            agent_id=trigger.agent_id,
+            event_source=trigger.event_source,
+            event_type=trigger.event_type,
+            target=trigger.event_target_credential_id,
+        )
+    ):
+        # Re-enabling a polled trigger: its login is still the agent's (checked
+        # above), and it starts from a fresh baseline instead of catching up.
+        from oc8.events.sources import EVENT_TARGET_CHANGED, reset_cursor
+
+        await reset_cursor(db, trigger)
+        if trigger.last_skip_reason == EVENT_TARGET_CHANGED:
+            trigger.last_skip_reason = None
     if enabled is not None:
         trigger.enabled = enabled
     if trigger.kind == "cron" and (cron_expression is not None or timezone):

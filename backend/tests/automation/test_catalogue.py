@@ -18,6 +18,7 @@ def test_event_descriptors_are_value_safe_metadata_only() -> None:
         "type",
         "label",
         "description",
+        "polled",
     ]
 
 
