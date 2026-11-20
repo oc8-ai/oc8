@@ -52,6 +52,20 @@ a branch other people build on. If a commit needs fixing after the fact,
 add a new commit that fixes it, rather than rewriting the one that's
 wrong.
 
+## Releases
+
+Work lands on `dev`. Every change set bumps the version in
+`backend/pyproject.toml` and `frontend/package.json` (and their lock files).
+To release, open a pull request from `dev` into `main` titled
+`Release X.Y.Z: merge dev into main` and merge it with a merge commit.
+
+Its description becomes the release text, so write it for users. Start
+with highlights, then upgrade notes (migrations, new settings, changed
+defaults). On merge, the `Release` workflow tags `vX.Y.Z` and creates the
+GitHub release from that description. It adds the list of merged pull
+requests, then starts the agent image build for the tag. If `main`
+already has a tag for its version, nothing is released.
+
 ## Next
 
 - [Coding Guidelines](coding-guidelines.md) for lint/type/test conventions.
