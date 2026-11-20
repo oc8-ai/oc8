@@ -2,18 +2,19 @@
 this poller and starts the agent for each new mail (`oc8.events.sources`).
 
 Runs in the core process, with the login the agent is fixed to for this
-capa's tools: the Azure app registration (`ms365_app`: tenant ID, client ID,
-client secret). Every poll mints an app-only Graph token with it
-(client_credentials, as core's `oauth.tokens` does for the tools) and reads
+capa's tools: the organisation's Microsoft connection. Core hands over a
+fresh Graph token (`login_fields["access_token"]`, from `oc8.oauth.tokens`
+as for the tools): app-only for an app registration (client_credentials),
+whose app needs the `Mail.Read` (or `Mail.ReadWrite`) application
+permission; or the account's own for an account signed in for the
+organisation, which then reads that account's mailbox only. The poller reads
 the trigger's mailbox (`event_config["mailbox"]`, by default the setup's
-`default_user`) through the Graph delta query on one folder. The app needs
-the `Mail.Read` (or `Mail.ReadWrite`) application permission.
+`default_user`) through the Graph delta query on one folder.
 
-Only two fixed hosts are ever called, Microsoft's sign-in service and
-Graph, through core's provider client (`oc8.oauth.http`); a link Graph hands
-back to continue from is followed only when it points at Graph itself, so the
-token never leaves for another host. The mailbox and the folder are checked
-and quoted before they go into a path.
+Only one fixed host is ever called, Graph, through core's provider client
+(`oc8.oauth.http`); a link Graph hands back to continue from is followed only
+when it points at Graph itself, so the token never leaves for another host.
+The mailbox and the folder are checked and quoted before they go into a path.
 
 The cursor is `{mailbox, folder, link, since, seen}`: `link` is where the
 next delta request goes (Graph's `@odata.nextLink` or `@odata.deltaLink`),
@@ -33,7 +34,7 @@ reports; a mail that cannot be read becomes an event from its headers alone,
 or none, and the cursor moves past it; at most `MAX_EVENTS_PER_TICK` mails a
 poll, and no new mail is started after `POLL_BUDGET_SECONDS`. Rendering runs
 in a thread. Errors name the HTTP status and Graph's error code, never a
-token, a secret or the text of the sign-in service's answer.
+token or the text of Graph's answer.
 """
 
 from __future__ import annotations
@@ -56,12 +57,9 @@ from oc8.oauth.http import get_client
 logger = logging.getLogger(__name__)
 
 EVENT_TYPE: Final = "mail.received"
-CREDENTIAL_TYPE: Final = "ms365_app"
 
 GRAPH: Final = "https://graph.microsoft.com/v1.0"
 _GRAPH_HOST: Final = "graph.microsoft.com"
-_TOKEN_URL: Final = "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-_SCOPE: Final = "https://graph.microsoft.com/.default"
 
 #: One HTTP request, at most. With the budget below a poll ends well inside
 #: core's 60 s: the last mail started at 40 s takes two requests at most.
@@ -91,8 +89,6 @@ _GUID = re.compile(r"[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
 _ADDRESS = re.compile(
     r"[^@\s<>()\[\],;:\"/\\?#%]+@[^@\s<>()\[\],;:\"/\\?#%]+\.[^@\s<>()\[\],;:\"/\\?#%]+"
 )
-_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
-_DOMAIN = re.compile(rf"{_LABEL}(?:\.{_LABEL})+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
 _CODE = re.compile(r"[A-Za-z0-9_.]{1,64}")
 #: Senders of delivery reports, whatever their content type says: Exchange
@@ -153,47 +149,23 @@ async def _send(client: httpx.AsyncClient, method: str, url: str, **kwargs: Any)
     return await asyncio.wait_for(client.request(method, url, **kwargs), timeout=REQUEST_SECONDS)
 
 
-async def _token(client: httpx.AsyncClient, fields: Mapping[str, str]) -> str:
-    """An app-only Graph token. Nothing the sign-in service answers is
-    repeated: its error text may quote what it was sent."""
-    tenant = str(fields.get("azure_tenant_id") or "").strip()
-    client_id = str(fields.get("client_id") or "").strip()
-    secret = str(fields.get("client_secret") or "").strip()
-    if not (tenant and client_id and secret):
-        raise MailboxError(
-            "The Microsoft 365 app login is incomplete: it needs the tenant ID, the client "
-            "ID and the client secret."
-        )
-    if not (_GUID.fullmatch(tenant) or _DOMAIN.fullmatch(tenant)):
-        raise MailboxError("The Azure AD tenant ID must be a GUID or a domain name.")
-    try:
-        resp = await _send(
-            client,
-            "POST",
-            _TOKEN_URL.format(tenant=quote(tenant, safe="")),
-            data={
-                "grant_type": "client_credentials",
-                "client_id": client_id,
-                "client_secret": secret,
-                "scope": _SCOPE,
-            },
-        )
-    except (httpx.HTTPError, TimeoutError) as exc:
-        raise MailboxError(
-            f"Microsoft's sign-in service could not be reached ({type(exc).__name__})."
-        ) from None
-    if resp.status_code != 200:
-        raise MailboxError(
-            f"Microsoft refused the app registration's login (HTTP {resp.status_code}): check "
-            "the tenant ID, the client ID and the client secret."
-        )
-    try:
-        token = resp.json().get("access_token")
-    except (ValueError, AttributeError):
-        token = None
+def _token(login: Mapping[str, str]) -> str:
+    token = login.get("access_token")
     if not isinstance(token, str) or not token:
-        raise MailboxError("Microsoft's sign-in service answered without a token.")
+        raise MailboxError("The login gave no access token: connect it again.")
     return token
+
+
+def _own_mailbox(login: Mapping[str, str], mailbox: str) -> str:
+    """The mailbox to read: a person's own sign-in (`authorization_code`)
+    reads that account only, as the tools do (`mcp_bridge/_user.py`)."""
+    if login.get("grant_type") != "authorization_code":
+        return mailbox
+    own = str(login.get("account_label") or "").strip()
+    if not own or mailbox.casefold() != own.casefold():
+        who = own or "its connected person"
+        raise MailboxError(f"This connection acts as {who} only: set that mailbox.")
+    return own
 
 
 def _graph_link(link: Any) -> str | None:
@@ -426,12 +398,13 @@ async def _round(
 async def poll(
     login_fields: dict[str, str], event_config: dict[str, Any], cursor: dict[str, Any] | None
 ) -> PollResult:
-    mailbox = _mailbox(event_config.get("mailbox"))
+    mailbox = _own_mailbox(login_fields, _mailbox(event_config.get("mailbox")))
     folder = _folder(event_config.get("folder"))
+    token = _token(login_fields)
     deadline = time.monotonic() + POLL_BUDGET_SECONDS
     starved = isinstance(cursor, Mapping) and cursor.get("starved") is True
     async with get_client() as client:
-        graph = _Graph(client, await _token(client, login_fields), mailbox, folder)
+        graph = _Graph(client, token, mailbox, folder)
         state = _usable(cursor, mailbox, folder)
         if state is None:
             return PollResult(next_cursor=await _baseline(graph, deadline))
@@ -456,7 +429,9 @@ async def poll(
 
 
 def register(contrib: Any) -> None:
-    contrib.add_poller(EVENT_TYPE, poll, credential_type=CREDENTIAL_TYPE)
+    # No credential type: the trigger listens on the organisation's Microsoft
+    # connection the agent is fixed to (`oc8.events.sources.LoginTarget`).
+    contrib.add_poller(EVENT_TYPE, poll)
 
 
 # --- one mail ------------------------------------------------------------------------------

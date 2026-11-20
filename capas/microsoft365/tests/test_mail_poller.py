@@ -46,12 +46,15 @@ _evict()
 pytestmark = pytest.mark.asyncio
 
 GRAPH = "https://graph.microsoft.com/v1.0"
-SECRET = "s3cr3t-Client-Value"
 TOKEN = "eyJ-graph-access-token-XYZ"
+#: What core hands a poll on the app registration (`oc8.events.sources`): an
+#: app-only token it minted, and facts about the login.
 FIELDS = {
+    "access_token": TOKEN,
+    "grant_type": "client_credentials",
+    "provider": "microsoft",
+    "account_label": "app-1",
     "azure_tenant_id": "contoso.onmicrosoft.com",
-    "client_id": "app-1",
-    "client_secret": SECRET,
 }
 MAILBOX = "info@contoso.com"
 CONFIG = {"mailbox": MAILBOX, "folder": "inbox"}
@@ -77,7 +80,6 @@ class FakeGraph:
         self.fail_get: dict[str, int] = {}
         self.fail_header_get: set[str] = set()
         self.expired = False
-        self.token_status = 200
         self.graph_status = 200
         self.next_link_host = "graph.microsoft.com"
         self._ids = 0
@@ -133,8 +135,6 @@ class FakeGraph:
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
         url = urlsplit(str(request.url))
-        if url.netloc == "login.microsoftonline.com":
-            return self._token(request)
         assert url.netloc == "graph.microsoft.com", url.netloc
         assert request.headers["Authorization"] == f"Bearer {TOKEN}"
         if self.graph_status != 200:
@@ -151,20 +151,6 @@ class FakeGraph:
             if path.startswith(f"{prefix}/messages/"):
                 return self._message(path.rsplit("/", 1)[1], query)
         return httpx.Response(404, json={"error": {"code": "ErrorItemNotFound"}})
-
-    def _token(self, request: httpx.Request) -> httpx.Response:
-        form = parse_qs(request.content.decode())
-        assert form["grant_type"] == ["client_credentials"]
-        assert form["scope"] == ["https://graph.microsoft.com/.default"]
-        if self.token_status != 200 or form["client_secret"] != [SECRET]:
-            return httpx.Response(
-                self.token_status if self.token_status != 200 else 401,
-                json={
-                    "error": "invalid_client",
-                    "error_description": f"AADSTS7000215: Invalid client secret {SECRET}",
-                },
-            )
-        return httpx.Response(200, json={"access_token": TOKEN, "expires_in": 3599})
 
     def _delta(self, query: dict[str, list[str]]) -> httpx.Response:
         if "$deltatoken" in query:
@@ -529,32 +515,50 @@ async def test_the_text_is_truncated_at_twenty_thousand_characters(graph: FakeGr
 # --- secrets and errors -------------------------------------------------------------------
 
 
-async def test_a_wrong_secret_fails_without_the_secret_or_the_server_text(graph: FakeGraph) -> None:
-    fields = dict(FIELDS, client_secret="wrong-" + SECRET)
-    with pytest.raises(source.MailboxError) as caught:
-        await source.poll(fields, CONFIG, None)
-    text = str(caught.value)
-    assert "401" in text
-    assert SECRET not in text and "AADSTS" not in text and "wrong-" not in text
+async def test_the_poll_reads_with_the_token_core_hands_over(graph: FakeGraph) -> None:
+    await baseline(graph)
+    assert graph.requests and all(r.url.host == "graph.microsoft.com" for r in graph.requests)
 
 
-async def test_a_graph_401_names_the_status_but_never_the_token(graph: FakeGraph) -> None:
+async def test_a_login_without_a_token_is_refused(graph: FakeGraph) -> None:
+    with pytest.raises(source.MailboxError, match="token"):
+        await source.poll(dict(FIELDS, access_token=""), CONFIG, None)
+    assert graph.requests == []
+
+
+async def test_a_persons_own_sign_in_reads_that_mailbox_only(graph: FakeGraph) -> None:
+    own = {
+        "access_token": TOKEN,
+        "grant_type": "authorization_code",
+        "account_label": MAILBOX,
+    }
+    await source.poll(own, {"mailbox": MAILBOX.upper(), "folder": "inbox"}, None)
+    assert graph.requests
+    graph.requests.clear()
+    with pytest.raises(source.MailboxError, match="acts as"):
+        await source.poll(own, {"mailbox": "other@contoso.com", "folder": "inbox"}, None)
+    assert graph.requests == []
+
+
+async def test_a_graph_401_names_the_status_but_never_the_token(
+    graph: FakeGraph,
+) -> None:
     cursor = await baseline(graph)
     graph.graph_status = 401
     with pytest.raises(source.MailboxError) as caught:
         await source.poll(FIELDS, CONFIG, cursor)
     text = str(caught.value)
-    assert "401" in text and TOKEN not in text and SECRET not in text
+    assert "401" in text and TOKEN not in text
 
 
 async def test_a_network_failure_names_no_secret(graph: FakeGraph) -> None:
     def down(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError(f"cannot connect {request.content!r}")
+        raise httpx.ConnectError(f"cannot connect {request.headers['Authorization']}")
 
     oauth_http.set_transport_override(httpx.MockTransport(down))
     with pytest.raises(source.MailboxError) as caught:
         await source.poll(FIELDS, CONFIG, None)
-    assert SECRET not in str(caught.value)
+    assert TOKEN not in str(caught.value)
     assert caught.value.__cause__ is None and caught.value.__suppress_context__
 
 
@@ -576,13 +580,6 @@ async def test_a_guid_mailbox_and_a_folder_id_are_quoted_into_the_path(graph: Fa
         await source.poll(FIELDS, {"mailbox": guid, "folder": "AAMk/Fo+ld=="}, None)
     delta = next(r for r in graph.requests if r.url.host == "graph.microsoft.com")
     assert f"/users/{guid}/mailFolders/AAMk%2FFo%2Bld%3D%3D/messages/delta" in str(delta.url)
-
-
-async def test_a_bad_tenant_id_is_refused_before_any_request(graph: FakeGraph) -> None:
-    fields = dict(FIELDS, azure_tenant_id="contoso.com/../evil")
-    with pytest.raises(source.MailboxError):
-        await source.poll(fields, CONFIG, None)
-    assert graph.requests == []
 
 
 # --- the time budget --------------------------------------------------------------------
@@ -640,12 +637,13 @@ async def test_a_poll_leaves_the_event_loop_free(
     assert gaps and max(gaps) < 0.3
 
 
-async def test_register_contributes_the_poller_for_the_app_login() -> None:
+async def test_register_contributes_the_poller_for_the_oauth_login() -> None:
     calls: list[tuple[Any, ...]] = []
 
     class Contrib:
-        def add_poller(self, event_type: str, poller: Any, *, credential_type: str) -> None:
-            calls.append((event_type, poller, credential_type))
+        def add_poller(self, event_type: str, poller: Any, **kwargs: Any) -> None:
+            calls.append((event_type, poller, kwargs))
 
     source.register(Contrib())
-    assert calls == [("mail.received", source.poll, "ms365_app")]
+    # No credential type: the trigger listens on the capa's Microsoft connection.
+    assert calls == [("mail.received", source.poll, {})]

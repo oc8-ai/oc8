@@ -38,7 +38,8 @@ def _evict() -> None:
     for _stale in [
         n
         for n in sys.modules
-        if n in {"connector", "mcp_bridge"} or n.startswith(("connector.", "mcp_bridge."))
+        if n in {"connector", "mcp_bridge", "events"}
+        or n.startswith(("connector.", "mcp_bridge.", "events."))
     ]:
         del sys.modules[_stale]
 

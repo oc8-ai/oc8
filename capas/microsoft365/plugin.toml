@@ -35,7 +35,21 @@ polled = true
 editor_label = "On new email"
 
 # The mailbox watched: a UPN or Graph object ID, by default the setup's
-# default mailbox.
+# default mailbox. No allowed_from: the setup keeps no list of mailboxes, and
+# an app registration with Mail.Read reads every mailbox of the tenant, as
+# its tools may (userId) -- the trigger widens nothing. An account signed in
+# for the organisation watches its own mailbox only.
+#
+# Known limits:
+# - Loop protection compares senders with this setting, so with a Graph
+#   object ID instead of an address the mailbox's own mail is not recognised
+#   (resolving it needs User.Read.All, which the documented permissions do
+#   not include). Delivery reports, Auto-Submitted and Precedence still apply.
+# - Not verified against a live tenant: `$expand=attachments($select=...)` on
+#   one message (if refused, each mail becomes a headers-only event and
+#   nothing is lost), and re-reading a delta nextLink page after a poll
+#   stopped inside it (`seen` skips what was done, receivedDateTime tells new
+#   mail from changed).
 [[plugin.triggers.config]]
 key = "mailbox"
 label = "Mailbox"

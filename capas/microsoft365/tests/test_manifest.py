@@ -27,7 +27,7 @@ PLUGINS_ROOT = PLUGIN_ROOT.parent
 
 
 def _evict() -> None:
-    """Drop every cached `connector`/`mcp_bridge` module from sys.modules.
+    """Drop every cached `connector`/`mcp_bridge`/`events` module from sys.modules.
 
     Both names are generic -- after the package restructure every plugin ships
     a package called one of them (design §5.2) -- and sys.modules is keyed by
@@ -42,7 +42,8 @@ def _evict() -> None:
     for _stale in [
         n
         for n in sys.modules
-        if n in {"connector", "mcp_bridge"} or n.startswith(("connector.", "mcp_bridge."))
+        if n in {"connector", "mcp_bridge", "events"}
+        or n.startswith(("connector.", "mcp_bridge.", "events."))
     ]:
         del sys.modules[_stale]
 
@@ -241,7 +242,7 @@ def test_it_declares_mail_received_as_a_polled_event_on_the_default_mailbox() ->
     assert kinds["default_user"] == "text"
 
 
-def test_loading_the_capa_registers_the_poller_for_the_app_login() -> None:
+def test_loading_the_capa_registers_the_poller_for_the_oauth_login() -> None:
     from oc8.capas.contributions import pollers_for
     from oc8.capas.loader import load_plugin
 
@@ -249,7 +250,8 @@ def test_loading_the_capa_registers_the_poller_for_the_app_login() -> None:
     assert discovered is not None
     assert load_plugin(discovered)
     registered = pollers_for("microsoft365")["mail.received"]
-    assert registered.credential_type == "ms365_app"
+    # No credential type: the trigger listens on the Microsoft connection.
+    assert registered.credential_type is None
     assert callable(registered.poller)
 
 
