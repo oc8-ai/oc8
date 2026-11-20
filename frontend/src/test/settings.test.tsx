@@ -377,14 +377,31 @@ describe("TwoFactorPolicyPanel", () => {
     expect(screen.getByText(/needs https/i)).toBeInTheDocument();
   });
 
-  it("lets a stored passkey be turned off while unavailable, never on", async () => {
-    getTwoFactorMock.mockResolvedValue({ ...POLICY, passkeyAvailable: false });
+  it("leaves out the methods this server cannot offer, so saving the default policy works", async () => {
+    getTwoFactorMock.mockResolvedValue({
+      ...POLICY,
+      emailAvailable: false,
+      passkeyAvailable: false,
+    });
+    putTwoFactorMock.mockResolvedValue({ ...POLICY, requirement: "everyone", methods: ["totp"] });
     renderPanel();
 
     const passkey = await screen.findByRole("checkbox", { name: /passkey/i });
-    expect(passkey).toBeEnabled();
-    fireEvent.click(passkey);
+    const email = screen.getByRole("checkbox", { name: /code by email/i });
     expect(passkey).not.toBeChecked();
     expect(passkey).toBeDisabled();
+    expect(email).not.toBeChecked();
+    expect(email).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: /everyone/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() =>
+      expect(putTwoFactorMock).toHaveBeenCalledWith({
+        requirement: "everyone",
+        methods: ["totp"],
+        graceDays: 7,
+      }),
+    );
   });
 });

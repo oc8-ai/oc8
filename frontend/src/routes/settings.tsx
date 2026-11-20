@@ -519,7 +519,15 @@ export function TwoFactorPolicyPanel() {
   useEffect(() => {
     if (data) {
       setRequirement(data.requirement);
-      setMethods(data.methods);
+      // A method this server cannot offer (no mail server, no HTTPS) is never
+      // used at sign-in and the server refuses to save it, so the form leaves
+      // it out; otherwise the default policy could not be saved here.
+      setMethods(
+        data.methods.filter(
+          (m) =>
+            (m !== "email" || data.emailAvailable) && (m !== "passkey" || data.passkeyAvailable),
+        ),
+      );
       setGraceDays(String(data.graceDays));
     }
   }, [data]);
