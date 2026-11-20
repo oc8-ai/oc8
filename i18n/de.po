@@ -436,6 +436,11 @@ msgstr "Alle Quellen"
 msgid "All systems operational"
 msgstr "Alle Systeme betriebsbereit"
 
+#, fuzzy
+#| msgid "All departments"
+msgid "All time"
+msgstr "Alle Abteilungen"
+
 msgid "Allow"
 msgstr "Erlauben"
 
@@ -1273,6 +1278,11 @@ msgstr "Verbindung funktioniert."
 msgid "Connections"
 msgstr "Verbindungen"
 
+#, fuzzy
+#| msgid "context"
+msgid "Content"
+msgstr "Kontext"
+
 msgid "context"
 msgstr "Kontext"
 
@@ -1440,6 +1450,11 @@ msgstr "Konnte nicht gelöscht werden."
 
 msgid "Could not disable."
 msgstr "Deaktivieren fehlgeschlagen."
+
+#, fuzzy
+#| msgid "Could not create the skill."
+msgid "Could not duplicate the skill."
+msgstr "Skill konnte nicht erstellt werden."
 
 msgid "Could not fetch model list"
 msgstr "Modellliste konnte nicht geladen werden"
@@ -2173,6 +2188,12 @@ msgstr "Mit Copilot entwerfen"
 
 msgid "Drift guard — pause on off-role actions"
 msgstr "Drift-Schutz — pausieren bei rollenfremden Aktionen"
+
+msgid "Duplicate"
+msgstr ""
+
+msgid "Duplicate this skill to change it"
+msgstr ""
 
 msgid "Duration"
 msgstr "Dauer"
@@ -2921,6 +2942,11 @@ msgstr "Wissensdatenbanken"
 
 msgid "Knowledge Bases"
 msgstr "Wissensdatenbanken"
+
+#, fuzzy
+#| msgid "Knowledge base deleted"
+msgid "Knowledge bases (one per line)"
+msgstr "Wissensdatenbank gelöscht"
 
 msgid "Knowledge library"
 msgstr "Wissens-Bibliothek"
@@ -3729,6 +3755,11 @@ msgstr "Keine Tools passen zur Suche."
 msgid "No tools yet — add one directly for this agent, or grant it to the whole department first."
 msgstr "Noch keine Tools — direkt für diesen Agenten hinzufügen oder zuerst der ganzen Abteilung gewähren."
 
+#, fuzzy
+#| msgid "No usage metered yet for this tenant."
+msgid "No usage metered this month."
+msgstr "Für diesen Tenant wurde noch kein Verbrauch gemessen."
+
 msgid "No usage metered yet for this tenant."
 msgstr "Für diesen Tenant wurde noch kein Verbrauch gemessen."
 
@@ -3881,6 +3912,9 @@ msgstr "oc8 berechnet"
 
 msgid "oc8 object"
 msgstr "oc8-Objekt"
+
+msgid "of which from cache"
+msgstr ""
 
 msgid "Office"
 msgstr "Büro"
@@ -5059,6 +5093,11 @@ msgstr "Skill zugewiesen"
 msgid "Skill created"
 msgstr "Skill erstellt"
 
+#, fuzzy
+#| msgid "Skill updated"
+msgid "Skill duplicated"
+msgstr "Skill aktualisiert"
+
 msgid "Skill library"
 msgstr "Skill-Bibliothek"
 
@@ -5853,6 +5892,11 @@ msgstr "Dieses Modell darf nur im Chat antworten, nicht nach Zeitplan oder auf e
 
 #, fuzzy
 #| msgid "used this month"
+msgid "this month"
+msgstr "verbraucht diesen Monat"
+
+#, fuzzy
+#| msgid "used this month"
 msgid "This month"
 msgstr "verbraucht diesen Monat"
 
@@ -6500,6 +6544,9 @@ msgstr "Ja, zustimmen"
 
 msgid "you"
 msgstr "du"
+
+msgid "You are editing the original text. Translations are not updated."
+msgstr ""
 
 msgid "You are not allowed to connect this account for the organisation."
 msgstr "Du darfst dieses Konto nicht für die Organisation verbinden."

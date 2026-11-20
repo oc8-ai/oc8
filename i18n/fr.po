@@ -545,6 +545,10 @@ msgid "All systems operational"
 msgstr "Tous les systèmes sont opérationnels"
 
 #, fuzzy
+msgid "All time"
+msgstr "Tous les départements"
+
+#, fuzzy
 msgid "Allow"
 msgstr "Autoriser"
 
@@ -1641,6 +1645,10 @@ msgid "Connections"
 msgstr "Connexions"
 
 #, fuzzy
+msgid "Content"
+msgstr "contexte"
+
+#, fuzzy
 msgid "context"
 msgstr "contexte"
 
@@ -1862,6 +1870,10 @@ msgstr "Impossible de supprimer."
 #, fuzzy
 msgid "Could not disable."
 msgstr "Impossible de désactiver."
+
+#, fuzzy
+msgid "Could not duplicate the skill."
+msgstr "Impossible de créer la compétence."
 
 #, fuzzy
 msgid "Could not fetch model list"
@@ -2792,6 +2804,12 @@ msgstr "Rédiger avec Copilot"
 #, fuzzy
 msgid "Drift guard — pause on off-role actions"
 msgstr "Garde-fou de dérive : mettre en pause en cas d'actions hors rôle"
+
+msgid "Duplicate"
+msgstr ""
+
+msgid "Duplicate this skill to change it"
+msgstr ""
 
 #, fuzzy
 msgid "Duration"
@@ -3776,6 +3794,10 @@ msgstr "Bases de connaissances"
 #, fuzzy
 msgid "Knowledge Bases"
 msgstr "Bases de connaissances"
+
+#, fuzzy
+msgid "Knowledge bases (one per line)"
+msgstr "Base de connaissances supprimée"
 
 #, fuzzy
 msgid "Knowledge library"
@@ -4811,6 +4833,10 @@ msgid "No tools yet — add one directly for this agent, or grant it to the whol
 msgstr "Aucun outil pour l'instant : ajoutez-en un directement à cet agent, ou accordez d'abord tout le département."
 
 #, fuzzy
+msgid "No usage metered this month."
+msgstr "Aucune consommation mesurée pour cette organisation pour l'instant."
+
+#, fuzzy
 msgid "No usage metered yet for this tenant."
 msgstr "Aucune consommation mesurée pour cette organisation pour l'instant."
 
@@ -5005,6 +5031,9 @@ msgstr "calculé par oc8"
 #, fuzzy
 msgid "oc8 object"
 msgstr "objet oc8"
+
+msgid "of which from cache"
+msgstr ""
 
 #, fuzzy
 msgid "Office"
@@ -6548,6 +6577,10 @@ msgid "Skill created"
 msgstr "Compétence créée"
 
 #, fuzzy
+msgid "Skill duplicated"
+msgstr "Compétence mise à jour"
+
+#, fuzzy
 msgid "Skill library"
 msgstr "Bibliothèque de compétences"
 
@@ -7558,6 +7591,10 @@ msgid "This model may only answer chats, not run on a schedule or an event."
 msgstr "Ce modèle ne peut répondre qu'au chat, pas s'exécuter selon une planification ou un événement."
 
 #, fuzzy
+msgid "this month"
+msgstr "utilisé ce mois-ci"
+
+#, fuzzy
 msgid "This month"
 msgstr "utilisé ce mois-ci"
 
@@ -8380,6 +8417,9 @@ msgstr "Oui, approuver"
 #, fuzzy
 msgid "you"
 msgstr "vous"
+
+msgid "You are editing the original text. Translations are not updated."
+msgstr ""
 
 #, fuzzy
 msgid "You are not allowed to connect this account for the organisation."

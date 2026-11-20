@@ -424,6 +424,11 @@ msgstr "Alle bronnen"
 msgid "All systems operational"
 msgstr "Alle systemen operationeel"
 
+#, fuzzy
+#| msgid "All departments"
+msgid "All time"
+msgstr "Alle afdelingen"
+
 msgid "Allow"
 msgstr "Toestaan"
 
@@ -1307,6 +1312,10 @@ msgid "Connections"
 msgstr "Koppelingen"
 
 #, fuzzy
+msgid "Content"
+msgstr "context"
+
+#, fuzzy
 msgid "context"
 msgstr "context"
 
@@ -1528,6 +1537,10 @@ msgstr "Verwijderen mislukt."
 #, fuzzy
 msgid "Could not disable."
 msgstr "Uitschakelen mislukt."
+
+#, fuzzy
+msgid "Could not duplicate the skill."
+msgstr "Skill aanmaken mislukt."
 
 #, fuzzy
 msgid "Could not fetch model list"
@@ -2458,6 +2471,12 @@ msgstr "Opstellen met Copilot"
 #, fuzzy
 msgid "Drift guard — pause on off-role actions"
 msgstr "Driftbewaking — pauzeer bij acties buiten de rol"
+
+msgid "Duplicate"
+msgstr ""
+
+msgid "Duplicate this skill to change it"
+msgstr ""
 
 #, fuzzy
 msgid "Duration"
@@ -3444,6 +3463,10 @@ msgstr "Kennisbanken"
 #, fuzzy
 msgid "Knowledge Bases"
 msgstr "Kennisbanken"
+
+#, fuzzy
+msgid "Knowledge bases (one per line)"
+msgstr "Kennisbank verwijderd"
 
 #, fuzzy
 msgid "Knowledge library"
@@ -4479,6 +4502,10 @@ msgid "No tools yet — add one directly for this agent, or grant it to the whol
 msgstr "Nog geen tools — voeg er rechtstreeks een toe aan deze agent, of geef eerst de hele afdeling toegang."
 
 #, fuzzy
+msgid "No usage metered this month."
+msgstr "Nog geen verbruik gemeten voor deze tenant."
+
+#, fuzzy
 msgid "No usage metered yet for this tenant."
 msgstr "Nog geen verbruik gemeten voor deze tenant."
 
@@ -4673,6 +4700,9 @@ msgstr "oc8 heeft berekend"
 #, fuzzy
 msgid "oc8 object"
 msgstr "oc8-object"
+
+msgid "of which from cache"
+msgstr ""
 
 #, fuzzy
 msgid "Office"
@@ -6216,6 +6246,10 @@ msgid "Skill created"
 msgstr "Skill aangemaakt"
 
 #, fuzzy
+msgid "Skill duplicated"
+msgstr "Skill bijgewerkt"
+
+#, fuzzy
 msgid "Skill library"
 msgstr "Skillbibliotheek"
 
@@ -7226,6 +7260,10 @@ msgid "This model may only answer chats, not run on a schedule or an event."
 msgstr "Dit model mag alleen in chats antwoorden, niet volgens een schema of gebeurtenis draaien."
 
 #, fuzzy
+msgid "this month"
+msgstr "deze maand gebruikt"
+
+#, fuzzy
 msgid "This month"
 msgstr "deze maand gebruikt"
 
@@ -8049,6 +8087,9 @@ msgstr "Ja, goedkeuren"
 #, fuzzy
 msgid "you"
 msgstr "jij"
+
+msgid "You are editing the original text. Translations are not updated."
+msgstr ""
 
 #, fuzzy
 msgid "You are not allowed to connect this account for the organisation."
