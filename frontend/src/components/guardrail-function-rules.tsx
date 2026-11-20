@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Check, Info, Plus, Trash2, X } from "lucide-react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { Check, Info, Maximize2, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { resolveTranslation, useLang, useT, type Lang } from "@/lib/i18n";
 import {
@@ -11,6 +11,13 @@ import { useCan } from "@/lib/governance-hooks";
 import { cn } from "@/lib/utils";
 import type { GuardrailAttribute } from "@/lib/hooks";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   libraryPolicyOf,
   policyOf,
@@ -422,6 +429,96 @@ interface Row {
 // plus an "+ Neue Guardrail" affordance for adding one more. Every
 // non-suggestion row's checkbox is a direct, immediate control -- like a
 // fine-grained access token's permission list, checking/unchecking it calls
+// The Definition text of one row. A long rule does not fit one line of a
+// narrow table column, so the field grows with its text (up to a few lines)
+// and opens in a large editor on request. Enter applies the rule, as the
+// one-line field did; Shift+Enter starts a new line.
+const DEFINITION_MAX_HEIGHT_PX = 168;
+
+function DefinitionField({
+  label,
+  value,
+  onChange,
+  onSubmit,
+  readOnly,
+}: {
+  label: string;
+  value: string;
+  onChange: (text: string) => void;
+  onSubmit: () => void;
+  readOnly: boolean;
+}) {
+  const t = useT();
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [open, setOpen] = useState(false);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, DEFINITION_MAX_HEIGHT_PX)}px`;
+  }, [value]);
+  const placeholder = t(
+    "optional, e.g. up to 100 units on its own, above that approval",
+    "optional, z. B. bis 100 Stück selbstständig, darüber Freigabe",
+  );
+  return (
+    <div className="flex items-start gap-1">
+      <textarea
+        ref={ref}
+        rows={1}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            onSubmit();
+          }
+        }}
+        readOnly={readOnly}
+        placeholder={placeholder}
+        className="min-w-0 flex-1 resize-none rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50 read-only:opacity-70"
+      />
+      <button
+        type="button"
+        aria-label={t("Open in a larger editor", "In größerem Editor öffnen")}
+        title={t("Open in a larger editor", "In größerem Editor öffnen")}
+        onClick={() => setOpen(true)}
+        className="shrink-0 rounded-md border border-border p-1.5 text-muted-foreground transition hover:bg-accent hover:text-foreground"
+      >
+        <Maximize2 className="h-3.5 w-3.5" />
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {t("Definition", "Definition")} · {label}
+            </DialogTitle>
+          </DialogHeader>
+          <textarea
+            autoFocus
+            rows={12}
+            value={value}
+            onChange={(e) => onChange(e.target.value)}
+            readOnly={readOnly}
+            placeholder={placeholder}
+            aria-label={t("Definition", "Definition")}
+            className="max-h-[60vh] w-full resize-y rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50 read-only:opacity-70"
+          />
+          <DialogFooter>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              {t("Done", "Fertig")}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 // `onChange` right away with a plain allow/deny, no Definition text or
 // interpret round-trip required for that.
 // The Definition field + ✓ stays the way to express anything with more
@@ -953,28 +1050,16 @@ export function GuardrailFunctionRules({
                   )}
                 </td>
                 <td className="p-2.5 align-top">
-                  <input
-                    type="text"
+                  <DefinitionField
+                    label={humanizeName(row.name)}
                     value={
                       definitions[row.id] ??
                       suggestion?.definition ??
                       (pendingResult ? decisionLabel(t, pendingResult.result.decision) : "")
                     }
-                    onChange={(e) =>
-                      setDefinitions((prev) => ({ ...prev, [row.id]: e.target.value }))
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void save(row);
-                      }
-                    }}
+                    onChange={(text) => setDefinitions((prev) => ({ ...prev, [row.id]: text }))}
+                    onSubmit={() => void save(row)}
                     readOnly={isPending}
-                    placeholder={t(
-                      "optional, e.g. up to 100 units on its own, above that approval",
-                      "optional, z. B. bis 100 Stück selbstständig, darüber Freigabe",
-                    )}
-                    className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground outline-none focus:border-primary/50 read-only:opacity-70"
                   />
                   {rowConditions.length > 0 && (
                     <ul className="mt-1.5 space-y-0.5 text-xs text-muted-foreground">

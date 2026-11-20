@@ -3824,6 +3824,9 @@ msgstr ""
 msgid "Open guardrails →"
 msgstr ""
 
+msgid "Open in a larger editor"
+msgstr ""
+
 msgid "Open my work"
 msgstr ""
 
