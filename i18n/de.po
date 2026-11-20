@@ -25,6 +25,11 @@ msgstr "— zum Ablehnen erforderlich"
 msgid "(empty)"
 msgstr "(leer)"
 
+#, fuzzy
+#| msgid "Manage user roles for your organization."
+msgid "(no longer allowed by your organisation)"
+msgstr "Verwalte Benutzerrollen für deine Organisation."
+
 msgid "(optional)"
 msgstr "(optional)"
 
@@ -320,6 +325,14 @@ msgstr "Admin-API-Schlüssel"
 msgid "Administrator"
 msgstr "Administrator"
 
+#, fuzzy
+#| msgid "Administrator"
+msgid "Administrators"
+msgstr "Administrator"
+
+msgid "Administrators must set one up within the grace period."
+msgstr ""
+
 msgid "Advanced: exact role override"
 msgstr "Erweitert: genaue Rolle festlegen"
 
@@ -448,6 +461,11 @@ msgid "allowed"
 msgstr "erlaubt"
 
 msgid "Allowed"
+msgstr "Erlaubt"
+
+#, fuzzy
+#| msgid "Allowed"
+msgid "Allowed methods"
 msgstr "Erlaubt"
 
 msgid "Allowed origins (optional, comma-separated)"
@@ -748,6 +766,11 @@ msgstr "Prüfprotokoll"
 msgid "Auditor"
 msgstr "Prüfer"
 
+#, fuzzy
+#| msgid "Scan with your authenticator app"
+msgid "Authenticator app"
+msgstr "Mit deiner Authenticator-App scannen"
+
 msgid "Author"
 msgstr "Autor"
 
@@ -824,6 +847,11 @@ msgstr "Backlog"
 msgid "Backup and restore"
 msgstr "Sicherung und Wiederherstellung"
 
+#, fuzzy
+#| msgid "Backup downloaded"
+msgid "Backup code"
+msgstr "Sicherung heruntergeladen"
+
 msgid "Backup downloaded"
 msgstr "Sicherung heruntergeladen"
 
@@ -841,6 +869,9 @@ msgstr "Grunddaten deines Arbeitsbereichs."
 
 msgid "Basics"
 msgstr "Basis"
+
+msgid "Between 0 and 30. How long a member may still sign in without a second factor once it is required of them."
+msgstr ""
 
 msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
 msgstr "Zwischen 1 und 100. Ein niedrigerer Wert behält bestehende Wiedervorlagen, blockiert aber neue über dem Limit."
@@ -1140,11 +1171,19 @@ msgstr "Cloud oder lokal — 3 schnelle Schritte"
 msgid "Code"
 msgstr "Code"
 
+#, fuzzy
+#| msgid "Change email"
+msgid "Code by email"
+msgstr "E-Mail ändern"
+
 msgid "Collaboration"
 msgstr "Zusammenarbeit"
 
 msgid "Collapse sidebar"
 msgstr "Seitenleiste einklappen"
+
+msgid "Coming soon."
+msgstr ""
 
 msgid "commands"
 msgstr "Befehle"
@@ -1511,9 +1550,19 @@ msgid "Could not remove the binding"
 msgstr "Vertragsbindung konnte nicht entfernt werden"
 
 #, fuzzy
+#| msgid "Could not remove seat."
+msgid "Could not remove the method."
+msgstr "Sitz konnte nicht entfernt werden."
+
+#, fuzzy
 #| msgid "Could not remove the binding"
 msgid "Could not remove this login"
 msgstr "Vertragsbindung konnte nicht entfernt werden"
+
+#, fuzzy
+#| msgid "Two-factor authentication"
+msgid "Could not reset two-factor authentication."
+msgstr "Zwei-Faktor-Authentifizierung"
 
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
 msgstr "Diese Verbindung konnte nicht aufgelöst werden, daher ist ein Fortfahren nicht sicher -- ein Speichern jetzt könnte Guardrails unter dem falschen Schlüssel speichern."
@@ -1557,6 +1606,11 @@ msgstr "Speichern fehlgeschlagen."
 msgid "Could not save the endpoints."
 msgstr "Die Endpunkte konnten nicht gespeichert werden."
 
+#, fuzzy
+#| msgid "Could not save the endpoints."
+msgid "Could not save the policy."
+msgstr "Die Endpunkte konnten nicht gespeichert werden."
+
 msgid "Could not save the preset."
 msgstr "Preset konnte nicht gespeichert werden."
 
@@ -1578,6 +1632,11 @@ msgid "Could not save. Try again."
 msgstr "Konnte nicht gespeichert werden. Versuch es noch einmal."
 
 msgid "Could not send the answer"
+msgstr "Antwort konnte nicht gesendet werden"
+
+#, fuzzy
+#| msgid "Could not send the answer"
+msgid "Could not send the code."
 msgstr "Antwort konnte nicht gesendet werden"
 
 msgid "Could not set password."
@@ -2349,6 +2408,9 @@ msgstr "Manuell eingeben"
 msgid "Enter manually instead"
 msgstr "Stattdessen manuell eingeben"
 
+msgid "Enter one of the backup codes you saved when you set up two-factor authentication."
+msgstr ""
+
 msgid "Enter room"
 msgstr "Raum betreten"
 
@@ -2421,11 +2483,19 @@ msgstr "Jede Stunde"
 msgid "Every installable capability — connectors, tools, guardrails, templates."
 msgstr "Jede installierbare Fähigkeit — Connectoren, Tools, Guardrails, Vorlagen."
 
+msgid "Every member must set one up within the grace period."
+msgstr ""
+
 msgid "Every minute"
 msgstr "Jede Minute"
 
 msgid "Every save is kept — nothing is pruned."
 msgstr "Jede Speicherung bleibt erhalten — nichts wird gelöscht."
+
+#, fuzzy
+#| msgid "Every minute"
+msgid "Everyone"
+msgstr "Jede Minute"
 
 msgid "Everything"
 msgstr "Alles"
@@ -2572,6 +2642,9 @@ msgstr "Für persönliche Notizen einen Agenten öffnen und zum Tab „Gedächtn
 msgid "For scheduled runs the account of the person who created the schedule is used."
 msgstr "Bei geplanten Läufen wird das Konto der Person genutzt, die den Zeitplan angelegt hat."
 
+msgid "For someone who lost their phone or can no longer reach their email: removes their second factors so they can set one up again."
+msgstr ""
+
 msgid "For task-specific instructions, assign a skill instead — this field is only the agent's base mission."
 msgstr "Für aufgabenspezifische Anweisungen nutze stattdessen Skills — dieses Feld ist nur die Basis-Mission des Agenten."
 
@@ -2632,6 +2705,9 @@ msgstr "Generieren"
 msgid "Generating…"
 msgstr "Wird generiert…"
 
+msgid "Get codes by email"
+msgstr ""
+
 msgid "Get notified even when this tab isn't open."
 msgstr "Werde benachrichtigt, auch wenn dieser Tab nicht offen ist."
 
@@ -2661,6 +2737,9 @@ msgstr "Geht an die laufende Antwort"
 
 msgid "Good answer"
 msgstr "Gute Antwort"
+
+msgid "Grace period (days)"
+msgstr ""
 
 msgid "Granted company-wide access"
 msgstr "Unternehmensweiten Zugriff gewährt"
@@ -3223,6 +3302,9 @@ msgstr "Max. aktive Wiedervorlagen pro Person"
 msgid "MCP Connections"
 msgstr "MCP-Verbindungen"
 
+msgid "Members who set up a second factor are asked for it at sign-in."
+msgstr ""
+
 msgid "memories"
 msgstr "Erinnerungen"
 
@@ -3245,6 +3327,9 @@ msgstr "Nachricht"
 
 msgid "metered by the platform"
 msgstr "vom System gemessen"
+
+msgid "Method"
+msgstr ""
 
 msgid "Mine"
 msgstr "Meine"
@@ -3353,6 +3438,9 @@ msgstr "Arbeitsbereich benennen"
 
 msgid "Narrowed"
 msgstr "Eingeschränkt"
+
+msgid "Needs a mail server. Set one up under Mail server first."
+msgstr ""
 
 msgid "Needs an organisation connection"
 msgstr "Braucht eine Verbindung der Organisation"
@@ -3783,8 +3871,14 @@ msgstr "In dieser Firma hat sich noch niemand angemeldet — nutze den Schnellzu
 msgid "Nobody holds this role yet."
 msgstr "Diese Rolle hält bisher niemand."
 
+msgid "Nobody is asked for a second factor. Set-ups are kept."
+msgstr ""
+
 msgid "Nobody left to assign. People appear here after they have signed in once."
 msgstr "Niemand mehr zuzuweisen. Personen erscheinen hier, nachdem sie sich einmal angemeldet haben."
+
+msgid "Nobody will be asked for a second factor at sign-in. Set-ups are kept, and switching back on asks for them again at once."
+msgstr ""
 
 msgid "None (disable)"
 msgstr "Keine (deaktivieren)"
@@ -3916,6 +4010,11 @@ msgstr "oc8-Objekt"
 msgid "of which from cache"
 msgstr ""
 
+#, fuzzy
+#| msgid "Office"
+msgid "Off"
+msgstr "Büro"
+
 msgid "Office"
 msgstr "Büro"
 
@@ -3945,6 +4044,9 @@ msgstr "Hier zählt nur eine Verbindung der Organisation. Eine Datenquelle fütt
 
 msgid "Only for me"
 msgstr "Nur für mich"
+
+msgid "Only members who set up a second factor will be asked for it; the others will no longer be asked to set one up."
+msgstr ""
 
 msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
 msgstr "Es werden nur On-Prem-Modelle angeboten: dieses Deployment leitet jedes Embedding über die lokale Ollama-Instanz, ein Cloud-Modell würde beim ersten Dokument fehlschlagen."
@@ -3996,6 +4098,11 @@ msgstr "Öffnet eine Webseite"
 
 msgid "Operator"
 msgstr "Operator"
+
+#, fuzzy
+#| msgid "(optional)"
+msgid "Optional"
+msgstr "(optional)"
 
 msgid "optional, e.g. up to 100 units on its own, above that approval"
 msgstr "optional, z. B. bis 100 Stück selbstständig, darüber Freigabe"
@@ -4064,6 +4171,9 @@ msgstr "Übersicht"
 
 msgid "Page "
 msgstr "Seite "
+
+msgid "Passkey or security key"
+msgstr ""
 
 msgid "Passphrase"
 msgstr "Passphrase"
@@ -4529,8 +4639,24 @@ msgstr "Berichtshierarchie"
 msgid "Reports"
 msgstr "Berichte"
 
+#, fuzzy
+#| msgid "Manage user roles for your organization."
+msgid "Required by your organisation"
+msgstr "Verwalte Benutzerrollen für deine Organisation."
+
 msgid "Required tools (MCP)"
 msgstr "Benötigte Tools (MCP)"
+
+msgid "Reset"
+msgstr ""
+
+#, fuzzy
+#| msgid "Two-factor authentication"
+msgid "Reset their two-factor authentication?"
+msgstr "Zwei-Faktor-Authentifizierung"
+
+msgid "Reset two-factor"
+msgstr ""
 
 msgid "Resetting…"
 msgstr "Wird zurückgesetzt…"
@@ -4851,6 +4977,9 @@ msgstr "Sitz-Rolle"
 msgid "Seat updated"
 msgstr "Sitz aktualisiert"
 
+msgid "Security"
+msgstr ""
+
 msgid "Sees and decides in every department, including ones created later."
 msgstr "Sieht und entscheidet in jedem Department, auch in später erstellten."
 
@@ -4895,6 +5024,11 @@ msgstr "Antwort senden"
 
 msgid "Send answers"
 msgstr "Antworten senden"
+
+#, fuzzy
+#| msgid "Invalid code"
+msgid "Send code"
+msgstr "Ungültiger Code"
 
 msgid "Send e-mail from Gmail"
 msgstr "E-Mails aus Gmail senden"
@@ -4942,6 +5076,11 @@ msgstr "Legt mit dir Schritt für Schritt einen neuen Agenten an. Ändert nichts
 
 msgid "Set up now →"
 msgstr "Jetzt einrichten →"
+
+#, fuzzy
+#| msgid "Two-factor authentication"
+msgid "Set up two-factor authentication"
+msgstr "Zwei-Faktor-Authentifizierung"
 
 msgid "Set up your first administrator account to get started."
 msgstr "Richte dein erstes Administrator-Konto ein."
@@ -5912,6 +6051,9 @@ msgstr "Dieser Anbieter benötigt einen Completion-Schlüssel, bevor seine Agent
 msgid "This question needs an answer."
 msgstr "Diese Frage braucht eine Antwort."
 
+msgid "This removes every second factor and backup code they have. If your organisation requires two-factor authentication from them, they set it up again at their next sign-in, within the grace period."
+msgstr ""
+
 msgid "This replaces your current arrangement. You can switch back at any time."
 msgstr "Das ersetzt deine aktuelle Anordnung. Du kannst jederzeit wieder wechseln."
 
@@ -6110,6 +6252,16 @@ msgstr "Zwei-Faktor-Authentifizierung"
 msgid "Two-factor authentication enabled"
 msgstr "Zwei-Faktor-Authentifizierung aktiviert"
 
+#, fuzzy
+#| msgid "Two-factor authentication"
+msgid "Two-factor authentication reset"
+msgstr "Zwei-Faktor-Authentifizierung"
+
+#, fuzzy
+#| msgid "Two-factor authentication"
+msgid "Two-factor policy updated"
+msgstr "Zwei-Faktor-Authentifizierung"
+
 msgid "Type"
 msgstr "Typ"
 
@@ -6199,6 +6351,11 @@ msgstr "USD pro 1 Mio. Token — bearbeitbar"
 msgid "USD per 1M tokens — managed by your platform operator"
 msgstr "USD pro 1 Mio. Token — vom Plattformbetreiber gepflegt"
 
+#, fuzzy
+#| msgid "Save your backup codes"
+msgid "Use a backup code"
+msgstr "Speicher deine Backup-Codes"
+
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr "Verwende im Tool-Namen nur Buchstaben, Ziffern, _ und - (höchstens 64)."
 
@@ -6207,6 +6364,9 @@ msgstr "Anmeldungs-Standard nutzen"
 
 msgid "Use the built-in default"
 msgstr "Standard verwenden"
+
+msgid "Use the code by email instead"
+msgstr ""
 
 msgid "use the department's"
 msgstr "Abteilung verwenden"
@@ -6399,6 +6559,12 @@ msgstr "Wir konnten nicht erkennen, mit welchem Konto du dich angemeldet hast. B
 msgid "We recommend an API key instead of a password."
 msgstr "Wir empfehlen einen API-Schlüssel statt eines Passworts."
 
+msgid "We send a 6-digit code to your sign-in email."
+msgstr ""
+
+msgid "We send a 6-digit code to your sign-in email. Enter it to confirm the address."
+msgstr ""
+
 msgid "webhook"
 msgstr "Webhook"
 
@@ -6485,6 +6651,9 @@ msgstr "Wo diese Person steht, und auf welcher Ebene."
 
 msgid "Who may do what — and why you were refused."
 msgstr "Wer was darf — und warum du abgewiesen wurdest."
+
+msgid "Who must confirm their sign-in with a second factor, and how."
+msgstr ""
 
 msgid "Who watches the thinking of"
 msgstr "Wer überwacht das Denken von"
@@ -6681,6 +6850,12 @@ msgstr "Dein Name"
 
 msgid "Your office is open!"
 msgstr "Dein Büro ist eröffnet!"
+
+msgid "Your organisation asks for a second factor. Choose how you want to confirm it is you."
+msgstr ""
+
+msgid "Your organisation requires a second factor. Add another method first."
+msgstr ""
 
 msgid "Your own answer replaces the ticked options."
 msgstr "Eine eigene Antwort ersetzt die angekreuzten Optionen."
