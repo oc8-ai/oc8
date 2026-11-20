@@ -40,6 +40,8 @@ async def record_usage(
     cache_hit: bool = False,
     saved_tokens_in: int = 0,
     saved_tokens_out: int = 0,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
 ) -> None:
     stmt = (
         pg_insert(TokenUsageRecord)
@@ -60,6 +62,8 @@ async def record_usage(
             cache_hit=cache_hit,
             saved_tokens_in=saved_tokens_in,
             saved_tokens_out=saved_tokens_out,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
         )
         .on_conflict_do_nothing(index_elements=["request_id"])
     )

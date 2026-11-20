@@ -64,6 +64,10 @@ class Usage:
     #: The part of `tokens_out` the model spent on reasoning, where the
     #: provider reports it separately. None means "not reported", never zero.
     reasoning_tokens: int | None = None
+    #: The parts of `tokens_in` the provider read from, or wrote to, its
+    #: prompt cache. `tokens_in` stays the whole prompt; these sit inside it.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 @dataclass

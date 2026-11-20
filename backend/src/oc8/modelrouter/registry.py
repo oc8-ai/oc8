@@ -66,7 +66,9 @@ _PROVIDERS: tuple[ProviderEntry, ...] = (
         "anthropic",
         ("claude",),
         "cloud",
-        lambda s, _b, key: AnthropicAdapter(key or s.anthropic_api_key),
+        lambda s, _b, key: AnthropicAdapter(
+            key or s.anthropic_api_key, prompt_caching=s.anthropic_prompt_caching
+        ),
         lambda s, key: bool(key or s.anthropic_api_key),
         supports_reasoning=anthropic_thinks,
     ),

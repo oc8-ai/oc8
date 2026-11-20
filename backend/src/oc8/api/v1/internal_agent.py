@@ -1655,6 +1655,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             provider=res.provider,
             tokens_in=res.usage.tokens_in,
             tokens_out=res.usage.tokens_out,
+            cache_read_tokens=res.usage.cache_read_tokens,
+            cache_write_tokens=res.usage.cache_write_tokens,
             agent_id=agent.id,
             department_id=agent.department_id,
         )
@@ -2683,6 +2685,8 @@ async def _dispatch_one_tool(
                 provider=clarify_result.provider,
                 tokens_in=clarify_result.usage.tokens_in,
                 tokens_out=clarify_result.usage.tokens_out,
+                cache_read_tokens=clarify_result.usage.cache_read_tokens,
+                cache_write_tokens=clarify_result.usage.cache_write_tokens,
                 agent_id=agent.id,
                 department_id=agent.department_id,
             )

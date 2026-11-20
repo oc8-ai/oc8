@@ -239,6 +239,7 @@ async def _bill(
     department_id = caller.agent.department_id
     tenant_id = caller.tenant_id
     tokens_in, tokens_out = usage.tokens_in, usage.tokens_out
+    cache_read, cache_write = usage.cache_read_tokens, usage.cache_write_tokens
 
     async def _write() -> None:
         async with tenant_session(tenant_id) as own:
@@ -250,6 +251,8 @@ async def _bill(
                 provider=provider,
                 tokens_in=tokens_in,
                 tokens_out=tokens_out,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
                 agent_id=agent_id,
                 department_id=department_id,
             )
