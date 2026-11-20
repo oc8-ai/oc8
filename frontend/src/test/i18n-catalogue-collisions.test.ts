@@ -32,17 +32,26 @@ function sources(rel: string): string[] {
   return readdirSync(full).flatMap((entry) => sources(join(rel, entry)));
 }
 
+/** The entries the app serves: like `oc8.i18n.catalog`, untranslated and
+ * fuzzy ones (Weblate's "Needs editing") are skipped, so they never override
+ * a call's inline German. */
 function catalogue(): Map<string, string> {
   const entries = new Map<string, string>();
   let id: string | null = null;
   let str: string | null = null;
   let mode: "id" | "str" | null = null;
+  let fuzzy = false;
+  let nextFuzzy = false;
   const flush = () => {
-    if (id && str !== null) entries.set(id, str);
+    if (id && str && !fuzzy) entries.set(id, str);
   };
   for (const line of readFileSync(PO, "utf8").split("\n")) {
-    if (line.startsWith("msgid ")) {
+    if (/^#,.*\bfuzzy\b/.test(line)) {
+      nextFuzzy = true;
+    } else if (line.startsWith("msgid ")) {
       flush();
+      fuzzy = nextFuzzy;
+      nextFuzzy = false;
       id = JSON.parse(line.slice(6)) as string;
       str = null;
       mode = "id";
