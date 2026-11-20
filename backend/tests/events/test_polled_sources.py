@@ -627,3 +627,27 @@ async def test_a_failed_fire_keeps_the_cursor_and_the_retry_fires_each_event_onc
     keys = sorted(str(r.idempotency_key) for r in await _runs(app_session, polled))
     assert keys == [f"{polled.source}:d-{n}:{trigger_id}" for n in (1, 2, 3)]
     assert (await _cursor(app_session, polled, trigger_id)).cursor == {"pos": 8}
+
+
+async def test_a_missing_poller_keeps_the_position_and_reports_it(
+    app_session: AppSessionFactory,
+) -> None:
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(baseline_then(lambda _c: [event(1)])))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()  # baseline at pos 5
+
+    # The capa is still enabled, but this process has no poller for it: a
+    # broken upgrade, or a replica that does not carry the capa yet.
+    del sources._POLLERS[(polled.source, polled.event_type)]
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+
+    row = await _cursor(app_session, polled, trigger_id)
+    assert row.cursor == {"pos": 5}
+    assert row.last_error == "poller unavailable"
+    assert row.failures == 1 and row.last_error_at is not None
+    assert row.next_poll_at is not None
+    wait = (row.next_poll_at - datetime.now(tz=UTC)).total_seconds()
+    assert 50 < wait <= 60
+    assert await _runs(app_session, polled) == []

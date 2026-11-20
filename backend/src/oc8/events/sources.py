@@ -413,6 +413,15 @@ async def _fire_events(
     return True
 
 
+def _record_failure(cursor_row: m.EventSourceCursor, error: str) -> None:
+    """Keep the position, record why, and back off."""
+    now = datetime.now(tz=UTC)
+    cursor_row.failures = cursor_row.failures + 1
+    cursor_row.last_error = error
+    cursor_row.last_error_at = now
+    cursor_row.next_poll_at = now + timedelta(seconds=backoff_seconds(cursor_row.failures))
+
+
 async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: float) -> int:
     """Poll one trigger, holding its cursor row for the whole poll. Returns
     how many events it was handed."""
@@ -439,10 +448,18 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             return 0
         assert trigger.event_source is not None and trigger.event_type is not None
         spec = await polled_event_spec(db, trigger.event_source, trigger.event_type)
-        if spec is None or spec.registered is None or spec.tool_key is None:
-            # The capa is off, gone, or failed to load: nothing polls until it
-            # is back, and then from a fresh baseline. Not the trigger's error.
+        if spec is None:
+            # The capa is not enabled, or gone: nothing polls until it is back,
+            # and then from a fresh baseline. Not the trigger's error.
             cursor_row.cursor = None
+            return 0
+        if spec.registered is None or spec.tool_key is None:
+            # The capa is enabled but this process cannot poll it: its poller
+            # failed to import, or this replica does not carry it yet (a broken
+            # upgrade, a rolling deploy). Keep the position so nothing is lost,
+            # say so on the trigger, and try again after the usual back-off.
+            _record_failure(cursor_row, "poller unavailable")
+            logger.warning("polled trigger %s skipped: poller unavailable", trigger_id)
             return 0
         target = trigger.event_target_credential_id
         if target is None or await fixed_login(db, trigger.agent_id, spec.tool_key) != target:
@@ -468,13 +485,7 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
         except TenantInactive:
             raise  # the organisation stopped mid-tick: not the source's fault
         except Exception as exc:  # recorded on the trigger, never raised
-            failures = cursor_row.failures + 1
-            cursor_row.failures = failures
-            cursor_row.last_error = _error_text(exc, secret_forms)
-            cursor_row.last_error_at = datetime.now(tz=UTC)
-            cursor_row.next_poll_at = datetime.now(tz=UTC) + timedelta(
-                seconds=backoff_seconds(failures)
-            )
+            _record_failure(cursor_row, _error_text(exc, secret_forms))
             logger.warning(
                 "polled trigger %s failed (%s), backing off", trigger_id, type(exc).__name__
             )

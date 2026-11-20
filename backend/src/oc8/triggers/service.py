@@ -36,6 +36,15 @@ _ONE_POLLED_TRIGGER = "the agent already has a trigger on this polled event"
 _CAPA_NOT_ENABLED = "the event's capa is not enabled"
 
 
+def _violates(exc: IntegrityError, constraint: str) -> bool:
+    """Whether `exc` is a violation of the constraint or index `constraint`
+    (asyncpg names it on the driver error; its message names it too)."""
+    driver = getattr(exc.orig, "__cause__", None) or exc.orig
+    if getattr(driver, "constraint_name", None) == constraint:
+        return True
+    return f'"{constraint}"' in str(exc.orig)
+
+
 class InvalidTriggerConfig(ValueError):
     """Raised for a bad cron expression, an unknown kind, or a kind whose
     required fields (cron_expression, or event_source+event_type) are
@@ -214,7 +223,9 @@ async def create_trigger(
                 db.add(trigger)
                 await db.flush()
         except IntegrityError as exc:
-            raise InvalidTriggerConfig(_ONE_POLLED_TRIGGER) from exc
+            if _violates(exc, "uq_trigger_polled_event"):
+                raise InvalidTriggerConfig(_ONE_POLLED_TRIGGER) from exc
+            raise
     else:
         db.add(trigger)
         await db.flush()

@@ -343,3 +343,18 @@ async def test_re_enabling_while_the_capa_is_off_says_so(
         assert row is not None
         with pytest.raises(InvalidTriggerConfig, match="capa is not enabled"):
             await update_trigger(db, row, enabled=True)
+
+
+async def test_another_integrity_error_is_not_reported_as_a_duplicate(
+    app_session: AppSessionFactory, polled: Polled, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    async def passes(*_args: Any, **_kwargs: Any) -> bool:
+        return True
+
+    # As if the target login were deleted between the check and the insert:
+    # the foreign key refuses it, which is no duplicate.
+    monkeypatch.setattr("oc8.triggers.service._check_polled_target", passes)
+    with pytest.raises(IntegrityError):
+        await _create(app_session, polled, target=uuid.uuid4())
