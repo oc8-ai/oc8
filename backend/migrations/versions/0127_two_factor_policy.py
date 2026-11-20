@@ -8,8 +8,8 @@ Drops `organization.totp_step_up_enabled`: nothing ever read it, and the
 organisation's two-factor policy now lives in `organization.settings
 ["two_factor"]`.
 
-Revision ID: 0126
-Revises: 0125
+Revision ID: 0127
+Revises: 0126
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0126"
-down_revision: str | None = "0125"
+revision: str = "0127"
+down_revision: str | None = "0126"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -1,4 +1,4 @@
-"""0126: two-factor policy and email codes -- the two new tables, their RLS,
+"""0127: two-factor policy and email codes -- the two new tables, their RLS,
 and the unused `organization.totp_step_up_enabled` column gone."""
 
 from __future__ import annotations
