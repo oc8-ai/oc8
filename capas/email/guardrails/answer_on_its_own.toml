@@ -1,0 +1,20 @@
+# The agent answers mail on its own: it reads, replies and marks mail read,
+# without approval. It cannot start new conversations (mail_send), pass mail
+# on (mail_forward), or move or delete mail. A preset limits tools, not their
+# arguments, so a reply may go to everyone on the mail (reply_all).
+# There is no daily counter: the guardrail model has no per-day budget. What
+# bounds it is core's outward rule, one reply per mail in each task.
+kind = "preset"
+connection = "primary"
+key = "answer_on_its_own"
+label = "Answer on its own"
+summary = "Reads mail and answers it on its own, without approval: it can reply (also to everyone on a mail) and mark mail read. It cannot send new mail, forward, move or delete mail. There is no daily limit; in each task it replies to a mail at most once."
+recommended = false
+read = true
+modify = true
+approval_actions = []
+approval_eur = ""
+only = [
+    "mail_list_folders", "mail_search", "mail_get", "mail_get_attachment",
+    "mail_reply", "mail_mark_read",
+]

@@ -16,10 +16,15 @@ Rules that hold everywhere:
   not offer STARTTLS is refused before any login is sent. Certificates are
   verified against the system trust store, host name included
   (`tls_context`).
+* **Only where it may go.** A server's name is resolved once and checked
+  (`Guard`); the socket then goes only to the addresses checked, while TLS
+  still checks the certificate against the name, so a second DNS answer
+  cannot redirect it. The bridge refuses internal addresses (`default_guard`).
 * **No secret in any error.** Every failure is a `MailError` with wording of
-  our own; a login failure never carries the server's reply, and any other
-  server text has the passwords removed. Errors are raised without a chained
-  cause, so a logged traceback carries nothing more.
+  our own; a login failure never carries the server's reply, server text
+  from before the login is never shown, and later server text has the
+  passwords removed. Errors are raised without a chained cause, so a logged
+  traceback carries nothing more.
 * **Limits.** An attachment, read or sent, is at most 25 MB (sent attachments
   together too); a mail goes to at most 50 recipients; the text handed to
   the model is cut at 20,000 characters, with a note saying so.
@@ -37,17 +42,30 @@ import email.policy
 import imaplib
 import ipaddress
 import mimetypes
+import os
 import poplib
+import quopri
 import re
 import smtplib
 import socket
 import ssl
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import date
+from email.header import decode_header, make_header
 from email.message import EmailMessage, Message
-from email.utils import formataddr, formatdate, getaddresses, make_msgid, parseaddr
+from email.parser import BytesParser
+from email.utils import (
+    collapse_rfc2231_value,
+    decode_rfc2231,
+    formataddr,
+    formatdate,
+    getaddresses,
+    make_msgid,
+    parseaddr,
+)
 from html.parser import HTMLParser
 from typing import Any
 
@@ -56,8 +74,15 @@ TIMEOUT_SECONDS = 20.0
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
 MAX_RECIPIENTS = 50
 MAX_TEXT_CHARS = 20_000
-#: A mail larger than this is not downloaded; only its headers are read.
+#: A mail larger than this is not downloaded by the tools; only its headers
+#: are read.
 MAX_MESSAGE_BYTES = 60 * 1024 * 1024
+#: The most the poller reads of one mail for its event. A larger mail is read
+#: as its headers, its structure (BODYSTRUCTURE) and the start of its text.
+MAX_EVENT_FETCH_BYTES = 2 * 1024 * 1024
+#: How long one poll works before it hands back what it has, well inside the
+#: 60 seconds core gives it. The next poll continues where it stopped.
+POLL_BUDGET_SECONDS = 40.0
 DEFAULT_SEARCH_LIMIT = 20
 MAX_SEARCH_LIMIT = 100
 #: POP3 has no search: this many of the newest mails are searched locally.
@@ -69,6 +94,13 @@ SECURITY = ("ssl", "starttls")
 #: Marks everything this capa sends, so other systems' loop protection (and
 #: ours) recognises it.
 AUTO_SUBMITTED = "auto-replied"
+#: The bridge's allowlist for mail servers on internal addresses: networks
+#: (CIDR) and exact host names, comma-separated. Core passes `OC8_MCP_*`
+#: variables to the bridge; deriving this from core's own
+#: OC8_OUTBOUND_ALLOWED_PRIVATE is a follow-up.
+ALLOWLIST_ENV = "OC8_MCP_EMAIL_ALLOWED_PRIVATE"
+#: The deepest MIME nesting looked into; deeper parts are ignored.
+MAX_MIME_DEPTH = 50
 
 #: Bridge environment variable -> `mail_account` field (tool_pack.toml's
 #: `credential_env_fields` must say the same; a test holds them together).
@@ -113,8 +145,10 @@ class NotOnPop3(MailError):
     """POP3 has no folders, search, flags or move."""
 
 
-#: Checks a host before we connect to it; raises `MailError` to refuse.
-Guard = Callable[[str], None]
+#: Checks a host before we connect to it: resolves it once and returns the
+#: addresses it checked (or one of them), which are the only ones connected
+#: to; raises `MailError` to refuse.
+Guard = Callable[[str], "str | Sequence[str]"]
 
 
 def tls_context(host: str) -> ssl.SSLContext:
@@ -125,25 +159,164 @@ def tls_context(host: str) -> ssl.SSLContext:
     return context
 
 
-def default_guard(host: str) -> None:
-    """The bridge's own check: never the link-local range (cloud metadata),
-    multicast or unspecified addresses. Private networks stay reachable, since
-    a company's own mail server often sits on one; the core-process callers
-    pass core's stricter, operator-configured guard instead."""
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_SIX_TO_FOUR = ipaddress.ip_network("2002::/16")
+
+
+def _real_address(ip: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    """The address a connection would really reach: an IPv4 address hidden in
+    an IPv6 form (v4-mapped, NAT64, 6to4) is unwrapped, as core does."""
     try:
-        infos = socket.getaddrinfo(host, None)
-    except OSError:
+        addr = ipaddress.ip_address(ip.split("%", 1)[0])
+    except ValueError:
+        return None
+    if isinstance(addr, ipaddress.IPv6Address):
+        if addr.ipv4_mapped is not None:
+            return addr.ipv4_mapped
+        if addr in _NAT64:
+            return ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+        if addr in _SIX_TO_FOUR:
+            return ipaddress.IPv4Address((int(addr) >> 80) & 0xFFFFFFFF)
+    return addr
+
+
+def _allowlist() -> tuple[list[ipaddress.IPv4Network | ipaddress.IPv6Network], set[str]]:
+    nets: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    hosts: set[str] = set()
+    for raw in os.environ.get(ALLOWLIST_ENV, "").split(","):
+        entry = raw.strip().lower()
+        if not entry:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            hosts.add(entry)
+    return nets, hosts
+
+
+def default_guard(host: str) -> list[str]:
+    """The bridge's own check, as core's default: only public addresses.
+    Loopback, private, link-local (cloud metadata), multicast, unspecified and
+    other non-global addresses are refused, unless the operator's allowlist
+    (`ALLOWLIST_ENV`) names the network or the host; link-local, multicast and
+    unspecified addresses never pass. Every address the name resolves to must
+    pass; they are returned, in order, to connect to."""
+    unreachable = MailError(
+        f"The mail server {host} is not reachable from here.", reason="unreachable"
+    )
+    try:
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
         raise MailError(
             f"The mail server {host} could not be found.", reason="unreachable"
         ) from None
-    for info in infos:
-        addr = ipaddress.ip_address(str(info[4][0]).split("%", 1)[0])
-        if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-            addr = addr.ipv4_mapped
-        if addr.is_link_local or addr.is_multicast or addr.is_unspecified:
-            raise MailError(
-                f"The mail server {host} is not reachable from here.", reason="unreachable"
-            )
+    ips = list(dict.fromkeys(str(info[4][0]) for info in infos))
+    if not ips:
+        raise MailError(f"The mail server {host} could not be found.", reason="unreachable")
+    nets, hosts = _allowlist()
+    for ip in ips:
+        addr = _real_address(ip)
+        if addr is None or addr.is_link_local or addr.is_multicast or addr.is_unspecified:
+            raise unreachable
+        if addr.is_global or host.lower() in hosts:
+            continue
+        if not any(addr in net for net in nets if net.version == addr.version):
+            raise unreachable
+    return ips
+
+
+def _vet(host: str, guard: Guard | None) -> list[str]:
+    """The addresses to connect to for `host`, as `guard` checked them."""
+    found = (guard or default_guard)(host)
+    addresses = [found] if isinstance(found, str) else [a for a in found if isinstance(a, str)]
+    if not addresses or not all(addresses):
+        raise MailError(f"The mail server {host} is not reachable from here.", reason="unreachable")
+    return addresses
+
+
+def _connect(
+    addresses: Sequence[str], port: int, timeout: float | None, source: Any = None
+) -> socket.socket:
+    """A socket to the first of `addresses` that answers (like
+    `socket.create_connection` over a name's addresses, minus the lookup)."""
+    error: OSError | None = None
+    for address in addresses:
+        try:
+            return socket.create_connection((address, port), timeout, source)
+        except OSError as exc:
+            error = exc
+    assert error is not None
+    raise error
+
+
+# --- clients that connect to the vetted address -------------------------------
+#
+# Each keeps the server's name for TLS (`server_hostname`, so the certificate
+# is checked against the name) but opens its socket to the address `_vet`
+# returned, so the name is never looked up a second time.
+
+
+class _PinnedImap(imaplib.IMAP4):
+    def __init__(self, host: str, port: int, addresses: Sequence[str]) -> None:
+        self._addresses = addresses
+        super().__init__(host, port, timeout=TIMEOUT_SECONDS)
+
+    def _create_socket(self, timeout: float | None) -> socket.socket:
+        return _connect(self._addresses, self.port, timeout)
+
+
+class _PinnedImapSsl(imaplib.IMAP4_SSL):
+    def __init__(
+        self, host: str, port: int, addresses: Sequence[str], context: ssl.SSLContext
+    ) -> None:
+        self._addresses, self._context = addresses, context
+        super().__init__(host, port, ssl_context=context, timeout=TIMEOUT_SECONDS)
+
+    def _create_socket(self, timeout: float | None) -> socket.socket:
+        sock = _connect(self._addresses, self.port, timeout)
+        return self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedPop3(poplib.POP3):
+    def __init__(self, host: str, port: int, addresses: Sequence[str]) -> None:
+        self._addresses = addresses
+        super().__init__(host, port, timeout=TIMEOUT_SECONDS)
+
+    def _create_socket(self, timeout: float) -> socket.socket:
+        return _connect(self._addresses, self.port, timeout)
+
+
+class _PinnedPop3Ssl(poplib.POP3_SSL):
+    def __init__(
+        self, host: str, port: int, addresses: Sequence[str], context: ssl.SSLContext
+    ) -> None:
+        self._addresses, self._context = addresses, context
+        super().__init__(host, port, timeout=TIMEOUT_SECONDS, context=context)
+
+    def _create_socket(self, timeout: float) -> socket.socket:
+        sock = _connect(self._addresses, self.port, timeout)
+        return self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+class _PinnedSmtp(smtplib.SMTP):
+    def __init__(self, host: str, port: int, addresses: Sequence[str]) -> None:
+        self._addresses = addresses
+        super().__init__(host, port, timeout=TIMEOUT_SECONDS)
+
+    def _get_socket(self, host: str, port: int, timeout: float) -> socket.socket:
+        return _connect(self._addresses, port, timeout, self.source_address)
+
+
+class _PinnedSmtpSsl(smtplib.SMTP_SSL):
+    def __init__(
+        self, host: str, port: int, addresses: Sequence[str], context: ssl.SSLContext
+    ) -> None:
+        self._addresses, self._context, self._name = addresses, context, host
+        super().__init__(host, port, timeout=TIMEOUT_SECONDS, context=context)
+
+    def _get_socket(self, host: str, port: int, timeout: float) -> socket.socket:
+        sock = _connect(self._addresses, port, timeout, self.source_address)
+        return self._context.wrap_socket(sock, server_hostname=self._name)
 
 
 # --- the login ----------------------------------------------------------------
@@ -244,9 +417,12 @@ def scrub(text: str, account: Account | None) -> str:
     return text
 
 
-def _fail(side: str, host: str, exc: BaseException, account: Account) -> MailError:
+def _fail(
+    side: str, host: str, exc: BaseException, account: Account, *, before_login: bool = False
+) -> MailError:
     """Our wording for a connection failure on the `side` ("incoming" or
-    "outgoing") server."""
+    "outgoing") server. Before the login, the server is not yet known to be
+    the right one, so none of its text is passed on."""
     if isinstance(exc, MailError):
         return exc
     if isinstance(exc, ssl.SSLCertVerificationError):
@@ -262,6 +438,8 @@ def _fail(side: str, host: str, exc: BaseException, account: Account) -> MailErr
         return MailError(f"The {side} server {host} could not be found.", reason="unreachable")
     if isinstance(exc, OSError):
         return MailError(f"The {side} server could not be reached.", reason="unreachable")
+    if before_login:
+        return MailError(f"The {side} server did not accept the connection.", reason="unreachable")
     detail = scrub(str(exc), account).strip()[:200]
     return MailError(
         f"The {side} server refused: {detail}" if detail else f"The {side} server refused."
@@ -301,13 +479,22 @@ def _addresses(values: Sequence[str] | None, label: str) -> list[str]:
     return out
 
 
-def _header(msg: EmailMessage, name: str) -> str:
+def _header(msg: Message, name: str, limit: int = 500) -> str:
     try:
         value = msg.get(name)
     except Exception:  # a malformed header: fall back to its raw bytes
         raw = msg.get_all(name, failobj=[])
         value = str(raw[0]) if raw else ""
-    return _one_line(str(value or ""))
+    return _one_line(str(value or ""), limit)
+
+
+def _headers(msg: Message, name: str) -> list[str]:
+    """Every value of a header that may appear more than once."""
+    try:
+        values = msg.get_all(name, failobj=[])
+    except Exception:
+        return ["(unreadable)"]
+    return [_one_line(str(value or "")) for value in values]
 
 
 class _Html(HTMLParser):
@@ -365,15 +552,40 @@ def _part_text(part: EmailMessage) -> str:
     return payload.decode("utf-8", "replace") if isinstance(payload, bytes) else ""
 
 
-def _body_part(msg: EmailMessage) -> EmailMessage | None:
-    try:
-        return msg.get_body(preferencelist=("plain", "html"))  # type: ignore[return-value]
-    except Exception:
-        return None
+# The walks below take a parsed mail (`EmailMessage`) or its structure as the
+# server describes it (`_Structure`), the same way, so attachment ids agree
+# whichever was read. They walk without recursion and stop at
+# MAX_MIME_DEPTH, so a mail nested thousands deep costs nothing.
+
+
+def _find_body(root: Any) -> Any:
+    """The part that holds the text: the first text/plain, else the first
+    text/html, not counting attachments, looking only into the first part of
+    a multipart/related (as `EmailMessage.get_body` does)."""
+    best: Any = None
+    best_rank = 2
+    stack: list[tuple[Any, int]] = [(root, 0)]
+    while stack:
+        part, depth = stack.pop()
+        if part.is_attachment():
+            continue
+        maintype, _, subtype = part.get_content_type().partition("/")
+        if maintype == "text":
+            rank = {"plain": 0, "html": 1}.get(subtype, 2)
+            if rank < best_rank:
+                best, best_rank = part, rank
+            continue
+        if maintype != "multipart" or depth >= MAX_MIME_DEPTH:
+            continue
+        children = list(part.iter_parts())
+        if subtype == "related":
+            children = children[:1]
+        stack.extend((child, depth + 1) for child in reversed(children))
+    return best
 
 
 def body_text(msg: EmailMessage) -> str:
-    part = _body_part(msg)
+    part = _find_body(msg)
     if part is None:
         return ""
     text = _part_text(part)
@@ -382,17 +594,19 @@ def body_text(msg: EmailMessage) -> str:
     return text.strip()
 
 
-def _leaves(part: EmailMessage) -> Iterator[EmailMessage]:
-    if part.get_content_maintype() == "multipart":
-        for sub in part.iter_parts():
-            yield from _leaves(sub)  # type: ignore[arg-type]
-    else:
-        yield part
+def _leaves(root: Any) -> Iterator[Any]:
+    stack: list[tuple[Any, int]] = [(root, 0)]
+    while stack:
+        part, depth = stack.pop()
+        if part.get_content_maintype() != "multipart":
+            yield part
+        elif depth < MAX_MIME_DEPTH:
+            stack.extend((child, depth + 1) for child in reversed(list(part.iter_parts())))
 
 
-def _attachment_parts(msg: EmailMessage) -> list[EmailMessage]:
-    body = _body_part(msg)
-    out: list[EmailMessage] = []
+def _attachment_parts(msg: Any) -> list[Any]:
+    body = _find_body(msg)
+    out: list[Any] = []
     for leaf in _leaves(msg):
         if leaf is body:
             continue
@@ -420,7 +634,7 @@ def _part_bytes(part: EmailMessage) -> bytes:
     return payload if isinstance(payload, bytes) else b""
 
 
-def _attachment_name(part: EmailMessage, index: int) -> str:
+def _attachment_name(part: Any, index: int) -> str:
     name = _one_line(part.get_filename() or "", 200).replace("/", "_").replace("\\", "_")
     if name:
         return name
@@ -430,19 +644,212 @@ def _attachment_name(part: EmailMessage, index: int) -> str:
 
 
 def attachments(msg: EmailMessage) -> list[dict[str, Any]]:
+    return _listing(msg, lambda part: len(_part_bytes(part)))
+
+
+def _listing(root: Any, size_of: Callable[[Any], int]) -> list[dict[str, Any]]:
     return [
         {
             "id": str(index),
             "name": _attachment_name(part, index),
             "type": part.get_content_type(),
-            "size": len(_part_bytes(part)),
+            "size": size_of(part),
         }
-        for index, part in enumerate(_attachment_parts(msg), start=1)
+        for index, part in enumerate(_attachment_parts(root), start=1)
     ]
+
+
+class _Structure:
+    """One part of a mail as IMAP's BODYSTRUCTURE describes it, answering
+    the few questions the walks above ask of an `EmailMessage` part."""
+
+    def __init__(
+        self,
+        content_type: str,
+        params: dict[str, str],
+        disposition: str | None,
+        disposition_params: dict[str, str],
+        encoding: str,
+        size: int,
+        section: str,
+        children: list[_Structure],
+    ) -> None:
+        self.content_type = content_type
+        self.params = params
+        self.disposition = disposition
+        self.disposition_params = disposition_params
+        self.encoding = encoding
+        self.size = size
+        self.section = section
+        self.children = children
+
+    def get_content_type(self) -> str:
+        return self.content_type
+
+    def get_content_maintype(self) -> str:
+        return self.content_type.partition("/")[0]
+
+    def get_content_disposition(self) -> str | None:
+        return self.disposition
+
+    def get_content_charset(self) -> str | None:
+        return self.params.get("charset")
+
+    def is_attachment(self) -> bool:
+        return self.disposition == "attachment"
+
+    def iter_parts(self) -> Iterator[_Structure]:
+        return iter(self.children)
+
+    def get_filename(self) -> str | None:
+        for params, key in ((self.disposition_params, "filename"), (self.params, "name")):
+            if params.get(key):
+                return _decoded_words(params[key])
+            if params.get(key + "*"):
+                try:
+                    value = collapse_rfc2231_value(decode_rfc2231(params[key + "*"]))
+                except Exception:
+                    value = params[key + "*"]
+                return str(value)
+        return None
+
+    @property
+    def decoded_size(self) -> int:
+        """About the size once decoded: base64 carries 57 bytes per 78."""
+        return self.size * 57 // 78 if self.encoding == "base64" else self.size
+
+
+def _decoded_words(value: str) -> str:
+    try:
+        return str(make_header(decode_header(value)))
+    except Exception:
+        return value
+
+
+def _sexp(data: bytes, start: int) -> Any:
+    """The parenthesised list that starts at `data[start]` ("("), as nested
+    Python lists of strings and None (NIL). Literals ({n}) are read whole.
+    Iterative, so deep nesting cannot exhaust the stack."""
+    root: list[Any] = []
+    stack: list[list[Any]] = [root]
+    pos = start
+    while pos < len(data):
+        char = data[pos : pos + 1]
+        if char == b"(":
+            item: list[Any] = []
+            stack[-1].append(item)
+            stack.append(item)
+            pos += 1
+        elif char == b")":
+            stack.pop()
+            pos += 1
+            if len(stack) == 1:
+                return root[0]
+        elif char in (b" ", b"\r", b"\n"):
+            pos += 1
+        elif char == b'"':
+            out = bytearray()
+            pos += 1
+            while pos < len(data) and data[pos : pos + 1] != b'"':
+                if data[pos : pos + 1] == b"\\":
+                    pos += 1
+                out += data[pos : pos + 1]
+                pos += 1
+            stack[-1].append(out.decode("utf-8", "replace"))
+            pos += 1
+        elif char == b"{":
+            match = re.match(rb"\{(\d+)\+?\}\r\n", data[pos:])
+            if not match:
+                raise ValueError("bad literal")
+            begin = pos + match.end()
+            length = int(match.group(1))
+            stack[-1].append(data[begin : begin + length].decode("utf-8", "replace"))
+            pos = begin + length
+        else:
+            end = pos
+            while end < len(data) and data[end : end + 1] not in (b" ", b"(", b")", b"\r", b"\n"):
+                end += 1
+            atom = data[pos:end].decode("ascii", "replace")
+            stack[-1].append(None if atom.upper() == "NIL" else atom)
+            pos = end
+    raise ValueError("unbalanced BODYSTRUCTURE")
+
+
+def _params(value: Any) -> dict[str, str]:
+    if not isinstance(value, list):
+        return {}
+    items = [str(v) if v is not None else "" for v in value]
+    return {items[i].lower(): items[i + 1] for i in range(0, len(items) - 1, 2)}
+
+
+def _disposition(value: Any) -> tuple[str | None, dict[str, str]]:
+    if isinstance(value, list) and value and isinstance(value[0], str):
+        return value[0].lower(), _params(value[1] if len(value) > 1 else None)
+    return None, {}
+
+
+def _structure(item: Any, section: str = "", depth: int = 0) -> _Structure:
+    """A `_Structure` from a parsed BODYSTRUCTURE list. Sections are IMAP part
+    numbers ("1", "2.1"); a single-part mail's text is section TEXT."""
+    if not isinstance(item, list) or not item:
+        raise ValueError("bad BODYSTRUCTURE")
+    if isinstance(item[0], list):
+        count = 0
+        while count < len(item) and isinstance(item[count], list):
+            count += 1
+        subtype = str(item[count] or "mixed").lower() if count < len(item) else "mixed"
+        extension = item[count + 1 :]
+        disposition, disposition_params = _disposition(extension[1] if len(extension) > 1 else None)
+        children = []
+        if depth < MAX_MIME_DEPTH:
+            children = [
+                _structure(child, f"{section}.{n}" if section else str(n), depth + 1)
+                for n, child in enumerate(item[:count], start=1)
+            ]
+        return _Structure(
+            f"multipart/{subtype}",
+            _params(extension[0] if extension else None),
+            disposition,
+            disposition_params,
+            "",
+            0,
+            section,
+            children,
+        )
+    maintype = str(item[0] or "text").lower()
+    subtype = str(item[1] or "plain").lower() if len(item) > 1 else "plain"
+    content_type = f"{maintype}/{subtype}"
+    try:
+        size = int(item[6])
+    except (IndexError, TypeError, ValueError):
+        size = 0
+    md5_at = 8 if maintype == "text" else 10 if content_type == "message/rfc822" else 7
+    disposition, disposition_params = _disposition(
+        item[md5_at + 1] if len(item) > md5_at + 1 else None
+    )
+    return _Structure(
+        content_type,
+        _params(item[2] if len(item) > 2 else None),
+        disposition,
+        disposition_params,
+        str(item[5] or "7bit").lower() if len(item) > 5 else "7bit",
+        size,
+        section or "TEXT",
+        [],
+    )
 
 
 def parse(raw: bytes) -> EmailMessage:
     msg = email.message_from_bytes(raw, policy=_POLICY)
+    assert isinstance(msg, EmailMessage)
+    return msg
+
+
+def parse_headers(raw: bytes) -> EmailMessage:
+    """Only the header block of `raw`; the body is not looked at."""
+    end = min((i for i in (raw.find(b"\r\n\r\n"), raw.find(b"\n\n")) if i >= 0), default=-1)
+    head = raw if end < 0 else raw[:end]
+    msg = BytesParser(policy=_POLICY).parsebytes(head + b"\r\n\r\n", headersonly=True)
     assert isinstance(msg, EmailMessage)
     return msg
 
@@ -454,9 +861,9 @@ def skip_reason(msg: EmailMessage, account: Account) -> str | None:
     sender = parseaddr(_header(msg, "From"))[1].lower()
     if sender and sender in account.own_addresses:
         return "own address"
-    auto = _header(msg, "Auto-Submitted").split(";", 1)[0].strip().lower()
-    if auto and auto != "no":
-        return "auto-submitted"
+    for auto in _headers(msg, "Auto-Submitted"):
+        if auto.split(";", 1)[0].strip().lower() != "no":
+            return "auto-submitted"
     if _header(msg, "Precedence").strip().lower() in ("bulk", "junk", "list"):
         return "bulk"
     if msg.get_content_type() == "multipart/report":
@@ -485,16 +892,32 @@ class ImapId:
 
     @classmethod
     def parse(cls, value: str) -> ImapId:
-        try:
-            folder, uidvalidity, uid = str(value).rsplit(":", 2)
+        """Only the canonical form: the folder (which may contain ":"), then
+        UIDVALIDITY and UID as plain ASCII numbers without leading zeros. An
+        id is taken only when it reads back exactly as given."""
+        text = str(value)
+        if _IMAP_ID.fullmatch(text) and text == text.strip():
+            folder, uidvalidity, uid = text.rsplit(":", 2)
             parsed = cls(folder, int(uidvalidity), int(uid))
-        except ValueError:
-            raise MailError(
-                f"{value!r} is not a valid mail id; take the id from mail_search or mail_get."
-            ) from None
-        if not folder or parsed.uid <= 0:
-            raise MailError(f"{value!r} is not a valid mail id.")
-        return parsed
+            if str(parsed) == text:
+                return parsed
+        raise MailError(
+            f"{value!r} is not a valid mail id; take the id from mail_search or mail_get."
+        )
+
+
+_IMAP_ID = re.compile(r"[^\x00-\x1f\x7f:]+(?::[^\x00-\x1f\x7f:]+)*:[1-9][0-9]*:[1-9][0-9]*")
+#: A POP3 UIDL (RFC 1939): 1 to 70 printable ASCII characters, no spaces.
+_UIDL = re.compile(r"[\x21-\x7e]{1,70}")
+
+
+def _uidl(value: str) -> str:
+    text = str(value)
+    if not _UIDL.fullmatch(text):
+        raise MailError(
+            f"{value!r} is not a valid mail id; take the id from mail_search or mail_get."
+        )
+    return text
 
 
 # --- IMAP ---------------------------------------------------------------------
@@ -536,8 +959,8 @@ def _mutf7_decode(name: str) -> str:
 
 
 def _quote(value: str) -> str:
-    if "\r" in value or "\n" in value:
-        raise MailError("A value contains a line break.")
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+        raise MailError("A value contains a control character.")
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
@@ -548,14 +971,14 @@ def _folder_arg(folder: str) -> str:
 @contextmanager
 def imap_session(account: Account, guard: Guard | None = None) -> Iterator[imaplib.IMAP4]:
     host, port = account.incoming_host, account.incoming_port
-    (guard or default_guard)(host)
+    addresses = _vet(host, guard)
     try:
         context = tls_context(host)
         conn: imaplib.IMAP4
         if account.incoming_security == "ssl":
-            conn = imaplib.IMAP4_SSL(host, port, ssl_context=context, timeout=TIMEOUT_SECONDS)
+            conn = _PinnedImapSsl(host, port, addresses, context)
         else:
-            conn = imaplib.IMAP4(host, port, timeout=TIMEOUT_SECONDS)
+            conn = _PinnedImap(host, port, addresses)
             if "STARTTLS" not in conn.capabilities:
                 with suppress(Exception):
                     conn.shutdown()
@@ -566,7 +989,7 @@ def imap_session(account: Account, guard: Guard | None = None) -> Iterator[imapl
                 )
             conn.starttls(ssl_context=context)
     except Exception as exc:
-        raise _fail("incoming", host, exc, account) from None
+        raise _fail("incoming", host, exc, account, before_login=True) from None
     try:
         try:
             conn.login(account.username, account.password)
@@ -580,7 +1003,7 @@ def imap_session(account: Account, guard: Guard | None = None) -> Iterator[imapl
     except Exception as exc:
         with suppress(Exception):
             conn.shutdown()
-        raise _fail("incoming", host, exc, account) from None
+        raise _fail("incoming", host, exc, account, before_login=True) from None
     try:
         yield conn
     except MailError:
@@ -635,8 +1058,13 @@ def _imap_size(conn: imaplib.IMAP4, uid: int) -> int:
     raise MailError("Mail not found; it may have been moved or deleted.")
 
 
-def _imap_raw(conn: imaplib.IMAP4, uid: int, *, section: str = "") -> bytes:
-    typ, data = conn.uid("FETCH", str(uid), f"(BODY.PEEK[{section}])")
+def _imap_raw(
+    conn: imaplib.IMAP4, uid: int, *, section: str = "", partial: int | None = None
+) -> bytes:
+    """The mail, or one section of it, unread (PEEK); with `partial`, at most
+    that many bytes of it."""
+    window = f"<0.{partial}>" if partial is not None else ""
+    typ, data = conn.uid("FETCH", str(uid), f"(BODY.PEEK[{section}]{window})")
     items = _fetch_items(data or []) if typ == "OK" else []
     if not items:
         raise MailError("Mail not found; it may have been moved or deleted.")
@@ -780,14 +1208,14 @@ def pop3_session(account: Account, guard: Guard | None = None) -> Iterator[popli
     normally (QUIT); on an error the connection is dropped and nothing is
     deleted."""
     host, port = account.incoming_host, account.incoming_port
-    (guard or default_guard)(host)
+    addresses = _vet(host, guard)
     try:
         context = tls_context(host)
         conn: poplib.POP3
         if account.incoming_security == "ssl":
-            conn = poplib.POP3_SSL(host, port, timeout=TIMEOUT_SECONDS, context=context)
+            conn = _PinnedPop3Ssl(host, port, addresses, context)
         else:
-            conn = poplib.POP3(host, port, timeout=TIMEOUT_SECONDS)
+            conn = _PinnedPop3(host, port, addresses)
             try:
                 capabilities = conn.capa()
             except poplib.error_proto:
@@ -802,7 +1230,7 @@ def pop3_session(account: Account, guard: Guard | None = None) -> Iterator[popli
                 )
             conn.stls(context=context)
     except Exception as exc:
-        raise _fail("incoming", host, exc, account) from None
+        raise _fail("incoming", host, exc, account, before_login=True) from None
     try:
         conn.user(account.username)
         conn.pass_(account.password)
@@ -813,7 +1241,7 @@ def pop3_session(account: Account, guard: Guard | None = None) -> Iterator[popli
     except Exception as exc:
         with suppress(Exception):
             conn.close()
-        raise _fail("incoming", host, exc, account) from None
+        raise _fail("incoming", host, exc, account, before_login=True) from None
     try:
         yield conn
     except MailError:
@@ -967,8 +1395,9 @@ def _with_message(
     """The raw mail, its folder and whether it is unread (both None on POP3),
     in one session. Fetched with PEEK: reading it does not mark it read."""
     if account.incoming_protocol == "pop3":
+        uidl = _uidl(mail_id)
         with pop3_session(account, guard) as conn:
-            return _pop3_message(conn, str(mail_id)), None, None
+            return _pop3_message(conn, uidl), None, None
     parsed_id = ImapId.parse(mail_id)
     with imap_session(account, guard) as conn:
         _select_id(conn, parsed_id)
@@ -1109,19 +1538,27 @@ def move(
         _select_id(conn, parsed_id, readonly=False)
         _imap_size(conn, parsed_id.uid)
         uid = str(parsed_id.uid)
+        removed = True
         if "MOVE" in conn.capabilities:
             typ, data = conn.xatom("UID", "MOVE", uid, _folder_arg(folder))
             _ok(typ, data, "The server refused to move the mail.")
         else:
             typ, data = conn.uid("COPY", uid, _folder_arg(folder))
             _ok(typ, data, "The server refused to move the mail.")
-            _delete_uid(conn, uid)
+            removed = _delete_uid(conn, uid)
         new_id = _copied_id(conn, data, folder)
-    result: dict[str, Any] = {"status": "moved", "folder": folder}
+    result: dict[str, Any] = {"status": "moved" if removed else "copied", "folder": folder}
+    if not removed:
+        result["note"] = (
+            "The server supports neither MOVE nor UIDPLUS, so the mail was copied and the "
+            "original only flagged as deleted in its folder. " + _NO_UIDPLUS_WHY
+        )
     if new_id:
         result["id"] = new_id
     else:
-        result["note"] = "Search the folder for the mail's new id."
+        result["note"] = (
+            result.get("note", "") + " Search the folder for the mail's new id."
+        ).strip()
     return result
 
 
@@ -1139,15 +1576,29 @@ def _copied_id(conn: imaplib.IMAP4, data: Any, folder: str) -> str | None:
     return None
 
 
-def _delete_uid(conn: imaplib.IMAP4, uid: str) -> None:
+_NO_UIDPLUS_WHY = (
+    "Removing it for good needs EXPUNGE, which without UIDPLUS would also remove every "
+    "other mail flagged as deleted in that folder; a mail program removes it when it "
+    "next empties deleted mail."
+)
+_NO_UIDPLUS = "The server does not support UIDPLUS, so the mail is only flagged as deleted. " + (
+    _NO_UIDPLUS_WHY
+)
+
+
+def _delete_uid(conn: imaplib.IMAP4, uid: str) -> bool:
+    """Flag the mail deleted and, with UIDPLUS, remove exactly that one
+    (UID EXPUNGE). Without UIDPLUS it stays flagged: a plain EXPUNGE would
+    remove every flagged mail in the folder, including other clients' ones.
+    Returns whether the mail is gone."""
     _ok(
         *conn.uid("STORE", uid, "+FLAGS.SILENT", "(\\Deleted)"),
         "The server refused to delete the mail.",
     )
-    if "UIDPLUS" in conn.capabilities:
-        _ok(*conn.xatom("UID", "EXPUNGE", uid), "The server refused to delete the mail.")
-    else:
-        _ok(*conn.expunge(), "The server refused to delete the mail.")
+    if "UIDPLUS" not in conn.capabilities:
+        return False
+    _ok(*conn.xatom("UID", "EXPUNGE", uid), "The server refused to delete the mail.")
+    return True
 
 
 def mark_read(
@@ -1167,16 +1618,19 @@ def mark_read(
 
 def delete(account: Account, mail_id: str, *, guard: Guard | None = None) -> dict[str, Any]:
     if account.incoming_protocol == "pop3":
+        uidl = _uidl(mail_id)
         with pop3_session(account, guard) as conn:
-            number, _ = _pop3_find(conn, str(mail_id))
+            number, _ = _pop3_find(conn, uidl)
             conn.dele(number)
-        return {"status": "deleted", "id": str(mail_id)}
+        return {"status": "deleted", "id": uidl}
     parsed_id = ImapId.parse(mail_id)
     with imap_session(account, guard) as conn:
         _select_id(conn, parsed_id, readonly=False)
         _imap_size(conn, parsed_id.uid)
-        _delete_uid(conn, str(parsed_id.uid))
-    return {"status": "deleted", "id": str(mail_id)}
+        removed = _delete_uid(conn, str(parsed_id.uid))
+    if removed:
+        return {"status": "deleted", "id": str(parsed_id)}
+    return {"status": "flagged as deleted", "id": str(parsed_id), "note": _NO_UIDPLUS}
 
 
 # --- sending ------------------------------------------------------------------
@@ -1185,15 +1639,15 @@ def delete(account: Account, mail_id: str, *, guard: Guard | None = None) -> dic
 @contextmanager
 def smtp_session(account: Account, guard: Guard | None = None) -> Iterator[smtplib.SMTP]:
     host, port = account.smtp_host, account.smtp_port
-    (guard or default_guard)(host)
+    addresses = _vet(host, guard)
     try:
         context = tls_context(host)
         conn: smtplib.SMTP
         if account.smtp_security == "ssl":
-            conn = smtplib.SMTP_SSL(host, port, timeout=TIMEOUT_SECONDS, context=context)
+            conn = _PinnedSmtpSsl(host, port, addresses, context)
             conn.ehlo()
         else:
-            conn = smtplib.SMTP(host, port, timeout=TIMEOUT_SECONDS)
+            conn = _PinnedSmtp(host, port, addresses)
             conn.ehlo()
             if not conn.has_extn("starttls"):
                 with suppress(Exception):
@@ -1206,7 +1660,7 @@ def smtp_session(account: Account, guard: Guard | None = None) -> Iterator[smtpl
             conn.starttls(context=context)
             conn.ehlo()
     except Exception as exc:
-        raise _fail("outgoing", host, exc, account) from None
+        raise _fail("outgoing", host, exc, account, before_login=True) from None
     try:
         try:
             conn.login(account.smtp_username, account.smtp_password)
@@ -1223,7 +1677,7 @@ def smtp_session(account: Account, guard: Guard | None = None) -> Iterator[smtpl
     except Exception as exc:
         with suppress(Exception):
             conn.close()
-        raise _fail("outgoing", host, exc, account) from None
+        raise _fail("outgoing", host, exc, account, before_login=True) from None
     try:
         yield conn
     except MailError:
@@ -1271,6 +1725,12 @@ def _recipients(
     return out
 
 
+#: A media type as RFC 6838 allows it: `type/subtype`, nothing more.
+_MEDIA_TYPE = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}"
+)
+
+
 def _attachment_data(items: Sequence[Mapping[str, Any]] | None) -> list[tuple[str, str, bytes]]:
     """`(name, type, bytes)` for each attachment the agent passes: `name`
     plus either `text` or `content_base64`, optionally `type`."""
@@ -1297,9 +1757,12 @@ def _attachment_data(items: Sequence[Mapping[str, Any]] | None) -> list[tuple[st
                 f"Attachments may be at most {_size(MAX_ATTACHMENT_BYTES)} together; "
                 f"{name!r} goes over that."
             )
-        mime = str(item.get("type") or "") or mimetypes.guess_type(name)[0] or ""
-        if "/" not in mime or "\r" in mime or "\n" in mime:
-            mime = "application/octet-stream"
+        given = item.get("type")
+        if given not in (None, "") and not (
+            isinstance(given, str) and _MEDIA_TYPE.fullmatch(given)
+        ):
+            raise MailError(f"The type of {name!r} is not a media type such as application/pdf.")
+        mime = str(given or "") or mimetypes.guess_type(name)[0] or "application/octet-stream"
         out.append((name, mime, data))
     return out
 
@@ -1373,6 +1836,24 @@ def send(
     return _deliver(account, guard, msg, recipients)
 
 
+_MESSAGE_ID = re.compile(r"<[^<>\s]+>")
+#: How many of the latest ids a reply's References keeps (plus the first).
+_REFERENCES_KEPT = 10
+
+
+def _references(previous: str, message_id: str) -> str:
+    """The thread for a reply: the ids in the original's References, then its
+    own Message-ID; only whole ids, and when there are many, the first and
+    the last ten (RFC 5322 3.6.4 allows shortening; the first names the
+    thread's start)."""
+    ids = _MESSAGE_ID.findall(previous)
+    if message_id:
+        ids.append(message_id)
+    if len(ids) > _REFERENCES_KEPT + 1:
+        ids = [ids[0], *ids[-_REFERENCES_KEPT:]]
+    return " ".join(ids)
+
+
 def _prefixed(prefix: str, subject: str) -> str:
     return subject if subject.lower().startswith(prefix.lower()) else f"{prefix} {subject}".strip()
 
@@ -1411,8 +1892,9 @@ def reply(
     if not to:
         raise MailError("This mail names nobody to reply to except this mailbox.")
     recipients = _recipients(to, cc, None)
-    message_id = _header(original, "Message-ID")
-    references = " ".join(x for x in (_header(original, "References"), message_id) if x)
+    own_id = _MESSAGE_ID.findall(_header(original, "Message-ID"))
+    message_id = own_id[0] if own_id else ""
+    references = _references(_header(original, "References", limit=20_000), message_id)
     quoted, _ = truncate(body_text(original))
     quote_lines = "\n".join(f"> {line}" if line else ">" for line in quoted.splitlines())
     header = f"On {_header(original, 'Date')}, {_header(original, 'From')} wrote:"
@@ -1468,15 +1950,18 @@ def check_login(account: Account, *, guard: Guard | None = None) -> None:
 
 @dataclass(frozen=True)
 class Fetched:
-    """A new mail the poller found. `raw` is the headers only when the mail is
-    larger than `MAX_MESSAGE_BYTES` (`complete` False)."""
+    """A new mail as the poller read it. `raw` is the whole mail when it fits
+    in MAX_EVENT_FETCH_BYTES (`complete`). Otherwise `raw` is its headers, and
+    on IMAP `text` is the start of its text and `listed` its attachments, both
+    from its structure (None when the server gave none)."""
 
     id: str
     folder: str | None
     raw: bytes
     size: int
     complete: bool
-    fallback_delivery_id: str
+    text: str | None = None
+    listed: list[dict[str, Any]] | None = None
 
 
 def poll(
@@ -1485,16 +1970,25 @@ def poll(
     cursor: Mapping[str, Any] | None,
     limit: int,
     guard: Guard | None = None,
-) -> tuple[dict[str, Any], list[Fetched]]:
-    """`(next_cursor, new mails)`, at most `limit`, oldest first. A cursor of
-    None (or one that does not fit) only records where the mailbox stands.
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """`(next_cursor, events)` for the new mail, at most `limit`, oldest
+    first; each event is `{delivery_id, payload, summary}` (`mail_event`). A
+    cursor of None (or one that does not fit) only records where the mailbox
+    stands.
 
-    IMAP: `{"uidvalidity", "last_uid"}`; a changed UIDVALIDITY records a new
-    position, since the old UIDs mean nothing any more. POP3: `{"seen":
-    [uidl, ...]}`, the last 5,000. Mail is read with PEEK, never marked read."""
+    Mails are read and turned into events one at a time. One that cannot be
+    read becomes an event from its headers alone, or none, and the cursor
+    still moves past it. After POLL_BUDGET_SECONDS the poll stops and hands
+    back the cursor at the last mail done (at least one is always done).
+
+    IMAP: `{"folder", "uidvalidity", "last_uid"}`; another folder or a changed
+    UIDVALIDITY records a new position, since the old UIDs mean nothing
+    there. POP3: `{"seen": [uidl, ...]}`, the last 5,000. Mail is read with
+    PEEK, never marked read."""
+    deadline = time.monotonic() + POLL_BUDGET_SECONDS
     if account.incoming_protocol == "pop3":
-        return _poll_pop3(account, cursor, limit, guard)
-    return _poll_imap(account, folder or "INBOX", cursor, limit, guard)
+        return _poll_pop3(account, cursor, limit, guard, deadline)
+    return _poll_imap(account, folder or "INBOX", cursor, limit, guard, deadline)
 
 
 def _cursor_int(cursor: Mapping[str, Any] | None, key: str) -> int | None:
@@ -1508,31 +2002,34 @@ def _poll_imap(
     cursor: Mapping[str, Any] | None,
     limit: int,
     guard: Guard | None,
-) -> tuple[dict[str, Any], list[Fetched]]:
+    deadline: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with imap_session(account, guard) as conn:
         uidvalidity = _select(conn, folder)
         last_uid = _cursor_int(cursor, "last_uid")
-        if last_uid is None or _cursor_int(cursor, "uidvalidity") != uidvalidity:
-            return {"uidvalidity": uidvalidity, "last_uid": _highest_uid(conn)}, []
+        if (
+            last_uid is None
+            or not isinstance(cursor, Mapping)
+            or cursor.get("folder") != folder
+            or _cursor_int(cursor, "uidvalidity") != uidvalidity
+        ):
+            return {
+                "folder": folder,
+                "uidvalidity": uidvalidity,
+                "last_uid": _highest_uid(conn),
+            }, []
         data = _ok(*conn.uid("SEARCH", f"UID {last_uid + 1}:*"), "The server refused the search.")
         uids = sorted(u for u in {int(x) for x in b" ".join(data or [b""]).split()} if u > last_uid)
-        mails: list[Fetched] = []
+        events: list[dict[str, Any]] = []
+        done = last_uid
         for uid in uids[:limit]:
-            size = _imap_size(conn, uid)
-            complete = size <= MAX_MESSAGE_BYTES
-            raw = _imap_raw(conn, uid, section="" if complete else "HEADER")
-            mails.append(
-                Fetched(
-                    id=str(ImapId(folder, uidvalidity, uid)),
-                    folder=folder,
-                    raw=raw,
-                    size=size,
-                    complete=complete,
-                    fallback_delivery_id=f"{uidvalidity}:{uid}",
-                )
-            )
-        next_last = uids[:limit][-1] if uids else last_uid
-        return {"uidvalidity": uidvalidity, "last_uid": next_last}, mails
+            if done != last_uid and time.monotonic() >= deadline:
+                break
+            fetched = _imap_event_mail(conn, ImapId(folder, uidvalidity, uid))
+            if fetched is not None and (event := _safe_event(fetched, account)) is not None:
+                events.append(event)
+            done = uid
+        return {"folder": folder, "uidvalidity": uidvalidity, "last_uid": done}, events
 
 
 def _highest_uid(conn: imaplib.IMAP4) -> int:
@@ -1541,42 +2038,174 @@ def _highest_uid(conn: imaplib.IMAP4) -> int:
     return max(uids, default=0)
 
 
+def _imap_event_mail(conn: imaplib.IMAP4, mail_id: ImapId) -> Fetched | None:
+    """One new mail, read for its event without ever holding more than about
+    MAX_EVENT_FETCH_BYTES of it. None when it is gone already."""
+    uid, cap = mail_id.uid, MAX_EVENT_FETCH_BYTES
+    try:
+        size = _imap_size(conn, uid)
+        if size <= cap:
+            raw = _imap_raw(conn, uid, partial=cap)
+            return Fetched(str(mail_id), mail_id.folder, raw, size, complete=True)
+        head = _imap_raw(conn, uid, section="HEADER", partial=cap)
+    except MailError:
+        return None
+    text: str | None = None
+    listed: list[dict[str, Any]] | None = None
+    try:
+        structure = _imap_structure(conn, uid)
+    except (ValueError, IndexError, TypeError, RecursionError):
+        structure = None
+    if structure is not None:
+        listed = _listing(structure, lambda part: part.decoded_size)
+        body = _find_body(structure)
+        if body is not None:
+            text = _imap_text(conn, uid, body)
+    return Fetched(
+        str(mail_id), mail_id.folder, head, size, complete=False, text=text, listed=listed
+    )
+
+
+def _imap_structure(conn: imaplib.IMAP4, uid: int) -> _Structure | None:
+    typ, data = conn.uid("FETCH", str(uid), "(BODYSTRUCTURE)")
+    if typ != "OK":
+        return None
+    # imaplib splits a response with literals into (text, literal) pairs;
+    # put it back together for the parser.
+    joined = b"".join(
+        item[0] + b"\r\n" + item[1] if isinstance(item, tuple) else item
+        for item in data or []
+        if isinstance(item, tuple | bytes)
+    )
+    at = joined.find(b"BODYSTRUCTURE (")
+    if at < 0:
+        return None
+    return _structure(_sexp(joined, at + len(b"BODYSTRUCTURE ")))
+
+
+def _imap_text(conn: imaplib.IMAP4, uid: int, part: _Structure) -> str:
+    """The start of a text part, at most MAX_EVENT_FETCH_BYTES of it,
+    decoded."""
+    try:
+        data = _imap_raw(conn, uid, section=part.section, partial=MAX_EVENT_FETCH_BYTES)
+    except MailError:
+        return ""
+    if part.encoding == "base64":
+        compact = re.sub(rb"[^A-Za-z0-9+/]", b"", data)
+        data = base64.b64decode(compact[: len(compact) - len(compact) % 4])
+    elif part.encoding == "quoted-printable":
+        data = quopri.decodestring(data)
+    try:
+        text = data.decode(part.get_content_charset() or "utf-8", "replace")
+    except LookupError:
+        text = data.decode("utf-8", "replace")
+    if part.get_content_type() == "text/html":
+        text = html_to_text(text)
+    return text.strip()
+
+
 def _poll_pop3(
-    account: Account, cursor: Mapping[str, Any] | None, limit: int, guard: Guard | None
-) -> tuple[dict[str, Any], list[Fetched]]:
+    account: Account,
+    cursor: Mapping[str, Any] | None,
+    limit: int,
+    guard: Guard | None,
+    deadline: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with pop3_session(account, guard) as conn:
         listing = _pop3_listing(conn)
-        next_cursor, new = pop3_new_uidls([u for _, u, _ in listing], cursor, limit=limit)
+        uidls = [u for _, u, _ in listing]
+        next_cursor, new = pop3_new_uidls(uidls, cursor, limit=limit)
+        if not new:
+            return next_cursor, []
         by_uidl = {u: (n, s) for n, u, s in listing}
-        mails: list[Fetched] = []
+        events: list[dict[str, Any]] = []
+        done = 0
         for uidl in new:
+            if done and time.monotonic() >= deadline:
+                break
             number, size = by_uidl[uidl]
-            complete = size <= MAX_MESSAGE_BYTES
-            mails.append(
-                Fetched(
-                    id=uidl,
-                    folder=None,
-                    raw=_pop3_raw(conn, number, headers_only=not complete),
-                    size=size,
-                    complete=complete,
-                    fallback_delivery_id=uidl,
-                )
-            )
-        return next_cursor, mails
+            complete = size <= MAX_EVENT_FETCH_BYTES
+            raw = _pop3_raw(conn, number, headers_only=not complete)
+            fetched = Fetched(uidl, None, raw, size, complete=complete)
+            if (event := _safe_event(fetched, account)) is not None:
+                events.append(event)
+            done += 1
+        if done < len(new):
+            next_cursor, _ = pop3_new_uidls(uidls, cursor, limit=done)
+        return next_cursor, events
+
+
+# --- the event ------------------------------------------------------------------
+
+
+def _safe_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+    """`mail_event`, and when that fails for any reason, an event from the
+    headers alone; when even those cannot be read, none. Never raises, so
+    one bad mail cannot hold up the mail after it."""
+    try:
+        return mail_event(fetched, account)
+    except Exception:
+        pass
+    try:
+        return _header_event(fetched, account)
+    except Exception:
+        return None
 
 
 def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
     """`{delivery_id, payload, summary}` for a new mail, or None when loop
-    protection skips it."""
-    msg = parse(fetched.raw)
+    protection skips it. The delivery id is the mailbox's own id for the
+    mail, never its Message-ID, which the sender chooses."""
+    if fetched.complete:
+        msg = parse(fetched.raw)
+        text = body_text(msg)
+        listed = attachments(msg)
+        notes: list[str] = []
+    else:
+        msg = parse_headers(fetched.raw)
+        text = fetched.text or ""
+        listed = fetched.listed or []
+        if fetched.text is None:
+            notes = [
+                f"(This mail is {_size(fetched.size)}, too large to read here; only its "
+                "headers are shown. Open it with mail_get.)"
+            ]
+        else:
+            notes = [
+                f"(This mail is {_size(fetched.size)}; only the start of its text was read, "
+                "and the attachment sizes are estimates. Open it with mail_get.)"
+            ]
     if skip_reason(msg, account):
         return None
-    listed = attachments(msg) if fetched.complete else []
-    message_id = _header(msg, "Message-ID")
-    payload: dict[str, Any] = {
+    payload = _payload(fetched, msg, listed)
+    return {
+        "delivery_id": fetched.id,
+        "payload": payload,
+        "summary": render_summary(payload, text, notes),
+    }
+
+
+def _header_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+    msg = parse_headers(fetched.raw)
+    if skip_reason(msg, account):
+        return None
+    payload = _payload(fetched, msg, [])
+    note = (
+        "(This mail could not be read; only its headers are shown. Open it with mail_get "
+        "to try again.)"
+    )
+    return {
+        "delivery_id": fetched.id,
+        "payload": payload,
+        "summary": _render(payload, None, [note]),
+    }
+
+
+def _payload(fetched: Fetched, msg: Message, listed: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
         "id": fetched.id,
         "folder": fetched.folder,
-        "message_id": message_id,
+        "message_id": _header(msg, "Message-ID"),
         "from": _header(msg, "From"),
         "to": _header(msg, "To"),
         "cc": _header(msg, "Cc"),
@@ -1584,20 +2213,21 @@ def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
         "subject": _header(msg, "Subject"),
         "attachments": listed,
     }
-    return {
-        "delivery_id": message_id or fetched.fallback_delivery_id,
-        "payload": payload,
-        "summary": render_summary(payload, msg, fetched),
-    }
 
 
 _SUMMARY_ATTACHMENTS = 50
 
 
-def render_summary(payload: Mapping[str, Any], msg: EmailMessage, fetched: Fetched) -> str:
-    """The plain text the agent's run receives for a new mail: the mail id
-    the tools take, the headers, the text (truncated) and the attachments
-    with their ids."""
+def render_summary(payload: Mapping[str, Any], text: str, notes: Sequence[str] = ()) -> str:
+    """The plain text the agent's run receives for a new mail (see `_render`)."""
+    return _render(payload, text, notes)
+
+
+def _render(payload: Mapping[str, Any], text: str | None, notes: Sequence[str]) -> str:
+    """The mail id the tools take, the headers (each on one line), the
+    attachments with their ids, our notes, and last the mail's text under
+    "Text:", every line of it quoted with "> ". Nothing in the text can
+    pass for one of the lines above it."""
     lines = [
         f"Mail id: {payload['id']} (pass it to mail_get, mail_reply, mail_forward, "
         "mail_move, mail_mark_read or mail_delete)",
@@ -1614,15 +2244,6 @@ def render_summary(payload: Mapping[str, Any], msg: EmailMessage, fetched: Fetch
     ):
         if payload[key]:
             lines.append(f"{label}: {payload[key]}")
-    lines.append("")
-    if fetched.complete:
-        text, _ = truncate(body_text(msg))
-        lines.append(text or "(no text)")
-    else:
-        lines.append(
-            f"(This mail is {_size(fetched.size)}, too large to read here; "
-            "only its headers are shown.)"
-        )
     listed = payload["attachments"]
     if listed:
         lines += [
@@ -1635,4 +2256,15 @@ def render_summary(payload: Mapping[str, Any], msg: EmailMessage, fetched: Fetch
             lines.append(f"- attachment id {item['id']}: {item['name']} ({item['type']}, {size})")
         if len(listed) > _SUMMARY_ATTACHMENTS:
             lines.append(f"- ... and {len(listed) - _SUMMARY_ATTACHMENTS} more")
+    notes = list(notes)
+    if text is not None and len(text) > MAX_TEXT_CHARS:
+        notes.append(
+            f"(Text truncated: showing the first {MAX_TEXT_CHARS:,} of {len(text):,} characters.)"
+        )
+        text = text[:MAX_TEXT_CHARS]
+    if notes:
+        lines += ["", *notes]
+    if text is not None:
+        quoted = [f"> {line}" if line else ">" for line in text.splitlines()]
+        lines += ["", "Text:", *quoted] if quoted else ["", "Text: (none)"]
     return "\n".join(lines)

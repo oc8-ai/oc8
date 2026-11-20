@@ -16,7 +16,7 @@ from pathlib import Path
 from types import ModuleType
 
 from oc8.credentials.errors import CredentialCheckFailed
-from oc8.net.outbound import OutboundBlocked, guard_outbound_host
+from oc8.net.outbound import OutboundBlocked, guard_outbound_host, resolve_ips
 
 _MODULE = "oc8_capa_email_mailbox"
 
@@ -41,13 +41,22 @@ def _load_mailbox() -> ModuleType:
 async def validate_mail_account(values: dict[str, str]) -> None:
     mailbox = _load_mailbox()
 
-    def guard(host: str) -> None:
+    def guard(host: str) -> list[str]:
+        # As `events.source.guard`: resolved once, and only what core
+        # checked is connected to.
+        checked: list[str] = []
+
+        def resolve(name: str) -> list[str]:
+            checked[:] = list(dict.fromkeys(resolve_ips(name)))
+            return list(checked)
+
         try:
-            guard_outbound_host(host)
+            guard_outbound_host(host, resolver=resolve)
         except OutboundBlocked:
             raise mailbox.MailError(
                 f"The mail server {host} is not reachable from here.", reason="unreachable"
             ) from None
+        return checked
 
     try:
         account = mailbox.Account.from_fields(values)

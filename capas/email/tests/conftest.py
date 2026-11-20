@@ -497,8 +497,16 @@ def greenmail_server() -> Iterator[GreenMail]:
                 front.close()
 
 
+#: The bridge's own allowlist for mail servers on internal addresses.
+BRIDGE_ALLOWLIST = "OC8_MCP_EMAIL_ALLOWED_PRIVATE"
+
+
 @pytest.fixture
-def greenmail(greenmail_server: GreenMail) -> GreenMail:
+def greenmail(greenmail_server: GreenMail, monkeypatch: pytest.MonkeyPatch) -> GreenMail:
+    """GreenMail, emptied. It listens on loopback, which the bridge refuses
+    unless its allowlist names it (as an operator would for a mail server on
+    the company network)."""
+    monkeypatch.setenv(BRIDGE_ALLOWLIST, "127.0.0.1/32,::1/128")
     greenmail_server.purge()
     return greenmail_server
 
@@ -562,7 +570,7 @@ def raw_mail(
     to: str = "agent@example.com",
     body: str = "Hi agent,\nplease have a look.\n",
     message_id: str | None = "<m1@example.com>",
-    headers: dict[str, str] | None = None,
+    headers: dict[str, str | list[str]] | None = None,
     attachments: list[tuple[str, str, bytes]] | None = None,
     html: str | None = None,
 ) -> bytes:
@@ -577,7 +585,8 @@ def raw_mail(
     if message_id:
         msg["Message-ID"] = message_id
     for name, value in (headers or {}).items():
-        msg[name] = value
+        for one in [value] if isinstance(value, str) else value:
+            msg[name] = one
     if html is not None:
         msg.set_content(html, subtype="html")
     else:

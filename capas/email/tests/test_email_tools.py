@@ -405,3 +405,88 @@ async def test_the_bridge_starts_the_way_core_launches_it(
         with pytest.raises(Exception, match="certificate could not be verified") as caught:
             await session.call("mail_search", {})
         assert fields["password"] not in str(caught.value)
+
+
+# --- hardening ------------------------------------------------------------------
+
+
+async def test_references_keep_the_first_and_the_last_ten_whole_ids(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]], make_mail: Any
+) -> None:
+    chain = " ".join(f"<r{i}@example.com>" for i in range(30))
+    greenmail.append(
+        make_mail(
+            message_id="<last@example.com>",
+            headers={"References": chain + " junk <broken@exa"},
+        )
+    )
+    [hit] = await call(tools, "mail_search")
+    await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    [raw] = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    references = str(parsed(raw)["References"]).split()
+    assert references == [
+        "<r0@example.com>",
+        *[f"<r{i}@example.com>" for i in range(21, 30)],
+        "<last@example.com>",
+    ]
+
+
+async def test_a_line_break_in_a_recipient_name_is_refused(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    with pytest.raises(Exception, match="line break"):
+        await call(
+            tools,
+            "mail_send",
+            to=['"Bob\r\nBcc: mallory@example.com" <bob@example.com>'],
+            subject="s",
+            body="b",
+        )
+    assert greenmail.messages(user={"login": "bob", "password": "bob-pw-123"}) == []
+
+
+async def test_a_line_break_in_the_sender_name_stays_on_one_line(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    mail_env(from_name="Agent\r\nBcc: mallory@example.com")
+    await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    [raw] = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    msg = parsed(raw)
+    assert "Bcc" not in msg and b"\r\nBcc:" not in raw
+    assert "\n" not in str(msg["From"]) and str(msg["From"]).endswith("<agent@example.com>")
+
+
+async def test_fifty_recipients_pass_and_fifty_one_do_not(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    fifty = [f"r{i}@example.com" for i in range(50)]
+    result = await call(tools, "mail_send", to=fifty, subject="s", body="b")
+    assert result["recipients"] == 50
+    with pytest.raises(Exception, match="at most 50 recipients; this one has 51"):
+        await call(tools, "mail_send", to=[*fifty, "r50@example.com"], subject="s", body="b")
+
+
+@pytest.mark.parametrize(
+    "mime", ["text", "text/plain; charset=x", "text/plain\r\nBcc: x@y", "a/b/c", "te xt/plain"]
+)
+async def test_an_attachment_type_must_be_a_media_type(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]], mime: str
+) -> None:
+    with pytest.raises(Exception, match="not a media type"):
+        await call(
+            tools,
+            "mail_send",
+            to=["alice@example.com"],
+            subject="s",
+            body="b",
+            attachments=[{"name": "a.txt", "text": "x", "type": mime}],
+        )
+    result = await call(
+        tools,
+        "mail_send",
+        to=["alice@example.com"],
+        subject="s",
+        body="b",
+        attachments=[{"name": "a.bin", "text": "x", "type": "application/vnd.oc8+json"}],
+    )
+    assert result["status"] == "sent"

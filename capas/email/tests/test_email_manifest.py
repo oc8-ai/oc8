@@ -165,14 +165,28 @@ def test_presets_default_to_approval_before_sending() -> None:
     assert set(presets) == {
         "read_only",
         "send_with_approval",
-        "autonomous_with_limit",
+        "answer_on_its_own",
         "no_deletions",
     }
     assert [k for k, p in presets.items() if p.recommended] == ["send_with_approval"]
     assert presets["read_only"].modify is False
     assert presets["send_with_approval"].approval_actions == ["modify"]
     assert "mail_delete" not in presets["no_deletions"].only
-    assert "mail_delete" not in presets["autonomous_with_limit"].only
+    # Answering on its own reads, replies and marks read; nothing else.
+    answer = presets["answer_on_its_own"]
+    assert answer.label == "Answer on its own"
+    assert answer.approval_actions == []
+    assert sorted(answer.only) == sorted(
+        [
+            "mail_list_folders",
+            "mail_search",
+            "mail_get",
+            "mail_get_attachment",
+            "mail_reply",
+            "mail_mark_read",
+        ]
+    )
+    assert "no daily" in answer.summary
 
 
 def test_every_shown_string_has_a_german_translation() -> None:
