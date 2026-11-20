@@ -25,7 +25,7 @@ from sqlalchemy import select, update
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1.auth import PasswordSessionResponse
-from oc8.api.v1.totp import mint_full_session
+from oc8.api.v1.totp import mint_full_session, refuse_enrol_token_once_enrolled
 from oc8.auth import Principal
 from oc8.auth.email_otp import (
     Capped,
@@ -207,6 +207,7 @@ async def email_enroll(principal: CurrentPrincipal, db: DbSession) -> EmailCodeS
     if await active_smtp_credential(db, tenant_id=principal.tenant_id) is None:
         raise HTTPException(status.HTTP_409_CONFLICT, "Outgoing mail is not configured.")
     member = await _own_member(db, principal)
+    await refuse_enrol_token_once_enrolled(db, principal, member.id)
     already = (
         await db.execute(
             select(m.SecondFactor.id).where(
@@ -238,10 +239,13 @@ async def email_confirm(
     member = await _own_member(db, principal)
     address = _address(member)
     tenant_id, member_id = principal.tenant_id, member.id
+    await refuse_enrol_token_once_enrolled(db, principal, member_id)
     _refuse_unless_ok(await _answer(db, principal, member, "enrol", body.code))
 
     # `_answer` committed; a fresh, tenant-bound session for the enrolment.
     async with tenant_session(tenant_id) as tx:
+        await lock_member(tx, member_id)
+        await refuse_enrol_token_once_enrolled(tx, principal, member_id)
         already = (
             await tx.execute(
                 select(m.SecondFactor.id).where(
@@ -533,6 +537,7 @@ async def passkey_register_options(
     existing passkeys to exclude."""
     rp = await _refuse_unless_passkeys_allowed(db, principal)
     member = await _own_member(db, principal)
+    await refuse_enrol_token_once_enrolled(db, principal, member.id)
     challenge = await issue_challenge(
         db, tenant_id=principal.tenant_id, member_id=member.id, purpose="register"
     )
@@ -556,6 +561,7 @@ async def passkey_register_verify(
     rp = await _refuse_unless_passkeys_allowed(db, principal)
     member = await _own_member(db, principal)
     tenant_id, member_id = principal.tenant_id, member.id
+    await refuse_enrol_token_once_enrolled(db, principal, member_id)
     challenge = await take_challenge(db, member_id=member_id, purpose="register")
     # Spent whatever the answer: committed before it is checked.
     await db.commit()
@@ -568,6 +574,7 @@ async def passkey_register_verify(
 
     async with tenant_session(tenant_id) as tx:
         await lock_member(tx, member_id)
+        await refuse_enrol_token_once_enrolled(tx, principal, member_id)
         taken = (
             await tx.execute(
                 select(m.SecondFactor.id).where(

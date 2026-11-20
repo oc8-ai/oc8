@@ -226,6 +226,40 @@ async def test_the_enrol_token_can_register_a_passkey(app_session: AppSessionFac
     assert len(await _rows(app_session, s)) == 1
 
 
+async def test_the_enrol_token_cannot_add_a_passkey_once_the_member_has_a_method(
+    app_session: AppSessionFactory,
+) -> None:
+    """The enrol token proves the password only. It exists because the member
+    had nothing to answer with; once they have, it must not add a factor."""
+    s = await _seed(app_session)
+    key = SoftAuthenticator()
+    enrol = s.headers("totp:enroll")
+    async with _http() as http:
+        options = await _options(http, _REGISTER_OPTIONS, enrol)
+        async with app_session(s.tenant) as db:
+            db.add(
+                m.TotpCredential(
+                    tenant_id=s.tenant,
+                    member_id=s.member_id,
+                    secret_ref=f"totp:{s.member_id}",
+                    enrolled_at=dt.datetime.now(tz=dt.UTC),
+                    backup_codes=[],
+                )
+            )
+        verify = await http.post(
+            _REGISTER_VERIFY,
+            json={"credential": key.register(options), "label": "Laptop"},
+            headers=enrol,
+        )
+        again = await http.post(_REGISTER_OPTIONS, headers=enrol)
+        # A full session may still add one.
+        full = await _register(http, s, SoftAuthenticator())
+    assert verify.status_code == 409, verify.text
+    assert again.status_code == 409, again.text
+    assert full.status_code == 200, full.text
+    assert len(await _rows(app_session, s)) == 1
+
+
 async def test_a_member_can_hold_several_passkeys(app_session: AppSessionFactory) -> None:
     s = await _seed(app_session)
     first, second = SoftAuthenticator(), SoftAuthenticator()

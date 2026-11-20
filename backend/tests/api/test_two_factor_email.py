@@ -36,6 +36,8 @@ _CONFIRM = "/api/v1/auth/two-factor/email/confirm"
 _SEND = "/api/v1/auth/two-factor/email/send"
 _VERIFY = "/api/v1/auth/two-factor/email/verify"
 _TOTP_VERIFY = "/api/v1/auth/totp/verify"
+_TOTP_ENROLL = "/api/v1/auth/totp/enroll"
+_TOTP_CONFIRM = "/api/v1/auth/totp/confirm"
 
 
 @pytest.fixture(autouse=True)
@@ -234,6 +236,64 @@ async def test_the_enrol_token_can_enrol_email(
             _CONFIRM, json={"code": outbox.last_code()}, headers=s.token("totp:enroll")
         )
         assert r.status_code == 200, r.text
+
+
+async def _hold_totp(app_session: AppSessionFactory, s: Seeded) -> None:
+    async with app_session(s.tenant) as db:
+        db.add(
+            m.TotpCredential(
+                tenant_id=s.tenant,
+                member_id=s.member_id,
+                secret_ref=f"totp:{s.member_id}",
+                enrolled_at=dt.datetime.now(tz=dt.UTC),
+                backup_codes=[],
+            )
+        )
+
+
+async def test_the_enrol_token_cannot_add_email_once_the_member_has_a_method(
+    app_session: AppSessionFactory, outbox: Outbox
+) -> None:
+    """The enrol token proves the password only. It exists because the member
+    had nothing to answer with; once they have, it must not add a factor."""
+    s = await _seed(app_session)
+    async with _http() as http:
+        r = await http.post(_ENROLL, headers=s.token("totp:enroll"))
+        assert r.status_code == 200, r.text
+        code = outbox.last_code()
+        await _hold_totp(app_session, s)
+        refused_confirm = await http.post(
+            _CONFIRM, json={"code": code}, headers=s.token("totp:enroll")
+        )
+        refused_enroll = await http.post(_ENROLL, headers=s.token("totp:enroll"))
+        # A full session may still add one, with the same code.
+        allowed = await http.post(_CONFIRM, json={"code": code}, headers=s.token())
+    assert refused_confirm.status_code == 409, refused_confirm.text
+    assert refused_enroll.status_code == 409, refused_enroll.text
+    assert len(outbox.sent) == 1
+    assert allowed.status_code == 200, allowed.text
+    async with app_session(s.tenant) as db:
+        assert len((await db.execute(select(m.SecondFactor))).scalars().all()) == 1
+
+
+async def test_the_enrol_token_cannot_add_totp_once_the_member_has_a_method(
+    app_session: AppSessionFactory,
+) -> None:
+    import pyotp
+
+    s = await _seed(app_session, email_enrolled=True)
+    secret = pyotp.random_base32()
+    async with _http() as http:
+        enroll = await http.post(_TOTP_ENROLL, headers=s.token("totp:enroll"))
+        confirm = await http.post(
+            _TOTP_CONFIRM,
+            json={"secret": secret, "code": pyotp.TOTP(secret).now()},
+            headers=s.token("totp:enroll"),
+        )
+    assert enroll.status_code == 409, enroll.text
+    assert confirm.status_code == 409, confirm.text
+    async with app_session(s.tenant) as db:
+        assert (await db.execute(select(m.TotpCredential))).scalars().all() == []
 
 
 # --- the login challenge -----------------------------------------------------
