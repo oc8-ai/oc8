@@ -40,12 +40,43 @@ msgid "(requires settings:manage)"
 msgstr "(requiere settings:manage)"
 
 #, fuzzy
+msgid "{count} departments"
+msgstr "Sin departamento"
+
+#, fuzzy
+msgid "{field} is required."
+msgstr "Se requiere el proveedor"
+
+msgid "{from}–{to} of {total}"
+msgstr ""
+
+#, fuzzy
 msgid "{label} may write content to knowledge bases"
 msgstr "{label} puede escribir contenido en las bases de conocimiento"
 
 #, fuzzy
+msgid "{n} selected"
+msgstr "Todo: seleccionado"
+
+#, fuzzy
 msgid "{n} skipped: {reasons}"
 msgstr "{n} omitidos: {reasons}"
+
+#, fuzzy
+msgid "{name} configured."
+msgstr "configurado"
+
+msgid "{name} is incomplete: {fields} missing"
+msgstr ""
+
+msgid "{name} is still in use ({what}). Delete it anyway? Agents that chose it then have no login until someone chooses another."
+msgstr ""
+
+msgid "{name} is still read by the data source {sources}. Choose another credential there first, then delete it."
+msgstr ""
+
+msgid "{name} is still read by the data sources {sources}. Choose another credential there first, then delete it."
+msgstr ""
 
 #, fuzzy
 msgid "/do carry out the plan above"
@@ -54,6 +85,18 @@ msgstr "/do ejecuta el plan anterior"
 #, fuzzy
 msgid "/summarise this conversation"
 msgstr "/summarise resume esta conversación"
+
+#, fuzzy
+msgid "1 block"
+msgstr "Bloquear"
+
+#, fuzzy
+msgid "1 department"
+msgstr "Sin departamento"
+
+#, fuzzy
+msgid "1 record"
+msgstr "Abrir registro"
 
 #, fuzzy
 msgid "1 unpublished change"
@@ -87,9 +130,27 @@ msgstr "No se pudo desactivar una capa instalada con un nombre anterior. Desact�
 msgid "A Capa is anything installable in oc8 — an agent template, an MCP tool pack, a guardrail set, a department template, a runtime, or a bundle of several."
 msgstr "Una Capa es cualquier elemento instalable en oc8: una plantilla de agente, un paquete de herramientas MCP, un conjunto de barreras de protección, una plantilla de departamento, un entorno de ejecución o un paquete que combine varios."
 
+msgid "A dashboard can only go to an agent of its own department."
+msgstr ""
+
+msgid "A dashboard change may only add datasets; an existing dataset can't be removed."
+msgstr ""
+
+msgid "A dashboard change may only add fields; an existing field can't be removed."
+msgstr ""
+
+msgid "A dataset's grain can't change; add a new dataset instead."
+msgstr ""
+
 #, fuzzy
 msgid "A decision was made."
 msgstr "Se tomó una decisión."
+
+msgid "A field's currency can't change; add a new field instead."
+msgstr ""
+
+msgid "A field's type can't change; add a new field instead."
+msgstr ""
 
 #, fuzzy
 msgid "a former member"
@@ -304,6 +365,10 @@ msgid "Add seat"
 msgstr "Añadir puesto"
 
 #, fuzzy
+msgid "Add to My work"
+msgstr "Ir a mi trabajo"
+
+#, fuzzy
 msgid "Add tool"
 msgstr "Añadir herramienta"
 
@@ -424,6 +489,10 @@ msgid "Agents in this department get its tools; agents in other departments don'
 msgstr "Los agentes de este departamento reciben sus herramientas; los de otros departamentos, no."
 
 #, fuzzy
+msgid "Agents of these departments use this login, unless an agent has chosen another."
+msgstr "Los agentes de este departamento reciben sus herramientas; los de otros departamentos, no."
+
+#, fuzzy
 msgid "Alerts"
 msgstr "Alertas"
 
@@ -506,6 +575,10 @@ msgstr "Ya asignado"
 #, fuzzy
 msgid "Already running"
 msgstr "Ya en ejecución"
+
+#, fuzzy
+msgid "Also fits: "
+msgstr "También encaja: "
 
 #, fuzzy
 msgid "Also require approval for a specific tool (optional)"
@@ -620,6 +693,10 @@ msgid "Apply"
 msgstr "Aplicar"
 
 #, fuzzy
+msgid "Apply this change"
+msgstr "Cambios sin publicar"
+
+#, fuzzy
 msgid "Apply this rule to the draft below (doesn't save yet)"
 msgstr "Aplica esta regla al borrador de abajo (aún no se guarda)"
 
@@ -726,6 +803,16 @@ msgstr "Archivado"
 #, fuzzy
 msgid "Arguments (JSON)"
 msgstr "Argumentos (JSON)"
+
+msgid "Artifact blocks are available in Enterprise only."
+msgstr ""
+
+#, fuzzy
+msgid "As first reported"
+msgstr "Informado por el proveedor"
+
+msgid "As of"
+msgstr ""
 
 #, fuzzy
 msgid "Ask an admin to allow this"
@@ -896,6 +983,10 @@ msgid "Available in chat"
 msgstr "Disponible en el chat"
 
 #, fuzzy
+msgid "Available in Enterprise"
+msgstr "Disponible en el chat"
+
+#, fuzzy
 msgid "Available in:"
 msgstr "Disponible en:"
 
@@ -926,6 +1017,10 @@ msgstr "Volver a agentes"
 #, fuzzy
 msgid "Back to knowledge"
 msgstr "Volver a conocimiento"
+
+#, fuzzy
+msgid "Back to Live"
+msgstr "Volver a la oficina"
 
 #, fuzzy
 msgid "Back to office"
@@ -1018,6 +1113,10 @@ msgstr "Creando archivo…"
 #, fuzzy
 msgid "Building preview…"
 msgstr "Creando vista previa…"
+
+#, fuzzy
+msgid "by a setup"
+msgstr "sin configurar"
 
 #, fuzzy
 msgid "By Agent"
@@ -1158,6 +1257,10 @@ msgstr "Cambiar contraseña"
 #, fuzzy
 msgid "Change runtime"
 msgstr "Cambiar entorno de ejecución"
+
+#, fuzzy
+msgid "Changed"
+msgstr "Cambiar"
 
 #, fuzzy
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
@@ -1391,6 +1494,9 @@ msgstr "Toda la empresa"
 msgid "Compare"
 msgstr "Comparar"
 
+msgid "Complete it under Settings → Connections."
+msgstr ""
+
 #, fuzzy
 msgid "Complete these live checks before inviting pilot users."
 msgstr "Completa estas comprobaciones en vivo antes de invitar a usuarios piloto."
@@ -1523,6 +1629,9 @@ msgstr "Error de conexión"
 msgid "Connection log"
 msgstr "Registro de conexión"
 
+msgid "Connection test failed: {detail}"
+msgstr ""
+
 #, fuzzy
 msgid "Connection works."
 msgstr "La conexión funciona."
@@ -1566,6 +1675,9 @@ msgstr "Copiado"
 #, fuzzy
 msgid "Copilot"
 msgstr "Copilot"
+
+msgid "Copilot on behalf of"
+msgstr ""
 
 #, fuzzy
 msgid "Copilot settings updated"
@@ -1824,6 +1936,10 @@ msgid "Could not remove the binding"
 msgstr "No se pudo eliminar el vínculo"
 
 #, fuzzy
+msgid "Could not remove this login"
+msgstr "No se pudo eliminar el vínculo"
+
+#, fuzzy
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
 msgstr "No se pudo resolver esta conexión, por lo que no es seguro continuar: guardar ahora podría escribir barreras de protección bajo la clave equivocada."
 
@@ -1890,6 +2006,10 @@ msgstr "No se pudo guardar el nombre del espacio de trabajo"
 #, fuzzy
 msgid "Could not save your dashboard layout"
 msgstr "No se pudo guardar el diseño de tu panel"
+
+#, fuzzy
+msgid "Could not save your notification settings"
+msgstr "No se pudieron cargar los ajustes de la organización."
 
 #, fuzzy
 msgid "Could not save."
@@ -1992,6 +2112,10 @@ msgid "Couldn't load the run history."
 msgstr "No se pudo cargar el historial de ejecuciones."
 
 #, fuzzy
+msgid "Couldn't mark the notification as read"
+msgstr "No se pudieron guardar las instrucciones"
+
+#, fuzzy
 msgid "Couldn't publish"
 msgstr "No se pudo publicar"
 
@@ -2000,8 +2124,16 @@ msgid "Couldn't reach the copilot"
 msgstr "No se pudo contactar con Copilot"
 
 #, fuzzy
+msgid "Couldn't refresh"
+msgstr "No se pudo actualizar"
+
+#, fuzzy
 msgid "Couldn't remove skill"
 msgstr "No se pudo quitar la habilidad"
+
+#, fuzzy
+msgid "Couldn't remove the share"
+msgstr "No se pudo cambiar el nombre del agente"
 
 #, fuzzy
 msgid "Couldn't remove webhook"
@@ -2038,6 +2170,10 @@ msgstr "No se pudieron guardar las instrucciones"
 #, fuzzy
 msgid "Couldn't send answer"
 msgstr "No se pudo enviar la respuesta"
+
+#, fuzzy
+msgid "Couldn't share the dashboard"
+msgstr "No se pudo guardar el diseño de tu panel"
 
 #, fuzzy
 msgid "Couldn't start run"
@@ -2120,6 +2256,10 @@ msgid "Create this agent"
 msgstr "Crear este agente"
 
 #, fuzzy
+msgid "Create this dashboard"
+msgstr "Crear este agente"
+
+#, fuzzy
 msgid "Create user"
 msgstr "Crear usuario"
 
@@ -2192,6 +2332,10 @@ msgid "Custom MCP capa"
 msgstr "Capa MCP personalizada"
 
 #, fuzzy
+msgid "Custom range"
+msgstr "Valor personalizado"
+
+#, fuzzy
 msgid "Custom server or API"
 msgstr "Servidor o API propios"
 
@@ -2214,6 +2358,20 @@ msgstr "a diario {time}"
 #, fuzzy
 msgid "Daily role audit — compare actions vs. role scope"
 msgstr "Auditoría diaria de roles: compara las acciones con el alcance del rol"
+
+#, fuzzy
+msgid "Dashboard"
+msgstr "Tablero de tareas"
+
+msgid "Dashboard proposal"
+msgstr ""
+
+#, fuzzy
+msgid "Dashboards"
+msgstr "Tablero de tareas"
+
+msgid "Dashboards can only be proposed by the Copilot."
+msgstr ""
 
 #, fuzzy
 msgid "Data source"
@@ -2250,6 +2408,10 @@ msgstr "Decidido"
 #, fuzzy
 msgid "Decided a request"
 msgstr "Decidió una solicitud"
+
+#, fuzzy
+msgid "Decided approvals"
+msgstr "Aprobaciones abiertas"
 
 #, fuzzy
 msgid "Decided by you"
@@ -2316,6 +2478,10 @@ msgid "Delete agent"
 msgstr "Eliminar agente"
 
 #, fuzzy
+msgid "Delete anyway"
+msgstr "Definir de todos modos"
+
+#, fuzzy
 msgid "Delete chat?"
 msgstr "¿Eliminar el chat?"
 
@@ -2330,6 +2496,14 @@ msgstr "¿Eliminar la conexión?"
 #, fuzzy
 msgid "Delete credential?"
 msgstr "¿Eliminar la credencial?"
+
+#, fuzzy
+msgid "Delete dashboard"
+msgstr "¿Eliminar la fuente de datos?"
+
+#, fuzzy
+msgid "Delete dashboard?"
+msgstr "¿Eliminar la fuente de datos?"
 
 #, fuzzy
 msgid "Delete data source?"
@@ -2472,6 +2646,14 @@ msgid "departments · jointly coordinated"
 msgstr "departamentos · coordinados conjuntamente"
 
 #, fuzzy
+msgid "Departments for {name}"
+msgstr "Nombre del departamento"
+
+#, fuzzy
+msgid "Departments saved."
+msgstr "Departamento archivado"
+
+#, fuzzy
 msgid "Describe roughly what this agent should do"
 msgstr "Describe a grandes rasgos qué debe hacer este agente"
 
@@ -2510,6 +2692,10 @@ msgstr "Hizo algo"
 #, fuzzy
 msgid "Diff"
 msgstr "Diferencias"
+
+#, fuzzy
+msgid "Direct access"
+msgstr "Tu acceso"
 
 #, fuzzy
 msgid "Disable"
@@ -2764,6 +2950,14 @@ msgid "Enabled"
 msgstr "Activado"
 
 #, fuzzy
+msgid "Enabled for {count} department(s)"
+msgstr "No se pudo crear el departamento"
+
+#, fuzzy
+msgid "Enabled for all departments"
+msgstr "todos los departamentos"
+
+#, fuzzy
 msgid "Enabling…"
 msgstr "Activando…"
 
@@ -2972,6 +3166,10 @@ msgid "Failed"
 msgstr "Fallido"
 
 #, fuzzy
+msgid "Failed agents"
+msgstr "Todos los agentes"
+
+#, fuzzy
 msgid "Fast"
 msgstr "Rápido"
 
@@ -2990,6 +3188,10 @@ msgstr "Obteniendo modelos…"
 #, fuzzy
 msgid "Field"
 msgstr "Campo"
+
+#, fuzzy
+msgid "Fields marked * are required."
+msgstr "Se requieren el proveedor y la etiqueta del modelo"
 
 #, fuzzy
 msgid "File"
@@ -3264,6 +3466,10 @@ msgid "Handoffs"
 msgstr "Traspasos"
 
 #, fuzzy
+msgid "Hands over:"
+msgstr "Entrega:"
+
+#, fuzzy
 msgid "hard"
 msgstr "estricto"
 
@@ -3520,6 +3726,10 @@ msgid "Judging against your number for this look only — nothing is saved."
 msgstr "Se evalúa con tu número solo para esta vista: no se guarda nada."
 
 #, fuzzy
+msgid "just now"
+msgstr "Probar ahora"
+
+#, fuzzy
 msgid "Keep an eye on something for me"
 msgstr "Vigila algo por mí"
 
@@ -3576,6 +3786,10 @@ msgid "Language switched to"
 msgstr "Idioma cambiado a"
 
 #, fuzzy
+msgid "Last 12 months"
+msgstr "¿Coste este mes?"
+
+#, fuzzy
 msgid "Last 30 days — validation only"
 msgstr "Últimos 30 días: solo validación"
 
@@ -3626,6 +3840,9 @@ msgstr "Déjalo vacío para configurarlo más tarde"
 #, fuzzy
 msgid "Leave unassigned"
 msgstr "Dejar sin asignar"
+
+msgid "Legend"
+msgstr ""
 
 #, fuzzy
 msgid "Let the copilot draft this from a rough description"
@@ -3678,10 +3895,6 @@ msgstr "Vinculado en este inquilino"
 #, fuzzy
 msgid "Live"
 msgstr "En vivo"
-
-#, fuzzy
-msgid "Live Log"
-msgstr "Registro en vivo"
 
 #, fuzzy
 msgid "Live Log · current run"
@@ -3891,6 +4104,9 @@ msgstr "manual"
 msgid "Map each complexity tier to an existing model config. At least one is required."
 msgstr "Asigna cada nivel de complejidad a una configuración de modelo existente. Se requiere al menos una."
 
+msgid "Mark all as read"
+msgstr ""
+
 #, fuzzy
 msgid "Max output tokens (optional)"
 msgstr "Máx. de tokens de salida (opcional)"
@@ -3942,6 +4158,10 @@ msgstr "Mensaje"
 #, fuzzy
 msgid "Messages to this run"
 msgstr "Mensajes a esta ejecución"
+
+#, fuzzy
+msgid "Messenger"
+msgstr "Mensaje"
 
 #, fuzzy
 msgid "metered by the platform"
@@ -4140,8 +4360,15 @@ msgid "Never without approval"
 msgstr "Nunca sin aprobación"
 
 #, fuzzy
+msgid "New"
+msgstr "Más reciente"
+
+#, fuzzy
 msgid "New agent"
 msgstr "Agente nuevo"
+
+msgid "New agent schedules run in this timezone unless they name another."
+msgstr ""
 
 #, fuzzy
 msgid "New approval requested"
@@ -4158,6 +4385,10 @@ msgstr "Nuevo límite de costes"
 #, fuzzy
 msgid "New credential"
 msgstr "Credencial nueva"
+
+#, fuzzy
+msgid "New dashboards"
+msgstr "Contraseña nueva"
 
 #, fuzzy
 msgid "New department"
@@ -4190,6 +4421,10 @@ msgstr "Contraseña nueva (mín. 8 caracteres)"
 #, fuzzy
 msgid "New project"
 msgstr "Proyecto nuevo"
+
+#, fuzzy
+msgid "New records arrived — check the count and confirm again."
+msgstr "No se pudo guardar el proyecto. Revisa el nombre e inténtalo de nuevo."
 
 #, fuzzy
 msgid "New role"
@@ -4248,6 +4483,10 @@ msgid "Next step"
 msgstr "Siguiente paso"
 
 #, fuzzy
+msgid "No access"
+msgstr "Tu acceso"
+
+#, fuzzy
 msgid "No access token: the token URL refused or did not answer. The API itself was not called."
 msgstr "Sin token de acceso: la URL del token lo rechazó o no respondió. No se llamó a la API."
 
@@ -4304,6 +4543,10 @@ msgid "No chunks found."
 msgstr "No se encontraron fragmentos."
 
 #, fuzzy
+msgid "No comparison"
+msgstr "Tu empresa"
+
+#, fuzzy
 msgid "No connected data sources yet — create one first from the Sources tab, or skip this step."
 msgstr "Aún no hay fuentes de datos conectadas: crea una primero desde la pestaña Fuentes u omite este paso."
 
@@ -4328,7 +4571,15 @@ msgid "No credentials yet."
 msgstr "Aún no hay credenciales."
 
 #, fuzzy
+msgid "No data"
+msgstr "Sin departamento"
+
+#, fuzzy
 msgid "No data for this filter."
+msgstr "No hay datos para este filtro."
+
+#, fuzzy
+msgid "No data for this period"
 msgstr "No hay datos para este filtro."
 
 #, fuzzy
@@ -4346,6 +4597,10 @@ msgstr "Sin departamento (valor estricto por defecto)"
 #, fuzzy
 msgid "No department seats yet."
 msgstr "Aún no hay puestos de departamento."
+
+#, fuzzy
+msgid "no department yet"
+msgstr "Aún no hay departamentos."
 
 #, fuzzy
 msgid "No departments available"
@@ -4412,12 +4667,24 @@ msgid "No login"
 msgstr "Sin acceso"
 
 #, fuzzy
+msgid "No login set up yet"
+msgstr "Falló la configuración del plugin."
+
+#, fuzzy
+msgid "No longer updated"
+msgstr "Rol actualizado"
+
+#, fuzzy
 msgid "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password."
 msgstr "No hay ningún servidor de correo configurado en esta instancia, por lo que no se pudo enviar la invitación por correo. Copia este enlace y envíaselo tú mismo al nuevo usuario: le permite definir su propia contraseña."
 
 #, fuzzy
 msgid "No mail server is configured for this instance, so the reset could not be emailed. Copy this link and send it to them yourself — it lets them set a new password."
 msgstr "No hay ningún servidor de correo configurado en esta instancia, por lo que no se pudo enviar el restablecimiento por correo. Copia este enlace y envíaselo tú mismo: le permite definir una contraseña nueva."
+
+#, fuzzy
+msgid "No matches"
+msgstr "Nada coincide con eso."
 
 #, fuzzy
 msgid "No MCP connections yet."
@@ -4446,6 +4713,14 @@ msgstr "No se inició ninguna respuesta nueva. Inténtalo de nuevo."
 #, fuzzy
 msgid "no note"
 msgstr "sin nota"
+
+#, fuzzy
+msgid "No note for this period"
+msgstr "No hay datos para este filtro."
+
+#, fuzzy
+msgid "No notifications"
+msgstr "Notificaciones"
 
 #, fuzzy
 msgid "No organisation access yet."
@@ -4548,6 +4823,10 @@ msgid "No users found. Users appear here after they sign in."
 msgstr "No se encontraron usuarios. Los usuarios aparecen aquí después de iniciar sesión."
 
 #, fuzzy
+msgid "No values in this period"
+msgstr "Aún no hay chats en este proyecto."
+
+#, fuzzy
 msgid "no version"
 msgstr "sin versión"
 
@@ -4596,6 +4875,10 @@ msgid "Not enabled"
 msgstr "No activado"
 
 #, fuzzy
+msgid "Not enabled for any department yet"
+msgstr "Aún no hay departamentos."
+
+#, fuzzy
 msgid "not for people"
 msgstr "no para personas"
 
@@ -4622,6 +4905,10 @@ msgstr "Sin definir"
 #, fuzzy
 msgid "not set up"
 msgstr "sin configurar"
+
+#, fuzzy
+msgid "Not shared yet"
+msgstr "Aún no hay uso registrado."
 
 #, fuzzy
 msgid "Not tested"
@@ -4752,6 +5039,10 @@ msgid "One sentence"
 msgstr "Una frase"
 
 #, fuzzy
+msgid "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it."
+msgstr "Aquí solo cuenta una conexión de la organización. Una fuente de datos alimenta conocimiento que usa toda la organización, por eso nunca se usa tu inicio de sesión personal."
+
+#, fuzzy
 msgid "Only for me"
 msgstr "Solo para mí"
 
@@ -4848,8 +5139,15 @@ msgid "Organisation accesses"
 msgstr "Accesos a la organización"
 
 #, fuzzy
+msgid "organisation account"
+msgstr "Accesos a la organización"
+
+#, fuzzy
 msgid "Organisation ID"
 msgstr "ID de la organización"
+
+msgid "Organisation timezone is UTC — "
+msgstr ""
 
 #, fuzzy
 msgid "Organization"
@@ -5179,6 +5477,9 @@ msgstr "Publicado"
 msgid "Published configuration · newest first"
 msgstr "Configuración publicada · más reciente primero"
 
+msgid "Push"
+msgstr ""
+
 #, fuzzy
 msgid "Push notifications aren't configured on this server yet."
 msgstr "Las notificaciones push aún no están configuradas en este servidor."
@@ -5227,6 +5528,9 @@ msgstr "Volver a comprobar no lo solucionará. Si la protección antimanipulaci�
 msgid "Re-sync"
 msgstr "Resincronizar"
 
+msgid "read"
+msgstr ""
+
 #, fuzzy
 msgid "Read"
 msgstr "Leer"
@@ -5266,6 +5570,9 @@ msgstr "Leyendo una página web …"
 #, fuzzy
 msgid "Reading archive…"
 msgstr "Leyendo el archivo…"
+
+msgid "Reading is allowed for the rest of this chat. Every change asks you again."
+msgstr ""
 
 #, fuzzy
 msgid "Reading its instructions"
@@ -5377,6 +5684,10 @@ msgstr "Material de referencia que este agente puede leer bajo demanda; nunca se
 
 #, fuzzy
 msgid "Refresh"
+msgstr "Actualizar"
+
+#, fuzzy
+msgid "Refresh data"
 msgstr "Actualizar"
 
 #, fuzzy
@@ -5568,6 +5879,10 @@ msgid "Revoke"
 msgstr "Revocar"
 
 #, fuzzy
+msgid "Revoke access"
+msgstr "Tu acceso"
+
+#, fuzzy
 msgid "Revoke this connection?"
 msgstr "¿Revocar esta conexión?"
 
@@ -5622,6 +5937,10 @@ msgstr "ejecución"
 #, fuzzy
 msgid "Run"
 msgstr "Ejecución"
+
+#, fuzzy
+msgid "Run agent"
+msgstr "Ejecutar agente"
 
 #, fuzzy
 msgid "Run details"
@@ -5844,6 +6163,10 @@ msgid "Search people"
 msgstr "Buscar personas"
 
 #, fuzzy
+msgid "Search people and departments"
+msgstr "Buscar departamentos…"
+
+#, fuzzy
 msgid "Search person or account"
 msgstr "Buscar persona o cuenta"
 
@@ -6012,6 +6335,10 @@ msgid "Set automatically from the selected model"
 msgstr "Se define automáticamente a partir del modelo seleccionado"
 
 #, fuzzy
+msgid "set it in settings"
+msgstr "Guardar ajustes de muestreo"
+
+#, fuzzy
 msgid "Set new password"
 msgstr "Definir contraseña nueva"
 
@@ -6047,6 +6374,13 @@ msgstr "Ajustes"
 msgid "Setup failed"
 msgstr "Falló la configuración"
 
+msgid "Several logins are enabled — choose one for this agent"
+msgstr ""
+
+#, fuzzy
+msgid "several logins are enabled for this department and the agent has none chosen."
+msgstr "Elimina de forma permanente este departamento y todos los agentes que contiene."
+
 #, fuzzy
 msgid "Shadow only"
 msgstr "Solo en sombra"
@@ -6058,6 +6392,9 @@ msgstr "Compartir"
 #, fuzzy
 msgid "Share account"
 msgstr "Compartir cuenta"
+
+msgid "Share dashboard"
+msgstr ""
 
 #, fuzzy
 msgid "Share this invite link"
@@ -6076,7 +6413,15 @@ msgid "Shared memory & private stores."
 msgstr "Memoria compartida y almacenes privados."
 
 #, fuzzy
+msgid "Shared with"
+msgstr "Compartido con el equipo"
+
+#, fuzzy
 msgid "Shared with the team"
+msgstr "Compartido con el equipo"
+
+#, fuzzy
+msgid "Shared with you"
 msgstr "Compartido con el equipo"
 
 #, fuzzy
@@ -6344,6 +6689,10 @@ msgid "Steps"
 msgstr "Pasos"
 
 #, fuzzy
+msgid "Still in use"
+msgstr "Habilidad asignada"
+
+#, fuzzy
 msgid "Stop"
 msgstr "Detener"
 
@@ -6567,6 +6916,9 @@ msgstr "Ese departamento ya no existe."
 msgid "That did not work. Please try again."
 msgstr "Eso no funcionó. Inténtalo de nuevo."
 
+msgid "That earlier version of the dashboard does not exist."
+msgstr ""
+
 #, fuzzy
 msgid "That link did not name an object I can pin, so this is a new chat."
 msgstr "Ese enlace no indicaba ningún objeto que pueda fijar, así que este es un chat nuevo."
@@ -6588,6 +6940,10 @@ msgid "The access could not be saved. Please try again."
 msgstr "No se pudo guardar el acceso. Inténtalo de nuevo."
 
 #, fuzzy
+msgid "The account could not be determined."
+msgstr "No se pudo cargar esta ejecución."
+
+#, fuzzy
 msgid "The account's owner or an administrator can confirm it."
 msgstr "El propietario de la cuenta o un administrador puede confirmarlo."
 
@@ -6602,6 +6958,9 @@ msgstr "El agente espera tu respuesta."
 #, fuzzy
 msgid "The agent isn't reachable right now. Your message wasn't sent – try again in a moment."
 msgstr "El agente no está disponible ahora mismo. Tu mensaje no se envió: inténtalo de nuevo en un momento."
+
+msgid "The agent that should fill the dashboard no longer exists or is out of reach."
+msgstr ""
 
 #, fuzzy
 msgid "The agent was not created. Try again."
@@ -6672,6 +7031,14 @@ msgid "The check failed. Please try again."
 msgstr "Falló la comprobación. Inténtalo de nuevo."
 
 #, fuzzy
+msgid "The chosen account must be connected again"
+msgstr "No se pudo cambiar el modelo. Inténtalo de nuevo."
+
+#, fuzzy
+msgid "The chosen login is incomplete. Complete it first."
+msgstr "El acceso está incompleto: rellena todos los campos y el secreto."
+
+#, fuzzy
 msgid "The code expired before it was confirmed. Start again to get a new one."
 msgstr "El código caducó antes de confirmarse. Empieza de nuevo para obtener uno nuevo."
 
@@ -6694,6 +7061,24 @@ msgstr "No se pudo eliminar la conexión del departamento que dejaste. Elimínal
 #, fuzzy
 msgid "The copilot found nothing in the instructions to restrict here."
 msgstr "Copilot no encontró nada en las instrucciones que restringir aquí."
+
+msgid "The dashboard changed since this proposal. Ask the Copilot to propose the change again from its current version."
+msgstr ""
+
+#, fuzzy
+msgid "The dashboard could not be deleted. Reload and try again."
+msgstr "No se pudo cargar la carpeta. Inténtalo de nuevo."
+
+msgid "The dashboard moved to another department meanwhile. Reject this request so it can be requested again."
+msgstr ""
+
+#, fuzzy
+msgid "The dashboard was not saved. Try again."
+msgstr "No se guardó la decisión. Inténtalo de nuevo."
+
+#, fuzzy
+msgid "The dashboard's layout is not valid."
+msgstr "La programación o el evento no es válido."
 
 #, fuzzy
 msgid "The day somebody should only sign off offers: fork a built-in role, untick everything but four boxes, name it, assign it."
@@ -6734,6 +7119,9 @@ msgstr "Falló la última sincronización."
 #, fuzzy
 msgid "The link doesn't fill the code in for you — type or paste it yourself."
 msgstr "El enlace no rellena el código por ti: escríbelo o pégalo tú mismo."
+
+msgid "The login chosen for this agent is not confirmed — runs refuse it"
+msgstr ""
 
 #, fuzzy
 msgid "The login is incomplete: fill in every field and the secret."
@@ -6924,6 +7312,10 @@ msgid "The usual choice"
 msgstr "La opción habitual"
 
 #, fuzzy
+msgid "their own login"
+msgstr "Sin acceso"
+
+#, fuzzy
 msgid "These describe what an AGENT may do in your systems. They are never given to a person, and they can only ever subtract: what an agent actually does is this, intersected with its department’s frame and with its own narrowing."
 msgstr "Esto describe lo que un AGENTE puede hacer en tus sistemas. Nunca se asignan a una persona y solo pueden restar: lo que un agente hace realmente es esto, intersecado con el marco de su departamento y con su propia restricción."
 
@@ -7012,6 +7404,14 @@ msgid "This base already has ingested content, so its embedding model can't chan
 msgstr "Esta base ya tiene contenido ingerido, por lo que su modelo de embeddings no se puede cambiar: los fragmentos antiguos y nuevos dejarían de ser comparables. Elimina y vuelve a crear la base para usar otro modelo."
 
 #, fuzzy
+msgid "This block can't be shown"
+msgstr "Esto no se puede deshacer."
+
+#, fuzzy
+msgid "This block couldn't be loaded"
+msgstr "No se pudo cargar esta ejecución."
+
+#, fuzzy
 msgid "This browser does not support push notifications."
 msgstr "Este navegador no admite notificaciones push."
 
@@ -7054,6 +7454,29 @@ msgstr "La URL base de esta conexión contiene un inicio de sesión. Elimina est
 #, fuzzy
 msgid "This connector can't be allowed from here."
 msgstr "Este conector no se puede permitir desde aquí."
+
+#, fuzzy
+msgid "This dashboard can't be shown."
+msgstr "No se pudo cargar tu panel."
+
+#, fuzzy
+msgid "This dashboard couldn't be loaded."
+msgstr "No se pudo cargar tu panel."
+
+#, fuzzy
+msgid "This dashboard no longer exists or is out of reach."
+msgstr "Este chat ya no existe. Empieza uno nuevo."
+
+#, fuzzy
+msgid "This dashboard was already saved."
+msgstr "Este agente ya se creó."
+
+msgid "This dashboard was deleted"
+msgstr ""
+
+#, fuzzy
+msgid "This dashboard was removed."
+msgstr "No se registró ningún motivo."
 
 #, fuzzy
 msgid "This deletes every agent, run and knowledge item this company currently has and replaces them with the contents of the uploaded file. It cannot be undone."
@@ -7132,6 +7555,10 @@ msgid "This model may only answer chats, not run on a schedule or an event."
 msgstr "Este modelo solo puede responder en chats, no ejecutarse por programación o evento."
 
 #, fuzzy
+msgid "This month"
+msgstr "usado este mes"
+
+#, fuzzy
 msgid "This proposal has expired."
 msgstr "Esta propuesta ha caducado."
 
@@ -7202,6 +7629,9 @@ msgstr "Esta fuente ya no está disponible para ti. Vuelve atrás y elige otra."
 #, fuzzy
 msgid "This step used its whole answer budget."
 msgstr "Este paso agotó todo su presupuesto de respuesta."
+
+msgid "This tool cannot use a login in your chats right now"
+msgstr ""
 
 #, fuzzy
 msgid "This tool needs a login before it can be enabled."
@@ -7456,12 +7886,12 @@ msgid "Unpublished changes"
 msgstr "Cambios sin publicar"
 
 #, fuzzy
-msgid "unreadable"
+msgid "Unread"
 msgstr "ilegible"
 
 #, fuzzy
-msgid "Unregistered"
-msgstr "Sin registrar"
+msgid "unreadable"
+msgstr "ilegible"
 
 #, fuzzy
 msgid "unsupported file type"
@@ -7552,6 +7982,22 @@ msgid "Used by"
 msgstr "Usado por"
 
 #, fuzzy
+msgid "used by {count} agents"
+msgstr "Asignado a agentes"
+
+#, fuzzy
+msgid "used by 1 agent"
+msgstr "agente sin asignar"
+
+#, fuzzy
+msgid "used in {count} departments"
+msgstr "usar el del departamento"
+
+#, fuzzy
+msgid "used in 1 department"
+msgstr "usar el del departamento"
+
+#, fuzzy
 msgid "used this month"
 msgstr "usado este mes"
 
@@ -7587,13 +8033,47 @@ msgstr "Usuario y contraseña (Basic)"
 msgid "Users"
 msgstr "Usuarios"
 
+msgid "Uses {name} — chosen for this agent"
+msgstr ""
+
+msgid "Uses {name} — enabled for the department"
+msgstr ""
+
+msgid "Uses {name} — set up for the department before logins were shared"
+msgstr ""
+
+msgid "Uses {name} — the organisation's login"
+msgstr ""
+
+#, fuzzy
+msgid "Uses the department's earlier setup"
+msgstr "usar el del departamento"
+
+msgid "Uses the login of the person in the chat — you have none yet"
+msgstr ""
+
+msgid "Uses your own login {name} in your chats"
+msgstr ""
+
 #, fuzzy
 msgid "Uses your personal subscription — agents on it can only be started manually."
 msgstr "Usa tu suscripción personal: los agentes que la usan solo se pueden iniciar manualmente."
 
 #, fuzzy
+msgid "Using the organisation account"
+msgstr "Para la organización"
+
+#, fuzzy
+msgid "Using your own login"
+msgstr "Responder con tus propias palabras"
+
+#, fuzzy
 msgid "value"
 msgstr "valor"
+
+#, fuzzy
+msgid "Values couldn't be loaded"
+msgstr "No se pudo cargar tu cola"
 
 #, fuzzy
 msgid "Verification failed"
@@ -7630,6 +8110,13 @@ msgstr "mediante el responsable del departamento"
 #, fuzzy
 msgid "Visibility"
 msgstr "Visibilidad"
+
+#, fuzzy
+msgid "vs. previous period"
+msgstr "Página anterior"
+
+msgid "vs. same period last year"
+msgstr ""
 
 #, fuzzy
 msgid "waiting"
@@ -7670,6 +8157,10 @@ msgstr "esperando tarea"
 #, fuzzy
 msgid "Waiting for task"
 msgstr "Esperando tarea"
+
+#, fuzzy
+msgid "Waiting for the department's approval."
+msgstr "Esperando aprobación de contratación"
 
 #, fuzzy
 msgid "Waiting for the next step"
@@ -7876,6 +8367,10 @@ msgid "Wrote a file"
 msgstr "Escribió un archivo"
 
 #, fuzzy
+msgid "Year to date"
+msgstr "registrado hasta la fecha"
+
+#, fuzzy
 msgid "Yes, approve"
 msgstr "Sí, aprobar"
 
@@ -7946,6 +8441,10 @@ msgstr "No tienes acceso al chat de Copilot."
 #, fuzzy
 msgid "You don't have permission to view this content."
 msgstr "No tienes permiso para ver este contenido."
+
+#, fuzzy
+msgid "You have no access to this dashboard"
+msgstr "No tienes acceso al chat de Copilot."
 
 #, fuzzy
 msgid "You hold no seat in any department."
@@ -8102,19 +8601,3 @@ msgstr "Tus puestos"
 #, fuzzy
 msgid "Your work is next door"
 msgstr "Tu trabajo está aquí al lado"
-
-#, fuzzy
-msgid "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it."
-msgstr "Aquí solo cuenta una conexión de la organización. Una fuente de datos alimenta conocimiento que usa toda la organización, por eso nunca se usa tu inicio de sesión personal."
-
-#, fuzzy
-msgid "Also fits: "
-msgstr "También encaja: "
-
-#, fuzzy
-msgid "Hands over:"
-msgstr "Entrega:"
-
-#, fuzzy
-msgid "Run agent"
-msgstr "Ejecutar agente"
