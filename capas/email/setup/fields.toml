@@ -1,0 +1,21 @@
+# Operator setup form, interpreted generically by core. The mailbox lives
+# entirely in the shared credentials store (one login = one mailbox); this
+# form only chooses it. Which agent uses which mailbox is the agent's own
+# tool setting (a fixed login).
+title = "Set up Email"
+description = "Connect a mailbox over IMAP or POP3 and SMTP. The agent reads, searches and sends with it, and can start when new mail arrives."
+submit_label = "Save & test"
+
+[[fields]]
+key = "department"
+label = "Department"
+kind = "department"
+required = false
+help = "The chosen mailbox is enabled for this department; leave it empty to enable it for all departments."
+
+[[fields]]
+key = "mailbox"
+label = "Mailbox"
+kind = "credential"
+credential_type = "mail_account"
+help = "The login is only chosen here, never copied: its servers and passwords are read from the login each time the tools start, so editing the login takes effect everywhere."

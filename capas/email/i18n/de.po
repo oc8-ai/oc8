@@ -1,0 +1,183 @@
+#
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "An app password works too."
+msgstr "Ein App-Passwort geht auch."
+
+msgid "Approval before sending"
+msgstr "Freigabe vor dem Senden"
+
+msgid "Autonomous with a limit"
+msgstr "Selbstständig mit Limit"
+
+msgid ""
+"Can list, search and read mail and its attachments, but sends, moves and "
+"deletes nothing."
+msgstr ""
+"Darf E-Mails und Anhänge auflisten, durchsuchen und lesen, aber nichts "
+"senden, verschieben oder löschen."
+
+msgid ""
+"Connect a mailbox over IMAP or POP3 and SMTP. The agent reads, searches and "
+"sends with it, and can start when new mail arrives."
+msgstr ""
+"Verbinde ein Postfach über IMAP oder POP3 und SMTP. Der Agent liest, sucht "
+"und sendet damit und kann starten, wenn neue E-Mails ankommen."
+
+msgid "Department"
+msgstr "Abteilung"
+
+msgid "Email"
+msgstr "E-Mail"
+
+msgid ""
+"Give an agent its own mailbox over IMAP or POP3 and SMTP: read, search, "
+"send, reply and react to new mail"
+msgstr ""
+"Gib einem Agenten sein eigenes Postfach über IMAP oder POP3 und SMTP: lesen,"
+" suchen, senden, antworten und auf neue E-Mails reagieren"
+
+msgid ""
+"IMAP keeps folders and read flags on the server. POP3 only reads, searches "
+"and deletes the mail in the inbox."
+msgstr ""
+"IMAP hält Ordner und Gelesen-Markierungen auf dem Server. POP3 kann E-Mails "
+"im Posteingang nur lesen, durchsuchen und löschen."
+
+msgid "Incoming encryption"
+msgstr "Verschlüsselung eingehend"
+
+msgid "Incoming port"
+msgstr "Port für eingehende E-Mails"
+
+msgid "Incoming protocol"
+msgstr "Protokoll für eingehende E-Mails"
+
+msgid "Incoming server"
+msgstr "Server für eingehende E-Mails"
+
+msgid ""
+"Like \"Approval before sending\", except deleting mail is not possible at "
+"all."
+msgstr ""
+"Wie „Freigabe vor dem Senden“, nur dass E-Mails gar nicht gelöscht werden "
+"können."
+
+msgid "Mailbox"
+msgstr "Postfach"
+
+msgid "New email"
+msgstr "Neue E-Mail"
+
+msgid ""
+"Only if sending needs a different login; leave empty to use the username "
+"above."
+msgstr ""
+"Nur, wenn das Senden eine andere Anmeldung braucht; lass das Feld leer, um "
+"den Benutzernamen oben zu verwenden."
+
+msgid ""
+"Only if sending needs a different password; leave empty to use the password "
+"above."
+msgstr ""
+"Nur, wenn das Senden ein anderes Passwort braucht; lass das Feld leer, um "
+"das Passwort oben zu verwenden."
+
+msgid "Outgoing encryption"
+msgstr "Verschlüsselung ausgehend"
+
+msgid "Outgoing port"
+msgstr "Port für ausgehende E-Mails"
+
+msgid "Outgoing server (SMTP)"
+msgstr "Server für ausgehende E-Mails (SMTP)"
+
+msgid "Password"
+msgstr "Passwort"
+
+msgid "Read only"
+msgstr "Nur lesen"
+
+msgid ""
+"Reads freely. Sending, replying, forwarding, moving, marking and deleting "
+"each need a person's approval first."
+msgstr ""
+"Liest frei. Senden, Antworten, Weiterleiten, Verschieben, Markieren und "
+"Löschen brauchen jeweils zuerst die Freigabe einer Person."
+
+msgid ""
+"Reads, sends, replies, moves and marks mail on its own, without approval. It"
+" cannot delete mail or forward it. Core allows one new mail and one reply "
+"per mail in each task."
+msgstr ""
+"Liest, sendet, antwortet, verschiebt und markiert E-Mails selbstständig, "
+"ohne Freigabe. Löschen und Weiterleiten sind nicht möglich. Pro Aufgabe sind"
+" eine neue E-Mail und eine Antwort je E-Mail erlaubt."
+
+msgid "SMTP password"
+msgstr "SMTP-Passwort"
+
+msgid "SMTP username"
+msgstr "SMTP-Benutzername"
+
+msgid "Save & test"
+msgstr "Speichern & testen"
+
+msgid "Sender address"
+msgstr "Absenderadresse"
+
+msgid "Sender name"
+msgstr "Absendername"
+
+msgid "Set up Email"
+msgstr "E-Mail einrichten"
+
+msgid ""
+"Starts the agent when a new mail arrives in its mailbox. The mail is handed "
+"to the run as data, never as instructions."
+msgstr ""
+"Startet den Agenten, wenn eine neue E-Mail in seinem Postfach ankommt. Die "
+"E-Mail wird dem Lauf als Daten übergeben, nie als Anweisung."
+
+msgid ""
+"The address mail is sent from. Mail from this address is never treated as "
+"new mail for the agent."
+msgstr ""
+"Die Adresse, von der aus gesendet wird. E-Mails von dieser Adresse zählen "
+"für den Agenten nie als neue E-Mail."
+
+msgid ""
+"The chosen mailbox is enabled for this department; leave it empty to enable "
+"it for all departments."
+msgstr ""
+"Das gewählte Postfach wird für diese Abteilung freigeschaltet; lass das Feld"
+" leer, um es für alle Abteilungen freizuschalten."
+
+msgid ""
+"The login is only chosen here, never copied: its servers and passwords are "
+"read from the login each time the tools start, so editing the login takes "
+"effect everywhere."
+msgstr ""
+"Die Anmeldung wird hier nur ausgewählt, nie kopiert: Server und Passwörter "
+"werden bei jedem Start der Werkzeuge aus der Anmeldung gelesen, eine "
+"Änderung an der Anmeldung wirkt also überall."
+
+msgid "Username"
+msgstr "Benutzername"
+
+msgid "Usually 465 with ssl, 587 with starttls."
+msgstr "Meist 465 mit ssl, 587 mit starttls."
+
+msgid ""
+"Usually 993 for IMAP with ssl, 143 with starttls; 995 for POP3 with ssl, 110"
+" with starttls."
+msgstr ""
+"Meist 993 für IMAP mit ssl, 143 mit starttls; 995 für POP3 mit ssl, 110 mit "
+"starttls."
+
+msgid "Usually the full email address."
+msgstr "Meist die vollständige E-Mail-Adresse."
+
+msgid "With approval, never deletes"
+msgstr "Mit Freigabe, ohne Löschen"

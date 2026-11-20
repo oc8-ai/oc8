@@ -1,0 +1,69 @@
+# The tool-pack half of the email capa. This file's TOP LEVEL *is* the
+# `tool_pack` table -- there is no `[plugin.tool_pack]` wrapper.
+#
+# The connection's name, `email`, is the capa's tool key: an agent is fixed to
+# one mailbox login under it, and the `mail.received` trigger must target that
+# same login (oc8.events.sources).
+
+[[connections]]
+key = "primary"
+name = "email"
+transport = "stdio"
+server_url = ""
+credential_type = "mail_account"
+
+# env var name -> mail_account field (mcp_bridge/mailbox.py's ENV_FIELDS says
+# the same; a test holds them together). The passwords travel as the login's
+# own secret refs and are resolved only when the bridge starts.
+[connections.credential_env_fields]
+MAIL_INCOMING_PROTOCOL = "incoming_protocol"
+MAIL_INCOMING_HOST = "incoming_host"
+MAIL_INCOMING_PORT = "incoming_port"
+MAIL_INCOMING_SECURITY = "incoming_security"
+MAIL_SMTP_HOST = "smtp_host"
+MAIL_SMTP_PORT = "smtp_port"
+MAIL_SMTP_SECURITY = "smtp_security"
+MAIL_USERNAME = "username"
+MAIL_PASSWORD = "password"
+MAIL_SMTP_USERNAME = "smtp_username"
+MAIL_SMTP_PASSWORD = "smtp_password"
+MAIL_FROM_ADDRESS = "from_address"
+MAIL_FROM_NAME = "from_name"
+
+# Reading changes nothing (not even the read flag: mail is fetched with PEEK).
+# Everything else changes the mailbox or reaches a person.
+[connections.scopes]
+read = ["mail_list_folders", "mail_search", "mail_get", "mail_get_attachment"]
+modify = ["mail_send", "mail_reply", "mail_forward", "mail_move", "mail_mark_read", "mail_delete"]
+
+# `-m mcp_bridge` needs this capa's folder on PYTHONPATH; /app/capas is the
+# container mount (docker-compose.yml), as for microsoft365. Standard library
+# only, so the backend's own python runs it.
+[connections.config]
+command = "python"
+args = ["-m", "mcp_bridge"]
+
+# These reach a person. Core allows one per record per task: one reply or
+# forward per mail (focus_spec below names the mail), one new mail per task.
+outward_tools = ["mail_send", "mail_reply", "mail_forward"]
+irreversible_tools = ["mail_send", "mail_reply", "mail_forward"]
+destructive_tools = ["mail_delete"]
+read_before_write = true
+entity_lookup_tools = ["mail_search"]
+
+[connections.config.env]
+PYTHONPATH = "/app/capas/email"
+
+# Which mail a call is about: the tool names the entity, `id` the record.
+[connections.config.focus_spec]
+id_fields = ["id"]
+search_tools = ["mail_search"]
+
+[connections.config.focus_spec.tool_entities]
+mail_get = "mail"
+mail_get_attachment = "mail"
+mail_reply = "mail"
+mail_forward = "mail"
+mail_move = "mail"
+mail_mark_read = "mail"
+mail_delete = "mail"

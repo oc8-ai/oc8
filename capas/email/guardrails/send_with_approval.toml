@@ -1,0 +1,12 @@
+# The default: reading is free, and every change -- above all every mail that
+# leaves the mailbox -- waits for a person to approve it.
+kind = "preset"
+connection = "primary"
+key = "send_with_approval"
+label = "Approval before sending"
+summary = "Reads freely. Sending, replying, forwarding, moving, marking and deleting each need a person's approval first."
+recommended = true
+read = true
+modify = true
+approval_actions = ["modify"]
+approval_eur = ""

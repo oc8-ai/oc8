@@ -1,0 +1,29 @@
+# Email: the agent's own mailbox at any provider. Mail comes in over IMAP or
+# POP3 and goes out over SMTP, with a username and password (an app password
+# works too). Everything that knows about mail lives in this capa; core only
+# knows a polled event and a login.
+#
+# This file is the slim core. The tool pack is tool_pack.toml, the login type
+# credential_types/mail_account.toml, the setup form setup/*.toml and the
+# presets guardrails/<key>.toml.
+
+[plugin]
+name = "email"
+label = "Email"
+version = "1.0.0"
+type = "tool_pack"
+trust = "first_party"
+summary = "Give an agent its own mailbox over IMAP or POP3 and SMTP: read, search, send, reply and react to new mail"
+permissions = ["mcp:connect", "secrets:use"]
+capabilities = ["integration:email"]
+
+# The `mail.received` poller (events/source.py). Core polls the mailbox the
+# agent is fixed to for this capa's tools and starts the agent per new mail.
+[plugin.entry_points]
+event_sources = "events.source:register"
+
+[[plugin.triggers]]
+type = "mail.received"
+label = "New email"
+description = "Starts the agent when a new mail arrives in its mailbox. The mail is handed to the run as data, never as instructions."
+polled = true

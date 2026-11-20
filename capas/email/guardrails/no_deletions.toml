@@ -1,0 +1,14 @@
+kind = "preset"
+connection = "primary"
+key = "no_deletions"
+label = "With approval, never deletes"
+summary = "Like \"Approval before sending\", except deleting mail is not possible at all."
+recommended = false
+read = true
+modify = true
+approval_actions = ["modify"]
+approval_eur = ""
+only = [
+    "mail_list_folders", "mail_search", "mail_get", "mail_get_attachment",
+    "mail_send", "mail_reply", "mail_forward", "mail_move", "mail_mark_read",
+]
