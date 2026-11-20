@@ -1,10 +1,11 @@
-"""Second factors other than the TOTP routes in `totp.py`: a code by email.
+"""Second factors other than the TOTP routes in `totp.py`: a code by email
+and passkeys (WebAuthn, see `auth/passkey.py`).
 
 Like `totp.py`, every route here acts on the CALLER's own member row, derived
 from the token, never from a path parameter -- holding the token is the
 authorization. Which pending tokens reach which route is decided in exactly
 one place, `deny_totp_pending_principals` (`api/deps.py`): an enrolment token
-may enrol, a challenge token may only ask for and answer a login code.
+may enrol, a challenge token may only ask for and answer a login challenge.
 
 A code by email is only as strong as the mailbox; it is meant for members who
 cannot use an authenticator app, and the organisation's policy decides
@@ -14,9 +15,11 @@ whether it is allowed at all.
 from __future__ import annotations
 
 import datetime as dt
+import uuid
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import Field
+from pydantic import Field, StringConstraints
 from sqlalchemy import select, update
 
 from oc8 import models as m
@@ -34,9 +37,27 @@ from oc8.auth.email_otp import (
     issue_code,
     spend,
 )
+from oc8.auth.passkey import (
+    PasskeyRefused,
+    RelyingParty,
+    authentication_options,
+    credential_id_of,
+    issue_challenge,
+    member_passkeys,
+    registration_options,
+    relying_party,
+    sign_count_advances,
+    take_challenge,
+    verify_assertion,
+    verify_registration,
+)
 from oc8.auth.password import verify_password
-from oc8.auth.second_factors import audit, lock_member, remove_method
-from oc8.auth.totp import generate_backup_codes, hash_backup_code
+from oc8.auth.second_factors import (
+    audit,
+    issue_backup_codes_if_none,
+    lock_member,
+    remove_method,
+)
 from oc8.auth.totp_gate import member_id_for_principal
 from oc8.auth.two_factor_policy import (
     METHODS,
@@ -239,30 +260,7 @@ async def email_confirm(
                 data={"address": address},
             )
         )
-        cred = (
-            await tx.execute(
-                select(m.TotpCredential)
-                .where(m.TotpCredential.member_id == member_id)
-                .with_for_update()
-            )
-        ).scalar_one_or_none()
-        codes: list[str] = []
-        if cred is None or not cred.backup_codes:
-            codes = generate_backup_codes()
-            hashed = [{"hash": hash_backup_code(c), "used_at": None} for c in codes]
-            if cred is None:
-                # No TOTP secret: this row only carries the backup codes.
-                tx.add(
-                    m.TotpCredential(
-                        tenant_id=tenant_id,
-                        member_id=member_id,
-                        secret_ref="",
-                        enrolled_at=None,
-                        backup_codes=hashed,
-                    )
-                )
-            else:
-                cred.backup_codes = hashed
+        codes = await issue_backup_codes_if_none(tx, tenant_id=tenant_id, member_id=member_id)
         # Enrolled: the grace clock is cleared, as TOTP confirm does.
         await tx.execute(
             update(m.OrgMember)
@@ -347,9 +345,21 @@ class SecondFactorItem(CamelModel):
     removable: bool
 
 
+class PasskeyItem(CamelModel):
+    id: str
+    label: str
+    created_at: dt.datetime
+    last_used_at: dt.datetime | None
+    #: False when it is the member's last way to answer a challenge the
+    #: policy requires.
+    removable: bool
+
+
 class SecondFactorsResponse(CamelModel):
     methods: list[SecondFactorItem]
-    #: The policy's methods, `passkey` included although nobody can enrol one yet.
+    #: Each passkey of the `passkey` method, oldest first.
+    passkeys: list[PasskeyItem]
+    #: The policy's methods, less a passkey while the public URL cannot carry one.
     allowed_methods: list[str]
     #: Allowed methods the caller can enrol in right now.
     enrollable_methods: list[str]
@@ -382,10 +392,12 @@ async def list_second_factors(principal: CurrentPrincipal, db: DbSession) -> Sec
     required = await _required(db, member)
     rows = await db.execute(
         select(m.SecondFactor.method, m.SecondFactor.label).where(
-            m.SecondFactor.member_id == member.id
+            m.SecondFactor.member_id == member.id, m.SecondFactor.method != "passkey"
         )
     )
     labels = {method: label for method, label in rows}
+    passkeys = await member_passkeys(db, member.id)
+    last_passkey_required = required and allowed == ["passkey"] and len(passkeys) == 1
     cred = (
         await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member.id))
     ).scalar_one_or_none()
@@ -399,6 +411,16 @@ async def list_second_factors(principal: CurrentPrincipal, db: DbSession) -> Sec
                 removable=not (required and allowed == [x]),
             )
             for x in enrolled
+        ],
+        passkeys=[
+            PasskeyItem(
+                id=str(row.id),
+                label=row.label,
+                created_at=row.created_at,
+                last_used_at=row.last_used_at,
+                removable=not last_passkey_required,
+            )
+            for row in passkeys
         ],
         allowed_methods=list(policy.methods),
         enrollable_methods=await enrollable_methods(db, principal.tenant_id, policy),
@@ -444,6 +466,314 @@ async def remove_second_factor(
         action="two_factor.removed",
         member_id=member.id,
         method=method,
+        principal=principal,
+    )
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --- passkeys --------------------------------------------------------------------
+
+_PASSKEY_REFUSED = "The passkey could not be verified."
+
+
+class PasskeyOptionsResponse(CamelModel):
+    #: `PublicKeyCredentialCreationOptions` / `...RequestOptions` as JSON,
+    #: binary values base64url-encoded, for `navigator.credentials`.
+    options: dict[str, Any]
+
+
+#: A passkey's name: what the member calls the device it lives on.
+PasskeyLabel = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+
+
+class PasskeyRegisterRequest(CamelModel):
+    #: `PublicKeyCredential.toJSON()` from `navigator.credentials.create()`.
+    credential: dict[str, Any]
+    label: PasskeyLabel
+
+
+class PasskeyRegisterResponse(CamelModel):
+    id: str
+    #: Shown once. Empty when the member already had backup codes.
+    backup_codes: list[str]
+
+
+class PasskeyAssertRequest(CamelModel):
+    #: `PublicKeyCredential.toJSON()` from `navigator.credentials.get()`.
+    credential: dict[str, Any]
+
+
+class PasskeyRenameRequest(CamelModel):
+    label: PasskeyLabel
+
+
+async def _refuse_unless_passkeys_allowed(db: DbSession, principal: Principal) -> RelyingParty:
+    """The relying party, when the policy allows passkeys and the public URL
+    can carry one; 403 otherwise (`load_policy` drops an unusable passkey)."""
+    rp = relying_party()
+    policy = await load_policy(db, principal.tenant_id)
+    if rp is None or "passkey" not in policy.methods:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Passkeys are not available as a second factor in your organisation.",
+        )
+    return rp
+
+
+@router.post(
+    "/auth/two-factor/passkey/register/options",
+    response_model=PasskeyOptionsResponse,
+    dependencies=[Depends(unguarded(_ENROL_REASON))],
+)
+async def passkey_register_options(
+    principal: CurrentPrincipal, db: DbSession
+) -> PasskeyOptionsResponse:
+    """Start registering a passkey: a fresh challenge, and the member's
+    existing passkeys to exclude."""
+    rp = await _refuse_unless_passkeys_allowed(db, principal)
+    member = await _own_member(db, principal)
+    challenge = await issue_challenge(
+        db, tenant_id=principal.tenant_id, member_id=member.id, purpose="register"
+    )
+    options = registration_options(
+        rp, member=member, challenge=challenge, existing=await member_passkeys(db, member.id)
+    )
+    await db.commit()
+    return PasskeyOptionsResponse(options=options)
+
+
+@router.post(
+    "/auth/two-factor/passkey/register/verify",
+    response_model=PasskeyRegisterResponse,
+    dependencies=[Depends(unguarded(_ENROL_REASON))],
+)
+async def passkey_register_verify(
+    body: PasskeyRegisterRequest, principal: CurrentPrincipal, db: DbSession
+) -> PasskeyRegisterResponse:
+    """Register the passkey the browser created for the challenge from
+    `options`, and hand out backup codes if the member has none yet."""
+    rp = await _refuse_unless_passkeys_allowed(db, principal)
+    member = await _own_member(db, principal)
+    tenant_id, member_id = principal.tenant_id, member.id
+    challenge = await take_challenge(db, member_id=member_id, purpose="register")
+    # Spent whatever the answer: committed before it is checked.
+    await db.commit()
+    if challenge is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _PASSKEY_REFUSED)
+    try:
+        data = verify_registration(rp, challenge=challenge, credential=body.credential)
+    except PasskeyRefused as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _PASSKEY_REFUSED) from exc
+
+    async with tenant_session(tenant_id) as tx:
+        await lock_member(tx, member_id)
+        taken = (
+            await tx.execute(
+                select(m.SecondFactor.id).where(
+                    m.SecondFactor.method == "passkey",
+                    m.SecondFactor.data["credential_id"].astext == data["credential_id"],
+                )
+            )
+        ).first()
+        if taken is not None:
+            raise HTTPException(status.HTTP_409_CONFLICT, "This passkey is already registered.")
+        factor = m.SecondFactor(
+            tenant_id=tenant_id,
+            member_id=member_id,
+            method="passkey",
+            label=body.label,
+            data=data,
+        )
+        tx.add(factor)
+        await tx.flush()
+        codes = await issue_backup_codes_if_none(tx, tenant_id=tenant_id, member_id=member_id)
+        # Enrolled: the grace clock is cleared, as TOTP confirm does.
+        await tx.execute(
+            update(m.OrgMember)
+            .where(m.OrgMember.id == member_id)
+            .values(totp_grace_started_at=None)
+        )
+        await audit(
+            tx,
+            tenant_id=tenant_id,
+            actor_id=member_id,
+            action="two_factor.enrolled",
+            member_id=member_id,
+            method="passkey",
+            principal=principal,
+        )
+        factor_id = factor.id
+    return PasskeyRegisterResponse(id=str(factor_id), backup_codes=codes)
+
+
+@router.post(
+    "/auth/two-factor/passkey/authenticate/options",
+    response_model=PasskeyOptionsResponse,
+    dependencies=[Depends(unguarded(_CHALLENGE_REASON))],
+)
+async def passkey_authenticate_options(
+    principal: CurrentPrincipal, db: DbSession
+) -> PasskeyOptionsResponse:
+    """A sign-in challenge for a member whose allowed method is a passkey;
+    only their own passkeys may answer it."""
+    member = await _own_member(db, principal)
+    rp = relying_party()
+    if rp is None or "passkey" not in await member_methods(db, member):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Passkeys are not a method you can use.")
+    challenge = await issue_challenge(
+        db, tenant_id=principal.tenant_id, member_id=member.id, purpose="login"
+    )
+    options = authentication_options(
+        rp, challenge=challenge, passkeys=await member_passkeys(db, member.id)
+    )
+    await db.commit()
+    return PasskeyOptionsResponse(options=options)
+
+
+@router.post(
+    "/auth/two-factor/passkey/authenticate/verify",
+    response_model=PasswordSessionResponse,
+    dependencies=[Depends(unguarded(_CHALLENGE_REASON))],
+)
+async def passkey_authenticate_verify(
+    body: PasskeyAssertRequest, principal: CurrentPrincipal, db: DbSession
+) -> PasswordSessionResponse:
+    """Answer the login challenge with a passkey; mints the full session
+    exactly as TOTP verify does."""
+    member = await _own_member(db, principal)
+    member_id = member.id
+    rp = relying_party()
+    if rp is None or "passkey" not in await member_methods(db, member):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _PASSKEY_REFUSED)
+    challenge = await take_challenge(db, member_id=member_id, purpose="login")
+    await db.commit()
+    if challenge is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _PASSKEY_REFUSED)
+    credential_id = credential_id_of(body.credential)
+
+    async with tenant_session(principal.tenant_id) as tx:
+        # Only the caller's own passkey, locked: two answers must not both
+        # move the sign count from the same value.
+        factor = (
+            (
+                await tx.execute(
+                    select(m.SecondFactor)
+                    .where(
+                        m.SecondFactor.member_id == member_id,
+                        m.SecondFactor.method == "passkey",
+                        m.SecondFactor.data["credential_id"].astext == credential_id,
+                    )
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if credential_id is not None
+            else None
+        )
+        if factor is None:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, _PASSKEY_REFUSED)
+        stored = int(factor.data.get("sign_count") or 0)
+        try:
+            new_count = verify_assertion(
+                rp, challenge=challenge, credential=body.credential, data=factor.data
+            )
+        except PasskeyRefused as exc:
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, _PASSKEY_REFUSED) from exc
+        if not sign_count_advances(stored, new_count):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, _PASSKEY_REFUSED)
+        factor.data = {**factor.data, "sign_count": new_count}
+        factor.last_used_at = dt.datetime.now(tz=dt.UTC)
+    return mint_full_session(principal, member_id)
+
+
+async def _last_required_passkey(db: DbSession, member: m.OrgMember) -> bool:
+    """Whether the member's single passkey is their only allowed method while
+    the policy requires one: then it cannot be removed."""
+    policy = await load_policy(db, member.tenant_id)
+    allowed = [x for x in await enrolled_methods(db, member.id) if x in policy.methods]
+    return (
+        allowed == ["passkey"]
+        and len(await member_passkeys(db, member.id)) == 1
+        and await _required(db, member)
+    )
+
+
+async def _own_passkey(db: DbSession, member_id: uuid.UUID, factor_id: uuid.UUID) -> m.SecondFactor:
+    factor = (
+        await db.execute(
+            select(m.SecondFactor).where(
+                m.SecondFactor.id == factor_id,
+                m.SecondFactor.member_id == member_id,
+                m.SecondFactor.method == "passkey",
+            )
+        )
+    ).scalar_one_or_none()
+    if factor is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "You have no such passkey.")
+    return factor
+
+
+@router.patch(
+    "/auth/two-factor/passkey/{factor_id}",
+    response_model=PasskeyItem,
+    dependencies=[Depends(unguarded(_MANAGE_REASON))],
+)
+async def rename_passkey(
+    factor_id: uuid.UUID, body: PasskeyRenameRequest, principal: CurrentPrincipal, db: DbSession
+) -> PasskeyItem:
+    """Rename one of the caller's own passkeys."""
+    member = await _own_member(db, principal)
+    factor = await _own_passkey(db, member.id, factor_id)
+    factor.label = body.label
+    await db.flush()
+    item = PasskeyItem(
+        id=str(factor.id),
+        label=factor.label,
+        created_at=factor.created_at,
+        last_used_at=factor.last_used_at,
+        removable=not await _last_required_passkey(db, member),
+    )
+    await db.commit()
+    return item
+
+
+@router.delete(
+    "/auth/two-factor/passkey/{factor_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(unguarded(_MANAGE_REASON))],
+)
+async def remove_passkey(
+    factor_id: uuid.UUID,
+    body: RemoveSecondFactorRequest,
+    principal: CurrentPrincipal,
+    db: DbSession,
+) -> Response:
+    """Remove one of the caller's own passkeys. Refused while it is their
+    last way to answer a challenge the policy requires."""
+    member = await _own_member(db, principal)
+    await lock_member(db, member.id)
+    if member.password_hash is None or not verify_password(
+        body.current_password, member.password_hash
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is incorrect")
+    await _own_passkey(db, member.id, factor_id)
+    if await _last_required_passkey(db, member):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Your organisation requires a second factor. Add another passkey or method before "
+            "removing this one.",
+        )
+    await remove_method(
+        db, tenant_id=principal.tenant_id, member=member, method="passkey", factor_id=factor_id
+    )
+    await audit(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_id=member.id,
+        action="two_factor.removed",
+        member_id=member.id,
+        method="passkey",
         principal=principal,
     )
     await db.commit()

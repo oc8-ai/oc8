@@ -37,6 +37,7 @@ from oc8.models.identity import (
     MemberDashboardLayout,
     OrgMember,
     OrgMemberDepartment,
+    PasskeyChallenge,
     SecondFactor,
     TotpCredential,
 )
@@ -146,6 +147,7 @@ __all__ = [
     "OrgMember",
     "OrgMemberDepartment",
     "Organization",
+    "PasskeyChallenge",
     "Permission",
     "ProviderBudget",
     "PushSubscription",

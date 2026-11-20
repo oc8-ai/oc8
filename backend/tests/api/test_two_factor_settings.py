@@ -113,6 +113,7 @@ async def test_get_returns_the_default_when_nothing_is_stored(
         "methods": ["totp", "email", "passkey"],
         "graceDays": 7,
         "emailAvailable": False,
+        "passkeyAvailable": True,
     }
 
 
@@ -124,7 +125,7 @@ async def test_put_stores_the_policy_and_audits_from_and_to(
     async with _http() as http:
         r = await http.put(_URL, json=body, headers=headers)
         assert r.status_code == 200, r.text
-        assert r.json() == {**body, "emailAvailable": True}
+        assert r.json() == {**body, "emailAvailable": True, "passkeyAvailable": True}
         again = await http.get(_URL, headers=headers)
     assert again.json()["requirement"] == "everyone"
 
@@ -258,3 +259,41 @@ async def test_change_needs_settings_manage(app_session: AppSessionFactory) -> N
             headers={"Authorization": f"Bearer {token}"},
         )
     assert r.status_code == 403, r.text
+
+
+# --- passkeys need a public URL a browser will create one for -------------------
+
+
+async def test_get_reports_passkeys_unavailable_without_a_usable_public_url(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import config
+
+    monkeypatch.setattr(config.get_settings(), "frontend_base_url", "http://oc8.example.com")
+    _tenant, headers = await _seed(app_session)
+    async with _http() as http:
+        r = await http.get(_URL, headers=headers)
+    assert r.json()["passkeyAvailable"] is False
+
+
+async def test_put_refuses_passkeys_while_they_are_unavailable(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import config
+
+    monkeypatch.setattr(config.get_settings(), "frontend_base_url", "")
+    _tenant, headers = await _seed(app_session, totp=True)
+    async with _http() as http:
+        refused = await http.put(
+            _URL,
+            json={"requirement": "optional", "methods": ["totp", "passkey"], "graceDays": 7},
+            headers=headers,
+        )
+        saved = await http.put(
+            _URL,
+            json={"requirement": "optional", "methods": ["totp"], "graceDays": 7},
+            headers=headers,
+        )
+    assert refused.status_code == 422, refused.text
+    assert "passkey" in refused.json()["detail"].lower()
+    assert saved.status_code == 200, saved.text

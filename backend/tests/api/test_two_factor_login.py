@@ -104,8 +104,9 @@ async def test_the_enrolment_response_names_what_can_be_enrolled(
     )
     body = login.json()
     assert body["requiresTotpEnrollment"] is True
-    # No mail server: email cannot be enrolled; passkey is never offered.
-    assert body["twoFactorMethods"] == ["totp"]
+    # No mail server: email cannot be enrolled. The public URL is localhost,
+    # so a passkey can be.
+    assert body["twoFactorMethods"] == ["totp", "passkey"]
 
 
 async def test_a_full_session_names_no_methods(
