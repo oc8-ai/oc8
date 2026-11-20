@@ -323,6 +323,29 @@ async def test_a_mail_trimmed_from_seen_never_fires_again(
     assert [e.delivery_id for e in result.events] == [later]
 
 
+async def test_a_new_mail_in_the_second_of_a_trimmed_one_still_fires(
+    graph: FakeGraph, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`since` moves to the oldest kept mail's receive time and compares with
+    >=: a mail in the same second as a trimmed one is never lost (a repeat
+    is dropped by core's idempotency key)."""
+    monkeypatch.setattr(source, "MAX_SEEN", 3)
+    cursor = await baseline(graph)
+    start = datetime.now(tz=UTC).replace(microsecond=0)
+
+    def at(i: int) -> str:
+        return (start + timedelta(seconds=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # m1 (trimmed) and m2 (kept) share a second.
+    for i, second in enumerate((0, 1, 1, 2, 3)):
+        graph.add(subject=f"m{i}", received=at(second))
+    events, cursor = await drain(cursor, rounds=2)
+    assert len(events) == 5
+    same_second = graph.add(subject="same second", received=at(1))
+    result = await source.poll(FIELDS, CONFIG, cursor)
+    assert [e.delivery_id for e in result.events] == [same_second]
+
+
 async def test_changed_and_removed_items_do_not_fire(graph: FakeGraph) -> None:
     old = graph.add(subject="old", received=OLD)
     gone = graph.add(subject="old too", received=OLD)

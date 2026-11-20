@@ -20,7 +20,7 @@ The cursor is `{mailbox, folder, link, since, seen}`: `link` is where the
 next delta request goes (Graph's `@odata.nextLink` or `@odata.deltaLink`),
 `since` the time the baseline was taken (less a margin for clock skew), and
 `seen` the (id, received) pairs of the last 5,000 messages already handled
-(`since` moves past what is trimmed from it). A delta round
+(`since` moves to the oldest receive time still kept). A delta round
 lists new and changed messages alike: a message counts as new when it is not
 removed, not a draft, received at or after `since`, and not seen before. The
 baseline drains the first delta round without events, over several polls if
@@ -322,14 +322,15 @@ def _cursor(
     graph: _Graph, link: str, since: datetime, seen: Sequence[Seen], **extra: Any
 ) -> dict[str, Any]:
     """`seen` keeps the last MAX_SEEN (id, received) pairs. What is trimmed
-    is forgotten, so `since` moves past the latest receive time trimmed: a
-    later change to such a mail is never taken for new mail. (Graph gives
-    whole seconds; a mail received in that very second also counts as old.)"""
+    is forgotten, so `since` moves to the oldest receive time still kept: a
+    later change to a trimmed mail older than that is never taken for new
+    mail. `since` is compared with >=, so a mail in the same second as a
+    trimmed one may be handed over again -- core's idempotency key drops the
+    repeat -- but is never lost."""
     kept = list(seen)[-MAX_SEEN:]
-    trimmed = list(seen)[: max(len(seen) - MAX_SEEN, 0)]
-    if trimmed:
-        latest = max(datetime.fromisoformat(received) for _mid, received in trimmed)
-        since = max(since, latest + timedelta(seconds=1))
+    if len(seen) > MAX_SEEN and kept:
+        oldest = min(datetime.fromisoformat(received) for _mid, received in kept)
+        since = max(since, oldest)
     return {
         "mailbox": graph.mailbox,
         "folder": graph.folder,
