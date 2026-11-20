@@ -98,6 +98,17 @@ def bumped_for_length_retry(params: ModelParams, *, provider: str | None = None)
     )
 
 
+def refusal_message() -> str:
+    """Why a step failed when the model declined the request
+    (`stop_reason == "refusal"`). Fixed text: nothing the model wrote before
+    the refusal is passed on."""
+    return (
+        "The model declined this request: its provider's safety checks stopped "
+        "the answer, so nothing was done. Rephrase the task, or give this agent "
+        "another model."
+    )
+
+
 def budget_exhausted_message(max_tokens: int) -> str:
     """Why a step failed with nothing to show, and what the operator can do.
 

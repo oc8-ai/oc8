@@ -114,7 +114,10 @@ def test_fast_sends_the_lowest_effort_and_forces_no_thinking() -> None:
     payload = _build_payload(_req("claude-opus-4-8", reasoning="fast"))
     assert payload["output_config"] == {"effort": "low"}
     assert "thinking" not in payload
-    assert payload["temperature"] == 0.3
+    # Opus 4.7 and later refuse sampling parameters; 4.6 still takes them.
+    assert "temperature" not in payload
+    older = _build_payload(_req("claude-sonnet-4-6", reasoning="fast"))
+    assert "thinking" not in older and older["temperature"] == 0.3
 
 
 @pytest.mark.parametrize(("level", "budget"), [("balanced", 4096), ("thorough", 16384)])

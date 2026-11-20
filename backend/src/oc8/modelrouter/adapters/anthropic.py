@@ -16,6 +16,7 @@ from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.reasoning_support import (
     anthropic_has_effort,
     anthropic_hides_thinking,
+    anthropic_takes_temperature,
     anthropic_thinking_style,
 )
 from oc8.modelrouter.types import (
@@ -213,19 +214,34 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
             continue
         payload[key] = value
     # Sampling parameters are incompatible with thinking, whether the level or
-    # an operator's `extra` turned it on.
-    if include_temperature and "thinking" not in payload:
+    # an operator's `extra` turned it on, and Claude from Opus 4.7 on refuses
+    # them outright.
+    if include_temperature and "thinking" not in payload and anthropic_takes_temperature(req.model):
         payload["temperature"] = req.params.temperature
     return payload
 
 
+#: The one stop reason the runtimes act on by name: an answer cut off by the
+#: budget. Every other provider reports it as "length", and the retry with a
+#: bigger budget (engine.py, internal_agent.py) looks for exactly that; an
+#: always-thinking Claude can spend the whole budget before it writes a word.
+_STOP_REASONS = {"max_tokens": "length"}
+
+
+def _stop_reason(raw: object) -> str:
+    """Anthropic's `stop_reason` in the router's words. "refusal" and the
+    others pass through for the runtimes to read."""
+    return _STOP_REASONS.get(str(raw), str(raw))
+
+
 # Live, 2026-09: newer Claude models (claude-sonnet-5, claude-opus-5, ...)
-# reject `temperature` outright rather than merely ignoring it, and there is
-# no way to know in advance which model name will do this next -- a hardcoded
-# list of "deprecated on" models would need updating with every release and
-# would still miss one. So this is detected from the provider's own words and
-# handled by retrying once without the field, rather than by naming models.
-_TEMPERATURE_DEPRECATED = re.compile(r'"message"\s*:\s*"temperature is deprecated for this model')
+# reject `temperature` outright rather than merely ignoring it.
+# `anthropic_takes_temperature` leaves it out for the versions known to, but
+# a name it cannot read (a gateway alias) or a rule that has gone stale still
+# ends here: any 400 whose message names `temperature` is retried once
+# without the field, whatever the wording ("is deprecated for this model",
+# "may only be set to 1").
+_TEMPERATURE_DEPRECATED = re.compile(r'"message"\s*:\s*"[^"]*temperature', re.IGNORECASE)
 
 
 def _is_temperature_deprecated(exc: httpx.HTTPStatusError) -> bool:
@@ -292,7 +308,7 @@ class AnthropicAdapter:
             text="".join(text_parts),
             tool_calls=tool_calls,
             usage=usage,
-            stop_reason=data.get("stop_reason", "stop"),
+            stop_reason=_stop_reason(data.get("stop_reason", "stop")),
             provider=self.provider,
             model=req.model,
             reasoning=reasoning or None,
@@ -443,7 +459,7 @@ def _chunk_from_event(event_type: str, data: dict[str, Any]) -> CompletionChunk 
         chunk = CompletionChunk()
         carries = False
         if delta.get("stop_reason"):
-            chunk.stop_reason = str(delta["stop_reason"])
+            chunk.stop_reason = _stop_reason(delta["stop_reason"])
             carries = True
         if usage_raw:
             # This event's usage is output-tokens-only and cumulative -- the

@@ -3880,3 +3880,48 @@ async def test_step_persists_and_reoffers_board_write_across_calls(
     async with app_session(tenant) as db:  # type: ignore[operator]
         row = await db.get(m.AgentRun, run_id)
         assert row is not None and row.context["produces_board"] is True
+
+
+async def test_step_reports_failed_when_the_model_declines_the_request(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`stop_reason == "refusal"` is HTTP 200 with nothing to show; the shell
+    must not read it as a finished answer."""
+    from oc8.modelrouter.sampling import refusal_message
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    calls = {"n": 0}
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        calls["n"] += 1
+        return CompletionResult(
+            text="Here is the first half of", tool_calls=[], usage=Usage(tokens_in=900),
+            stop_reason="refusal", provider="anthropic", model="claude-opus-5-5",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    token = _agent_token(tenant, agent_id, run_id)
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["status_override"] == "failed"
+            assert r.json()["text"] == refusal_message()
+    assert calls["n"] == 1

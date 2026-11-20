@@ -5,8 +5,12 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from oc8.modelrouter.adapters._openai_common import build_payload, parse_response, post_completion
-from oc8.modelrouter.streaming import stream_openai_sse
+from oc8.modelrouter.adapters._openai_common import (
+    build_payload,
+    parse_response,
+    post_completion,
+    stream_completion,
+)
 from oc8.modelrouter.types import CompletionChunk, CompletionRequest, CompletionResult
 
 _API_URL = "https://api.openai.com/v1/chat/completions"
@@ -22,9 +26,11 @@ class OpenAIAdapter:
         return {"Authorization": f"Bearer {self._api_key}", "content-type": "application/json"}
 
     async def complete(self, req: CompletionRequest) -> CompletionResult:
-        data = await post_completion(_API_URL, build_payload(req), self._headers())
+        data = await post_completion(_API_URL, build_payload(req, openai_api=True), self._headers())
         return parse_response(data, provider=self.provider, model=req.model)
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[CompletionChunk]:
-        async for chunk in stream_openai_sse(_API_URL, build_payload(req), self._headers()):
+        async for chunk in stream_completion(
+            _API_URL, build_payload(req, openai_api=True), self._headers()
+        ):
             yield chunk

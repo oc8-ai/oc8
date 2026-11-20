@@ -11,9 +11,13 @@ from collections.abc import AsyncIterator
 
 import httpx
 
-from oc8.modelrouter.adapters._openai_common import build_payload, parse_response, post_completion
+from oc8.modelrouter.adapters._openai_common import (
+    build_payload,
+    parse_response,
+    post_completion,
+    stream_completion,
+)
 from oc8.modelrouter.http_errors import raise_for_status_with_body
-from oc8.modelrouter.streaming import stream_openai_sse
 from oc8.modelrouter.types import CompletionChunk, CompletionRequest, CompletionResult
 
 _EMBED_TIMEOUT_S = 60.0
@@ -47,7 +51,7 @@ class OpenAICompatibleAdapter:
         return parse_response(data, provider=self.provider, model=req.model)
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[CompletionChunk]:
-        async for chunk in stream_openai_sse(
+        async for chunk in stream_completion(
             f"{self._base_url}/chat/completions", build_payload(req), self._headers()
         ):
             yield chunk
