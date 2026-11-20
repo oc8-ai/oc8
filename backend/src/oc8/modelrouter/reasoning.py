@@ -55,6 +55,21 @@ def reasoning_tokens_from(usage: dict[str, Any] | None, *details_keys: str) -> i
     return None
 
 
+def cached_tokens_from(usage: dict[str, Any] | None, details_key: str) -> int:
+    """`usage[<details_key>].cached_tokens`: the part of the prompt a provider
+    served from its own prompt cache (OpenAI reports it this way). It is
+    already counted in the prompt tokens. 0 when absent or malformed."""
+    if not isinstance(usage, dict):
+        return 0
+    details = usage.get(details_key)
+    if not isinstance(details, dict):
+        return 0
+    try:
+        return max(int(details.get("cached_tokens") or 0), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def split_think_tags(text: str) -> tuple[str, str]:
     """`text` with every `<think>...</think>` span removed, plus what they held.
 

@@ -83,10 +83,29 @@ def price_as_of(
     return (best.price_in_usd_per_1m, best.price_out_usd_per_1m)
 
 
-#: Anthropic's prompt-cache rates as multiples of the input price: a cache
+#: Prompt-cache rates as multiples of the input price. Anthropic: a cache
 #: read costs a tenth, writing the prefix into the cache a quarter more.
+#: OpenAI caches on its own and bills no write; its read discount depends on
+#: the model family (`_CACHE_READ_RATES`).
 CACHE_READ_RATE = 0.1
 CACHE_WRITE_RATE = 1.25
+
+#: OpenAI's cached-input price as a share of the input price, by model family,
+#: most specific first. Any other model (Claude, gpt-5 and later) reads at
+#: `CACHE_READ_RATE`.
+_CACHE_READ_RATES: tuple[tuple[re.Pattern[str], float], ...] = (
+    (re.compile(r"^(gpt-4\.1|o3|o4)"), 0.25),
+    (re.compile(r"^(gpt-4o|o1)"), 0.5),
+)
+
+
+def cache_read_rate(model: str) -> float:
+    """What one cached prompt token costs, as a share of the input price."""
+    base = model.lower().rsplit("/", 1)[-1]
+    for pattern, rate in _CACHE_READ_RATES:
+        if pattern.match(base):
+            return rate
+    return CACHE_READ_RATE
 
 
 def cost_micros_from_price(
@@ -96,14 +115,16 @@ def cost_micros_from_price(
     *,
     cache_read_tokens: int = 0,
     cache_write_tokens: int = 0,
+    model: str = "",
 ) -> int:
     """Cost of one call (or a sum of calls). `tokens_in` is the whole prompt;
-    the cached parts inside it are billed at the cache rates."""
+    the cached parts inside it are billed at the cache rates of `model`."""
     p_in, p_out = price
     uncached = max(tokens_in - cache_read_tokens - cache_write_tokens, 0)
+    read_rate = cache_read_rate(model) if model else CACHE_READ_RATE
     return round(
         uncached * p_in
-        + cache_read_tokens * p_in * CACHE_READ_RATE
+        + cache_read_tokens * p_in * read_rate
         + cache_write_tokens * p_in * CACHE_WRITE_RATE
         + tokens_out * p_out
     )

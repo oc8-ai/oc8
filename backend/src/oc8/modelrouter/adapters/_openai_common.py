@@ -16,7 +16,12 @@ import httpx
 
 from oc8.modelrouter.http_errors import raise_for_status_with_body
 from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
-from oc8.modelrouter.reasoning import reasoning_field, reasoning_tokens_from, split_think_tags
+from oc8.modelrouter.reasoning import (
+    cached_tokens_from,
+    reasoning_field,
+    reasoning_tokens_from,
+    split_think_tags,
+)
 from oc8.modelrouter.reasoning_support import openai_thinks
 from oc8.modelrouter.streaming import stream_openai_sse
 from oc8.modelrouter.types import (
@@ -274,6 +279,7 @@ def parse_response(data: dict[str, Any], *, provider: str, model: str) -> Comple
         tokens_in=int(usage_raw.get("prompt_tokens", 0)),
         tokens_out=int(usage_raw.get("completion_tokens", 0)),
         reasoning_tokens=reasoning_tokens_from(usage_raw, "completion_tokens_details"),
+        cache_read_tokens=cached_tokens_from(usage_raw, "prompt_tokens_details"),
     )
     # A model may write its reasoning into the answer as <think>...</think>
     # instead of (or as well as) a separate field; either way it is not the
