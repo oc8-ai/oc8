@@ -3936,6 +3936,9 @@ msgstr "Offene Freigaben"
 msgid "Open guardrails →"
 msgstr "Guardrails öffnen →"
 
+msgid "Open in a larger editor"
+msgstr ""
+
 msgid "Open my work"
 msgstr "Meine Arbeit öffnen"
 
