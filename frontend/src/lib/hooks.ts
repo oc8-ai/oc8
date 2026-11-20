@@ -2846,6 +2846,8 @@ export function useImportSkills() {
 export interface SkillVersionPublished extends Skill {
   assignmentsUpdated: number;
   assignmentsSkipped: number;
+  /** Left on the old version because the caller may not change that agent. */
+  assignmentsNotAllowed: number;
 }
 
 export interface PublishSkillVersionBody {

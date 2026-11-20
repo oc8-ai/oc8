@@ -303,3 +303,86 @@ async def test_the_skill_list_counts_live_assignments(app_session: Any) -> None:
             await _assign(c, tenant, two, skill["currentVersionId"])
             rows = (await c.get("/api/v1/skills", headers=_h(tenant))).json()["items"]
             assert next(s for s in rows if s["id"] == skill["id"])["assignmentCount"] == 2
+
+
+async def test_the_dto_carries_the_source_text_beside_its_translation(app_session: Any) -> None:
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with await _client(app) as c:
+            skill = (await c.post("/api/v1/skills", json=_body(), headers=_h(tenant))).json()
+            async with app_session(tenant) as db:
+                row = await db.get(m.SkillVersion, uuid.UUID(skill["currentVersionId"]))
+                assert row is not None
+                pres = dict(row.definition["presentation"])
+                pres["i18n"] = {"de": {"name": "Rechnung", "instructions": "Vergleiche."}}
+                row.definition = {**row.definition, "presentation": pres}
+            got = next(
+                s
+                for s in (await c.get("/api/v1/skills", headers=_h(tenant))).json()["items"]
+                if s["id"] == skill["id"]
+            )
+            assert got["name"] == "Invoice check"
+            assert got["instructions"].startswith("Compare the invoice")
+            assert got["nameTranslations"]["de"] == "Rechnung"
+            assert got["instructionsTranslations"]["de"] == "Vergleiche."
+
+
+async def test_assignments_move_only_where_the_caller_may_change_agents(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Moving an assignment is changing an agent, so it needs the same agent-write
+    authority `POST /agents/{id}/skills` needs, department by department. Every
+    role that holds `skill:manage` today also holds `agent:manage` tenant-wide, so
+    the narrower caller is simulated by refusing one department at the gate the
+    route shares with `assign_skill`."""
+    from fastapi import HTTPException
+
+    from oc8.api.v1 import skills_write
+
+    tenant = uuid.uuid4()
+    home_agent = await _agent(app_session, tenant, {})
+    foreign_agent = await _agent(app_session, tenant, {})
+    async with app_session(tenant) as db:
+        foreign_dept = (await db.get(m.Agent, foreign_agent)).department_id  # type: ignore[union-attr]
+
+    real = skills_write.authorize_agent_write
+    refuse: set[uuid.UUID] = set()
+
+    async def gate(request: Any, db: Any, actor: Any, department_id: uuid.UUID, **kw: Any) -> None:
+        if department_id in refuse:
+            raise HTTPException(403, "requires agent:manage in this department")
+        await real(request, db, actor, department_id, **kw)
+
+    monkeypatch.setattr(skills_write, "authorize_agent_write", gate)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with await _client(app) as c:
+            skill = (await c.post("/api/v1/skills", json=_body(), headers=_h(tenant))).json()
+            v1 = skill["currentVersionId"]
+            for agent in (home_agent, foreign_agent):
+                await _assign(c, tenant, agent, v1)
+
+            def publish() -> Any:
+                return c.post(
+                    f"/api/v1/skills/{skill['id']}/versions",
+                    json={"instructions": "n", "updateAssignments": True},
+                    headers=_h(tenant),
+                )
+
+            refuse.add(foreign_dept)
+            partial = (await publish()).json()
+            assert partial["assignmentsUpdated"] == 1
+            assert partial["assignmentsNotAllowed"] == 1
+            v2 = partial["currentVersionId"]
+            refuse.clear()
+            full = (await publish()).json()
+            assert full["assignmentsUpdated"] == 2
+            assert full["assignmentsNotAllowed"] == 0
+
+    async with app_session(tenant) as db:
+        rows = {a.agent_id: a for a in (await db.execute(select(m.SkillAssignment))).scalars()}
+        assert str(rows[home_agent].skill_version_id) == full["currentVersionId"]
+        assert str(rows[foreign_agent].skill_version_id) == full["currentVersionId"]
+    assert v2 != full["currentVersionId"]

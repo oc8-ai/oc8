@@ -18,18 +18,21 @@ import hashlib
 import json
 import re
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
-from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
+from oc8.api.deps import CurrentPrincipal, DbSession, authorize_agent_write, require_permission
 from oc8.api.v1._serializers import skill_to_dto
 from oc8.authz.pdp import missing_skill_requirements
 from oc8.authz.permissions import MANAGE, SKILL, VIEW, perm
+from oc8.authz.scope import HumanActor, scope_for_principal
 from oc8.db.base import uuid7
 from oc8.knowledge.connectors.base import ConnectorError
+from oc8.runtime.registry import check_runtime_capabilities, resolve_runtime_plugin
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SkillDTO
 from oc8.skills.importer import DEFAULT_BUDGET_TOKENS, discover
@@ -71,6 +74,8 @@ class SkillVersionPublishedDTO(SkillDTO):
 
     assignments_updated: int = 0
     assignments_skipped: int = 0
+    #: Left on the old version because the caller may not change that agent.
+    assignments_not_allowed: int = 0
 
 
 class DuplicateSkillRequest(CamelModel):
@@ -238,6 +243,7 @@ async def create_skill(
 async def create_skill_version(
     skill_id: uuid.UUID,
     body: CreateVersionRequest,
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> SkillVersionPublishedDTO:
@@ -297,29 +303,38 @@ async def create_skill_version(
     # unless the caller asks for them to follow -- publishing must not silently
     # change what a running agent is doing.
     skill.current_version_id = version.id
-    updated = skipped = 0
+    updated = skipped = not_allowed = 0
     if body.update_assignments:
-        updated, skipped = await _move_assignments(db, skill.id, version)
+        updated, skipped, not_allowed = await _move_assignments(
+            db, request, principal, skill.id, version
+        )
     await db.flush()
     await db.commit()
     return SkillVersionPublishedDTO(
         **skill_to_dto(skill, version).model_dump(),
         assignments_updated=updated,
         assignments_skipped=skipped,
+        assignments_not_allowed=not_allowed,
     )
 
 
 async def _move_assignments(
-    db: DbSession, skill_id: uuid.UUID, version: m.SkillVersion
-) -> tuple[int, int]:
+    db: DbSession,
+    request: Request,
+    principal: CurrentPrincipal,
+    skill_id: uuid.UUID,
+    version: m.SkillVersion,
+) -> tuple[int, int, int]:
     """Re-pin every live assignment of any version of `skill_id` to `version`.
 
-    Applies the check `POST /agents/{id}/skills` applies -- `requires` against
-    the effective rights -- so a new version can never grant an agent more than
-    assigning it by hand would. An agent-scoped assignment is judged against
-    that agent; a department or tenant-wide one against each department frame it
-    reaches (with no narrowing, which can only tighten). Failing assignments
-    stay put.
+    Pinning a version changes what an agent does, so each one is judged exactly
+    as `POST /agents/{id}/skills` judges it: the caller must be allowed to write
+    agents in that department (`authorize_agent_write`, first, before anything
+    reads the frame), then `requires` must fit the effective rights, then the
+    runtime must support skills. An agent-scoped assignment is judged against
+    that agent; a department or tenant-wide one against every department (and
+    its agents) it reaches. Returns (updated, skipped, not_allowed); anything
+    that fails stays on its old version.
     """
     rows = (
         (
@@ -336,52 +351,113 @@ async def _move_assignments(
         .scalars()
         .all()
     )
+    actor: HumanActor | None = None
+    try:
+        member, scope = await scope_for_principal(db, principal, upsert=True)
+        if member is not None:
+            actor = HumanActor(principal=principal, member=member, scope=scope)
+    except PermissionError:
+        actor = None
+    allowed_cache: dict[uuid.UUID, bool] = {}
+
+    async def may_write(department_id: uuid.UUID) -> bool:
+        if department_id not in allowed_cache:
+            ok = False
+            if actor is not None:
+                try:
+                    await authorize_agent_write(
+                        request,
+                        db,
+                        actor,
+                        department_id,
+                        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+                    )
+                    ok = True
+                except HTTPException:
+                    ok = False
+            allowed_cache[department_id] = ok
+        return allowed_cache[department_id]
+
     requires = version.definition.get("requires", {})
-    updated = skipped = 0
+    updated = skipped = not_allowed = 0
     seen_scopes: set[tuple[uuid.UUID | None, uuid.UUID | None]] = set()
     for assignment in rows:
-        scope = (assignment.agent_id, assignment.department_id)
-        if not await _satisfies(db, assignment, requires):
+        scope_key = (assignment.agent_id, assignment.department_id)
+        outcome = await _judge(db, assignment, requires, may_write)
+        if outcome == "not_allowed":
+            not_allowed += 1
+            continue
+        if outcome == "unmet":
             skipped += 1
             continue
-        if scope in seen_scopes:
+        if scope_key in seen_scopes:
             # Two old versions of one scope collapse into one: the unique index
             # allows a single assignment per scope and skill version.
             await db.delete(assignment)
             continue
-        seen_scopes.add(scope)
+        seen_scopes.add(scope_key)
         if assignment.skill_version_id != version.id:
             assignment.skill_version_id = version.id
         updated += 1
-    return updated, skipped
+    return updated, skipped, not_allowed
 
 
-async def _satisfies(
-    db: DbSession, assignment: m.SkillAssignment, requires: dict[str, Any]
-) -> bool:
-    targets: list[tuple[dict[str, Any], dict[str, Any], list[uuid.UUID]]] = []
+async def _judge(
+    db: DbSession,
+    assignment: m.SkillAssignment,
+    requires: dict[str, Any],
+    may_write: Callable[[uuid.UUID], Awaitable[bool]],
+) -> str:
+    """ "ok", "not_allowed" (caller may not change it) or "unmet" (requirement or
+    runtime check fails). Mirrors `assign_skill`, in the same order."""
+    agents: list[m.Agent] = []
+    departments: list[m.Department] = []
     if assignment.agent_id is not None:
         agent = await db.get(m.Agent, assignment.agent_id)
         if agent is None:
-            return False
+            return "unmet"
+        agents = [agent]
         dept = await db.get(m.Department, agent.department_id)
-        targets.append(
-            (dept.frame if dept else {}, agent.narrowing, [agent.id, agent.department_id])
-        )
+        departments = [dept] if dept is not None else []
+        if not await may_write(agent.department_id):
+            return "not_allowed"
     else:
         stmt = select(m.Department).where(m.Department.tenant_id == assignment.tenant_id)
         if assignment.department_id is not None:
             stmt = stmt.where(m.Department.id == assignment.department_id)
-        for dept in (await db.execute(stmt)).scalars().all():
-            targets.append((dept.frame, {}, [dept.id]))
-    for frame, narrowing, grantees in targets:
+        departments = list((await db.execute(stmt)).scalars().all())
+        for reached in departments:
+            if not await may_write(reached.id):
+                return "not_allowed"
+        agents = list(
+            (
+                await db.execute(
+                    select(m.Agent).where(m.Agent.department_id.in_([d.id for d in departments]))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    narrowing_by_dept = {a.department_id: a.narrowing for a in agents} if agents else {}
+    for dept in departments:
+        narrowing = narrowing_by_dept.get(dept.id, {}) if assignment.agent_id else {}
+        grantees = [dept.id] + ([assignment.agent_id] if assignment.agent_id else [])
         granted = await db.execute(
             select(m.KnowledgeGrant.kb_id).where(m.KnowledgeGrant.grantee_id.in_(grantees))
         )
         granted_kb_ids = {str(k) for k in granted.scalars().all()}
-        if missing_skill_requirements(frame, narrowing, requires, granted_kb_ids):
-            return False
-    return True
+        if missing_skill_requirements(dept.frame, narrowing, requires, granted_kb_ids):
+            return "unmet"
+    for agent in agents:
+        resolved = await resolve_runtime_plugin(db, tenant_id=assignment.tenant_id, agent=agent)
+        if resolved is not None and check_runtime_capabilities(
+            has_supervision=False,
+            has_enabled_skills=True,
+            runtime_capabilities=list(resolved[1].capabilities),
+        ):
+            return "unmet"
+    return "ok"
 
 
 @router.post(

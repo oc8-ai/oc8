@@ -19,7 +19,12 @@ vi.mock("@/lib/hooks", () => ({
   usePublishSkillVersion: () => ({
     mutate: (vars: unknown, opts?: { onSuccess?: (r: unknown) => void }) => {
       publishMock(vars);
-      opts?.onSuccess?.({ version: "1.0.1", assignmentsUpdated: 1, assignmentsSkipped: 1 });
+      opts?.onSuccess?.({
+        version: "1.0.1",
+        assignmentsUpdated: 1,
+        assignmentsSkipped: 1,
+        assignmentsNotAllowed: 1,
+      });
     },
     isPending: false,
   }),
@@ -195,5 +200,41 @@ describe("SkillDrawer", () => {
 
     expect(duplicateMock).toHaveBeenCalledWith({ id: "sk-1", name: "Invoice Review (copy)" });
     expect(onDuplicated).toHaveBeenCalledWith(expect.objectContaining({ id: "sk-2" }));
+  });
+
+  it("edits and saves the original text when the list shows a translation", () => {
+    const mutate = vi.fn();
+    useUpdateSkillMock.mockReturnValue({ mutate, isPending: false });
+    publishMock.mockClear();
+    const translated: Skill = {
+      ...skill,
+      name: "Rechnungsprüfung",
+      description: "Prüft Rechnungen.",
+      instructions: "Positionen extrahieren und buchen.",
+      guardrails: ["Beträge über 10 000 € brauchen Freigabe"],
+      source: {
+        name: skill.name,
+        description: skill.description,
+        instructions: skill.instructions,
+        guardrails: skill.guardrails,
+      },
+    };
+
+    renderDrawer(vi.fn(), translated);
+
+    expect(screen.getByLabelText("Instructions")).toHaveValue(skill.instructions);
+    expect(screen.getByLabelText("Name")).toHaveValue(skill.name);
+    expect(
+      screen.getByText("You are editing the original text. Translations are not updated."),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Tools (comma-separated)"), {
+      target: { value: "Accounting, OCR" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(publishMock).toHaveBeenCalledWith(
+      expect.objectContaining({ instructions: skill.instructions, guardrails: skill.guardrails }),
+    );
+    expect(mutate).not.toHaveBeenCalled();
   });
 });

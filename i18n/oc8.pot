@@ -6332,6 +6332,9 @@ msgstr ""
 msgid "you"
 msgstr ""
 
+msgid "You are editing the original text. Translations are not updated."
+msgstr ""
+
 msgid "You are not allowed to connect this account for the organisation."
 msgstr ""
 

@@ -469,13 +469,21 @@ export function SkillDrawer({
   const publish = usePublishSkillVersion();
   const duplicateAction = useDuplicateAction(onDuplicated);
   const [target, setTarget] = useState("");
-  const [name, setName] = useState(skill.name);
-  const [description, setDescription] = useState(skill.description);
+  // The list shows translations; the editor must start from, compare against and
+  // save the original text, or a save would overwrite it with a translation.
+  const src = skill.source ?? skill;
+  const hasTranslation =
+    src.name !== skill.name ||
+    src.description !== skill.description ||
+    src.instructions !== skill.instructions ||
+    !sameList(src.guardrails, skill.guardrails);
+  const [name, setName] = useState(src.name);
+  const [description, setDescription] = useState(src.description);
   const [category, setCategory] = useState(skill.category);
-  const [instructions, setInstructions] = useState(skill.instructions);
+  const [instructions, setInstructions] = useState(src.instructions);
   const [toolsText, setToolsText] = useState(skill.tools.join(", "));
   const [knowledgeText, setKnowledgeText] = useState((skill.knowledge ?? []).join("\n"));
-  const [guardrailsText, setGuardrailsText] = useState(skill.guardrails.join("\n"));
+  const [guardrailsText, setGuardrailsText] = useState(src.guardrails.join("\n"));
   const [updateAssignments, setUpdateAssignments] = useState(true);
 
   // Only a skill we authored may be changed in place; anything imported or
@@ -483,10 +491,10 @@ export function SkillDrawer({
   const editable = skill.origin === "local";
   const contentChanged =
     editable &&
-    (instructions.trim() !== skill.instructions.trim() ||
+    (instructions.trim() !== src.instructions.trim() ||
       !sameList(splitComma(toolsText), skill.tools) ||
       !sameList(splitLines(knowledgeText), skill.knowledge ?? []) ||
-      !sameList(splitLines(guardrailsText), skill.guardrails));
+      !sameList(splitLines(guardrailsText), src.guardrails));
   const assignedCount = skill.assignmentCount ?? 0;
 
   const saveError = (e: unknown) =>
@@ -527,21 +535,28 @@ export function SkillDrawer({
       {
         onSuccess: (res) => {
           const skipped = res.assignmentsSkipped ?? 0;
+          const notAllowed = res.assignmentsNotAllowed ?? 0;
+          const notes = [
+            skipped > 0
+              ? t(
+                  `${skipped} agents stayed on the old version because they lack a tool or knowledge base the skill needs.`,
+                  `${skipped} Agenten bleiben auf der alten Version, weil ihnen ein Tool oder eine Wissensdatenbank fehlt, die der Skill braucht.`,
+                )
+              : "",
+            notAllowed > 0
+              ? t(
+                  `${notAllowed} agents stayed on the old version because you may not change them.`,
+                  `${notAllowed} Agenten bleiben auf der alten Version, weil du sie nicht ändern darfst.`,
+                )
+              : "",
+          ].filter(Boolean);
           toast.success(
             t(`Saved as version ${res.version}`, `Als Version ${res.version} gespeichert`),
-            {
-              description:
-                skipped > 0
-                  ? t(
-                      `${skipped} agents stayed on the old version because they lack a tool or knowledge base the skill needs.`,
-                      `${skipped} Agenten bleiben auf der alten Version, weil ihnen ein Tool oder eine Wissensdatenbank fehlt, die der Skill braucht.`,
-                    )
-                  : name.trim(),
-            },
+            { description: notes.length > 0 ? notes.join(" ") : name.trim() },
           );
           if (
-            name.trim() !== skill.name ||
-            description.trim() !== skill.description ||
+            name.trim() !== src.name ||
+            description.trim() !== src.description ||
             category !== skill.category
           )
             patchMeta(() => undefined);
@@ -631,6 +646,14 @@ export function SkillDrawer({
       {editable ? (
         <Section icon={BookOpen} title={t("Content", "Inhalt")}>
           <div className="space-y-3">
+            {hasTranslation && (
+              <p className="text-[11px] text-muted-foreground">
+                {t(
+                  "You are editing the original text. Translations are not updated.",
+                  "Du bearbeitest den Originaltext. Übersetzungen werden nicht aktualisiert.",
+                )}
+              </p>
+            )}
             <Field label={t("Instructions", "Anweisungen")}>
               <textarea
                 value={instructions}
