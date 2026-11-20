@@ -1694,6 +1694,9 @@ msgstr ""
 msgid "Couldn't save instructions"
 msgstr ""
 
+msgid "Couldn't save the trigger"
+msgstr ""
+
 msgid "Couldn't send answer"
 msgstr ""
 
@@ -2591,6 +2594,9 @@ msgstr ""
 msgid "From store"
 msgstr ""
 
+msgid "From the connection's setup"
+msgstr ""
+
 msgid "from the department"
 msgstr ""
 
@@ -2631,6 +2637,9 @@ msgid "Give a reason first — a rejection with none is a dead end for the agent
 msgstr ""
 
 msgid "Give each endpoint a name first."
+msgstr ""
+
+msgid "Give this agent a mailbox first"
 msgstr ""
 
 msgid "Give this tool a name."
@@ -2876,6 +2885,12 @@ msgstr ""
 msgid "Invite"
 msgstr ""
 
+msgid "It has not worked yet."
+msgstr ""
+
+msgid "It listens on the mailbox the agent uses for its tools. "
+msgstr ""
+
 msgid "its model configuration"
 msgstr ""
 
@@ -3023,6 +3038,9 @@ msgstr ""
 msgid "Linked in this tenant"
 msgstr ""
 
+msgid "Listening"
+msgstr ""
+
 msgid "Live"
 msgstr ""
 
@@ -3159,6 +3177,12 @@ msgid "Mail server disabled"
 msgstr ""
 
 msgid "Mail server updated"
+msgstr ""
+
+msgid "Mailbox"
+msgstr ""
+
+msgid "Mailbox changed: switched off. Switch it on to listen on the agent's current mailbox."
 msgstr ""
 
 msgid "Make available"
@@ -3776,6 +3800,9 @@ msgstr ""
 msgid "Not available."
 msgstr ""
 
+msgid "Not checked yet"
+msgstr ""
+
 msgid "Not connected"
 msgstr ""
 
@@ -3902,10 +3929,16 @@ msgstr ""
 msgid "Older"
 msgstr ""
 
+msgid "On"
+msgstr ""
+
 msgid "On demand"
 msgstr ""
 
 msgid "on its own"
+msgstr ""
+
+msgid "On new email"
 msgstr ""
 
 msgid "once"
@@ -3966,6 +3999,9 @@ msgid "Open the agent"
 msgstr ""
 
 msgid "Open the record"
+msgstr ""
+
+msgid "Open the tool settings"
 msgstr ""
 
 msgid "Opening a file"
@@ -4316,6 +4352,9 @@ msgstr ""
 msgid "Read its instructions"
 msgstr ""
 
+msgid "Read the new email and take care of it."
+msgstr ""
+
 msgid "Read the text before importing"
 msgstr ""
 
@@ -4464,6 +4503,9 @@ msgid "Remove seat"
 msgstr ""
 
 msgid "Remove source?"
+msgstr ""
+
+msgid "Remove trigger"
 msgstr ""
 
 msgid "Remove user"
@@ -5294,6 +5336,9 @@ msgstr ""
 msgid "Target"
 msgstr ""
 
+msgid "Task"
+msgstr ""
+
 msgid "Task (optional)"
 msgstr ""
 
@@ -5498,10 +5543,16 @@ msgstr ""
 msgid "The decision was not saved. Try again."
 msgstr ""
 
+msgid "The email is appended to this task as data from outside, never as instructions."
+msgstr ""
+
 msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
 msgstr ""
 
 msgid "The endpoints are saved."
+msgstr ""
+
+msgid "The event listens on the agent's own login for its system, and the agent has none yet. Choose one in the agent's tool settings."
 msgstr ""
 
 msgid "The folder could not be loaded. Try again."
@@ -6063,6 +6114,12 @@ msgid "Total spend"
 msgstr ""
 
 msgid "Total tokens"
+msgstr ""
+
+msgid "Trigger removed"
+msgstr ""
+
+msgid "Trigger saved"
 msgstr ""
 
 msgid "Try again"
