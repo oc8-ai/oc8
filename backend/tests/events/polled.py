@@ -133,6 +133,7 @@ async def login(
     username: str = "anna",
     credential_type: str = CREDENTIAL_TYPE,
     owner: uuid.UUID | None = None,
+    secret: str = SECRET,
 ) -> uuid.UUID:
     async with app_session(tenant) as db:
         cred = m.Credential(
@@ -146,7 +147,7 @@ async def login(
         db.add(cred)
         await db.flush()
         ref = f"credential/{cred.id}/password"
-        await store_secret(db, tenant_id=tenant, name=ref, value=SECRET, kind="credential")
+        await store_secret(db, tenant_id=tenant, name=ref, value=secret, kind="credential")
         cred.secret_refs = {"password": ref}
         return cred.id
 
@@ -181,6 +182,7 @@ async def polled_setup(
     tenant: uuid.UUID | None = None,
     source: str | None = None,
     username: str = "anna",
+    secret: str = SECRET,
 ) -> Polled:
     """A fresh organisation (or `tenant`) with the capa `source` installed, one
     login and one agent fixed to it."""
@@ -193,7 +195,7 @@ async def polled_setup(
         installed = await db.scalar(select(m.Capa.id).where(m.Capa.name == source))
     if installed is None:
         await install_capa(app_session, tenant, source, tool_key)
-    credential_id = await login(app_session, tenant, username=username)
+    credential_id = await login(app_session, tenant, username=username, secret=secret)
     agent_id = await agent(app_session, tenant, tool_key=tool_key, credential_id=credential_id)
     return Polled(tenant, agent_id, credential_id, source, tool_key)
 

@@ -37,6 +37,13 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS ix_trigger_event_target_credential_id "
         "ON trigger (event_target_credential_id)"
     )
+    # One polled trigger per agent and event: the service checks first, this
+    # holds it against two creates at once.
+    op.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_trigger_polled_event "
+        "ON trigger (agent_id, event_source, event_type) "
+        "WHERE event_target_credential_id IS NOT NULL"
+    )
     op.execute("""
         CREATE TABLE IF NOT EXISTS event_source_cursor (
             id uuid PRIMARY KEY,
@@ -79,6 +86,7 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
     op.execute("DROP TABLE IF EXISTS event_source_cursor")
+    op.execute("DROP INDEX IF EXISTS uq_trigger_polled_event")
     op.execute("DROP INDEX IF EXISTS ix_trigger_event_target_credential_id")
     op.execute("ALTER TABLE trigger DROP COLUMN IF EXISTS event_config")
     op.execute("ALTER TABLE trigger DROP COLUMN IF EXISTS event_target_credential_id")

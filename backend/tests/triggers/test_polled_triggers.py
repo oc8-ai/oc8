@@ -274,3 +274,72 @@ async def test_re_enabling_resets_the_cursor_and_rechecks_the_login(
         assert row is not None and row.enabled is False
         with pytest.raises(InvalidTriggerConfig, match="fixed"):
             await update_trigger(db, row, enabled=True)
+
+
+async def test_the_database_holds_one_polled_trigger_per_agent_and_event(
+    app_session: AppSessionFactory, polled: Polled
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    await _create(app_session, polled, target=polled.credential_id)
+
+    with pytest.raises(IntegrityError):
+        async with app_session(polled.tenant) as db:
+            db.add(
+                m.Trigger(
+                    tenant_id=polled.tenant,
+                    agent_id=polled.agent_id,
+                    kind="event",
+                    task_text="again",
+                    event_source=polled.source,
+                    event_type=polled.event_type,
+                    event_target_credential_id=polled.credential_id,
+                )
+            )
+
+
+async def test_two_creates_at_once_leave_one_and_refuse_the_other_cleanly(
+    app_session: AppSessionFactory, polled: Polled
+) -> None:
+    import asyncio
+
+    async with app_session(polled.tenant) as first:
+        await create_trigger(
+            first,
+            tenant_id=polled.tenant,
+            agent_id=polled.agent_id,
+            kind="event",
+            task_text="first",
+            event_source=polled.source,
+            event_type=polled.event_type,
+            event_target_credential_id=polled.credential_id,
+        )
+        # The second create cannot see the first, uncommitted one; the unique
+        # index makes it wait for the commit below and then refuses it.
+        second = asyncio.create_task(_create(app_session, polled, target=polled.credential_id))
+        await asyncio.sleep(0.5)
+        assert not second.done()
+    with pytest.raises(InvalidTriggerConfig, match="already"):
+        await second
+
+
+async def test_re_enabling_while_the_capa_is_off_says_so(
+    app_session: AppSessionFactory, polled: Polled
+) -> None:
+    trigger = await _create(app_session, polled, target=polled.credential_id)
+    async with app_session(polled.tenant) as db:
+        row = await db.get(m.Trigger, trigger.id)
+        assert row is not None
+        await update_trigger(db, row, enabled=False)
+        capa_id = await db.scalar(select(m.Capa.id).where(m.Capa.name == polled.source))
+        installation = await db.scalar(
+            select(m.CapaInstallation).where(m.CapaInstallation.capa_id == capa_id)
+        )
+        assert installation is not None
+        installation.status = "disabled"
+
+    async with app_session(polled.tenant) as db:
+        row = await db.get(m.Trigger, trigger.id)
+        assert row is not None
+        with pytest.raises(InvalidTriggerConfig, match="capa is not enabled"):
+            await update_trigger(db, row, enabled=True)

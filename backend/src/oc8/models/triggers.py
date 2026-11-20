@@ -7,7 +7,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Integer, Text, UniqueConstraint, Uuid
+from sqlalchemy import CheckConstraint, DateTime, Index, Integer, Text, UniqueConstraint, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -101,6 +101,15 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
             "chat_session_id IS NULL OR (responsibility_id IS NOT NULL AND timezone IS NOT NULL "
             "AND (kind <> 'cron' OR ends_at IS NOT NULL) AND kind IN ('cron','once'))",
             name="ck_trigger_followup_fields",
+        ),
+        # One polled trigger per agent and event (oc8.events.sources).
+        Index(
+            "uq_trigger_polled_event",
+            "agent_id",
+            "event_source",
+            "event_type",
+            unique=True,
+            postgresql_where=text("event_target_credential_id IS NOT NULL"),
         ),
     )
 

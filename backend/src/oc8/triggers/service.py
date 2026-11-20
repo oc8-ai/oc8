@@ -10,6 +10,7 @@ from typing import Any
 
 from croniter import CroniterBadCronError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.connections.access import trigger_fingerprint
@@ -29,6 +30,10 @@ from oc8.triggers.zones import (
 #: n8n-Webhook-node model this trigger kind copies), so it needs to be
 #: unguessable on its own, not just unique.
 _WEBHOOK_TOKEN_BYTES = 32
+
+
+_ONE_POLLED_TRIGGER = "the agent already has a trigger on this polled event"
+_CAPA_NOT_ENABLED = "the event's capa is not enabled"
 
 
 class InvalidTriggerConfig(ValueError):
@@ -77,15 +82,19 @@ async def _check_polled_target(
     event_source: str,
     event_type: str,
     target: uuid.UUID | None,
+    existing: bool = False,
 ) -> bool:
     """For an event this tenant's capas declare as polled
     (`oc8.events.sources`): refuse a target that is not the organisation login
     the agent is fixed to for the capa's tools. Returns whether the event is
-    polled; a pushed event takes no target."""
+    polled; a pushed event takes no target. `existing`: re-checking a polled
+    trigger already saved, whose capa may have been switched off since."""
     from oc8.events.sources import fixed_login, polled_event_spec
 
     spec = await polled_event_spec(db, event_source, event_type)
     if spec is None:
+        if existing and target is not None:
+            raise InvalidTriggerConfig(_CAPA_NOT_ENABLED)
         if target is not None:
             raise InvalidTriggerConfig("only a polled event listens on a login")
         return False
@@ -168,7 +177,7 @@ async def create_trigger(
                 Trigger.event_type == event_type,
             )
         ):
-            raise InvalidTriggerConfig("the agent already has a trigger on this polled event")
+            raise InvalidTriggerConfig(_ONE_POLLED_TRIGGER)
     elif kind != "webhook":
         raise InvalidTriggerConfig(f"unknown trigger kind: {kind!r}")
     if not polled and (event_target_credential_id is not None or event_config):
@@ -196,8 +205,19 @@ async def create_trigger(
         event_target_credential_id=event_target_credential_id if polled else None,
         event_config=dict(event_config or {}) if polled else {},
     )
-    db.add(trigger)
-    await db.flush()
+    if polled:
+        # Two creates at once both pass the check above; the partial unique
+        # index (uq_trigger_polled_event) refuses the second. Inside a
+        # savepoint so the caller's transaction survives the refusal.
+        try:
+            async with db.begin_nested():
+                db.add(trigger)
+                await db.flush()
+        except IntegrityError as exc:
+            raise InvalidTriggerConfig(_ONE_POLLED_TRIGGER) from exc
+    else:
+        db.add(trigger)
+        await db.flush()
     if polled:
         from oc8.events.sources import reset_cursor
 
@@ -285,6 +305,7 @@ async def update_trigger(
             event_source=trigger.event_source,
             event_type=trigger.event_type,
             target=trigger.event_target_credential_id,
+            existing=True,
         )
     ):
         # Re-enabling a polled trigger: its login is still the agent's (checked
