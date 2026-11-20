@@ -254,6 +254,11 @@ msgstr "Hinzufügen"
 msgid "Add a model configuration"
 msgstr "Modellkonfiguration anlegen"
 
+#, fuzzy
+#| msgid "Add access"
+msgid "Add a passkey"
+msgstr "Zugang hinzufügen"
+
 msgid "Add access"
 msgstr "Zugang hinzufügen"
 
@@ -1182,9 +1187,6 @@ msgstr "Zusammenarbeit"
 msgid "Collapse sidebar"
 msgstr "Seitenleiste einklappen"
 
-msgid "Coming soon."
-msgstr ""
-
 msgid "commands"
 msgstr "Befehle"
 
@@ -1241,6 +1243,11 @@ msgstr "Passwort bestätigen"
 
 msgid "Confirm rollback"
 msgstr "Zurücksetzen bestätigen"
+
+#, fuzzy
+#| msgid "from their sign-in"
+msgid "Confirm your sign-in"
+msgstr "aus ihrer Anmeldung"
 
 msgid "Confirming…"
 msgstr "Wird bestätigt…"
@@ -1555,9 +1562,19 @@ msgid "Could not remove the method."
 msgstr "Sitz konnte nicht entfernt werden."
 
 #, fuzzy
+#| msgid "Could not remove seat."
+msgid "Could not remove the passkey."
+msgstr "Sitz konnte nicht entfernt werden."
+
+#, fuzzy
 #| msgid "Could not remove the binding"
 msgid "Could not remove this login"
 msgstr "Vertragsbindung konnte nicht entfernt werden"
+
+#, fuzzy
+#| msgid "Could not create the task"
+msgid "Could not rename the passkey."
+msgstr "Aufgabe konnte nicht erstellt werden"
 
 #, fuzzy
 #| msgid "Two-factor authentication"
@@ -1805,6 +1822,11 @@ msgstr "Limit erstellen"
 
 msgid "Create new"
 msgstr "Neu erstellen"
+
+#, fuzzy
+#| msgid "Create task"
+msgid "Create passkey"
+msgstr "Aufgabe erstellen"
 
 msgid "Create project"
 msgstr "Projekt anlegen"
@@ -2295,6 +2317,9 @@ msgstr "z. B. Verträge fristgerecht prüfen"
 
 msgid "e.g. Sales sign-off"
 msgstr "z. B. Freigabe Vertrieb"
+
+msgid "e.g. Work laptop"
+msgstr ""
 
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
 msgstr "Jeder Code funktioniert einmal. Bewahre sie sicher auf — du siehst sie nicht erneut."
@@ -3430,6 +3455,9 @@ msgstr "Name & Beschreibung"
 msgid "name + rights"
 msgstr "Name + Rechte"
 
+msgid "Name this passkey"
+msgstr ""
+
 msgid "Name updated"
 msgstr "Name aktualisiert"
 
@@ -3444,6 +3472,9 @@ msgstr ""
 
 msgid "Needs an organisation connection"
 msgstr "Braucht eine Verbindung der Organisation"
+
+msgid "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing)."
+msgstr ""
 
 msgid "Needs reconnecting"
 msgstr "Erneut verbinden nötig"
@@ -3937,6 +3968,11 @@ msgstr "Noch kein Verbrauch erfasst."
 
 msgid "Not tested"
 msgstr "Nicht getestet"
+
+#, fuzzy
+#| msgid "No usage recorded yet."
+msgid "not used yet"
+msgstr "Noch kein Verbrauch erfasst."
 
 msgid "Note"
 msgstr "Notiz"
@@ -5731,6 +5767,14 @@ msgstr "Das Parameter-Schema darf nur auf sich selbst verweisen ($ref beginnend 
 msgid "The parameter schema must be a JSON Schema object with \"type\": \"object\"."
 msgstr "Das Parameter-Schema muss ein JSON-Schema-Objekt mit \"type\": \"object\" sein."
 
+#, fuzzy
+#| msgid "The call could not be made."
+msgid "The passkey could not be used."
+msgstr "Der Aufruf war nicht möglich."
+
+msgid "The passkey prompt was cancelled or timed out."
+msgstr ""
+
 msgid "The permission model could not be loaded."
 msgstr "Das Berechtigungsmodell konnte nicht geladen werden."
 
@@ -5911,6 +5955,12 @@ msgstr "Das kann nicht rückgängig gemacht werden."
 msgid "This block couldn't be loaded"
 msgstr "Dieser Lauf konnte nicht geladen werden."
 
+msgid "This browser cannot use a passkey for this site."
+msgstr ""
+
+msgid "This browser cannot use passkeys. Try another browser or method."
+msgstr ""
+
 msgid "This browser does not support push notifications."
 msgstr "Dieser Browser unterstützt keine Push-Benachrichtigungen."
 
@@ -6038,6 +6088,11 @@ msgstr "verbraucht diesen Monat"
 #| msgid "used this month"
 msgid "This month"
 msgstr "verbraucht diesen Monat"
+
+#, fuzzy
+#| msgid "This agent was already created."
+msgid "This passkey is already registered."
+msgstr "Dieser Agent wurde schon angelegt."
 
 msgid "This proposal has expired."
 msgstr "Dieser Vorschlag ist abgelaufen."
@@ -6359,6 +6414,9 @@ msgstr "Speicher deine Backup-Codes"
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr "Verwende im Tool-Namen nur Buchstaben, Ziffern, _ und - (höchstens 64)."
 
+msgid "Use passkey"
+msgstr ""
+
 msgid "Use sign-in default"
 msgstr "Anmeldungs-Standard nutzen"
 
@@ -6376,6 +6434,15 @@ msgstr "Dieses Modell für den Copilot nutzen"
 
 msgid "Use your authenticator app, or a backup code."
 msgstr "Verwende deine Authenticator-App oder einen Backup-Code."
+
+msgid "Use your device's screen lock or a security key to confirm it is you. Give it a name so you can tell your passkeys apart."
+msgstr ""
+
+msgid "Use your passkey instead"
+msgstr ""
+
+msgid "Use your passkey or security key: your browser asks you to confirm it is you."
+msgstr ""
 
 msgid "Used by"
 msgstr "Verwendet von"
@@ -6543,6 +6610,11 @@ msgstr "Wartet auf Einstellungsfreigabe"
 
 msgid "Waiting for the next step"
 msgstr "Wartet auf den nächsten Schritt"
+
+#, fuzzy
+#| msgid "Waiting for task"
+msgid "Waiting for the passkey…"
+msgstr "Wartet auf Aufgabe"
 
 msgid "Waiting for you"
 msgstr "Wartet auf dich"
