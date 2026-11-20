@@ -74,9 +74,10 @@ REASONS: Final[dict[str, str]] = {
     ),
     "trigger_needs_login": (
         "the event listens on the agent's own organisation login for the "
-        "event's system, and the agent has none fixed. Give the agent that "
-        "system in systems with exactly one organisation login, or leave the "
-        "trigger out; the person picks the login on the agent's page"
+        "event's system, and the agent has no login fixed for it. You cannot "
+        "set one: the person picks the login in the agent's tool settings (the "
+        "Tools & Access tab on the agent's page) and then adds the trigger on "
+        "the agent's page. Tell the person exactly that, or leave the trigger out"
     ),
     "model_manual_only": (
         "the chosen model runs on a personal subscription and may only answer "

@@ -35,6 +35,7 @@ from oc8.triggers.service import (
     get_trigger,
     list_triggers_for_agent,
     polled_event_target,
+    polled_settings,
     update_trigger,
 )
 
@@ -167,7 +168,21 @@ async def _caller_member_id(db: DbSession, principal: CurrentPrincipal) -> uuid.
     return member.id if member is not None else None
 
 
-def _changes_what_runs(trigger: m.Trigger, body: UpdateTriggerRequest) -> bool:
+async def _changes_what_runs(db: DbSession, trigger: m.Trigger, body: UpdateTriggerRequest) -> bool:
+    if body.event_config is not None or body.event_target_credential_id is not None:
+        # Compared as they would be stored (stripped, filled): whitespace
+        # alone changes nothing. A refusal surfaces from update_trigger.
+        try:
+            target, config = await polled_settings(
+                db,
+                trigger,
+                event_config=body.event_config,
+                target=body.event_target_credential_id,
+            )
+        except InvalidTriggerConfig:
+            return True
+        if target != trigger.event_target_credential_id or config != trigger.event_config:
+            return True
     return (
         (body.task_text is not None and body.task_text != trigger.task_text)
         or (
@@ -177,11 +192,6 @@ def _changes_what_runs(trigger: m.Trigger, body: UpdateTriggerRequest) -> bool:
         )
         or (bool(body.timezone) and trigger.kind == "cron" and body.timezone != trigger.timezone)
         or body.enabled is True
-        or (body.event_config is not None and body.event_config != trigger.event_config)
-        or (
-            body.event_target_credential_id is not None
-            and body.event_target_credential_id != trigger.event_target_credential_id
-        )
     )
 
 
@@ -202,12 +212,16 @@ async def list_trigger_events(db: DbSession, principal: CurrentPrincipal) -> lis
     from oc8.events.sources import polled_event_spec
 
     out: list[TriggerEventDTO] = []
-    catalogs: dict[str, dict[str, dict[str, str]]] = {}
+    catalogs: dict[str, tuple[dict[str, dict[str, str]], str]] = {}
     for event in await list_installed_automation_events(db):
         if event.source not in catalogs:
             found = find_plugin(event.source) if event.source != "core" else None
-            catalogs[event.source] = dict(found.i18n) if found is not None else {}
-        i18n = catalogs[event.source]
+            label = (found.manifest or {}).get("label") if found is not None else None
+            catalogs[event.source] = (
+                dict(found.i18n) if found is not None else {},
+                label if isinstance(label, str) and label else event.source,
+            )
+        i18n, source_label = catalogs[event.source]
         tool_key: str | None = None
         if event.polled:
             spec = await polled_event_spec(db, event.source, event.type)
@@ -222,6 +236,10 @@ async def list_trigger_events(db: DbSession, principal: CurrentPrincipal) -> lis
                 description_translations=_translations(i18n, event.description),
                 polled=event.polled,
                 tool_key=tool_key,
+                editor_label=event.editor_label,
+                editor_label_translations=_translations(i18n, event.editor_label),
+                source_label=source_label,
+                source_label_translations=_translations(i18n, source_label),
                 config=[
                     TriggerEventConfigFieldDTO(
                         key=field.key,
@@ -332,7 +350,7 @@ async def update_agent_trigger(
     if owner is None:
         # Re-saving a schedule made before triggers recorded a creator.
         trigger.created_by_member_id = caller
-    elif caller != owner and _changes_what_runs(trigger, body):
+    elif caller != owner and await _changes_what_runs(db, trigger, body):
         # Whoever changes what a trigger does becomes the person it acts for,
         # so an edit can never run under the previous owner's account.
         trigger.created_by_member_id = caller

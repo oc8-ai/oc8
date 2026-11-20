@@ -91,12 +91,16 @@ def _with_config(*fields: dict[str, object]) -> dict[str, object]:
 
 
 def test_a_table_declares_its_trigger_settings() -> None:
-    manifest = parse_manifest(
-        _with_config(
-            {"key": "folder", "label": "Folder", "default": "INBOX"},
-            {"key": "user", "label": "Mailbox", "default_from": "default_user"},
-        )
+    raw = _with_config(
+        {"key": "folder", "label": "Folder", "default": "INBOX"},
+        {"key": "user", "label": "Mailbox", "default_from": "default_user"},
     )
+    raw["setup"] = {
+        "title": "Set up",
+        "fields": [{"key": "default_user", "label": "Default", "kind": "text"}],
+        "mcp": {"name": "tools", "env_fields": {"DEFAULT_USER": "default_user"}},
+    }
+    manifest = parse_manifest(raw)
 
     decl = manifest.triggers[0]
     assert isinstance(decl, TriggerDecl)
@@ -148,3 +152,56 @@ def test_the_catalogue_drops_an_event_whose_settings_are_malformed() -> None:
         )
         is None
     )
+
+
+def _defaulted_from(
+    field_kind: str, *, mapped: bool = True, secret: bool = False
+) -> dict[str, object]:
+    manifest = _with_config({"key": "user", "label": "Mailbox", "default_from": "default_user"})
+    field: dict[str, object] = {"key": "default_user", "label": "Default", "kind": field_kind}
+    if field_kind == "credential":
+        field["credential_type"] = "some_login"
+    if field_kind == "select":
+        field["options"] = ["a"]
+    mcp: dict[str, object] = {"name": "tools", "env_fields": {}, "secret_env_fields": {}}
+    if mapped:
+        mcp["env_fields"] = {"DEFAULT_USER": "default_user"}
+    if secret:
+        mcp["secret_env_fields"] = {"DEFAULT_USER_SECRET": "default_user"}
+    manifest["setup"] = {"title": "Set up", "fields": [field], "mcp": mcp}
+    return manifest
+
+
+@pytest.mark.parametrize("kind", ["text", "url", "select"])
+def test_a_setting_may_default_from_a_plain_mapped_setup_field(kind: str) -> None:
+    parse_manifest(_defaulted_from(kind))
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        _defaulted_from("password"),
+        _defaulted_from("credential"),
+        _defaulted_from("department"),
+        _defaulted_from("text", mapped=False),
+        _defaulted_from("text", secret=True),
+        _with_config({"key": "user", "label": "Mailbox", "default_from": "default_user"}),
+    ],
+)
+def test_a_setting_never_defaults_from_a_secret_or_unknown_field(
+    manifest: dict[str, object],
+) -> None:
+    with pytest.raises(ManifestError, match="default_from"):
+        parse_manifest(manifest)
+
+
+def test_a_table_may_name_its_trigger_editor_tab() -> None:
+    raw = _with_config()
+    raw["triggers"][0]["editor_label"] = "On new item"  # type: ignore[index]
+    manifest = parse_manifest(raw)
+
+    decl = manifest.triggers[0]
+    assert isinstance(decl, TriggerDecl) and decl.editor_label == "On new item"
+    assert TriggerDecl(type="x").editor_label == ""
+    descriptor = _descriptor_from_manifest("p", manifest.model_dump(mode="json")["triggers"][0])
+    assert descriptor is not None and descriptor.editor_label == "On new item"

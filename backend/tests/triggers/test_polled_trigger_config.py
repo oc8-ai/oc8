@@ -296,3 +296,56 @@ async def test_re_targeting_to_the_agents_new_login_starts_a_fresh_baseline(
         assert row.event_target_credential_id == other
     cursor = await _cursor(app_session, polled, trigger.id)
     assert cursor.cursor is None and cursor.failures == 0
+
+
+async def test_a_default_never_comes_from_another_departments_row(
+    app_session: AppSessionFactory, polled: Polled
+) -> None:
+    await _connection(app_session, polled, "other@example.test", department_id=uuid.uuid4())
+
+    trigger = await _create(app_session, polled, None)
+
+    assert trigger.event_config["user"] == ""
+
+
+async def test_the_lookup_refuses_a_setup_field_that_is_not_plain(
+    app_session: AppSessionFactory, polled: Polled
+) -> None:
+    """Defence in depth behind the manifest check: a secret-kind field is
+    never read, even when a row holds a value under its env name."""
+    from dataclasses import replace
+
+    from oc8.events.sources import connection_setup_value, polled_event_spec
+
+    await _connection(app_session, polled, "s3cret", credential_id=polled.credential_id)
+    async with app_session(polled.tenant) as db:
+        spec = await polled_event_spec(db, polled.source, polled.event_type)
+        assert spec is not None
+        assert spec.setup_kinds == {"default_user": "text"}
+        args = {"agent_id": polled.agent_id, "target": polled.credential_id}
+        assert await connection_setup_value(db, spec, key="default_user", **args) == "s3cret"
+        for kind in ("password", "credential", "department"):
+            hidden = replace(spec, setup_kinds={"default_user": kind})
+            assert await connection_setup_value(db, hidden, key="default_user", **args) == ""
+        unknown = replace(spec, setup_kinds={})
+        assert await connection_setup_value(db, unknown, key="default_user", **args) == ""
+
+
+async def test_a_fresh_baseline_forgets_when_it_last_polled(
+    app_session: AppSessionFactory, polled: Polled
+) -> None:
+    from datetime import UTC, datetime
+
+    trigger = await _create(app_session, polled, None)
+    async with app_session(polled.tenant) as db:
+        row = await db.scalar(
+            select(m.EventSourceCursor).where(m.EventSourceCursor.trigger_id == trigger.id)
+        )
+        assert row is not None
+        row.last_polled_at = row.last_ok_at = datetime.now(tz=UTC)
+    async with app_session(polled.tenant) as db:
+        stored = await db.get(m.Trigger, trigger.id)
+        assert stored is not None
+        await update_trigger(db, stored, event_config={"folder": "Archive"})
+    cursor = await _cursor(app_session, polled, trigger.id)
+    assert cursor.last_polled_at is None and cursor.last_ok_at is None

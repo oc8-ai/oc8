@@ -868,6 +868,9 @@ class PluginSetupSpec(BaseModel):
 
 #: The longest value a trigger setting (`Trigger.event_config`) may hold.
 TRIGGER_CONFIG_VALUE_MAX = 200
+#: The setup field kinds a trigger setting's `default_from` may read: plain
+#: values, never a secret, a login or a department reference.
+PLAIN_SETUP_FIELD_KINDS: frozenset[str] = frozenset({"text", "url", "select"})
 
 
 class TriggerConfigField(BaseModel):
@@ -898,6 +901,9 @@ class TriggerDecl(BaseModel):
     description: str = ""
     polled: bool = False
     config: list[TriggerConfigField] = Field(default_factory=list, max_length=16)
+    #: How the trigger editor names its tab (e.g. "On a new item"); `label`
+    #: when empty. Translated through the capa's own catalogs like `label`.
+    editor_label: str = Field(default="", max_length=200)
 
     @model_validator(mode="after")
     def _unique_config_keys(self) -> TriggerDecl:
@@ -992,6 +998,37 @@ class Manifest(BaseModel):
     claude_hooks: ClaudeHooksSpec | None = None
     #: How this capa was assembled on disk — metadata for UI and debugging.
     source_format: SourceFormat = "oc8"
+
+    @model_validator(mode="after")
+    def _trigger_defaults_read_plain_setup_fields(self) -> Manifest:
+        """A trigger setting's `default_from` names a plain setup field the
+        connection keeps in its env (`env_fields`), never one that is or
+        carries a secret: its value is stored on the trigger and shown."""
+        setup = self.setup
+        fields = {f.key: f for f in setup.fields} if setup is not None else {}
+        mcp = setup.mcp if setup is not None else None
+        mapped = set(mcp.env_fields.values()) if mcp is not None else set()
+        secret = set(mcp.secret_env_fields.values()) if mcp is not None else set()
+        for decl in self.triggers:
+            if not isinstance(decl, TriggerDecl):
+                continue
+            for item in decl.config:
+                key = item.default_from
+                if not key:
+                    continue
+                field = fields.get(key)
+                if (
+                    field is None
+                    or field.kind not in PLAIN_SETUP_FIELD_KINDS
+                    or key not in mapped
+                    or key in secret
+                ):
+                    raise ValueError(
+                        f"trigger {decl.type!r} setting {item.key!r}: default_from "
+                        f"{key!r} must name a plain ({', '.join(sorted(PLAIN_SETUP_FIELD_KINDS))}) "
+                        "setup field mapped in env_fields and not in secret_env_fields"
+                    )
+        return self
 
     @model_validator(mode="after")
     def _deferred_permissions_are_declared(self) -> Manifest:

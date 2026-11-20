@@ -39,6 +39,8 @@ class AutomationEventDescriptor:
     polled: bool = False
     #: The settings a trigger on this event takes, in the editor's order.
     config: tuple[AutomationEventConfigField, ...] = ()
+    #: The trigger editor's name for its tab; `label` when empty.
+    editor_label: str = ""
 
 
 class DuplicateAutomationEvent(ValueError):
@@ -83,7 +85,8 @@ def _descriptor_from_manifest(plugin_name: str, value: Any) -> AutomationEventDe
     label = value.get("label", event_type)
     description = value.get("description", "")
     polled = value.get("polled", False)
-    if not all(isinstance(item, str) for item in (source, label, description)):
+    editor_label = value.get("editor_label", "")
+    if not all(isinstance(item, str) for item in (source, label, description, editor_label)):
         return None
     if not isinstance(polled, bool):
         return None
@@ -110,6 +113,7 @@ def _descriptor_from_manifest(plugin_name: str, value: Any) -> AutomationEventDe
             )
             for field in config
         ),
+        editor_label=editor_label,
     )
 
 

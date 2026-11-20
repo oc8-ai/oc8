@@ -1423,6 +1423,16 @@ class BuilderChoiceDTO(CamelModel):
     label: str
 
 
+class BuilderTriggerSettingDTO(CamelModel):
+    """One setting a proposed event trigger names, with the event's label for
+    it when an enabled capa declares it (the key otherwise)."""
+
+    key: str
+    label: str
+    label_translations: dict[str, str] = {}
+    value: str
+
+
 class BuilderTriggerDTO(CamelModel):
     kind: str  # cron | event
     cron_expression: str | None = None
@@ -1431,6 +1441,8 @@ class BuilderTriggerDTO(CamelModel):
     event_source: str | None = None
     event_type: str | None = None
     task_text: str = ""
+    #: A polled event's settings (`eventConfig`), in the order proposed.
+    settings: list[BuilderTriggerSettingDTO] = []
 
 
 class BuilderLimitDTO(CamelModel):
@@ -1503,6 +1515,10 @@ class AgentBuilderDTO(CamelModel):
     #: and `mission` are empty and the department is the board's (or its
     #: producing agent's).
     kind: Literal["agent", "board"] = "agent"
+    #: Fixed codes for what was left out on apply and what the person does
+    #: next, e.g. "trigger_needs_login": a polled event's trigger skipped
+    #: because the new agent had no login to listen on yet.
+    notices: list[str] = []
     board: BuilderBoardDTO | None = None
 
 
@@ -1697,6 +1713,13 @@ class TriggerEventDTO(CamelModel):
     #: on (`AgentToolAccess.tool_key`); None otherwise.
     tool_key: str | None = None
     config: list[TriggerEventConfigFieldDTO] = []
+    #: The trigger editor's name for its tab; the editor falls back to `label`.
+    editor_label: str = ""
+    editor_label_translations: dict[str, str] = {}
+    #: The display name of the capa it comes from (its name when it has none),
+    #: to tell two events with the same tab name apart.
+    source_label: str = ""
+    source_label_translations: dict[str, str] = {}
 
 
 class TriggerDTO(CamelModel):

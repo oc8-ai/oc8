@@ -49,6 +49,7 @@ def test_it_declares_mail_received_as_a_polled_event() -> None:
             description=manifest.triggers[0].description,  # type: ignore[union-attr]
             polled=True,
             config=[TriggerConfigField(key="folder", label="Folder", default="INBOX")],
+            editor_label="On new email",
         )
     ]
     decl = manifest.triggers[0]
@@ -199,6 +200,8 @@ def test_every_shown_string_has_a_german_translation() -> None:
     shown += [plugin["label"], plugin["summary"]]
     for trigger in plugin["triggers"]:
         shown += [trigger["label"], trigger["description"]]
+        shown += [trigger["editor_label"]] if trigger.get("editor_label") else []
+        shown += [setting["label"] for setting in trigger.get("config", [])]
     cred = _toml("credential_types/mail_account.toml")
     shown.append(cred["display_name"])
     for field in cred["fields"]:

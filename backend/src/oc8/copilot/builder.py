@@ -812,6 +812,9 @@ async def _remember(
 
 #: What `_remember` writes; cleared on the next refusal and on success.
 _REFUSAL_KEYS: Final = ("refusal", "failedStep", "failedReason")
+#: A step skipped on apply: a trigger on a polled event of a new agent that has
+#: no fixed login for the event's tools yet (`InvalidOperation.reason`).
+TRIGGER_NEEDS_LOGIN: Final = "trigger_needs_login"
 
 
 def _apply_order(steps: list[BuilderStep]) -> list[tuple[int, BuilderStep]]:
@@ -953,6 +956,7 @@ async def apply_builder_proposal(
     board_id: uuid.UUID | None = None
     failed_at = 0
     published = False
+    notices: list[str] = []
     try:
         async with db.begin_nested():
             for index, step in _apply_order(steps):
@@ -965,6 +969,25 @@ async def apply_builder_proposal(
                 failed_at = index
                 await _check_board_base(db, step.operation, bases.get(index))
                 data, ref = resolve_step(builder_operation_data(step), refs)
+                if isinstance(step.operation, TriggerCreate):
+                    try:
+                        async with db.begin_nested():
+                            await apply_operation(
+                                db,
+                                tenant_id=proposal.tenant_id,
+                                data=data,
+                                actor_member_id=applied_by_member,
+                                publish=False,
+                            )
+                    except InvalidOperation as exc:
+                        if exc.reason != TRIGGER_NEEDS_LOGIN:
+                            raise
+                        # A brand-new agent has no fixed login yet, so a
+                        # trigger on a polled event cannot listen on one: the
+                        # agent is created without it, and the card tells the
+                        # person to pick the login and add the trigger.
+                        notices.append(TRIGGER_NEEDS_LOGIN)
+                    continue
                 created = await apply_operation(
                     db,
                     tenant_id=proposal.tenant_id,
@@ -1005,6 +1028,9 @@ async def apply_builder_proposal(
     proposal.result = {**kept, "agentId": str(agent_id)}
     if board_id is not None:
         proposal.result["boardId"] = str(board_id)
+    if notices:
+        # Fixed codes only: what the person still has to do (`AgentBuilderDTO.notices`).
+        proposal.result["notices"] = notices
     await db.flush()
     requested_by_member = await _member_id(
         db, tenant_id=proposal.tenant_id, subject=proposal.created_by

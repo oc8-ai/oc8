@@ -25,6 +25,7 @@ from tests.events.polled import (
     FakePoller,
     Polled,
     agent,
+    login,
     polled_setup,
     register,
     use_kek,
@@ -89,6 +90,9 @@ async def test_the_editor_lists_polled_events_with_their_settings_and_tool(
     assert event["label"] == LABEL
     assert event["polled"] is True
     assert event["toolKey"] == polled.tool_key
+    assert event["editorLabel"] == "" and event["editorLabelTranslations"] == {}
+    # Not on disk here: the capa's name stands in for its display name.
+    assert event["sourceLabel"] == polled.source
     assert event["config"] == [
         {
             "key": "folder",
@@ -222,3 +226,42 @@ async def test_update_changes_the_settings_and_starts_a_fresh_baseline(
         headers=_headers(polled.tenant),
     )
     assert resp.status_code == 422
+
+
+def _member_headers(tenant: uuid.UUID, subject: str) -> dict[str, str]:
+    token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role="org_admin")
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def test_whitespace_alone_in_the_settings_changes_nothing(
+    client: AsyncClient, polled: Polled
+) -> None:
+    created = (await _create(client, polled, eventConfig={"folder": "Orders"})).json()
+    owner = created["createdByMemberId"]
+    url = f"/api/v1/triggers/{created['id']}"
+    other = _member_headers(polled.tenant, "someone-else")
+
+    same = await client.patch(url, json={"eventConfig": {"folder": "  Orders "}}, headers=other)
+    assert same.status_code == 200, same.text
+    assert same.json()["createdByMemberId"] == owner
+
+    changed = await client.patch(url, json={"eventConfig": {"folder": "Archive"}}, headers=other)
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["createdByMemberId"] != owner
+
+
+async def test_update_refuses_another_agents_login(
+    client: AsyncClient, app_session: AppSessionFactory, polled: Polled
+) -> None:
+    created = (await _create(client, polled)).json()
+    other_login = await login(app_session, polled.tenant, username="bert")
+    await agent(app_session, polled.tenant, tool_key=polled.tool_key, credential_id=other_login)
+
+    resp = await client.patch(
+        f"/api/v1/triggers/{created['id']}",
+        json={"eventTargetCredentialId": str(other_login)},
+        headers=_headers(polled.tenant),
+    )
+
+    assert resp.status_code == 422
+    assert "fixed" in resp.json()["detail"]

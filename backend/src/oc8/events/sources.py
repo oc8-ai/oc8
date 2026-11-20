@@ -132,6 +132,8 @@ class PolledEventSpec:
     #: Setup field key -> the env name the capa's connection keeps it under
     #: (`[plugin.setup.mcp] env_fields`): where `default_from` reads.
     setup_env: dict[str, str] = field(default_factory=dict)
+    #: Setup field key -> its kind; `default_from` only ever reads a plain one.
+    setup_kinds: dict[str, str] = field(default_factory=dict)
 
 
 _POLLERS: dict[tuple[str, str], RegisteredPoller] = {}
@@ -211,63 +213,61 @@ async def polled_event_spec(
         registered=get_poller(source, event_type),
         config=tuple(declared.config),
         setup_env=({key: env for env, key in mcp.env_fields.items()} if mcp is not None else {}),
+        setup_kinds=(
+            {f.key: f.kind for f in manifest.setup.fields} if manifest.setup is not None else {}
+        ),
     )
 
 
 async def connection_setup_value(
     db: AsyncSession, spec: PolledEventSpec, *, agent_id: uuid.UUID, target: uuid.UUID, key: str
 ) -> str:
-    """The value the setup of the connection `target` belongs to gave its field
-    `key` (a trigger setting's `default_from`), or "" when none did.
+    """The value the setup of the connection `target` belongs to gave its plain
+    field `key` (a trigger setting's `default_from`), or "" when none did.
 
     A setup keeps a plain field in its connection's env (`env_fields`). The
     connection is the capa's own row for exactly that login when there is one,
     else its row for the agent's department, else its row for every
-    department; a setup without a connection keeps its values on the
-    installation instead."""
+    department. A field that is not plain (a password, a login, a department)
+    is never read, whatever the manifest says (it refuses that already)."""
+    from oc8.capas.manifest import PLAIN_SETUP_FIELD_KINDS
     from oc8.connections.tool_connection import not_retired
 
     env_name = spec.setup_env.get(key)
-    if env_name is not None:
-        rows = (
-            (
-                await db.execute(
-                    select(m.McpConnection)
-                    .where(
-                        m.McpConnection.config["_plugin_name"].astext == spec.source,
-                        not_retired(),
-                    )
-                    .order_by(m.McpConnection.created_at, m.McpConnection.id)
+    if env_name is None or spec.setup_kinds.get(key) not in PLAIN_SETUP_FIELD_KINDS:
+        return ""
+    rows = (
+        (
+            await db.execute(
+                select(m.McpConnection)
+                .where(
+                    m.McpConnection.config["_plugin_name"].astext == spec.source,
+                    not_retired(),
                 )
+                .order_by(m.McpConnection.created_at, m.McpConnection.id)
             )
-            .scalars()
-            .all()
         )
-        agent = await db.get(m.Agent, agent_id)
-        department = agent.department_id if agent is not None else None
-
-        def rank(row: m.McpConnection) -> int | None:
-            if row.credential_id is not None:
-                return 0 if row.credential_id == target else None
-            if row.department_id is not None:
-                return 1 if row.department_id == department else None
-            return 2
-
-        ranked = sorted(
-            ((r, row) for row in rows if (r := rank(row)) is not None), key=lambda item: item[0]
-        )
-        for _rank, row in ranked:
-            value = ((row.config or {}).get("env") or {}).get(env_name)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-    installed = await db.scalar(
-        select(m.CapaInstallation.config)
-        .join(m.Capa, m.Capa.id == m.CapaInstallation.capa_id)
-        .where(m.Capa.name == spec.source, m.CapaInstallation.status == "enabled")
-        .limit(1)
+        .scalars()
+        .all()
     )
-    value = (installed or {}).get(key) if isinstance(installed, dict) else None
-    return value.strip() if isinstance(value, str) else ""
+    agent = await db.get(m.Agent, agent_id)
+    department = agent.department_id if agent is not None else None
+
+    def rank(row: m.McpConnection) -> int | None:
+        if row.credential_id is not None:
+            return 0 if row.credential_id == target else None
+        if row.department_id is not None:
+            return 1 if row.department_id == department else None
+        return 2
+
+    ranked = sorted(
+        ((r, row) for row in rows if (r := rank(row)) is not None), key=lambda item: item[0]
+    )
+    for _rank, row in ranked:
+        value = ((row.config or {}).get("env") or {}).get(env_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 async def fixed_login(db: AsyncSession, agent_id: uuid.UUID, tool_key: str) -> uuid.UUID | None:
@@ -294,6 +294,8 @@ async def reset_cursor(db: AsyncSession, trigger: m.Trigger) -> None:
         row.cursor = None
         row.failures = 0
         row.next_poll_at = None
+        row.last_polled_at = None
+        row.last_ok_at = None
         row.last_error = None
         row.last_error_at = None
     await db.flush()

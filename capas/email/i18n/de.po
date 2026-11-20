@@ -73,6 +73,9 @@ msgstr "Postfach"
 msgid "New email"
 msgstr "Neue E-Mail"
 
+msgid "On new email"
+msgstr "Bei neuer E-Mail"
+
 msgid ""
 "Only if sending needs a different login; leave empty to use the username "
 "above."

@@ -141,3 +141,31 @@ def test_the_tools_offer_the_settings() -> None:
     jsonschema.Draft202012Validator(PROPOSE_AGENT.parameters).validate(flat)
     (trigger,) = [op for op in flat_operations(flat) if op["type"] == "trigger.create"]
     assert trigger["eventConfig"] == {"folder": "INBOX"}
+
+
+def test_the_copilot_never_names_the_login() -> None:
+    from oc8.copilot.capabilities import parse_operations
+
+    operation = {
+        "type": "trigger.create",
+        "agentId": str(uuid.uuid4()),
+        "kind": "event",
+        "taskText": "t",
+        "eventSource": "s",
+        "eventType": "e",
+        "eventTargetCredentialId": str(uuid.uuid4()),
+    }
+    with pytest.raises(InvalidOperation):
+        parse_operations([operation])
+
+
+def test_flat_settings_without_an_event_are_refused() -> None:
+    flat = {
+        "departmentId": str(uuid.uuid4()),
+        "name": "Postfach",
+        "mission": "Sortiert die Post.",
+        "eventConfig": {"folder": "INBOX"},
+    }
+    with pytest.raises(BuilderInvalid) as caught:
+        flat_operations(flat)
+    assert caught.value.code == "event_config_without_event"

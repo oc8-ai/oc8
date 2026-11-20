@@ -436,15 +436,17 @@ async def update_trigger(
     return trigger
 
 
-async def _update_polled_settings(
+async def polled_settings(
     db: AsyncSession,
     trigger: Trigger,
     *,
     event_config: dict[str, Any] | None,
     target: uuid.UUID | None,
-) -> None:
-    from oc8.events.sources import reset_cursor
-
+) -> tuple[uuid.UUID, dict[str, str]]:
+    """What a polled trigger's target and settings would be after an update
+    naming `event_config` and `target` (None keeps each): checked and filled
+    as on create, without changing the trigger. Lets a caller tell a real
+    change from the same settings written differently."""
     if (
         trigger.kind != "event"
         or trigger.event_source is None
@@ -468,6 +470,21 @@ async def _update_polled_settings(
         agent_id=trigger.agent_id,
         target=new_target,
         given=event_config if event_config is not None else trigger.event_config,
+    )
+    return new_target, config
+
+
+async def _update_polled_settings(
+    db: AsyncSession,
+    trigger: Trigger,
+    *,
+    event_config: dict[str, Any] | None,
+    target: uuid.UUID | None,
+) -> None:
+    from oc8.events.sources import reset_cursor
+
+    new_target, config = await polled_settings(
+        db, trigger, event_config=event_config, target=target
     )
     if new_target == trigger.event_target_credential_id and config == trigger.event_config:
         return

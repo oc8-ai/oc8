@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from typing import Annotated, Final, Literal
+from typing import Annotated, Any, Final, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -65,6 +65,7 @@ from oc8.schemas.dto import (
     BuilderDatasetDTO,
     BuilderLimitDTO,
     BuilderTriggerDTO,
+    BuilderTriggerSettingDTO,
     LocalizedTextDTO,
 )
 from oc8.triggers.zones import organisation_timezone
@@ -189,6 +190,29 @@ def _was_submitted(proposal: CopilotProposal) -> bool:
     )
 
 
+async def _setting_labels(
+    db: AsyncSession,
+) -> dict[tuple[str | None, str | None, str], dict[str, Any]]:
+    """`(source, type, key)` -> the label (and its capa translations) of every
+    setting the enabled capas' events declare."""
+    from oc8.automation.catalogue import list_installed_automation_events
+    from oc8.capas.discovery import find_plugin
+    from oc8.capas.i18n import translations_for
+
+    out: dict[tuple[str | None, str | None, str], dict[str, Any]] = {}
+    for event in await list_installed_automation_events(db):
+        if not event.config:
+            continue
+        found = find_plugin(event.source)
+        i18n = dict(found.i18n) if found is not None else {}
+        for field in event.config:
+            out[(event.source, event.type, field.key)] = {
+                "label": field.label,
+                "label_translations": translations_for(i18n, field.label),
+            }
+    return out
+
+
 async def builder_dto(
     db: AsyncSession,
     proposal: CopilotProposal,
@@ -226,6 +250,7 @@ async def builder_dto(
     triggers: list[BuilderTriggerDTO] = []
     systems: set[str] = set()
     limits: list[BuilderLimitDTO] = []
+    setting_labels: dict[tuple[str | None, str | None, str], dict[str, Any]] | None = None
     for step in steps:
         op = step.operation
         if isinstance(op, MissionSet):
@@ -242,6 +267,21 @@ async def builder_dto(
                 BuilderChoiceDTO(id=str(op.skillVersionId), label=skill.name if skill else "")
             )
         elif isinstance(op, TriggerCreate):
+            settings: list[BuilderTriggerSettingDTO] = []
+            if op.eventConfig:
+                if setting_labels is None:
+                    setting_labels = await _setting_labels(db)
+                settings = [
+                    BuilderTriggerSettingDTO(
+                        key=key,
+                        **setting_labels.get(
+                            (op.eventSource, op.eventType, key),
+                            {"label": key, "label_translations": {}},
+                        ),
+                        value=value,
+                    )
+                    for key, value in op.eventConfig.items()
+                ]
             zone = None
             if op.kind == "cron":
                 # What create_trigger will read the schedule in.
@@ -255,6 +295,7 @@ async def builder_dto(
                     event_type=op.eventType,
                     # The trigger's task is mission text too.
                     task_text=op.taskText if show_mission else "",
+                    settings=settings,
                 )
             )
         elif isinstance(op, AgentNarrowingSet):
@@ -302,6 +343,7 @@ async def builder_dto(
         failed_reason=failed_reason if isinstance(failed_reason, str) else None,
         rejected_reason=rejected_reason if isinstance(rejected_reason, str) else None,
         agent=agent_dto,
+        notices=[n for n in result.get("notices") or [] if isinstance(n, str)],
         kind="agent",
         board=await _board_dto(db, proposal, steps, sees),
     )

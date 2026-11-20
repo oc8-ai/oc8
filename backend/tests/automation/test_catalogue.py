@@ -21,6 +21,7 @@ def test_event_descriptors_are_value_safe_metadata_only() -> None:
         "description",
         "polled",
         "config",
+        "editor_label",
     ]
     # A setting declares how it is shown and filled, never a value.
     assert [field.name for field in fields(AutomationEventConfigField)] == [
