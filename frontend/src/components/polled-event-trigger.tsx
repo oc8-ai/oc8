@@ -10,7 +10,7 @@ import { Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { TriggerOwner } from "@/components/connections/trigger-owner";
-import { useAgentToolAccess } from "@/lib/connections";
+import { type AgentToolAccess, useAgentToolAccess } from "@/lib/connections";
 import {
   EVENT_TARGET_CHANGED,
   type TriggerDTO,
@@ -50,6 +50,14 @@ function formatWhen(iso: string, lang: Lang): string {
   });
 }
 
+/** The trigger's target, named the way the API takes it: the agent's fixed
+ *  login for the event's tools, a credential or an OAuth connection. */
+function targetOf(login: AgentToolAccess | undefined) {
+  if (login?.credentialId) return { eventTargetCredentialId: login.credentialId };
+  if (login?.oauthConnectionId) return { eventTargetOauthConnectionId: login.oauthConnectionId };
+  return null;
+}
+
 function initialConfig(event: TriggerEventDTO, trigger: TriggerDTO | undefined) {
   return Object.fromEntries(
     event.config.map((field) => [field.key, trigger?.eventConfig?.[field.key] ?? field.default]),
@@ -74,8 +82,12 @@ export function PolledEventTriggerPanel({
   const updateTrigger = useUpdateAgentTrigger();
   const deleteTrigger = useDeleteAgentTrigger();
   const login = access?.find(
-    (row) => row.toolKey === event.toolKey && row.mode === "fixed" && !!row.credentialId,
+    (row) =>
+      row.toolKey === event.toolKey &&
+      row.mode === "fixed" &&
+      (!!row.credentialId || !!row.oauthConnectionId),
   );
+  const target = targetOf(login);
   const [config, setConfig] = useState<Record<string, string>>(() => initialConfig(event, trigger));
   const [taskText, setTaskText] = useState(
     () =>
@@ -97,16 +109,10 @@ export function PolledEventTriggerPanel({
     toast.success(t("Trigger saved", "Auslöser gespeichert"), { description: agentName });
 
   function save() {
-    if (!login?.credentialId) return;
+    if (!target) return;
     if (trigger) {
       updateTrigger.mutate(
-        {
-          agentId,
-          triggerId: trigger.id,
-          eventConfig: config,
-          taskText,
-          eventTargetCredentialId: login.credentialId,
-        },
+        { agentId, triggerId: trigger.id, eventConfig: config, taskText, ...target },
         { onSuccess: onSaved, onError: onFailed },
       );
     } else {
@@ -127,8 +133,8 @@ export function PolledEventTriggerPanel({
   function setEnabled(enabled: boolean) {
     if (!trigger) return;
     updateTrigger.mutate(
-      enabled && login?.credentialId
-        ? { agentId, triggerId: trigger.id, enabled, eventTargetCredentialId: login.credentialId }
+      enabled && target
+        ? { agentId, triggerId: trigger.id, enabled, ...target }
         : { agentId, triggerId: trigger.id, enabled },
       { onError: onFailed },
     );
@@ -162,7 +168,7 @@ export function PolledEventTriggerPanel({
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background/30 px-3 py-2 text-sm">
           <div className="min-w-0">
             <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
-              {t("Mailbox", "Postfach")}
+              {login.kind === "oauth" ? t("Login", "Anmeldung") : t("Mailbox", "Postfach")}
             </div>
             <div className="truncate font-medium">{login.targetLabel ?? login.label}</div>
           </div>

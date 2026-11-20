@@ -15,7 +15,11 @@ from oc8 import models as m
 from oc8.backup.tables import EXCLUDED_TABLES
 from tests.conftest import AppSessionFactory
 
-_TRIGGER_COLUMNS = {"event_target_credential_id", "event_config"}
+_TRIGGER_COLUMNS = {
+    "event_target_credential_id",
+    "event_target_oauth_connection_id",
+    "event_config",
+}
 _CURSOR_COLUMNS = {
     "tenant_id",
     "trigger_id",
@@ -52,6 +56,35 @@ def test_upgrade_adds_the_columns_and_the_table_and_downgrade_removes_them(pg_ur
         command.upgrade(cfg, "head")
     assert _TRIGGER_COLUMNS <= _columns(dsn, "trigger")
     assert _CURSOR_COLUMNS <= _columns(dsn, "event_source_cursor")
+
+
+def test_either_target_counts_once_and_never_both(pg_url: str) -> None:
+    dsn = pg_url.replace("+psycopg", "")
+    with psycopg.connect(dsn) as conn:
+        index = conn.execute(
+            "SELECT indexdef FROM pg_indexes WHERE indexname = 'uq_trigger_polled_event'"
+        ).fetchone()
+        check = conn.execute(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+            "WHERE conname = 'ck_trigger_event_target_one'"
+        ).fetchone()
+        fks = {
+            row[0]
+            for row in conn.execute(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid = 'trigger'::regclass AND contype = 'f'"
+            ).fetchall()
+        }
+    assert index is not None
+    assert "event_target_credential_id IS NOT NULL" in index[0]
+    assert "event_target_oauth_connection_id IS NOT NULL" in index[0]
+    assert check is not None and "event_target_oauth_connection_id" in check[0]
+    assert any(
+        "event_target_oauth_connection_id" in fk
+        and "oauth_connection(id)" in fk
+        and "ON DELETE SET NULL" in fk
+        for fk in fks
+    )
 
 
 def test_cursors_are_not_backed_up() -> None:

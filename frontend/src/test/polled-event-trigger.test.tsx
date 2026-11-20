@@ -165,6 +165,29 @@ describe("polled event trigger", () => {
     expect(screen.getByRole("link", { name: /tool settings/i })).toBeInTheDocument();
   });
 
+  it("shows an OAuth login the same way and saves on it", () => {
+    m.access = [
+      {
+        ...MAILBOX,
+        kind: "oauth",
+        credentialId: null,
+        oauthConnectionId: "oauth-1",
+        targetLabel: "app-client-id",
+      },
+    ];
+    panel({ ...TRIGGER, eventTargetCredentialId: null, eventTargetOauthConnectionId: "oauth-1" });
+
+    expect(screen.getByText("app-client-id")).toBeInTheDocument();
+    expect(screen.queryByText("Give this agent a mailbox first")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(m.update).toHaveBeenCalledWith(
+      expect.objectContaining({ eventTargetOauthConnectionId: "oauth-1" }),
+      expect.anything(),
+    );
+    expect(m.update.mock.calls[0][0]).not.toHaveProperty("eventTargetCredentialId");
+  });
+
   it("creates the trigger with the folder and the task text", () => {
     panel();
 

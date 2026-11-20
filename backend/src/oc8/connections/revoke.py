@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.credentials.service import delete_unshared_secrets, owns_ref
+from oc8.events.sources import LoginTarget, disable_triggers_on_login
 from oc8.oauth.errors import OAuthError
 from oc8.oauth.http import get_client
 from oc8.oauth.providers import get_provider
@@ -45,6 +46,9 @@ async def revoke_oauth_connection(db: AsyncSession, conn: m.OAuthConnection) -> 
     # keyed by connection, not in the secret store, and would otherwise stay
     # servable for up to an hour after the row was removed.
     invalidate_delegated_tokens(conn.id)
+    # A trigger polling this login stops; its target goes with the row (ON
+    # DELETE SET NULL) and nothing would poll it again.
+    await disable_triggers_on_login(db, conn.tenant_id, LoginTarget("oauth", conn.id))
     await db.delete(conn)
     await db.flush()
 

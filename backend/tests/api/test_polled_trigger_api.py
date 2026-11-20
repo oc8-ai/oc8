@@ -265,3 +265,61 @@ async def test_update_refuses_another_agents_login(
 
     assert resp.status_code == 422
     assert "fixed" in resp.json()["detail"]
+
+
+async def test_an_oauth_login_is_a_target_on_create_and_update(
+    client: AsyncClient, app_session: AppSessionFactory
+) -> None:
+    from tests.events.polled import oauth_polled_setup
+
+    polled = await oauth_polled_setup(app_session)
+    resp = await client.post(
+        f"/api/v1/agents/{polled.agent_id}/triggers",
+        json={
+            "kind": "event",
+            "taskText": "Sort the mail",
+            "eventSource": polled.source,
+            "eventType": polled.event_type,
+            "eventConfig": {"mailbox": "Sales@acme.test"},
+        },
+        headers=_headers(polled.tenant),
+    )
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    assert created["eventTargetOauthConnectionId"] == str(polled.connection_id)
+    assert created["eventTargetCredentialId"] is None
+    assert created["pollStatus"] is not None
+
+    patch = f"/api/v1/triggers/{created['id']}"
+    ok = await client.patch(
+        patch,
+        json={
+            "eventConfig": {"mailbox": "info@acme.test"},
+            "eventTargetOauthConnectionId": str(polled.connection_id),
+        },
+        headers=_headers(polled.tenant),
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["eventConfig"]["mailbox"] == "info@acme.test"
+
+    outside = await client.patch(
+        patch, json={"eventConfig": {"mailbox": "ceo@acme.test"}}, headers=_headers(polled.tenant)
+    )
+    assert outside.status_code == 422 and "delegated_mailboxes" in outside.text
+
+    both = await client.patch(
+        patch,
+        json={
+            "eventTargetOauthConnectionId": str(polled.connection_id),
+            "eventTargetCredentialId": str(uuid.uuid4()),
+        },
+        headers=_headers(polled.tenant),
+    )
+    assert both.status_code == 422 and "one login" in both.text
+
+    stranger = await client.patch(
+        patch,
+        json={"eventTargetOauthConnectionId": str(uuid.uuid4())},
+        headers=_headers(polled.tenant),
+    )
+    assert stranger.status_code == 422

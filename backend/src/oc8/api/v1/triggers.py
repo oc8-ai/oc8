@@ -17,6 +17,7 @@ from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
 from oc8.connections.access import trigger_fingerprint
+from oc8.events.sources import LoginTarget
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
@@ -81,7 +82,7 @@ async def _poll_statuses(
     db: DbSession, triggers: list[m.Trigger]
 ) -> dict[uuid.UUID, m.EventSourceCursor]:
     """The cursor rows of the polled triggers among `triggers`."""
-    ids = [t.id for t in triggers if t.event_target_credential_id is not None]
+    ids = [t.id for t in triggers if _polled(t)]
     if not ids:
         return {}
     rows = (
@@ -100,10 +101,17 @@ def _iso(value: dt.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _polled(t: m.Trigger) -> bool:
+    """A trigger that listens on a login (a credential or an OAuth connection)."""
+    return (
+        t.event_target_credential_id is not None or t.event_target_oauth_connection_id is not None
+    )
+
+
 def _poll_status(
     t: m.Trigger, cursors: dict[uuid.UUID, m.EventSourceCursor]
 ) -> TriggerPollStatusDTO | None:
-    if t.event_target_credential_id is None:
+    if not _polled(t):
         return None
     row = cursors.get(t.id)
     if row is None:
@@ -153,6 +161,9 @@ def _dto_with(
         event_target_credential_id=(
             str(t.event_target_credential_id) if t.event_target_credential_id else None
         ),
+        event_target_oauth_connection_id=(
+            str(t.event_target_oauth_connection_id) if t.event_target_oauth_connection_id else None
+        ),
         event_config=dict(t.event_config or {}),
         poll_status=_poll_status(t, cursors),
         last_skip_reason=t.last_skip_reason,
@@ -169,7 +180,11 @@ async def _caller_member_id(db: DbSession, principal: CurrentPrincipal) -> uuid.
 
 
 async def _changes_what_runs(db: DbSession, trigger: m.Trigger, body: UpdateTriggerRequest) -> bool:
-    if body.event_config is not None or body.event_target_credential_id is not None:
+    named = (
+        body.event_target_credential_id is not None
+        or body.event_target_oauth_connection_id is not None
+    )
+    if body.event_config is not None or named:
         # Compared as they would be stored (stripped, filled): whitespace
         # alone changes nothing. A refusal surfaces from update_trigger.
         try:
@@ -177,11 +192,14 @@ async def _changes_what_runs(db: DbSession, trigger: m.Trigger, body: UpdateTrig
                 db,
                 trigger,
                 event_config=body.event_config,
-                target=body.event_target_credential_id,
+                target=LoginTarget.of(
+                    credential_id=body.event_target_credential_id,
+                    oauth_connection_id=body.event_target_oauth_connection_id,
+                ),
             )
-        except InvalidTriggerConfig:
+        except (InvalidTriggerConfig, ValueError):
             return True
-        if target != trigger.event_target_credential_id or config != trigger.event_config:
+        if target != LoginTarget.of_trigger(trigger) or config != trigger.event_config:
             return True
     return (
         (body.task_text is not None and body.task_text != trigger.task_text)
@@ -269,9 +287,13 @@ async def create_agent_trigger(
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     caller = await _caller_member_id(db, principal)
-    target = body.event_target_credential_id
+    named = (
+        body.event_target_credential_id is not None
+        or body.event_target_oauth_connection_id is not None
+    )
+    target: LoginTarget | None = None
     try:
-        if body.kind == "event" and target is None and body.event_source and body.event_type:
+        if body.kind == "event" and not named and body.event_source and body.event_type:
             # A polled event listens on the agent's fixed login for its tools.
             target = await polled_event_target(
                 db, agent_id=agent_id, event_source=body.event_source, event_type=body.event_type
@@ -288,7 +310,9 @@ async def create_agent_trigger(
             event_type=body.event_type,
             created_by_member_id=caller,
             acts_for_creator=body.acts_for_creator,
-            event_target_credential_id=target,
+            event_target_credential_id=body.event_target_credential_id,
+            event_target_oauth_connection_id=body.event_target_oauth_connection_id,
+            event_target=target,
             event_config=body.event_config,
         )
     except InvalidTriggerConfig as exc:
@@ -369,6 +393,7 @@ async def update_agent_trigger(
             timezone=body.timezone,
             event_config=body.event_config,
             event_target_credential_id=body.event_target_credential_id,
+            event_target_oauth_connection_id=body.event_target_oauth_connection_id,
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc

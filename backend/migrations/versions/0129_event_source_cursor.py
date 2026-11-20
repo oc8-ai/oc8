@@ -1,7 +1,8 @@
 """Polled event sources.
 
-A trigger on a polled event names the login it listens on
-(`trigger.event_target_credential_id`) and carries the poller's settings
+A trigger on a polled event names the login it listens on -- a credential
+(`trigger.event_target_credential_id`) or an OAuth connection
+(`trigger.event_target_oauth_connection_id`), never both -- and carries the poller's settings
 (`trigger.event_config`). `event_source_cursor` keeps, per trigger, where the
 poller left off and how its last polls went; tenant-isolated by RLS like
 `passkey_challenge`, and never backed up (a restored trigger starts from a
@@ -30,6 +31,18 @@ def upgrade() -> None:
         "REFERENCES credential(id) ON DELETE SET NULL"
     )
     op.execute(
+        "ALTER TABLE trigger ADD COLUMN IF NOT EXISTS event_target_oauth_connection_id uuid NULL "
+        "REFERENCES oauth_connection(id) ON DELETE SET NULL"
+    )
+    op.execute("""
+        DO $$ BEGIN
+            ALTER TABLE trigger ADD CONSTRAINT ck_trigger_event_target_one CHECK (
+                NOT (event_target_credential_id IS NOT NULL
+                     AND event_target_oauth_connection_id IS NOT NULL));
+        EXCEPTION WHEN duplicate_object THEN NULL;
+        END $$
+    """)
+    op.execute(
         "ALTER TABLE trigger ADD COLUMN IF NOT EXISTS event_config jsonb NOT NULL "
         "DEFAULT '{}'::jsonb"
     )
@@ -37,12 +50,17 @@ def upgrade() -> None:
         "CREATE INDEX IF NOT EXISTS ix_trigger_event_target_credential_id "
         "ON trigger (event_target_credential_id)"
     )
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS ix_trigger_event_target_oauth_connection_id "
+        "ON trigger (event_target_oauth_connection_id)"
+    )
     # One polled trigger per agent and event: the service checks first, this
     # holds it against two creates at once.
     op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_trigger_polled_event "
         "ON trigger (agent_id, event_source, event_type) "
-        "WHERE event_target_credential_id IS NOT NULL"
+        "WHERE event_target_credential_id IS NOT NULL "
+        "OR event_target_oauth_connection_id IS NOT NULL"
     )
     op.execute("""
         CREATE TABLE IF NOT EXISTS event_source_cursor (
@@ -88,5 +106,8 @@ def downgrade() -> None:
     op.execute("DROP TABLE IF EXISTS event_source_cursor")
     op.execute("DROP INDEX IF EXISTS uq_trigger_polled_event")
     op.execute("DROP INDEX IF EXISTS ix_trigger_event_target_credential_id")
+    op.execute("DROP INDEX IF EXISTS ix_trigger_event_target_oauth_connection_id")
+    op.execute("ALTER TABLE trigger DROP CONSTRAINT IF EXISTS ck_trigger_event_target_one")
+    op.execute("ALTER TABLE trigger DROP COLUMN IF EXISTS event_target_oauth_connection_id")
     op.execute("ALTER TABLE trigger DROP COLUMN IF EXISTS event_config")
     op.execute("ALTER TABLE trigger DROP COLUMN IF EXISTS event_target_credential_id")

@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.events.sources import PollResult
+from oc8.events.sources import LoginTarget, PollResult
 from oc8.triggers.service import (
     InvalidTriggerConfig,
     PolledTargetMissing,
@@ -252,7 +252,7 @@ async def test_the_target_is_the_agents_fixed_login(
                 event_source=polled.source,
                 event_type=polled.event_type,
             )
-            == polled.credential_id
+            == LoginTarget("credential", polled.credential_id)
         )
 
 
@@ -322,7 +322,10 @@ async def test_the_lookup_refuses_a_setup_field_that_is_not_plain(
         spec = await polled_event_spec(db, polled.source, polled.event_type)
         assert spec is not None
         assert spec.setup_kinds == {"default_user": "text"}
-        args = {"agent_id": polled.agent_id, "target": polled.credential_id}
+        args = {
+            "agent_id": polled.agent_id,
+            "target": LoginTarget("credential", polled.credential_id),
+        }
         assert await connection_setup_value(db, spec, key="default_user", **args) == "s3cret"
         for kind in ("password", "credential", "department"):
             hidden = replace(spec, setup_kinds={"default_user": kind})

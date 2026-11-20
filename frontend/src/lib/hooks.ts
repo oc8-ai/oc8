@@ -2492,6 +2492,8 @@ export interface TriggerDTO {
   //: A polled event's trigger: the organisation login it listens on (the
   //: agent's fixed login for the event's tools) and its declared settings.
   eventTargetCredentialId?: string | null;
+  //: The same when that login is an OAuth connection (never both).
+  eventTargetOauthConnectionId?: string | null;
   eventConfig?: Record<string, string>;
   //: How polling goes; null for every trigger that is not on a polled event.
   pollStatus?: TriggerPollStatus | null;
@@ -2612,6 +2614,7 @@ export function useUpdateAgentTrigger() {
       enabled,
       eventConfig,
       eventTargetCredentialId,
+      eventTargetOauthConnectionId,
     }: {
       agentId: string;
       triggerId: string;
@@ -2626,6 +2629,7 @@ export function useUpdateAgentTrigger() {
       //: listen on; a change to either starts from what is there now.
       eventConfig?: Record<string, string>;
       eventTargetCredentialId?: string;
+      eventTargetOauthConnectionId?: string;
     }) =>
       api.patch<TriggerDTO>(`/triggers/${triggerId}`, {
         cronExpression,
@@ -2635,6 +2639,7 @@ export function useUpdateAgentTrigger() {
         enabled,
         eventConfig,
         eventTargetCredentialId,
+        eventTargetOauthConnectionId,
       }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });

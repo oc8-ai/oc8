@@ -1753,6 +1753,8 @@ class TriggerDTO(CamelModel):
     #: A polled event's trigger: the organisation login it listens on (the
     #: agent's fixed login for the event capa's tools) and its settings.
     event_target_credential_id: str | None = None
+    #: The same when that login is an OAuth connection (never both).
+    event_target_oauth_connection_id: str | None = None
     event_config: dict[str, Any] = {}
     #: A polled event's trigger only; None for every other trigger.
     poll_status: TriggerPollStatusDTO | None = None

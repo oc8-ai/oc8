@@ -205,3 +205,64 @@ def test_a_table_may_name_its_trigger_editor_tab() -> None:
     assert TriggerDecl(type="x").editor_label == ""
     descriptor = _descriptor_from_manifest("p", manifest.model_dump(mode="json")["triggers"][0])
     assert descriptor is not None and descriptor.editor_label == "On new item"
+
+
+def _allowed_from(
+    *, kind: str = "text", mapped: str = "env", acts_as: bool = False, allowed: bool = True
+) -> dict[str, object]:
+    setting: dict[str, object] = {"key": "mailbox", "label": "Mailbox"}
+    if allowed:
+        setting["allowed_from"] = "mailboxes"
+    if acts_as:
+        setting["acts_as"] = True
+    manifest = _with_config(setting)
+    field: dict[str, object] = {"key": "mailboxes", "label": "Mailboxes", "kind": kind}
+    if kind == "password":
+        field = {"key": "mailboxes", "label": "Mailboxes", "kind": "password"}
+    mcp: dict[str, object] = {"name": "tools", "env_fields": {}}
+    setup: dict[str, object] = {"title": "Set up", "fields": [field], "mcp": mcp}
+    if mapped == "env":
+        mcp["env_fields"] = {"MAILBOXES": "mailboxes"}
+    elif mapped == "delegated":
+        # Kept in the connection's env by the OAuth provisioning instead.
+        setup["oauth_provision"] = {
+            "provider": "google",
+            "delegated_identities_field": "mailboxes",
+            "delegated_identities_env": "MAILBOXES",
+            "delegated_token_env_prefix": "TOKEN",
+            "delegated_scope": "s",
+        }
+    manifest["setup"] = setup
+    return manifest
+
+
+@pytest.mark.parametrize("mapped", ["env", "delegated"])
+def test_a_setting_may_be_limited_to_a_plain_setup_list(mapped: str) -> None:
+    manifest = parse_manifest(_allowed_from(mapped=mapped, acts_as=True))
+    decl = manifest.triggers[0]
+    assert isinstance(decl, TriggerDecl)
+    assert decl.config[0].allowed_from == "mailboxes" and decl.config[0].acts_as
+
+
+@pytest.mark.parametrize(
+    "manifest",
+    [_allowed_from(kind="password"), _allowed_from(mapped="none")],
+)
+def test_a_setting_is_never_limited_by_a_secret_or_unkept_field(
+    manifest: dict[str, object],
+) -> None:
+    with pytest.raises(ManifestError, match="allowed_from"):
+        parse_manifest(manifest)
+
+
+def test_a_setting_the_login_acts_as_must_be_limited() -> None:
+    with pytest.raises(ManifestError, match="acts_as"):
+        parse_manifest(_allowed_from(allowed=False, acts_as=True))
+
+
+def test_only_one_setting_is_acted_as() -> None:
+    manifest = _allowed_from(acts_as=True)
+    config = manifest["triggers"][0]["config"]  # type: ignore[index]
+    config.append(dict(config[0], key="other"))
+    with pytest.raises(ManifestError, match="acts_as"):
+        parse_manifest(manifest)

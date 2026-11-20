@@ -428,8 +428,12 @@ def test_a_capa_contributes_a_poller_under_its_own_name() -> None:
     try:
         found = contributions.pollers_for("some_capa")["item.arrived"]
         assert found.poller is poll and found.credential_type == "some_login"
+        # A capa whose tools sign in through an OAuth connection names no
+        # credential type: its trigger listens on a connection of its provider.
+        contrib.add_poller("item.arrived", poll)
+        assert contributions.pollers_for("some_capa")["item.arrived"].credential_type is None
         with pytest.raises(ValueError):
-            contrib.add_poller("item.arrived", poll, credential_type="")
+            contrib.add_poller("", poll)
     finally:
         contributions.forget("some_capa")
 

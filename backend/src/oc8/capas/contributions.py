@@ -136,17 +136,19 @@ class PluginContributions:
             raise ValueError("a hook handler must be callable")
         self.hooks[point] = fn
 
-    def add_poller(self, event_type: str, poller: Poller, *, credential_type: str) -> None:
-        """A poller for an event this plugin declares as polled in its manifest
+    def add_poller(
+        self, event_type: str, poller: Poller, *, credential_type: str | None = None
+    ) -> None:
+        """A poller for an event this plugin declares polled in its manifest
         (`[[plugin.triggers]]` with `polled = true`). Its source is the plugin's
-        name. `credential_type` is the login type the poller reads: a trigger
-        on the event must target a login of that type."""
+        name. `credential_type` is the credential type the poller reads, when
+        the plugin's tools sign in with a credential; a plugin whose tools sign
+        in through an OAuth connection leaves it out, and a trigger on the
+        event then listens on an OAuth connection of the plugin's provider."""
         from oc8.events.sources import RegisteredPoller
 
         if not event_type:
             raise ValueError("a poller needs the event type it serves")
-        if not credential_type:
-            raise ValueError("a poller needs the login type it reads")
         if not callable(poller):
             raise ValueError("a poller must be callable")
         self.pollers[event_type] = RegisteredPoller(poller, credential_type)

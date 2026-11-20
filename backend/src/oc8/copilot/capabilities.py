@@ -707,7 +707,7 @@ async def apply_operation(
                 event_type=operation.eventType,
                 declared_events={(event.source, event.type) for event in events},
                 created_by_member_id=actor_member_id,
-                event_target_credential_id=target,
+                event_target=target,
                 event_config=operation.eventConfig,
             )
         except SubscriptionModelNotManualOnly as exc:

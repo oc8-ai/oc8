@@ -219,3 +219,215 @@ async def polled_setup(
 
 def register(polled: Polled, fake: FakePoller) -> None:
     register_poller(polled.source, polled.event_type, fake, credential_type=CREDENTIAL_TYPE)
+
+
+# --- a capa whose tools sign in through an OAuth connection ---------------------------
+
+TOKEN = "eyJ-org-access-token-0123456789"
+DELEGATED_SCOPE = "https://example.test/mail.read https://example.test/cal"
+#: Setup fields of the OAuth test capa: a default mailbox and the mailboxes
+#: the login may act as.
+OAUTH_CONFIG: list[dict[str, Any]] = [
+    {
+        "key": "mailbox",
+        "label": "Mailbox",
+        "default_from": "default_mailbox",
+        "allowed_from": "delegated_mailboxes",
+        "acts_as": True,
+    },
+    {"key": "folder", "label": "Folder", "default": "in"},
+]
+
+
+async def install_oauth_capa(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    source: str,
+    tool_key: str,
+    *,
+    provider: str = "google",
+    config: list[dict[str, Any]] | None = None,
+) -> None:
+    async with app_session(tenant) as db:
+        capa = m.Capa(tenant_id=tenant, name=source, type="tool_pack")
+        db.add(capa)
+        await db.flush()
+        manifest = {
+            "name": source,
+            "version": "1.0.0",
+            "type": "tool_pack",
+            "triggers": [
+                {
+                    "type": EVENT_TYPE,
+                    "label": LABEL,
+                    "polled": True,
+                    "config": OAUTH_CONFIG if config is None else config,
+                }
+            ],
+            "tool_pack": {"connections": [{"name": tool_key, "server_url": ""}]},
+            "setup": {
+                "title": "Connect",
+                "fields": [
+                    {"key": "default_mailbox", "label": "Default", "required": False},
+                    {"key": "delegated_mailboxes", "label": "Mailboxes", "required": False},
+                ],
+                "mcp": {
+                    "name": tool_key,
+                    "env_fields": {"TEST_DEFAULT_MAILBOX": "default_mailbox"},
+                },
+                "oauth_provision": {
+                    "provider": provider,
+                    "delegated_identities_field": "delegated_mailboxes",
+                    "delegated_identities_env": "TEST_DELEGATED_MAILBOXES",
+                    "delegated_token_env_prefix": "TEST_DELEGATED_TOKEN",
+                    "delegated_scope": DELEGATED_SCOPE,
+                },
+            },
+        }
+        version = m.CapaVersion(
+            tenant_id=tenant, capa_id=capa.id, semver="1.0.0", manifest=manifest, artifact_hash=b"x"
+        )
+        db.add(version)
+        await db.flush()
+        capa.current_version_id = version.id
+        db.add(
+            m.CapaInstallation(
+                tenant_id=tenant, capa_id=capa.id, version_id=version.id, status="enabled"
+            )
+        )
+
+
+async def oauth_login(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    *,
+    provider: str = "google",
+    grant_type: str = "service_account",
+    owner: uuid.UUID | None = None,
+    status: str = "active",
+    account_label: str = "bot@project.iam.example.test",
+    token: str = TOKEN,
+) -> uuid.UUID:
+    """An OAuth connection whose stored access token is still fresh."""
+    from datetime import UTC, datetime, timedelta
+
+    from oc8.oauth.tokens import access_ref
+
+    async with app_session(tenant) as db:
+        row = m.OAuthConnection(
+            tenant_id=tenant,
+            provider=provider,
+            account_label=account_label,
+            scopes=[],
+            access_secret_ref="",
+            status=status,
+            client_source="tenant",
+            grant_type=grant_type,
+            azure_tenant_id="contoso.onmicrosoft.com" if provider == "microsoft" else None,
+            owner_member_id=owner,
+            expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+        )
+        db.add(row)
+        await db.flush()
+        row.access_secret_ref = access_ref(row.id)
+        await store_secret(
+            db, tenant_id=tenant, name=access_ref(row.id), value=token, kind="oauth_token"
+        )
+        return row.id
+
+
+async def setup_row(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    source: str,
+    tool_key: str,
+    *,
+    oauth_connection_id: uuid.UUID,
+    default_mailbox: str = "info@acme.test",
+    delegated: str = "info@acme.test,sales@acme.test",
+) -> uuid.UUID:
+    """The capa's setup connection for every department, as a setup with an
+    OAuth app leaves it."""
+    env = {"TEST_DEFAULT_MAILBOX": default_mailbox}
+    if delegated:
+        env["TEST_DELEGATED_MAILBOXES"] = delegated
+    async with app_session(tenant) as db:
+        row = m.McpConnection(
+            tenant_id=tenant,
+            name=tool_key,
+            server_url="",
+            transport="stdio",
+            config={
+                "_plugin_name": source,
+                "_connection_key": "default",
+                "env": env,
+                "oauth_connection_id": str(oauth_connection_id),
+            },
+        )
+        db.add(row)
+        await db.flush()
+        return row.id
+
+
+async def oauth_agent(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    *,
+    tool_key: str,
+    oauth_connection_id: uuid.UUID,
+) -> uuid.UUID:
+    async with app_session(tenant) as db:
+        row = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Listener")
+        db.add(row)
+        await db.flush()
+        db.add(
+            m.AgentToolAccess(
+                tenant_id=tenant,
+                agent_id=row.id,
+                tool_key=tool_key,
+                mode="fixed",
+                oauth_connection_id=oauth_connection_id,
+            )
+        )
+        return row.id
+
+
+@dataclass
+class OAuthPolled:
+    tenant: uuid.UUID
+    agent_id: uuid.UUID
+    connection_id: uuid.UUID
+    setup_id: uuid.UUID
+    source: str
+    tool_key: str
+    event_type: str = EVENT_TYPE
+
+
+async def oauth_polled_setup(
+    app_session: AppSessionFactory,
+    *,
+    provider: str = "google",
+    grant_type: str = "service_account",
+    config: list[dict[str, Any]] | None = None,
+    delegated: str = "info@acme.test,sales@acme.test",
+) -> OAuthPolled:
+    tenant = uuid.uuid4()
+    await organisation(app_session, tenant)
+    source = f"oa_{uuid.uuid4().hex[:10]}"
+    tool_key = f"{source}_tools"
+    await install_oauth_capa(
+        app_session, tenant, source, tool_key, provider=provider, config=config
+    )
+    conn = await oauth_login(app_session, tenant, provider=provider, grant_type=grant_type)
+    setup_id = await setup_row(
+        app_session, tenant, source, tool_key, oauth_connection_id=conn, delegated=delegated
+    )
+    agent_id = await oauth_agent(app_session, tenant, tool_key=tool_key, oauth_connection_id=conn)
+    polled = OAuthPolled(tenant, agent_id, conn, setup_id, source, tool_key)
+    # A poller that finds nothing, until a test registers its own.
+    register_oauth(polled, FakePoller(baseline_then(lambda _c: [])))
+    return polled
+
+
+def register_oauth(polled: OAuthPolled, fake: FakePoller) -> None:
+    register_poller(polled.source, polled.event_type, fake)

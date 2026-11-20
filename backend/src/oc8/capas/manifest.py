@@ -885,6 +885,15 @@ class TriggerConfigField(BaseModel):
     kind: Literal["text"] = "text"
     default: str = Field(default="", max_length=TRIGGER_CONFIG_VALUE_MAX)
     default_from: str = Field(default="", max_length=64)
+    #: A plain setup field holding a list (comma, newline or space separated):
+    #: when the login's setup lists anything there, the setting only takes one
+    #: of those values (compared case-insensitively), on save and before
+    #: every poll (`oc8.events.sources.refused_setting`).
+    allowed_from: str = Field(default="", max_length=64)
+    #: The login acts as this setting's value: a login that delegates
+    #: (domain-wide delegation) is handed a token for it rather than its own.
+    #: Needs `allowed_from`; for such a login an empty list allows nobody.
+    acts_as: bool = False
 
 
 class TriggerDecl(BaseModel):
@@ -910,7 +919,33 @@ class TriggerDecl(BaseModel):
         keys = [field.key for field in self.config]
         if len(keys) != len(set(keys)):
             raise ValueError(f"trigger {self.type!r} declares a setting twice")
+        acted = [field for field in self.config if field.acts_as]
+        if len(acted) > 1:
+            raise ValueError(f"trigger {self.type!r}: at most one setting is acts_as")
+        if acted and not acted[0].allowed_from:
+            raise ValueError(
+                f"trigger {self.type!r} setting {acted[0].key!r}: acts_as needs allowed_from, "
+                "the setup's list of whom the login may act as"
+            )
         return self
+
+
+def connection_env_fields(manifest: Manifest) -> dict[str, str]:
+    """Setup field key -> the env name its connection keeps the value under:
+    `[plugin.setup.mcp] env_fields`, and the OAuth setup's delegated
+    identities (`delegated_identities_field` -> `delegated_identities_env`)."""
+    setup = manifest.setup
+    if setup is None or setup.mcp is None:
+        return {}
+    kept = {key: env for env, key in setup.mcp.env_fields.items()}
+    provision = setup.oauth_provision
+    if (
+        provision is not None
+        and provision.delegated_identities_field
+        and provision.delegated_identities_env
+    ):
+        kept[provision.delegated_identities_field] = provision.delegated_identities_env
+    return kept
 
 
 class Manifest(BaseModel):
@@ -1006,28 +1041,30 @@ class Manifest(BaseModel):
         carries a secret: its value is stored on the trigger and shown."""
         setup = self.setup
         fields = {f.key: f for f in setup.fields} if setup is not None else {}
+        kept = connection_env_fields(self)
         mcp = setup.mcp if setup is not None else None
-        mapped = set(mcp.env_fields.values()) if mcp is not None else set()
         secret = set(mcp.secret_env_fields.values()) if mcp is not None else set()
         for decl in self.triggers:
             if not isinstance(decl, TriggerDecl):
                 continue
             for item in decl.config:
-                key = item.default_from
-                if not key:
-                    continue
-                field = fields.get(key)
-                if (
-                    field is None
-                    or field.kind not in PLAIN_SETUP_FIELD_KINDS
-                    or key not in mapped
-                    or key in secret
-                ):
-                    raise ValueError(
-                        f"trigger {decl.type!r} setting {item.key!r}: default_from "
-                        f"{key!r} must name a plain ({', '.join(sorted(PLAIN_SETUP_FIELD_KINDS))}) "
-                        "setup field mapped in env_fields and not in secret_env_fields"
-                    )
+                for attr in ("default_from", "allowed_from"):
+                    key = getattr(item, attr)
+                    if not key:
+                        continue
+                    field = fields.get(key)
+                    if (
+                        field is None
+                        or field.kind not in PLAIN_SETUP_FIELD_KINDS
+                        or key not in kept
+                        or key in secret
+                    ):
+                        raise ValueError(
+                            f"trigger {decl.type!r} setting {item.key!r}: {attr} {key!r} must "
+                            f"name a plain ({', '.join(sorted(PLAIN_SETUP_FIELD_KINDS))}) setup "
+                            "field the connection keeps in its env (env_fields, or the OAuth "
+                            "setup's delegated identities) and not in secret_env_fields"
+                        )
         return self
 
     @model_validator(mode="after")

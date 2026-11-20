@@ -79,6 +79,10 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     #: deleted login leaves it NULL (ON DELETE SET NULL) and the tick switches
     #: the trigger off.
     event_target_credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: The same for a login that is an OAuth connection (an app registration,
+    #: a service account): a trigger names at most one of the two, as
+    #: `AgentToolAccess` holds either kind (`oc8.events.sources.LoginTarget`).
+    event_target_oauth_connection_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     #: The poller's settings for this trigger, handed to it unread by core.
     event_config: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default="{}"
@@ -102,6 +106,11 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
             "AND (kind <> 'cron' OR ends_at IS NOT NULL) AND kind IN ('cron','once'))",
             name="ck_trigger_followup_fields",
         ),
+        CheckConstraint(
+            "NOT (event_target_credential_id IS NOT NULL "
+            "AND event_target_oauth_connection_id IS NOT NULL)",
+            name="ck_trigger_event_target_one",
+        ),
         # One polled trigger per agent and event (oc8.events.sources).
         Index(
             "uq_trigger_polled_event",
@@ -109,7 +118,10 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
             "event_source",
             "event_type",
             unique=True,
-            postgresql_where=text("event_target_credential_id IS NOT NULL"),
+            postgresql_where=text(
+                "event_target_credential_id IS NOT NULL "
+                "OR event_target_oauth_connection_id IS NOT NULL"
+            ),
         ),
     )
 

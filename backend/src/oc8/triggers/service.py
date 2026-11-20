@@ -17,6 +17,7 @@ from oc8.connections.access import trigger_fingerprint
 from oc8.modelrouter.subscription_guard import assert_manual_only_compatible
 from oc8.models.core import Agent
 from oc8.models.credentials import Credential
+from oc8.models.oauth import OAuthConnection
 from oc8.models.triggers import Trigger
 from oc8.triggers.zones import (
     UnknownTimezone,
@@ -26,7 +27,7 @@ from oc8.triggers.zones import (
 )
 
 if TYPE_CHECKING:
-    from oc8.events.sources import PolledEventSpec
+    from oc8.events.sources import LoginTarget, PolledEventSpec
 
 #: 256 bits of CSPRNG entropy, URL-safe -- for a kind='webhook' row this
 #: token is the ENTIRE auth boundary (no signature, no header, per the
@@ -98,14 +99,16 @@ async def _check_polled_target(
     agent_id: uuid.UUID,
     event_source: str,
     event_type: str,
-    target: uuid.UUID | None,
+    target: LoginTarget | None,
     existing: bool = False,
 ) -> PolledEventSpec | None:
     """For an event this tenant's capas declare as polled
     (`oc8.events.sources`): refuse a target that is not the organisation login
-    the agent is fixed to for the capa's tools. Returns the polled event, None
-    for a pushed one, which takes no target. `existing`: re-checking a polled
-    trigger already saved, whose capa may have been switched off since."""
+    the agent is fixed to for the capa's tools -- a credential of the poller's
+    type, or an OAuth connection of the capa's provider. Returns the polled
+    event, None for a pushed one, which takes no target. `existing`:
+    re-checking a polled trigger already saved, whose capa may have been
+    switched off since."""
     from oc8.events.sources import fixed_login, polled_event_spec
 
     spec = await polled_event_spec(db, event_source, event_type)
@@ -121,15 +124,31 @@ async def _check_polled_target(
         raise InvalidTriggerConfig("the event's capa has no login tool")
     if target is None:
         raise InvalidTriggerConfig("a polled event needs the login it listens on")
-    credential = await db.get(Credential, target)
-    if credential is None:
-        raise InvalidTriggerConfig("the login it listens on does not exist")
-    if credential.owner_member_id is not None:
-        raise InvalidTriggerConfig("a polled event listens on an organisation login only")
-    if credential.credential_type != spec.registered.credential_type:
-        raise InvalidTriggerConfig(
-            f"a polled event of this kind listens on a {spec.registered.credential_type} login"
-        )
+    if target.kind == "credential":
+        credential = await db.get(Credential, target.id)
+        if credential is None:
+            raise InvalidTriggerConfig("the login it listens on does not exist")
+        if credential.owner_member_id is not None:
+            raise InvalidTriggerConfig("a polled event listens on an organisation login only")
+        wanted = spec.registered.credential_type
+        if wanted is None or credential.credential_type != wanted:
+            raise InvalidTriggerConfig(
+                f"a polled event of this kind listens on a {wanted} login"
+                if wanted
+                else "a polled event of this kind listens on an OAuth connection"
+            )
+    else:
+        conn = await db.get(OAuthConnection, target.id)
+        if conn is None:
+            raise InvalidTriggerConfig("the login it listens on does not exist")
+        if conn.owner_member_id is not None:
+            raise InvalidTriggerConfig("a polled event listens on an organisation login only")
+        if spec.provider is None or conn.provider != spec.provider:
+            raise InvalidTriggerConfig(
+                f"a polled event of this kind listens on a {spec.provider} connection"
+                if spec.provider
+                else "a polled event of this kind listens on a login, not an OAuth connection"
+            )
     if await fixed_login(db, agent_id, spec.tool_key) != target:
         raise InvalidTriggerConfig(
             "a polled event listens on the login the agent is fixed to for its tools"
@@ -137,20 +156,32 @@ async def _check_polled_target(
     return spec
 
 
+def _target(
+    credential_id: uuid.UUID | None, oauth_connection_id: uuid.UUID | None
+) -> LoginTarget | None:
+    from oc8.events.sources import LoginTarget
+
+    try:
+        return LoginTarget.of(credential_id=credential_id, oauth_connection_id=oauth_connection_id)
+    except ValueError as exc:
+        raise InvalidTriggerConfig("a polled event listens on one login, not two") from exc
+
+
 async def _event_config(
     db: AsyncSession,
     spec: PolledEventSpec,
     *,
     agent_id: uuid.UUID,
-    target: uuid.UUID,
+    target: LoginTarget,
     given: dict[str, Any] | None,
 ) -> dict[str, str]:
     """The trigger's settings for `spec`: only the keys its event declares,
     each a string of at most `TRIGGER_CONFIG_VALUE_MAX` characters; one left
     out or blank is filled from its `default`, or from its `default_from` key
-    of the login's connection setup (`connection_setup_value`)."""
+    of the login's connection setup (`connection_setup_value`). A setting with
+    `allowed_from` only takes a value of that setup list (`setting_refusal`)."""
     from oc8.capas.manifest import TRIGGER_CONFIG_VALUE_MAX
-    from oc8.events.sources import connection_setup_value
+    from oc8.events.sources import connection_setup_value, setting_refusal
 
     given = dict(given or {})
     declared = {field.key: field for field in spec.config}
@@ -172,12 +203,17 @@ async def _event_config(
                 db, spec, agent_id=agent_id, target=target, key=field.default_from
             )
         out[key] = value or field.default
+    _allowed, refused = await setting_refusal(
+        db, spec, agent_id=agent_id, target=target, config=out
+    )
+    if refused is not None:
+        raise InvalidTriggerConfig(refused)
     return out
 
 
 async def polled_event_target(
     db: AsyncSession, *, agent_id: uuid.UUID, event_source: str, event_type: str
-) -> uuid.UUID | None:
+) -> LoginTarget | None:
     """The login a trigger of the agent on this event listens on: the
     organisation login the agent is fixed to for the event capa's tools. None
     for an event that is not polled; `PolledTargetMissing` when the agent has
@@ -213,12 +249,16 @@ async def create_trigger(
     created_by_member_id: uuid.UUID | None = None,
     acts_for_creator: bool = False,
     event_target_credential_id: uuid.UUID | None = None,
+    event_target_oauth_connection_id: uuid.UUID | None = None,
+    event_target: LoginTarget | None = None,
     event_config: dict[str, Any] | None = None,
 ) -> Trigger:
-    """`event_target_credential_id` and `event_config` are for a polled event
-    only (`oc8.events.sources`): the organisation login the agent is fixed to
-    for the event capa's tools, required; and the poller's settings. An agent
-    has at most one trigger per polled event."""
+    """The event target and `event_config` are for a polled event only: the
+    organisation login the agent is fixed to for the event capa's tools,
+    required -- named by its id (`event_target_credential_id` or
+    `event_target_oauth_connection_id`) or as `event_target` -- and the
+    poller's settings. An agent has at most one trigger per polled event."""
+    target = event_target or _target(event_target_credential_id, event_target_oauth_connection_id)
     next_run_at = None
     polled = False
     config: dict[str, str] = {}
@@ -245,17 +285,13 @@ async def create_trigger(
             agent_id=agent_id,
             event_source=event_source,
             event_type=event_type,
-            target=event_target_credential_id,
+            target=target,
         )
         polled = spec is not None
         if spec is not None:
-            assert event_target_credential_id is not None  # _check_polled_target
+            assert target is not None  # _check_polled_target
             config = await _event_config(
-                db,
-                spec,
-                agent_id=agent_id,
-                target=event_target_credential_id,
-                given=event_config,
+                db, spec, agent_id=agent_id, target=target, given=event_config
             )
         if polled and await db.scalar(
             select(Trigger.id).where(
@@ -268,7 +304,7 @@ async def create_trigger(
             raise InvalidTriggerConfig(_ONE_POLLED_TRIGGER)
     elif kind != "webhook":
         raise InvalidTriggerConfig(f"unknown trigger kind: {kind!r}")
-    if not polled and (event_target_credential_id is not None or event_config):
+    if not polled and (target is not None or event_config):
         raise InvalidTriggerConfig("only a polled event listens on a login")
 
     # Generated here, never client-supplied -- a caller naming its own token
@@ -290,9 +326,10 @@ async def create_trigger(
         event_source=event_source,
         event_type=event_type,
         webhook_token=webhook_token,
-        event_target_credential_id=event_target_credential_id if polled else None,
         event_config=config,
     )
+    if polled and target is not None:
+        target.put_on(trigger)
     if polled:
         # Two creates at once both pass the check above; the partial unique
         # index (uq_trigger_polled_event) refuses the second. Inside a
@@ -380,21 +417,21 @@ async def update_trigger(
     jitter_seconds: int = 60,
     event_config: dict[str, Any] | None = None,
     event_target_credential_id: uuid.UUID | None = None,
+    event_target_oauth_connection_id: uuid.UUID | None = None,
 ) -> Trigger:
     """`timezone` None keeps the zone the trigger has -- a row saved before
     triggers carried one stays in UTC until someone names a zone.
 
-    `event_config` and `event_target_credential_id` are for a polled trigger
-    only: new settings (checked and filled as on create), and a new target,
-    which must be the login the agent is fixed to now. A change to either
+    `event_config` and the target ids are for a polled trigger only: new
+    settings (checked and filled as on create), and a new target, which must
+    be the login the agent is fixed to now. A change to either
     starts a fresh baseline, so a different folder or login never replays its
     backlog."""
     if task_text is not None:
         trigger.task_text = task_text
-    if event_config is not None or event_target_credential_id is not None:
-        await _update_polled_settings(
-            db, trigger, event_config=event_config, target=event_target_credential_id
-        )
+    target = _target(event_target_credential_id, event_target_oauth_connection_id)
+    if event_config is not None or target is not None:
+        await _update_polled_settings(db, trigger, event_config=event_config, target=target)
     if (
         enabled is True
         and not trigger.enabled
@@ -406,7 +443,7 @@ async def update_trigger(
             agent_id=trigger.agent_id,
             event_source=trigger.event_source,
             event_type=trigger.event_type,
-            target=trigger.event_target_credential_id,
+            target=_saved_target(trigger),
             existing=True,
         )
     ):
@@ -436,25 +473,32 @@ async def update_trigger(
     return trigger
 
 
+def _saved_target(trigger: Trigger) -> LoginTarget | None:
+    from oc8.events.sources import LoginTarget
+
+    return LoginTarget.of_trigger(trigger)
+
+
 async def polled_settings(
     db: AsyncSession,
     trigger: Trigger,
     *,
     event_config: dict[str, Any] | None,
-    target: uuid.UUID | None,
-) -> tuple[uuid.UUID, dict[str, str]]:
+    target: LoginTarget | None,
+) -> tuple[LoginTarget, dict[str, str]]:
     """What a polled trigger's target and settings would be after an update
     naming `event_config` and `target` (None keeps each): checked and filled
     as on create, without changing the trigger. Lets a caller tell a real
     change from the same settings written differently."""
+    saved = _saved_target(trigger)
     if (
         trigger.kind != "event"
         or trigger.event_source is None
         or trigger.event_type is None
-        or trigger.event_target_credential_id is None
+        or saved is None
     ):
         raise InvalidTriggerConfig("only a polled event listens on a login")
-    new_target = target if target is not None else trigger.event_target_credential_id
+    new_target = target if target is not None else saved
     spec = await _check_polled_target(
         db,
         agent_id=trigger.agent_id,
@@ -479,16 +523,16 @@ async def _update_polled_settings(
     trigger: Trigger,
     *,
     event_config: dict[str, Any] | None,
-    target: uuid.UUID | None,
+    target: LoginTarget | None,
 ) -> None:
     from oc8.events.sources import reset_cursor
 
     new_target, config = await polled_settings(
         db, trigger, event_config=event_config, target=target
     )
-    if new_target == trigger.event_target_credential_id and config == trigger.event_config:
+    if new_target == _saved_target(trigger) and config == trigger.event_config:
         return
-    trigger.event_target_credential_id = new_target
+    new_target.put_on(trigger)
     trigger.event_config = config
     await reset_cursor(db, trigger)
 

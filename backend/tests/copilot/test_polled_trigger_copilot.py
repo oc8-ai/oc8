@@ -169,3 +169,36 @@ def test_flat_settings_without_an_event_are_refused() -> None:
     with pytest.raises(BuilderInvalid) as caught:
         flat_operations(flat)
     assert caught.value.code == "event_config_without_event"
+
+
+async def test_the_copilot_listens_on_an_oauth_login_and_keeps_to_the_list(
+    app_session: AppSessionFactory,
+) -> None:
+    from tests.events.polled import oauth_polled_setup
+
+    polled = await oauth_polled_setup(app_session)
+    data = {
+        "type": "trigger.create",
+        "agentId": str(polled.agent_id),
+        "kind": "event",
+        "taskText": "Sort the mail",
+        "eventSource": polled.source,
+        "eventType": polled.event_type,
+    }
+    async with app_session(polled.tenant) as db:
+        with pytest.raises(InvalidOperation):
+            await apply_operation(
+                db,
+                tenant_id=polled.tenant,
+                data={**data, "eventConfig": {"mailbox": "ceo@acme.test"}},
+            )
+    async with app_session(polled.tenant) as db:
+        await apply_operation(
+            db, tenant_id=polled.tenant, data={**data, "eventConfig": {"mailbox": "info@acme.test"}}
+        )
+    async with app_session(polled.tenant) as db:
+        trigger = await db.scalar(select(m.Trigger).where(m.Trigger.agent_id == polled.agent_id))
+        assert trigger is not None
+        assert trigger.event_target_oauth_connection_id == polled.connection_id
+        assert trigger.event_target_credential_id is None
+        assert trigger.event_config["mailbox"] == "info@acme.test"

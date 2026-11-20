@@ -9,8 +9,11 @@ register one directly with `register_poller`.
 
 A trigger on such an event names its target: the organisation login the agent
 is fixed to for the capa's tools (`oc8.triggers.service.create_trigger` checks
-it). Every tick, each enabled targeted trigger that is due gets polled with
-that login's fields, in its own tenant session:
+it), of either kind `AgentToolAccess` holds -- a credential or an OAuth
+connection (`LoginTarget`). Every tick, each enabled targeted trigger that is
+due gets polled with that login's fields (`_login_fields`: a credential's
+values, or a fresh access token of an OAuth connection), in its own tenant
+session:
 
 * its `event_source_cursor` row is locked with `FOR UPDATE SKIP LOCKED`, so a
   second scheduler replica skips it instead of polling twice;
@@ -46,15 +49,16 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import secrets
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 from urllib.parse import quote, quote_plus
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -111,8 +115,56 @@ Poller = Callable[[dict[str, str], dict[str, Any], dict[str, Any] | None], Await
 @dataclass(frozen=True)
 class RegisteredPoller:
     poller: Poller
-    #: The login type the poller reads; a trigger's target must be one.
-    credential_type: str
+    #: The credential type the poller reads, when its capa's tools sign in
+    #: with a credential; None for a capa whose tools sign in through an OAuth
+    #: connection (its provider is the capa's, `PolledEventSpec.provider`).
+    credential_type: str | None = None
+
+
+@dataclass(frozen=True)
+class LoginTarget:
+    """The organisation login a polled trigger listens on: a `Credential` or
+    an `OAuthConnection`, exactly as `AgentToolAccess` holds either."""
+
+    kind: Literal["credential", "oauth"]
+    id: uuid.UUID
+
+    @classmethod
+    def of(
+        cls, *, credential_id: uuid.UUID | None, oauth_connection_id: uuid.UUID | None
+    ) -> LoginTarget | None:
+        if credential_id is not None and oauth_connection_id is not None:
+            raise ValueError("a polled trigger listens on one login, not two")
+        if credential_id is not None:
+            return cls("credential", credential_id)
+        if oauth_connection_id is not None:
+            return cls("oauth", oauth_connection_id)
+        return None
+
+    @classmethod
+    def of_trigger(cls, trigger: m.Trigger) -> LoginTarget | None:
+        return cls.of(
+            credential_id=trigger.event_target_credential_id,
+            oauth_connection_id=trigger.event_target_oauth_connection_id,
+        )
+
+    def put_on(self, trigger: m.Trigger) -> None:
+        trigger.event_target_credential_id = self.id if self.kind == "credential" else None
+        trigger.event_target_oauth_connection_id = self.id if self.kind == "oauth" else None
+
+
+def has_event_target() -> ColumnElement[bool]:
+    """A trigger that listens on a login: a polled one."""
+    return or_(
+        m.Trigger.event_target_credential_id.is_not(None),
+        m.Trigger.event_target_oauth_connection_id.is_not(None),
+    )
+
+
+class PollLoginUnavailable(Exception):
+    """The trigger's login cannot be used right now (it must be connected
+    again, or it is gone). Recorded on the trigger like any poll failure; its
+    text is ours and safe to show."""
 
 
 @dataclass(frozen=True)
@@ -134,16 +186,22 @@ class PolledEventSpec:
     setup_env: dict[str, str] = field(default_factory=dict)
     #: Setup field key -> its kind; `default_from` only ever reads a plain one.
     setup_kinds: dict[str, str] = field(default_factory=dict)
+    #: The OAuth provider of the capa's tools, when they sign in through an
+    #: OAuth connection; a trigger's OAuth target must be one of it.
+    provider: str | None = None
+    #: The scope a delegating login's token is minted with for an `acts_as`
+    #: setting (`[plugin.setup.oauth_provision] delegated_scope`).
+    delegated_scope: str = ""
 
 
 _POLLERS: dict[tuple[str, str], RegisteredPoller] = {}
 
 
-def register_poller(source: str, event_type: str, poller: Poller, *, credential_type: str) -> None:
+def register_poller(
+    source: str, event_type: str, poller: Poller, *, credential_type: str | None = None
+) -> None:
     if not source or not event_type:
         raise ValueError("a poller needs a source and an event type")
-    if not credential_type:
-        raise ValueError("a poller needs the login type it reads")
     if not callable(poller):
         raise ValueError("a poller must be callable")
     _POLLERS[(source, event_type)] = RegisteredPoller(poller, credential_type)
@@ -173,7 +231,12 @@ async def polled_event_spec(
     """The polled event `(source, event_type)` in this tenant (RLS-bound
     session), or None when no capa this tenant has enabled declares it as
     polled. The source of a capa's event is the capa's name."""
-    from oc8.capas.manifest import ManifestError, TriggerDecl, parse_manifest
+    from oc8.capas.manifest import (
+        ManifestError,
+        TriggerDecl,
+        connection_env_fields,
+        parse_manifest,
+    )
     from oc8.connections.integrations import integration_from_manifest
 
     raw = await db.scalar(
@@ -204,7 +267,7 @@ async def polled_event_spec(
     if declared is None:
         return None
     integration = integration_from_manifest(manifest)
-    mcp = manifest.setup.mcp if manifest.setup is not None else None
+    provision = manifest.setup.oauth_provision if manifest.setup is not None else None
     return PolledEventSpec(
         source=source,
         event_type=event_type,
@@ -212,24 +275,34 @@ async def polled_event_spec(
         tool_key=integration.tool_key if integration is not None else None,
         registered=get_poller(source, event_type),
         config=tuple(declared.config),
-        setup_env=({key: env for env, key in mcp.env_fields.items()} if mcp is not None else {}),
+        setup_env=connection_env_fields(manifest),
         setup_kinds=(
             {f.key: f.kind for f in manifest.setup.fields} if manifest.setup is not None else {}
         ),
+        provider=(
+            integration.provider
+            if integration is not None and integration.kind == "oauth"
+            else None
+        ),
+        delegated_scope=provision.delegated_scope if provision is not None else "",
     )
 
 
 async def connection_setup_value(
-    db: AsyncSession, spec: PolledEventSpec, *, agent_id: uuid.UUID, target: uuid.UUID, key: str
+    db: AsyncSession, spec: PolledEventSpec, *, agent_id: uuid.UUID, target: LoginTarget, key: str
 ) -> str:
     """The value the setup of the connection `target` belongs to gave its plain
-    field `key` (a trigger setting's `default_from`), or "" when none did.
+    field `key` (a trigger setting's `default_from` or `allowed_from`), or ""
+    when none did.
 
-    A setup keeps a plain field in its connection's env (`env_fields`). The
-    connection is the capa's own row for exactly that login when there is one,
-    else its row for the agent's department, else its row for every
-    department. A field that is not plain (a password, a login, a department)
-    is never read, whatever the manifest says (it refuses that already)."""
+    A setup keeps a plain field in its connection's env (`env_fields`, or an
+    OAuth setup's delegated identities). The connection is the capa's own row
+    for exactly that login when there is one (a credential's row, or the row
+    whose setup made that OAuth connection), else its row for the agent's
+    department, else its row for every department; a row made for another
+    OAuth connection is never read for this one. A field that is not plain (a
+    password, a login, a department) is never read, whatever the manifest says
+    (it refuses that already)."""
     from oc8.capas.manifest import PLAIN_SETUP_FIELD_KINDS
     from oc8.connections.tool_connection import not_retired
 
@@ -255,7 +328,10 @@ async def connection_setup_value(
 
     def rank(row: m.McpConnection) -> int | None:
         if row.credential_id is not None:
-            return 0 if row.credential_id == target else None
+            return 0 if target.kind == "credential" and row.credential_id == target.id else None
+        made_for = (row.config or {}).get("oauth_connection_id")
+        if target.kind == "oauth" and made_for:
+            return 0 if str(made_for) == str(target.id) else None
         if row.department_id is not None:
             return 1 if row.department_id == department else None
         return 2
@@ -270,8 +346,88 @@ async def connection_setup_value(
     return ""
 
 
-async def fixed_login(db: AsyncSession, agent_id: uuid.UUID, tool_key: str) -> uuid.UUID | None:
-    """The organisation login the agent is fixed to for `tool_key`, if any."""
+_LIST_SEPARATORS = re.compile(r"[\s,;]+")
+
+
+def setup_list(value: str) -> list[str]:
+    """A setup field holding a list: comma, semicolon, newline or space
+    separated."""
+    return [part for part in _LIST_SEPARATORS.split(value) if part]
+
+
+async def allowed_values(
+    db: AsyncSession, spec: PolledEventSpec, *, agent_id: uuid.UUID, target: LoginTarget
+) -> dict[str, list[str]]:
+    """Setting key -> the values its `allowed_from` setup list allows, for
+    each setting that has one (an empty list: the setup lists none)."""
+    out: dict[str, list[str]] = {}
+    for item in spec.config:
+        if item.allowed_from:
+            out[item.key] = setup_list(
+                await connection_setup_value(
+                    db, spec, agent_id=agent_id, target=target, key=item.allowed_from
+                )
+            )
+    return out
+
+
+async def login_delegates(db: AsyncSession, target: LoginTarget) -> bool:
+    """The login signs in as others (domain-wide delegation, a service
+    account): the setting it acts as picks whom."""
+    if target.kind != "oauth":
+        return False
+    conn = await db.get(m.OAuthConnection, target.id)
+    return conn is not None and conn.grant_type == "service_account"
+
+
+async def setting_refusal(
+    db: AsyncSession,
+    spec: PolledEventSpec,
+    *,
+    agent_id: uuid.UUID,
+    target: LoginTarget,
+    config: dict[str, Any],
+) -> tuple[dict[str, list[str]], str | None]:
+    """The setup lists the settings are limited to, and why `config` is
+    refused by them (None: it is not). On save and before every poll."""
+    allowed = await allowed_values(db, spec, agent_id=agent_id, target=target)
+    delegates = await login_delegates(db, target)
+    return allowed, refused_setting(spec, config, allowed, delegates=delegates)
+
+
+def refused_setting(
+    spec: PolledEventSpec,
+    config: dict[str, Any],
+    allowed: dict[str, list[str]],
+    *,
+    delegates: bool = False,
+) -> str | None:
+    """Why `config` is not allowed (a setting outside its setup list), or
+    None. An empty list allows anything, except for the setting a delegating
+    login acts as: that one only ever takes a value the setup lists."""
+    for item in spec.config:
+        if not item.allowed_from:
+            continue
+        values = allowed.get(item.key, [])
+        if not values:
+            if item.acts_as and delegates:
+                return (
+                    f"the setting {item.key!r} must be one the setup lists in "
+                    f"{item.allowed_from!r}, and it lists none"
+                )
+            continue
+        value = str(config.get(item.key) or "")
+        if value.casefold() not in {v.casefold() for v in values}:
+            return (
+                f"the setting {item.key!r} must be one the setup lists in "
+                f"{item.allowed_from!r} ({', '.join(values)})"
+            )
+    return None
+
+
+async def fixed_login(db: AsyncSession, agent_id: uuid.UUID, tool_key: str) -> LoginTarget | None:
+    """The organisation login the agent is fixed to for `tool_key`, if any: a
+    credential or an OAuth connection, neither of them a person's own."""
     row = await db.scalar(
         select(m.AgentToolAccess).where(
             m.AgentToolAccess.agent_id == agent_id, m.AgentToolAccess.tool_key == tool_key
@@ -279,7 +435,33 @@ async def fixed_login(db: AsyncSession, agent_id: uuid.UUID, tool_key: str) -> u
     )
     if row is None or row.mode != "fixed":
         return None
-    return row.credential_id
+    if row.credential_id is not None:
+        cred = await db.get(m.Credential, row.credential_id)
+        if cred is not None and cred.owner_member_id is None:
+            return LoginTarget("credential", cred.id)
+        return None
+    if row.oauth_connection_id is not None:
+        conn = await db.get(m.OAuthConnection, row.oauth_connection_id)
+        if conn is not None and conn.owner_member_id is None:
+            return LoginTarget("oauth", conn.id)
+    return None
+
+
+async def disable_triggers_on_login(
+    db: AsyncSession, tenant_id: uuid.UUID, target: LoginTarget
+) -> None:
+    """Switch off every enabled polled trigger listening on `target`: the
+    login is being removed. Called before the row goes."""
+    column = (
+        m.Trigger.event_target_credential_id
+        if target.kind == "credential"
+        else m.Trigger.event_target_oauth_connection_id
+    )
+    await db.execute(
+        update(m.Trigger)
+        .where(m.Trigger.tenant_id == tenant_id, column == target.id, m.Trigger.enabled.is_(True))
+        .values(enabled=False, last_skip_reason=EVENT_TARGET_CHANGED)
+    )
 
 
 async def reset_cursor(db: AsyncSession, trigger: m.Trigger) -> None:
@@ -315,7 +497,7 @@ async def disable_off_target_triggers(
                     m.Trigger.agent_id == agent_id,
                     m.Trigger.kind == "event",
                     m.Trigger.enabled.is_(True),
-                    m.Trigger.event_target_credential_id.is_not(None),
+                    has_event_target(),
                 )
             )
         )
@@ -326,7 +508,7 @@ async def disable_off_target_triggers(
         return
     fixed = await fixed_login(db, agent_id, tool_key)
     for trigger in triggers:
-        if trigger.event_target_credential_id == fixed:
+        if LoginTarget.of_trigger(trigger) == fixed:
             continue
         assert trigger.event_source is not None and trigger.event_type is not None
         spec = await polled_event_spec(db, trigger.event_source, trigger.event_type)
@@ -362,10 +544,85 @@ def event_block(label: str, summary: str) -> str:
 
 
 async def _login_fields(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    target: LoginTarget,
+    spec: PolledEventSpec,
+    config: dict[str, Any],
+) -> tuple[dict[str, str], list[str]]:
+    """What the poller signs in with, and every spelling of its secrets, to
+    keep them out of anything recorded: a credential's values, secrets
+    resolved; or an OAuth connection's fresh access token with the facts
+    about it a poller needs (`_oauth_login_fields`)."""
+    if target.kind == "oauth":
+        return await _oauth_login_fields(db, tenant_id, target.id, spec, config)
+    return await _credential_fields(db, tenant_id, target.id)
+
+
+async def _oauth_login_fields(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    connection_id: uuid.UUID,
+    spec: PolledEventSpec,
+    config: dict[str, Any],
+) -> tuple[dict[str, str], list[str]]:
+    """`access_token`, refreshed or re-minted as core does for the tools
+    (`oc8.oauth.tokens`), plus `account_label`, `grant_type`, `provider` and,
+    when set, `azure_tenant_id`. A login that delegates (a service account)
+    gets a token for the value of the trigger's `acts_as` setting instead of
+    its own, with the setup's delegated scope -- that value was checked
+    against the setup's list before (`refused_setting`)."""
+    from oc8.oauth import tokens
+    from oc8.oauth.errors import OAuthError, OAuthReauthRequired
+
+    conn = await db.get(m.OAuthConnection, connection_id)
+    if conn is None or conn.owner_member_id is not None:
+        raise PollLoginUnavailable("the login this trigger listens on is gone")
+    if conn.status != "active":
+        raise PollLoginUnavailable(
+            f"the login {conn.account_label!r} must be connected again (it is {conn.status})"
+        )
+    acted = next((item for item in spec.config if item.acts_as), None)
+    try:
+        if conn.grant_type == "service_account" and acted is not None:
+            subject = str(config.get(acted.key) or "")
+            if not subject or not spec.delegated_scope:
+                raise PollLoginUnavailable(
+                    f"the login acts as the setting {acted.key!r}, and it is empty"
+                )
+            token = await tokens.mint_delegated_token(
+                db,
+                tenant_id=tenant_id,
+                connection_id=conn.id,
+                subject=subject,
+                scope=spec.delegated_scope,
+            )
+        else:
+            token = await tokens.get_access_token(db, tenant_id=tenant_id, connection_id=conn.id)
+    except OAuthReauthRequired:
+        raise PollLoginUnavailable(
+            f"the login {conn.account_label!r} must be connected again"
+        ) from None
+    except OAuthError as exc:
+        # The provider's own words may quote what it was sent: the class only.
+        raise PollLoginUnavailable(
+            f"the login {conn.account_label!r} got no token ({type(exc).__name__})"
+        ) from None
+    fields = {
+        "access_token": token,
+        "account_label": conn.account_label,
+        "grant_type": conn.grant_type,
+        "provider": conn.provider,
+    }
+    if conn.azure_tenant_id:
+        fields["azure_tenant_id"] = conn.azure_tenant_id
+    return fields, _secret_forms(fields, [token])
+
+
+async def _credential_fields(
     db: AsyncSession, tenant_id: uuid.UUID, credential_id: uuid.UUID
 ) -> tuple[dict[str, str], list[str]]:
-    """Every value of the login, secrets resolved; and the secret values, to
-    keep them out of anything recorded."""
+    """Every value of the credential, secrets resolved; and the secret values."""
     from oc8.credentials.service import (
         CredentialFieldNotSet,
         get_credential,
@@ -431,7 +688,10 @@ async def _due_trigger_ids(tenant_id: uuid.UUID) -> list[uuid.UUID]:
             .where(
                 m.Trigger.kind == "event",
                 m.Trigger.enabled.is_(True),
-                m.Trigger.event_target_credential_id.is_not(None),
+                # A polled trigger whose login row was deleted outright lost
+                # its target (ON DELETE SET NULL) but keeps its cursor: its
+                # next poll switches it off (`_poll_trigger`).
+                has_event_target() | m.EventSourceCursor.trigger_id.is_not(None),
                 (m.EventSourceCursor.next_poll_at.is_(None))
                 | (m.EventSourceCursor.next_poll_at <= now),
             )
@@ -530,7 +790,7 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             _record_failure(cursor_row, "poller unavailable")
             logger.warning("polled trigger %s skipped: poller unavailable", trigger_id)
             return 0
-        target = trigger.event_target_credential_id
+        target = LoginTarget.of_trigger(trigger)
         if target is None or await fixed_login(db, trigger.agent_id, spec.tool_key) != target:
             trigger.enabled = False
             trigger.last_skip_reason = EVENT_TARGET_CHANGED
@@ -538,11 +798,23 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             return 0
 
         cursor_row.last_polled_at = now
+        config = dict(trigger.event_config or {})
+        # The setup's lists may have shrunk since the trigger was saved: a
+        # setting outside them now is never polled.
+        allowed, refused = await setting_refusal(
+            db, spec, agent_id=trigger.agent_id, target=target, config=config
+        )
+        if refused is not None:
+            _record_failure(cursor_row, refused[:_ERROR_LIMIT])
+            logger.warning("polled trigger %s not polled: a setting is not allowed", trigger_id)
+            return 0
         secret_forms: list[str] = []
         try:
-            login, secret_forms = await _login_fields(db, tenant_id, target)
+            login, secret_forms = await _login_fields(db, tenant_id, target, spec, config)
+            # The lists themselves, so a poller can check again on its own.
+            login.update({f"allowed_{key}": ",".join(v) for key, v in allowed.items()})
             result = await asyncio.wait_for(
-                spec.registered.poller(login, dict(trigger.event_config or {}), cursor_row.cursor),
+                spec.registered.poller(login, config, cursor_row.cursor),
                 timeout=POLL_TIMEOUT_SECONDS,
             )
             if cursor_row.cursor is None:
