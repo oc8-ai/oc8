@@ -31,6 +31,10 @@ msgstr "— vereist om af te wijzen"
 msgid "(empty)"
 msgstr "(leeg)"
 
+#, fuzzy
+msgid "(no longer allowed by your organisation)"
+msgstr "Beheer de gebruikersrollen van je organisatie."
+
 msgid "(optional)"
 msgstr "(optioneel)"
 
@@ -310,6 +314,14 @@ msgstr "Admin-API-sleutel"
 msgid "Administrator"
 msgstr "Beheerder"
 
+#, fuzzy
+#| msgid "Administrator"
+msgid "Administrators"
+msgstr "Beheerder"
+
+msgid "Administrators must set one up within the grace period."
+msgstr ""
+
 msgid "Advanced: exact role override"
 msgstr "Geavanceerd: exacte rol overschrijven"
 
@@ -436,6 +448,11 @@ msgid "allowed"
 msgstr "toegestaan"
 
 msgid "Allowed"
+msgstr "Toegestaan"
+
+#, fuzzy
+#| msgid "Allowed"
+msgid "Allowed methods"
 msgstr "Toegestaan"
 
 msgid "Allowed origins (optional, comma-separated)"
@@ -732,6 +749,10 @@ msgstr "Audit"
 msgid "Auditor"
 msgstr "Auditor"
 
+#, fuzzy
+msgid "Authenticator app"
+msgstr "Scan de authenticator-app"
+
 msgid "Author"
 msgstr "Auteur"
 
@@ -804,6 +825,11 @@ msgstr "Backlog"
 msgid "Backup and restore"
 msgstr "Back-up en herstel"
 
+#, fuzzy
+#| msgid "Backup downloaded"
+msgid "Backup code"
+msgstr "Back-up gedownload"
+
 msgid "Backup downloaded"
 msgstr "Back-up gedownload"
 
@@ -821,6 +847,9 @@ msgstr "Basisgegevens van je werkruimte."
 
 msgid "Basics"
 msgstr "Basis"
+
+msgid "Between 0 and 30. How long a member may still sign in without a second factor once it is required of them."
+msgstr ""
 
 msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
 msgstr "Tussen 1 en 100. Verlagen behoudt bestaande follow-ups, maar blokkeert nieuwe boven de limiet."
@@ -1130,12 +1159,20 @@ msgid "Code"
 msgstr "Code"
 
 #, fuzzy
+#| msgid "Change email"
+msgid "Code by email"
+msgstr "E-mailadres wijzigen"
+
+#, fuzzy
 msgid "Collaboration"
 msgstr "Samenwerking"
 
 #, fuzzy
 msgid "Collapse sidebar"
 msgstr "Zijbalk inklappen"
+
+msgid "Coming soon."
+msgstr ""
 
 #, fuzzy
 msgid "commands"
@@ -1615,8 +1652,16 @@ msgid "Could not remove the binding"
 msgstr "De koppeling kon niet worden verwijderd"
 
 #, fuzzy
+msgid "Could not remove the method."
+msgstr "Seat verwijderen mislukt."
+
+#, fuzzy
 msgid "Could not remove this login"
 msgstr "De koppeling kon niet worden verwijderd"
+
+#, fuzzy
+msgid "Could not reset two-factor authentication."
+msgstr "Tweestapsverificatie"
 
 #, fuzzy
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
@@ -1675,6 +1720,10 @@ msgid "Could not save the endpoints."
 msgstr "De endpoints konden niet worden opgeslagen."
 
 #, fuzzy
+msgid "Could not save the policy."
+msgstr "De endpoints konden niet worden opgeslagen."
+
+#, fuzzy
 msgid "Could not save the preset."
 msgstr "Preset opslaan mislukt."
 
@@ -1700,6 +1749,10 @@ msgstr "Opslaan mislukt. Probeer het opnieuw."
 
 #, fuzzy
 msgid "Could not send the answer"
+msgstr "Antwoord versturen mislukt"
+
+#, fuzzy
+msgid "Could not send the code."
 msgstr "Antwoord versturen mislukt"
 
 #, fuzzy
@@ -2679,6 +2732,9 @@ msgstr "Handmatig invoeren"
 msgid "Enter manually instead"
 msgstr "Liever handmatig invoeren"
 
+msgid "Enter one of the backup codes you saved when you set up two-factor authentication."
+msgstr ""
+
 #, fuzzy
 msgid "Enter room"
 msgstr "Ruimte betreden"
@@ -2775,6 +2831,9 @@ msgstr "Elk uur"
 msgid "Every installable capability — connectors, tools, guardrails, templates."
 msgstr "Elke installeerbare mogelijkheid — connectors, tools, vangrails, sjablonen."
 
+msgid "Every member must set one up within the grace period."
+msgstr ""
+
 #, fuzzy
 msgid "Every minute"
 msgstr "Elke minuut"
@@ -2782,6 +2841,10 @@ msgstr "Elke minuut"
 #, fuzzy
 msgid "Every save is kept — nothing is pruned."
 msgstr "Elke opslag wordt bewaard — er wordt niets opgeschoond."
+
+#, fuzzy
+msgid "Everyone"
+msgstr "Elke minuut"
 
 #, fuzzy
 msgid "Everything"
@@ -2972,6 +3035,9 @@ msgstr "Open voor persoonlijke notities een agent en ga naar het tabblad \"Geheu
 msgid "For scheduled runs the account of the person who created the schedule is used."
 msgstr "Bij geplande runs wordt het account gebruikt van de persoon die het schema heeft aangemaakt."
 
+msgid "For someone who lost their phone or can no longer reach their email: removes their second factors so they can set one up again."
+msgstr ""
+
 #, fuzzy
 msgid "For task-specific instructions, assign a skill instead — this field is only the agent's base mission."
 msgstr "Wijs voor taakspecifieke instructies liever een skill toe — dit veld is alleen de basismissie van de agent."
@@ -3052,6 +3118,9 @@ msgstr "Genereren"
 msgid "Generating…"
 msgstr "Genereren…"
 
+msgid "Get codes by email"
+msgstr ""
+
 #, fuzzy
 msgid "Get notified even when this tab isn't open."
 msgstr "Krijg meldingen, ook als dit tabblad niet open staat."
@@ -3091,6 +3160,9 @@ msgstr "Gaat naar het lopende antwoord"
 #, fuzzy
 msgid "Good answer"
 msgstr "Goed antwoord"
+
+msgid "Grace period (days)"
+msgstr ""
 
 #, fuzzy
 msgid "Granted company-wide access"
@@ -3830,6 +3902,9 @@ msgstr "Max. actieve follow-ups per persoon"
 msgid "MCP Connections"
 msgstr "MCP-koppelingen"
 
+msgid "Members who set up a second factor are asked for it at sign-in."
+msgstr ""
+
 #, fuzzy
 msgid "memories"
 msgstr "herinneringen"
@@ -3857,6 +3932,9 @@ msgstr "Bericht"
 #, fuzzy
 msgid "metered by the platform"
 msgstr "gemeten platform"
+
+msgid "Method"
+msgstr ""
 
 #, fuzzy
 msgid "Mine"
@@ -4001,6 +4079,9 @@ msgstr "Geef je werkruimte een naam"
 #, fuzzy
 msgid "Narrowed"
 msgstr "Verfijnd"
+
+msgid "Needs a mail server. Set one up under Mail server first."
+msgstr ""
 
 #, fuzzy
 msgid "Needs an organisation connection"
@@ -4533,9 +4614,15 @@ msgstr "Nog niemand heeft ingelogd bij dit bedrijf — gebruik hieronder snelle 
 msgid "Nobody holds this role yet."
 msgstr "Niemand heeft deze rol nog."
 
+msgid "Nobody is asked for a second factor. Set-ups are kept."
+msgstr ""
+
 #, fuzzy
 msgid "Nobody left to assign. People appear here after they have signed in once."
 msgstr "Niemand meer om toe te wijzen. Mensen verschijnen hier nadat ze één keer zijn ingelogd."
+
+msgid "Nobody will be asked for a second factor at sign-in. Set-ups are kept, and switching back on asks for them again at once."
+msgstr ""
 
 #, fuzzy
 msgid "None (disable)"
@@ -4705,6 +4792,10 @@ msgid "of which from cache"
 msgstr ""
 
 #, fuzzy
+msgid "Off"
+msgstr "Kantoor"
+
+#, fuzzy
 msgid "Office"
 msgstr "Kantoor"
 
@@ -4743,6 +4834,9 @@ msgstr "Hier telt alleen een verbinding van de organisatie. Een gegevensbron voe
 #, fuzzy
 msgid "Only for me"
 msgstr "Alleen voor mij"
+
+msgid "Only members who set up a second factor will be asked for it; the others will no longer be asked to set one up."
+msgstr ""
 
 #, fuzzy
 msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
@@ -4810,6 +4904,11 @@ msgstr "Een webpagina openen"
 #, fuzzy
 msgid "Operator"
 msgstr "Operator"
+
+#, fuzzy
+#| msgid "(optional)"
+msgid "Optional"
+msgstr "(optioneel)"
 
 #, fuzzy
 msgid "optional, e.g. up to 100 units on its own, above that approval"
@@ -4897,6 +4996,9 @@ msgstr "Overzicht"
 #, fuzzy
 msgid "Page "
 msgstr "Pagina "
+
+msgid "Passkey or security key"
+msgstr ""
 
 #, fuzzy
 msgid "Passphrase"
@@ -5512,8 +5614,22 @@ msgid "Reports"
 msgstr "Rapporten"
 
 #, fuzzy
+msgid "Required by your organisation"
+msgstr "Beheer de gebruikersrollen van je organisatie."
+
+#, fuzzy
 msgid "Required tools (MCP)"
 msgstr "Vereiste tools (MCP)"
+
+msgid "Reset"
+msgstr ""
+
+#, fuzzy
+msgid "Reset their two-factor authentication?"
+msgstr "Tweestapsverificatie"
+
+msgid "Reset two-factor"
+msgstr ""
 
 #, fuzzy
 msgid "Resetting…"
@@ -5935,6 +6051,9 @@ msgstr "Seatrol"
 msgid "Seat updated"
 msgstr "Seat bijgewerkt"
 
+msgid "Security"
+msgstr ""
+
 #, fuzzy
 msgid "Sees and decides in every department, including ones created later."
 msgstr "Ziet en beslist in elke afdeling, ook in afdelingen die later worden aangemaakt."
@@ -5996,6 +6115,10 @@ msgid "Send answers"
 msgstr "Antwoorden versturen"
 
 #, fuzzy
+msgid "Send code"
+msgstr "Ongeldige code"
+
+#, fuzzy
 msgid "Send e-mail from Gmail"
 msgstr "E-mail versturen vanuit Gmail"
 
@@ -6054,6 +6177,10 @@ msgstr "Stel samen stap voor stap een nieuwe agent in. Er verandert niets totdat
 #, fuzzy
 msgid "Set up now →"
 msgstr "Nu instellen →"
+
+#, fuzzy
+msgid "Set up two-factor authentication"
+msgstr "Tweestapsverificatie"
 
 #, fuzzy
 msgid "Set up your first administrator account to get started."
@@ -7283,6 +7410,9 @@ msgstr "Deze provider heeft een voltooiingssleutel nodig voordat zijn agents kun
 msgid "This question needs an answer."
 msgstr "Deze vraag heeft een antwoord nodig."
 
+msgid "This removes every second factor and backup code they have. If your organisation requires two-factor authentication from them, they set it up again at their next sign-in, within the grace period."
+msgstr ""
+
 #, fuzzy
 msgid "This replaces your current arrangement. You can switch back at any time."
 msgstr "Dit vervangt de huidige indeling. Je kunt altijd terugschakelen."
@@ -7547,6 +7677,14 @@ msgid "Two-factor authentication enabled"
 msgstr "Tweestapsverificatie ingeschakeld"
 
 #, fuzzy
+msgid "Two-factor authentication reset"
+msgstr "Tweestapsverificatie"
+
+#, fuzzy
+msgid "Two-factor policy updated"
+msgstr "Tweestapsverificatie"
+
+#, fuzzy
 msgid "Type"
 msgstr "Type"
 
@@ -7663,6 +7801,10 @@ msgid "USD per 1M tokens — managed by your platform operator"
 msgstr "USD per 1M tokens — beheerd door de platformoperator"
 
 #, fuzzy
+msgid "Use a backup code"
+msgstr "Bewaar je back-upcodes"
+
+#, fuzzy
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr "Gebruik in een toolnaam alleen letters, cijfers, _ en - (maximaal 64)."
 
@@ -7673,6 +7815,9 @@ msgstr "Standaard van inlog gebruiken"
 #, fuzzy
 msgid "Use the built-in default"
 msgstr "Ingebouwde standaard gebruiken"
+
+msgid "Use the code by email instead"
+msgstr ""
 
 #, fuzzy
 msgid "use the department's"
@@ -7896,6 +8041,12 @@ msgstr "We konden niet bepalen met welk account je bent ingelogd. Probeer het op
 msgid "We recommend an API key instead of a password."
 msgstr "We raden een API-sleutel aan in plaats van een wachtwoord."
 
+msgid "We send a 6-digit code to your sign-in email."
+msgstr ""
+
+msgid "We send a 6-digit code to your sign-in email. Enter it to confirm the address."
+msgstr ""
+
 #, fuzzy
 msgid "webhook"
 msgstr "webhook"
@@ -8011,6 +8162,9 @@ msgstr "Waar iemand staat, en op welk niveau."
 #, fuzzy
 msgid "Who may do what — and why you were refused."
 msgstr "Wie wat mag — en waarom je het weigerde."
+
+msgid "Who must confirm their sign-in with a second factor, and how."
+msgstr ""
 
 #, fuzzy
 msgid "Who watches the thinking of"
@@ -8266,6 +8420,12 @@ msgstr "Jouw naam"
 #, fuzzy
 msgid "Your office is open!"
 msgstr "Je kantoor is open!"
+
+msgid "Your organisation asks for a second factor. Choose how you want to confirm it is you."
+msgstr ""
+
+msgid "Your organisation requires a second factor. Add another method first."
+msgstr ""
 
 #, fuzzy
 msgid "Your own answer replaces the ticked options."
