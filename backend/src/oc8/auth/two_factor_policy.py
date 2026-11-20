@@ -97,6 +97,18 @@ async def enrolled_methods(db: AsyncSession, member_id: uuid.UUID) -> list[str]:
     ).scalar_one_or_none()
     if totp_enrolled_at is not None:
         found.add("totp")
+    # Only methods a member can enrol today: passkey rows cannot exist yet,
+    # and until passkey assertion ships one must never answer a challenge.
+    found.update(
+        (
+            await db.execute(
+                select(m.SecondFactor.method).where(
+                    m.SecondFactor.member_id == member_id,
+                    m.SecondFactor.method.in_(ENROLLABLE_METHODS),
+                )
+            )
+        ).scalars()
+    )
     return [x for x in METHODS if x in found]
 
 

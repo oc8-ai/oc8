@@ -29,8 +29,9 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Text, Uuid, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Integer, Text, Uuid, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -226,6 +227,64 @@ class TotpCredential(Base, PkMixin, TenantMixin, TimestampMixin):
     #: here at all, unlike secret_ref above.
     backup_codes: Mapped[list[dict[str, str | None]]] = mapped_column(
         JSONB, nullable=False, default=list
+    )
+
+
+class SecondFactor(Base, PkMixin, TenantMixin, TimestampMixin):
+    """A second factor a member enrolled, other than TOTP (two-factor methods
+    and policy design). `email` now; passkeys will add one row each.
+
+    TOTP keeps its own `totp_credential` row, and that row also holds the
+    member's backup codes whatever their method: a member whose only method is
+    email has a `totp_credential` row with `enrolled_at` NULL and no secret.
+    """
+
+    __tablename__ = "second_factor"
+
+    member_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    method: Mapped[str] = mapped_column(Text, nullable=False)
+    label: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default=text("''"))
+    #: Method data: for a passkey its credential id, public key and sign count.
+    data: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    last_used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("method IN ('email','passkey')", name="ck_second_factor_method"),
+        # One email factor per member; passkeys may be several.
+        Index(
+            "uq_second_factor_member_email",
+            "member_id",
+            unique=True,
+            postgresql_where=text("method = 'email'"),
+        ),
+    )
+
+
+class EmailOtpChallenge(Base, PkMixin, TenantMixin, TimestampMixin):
+    """A six-digit code mailed to a member, stored Argon2id-hashed.
+
+    `purpose` keeps an enrolment code from answering a login challenge and
+    the other way round. `used_at` is set when the code is accepted, and also
+    when a newer code replaces it or its mail could not be sent: only an
+    unused, unexpired row can ever be accepted, and only five wrong attempts
+    are allowed against it.
+    """
+
+    __tablename__ = "email_otp_challenge"
+
+    member_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    code_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("purpose IN ('enrol','login')", name="ck_email_otp_challenge_purpose"),
     )
 
 

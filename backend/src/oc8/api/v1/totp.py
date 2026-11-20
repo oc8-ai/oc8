@@ -175,6 +175,26 @@ async def _refuse_unless_totp_allowed(db: DbSession, principal: Principal) -> No
         )
 
 
+def mint_full_session(principal: Principal, member_id: uuid.UUID) -> PasswordSessionResponse:
+    """Exchange a passed challenge for the real session. Every second-factor
+    verify route ends here, so they mint exactly the same token."""
+    provider = get_identity_provider()
+    # role=principal.role, NOT re-resolved from anywhere else: the challenge
+    # token already carries whatever role `password_login` (Task 7) originally
+    # resolved -- MEMBER_ROLE per that function's own fail-closed doctrine,
+    # or "org_admin" from the bootstrap `/auth/setup` case. This endpoint's
+    # only job is converting the token's SCOPE from challenge-pending to a
+    # real session; it must not also upgrade the caller's role. Re-minting
+    # with the challenge token's own role claim preserves that --
+    # `org_member.role_id`'s override still applies on the NEXT request
+    # exactly as it always does, unaffected by anything here.
+    token = provider.mint(
+        tenant_id=principal.tenant_id, subject=principal.subject, role=principal.role
+    )
+    new_principal = provider.verify(token)
+    return PasswordSessionResponse(token=token, principal=new_principal, member_id=str(member_id))
+
+
 @router.post(
     "/auth/totp/enroll",
     response_model=TotpEnrollResponse,
@@ -219,10 +239,12 @@ async def totp_confirm(
     # transaction, so a constraint violation here rolls both back cleanly;
     # this pre-check only turns that into a clean, expected answer instead
     # of relying on the constraint as the sole guard).
-    already_enrolled = (
-        await db.execute(select(m.TotpCredential.id).where(m.TotpCredential.member_id == member_id))
+    # A row without `enrolled_at` only holds the backup codes of a member
+    # whose method is email; TOTP is added to it rather than refused.
+    existing = (
+        await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member_id))
     ).scalar_one_or_none()
-    if already_enrolled is not None:
+    if existing is not None and existing.enrolled_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "this member is already enrolled in TOTP")
 
     secret_ref = f"totp:{member_id}"
@@ -240,15 +262,22 @@ async def totp_confirm(
     codes = generate_backup_codes()
     hashed_codes = [{"hash": hash_backup_code(c), "used_at": None} for c in codes]
 
-    db.add(
-        m.TotpCredential(
-            tenant_id=principal.tenant_id,
-            member_id=member_id,
-            secret_ref=secret_ref,
-            enrolled_at=dt.datetime.now(tz=dt.UTC),
-            backup_codes=hashed_codes,
+    if existing is None:
+        db.add(
+            m.TotpCredential(
+                tenant_id=principal.tenant_id,
+                member_id=member_id,
+                secret_ref=secret_ref,
+                enrolled_at=dt.datetime.now(tz=dt.UTC),
+                backup_codes=hashed_codes,
+            )
         )
-    )
+    else:
+        # Fresh codes replace the email enrolment's: this response shows codes,
+        # and showing a set that does not work would be worse than a new one.
+        existing.secret_ref = secret_ref
+        existing.enrolled_at = dt.datetime.now(tz=dt.UTC)
+        existing.backup_codes = hashed_codes
     # Enforce the invariant models/identity.py's own docstring documents for
     # totp_grace_started_at ("NULL for anyone who has enrolled"): nothing
     # else clears it at enrollment time (Task 8's assign_role/password_setup
@@ -353,21 +382,7 @@ async def totp_verify(
 
     await db.commit()
 
-    provider = get_identity_provider()
-    # role=principal.role, NOT re-resolved from anywhere else: the challenge
-    # token already carries whatever role `password_login` (Task 7) originally
-    # resolved -- MEMBER_ROLE per that function's own fail-closed doctrine,
-    # or "org_admin" from the bootstrap `/auth/setup` case. This endpoint's
-    # only job is converting the token's SCOPE from challenge-pending to a
-    # real session; it must not also upgrade the caller's role. Re-minting
-    # with the challenge token's own role claim preserves that --
-    # `org_member.role_id`'s override still applies on the NEXT request
-    # exactly as it always does, unaffected by anything here.
-    token = provider.mint(
-        tenant_id=principal.tenant_id, subject=principal.subject, role=principal.role
-    )
-    new_principal = provider.verify(token)
-    return PasswordSessionResponse(token=token, principal=new_principal, member_id=str(member_id))
+    return mint_full_session(principal, member_id)
 
 
 class TotpStatusResponse(CamelModel):
