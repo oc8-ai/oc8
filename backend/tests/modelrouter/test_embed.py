@@ -39,7 +39,7 @@ async def test_embed_raises_embedding_unavailable_on_transport_error(
 async def test_embed_strips_the_local_namespace_before_calling_ollama(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """"local/bge-large" is oc8's own UI label for "on-prem" -- Ollama has no
+    """ "local/bge-large" is oc8's own UI label for "on-prem" -- Ollama has no
     such namespace and 404s on the literal string. A knowledge base created
     with that choice must actually reach Ollama asking for "bge-large"."""
 
@@ -54,13 +54,13 @@ async def test_embed_strips_the_local_namespace_before_calling_ollama(
     assert vec == [0.1, 0.2]
 
 
-async def test_embed_refuses_a_cloud_provider_model_instead_of_404ing_ollama(
+async def test_embed_never_sends_a_cloud_provider_model_to_ollama(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """v1 only ever routes embeddings through Ollama (see the docstring on
-    ModelRouter.embed). A knowledge base created with a cloud embedding
-    model must fail with a message that says why, not a raw Ollama 404 for
-    a model name Ollama was never going to recognize."""
+    """A `<provider>/<model>` embedding model is routed to that provider for a
+    tenant (tests/modelrouter/test_embed_cloud.py). Without a tenant to
+    resolve its key it must fail with a message naming the model, never be
+    sent to Ollama as a model name Ollama was never going to recognize."""
 
     def unexpected_post(self, url, json=None, **kwargs):  # type: ignore[no-untyped-def]
         raise AssertionError("must not call Ollama for an unsupported cloud model")

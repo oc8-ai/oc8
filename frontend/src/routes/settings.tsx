@@ -16,14 +16,19 @@ import { Panel } from "@/components/app-shell";
 import { BackupPanel } from "@/components/backup-panel";
 import { CredentialPicker } from "@/components/credential-picker";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
+import { TimezoneSelect } from "@/components/timezone-select";
+import { EditionSettingsSections } from "@/edition/slots";
+import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import {
+  useCopilotSettings,
   useCredentials,
   useMcpConnections,
   useModels,
   useOrganizationSettings,
   useTestCredential,
+  useUpdateCopilotSettings,
   useUpdateOrganizationSettings,
   type CredentialDTO,
 } from "@/lib/hooks";
@@ -41,7 +46,9 @@ function SettingsPage() {
         <PilotSetup onOpenWizard={() => setSetupOpen(true)} />
         <OrganizationPanel />
         <MailServerSetting />
+        <CopilotSettingsPanel />
         <BackupPanel />
+        <EditionSettingsSections />
       </div>
       {setupOpen && (
         // The SAME wizard as the first-run /welcome route -- there used to be
@@ -100,7 +107,7 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
     {
       label: t("Store a provider credential", "Provider-Zugangsdaten hinterlegen"),
       done: hasProviderCredential,
-      href: "/credentials",
+      href: "/connections",
     },
     {
       label: t("Test an MCP connection", "Eine MCP-Verbindung testen"),
@@ -165,23 +172,25 @@ function PilotSetup({ onOpenWizard }: { onOpenWizard: () => void }) {
   );
 }
 
-function OrganizationPanel() {
+export function OrganizationPanel() {
   const t = useT();
   const { data: organization, isLoading, error } = useOrganizationSettings();
   const update = useUpdateOrganizationSettings();
   const [name, setName] = useState("");
   const [region, setRegion] = useState("");
+  const [timezone, setTimezone] = useState("UTC");
 
   useEffect(() => {
     if (organization) {
       setName(organization.name);
       setRegion(organization.region);
+      setTimezone(organization.timezone || "UTC");
     }
   }, [organization]);
 
   const save = async () => {
     try {
-      await update.mutateAsync({ name: name.trim(), region: region.trim() });
+      await update.mutateAsync({ name: name.trim(), region: region.trim(), timezone });
       toast.success(t("Organization updated", "Organisation aktualisiert"));
     } catch (err) {
       toast.error(
@@ -196,7 +205,7 @@ function OrganizationPanel() {
     <Panel id="organization" className="p-5">
       <h3 className="font-serif text-lg">{t("Organization", "Organisation")}</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        {t("Basic details of your workspace.", "Grunddaten Ihres Arbeitsbereichs.")}
+        {t("Basic details of your workspace.", "Grunddaten deines Arbeitsbereichs.")}
       </p>
       {isLoading && <Loader2 className="mt-5 h-4 w-4 animate-spin text-muted-foreground" />}
       {error && (
@@ -225,6 +234,15 @@ function OrganizationPanel() {
               className="mt-1 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm text-foreground"
             />
           </label>
+          <div>
+            <TimezoneSelect value={timezone} onChange={setTimezone} />
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              {t(
+                "New agent schedules run in this timezone unless they name another.",
+                "Neue Zeitpläne von Agenten laufen in dieser Zeitzone, sofern sie keine andere nennen.",
+              )}
+            </p>
+          </div>
           <dl className="grid grid-cols-2 gap-2 text-xs text-muted-foreground">
             <div>
               <dt>{t("Tenant", "Mandant")}</dt>
@@ -395,6 +413,80 @@ export function MailServerSetting() {
           </ul>
         )}
       </div>
+    </Panel>
+  );
+}
+
+// ---------- Copilot (per-person follow-up cap) ----------
+const MIN_FOLLOWUPS = 1;
+const MAX_FOLLOWUPS = 100;
+
+export function CopilotSettingsPanel() {
+  const t = useT();
+  const may = useMay();
+  const { data } = useCopilotSettings();
+  const update = useUpdateCopilotSettings();
+  const [draft, setDraft] = useState("");
+  useEffect(() => {
+    if (data) setDraft(String(data.maxActiveFollowups));
+  }, [data]);
+
+  const value = Number(draft);
+  const valid = Number.isInteger(value) && value >= MIN_FOLLOWUPS && value <= MAX_FOLLOWUPS;
+  const canManage = may("settings:manage");
+
+  const save = async () => {
+    try {
+      await update.mutateAsync({ maxActiveFollowups: value });
+      toast.success(t("Copilot settings updated", "Copilot-Einstellungen aktualisiert"));
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t(
+              "Could not update the Copilot settings.",
+              "Copilot-Einstellungen konnten nicht aktualisiert werden.",
+            ),
+      );
+    }
+  };
+
+  return (
+    <Panel id="copilot" className="p-5">
+      <h3 className="font-serif text-lg">Copilot</h3>
+      <label className="mt-3 block text-xs text-muted-foreground">
+        {t("Max. active follow-ups per person", "Max. aktive Wiedervorlagen pro Person")}
+        <input
+          type="number"
+          min={MIN_FOLLOWUPS}
+          max={MAX_FOLLOWUPS}
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          disabled={!canManage}
+          className="mt-1 block w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+        />
+      </label>
+      <p className="mt-1 text-[11px] text-muted-foreground">
+        {t(
+          "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit.",
+          "Zwischen 1 und 100. Ein niedrigerer Wert behält bestehende Wiedervorlagen, blockiert aber neue über dem Limit.",
+        )}
+      </p>
+      {canManage && (
+        <button
+          type="button"
+          onClick={save}
+          disabled={!valid || update.isPending || value === data?.maxActiveFollowups}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+        >
+          {update.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : (
+            <Save className="h-3 w-3" />
+          )}
+          {t("Save", "Speichern")}
+        </button>
+      )}
     </Panel>
   );
 }

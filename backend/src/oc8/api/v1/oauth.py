@@ -4,7 +4,8 @@ The callback route is deliberately unauthenticated -- the provider redirects the
 user's browser to it, so no bearer token exists. The Redis state entry is
 therefore the authorization: unguessable, single-use, short-lived, and carrying
 the tenant binding. Because no principal is injected there, the handler opens
-its own RLS-bound session from the state's tenant_id.
+its own RLS-bound session from the state's tenant_id. The state binds tenant,
+member and owner, and the callback lands on the frontend's Connections page.
 """
 
 from __future__ import annotations
@@ -13,37 +14,44 @@ import logging
 import uuid
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import RedirectResponse
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission, unguarded
-from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
+from oc8.api.v1.connections import _oauth_dto, caller_member, may_manage_integrations
+from oc8.authz.permissions import CONNECTION_OWN, INTEGRATION, MANAGE, VIEW, perm
 from oc8.config import get_settings
-from oc8.db.session import tenant_session
-from oc8.oauth.client import resolve_client
+from oc8.connections.revoke import revoke_oauth_connection
+from oc8.oauth.client import ResolvedClient, resolve_client
 from oc8.oauth.errors import (
+    OAuthAccountUnresolved,
+    OAuthConsentRequired,
     OAuthError,
     OAuthNotConfigured,
     OAuthStateInvalid,
+    OAuthTenantMismatch,
 )
-from oc8.oauth.http import get_client
-from oc8.oauth.providers import get_provider, redirect_uri_for
+from oc8.oauth.providers import get_provider, redirect_uri_for, tool_scopes
 from oc8.oauth.provisioning import provision_oauth_connection
-from oc8.oauth.state import consume_state, put_state
+from oc8.oauth.state import OAuthState, consume_state, put_pending, put_state, take_pending
 from oc8.oauth.tokens import (
+    AccountIdentity,
+    TokenResponse,
     access_ref,
-    delete_tokens,
     exchange_code,
     expiry_from,
-    fetch_account_label,
-    invalidate_delegated_tokens,
+    fetch_account_identity,
     persist_tokens,
     refresh_ref,
+    tenant_from_id_token,
 )
-from oc8.schemas.dto import OAuthConnectionDTO, OAuthStartDTO
+from oc8.schemas.dto import AdminConsentUrlDTO, CompleteOAuthDTO, OAuthConnectionDTO, OAuthStartDTO
 from oc8.schemas.requests import (
+    CompleteOAuthRequest,
     CreateGoogleServiceConnectionRequest,
     CreateServiceConnectionRequest,
     StartOAuthRequest,
@@ -69,24 +77,47 @@ def _to_dto(conn: m.OAuthConnection) -> OAuthConnectionDTO:
 
 
 def _frontend_redirect(**params: str) -> RedirectResponse:
+    """Always the Connections page of this deployment's own frontend -- never a
+    caller-supplied URL."""
     base = get_settings().frontend_base_url.rstrip("/")
-    return RedirectResponse(f"{base}/knowledge?{urlencode(params)}", status_code=302)
+    return RedirectResponse(f"{base}/connections?{urlencode(params)}", status_code=302)
+
+
+#: Provider-returned `error` values passed through as typed codes; anything else
+#: becomes `provider_error`. The raw error_description is never echoed.
+_PASS_THROUGH_ERRORS = frozenset({"consent_required", "access_denied", "interaction_required"})
+
+
+def _provider_error_code(error: str, description: str | None) -> str:
+    if any(code in (description or "") for code in ("AADSTS65001", "AADSTS90094")):
+        return "admin_consent_required"
+    return error if error in _PASS_THROUGH_ERRORS else "provider_error"
 
 
 @router.post(
     "/oauth/{provider}/start",
     response_model=OAuthStartDTO,
-    dependencies=[Depends(require_permission(perm(INTEGRATION, MANAGE)))],
+    dependencies=[Depends(require_permission(CONNECTION_OWN))],
 )
 async def start_oauth(
     provider: str,
     body: StartOAuthRequest,
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> OAuthStartDTO:
+    if body.owner == "organisation" and not await may_manage_integrations(request, db, principal):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "requires permission: integration:manage")
+    if body.scopes and body.owner != "organisation":
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "an explicit scope list is accepted for an organisation connection only",
+        )
+    me = await caller_member(db, principal)
     try:
         prov = get_provider(provider)
         client = await resolve_client(db, tenant_id=principal.tenant_id, provider_id=provider)
+        scopes = tuple(body.scopes) if body.scopes else tool_scopes(provider)
     except OAuthNotConfigured as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except SecretStoreUnavailable as exc:
@@ -94,10 +125,28 @@ async def start_oauth(
     except OAuthError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
-    scopes = tuple(body.scopes) if body.scopes else prov.default_scopes
+    owner_filter = (
+        m.OAuthConnection.owner_member_id.is_(None)
+        if body.owner == "organisation"
+        else m.OAuthConnection.owner_member_id == me.id
+    )
+    has_active = bool(
+        await db.scalar(
+            select(func.count())
+            .select_from(m.OAuthConnection)
+            .where(
+                m.OAuthConnection.provider == provider,
+                m.OAuthConnection.grant_type == "authorization_code",
+                m.OAuthConnection.status == "active",
+                owner_filter,
+            )
+        )
+    )
     state, challenge = await put_state(
         tenant_id=principal.tenant_id,
         user_id=principal.subject,
+        member_id=me.id,
+        owner=body.owner,
         provider=provider,
         scopes=scopes,
     )
@@ -111,6 +160,9 @@ async def start_oauth(
         "code_challenge_method": "S256",
         **dict(prov.extra_authorize_params),
     }
+    prompt = prov.prompt_again if has_active else prov.prompt_first
+    if prompt:
+        params["prompt"] = prompt
     return OAuthStartDTO(authorization_url=f"{prov.authorize_url}?{urlencode(params)}")
 
 
@@ -204,6 +256,32 @@ async def create_service_connection(
 
 
 @router.get(
+    "/oauth/microsoft/admin-consent-url",
+    response_model=AdminConsentUrlDTO,
+    dependencies=[Depends(require_permission(CONNECTION_OWN))],
+)
+async def admin_consent_url(db: DbSession, principal: CurrentPrincipal) -> AdminConsentUrlDTO:
+    """The link a person hands their IT administrator when their organisation
+    lets nobody but an administrator consent (AADSTS65001/90094). Built from the
+    client id only -- no secret is involved."""
+    try:
+        client = await resolve_client(db, tenant_id=principal.tenant_id, provider_id="microsoft")
+    except OAuthNotConfigured as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return AdminConsentUrlDTO(url=_consent_link(client.client_id))
+
+
+def _consent_link(client_id: str) -> str:
+    prov = get_provider("microsoft")
+    params = {
+        "client_id": client_id,
+        "scope": prov.app_scope or "https://graph.microsoft.com/.default",
+        "redirect_uri": f"{get_settings().frontend_base_url.rstrip('/')}/connections",
+    }
+    return f"{prov.admin_consent_url}?{urlencode(params)}"
+
+
+@router.get(
     "/oauth/{provider}/callback",
     dependencies=[
         Depends(unguarded("browser redirect authenticated by the OAuth state parameter"))
@@ -214,7 +292,12 @@ async def oauth_callback(
     state: str | None = None,
     code: str | None = None,
     error: str | None = None,
+    error_description: str | None = None,
 ) -> RedirectResponse:
+    """Validates and consumes the state, then parks the code. It deliberately
+    exchanges nothing: whoever completes the provider's consent here may be a
+    different person than whoever started it, so the result only becomes a
+    connection once the starter confirms it in their own session."""
     if not state:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing state")
     try:
@@ -224,97 +307,200 @@ async def oauth_callback(
     if st.provider != provider:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "state/provider mismatch")
     if error:
-        return _frontend_redirect(oauthError=error, provider=provider)
+        return _frontend_redirect(
+            error=_provider_error_code(error, error_description), provider=provider
+        )
     if not code:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing code")
+    pending = await put_pending(st, code)
+    return _frontend_redirect(pending=pending, provider=provider)
 
-    # The state is already single-use-consumed above, so any failure past this
-    # point must not become a bare 500: the user would be stuck with no way to
-    # retry except starting a fresh /start. Every raise inside the block below
-    # propagates through tenant_session's except clause, which rolls back before
-    # we ever see it here, so a failure mid-exchange can never commit a
-    # half-built connection row.
+
+def _failure(error: str, **extra: str) -> JSONResponse:
+    return JSONResponse({"error": error, **extra}, status_code=status.HTTP_400_BAD_REQUEST)
+
+
+@router.post(
+    "/oauth/{provider}/complete",
+    response_model=CompleteOAuthDTO,
+    dependencies=[Depends(require_permission(CONNECTION_OWN))],
+)
+async def complete_oauth(
+    provider: str,
+    body: CompleteOAuthRequest,
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> CompleteOAuthDTO | JSONResponse:
+    """The starter confirms the provider's answer from their own session; only
+    then is the code exchanged and the account stored."""
+    taken = await take_pending(body.pending)
+    me = await caller_member(db, principal)
+    # Nothing distinguishes "not yours" from "not there": the entry is consumed
+    # either way and nothing is persisted.
+    if (
+        taken is None
+        or taken[0].provider != provider
+        or taken[0].tenant_id != principal.tenant_id
+        or taken[0].member_id != me.id
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no pending connection")
+    st, code = taken
+    owner_member_id: uuid.UUID | None = me.id if st.owner == "me" else None
+    if owner_member_id is None and not await may_manage_integrations(request, db, principal):
+        # Re-checked now: the right may have been taken away since /start.
+        return _failure("not_permitted")
+
     try:
-        async with tenant_session(st.tenant_id) as db:
-            client = await resolve_client(db, tenant_id=st.tenant_id, provider_id=provider)
-            tokens = await exchange_code(
-                provider_id=provider,
-                client=client,
-                code=code,
-                verifier=st.verifier,
-                redirect_uri=redirect_uri_for(provider),
-            )
-            label = await fetch_account_label(
-                provider_id=provider, access_token=tokens.access_token
-            )
-            if label == "unknown":
-                # An unresolvable label would collide with any other account
-                # that also failed userinfo, silently overwriting its token
-                # refs. Refuse to connect rather than create/overwrite a
-                # `(tenant_id, provider, "unknown")` row.
-                logger.warning(
-                    "oauth callback: could not resolve an account label for "
-                    "provider=%s tenant=%s; refusing to create a connection",
-                    provider,
-                    st.tenant_id,
-                )
-                return _frontend_redirect(oauthError="account_unresolved", provider=provider)
-
-            existing = (
-                await db.execute(
-                    select(m.OAuthConnection).where(
-                        m.OAuthConnection.tenant_id == st.tenant_id,
-                        m.OAuthConnection.provider == provider,
-                        m.OAuthConnection.account_label == label,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is None:
-                conn = m.OAuthConnection(
-                    id=uuid.uuid4(),
-                    tenant_id=st.tenant_id,
-                    provider=provider,
-                    account_label=label,
-                    scopes=list(tokens.scope.split()) if tokens.scope else list(st.scopes),
-                    access_secret_ref="",
-                    refresh_secret_ref=None,
-                    status="active",
-                    client_source=client.source,
-                    created_by_user_id=None,
-                )
-                db.add(conn)
-                await db.flush()
-            else:
-                conn = existing
-                conn.status = "active"
-                conn.client_source = client.source
-                if tokens.scope:
-                    conn.scopes = list(tokens.scope.split())
-
-            conn.access_secret_ref = access_ref(conn.id)
-            if tokens.refresh_token:
-                conn.refresh_secret_ref = refresh_ref(conn.id)
-            conn.expires_at = expiry_from(tokens.expires_in)
-            await persist_tokens(db, tenant_id=st.tenant_id, connection_id=conn.id, tokens=tokens)
-            await db.flush()
-    except OAuthError as exc:
-        logger.warning(
-            "oauth callback exchange failed for provider=%s tenant=%s: %s",
-            provider,
-            st.tenant_id,
-            exc,
+        client = await resolve_client(db, tenant_id=st.tenant_id, provider_id=provider)
+        tokens = await exchange_code(
+            provider_id=provider,
+            client=client,
+            code=code,
+            verifier=st.verifier,
+            redirect_uri=redirect_uri_for(provider),
         )
-        return _frontend_redirect(oauthError="exchange_failed", provider=provider)
+        identity = await fetch_account_identity(
+            provider_id=provider, access_token=tokens.access_token, id_token=tokens.id_token
+        )
+    except OAuthConsentRequired:
+        extra = {}
+        if provider == "microsoft":
+            extra["adminConsentUrl"] = _consent_link(client.client_id)
+        return _failure("admin_consent_required", **extra)
+    except OAuthTenantMismatch:
+        return _failure("tenant_mismatch")
+    except OAuthAccountUnresolved:
+        logger.warning("oauth complete: no stable identity for provider=%s", provider)
+        return _failure("account_unresolved")
+    except OAuthError as exc:
+        logger.warning("oauth complete failed for provider=%s: %s", provider, exc)
+        return _failure("exchange_failed")
     except Exception:
         logger.warning(
-            "oauth callback exchange failed unexpectedly for provider=%s tenant=%s",
-            provider,
-            st.tenant_id,
-            exc_info=True,
+            "oauth complete failed unexpectedly for provider=%s", provider, exc_info=True
         )
-        return _frontend_redirect(oauthError="exchange_failed", provider=provider)
+        return _failure("exchange_failed")
 
-    return _frontend_redirect(oauthConnected=provider)
+    conn: m.OAuthConnection | None = None
+    for _attempt in range(2):
+        try:
+            # A savepoint keeps the request's tenant binding alive across a retry.
+            async with db.begin_nested():
+                conn = await _store_connection(
+                    db,
+                    st=st,
+                    provider=provider,
+                    owner_member_id=owner_member_id,
+                    client=client,
+                    tokens=tokens,
+                    identity=identity,
+                )
+            break
+        except IntegrityError:
+            # A concurrent completion won the unique constraint: look again once.
+            conn = None
+    if conn is None:
+        return _failure("account_conflict")
+    await db.commit()
+    names = {me.id: me.display_name}
+    return CompleteOAuthDTO(connected=provider, connection=_oauth_dto(conn, me.id, names, {}))
+
+
+async def _store_connection(
+    db: AsyncSession,
+    *,
+    st: OAuthState,
+    provider: str,
+    owner_member_id: uuid.UUID | None,
+    client: ResolvedClient,
+    tokens: TokenResponse,
+    identity: AccountIdentity,
+) -> m.OAuthConnection | None:
+    """Create or refresh the owner's row for this account; None on a label held
+    by a different account (never overwritten)."""
+    label = identity.label
+    owner_filter = (
+        m.OAuthConnection.owner_member_id.is_(None)
+        if owner_member_id is None
+        else m.OAuthConnection.owner_member_id == owner_member_id
+    )
+    candidates = (
+        (
+            await db.execute(
+                select(m.OAuthConnection).where(
+                    m.OAuthConnection.tenant_id == st.tenant_id,
+                    m.OAuthConnection.provider == provider,
+                    owner_filter,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    def subject_of(c: m.OAuthConnection) -> str | None:
+        return (c.provider_metadata or {}).get("subject")
+
+    # The same account is the same subject; a label alone proves nothing --
+    # except for a legacy row that never recorded a subject, which is adopted.
+    existing = next(
+        (
+            c
+            for c in candidates
+            if c.grant_type == "authorization_code" and subject_of(c) == identity.subject
+        ),
+        None,
+    ) or next(
+        (
+            c
+            for c in candidates
+            if c.grant_type == "authorization_code"
+            and subject_of(c) is None
+            and c.account_label == label
+        ),
+        None,
+    )
+    if existing is None and any(c.account_label == label for c in candidates):
+        return None
+    if existing is None:
+        conn = m.OAuthConnection(
+            id=uuid.uuid4(),
+            tenant_id=st.tenant_id,
+            provider=provider,
+            account_label=label,
+            scopes=list(tokens.scope.split()) if tokens.scope else list(st.scopes),
+            access_secret_ref="",
+            refresh_secret_ref=None,
+            status="active",
+            client_source=client.source,
+            grant_type="authorization_code",
+            created_by_user_id=st.member_id,
+            owner_member_id=owner_member_id,
+            azure_tenant_id=(
+                tenant_from_id_token(tokens.id_token) if provider == "microsoft" else None
+            ),
+            provider_metadata={"subject": identity.subject},
+        )
+        db.add(conn)
+        await db.flush()
+    else:
+        conn = existing
+        conn.status = "active"
+        conn.client_source = client.source
+        conn.provider_metadata = {**(conn.provider_metadata or {}), "subject": identity.subject}
+        if not any(c.account_label == label and c.id != conn.id for c in candidates):
+            conn.account_label = label
+        if tokens.scope:
+            conn.scopes = list(tokens.scope.split())
+
+    conn.access_secret_ref = access_ref(conn.id)
+    if tokens.refresh_token:
+        conn.refresh_secret_ref = refresh_ref(conn.id)
+    conn.expires_at = expiry_from(tokens.expires_in)
+    await persist_tokens(db, tenant_id=st.tenant_id, connection_id=conn.id, tokens=tokens)
+    await db.flush()
+    return conn
 
 
 @router.get(
@@ -327,7 +513,13 @@ async def list_connections(
     principal: CurrentPrincipal,
 ) -> list[OAuthConnectionDTO]:
     rows = (
-        (await db.execute(select(m.OAuthConnection).order_by(m.OAuthConnection.created_at)))
+        (
+            await db.execute(
+                select(m.OAuthConnection)
+                .where(m.OAuthConnection.owner_member_id.is_(None))
+                .order_by(m.OAuthConnection.created_at)
+            )
+        )
         .scalars()
         .all()
     )
@@ -345,27 +537,8 @@ async def disconnect(
     principal: CurrentPrincipal,
 ) -> None:
     conn = await db.get(m.OAuthConnection, connection_id)
-    if conn is None or conn.tenant_id != principal.tenant_id:
+    if conn is None or conn.tenant_id != principal.tenant_id or conn.owner_member_id is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "connection not found")
 
-    prov = get_provider(conn.provider)
-    if prov.revoke_url and conn.refresh_secret_ref:
-        # Best effort: a provider-side failure must never block local cleanup,
-        # otherwise a dead provider would pin secrets in the store forever.
-        try:
-            from oc8.secrets.service import resolve_secret
-
-            token = await resolve_secret(db, tenant_id=conn.tenant_id, ref=conn.refresh_secret_ref)
-            async with get_client() as http_client:
-                await http_client.post(prov.revoke_url, data={"token": token})
-        except Exception as exc:  # best effort by design
-            logger.warning("provider revoke failed for %s: %s", connection_id, exc)
-
-    await delete_tokens(db, tenant_id=conn.tenant_id, connection_id=conn.id)
-    # The stored tokens are only half of what this connection can still serve:
-    # delegated (domain-wide-delegation) tokens live in a process-local cache
-    # keyed by connection, not in the secret store, and would otherwise stay
-    # servable for up to an hour after the row an operator just disconnected.
-    invalidate_delegated_tokens(conn.id)
-    await db.delete(conn)
+    await revoke_oauth_connection(db, conn)
     await db.commit()

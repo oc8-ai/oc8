@@ -3,19 +3,27 @@ import { Check, Copy, Link2, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { NotificationSettings } from "@/components/notification-settings";
 import { ApiKeysPanel } from "@/components/api-keys-panel";
+import {
+  AccountManagementLink,
+  OrganisationIdLine,
+  UserIdLine,
+} from "@/components/sign-in-identity";
 import { BackupCodesReveal } from "@/components/totp-backup-codes";
 import { TotpEnroll } from "@/components/totp-enroll";
 import { useT } from "@/lib/i18n";
 import { API_URL, api, getToken, hasCommunitySession, logoutCommunity, logoutDev } from "@/lib/api";
 import {
   useAuth,
+  useAuthConfig,
   useAvailableChannels,
   useChannelBindings,
   useRequestChannelLink,
   useRevokeChannelBinding,
 } from "@/lib/hooks";
 import { useCan } from "@/lib/governance-hooks";
+import { EditionProfileSections } from "@/edition/slots";
 import { cn } from "@/lib/utils";
 import {
   getPushSubscriptionStatus,
@@ -65,8 +73,16 @@ async function putConfirmingPassword<T>(path: string, body: unknown): Promise<T>
   return (await res.json()) as T;
 }
 
-function AccountPanel({ initialDisplayName }: { initialDisplayName: string }) {
+export function AccountPanel({ initialDisplayName }: { initialDisplayName: string }) {
   const t = useT();
+  const { data: authConfig } = useAuthConfig();
+  const { data: me } = useAuth();
+  // An external identity provider owns sign-in email and password. When the
+  // deployment names its account page, send the person there instead of
+  // offering forms the backend would refuse.
+  const localAuth = authConfig?.mode === "community" && authConfig?.memberInvites !== "external";
+  const accountUrl = !localAuth ? authConfig?.accountManagementUrl : null;
+  const signInEmail = me?.email || me?.subject || "";
   const [displayName, setDisplayName] = useState(initialDisplayName);
   // `initialDisplayName` arrives from `useAuth()` (`GET /me`), which is still
   // pending on this component's first render -- `useState`'s initializer only
@@ -188,104 +204,125 @@ function AccountPanel({ initialDisplayName }: { initialDisplayName: string }) {
         </div>
       </div>
 
-      <div className="mb-4 border-t border-border pt-4">
-        {!showPasswordForm ? (
-          <button
-            type="button"
-            onClick={() => setShowPasswordForm(true)}
-            className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent"
-          >
-            {t("Change password", "Passwort ändern")}
-          </button>
-        ) : (
-          <div className="space-y-2">
-            <input
-              type="password"
-              placeholder={t("Current password", "Aktuelles Passwort")}
-              value={currentPassword}
-              onChange={(e) => setCurrentPassword(e.target.value)}
-              className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
-            />
-            <input
-              type="password"
-              placeholder={t("New password", "Neues Passwort")}
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
-            />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={passwordBusy || !currentPassword || newPassword.length < 8}
-                onClick={changePassword}
-                className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent disabled:opacity-50"
-              >
-                {t("Save", "Speichern")}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowPasswordForm(false)}
-                className="h-8 rounded-md border border-border px-3 text-xs text-muted-foreground transition hover:text-foreground"
-              >
-                {t("Cancel", "Abbrechen")}
-              </button>
+      {accountUrl ? (
+        <div className="grid gap-2 border-t border-border pt-4">
+          <div>
+            <div className="mb-1 text-xs font-medium text-muted-foreground">
+              {t("Sign-in email", "Anmelde-E-Mail")}
             </div>
+            <div className="text-sm text-foreground">{signInEmail}</div>
           </div>
-        )}
-      </div>
-
-      <div className="border-t border-border pt-4">
-        {emailPendingConfirmation ? (
-          <p className="text-xs text-muted-foreground">
-            {t(
-              `Check your inbox at ${emailPendingConfirmation} to confirm this change.`,
-              `Bestätige die Änderung über den Link, den wir an ${emailPendingConfirmation} geschickt haben.`,
+          {me?.subject && signInEmail !== me.subject && <UserIdLine subject={me.subject} />}
+          <AccountManagementLink url={accountUrl} />
+        </div>
+      ) : (
+        <>
+          <div className="mb-4 border-t border-border pt-4">
+            {!showPasswordForm ? (
+              <button
+                type="button"
+                onClick={() => setShowPasswordForm(true)}
+                className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent"
+              >
+                {t("Change password", "Passwort ändern")}
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <input
+                  type="password"
+                  placeholder={t("Current password", "Aktuelles Passwort")}
+                  value={currentPassword}
+                  onChange={(e) => setCurrentPassword(e.target.value)}
+                  className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
+                />
+                <input
+                  type="password"
+                  placeholder={t("New password", "Neues Passwort")}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={passwordBusy || !currentPassword || newPassword.length < 8}
+                    onClick={changePassword}
+                    className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent disabled:opacity-50"
+                  >
+                    {t("Save", "Speichern")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowPasswordForm(false)}
+                    className="h-8 rounded-md border border-border px-3 text-xs text-muted-foreground transition hover:text-foreground"
+                  >
+                    {t("Cancel", "Abbrechen")}
+                  </button>
+                </div>
+              </div>
             )}
-          </p>
-        ) : !showEmailForm ? (
-          <button
-            type="button"
-            onClick={() => setShowEmailForm(true)}
-            className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent"
-          >
-            {t("Change email", "E-Mail ändern")}
-          </button>
-        ) : (
-          <div className="space-y-2">
-            <input
-              type="password"
-              placeholder={t("Current password", "Aktuelles Passwort")}
-              value={emailCurrentPassword}
-              onChange={(e) => setEmailCurrentPassword(e.target.value)}
-              className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
-            />
-            <input
-              type="email"
-              placeholder={t("New email", "Neue E-Mail")}
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
-            />
-            <div className="flex gap-2">
-              <button
-                type="button"
-                disabled={emailBusy || !emailCurrentPassword || !newEmail}
-                onClick={changeEmail}
-                className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent disabled:opacity-50"
-              >
-                {t("Save", "Speichern")}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowEmailForm(false)}
-                className="h-8 rounded-md border border-border px-3 text-xs text-muted-foreground transition hover:text-foreground"
-              >
-                {t("Cancel", "Abbrechen")}
-              </button>
-            </div>
           </div>
-        )}
-      </div>
+
+          <div className="border-t border-border pt-4">
+            {emailPendingConfirmation ? (
+              <p className="text-xs text-muted-foreground">
+                {t(
+                  `Check your inbox at ${emailPendingConfirmation} to confirm this change.`,
+                  `Bestätige die Änderung über den Link, den wir an ${emailPendingConfirmation} geschickt haben.`,
+                )}
+              </p>
+            ) : !showEmailForm ? (
+              <button
+                type="button"
+                onClick={() => setShowEmailForm(true)}
+                className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent"
+              >
+                {t("Change email", "E-Mail ändern")}
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <input
+                  type="password"
+                  placeholder={t("Current password", "Aktuelles Passwort")}
+                  value={emailCurrentPassword}
+                  onChange={(e) => setEmailCurrentPassword(e.target.value)}
+                  className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
+                />
+                <input
+                  type="email"
+                  placeholder={t("New email", "Neue E-Mail")}
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
+                />
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={emailBusy || !emailCurrentPassword || !newEmail}
+                    onClick={changeEmail}
+                    className="h-8 rounded-md border border-border bg-panel px-3 text-xs font-medium text-foreground transition hover:bg-accent disabled:opacity-50"
+                  >
+                    {t("Save", "Speichern")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowEmailForm(false)}
+                    className="h-8 rounded-md border border-border px-3 text-xs text-muted-foreground transition hover:text-foreground"
+                  >
+                    {t("Cancel", "Abbrechen")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {me?.tenantId && (
+        <div className="mt-4 border-t border-border pt-4">
+          <OrganisationIdLine tenantId={me.tenantId} />
+        </div>
+      )}
     </Panel>
   );
 }
@@ -428,6 +465,9 @@ export function ProfilePage() {
             </button>
           </div>
         )}
+        <div className="mt-4 border-t border-border pt-4">
+          <NotificationSettings />
+        </div>
       </Panel>
       <Panel className="p-4">
         <h2 className="mb-3 text-sm font-semibold text-foreground">
@@ -476,6 +516,7 @@ export function ProfilePage() {
       </Panel>
       <ApiKeysPanel />
       <ApprovalChannelsPanel />
+      <EditionProfileSections />
     </div>
   );
 }

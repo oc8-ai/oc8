@@ -11,6 +11,7 @@ from oc8 import models as m
 from oc8.constants import ACME_TENANT_ID
 from oc8.modelrouter.fallback import complete_with_fallback, is_retryable
 from oc8.modelrouter.types import CompletionResult, ModelParams, NeutralMessage, Usage
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -124,6 +125,7 @@ async def test_retryable_failure_falls_back_and_audits(app_session: AppSessionFa
         assert result.provider == "ollama"
         assert len(router.calls) == 2
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         events = (
             await db.execute(
                 select(m.AuditEvent).where(

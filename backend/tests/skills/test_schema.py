@@ -178,6 +178,12 @@ def test_empty_string_reference_root_is_treated_as_none() -> None:
     assert d.reference_root is None
 
 
+def test_code_mode_is_on_only_when_the_skill_says_true() -> None:
+    assert parse_definition({**SEEDED, "code_mode": True}).code_mode is True
+    assert parse_definition(SEEDED).code_mode is False
+    assert parse_definition({**SEEDED, "code_mode": "yes"}).code_mode is False
+
+
 def test_non_string_reference_root_is_dropped_not_raised() -> None:
     # Tolerant on the way in, same as every other field here -- a malformed
     # value must not cost a run that is otherwise fine.

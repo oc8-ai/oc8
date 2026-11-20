@@ -18,9 +18,10 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
-from oc8.agent.control_tools import SEARCH_KNOWLEDGE, execute_control_tool
+from oc8.agent.control_tools import SEARCH_KNOWLEDGE, SKIPPED_LOCAL_LINE, execute_control_tool
 from oc8.authz.pdp import Decision, Effect
 from oc8.modelrouter import ToolCall
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -80,6 +81,43 @@ async def test_the_agent_gets_what_the_knowledge_base_holds(
     assert retrieve.seen["query_text"] == "Erstattungsfrist"
 
 
+async def test_a_base_skipped_for_needing_a_local_embedding_is_said_but_never_named(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The member is told once, in the tool result the chat shows under the
+    answer's steps (E2E H), whether or not anything was found. The result
+    reaches the model, which may be a cloud one: a skipped base -- here a
+    restricted one -- is never named in it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task = await _agent_and_task(db, tenant)
+
+        async def fake_retrieve(*a: Any, **kw: Any) -> tuple[str, bool]:
+            kw["skipped_local"].extend(["Geheime Gehaltsliste", "Sales KB"])
+            return "Erstattungen: 14 Tage.", False
+
+        monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", fake_retrieve)
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=agent,
+            task=task,
+            tc=ToolCall(id="c1", name=SEARCH_KNOWLEDGE.name, arguments={"query": "Frist"}),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+        )
+    assert outcome is not None
+    assert "14 Tage" in outcome.output
+    assert "Geheime Gehaltsliste" not in outcome.output
+    assert "Sales KB" not in outcome.output
+    assert outcome.output.count(SKIPPED_LOCAL_LINE) == 1
+    # First: a step's stored result is cut at 300 characters.
+    assert outcome.output.startswith(SKIPPED_LOCAL_LINE)
+
+
 async def test_nothing_found_is_said_plainly(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -134,5 +172,75 @@ async def test_a_lookup_leaves_a_trail(
         events = (await db.execute(m.ActivityEvent.__table__.select())).fetchall()
         assert any("Garantiedauer" in (e.message or "") for e in events), "no feed line"
 
+        await flush_audit(db)  # staged audit events reach the chain at commit
         audit = (await db.execute(m.AuditEvent.__table__.select())).fetchall()
         assert any(a.action == "knowledge.searched" for a in audit), "no audit entry"
+
+
+async def test_restricted_text_fetched_mid_run_keeps_the_rest_of_the_run_off_cloud_models(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every completion carries `contains_restricted`, which makes the router
+    refuse a cloud model or a cloud fallback. It was fixed at the start of the
+    run, so restricted text the agent looked up later rode on as unrestricted."""
+    from oc8.modelrouter import CompletionResult, Usage, chunk_from_result
+
+    class _Router:
+        def __init__(self) -> None:
+            self.flags: list[bool] = []
+
+        async def complete(self, req: Any) -> CompletionResult:
+            self.flags.append(bool(req.contains_restricted))
+            if len(self.flags) == 1:
+                return CompletionResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id="c1", name=SEARCH_KNOWLEDGE.name, arguments={"query": "Gehalt"})
+                    ],
+                    usage=Usage(tokens_in=1, tokens_out=1),
+                    stop_reason="tool_use",
+                    provider=req.provider,
+                    model=req.model,
+                )
+            return CompletionResult(
+                text="fertig",
+                tool_calls=[],
+                usage=Usage(tokens_in=1, tokens_out=1),
+                stop_reason="stop",
+                provider=req.provider,
+                model=req.model,
+            )
+
+        async def stream(self, req: Any) -> Any:
+            yield chunk_from_result(await self.complete(req))
+
+    from oc8.agent.engine import run_agent
+
+    router = _Router()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+
+    async def nothing_up_front(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "", False
+
+    async def restricted_hit(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "Gehaltstabelle", True
+
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_kb_context", nothing_up_front)
+    monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", restricted_hit)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _task = await _agent_and_task(db, tenant)
+        kb = m.KnowledgeBase(tenant_id=tenant, name="HR", embedding_model="nomic-embed-text")
+        db.add(kb)
+        await db.flush()
+        db.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=kb.id, grantee_type="agent", grantee_id=agent.id
+            )
+        )
+        await db.flush()
+        await run_agent(db, agent=agent, task_text="Gehälter prüfen", tenant_id=tenant)
+
+    assert router.flags[0] is False, "nothing restricted before the lookup"
+    assert router.flags[1:] and all(router.flags[1:]), "everything after it is restricted"

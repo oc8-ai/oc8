@@ -3,9 +3,8 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from tests.audit.helpers import append_now
 from tests.conftest import AppSessionFactory
-
-from oc8.audit.chain import append_event
 
 pytestmark = pytest.mark.asyncio
 
@@ -14,7 +13,7 @@ async def test_new_rows_default_to_unkeyed(app_session: AppSessionFactory) -> No
     """With the flag off (the default), rows are written at mac_version 0."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        ev = await append_event(
+        ev = await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",

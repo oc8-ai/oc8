@@ -25,6 +25,7 @@ from oc8 import models as m
 from oc8.auth.principal import Principal
 from oc8.authz.scope import HumanActor, scope_for_principal
 from oc8.runtime.queue import RunQueue
+from oc8.tenants.activity import TenantInactive, set_tenant_activity_gate
 from oc8.workspace.tasks import NoTeamLead, create_task, visible_tasks
 from tests.conftest import AppSessionFactory
 
@@ -256,3 +257,46 @@ async def test_cannot_create_a_task_in_a_department_outside_the_scope(
                 member_id=actor.member.id,
                 instructions="Irgendwas erledigen.",
             )
+
+
+def _gate_saying_no_for(tenant: uuid.UUID):  # type: ignore[no-untyped-def]
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    return gate
+
+
+async def test_a_task_for_an_inactive_organisation_is_refused_and_not_written(
+    app_session: AppSessionFactory, queue: Any
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = await _department(db, tenant, "Kundenservice", with_lead=True)
+        await _seat(db, tenant, "justin", dept.id, "dept_viewer")
+        dept_id = dept.id
+        lead_id = dept.team_lead_agent_id
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+    async with app_session(tenant) as db:
+        actor = await _actor(db, tenant, "justin")
+        with pytest.raises(TenantInactive):
+            await create_task(
+                db,
+                actor=actor,
+                tenant_id=tenant,
+                department_id=dept_id,
+                member_id=actor.member.id,
+                instructions="Bitte die offenen Tickets zusammenfassen.",
+            )
+        tasks = (
+            (await db.execute(select(m.Task).where(m.Task.department_id == dept_id)))
+            .scalars()
+            .all()
+        )
+        assert tasks == [], "refused before the task is built"
+    async with app_session(tenant) as db:
+        runs = (
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == lead_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []

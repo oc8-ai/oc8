@@ -38,6 +38,15 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6381/0"
 
+    # Outbound requests to an address a person typed in (live credential
+    # checks, website sources) refuse private, loopback and link-local targets.
+    # A self-hosted install that needs one -- an ERP on the office network, an
+    # object store on the container host -- lists it here: comma-separated
+    # CIDRs and/or exact hostnames (e.g. "10.20.0.0/16,host.docker.internal").
+    # Default empty = nothing private is reachable. The cloud metadata
+    # addresses stay refused whatever is listed.
+    outbound_allowed_private: str = ""
+
     # Plugin discovery (§13): directories scanned for plugin folders, each
     # containing a plugin.toml. Comma-separated for multiple roots, like Odoo's
     # addons_path. Operator configuration -- never taken from a request.
@@ -48,6 +57,11 @@ class Settings(BaseSettings):
     # resolved against the working directory, mounted read-only so dropping
     # in a new file needs no image rebuild, just a backend restart.
     core_i18n_path: str = "i18n"
+    # Serve `#, fuzzy` ("needs editing", e.g. unreviewed machine drafts) entries
+    # that carry a msgstr, like any reviewed one. Off by default: only reviewed
+    # strings are served, and a language with none is not offered at all.
+    # Empty msgstr entries are never served. Env: OC8_I18N_SERVE_DRAFTS.
+    i18n_serve_drafts: bool = False
 
     # Max tool-using steps one agent run may take before it stops (§8.3). The
     # framework default; an operator may override it per agent, in either
@@ -59,6 +73,32 @@ class Settings(BaseSettings):
     # backstop -- it is just checked once per run, not per step, so this is
     # deliberately a large finite number, not literal infinity.
     agent_max_steps: int = 200
+
+    # Stranded queued runs (oc8.runtime.reconcile.recover_stranded_runs). A run
+    # is committed as `queued` BEFORE its stream entry is published, so a crash
+    # or a Redis outage in between leaves it queued with nothing to start it.
+    # A queued run untouched for this long, whose entry is not waiting in the
+    # stream, is published again -- at most once per window, since the
+    # republish itself restarts the clock. Short enough that a lost publish
+    # costs minutes, long enough that a worker in the middle of picking a run
+    # up is never second-guessed.
+    stranded_run_after_seconds: int = 120
+    # How many stranded runs one tenant may have republished per sweep, so a
+    # long Redis outage ends in a measured catch-up rather than a burst.
+    stranded_run_batch_size: int = 50
+
+    # Answer budget (max_tokens) for each model call of an agent step when
+    # neither the agent nor its model connection sets one
+    # (oc8.modelrouter.sampling.resolve_params). A reasoning model spends part
+    # of it thinking before it answers, so a low value fails runs with "the
+    # model used its whole answer budget"; one empty, cut-off answer is
+    # retried once with twice the budget.
+    default_max_tokens: int = 4096
+    # Highest max_tokens a provider accepts, as `provider=tokens` pairs
+    # separated by commas (e.g. "litellm=4096,ollama=8192"). A call above it is
+    # cut down to it instead of being rejected, the length retry included.
+    # Empty: no cap.
+    provider_max_tokens: str = ""
 
     # Isolated agent runtime (§8.5): the control-plane internal base URL an
     # isolated agent container calls back on (compose service name by default),
@@ -192,6 +232,50 @@ class Settings(BaseSettings):
     sandbox_driver: str = "docker"
     sandbox_provisioner_url: str = "http://runtime-provisioner:8090"
     sandbox_provisioner_token: str = ""
+    sandbox_archive_timeout_s: float = 120.0
+    """Longest one ``get_archive`` may take before the driver abandons it with
+    ``SandboxError``: a daemon call into a dying sandbox can otherwise block
+    forever."""
+    sandbox_exec_default_timeout_s: float = 600.0
+    """Bound on an ``exec`` whose caller gave no timeout (the provisioner
+    passes it on for requests without one)."""
+    sandbox_archive_max_bytes: int = 256 * 1024 * 1024
+    """Largest tar the runtime-provisioner accepts or returns in one request:
+    a seed, a ``put_archive`` body or a ``get_archive`` result. Above it the
+    request fails with 413 instead of filling the provisioner's memory."""
+    run_output_max_files: int = 1000
+    """Most files one output sync pass lists in a sandbox's
+    ``/workspace/output`` (``oc8.runtime.workspace``). Beyond it the rest are
+    left out of that pass and a warning is logged. Each file is fetched on its
+    own and capped at the attachment limit."""
+    run_output_pass_max_bytes: int = 64 * 1024 * 1024
+    """Most bytes one output sync pass fetches from a sandbox, counted as
+    each file's listed size plus a small growth tolerance. The pass stops
+    there and the next one continues. Keep it at or above the 25 MB
+    attachment limit, or a file that size is never fetched."""
+    run_output_pass_max_files: int = 200
+    """Most files one output sync pass fetches from a sandbox; the next pass
+    continues."""
+    run_output_sync_interval_s: float = 60.0
+    """How often a run's own output task stores ``/workspace/output`` from a
+    sandbox without mounts while the leg runs."""
+    run_output_final_read_timeout_s: float = 60.0
+    """Upper bound on the last output pass when a leg ends, before teardown."""
+    run_state_max_bytes: int = 128 * 1024 * 1024
+    """Largest saved run-state tar (``oc8.runtime.run_state.RunStateStore``),
+    for example a CLI home kept between legs. Larger state is refused on save;
+    pass it as ``max_bytes`` to ``get_archive`` so the read stops early."""
+    run_workspace_state_max_bytes: int = 256 * 1024 * 1024
+    """Largest ``/workspace`` (without ``output/``) kept between legs of a run
+    whose sandbox has no host directory. A larger one is dropped with a
+    warning, and the next leg starts with an empty workspace."""
+    run_state_max_files: int = 20000
+    """Most archive members (files and directories) one saved run state may
+    hold. More than that and the save is refused."""
+
+    board_record_cap_per_tenant: int = 1_000_000
+    """Most data-board records one tenant may store across all boards. A write that would
+    pass it is refused; boards keep history, so this is the bound on storage."""
 
     # Shared secret, das die eigenen service-to-service Tenant-Provisioning-
     # Route(n) dieser Instanz in `Authorization: Bearer <token>` erwarten.
@@ -231,6 +315,11 @@ class Settings(BaseSettings):
     default_model_provider: str = "ollama"
     default_model: str = "mistral:latest"
     default_embedding_model: str = "nomic-embed-text"
+    #: The local (Ollama) model used wherever the default above is a cloud
+    #: `<provider>/<model>` that policy or the tenant's setup does not allow:
+    #: memory of a tenant without that provider, a restricted base created
+    #: without an explicit model. Must produce the same 768-dim vectors.
+    local_embedding_model: str = "nomic-embed-text"
 
     # BYOK (§9): when True, a cloud completion with no per-tenant key is refused
     # rather than silently charged to the platform key. Off by default so dev and
@@ -260,15 +349,33 @@ class Settings(BaseSettings):
     # Secret store (§12.3): base64-encoded 256-bit root KEK for envelope encryption.
     secret_kek: str = ""
 
+    #: Model prices are global (oc8.api.v1.model_prices): on a deployment
+    #: shared by several tenants, one tenant's admin would change every
+    #: tenant's prices. True keeps the reads and refuses tenant writes; the
+    #: operator maintains prices outside the tenant API.
+    model_prices_read_only: bool = False
+
     # Third-party OAuth (§11.2). Tenant-supplied credentials take precedence;
     # these are the platform-wide fallback (design decision 2).
     google_oauth_client_id: str = ""
     google_oauth_client_secret: str = ""
+    microsoft_oauth_client_id: str = ""
+    microsoft_oauth_client_secret: str = ""
+    #: Ask Google for the full Gmail/Drive scopes when a person connects. Off
+    #: by default: those scopes are restricted and need a security assessment
+    #: of the app first; the narrow set needs none.
+    google_full_scopes: bool = False
     # Externally reachable base URL of THIS api — must match the redirect URI
     # registered with the provider.
     oauth_redirect_base_url: str = "http://localhost:8000"
     # Where the callback sends the browser back to.
     frontend_base_url: str = "http://localhost:8080"
+
+    # Where people change their own sign-in email and password when an external
+    # identity provider owns them (for example an OIDC provider's account page,
+    # such as Keycloak's `/realms/<realm>/account`). Empty: the members screen
+    # only says those details are managed by the identity provider.
+    account_management_url: str = ""
 
     # Audit chain MAC (§12.5 hardening): when enabled, audit_event rows are
     # hashed with HMAC-SHA256 under a key derived from secret_kek instead of a
@@ -281,10 +388,11 @@ class Settings(BaseSettings):
 
     # Observability (§18). Off by default => fully inert (no provider, no exporter).
     otel_enabled: bool = False
-    otel_exporter: str = "otlp"  # otlp | console | none
+    otel_exporter: str = "otlp"  # otlp (gRPC) | otlp_http | console | none
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "oc8"
     otel_metrics_enabled: bool = True
+    otel_traces_enabled: bool = True
 
     @model_validator(mode="after")
     def _validate_sandbox_user(self) -> Settings:
@@ -339,17 +447,34 @@ class Settings(BaseSettings):
     def _validate_otel(self) -> Settings:
         if (
             self.otel_enabled
-            and self.otel_exporter == "otlp"
+            and self.otel_exporter in ("otlp", "otlp_http")
             and not self.otel_exporter_otlp_endpoint
         ):
             raise ValueError(
-                "otel_enabled with otel_exporter='otlp' requires otel_exporter_otlp_endpoint"
+                f"otel_enabled with otel_exporter='{self.otel_exporter}' "
+                "requires otel_exporter_otlp_endpoint"
             )
         return self
 
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def provider_max_tokens_map(self) -> dict[str, int]:
+        """`provider_max_tokens` parsed; malformed pairs are skipped."""
+        caps: dict[str, int] = {}
+        for pair in self.provider_max_tokens.split(","):
+            name, sep, value = pair.partition("=")
+            if not sep or not name.strip():
+                continue
+            try:
+                cap = int(value.strip())
+            except ValueError:
+                continue
+            if cap > 0:
+                caps[name.strip()] = cap
+        return caps
 
     @property
     def capas_path_list(self) -> list[str]:

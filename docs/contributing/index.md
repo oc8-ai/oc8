@@ -25,6 +25,8 @@ capa, not in core.
    and pre-PR checks.
 4. **[Core UI Translations](translations.md)** — add or update a language
    for oc8's own UI via a `.po` catalog, no code change required.
+5. **[Translating on translate.oc8.ai](https://docs.oc8.ai/contributing/weblate)** —
+   the translator guide for the hosted Weblate workflow.
 
 ## Opening a pull request
 

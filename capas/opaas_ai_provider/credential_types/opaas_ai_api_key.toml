@@ -1,5 +1,5 @@
 name = "opaas_ai_api_key"
-display_name = "OPaaS AI"
+display_name = "oc8 AI – powered by opaas"
 
 [[fields]]
 key = "api_key"
@@ -12,4 +12,4 @@ label = "Server URL"
 kind = "url"
 required = false
 default = "https://ai.opaas.online/v1"
-help = "The OPaaS AI endpoint. Leave as the default unless you were given a different one."
+help = "The oc8 AI endpoint. Leave as the default unless you were given a different one."

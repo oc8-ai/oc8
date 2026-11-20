@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from oc8.agent.tool_idempotency import REPLAY_NOTE
 
 PLUGIN_ROOT = Path(__file__).resolve().parents[1]
 
@@ -94,7 +97,7 @@ async def test_on_call_tool_routes_to_the_named_handler(monkeypatch: pytest.Monk
     # `/users/{id}/...`, never `/me/...` -- see the whole-branch review's C1.
     assert captured["path"] == "/users/info@contoso.com/messages"
     assert captured["params"]["$search"] == '"x"'
-    assert _text(result) == str([{"id": "m1"}])
+    assert json.loads(_text(result)) == [{"id": "m1"}]
     assert result.is_error is False
 
 
@@ -159,3 +162,62 @@ async def test_a_missing_default_mailbox_reaches_the_model_as_an_error(
     result = await bridge._on_call_tool(_NO_CTX, params)
     assert result.is_error is True
     assert "userId" in _text(result)
+
+
+async def test_bridge_output_is_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    # str(dict) is Python repr (single quotes, True/None): record links parse
+    # the tool output as JSON, so the bridge has to emit real JSON.
+    async def _handler(args: dict[str, Any]) -> object:
+        return {"a": True, "b": None}
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert json.loads(_text(result)) == {"a": True, "b": None}
+
+
+async def test_a_string_result_passes_through_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _handler(args: dict[str, Any]) -> object:
+        return 'Hello "world"\nline two'
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert _text(result) == 'Hello "world"\nline two'
+
+
+async def test_a_json_looking_string_result_is_quoted(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Document text that happens to be JSON must not be parsed as records.
+    import json
+
+    doc = '[{"id": "1", "webViewLink": "https://drive.google.com/file/d/X/view"}]'
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return doc
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert json.loads(_text(result)) == doc
+
+
+@pytest.mark.parametrize(
+    ("text", "quoted"),
+    [
+        ('[{"id": "1"}]\n\n' + REPLAY_NOTE, True),
+        (" \u00a0\ufeff[1]", True),
+        ('\ufeff {"a": 1}', True),
+        ("Hello [x]", False),
+    ],
+)
+async def test_a_json_shaped_string_is_quoted_whatever_follows(
+    monkeypatch: pytest.MonkeyPatch, text: str, quoted: bool
+) -> None:
+
+    async def _handler(args: dict[str, Any]) -> object:
+        return text
+
+    monkeypatch.setitem(bridge.ALL_HANDLERS, "mail_search", _handler)
+    params = types.CallToolRequestParams(name="mail_search", arguments={})
+    result = await bridge._on_call_tool(_NO_CTX, params)
+    assert (json.loads(_text(result)) == text) if quoted else (_text(result) == text)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from oc8.api.v1 import (
+    agent_tool_access,
     agents,
     agents_write,
     api_keys,
@@ -12,15 +13,21 @@ from oc8.api.v1 import (
     audit,
     auth,
     backup,
+    boards,
     budgets,
     capas,
     catalog,
     channels,
     chat,
+    chat_context,
+    chat_direct_access,
+    chat_live,
     clarifications,
-    components,
+    connections,
     contracts,
     copilot,
+    copilot_builder,
+    copilot_member,
     credentials,
     dashboard,
     departments,
@@ -41,9 +48,11 @@ from oc8.api.v1 import (
     oauth,
     onboarding,
     reconciliation,
+    record_links,
     reports,
     roles,
     run,
+    run_inputs,
     runtimes,
     secrets,
     settings,
@@ -63,11 +72,15 @@ api_router.include_router(departments.router, tags=["departments"])
 api_router.include_router(onboarding.router, tags=["onboarding"])
 api_router.include_router(agents.router, tags=["agents"])
 api_router.include_router(agents_write.router, tags=["agents"])
+api_router.include_router(agent_tool_access.router, tags=["agents"])
+api_router.include_router(boards.router, tags=["boards"])
 api_router.include_router(catalog.router, tags=["catalog"])
 api_router.include_router(model_prices.router, tags=["catalog"])
 api_router.include_router(reconciliation.router, tags=["catalog"])
 api_router.include_router(channels.router, tags=["channels"])
 api_router.include_router(chat.router, tags=["chat"])
+api_router.include_router(chat_context.router, tags=["chat"])
+api_router.include_router(chat_direct_access.router, tags=["chat"])
 api_router.include_router(files.router, tags=["files"])
 api_router.include_router(skills_write.router, tags=["skills"])
 api_router.include_router(budgets.router, tags=["budgets"])
@@ -76,16 +89,18 @@ api_router.include_router(feed.router, tags=["feed"])
 api_router.include_router(approvals.router, tags=["approvals"])
 api_router.include_router(clarifications.router, tags=["approvals"])
 api_router.include_router(tasks.router, tags=["tasks"])
-api_router.include_router(components.router, tags=["components"])
 api_router.include_router(members.router, tags=["members"])
 api_router.include_router(mcp.router, tags=["mcp"])
 api_router.include_router(mcp_logins.router, tags=["mcp"])
 api_router.include_router(notifications.router, tags=["notifications"])
 api_router.include_router(dashboard.router, tags=["dashboard"])
 api_router.include_router(oauth.router, tags=["oauth"])
+api_router.include_router(connections.router, tags=["connections"])
 api_router.include_router(capas.router, tags=["capas"])
 api_router.include_router(roles.router, tags=["roles"])
 api_router.include_router(run.router, tags=["run"])
+api_router.include_router(run_inputs.router, tags=["run"])
+api_router.include_router(chat_live.router, tags=["chat"])
 api_router.include_router(reports.router, tags=["reports"])
 api_router.include_router(runtimes.router, tags=["runtimes"])
 # internal_agent is deliberately NOT included here: the operator API refuses
@@ -97,6 +112,8 @@ api_router.include_router(events.router, tags=["events"])
 api_router.include_router(handoffs.router, tags=["handoffs"])
 api_router.include_router(contracts.router, tags=["contracts"])
 api_router.include_router(copilot.router, tags=["copilot"])
+api_router.include_router(copilot_member.router, tags=["copilot"])
+api_router.include_router(copilot_builder.router, tags=["copilot"])
 api_router.include_router(flows.router, tags=["flows"])
 api_router.include_router(governance.router, tags=["governance"])
 api_router.include_router(triggers.router, tags=["triggers"])
@@ -106,3 +123,4 @@ api_router.include_router(credentials.router, tags=["credentials"])
 api_router.include_router(audit.router, tags=["audit"])
 api_router.include_router(backup.router, tags=["backup"])
 api_router.include_router(kpis.router, tags=["kpis"])
+api_router.include_router(record_links.router, tags=["records"])

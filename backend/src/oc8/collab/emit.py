@@ -59,7 +59,8 @@ async def emit_event(
     for binding in bindings:
         target = await db.get(m.Department, binding.target_department_id)
         handoff_type = await db.get(m.HandoffType, binding.handoff_type_id)
-        if target is None or handoff_type is None:
+        # An archived department takes no new work.
+        if target is None or target.deleted_at is not None or handoff_type is None:
             continue
         if department_intake(target.frame, handoff_type.name) is None:
             await append_event(

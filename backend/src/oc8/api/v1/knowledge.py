@@ -5,15 +5,18 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import Field
 from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
 from oc8.api.v1._serializers import (
+    browse_listing_to_dto,
     chunk_to_dto,
     datasource_to_dto,
     ingestion_job_to_dto,
@@ -23,18 +26,31 @@ from oc8.api.v1._serializers import (
 )
 from oc8.authz.permissions import KNOWLEDGE, MANAGE, VIEW, perm
 from oc8.caching.department_cache import purge_tenant
+from oc8.capas.i18n import translations_for
+from oc8.config import get_settings
+from oc8.knowledge.browse import BrowseUnsupported, UnknownConnector, browse_draft
 from oc8.knowledge.chunks import linked_source_ids, list_chunks, list_documents
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.connectors.context import SourceAuthContext
 from oc8.knowledge.connectors.fetcher import safe_fetch
-from oc8.knowledge.connectors.registry import available_connectors, resolve_connector
+from oc8.knowledge.connectors.registry import (
+    available_connectors,
+    connector_catalogs,
+    consent_pending_connectors,
+    resolve_connector,
+)
+from oc8.knowledge.embedding_policy import require_local_reason
+from oc8.knowledge.external_index import ExternalIndexRejected, validate_external_index_binding
 from oc8.knowledge.ingest import (
     IngestionError,
     KnowledgeBaseNotFoundError,
     extract_text,
     ingest_document,
+    reembed_knowledge_base,
 )
 from oc8.knowledge.retrieval import similar_chunks
+from oc8.knowledge.scope_prune import FLAG as SCOPE_FLAG
+from oc8.knowledge.scope_prune import picker_changes, record_scope_change, scope_flag
 from oc8.knowledge.sources import SourceRejected, validate_source_config
 from oc8.knowledge.tombstone import (
     OPERATOR_DELETE,
@@ -44,10 +60,19 @@ from oc8.knowledge.tombstone import (
     tombstone_source,
     unlink_source_from_base,
 )
+from oc8.knowledge.vector_indexes.base import VectorIndexError
+from oc8.knowledge.vector_indexes.registry import (
+    INTERNAL_INDEX_TYPE,
+    available_vector_indexes,
+    resolve_vector_index,
+)
 from oc8.knowledge.worker import get_ingestion_queue
+from oc8.modelrouter import EmbeddingUnavailable, get_model_router
+from oc8.modelrouter.router import embedding_local_tag
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     BaseRemovalDTO,
+    BrowseListingDTO,
     DataSourceDTO,
     DocumentRemovalDTO,
     DocumentRestoreDTO,
@@ -88,6 +113,96 @@ class ConnectorCatalogDTO(CamelModel):
     description: str | None = None
     config_schema: dict[str, object]
     requires_oauth: str | None = None
+    #: Whether a source can be set up with it now. A connector that signs in
+    #: somewhere needs an active organisation connection of that provider:
+    #: a source feeds shared knowledge, never one person's own account.
+    usable: bool = True
+    #: What is missing when it is not usable, e.g. "oauth:google", or
+    #: "consent:knowledge:write" for a capa that defers that permission.
+    missing: str | None = None
+    #: The capa to grant the missing consent on (POST /capas/{id}/grant).
+    capa_id: str | None = None
+    #: `label`/`description` in every locale the contributing capa's
+    #: `i18n/*.po` translates them into (capa-i18n design). Empty for a core
+    #: connector; the frontend falls back to the English text.
+    label_translations: dict[str, str] = {}
+    description_translations: dict[str, str] = {}
+    #: config property -> `title`/`description` -> {locale: text}.
+    field_translations: dict[str, dict[str, dict[str, str]]] = {}
+
+
+class VectorIndexCatalogDTO(CamelModel):
+    """A tenant's usable query-only vector-index backends."""
+
+    type_id: str
+    label: str | None = None
+    description: str | None = None
+    config_schema: dict[str, object]
+    credential_type: str
+
+
+class BrowseDraftRequest(CamelModel):
+    #: The draft source config, with the chosen credential. Never stored.
+    config: dict[str, object] = {}
+    path: str = Field("/", max_length=2048)
+
+
+class PreviewIndexRequest(CamelModel):
+    query: str = "test"
+    limit: int = 5
+
+
+@router.post(
+    "/knowledge/connectors/{type_id}/browse",
+    response_model=BrowseListingDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
+)
+async def browse_connector_draft(
+    type_id: str, body: BrowseDraftRequest, db: DbSession, principal: CurrentPrincipal
+) -> BrowseListingDTO:
+    """List a folder of a connector from a draft config, so the source wizard
+    can offer a picker before the source exists. Stores nothing."""
+    try:
+        listing = await browse_draft(
+            db,
+            tenant_id=principal.tenant_id,
+            connector_type=type_id,
+            config=dict(body.config),
+            path=body.path,
+        )
+    except UnknownConnector as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "unknown connector type") from exc
+    except BrowseUnsupported as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "This source can't be browsed.") from exc
+    except ConnectorError as exc:
+        # Already scrubbed by `browse_draft`: it names the failure, never the
+        # connector's own words.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    catalogs = await connector_catalogs(db, tenant_id=principal.tenant_id)
+    return browse_listing_to_dto(listing, catalogs.get(type_id))
+
+
+def _translations(i18n: dict[str, dict[str, str]], text: object) -> dict[str, str]:
+    return translations_for(i18n, text) if isinstance(text, str) and text else {}
+
+
+def _field_translations(
+    schema: object, i18n: dict[str, dict[str, str]]
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Each config property's `title`/`description` in every translated
+    locale, like `capas._resolve_setup_translations` does for a setup form."""
+    if not i18n or not isinstance(schema, dict):
+        return {}
+    properties = schema.get("properties")
+    out: dict[str, dict[str, dict[str, str]]] = {}
+    for key, spec in (properties if isinstance(properties, dict) else {}).items():
+        if not isinstance(spec, dict):
+            continue
+        for prop in ("title", "description"):
+            resolved = _translations(i18n, spec.get(prop))
+            if resolved:
+                out.setdefault(str(key), {})[prop] = resolved
+    return out
 
 
 @router.get(
@@ -97,18 +212,127 @@ class ConnectorCatalogDTO(CamelModel):
 )
 async def list_connectors(db: DbSession, principal: CurrentPrincipal) -> list[ConnectorCatalogDTO]:
     connectors = await available_connectors(db, tenant_id=principal.tenant_id)
-    return [
-        ConnectorCatalogDTO(
-            type_id=type_id,
-            label=getattr(connector, "label", None),
-            description=getattr(connector, "description", None),
-            config_schema=connector.config_schema,
-            requires_oauth=connector.requires_oauth,
-        )
-        for type_id, connector in sorted(connectors.items())
+    connected = set(
+        (
+            await db.execute(
+                select(m.OAuthConnection.provider).where(
+                    m.OAuthConnection.owner_member_id.is_(None),
+                    m.OAuthConnection.status == "active",
+                )
+            )
+        ).scalars()
+    )
+    # A capa that defers knowledge:write contributes nothing until it is
+    # granted; its connectors are listed as waiting for that consent.
+    pending = {
+        type_id: entry
+        for type_id, entry in (
+            await consent_pending_connectors(db, tenant_id=principal.tenant_id)
+        ).items()
+        if type_id not in connectors
+    }
+    entries = {**connectors, **{t: connector for t, (connector, _, _) in pending.items()}}
+    catalogs = await connector_catalogs(db, tenant_id=principal.tenant_id)
+    out: list[ConnectorCatalogDTO] = []
+    for type_id, connector in sorted(entries.items()):
         # Uploads are created by document upload, not as a configurable source.
-        if type_id != "upload"
+        if type_id == "upload":
+            continue
+        provider = connector.requires_oauth
+        missing = f"oauth:{provider}" if provider and provider not in connected else None
+        capa_id: str | None = None
+        if type_id in pending:
+            _, pending_capa, permission = pending[type_id]
+            missing, capa_id = f"consent:{permission}", str(pending_capa)
+        i18n = catalogs.get(type_id, {})
+        label = getattr(connector, "label", None)
+        description = getattr(connector, "description", None)
+        out.append(
+            ConnectorCatalogDTO(
+                type_id=type_id,
+                label=label,
+                description=description,
+                label_translations=_translations(i18n, label),
+                description_translations=_translations(i18n, description),
+                field_translations=_field_translations(connector.config_schema, i18n),
+                config_schema=connector.config_schema,
+                requires_oauth=provider,
+                usable=missing is None,
+                missing=missing,
+                capa_id=capa_id,
+            )
+        )
+    return out
+
+
+@router.get(
+    "/knowledge/vector-indexes",
+    response_model=list[VectorIndexCatalogDTO],
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, VIEW)))],
+)
+async def list_vector_indexes(
+    db: DbSession, principal: CurrentPrincipal
+) -> list[VectorIndexCatalogDTO]:
+    indexes = await available_vector_indexes(db, tenant_id=principal.tenant_id)
+    return [
+        VectorIndexCatalogDTO(
+            type_id=type_id,
+            label=getattr(index, "label", None),
+            description=getattr(index, "description", None),
+            config_schema=index.config_schema,
+            credential_type=index.credential_type,
+        )
+        for type_id, index in sorted(indexes.items())
     ]
+
+
+#: Embedding models offered for a new base. Only models whose vectors are
+#: EMBED_DIM wide belong here (see check_embedding_fits).
+_LOCAL_EMBEDDING_MODELS = ("local/nomic-embed-text",)
+
+
+class EmbeddingModelsDTO(CamelModel):
+    default_model: str
+    models: list[str]
+
+
+@router.get(
+    "/knowledge/embedding-models",
+    response_model=EmbeddingModelsDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, VIEW)))],
+)
+async def list_embedding_models() -> EmbeddingModelsDTO:
+    """The deployment's default embedding model (OC8_DEFAULT_EMBEDDING_MODEL)
+    first, then the local ones. A bare tag is an Ollama model and is shown
+    with the `local/` prefix the rest of the UI uses."""
+    default = get_settings().default_embedding_model
+    if "/" not in default:
+        default = f"local/{default}"
+    return EmbeddingModelsDTO(
+        default_model=default,
+        models=list(dict.fromkeys([default, *_LOCAL_EMBEDDING_MODELS])),
+    )
+
+
+def _embedding_model_for(requested: str | None, *, require_local: str | None) -> str:
+    """The embedding model a base gets. With none requested, the deployment
+    default -- unless the base's content must stay local and the default is a
+    cloud model, in which case the local fallback. The default never loosens a
+    base's own policy, and an explicit cloud model for such a base is refused
+    rather than quietly swapped."""
+    settings = get_settings()
+    if requested is None:
+        default = settings.default_embedding_model
+        if require_local and embedding_local_tag(default) is None:
+            return settings.local_embedding_model
+        return default
+    if require_local and embedding_local_tag(requested) is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"embedding model {requested!r} is a cloud model, but this knowledge base's "
+            f"content must stay local: {require_local}",
+        )
+    return requested
 
 
 async def _live_base(db: DbSession, kb_id: uuid.UUID) -> m.KnowledgeBase:
@@ -187,9 +411,7 @@ async def list_bases(
     )
     rows, total = await paginate(db, stmt, limit=limit, offset=offset)
     return Page(
-        items=[
-            kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows
-        ],
+        items=[kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, [])) for kb in rows],
         total_count=total,
     )
 
@@ -217,17 +439,100 @@ async def create_base(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> KnowledgeBaseDTO:
+    index_type = (body.index_type or INTERNAL_INDEX_TYPE).strip() or INTERNAL_INDEX_TYPE
+    index_config = dict(body.index_config or {})
+    credential_id = body.credential_id
+
+    if index_type == INTERNAL_INDEX_TYPE:
+        credential_id = None
+        index_config = {}
+    else:
+        try:
+            await validate_external_index_binding(
+                db,
+                tenant_id=principal.tenant_id,
+                index_type=index_type,
+                index_config=index_config,
+                credential_id=credential_id,
+            )
+        except ExternalIndexRejected as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    classification = body.classification or "internal"
+    embedding_model = _embedding_model_for(
+        body.embedding_model, require_local=require_local_reason(classification=classification)
+    )
+
     kb = m.KnowledgeBase(
         tenant_id=principal.tenant_id,
         name=body.name,
         description=body.description,
-        embedding_model=body.embedding_model,
+        embedding_model=embedding_model,
         status="current",
-        classification="internal",
+        classification=classification,
+        index_type=index_type,
+        index_config=index_config,
+        credential_id=credential_id,
     )
     db.add(kb)
     await db.flush()
     return kb_to_dto(kb, [], [])
+
+
+@router.post(
+    "/knowledge/bases/{kb_id}/preview-index",
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
+)
+async def preview_index(
+    kb_id: uuid.UUID,
+    body: PreviewIndexRequest,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> dict[str, object]:
+    """Probe-search an external index. Internal bases use the documents list."""
+    kb = await _live_base(db, kb_id)
+    if (kb.index_type or INTERNAL_INDEX_TYPE) == INTERNAL_INDEX_TYPE:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "preview-index is only for external vector indexes",
+        )
+    if kb.credential_id is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "knowledge base has no credential")
+    try:
+        index = await resolve_vector_index(db, tenant_id=principal.tenant_id, type_id=kb.index_type)
+        query_embedding = await get_model_router().embed(
+            body.query,
+            model=kb.embedding_model,
+            tenant_id=principal.tenant_id,
+            db=db,
+            require_local=require_local_reason(kb=kb),
+        )
+        hits = await index.search(
+            kb.index_config or {},
+            SourceAuthContext(db, tenant_id=principal.tenant_id),
+            credential_id=str(kb.credential_id),
+            query_embedding=query_embedding,
+            query_text=body.query,
+            limit=max(1, min(body.limit, 20)),
+        )
+    except EmbeddingUnavailable as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"embedding unavailable for model {kb.embedding_model!r}: {exc}",
+        ) from exc
+    except VectorIndexError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    return {
+        "hits": [
+            {
+                "content": h.content,
+                "sourceUri": h.source_uri,
+                "score": h.score,
+                "classification": h.classification,
+            }
+            for h in hits
+        ]
+    }
 
 
 @router.patch(
@@ -236,11 +541,17 @@ async def create_base(
     dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
 )
 async def update_base(
-    kb_id: uuid.UUID, body: UpdateKnowledgeBaseRequest, db: DbSession
+    kb_id: uuid.UUID, body: UpdateKnowledgeBaseRequest, db: DbSession, principal: CurrentPrincipal
 ) -> KnowledgeBaseDTO:
-    """Edit a base's name, description, or (only before it has any content)
-    its embedding model. Not the DELETE below: that one is irreversible by
-    design (§12.5.1). This is an ordinary metadata edit."""
+    """Edit a base's name, description, or embedding model. Not the DELETE
+    below: that one is irreversible by design (§12.5.1). This is an ordinary
+    metadata edit.
+
+    Changing the embedding model of an internal base that already holds
+    content clears every live vector (old and new models' vectors are not
+    comparable) and re-embeds a first batch with the new model; the rest is
+    filled by `POST /knowledge/bases/{id}/reembed`. An external index's
+    vectors live outside oc8, so its model cannot change under content."""
     kb = await _live_base(db, kb_id)
     if body.name is not None:
         kb.name = body.name
@@ -248,14 +559,25 @@ async def update_base(
         kb.description = body.description
     if body.embedding_model is not None and body.embedding_model != kb.embedding_model:
         chunks = (kb.freshness or {}).get("chunks", 0)
-        if chunks:
+        internal = (kb.index_type or INTERNAL_INDEX_TYPE) == INTERNAL_INDEX_TYPE
+        if chunks and not internal:
             raise HTTPException(
                 status.HTTP_409_CONFLICT,
-                "this base already has ingested content under its current embedding "
-                "model -- changing models now would leave old and new chunks "
-                "incomparable in the same base. Delete and recreate it instead.",
+                "this base is connected to an external vector index whose vectors were "
+                "made with its current embedding model -- changing models would leave "
+                "them incomparable. Delete and recreate it instead.",
             )
-        kb.embedding_model = body.embedding_model
+        kb.embedding_model = _embedding_model_for(
+            body.embedding_model, require_local=require_local_reason(kb=kb)
+        )
+        if chunks:
+            await reembed_knowledge_base(
+                db,
+                tenant_id=principal.tenant_id,
+                kb=kb,
+                limit=_REEMBED_BATCH,
+                reset=True,
+            )
     await db.flush()
     # Build the DTO from data already fetched, not a post-commit re-fetch: a
     # commit here unbinds the tenant GUC that RLS relies on (see
@@ -267,6 +589,43 @@ async def update_base(
     dto = kb_to_dto(kb, *grants.get(kb.id, ([], [])), sources.get(kb.id, []))
     await db.commit()
     return dto
+
+
+#: Chunks embedded per request. Bounded so one call stays well inside a request
+#: timeout against a remote provider; the endpoint is idempotent, so a large
+#: base is finished by calling it again until `remaining` is 0.
+_REEMBED_BATCH = 200
+
+
+class ReembedResultDTO(CamelModel):
+    embedded: int
+    remaining: int
+    error: str | None = None
+
+
+@router.post(
+    "/knowledge/bases/{kb_id}/reembed",
+    response_model=ReembedResultDTO,
+    dependencies=[Depends(require_permission(perm(KNOWLEDGE, MANAGE)))],
+)
+async def reembed_base(
+    kb_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+) -> ReembedResultDTO:
+    """Embed the base's chunks that have no vector yet, with its current
+    embedding model -- e.g. documents ingested while the model was
+    unreachable or not yet configured. Idempotent and tenant-scoped; does up
+    to `_REEMBED_BATCH` chunks per call and reports how many are left."""
+    kb = await _live_base(db, kb_id)
+    if (kb.index_type or INTERNAL_INDEX_TYPE) != INTERNAL_INDEX_TYPE:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "re-embedding is only for internal knowledge bases",
+        )
+    result = await reembed_knowledge_base(
+        db, tenant_id=principal.tenant_id, kb=kb, limit=_REEMBED_BATCH
+    )
+    await db.commit()
+    return ReembedResultDTO(**result)
 
 
 @router.post(
@@ -332,7 +691,25 @@ async def list_sources(
         default_order=m.DataSource.created_at,
     )
     rows, total = await paginate(db, stmt, limit=limit, offset=offset)
-    return Page(items=[datasource_to_dto(d) for d in rows], total_count=total)
+    # One query for the whole page: each source's most recent FINISHED job, whose
+    # stats say what the last sync left out. Not one lookup per source.
+    last_stats: dict[uuid.UUID, dict[str, Any]] = {}
+    if rows:
+        latest = await db.execute(
+            select(m.IngestionJob.data_source_id, m.IngestionJob.stats)
+            .where(
+                m.IngestionJob.data_source_id.in_([d.id for d in rows]),
+                m.IngestionJob.status.in_(("succeeded", "partial", "failed")),
+            )
+            .distinct(m.IngestionJob.data_source_id)
+            .order_by(
+                m.IngestionJob.data_source_id,
+                m.IngestionJob.created_at.desc(),
+                m.IngestionJob.id.desc(),
+            )
+        )
+        last_stats = {sid: stats for sid, stats in latest.all()}
+    return Page(items=[datasource_to_dto(d, last_stats.get(d.id)) for d in rows], total_count=total)
 
 
 @router.post(
@@ -349,6 +726,18 @@ async def create_source(
     # Shared with the plugin setup form's own source creation
     # (api/v1/capas.py), which was building the row by hand and running
     # neither check. See oc8/knowledge/sources.py.
+    if body.oauth_connection_id is not None:
+        conn = await db.get(m.OAuthConnection, body.oauth_connection_id)
+        if conn is None or conn.tenant_id != principal.tenant_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "oauth connection not found")
+        if conn.owner_member_id is not None:
+            # A knowledge base is the organisation's; indexing somebody's own
+            # mailbox or drive into it would publish it to every reader.
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "a personal connection cannot feed a knowledge base; "
+                "use an organisation connection",
+            )
     try:
         await validate_source_config(
             db,
@@ -361,10 +750,6 @@ async def create_source(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except SourceRejected as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-    if body.oauth_connection_id is not None:
-        conn = await db.get(m.OAuthConnection, body.oauth_connection_id)
-        if conn is None or conn.tenant_id != principal.tenant_id:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, "oauth connection not found")
     ds = m.DataSource(
         tenant_id=principal.tenant_id,
         connector_type=body.connector_type,
@@ -391,19 +776,52 @@ async def update_source(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> DataSourceDTO:
-    """Edit a source's name, classification, or schedule. Not the DELETE below:
-    that one is irreversible by design (§12.5.1 -- an operator DELETE destroys
-    the source's content immediately). This is an ordinary metadata edit, on a
-    row that stays exactly as reachable afterward as before."""
+    """Edit a source's name, classification, schedule or config. Not the DELETE
+    below: that one is irreversible by design (§12.5.1 -- an operator DELETE
+    destroys the source's content immediately).
+
+    `config` is MERGED into the stored config, and the merged result is
+    validated exactly as at creation -- including that no `x-oc8-picker`
+    property is left empty -- before ANY field of the request is applied, so a
+    400 leaves the row untouched. When the edit changes a picker property (the
+    source's selected scope), it records a `knowledge.source_scope_changed`
+    audit event with the picker values before and after, and flags the cursor
+    with who made it; the next sync then drops whatever the new selection
+    leaves out (oc8/knowledge/scope_prune.py)."""
     ds = await _live_source(db, source_id, principal.tenant_id)
+    if body.config is not None:
+        # Validated BEFORE anything is applied, so a refusal leaves the row
+        # exactly as it was: the edit drawer must not be able to save a config
+        # the connector would have refused at creation.
+        before = dict(ds.config or {})
+        merged = {**before, **body.config}
+        try:
+            connector = await validate_source_config(
+                db,
+                tenant_id=principal.tenant_id,
+                connector_type=ds.connector_type,
+                config=merged,
+                oauth_connection_id=ds.oauth_connection_id,
+            )
+        except (ConnectorError, SourceRejected) as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+        changes = picker_changes(connector.config_schema, before, merged)
+        if changes:
+            # The next sync prunes what the new selection leaves out, at once --
+            # see oc8/knowledge/scope_prune.py for why this skips reconcile.
+            # Merged into the cursor as it is NOW, under the row lock: the copy
+            # loaded with the row may predate a sync's digests, and writing it
+            # back would undo them.
+            await db.refresh(ds, ["cursor"], with_for_update=True)
+            ds.cursor = {**(ds.cursor or {}), SCOPE_FLAG: scope_flag(principal)}
+            await record_scope_change(db, principal=principal, data_source=ds, changes=changes)
+        ds.config = merged
     if body.name is not None:
         ds.name = body.name
     if body.classification is not None:
         ds.classification = body.classification
     if body.schedule_cron is not None:
         ds.schedule_cron = body.schedule_cron
-    if body.config is not None:
-        ds.config = {**(ds.config or {}), **body.config}
     await db.flush()
     # Build the DTO from the in-memory object, not a post-commit re-fetch: a
     # commit here unbinds the tenant GUC that RLS relies on (see create_source,
@@ -466,7 +884,12 @@ async def sync_source(
     # started after the tombstones landed would re-ingest straight back into the
     # base the operator just cleared.
     ds = await _live_source(db, source_id, principal.tenant_id)
-    await _live_base(db, body.kb_id)
+    kb = await _live_base(db, body.kb_id)
+    if (kb.index_type or INTERNAL_INDEX_TYPE) != INTERNAL_INDEX_TYPE:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "this knowledge base is connected to an external vector index — sync is not supported",
+        )
 
     job = m.IngestionJob(
         tenant_id=principal.tenant_id,

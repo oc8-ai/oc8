@@ -1,0 +1,19 @@
+id = "google_schedule_meeting"
+systems = ["google_workspace"]
+origin = "manual"
+scenario = "google_schedule_meeting"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Schedule a 1-hour meeting titled "Q4 planning" with alice@example.com and bob@example.com on 2026-09-28, between 08:00 and 18:00, at a time when both are free. Check their availability first.
+"""
+
+[frame_tools.google_workspace]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

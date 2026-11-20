@@ -152,6 +152,11 @@
   --font-serif: "Space Grotesk", ui-sans-serif, system-ui, sans-serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  /* Density floor: on desktop the root font is 90 % (see the `html` rule in
+     the base layer), which would take `text-xs` to 10.8px. Keep the smallest
+     scale step readable instead; it still scales up with the user's own
+     browser font size because the rem side of max() wins there. */
+  --text-xs: max(0.75rem, 11.5px);
 }
 
 :root {
@@ -250,6 +255,24 @@
     border-color: var(--color-border);
   }
 
+  /* App density. Every rem-based size (Tailwind spacing, type scale, radii)
+     follows the root font size, so 90 % here reads like the browser at 90 %
+     zoom -- more on screen, still comfortable -- without CSS zoom/transform,
+     which would break pointer maths, sticky/fixed positioning and popper
+     placement. A percentage, not a px value, so the user's own browser font
+     size and zoom still apply on top. Only on wide screens with a precise
+     pointer: phones and tablets keep 100 % so touch targets stay >= 40px.
+     (Media queries resolve rem/em against the browser default, not this.) */
+  html {
+    font-size: 100%;
+  }
+
+  @media (min-width: 48rem) and (pointer: fine) {
+    html {
+      font-size: 90%;
+    }
+  }
+
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
@@ -332,6 +355,167 @@
 
 @utility bubble-in {
   animation: bubble-in 0.35s ease-out both;
+}
+
+/* doc: DESIGN.md "micro" -- the one label style (11/14, 500, uppercase). */
+@utility text-micro {
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted-foreground);
+}
+
+@keyframes oc8-turn-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* doc: a new chat turn fades and rises over 150 ms (spec §2.2). */
+@utility turn-in {
+  animation: oc8-turn-in 150ms ease-out both;
+}
+
+@keyframes oc8-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* doc: a text shimmer for a state that lasts -- it runs only while the state
+   does. */
+@utility text-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: oc8-shimmer 1.6s linear infinite;
+}
+
+@keyframes oc8-breathe {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(0.9);
+    box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+    box-shadow: 0 0 12px 1px color-mix(in oklab, var(--primary) 35%, transparent);
+  }
+}
+
+/* doc: the Copilot mark while a turn waits for its first word -- breathes
+   (0.9 -> 1.05, soft glow) on a 1.6 s loop, and only while the wait lasts.
+   Under reduced motion it stands still at full size. */
+@utility presence-mark {
+  animation: oc8-breathe 1.6s ease-in-out infinite;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@keyframes oc8-presence-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: none;
+  }
+}
+
+@keyframes oc8-presence-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* doc: the waiting line's words crossfade over 200 ms when they change; the
+   two labels share one grid cell, so nothing moves. */
+@utility presence-in {
+  animation: oc8-presence-in 200ms ease-out both;
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@utility presence-out {
+  animation: oc8-presence-out 200ms ease-in both;
+}
+
+@keyframes oc8-tail-breathe {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.75);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes oc8-fresh-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Set on the markdown root while an answer streams. The tail -- a small
+   breathing dot in the brand colour with a soft glow -- is the ::after of the
+   last block (inside the last item of a trailing list), so it sits inline
+   right after the last word and owns no box that could jump when it goes
+   away. The words revealed last (`.stream-fresh`, one span per reveal, see
+   stream-words.ts) fade in over 120 ms: opacity only, never layout, no blur
+   (a filter repaints the whole run each frame). Reduced motion: a still
+   dot and words that simply appear. */
+@utility stream-tail {
+  & > :last-child:not(ul, ol, pre, table, hr)::after,
+  & > :is(ul, ol):last-child > li:last-child::after {
+    content: "";
+    display: inline-block;
+    width: 0.45em;
+    height: 0.45em;
+    margin-left: 0.3em;
+    vertical-align: 0.1em;
+    border-radius: 9999px;
+    background: var(--primary);
+    box-shadow: 0 0 6px 1px color-mix(in oklab, var(--primary) 40%, transparent);
+    animation: oc8-tail-breathe 1.6s ease-in-out infinite;
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+    }
+  }
+  & .stream-fresh {
+    animation: oc8-fresh-in 120ms ease-out both;
+    @media (prefers-reduced-motion: reduce) {
+      animation: none;
+    }
+  }
 }
 
 @keyframes room-pulse-teal {
@@ -464,7 +648,8 @@
 }
 
 .oc8-docking-station__ambient {
-  background-image: linear-gradient(oklch(1 0 0 / 0.05) 1px, transparent 1px),
+  background-image:
+    linear-gradient(oklch(1 0 0 / 0.05) 1px, transparent 1px),
     linear-gradient(90deg, oklch(1 0 0 / 0.05) 1px, transparent 1px);
   background-size: 2.5rem 2.5rem;
   inset: 0;
@@ -593,12 +778,31 @@
   animation: oc8-docking-celebrate 800ms ease-in-out 2;
 }
 
+/* doc: DESIGN.md "Motion" -- one rule for the whole app, not one per component. */
 @media (prefers-reduced-motion: reduce) {
-  .oc8-docking-station *,
-  .oc8-docking-station *::before,
-  .oc8-docking-station *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
+}
+
+/* An edition may tint the chat composer's focus glow by setting
+   --edition-accent-glow on :root; without one there is no glow, as before. */
+.edition-accent-focus:focus {
+  box-shadow: 0 0 0 3px var(--edition-accent-glow, transparent);
+}
+
+/* doc: Shiki highlights code with both themes (defaultColor: false); the app's
+   `.dark` class on <html> picks which colour applies. */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+}
+.dark .shiki,
+.dark .shiki span {
+  color: var(--shiki-dark);
 }

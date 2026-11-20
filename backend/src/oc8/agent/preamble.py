@@ -13,7 +13,9 @@ Core-neutral: names no vendor, product or software specifics.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -21,9 +23,22 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agent.control_tools import _acting_token_role, _resolve_agent_actor
+from oc8.agent.control_tools import (
+    _acting_token_role,
+    _resolve_agent_actor,
+    copilot_person,
+    person_token_role,
+)
+from oc8.agent.harness.caps import ModelCaps
+from oc8.agent.harness.prompts import (
+    TENANT_ASSISTANT_OPENER,
+    render_system_prompt,
+    resolve_timezone,
+    run_context_block,
+)
 from oc8.agent.provenance import RULE as PROVENANCE_RULE
 from oc8.authz.authority import authority_for_member
+from oc8.authz.pdp import effective_tool_policies, reachable_connections
 from oc8.authz.permissions import (
     AGENT,
     APPROVAL,
@@ -33,47 +48,70 @@ from oc8.authz.permissions import (
     VIEW,
     perm,
 )
+from oc8.authz.scope import AgentActor
+from oc8.connections.tool_connection import tool_connections
+from oc8.connections.usable import needs_department
+from oc8.copilot.notes import member_behind_run_task
 from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
 from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
 from oc8.modelrouter.types import ImagePart, TextPart
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
 
+_ORIGIN_LABELS: dict[str, str] = {
+    "chat": "chat",
+    "cron": "schedule",
+    "decision": "decision follow-up",
+    "webhook": "webhook trigger",
+    "event": "trigger",
+    "manual": "manual run",
+    "handoff": "handoff",
+}
 
-def system_prompt(agent: m.Agent) -> str:
-    pres = agent.presentation or {}
-    guardrails = pres.get("guardrails", [])
-    parts = [f"You are {agent.name}" + (f", {agent.role_title}." if agent.role_title else ".")]
-    if agent.mission:
-        parts.append(agent.mission)
-    if guardrails:
-        parts.append("Guardrails you must respect:\n" + "\n".join(f"- {g}" for g in guardrails))
-    parts.append(
-        "You have tools available. To use a tool you MUST invoke it through the "
-        "function-calling interface — never write the tool call as text or JSON in "
-        "your reply. Call one tool at a time and wait for its result. When the task "
-        "is fully done, reply with a short plain-text summary and call no further tools."
-    )
-    parts.append(
-        "Before you report completion, actively verify you covered the whole task, "
-        "not just the first sub-part that happened to have work in it: re-read your "
-        "own instructions and check whether anything else they describe still needs "
-        "action right now -- including records or items that were already in "
-        "progress before this run started, not only newly arrived ones. Only report "
-        "'nothing to do' once you have actually checked, not because a first search "
-        "came back empty. If you run out of steps before finishing, say so plainly "
-        "in your summary instead of presenting a partial result as complete."
-    )
-    if agent.is_tenant_assistant:
-        parts.append(
-            "At the start of a new conversation, before waiting for the human to "
-            "ask anything, proactively call list_pending_approvals and "
-            "department_status (whichever of these you have been offered) and "
-            "open with a short status summary -- what is waiting for a "
-            "decision, and how the departments you can see are doing. Skip this "
-            "if the conversation already has prior turns."
+
+async def _origin_label(db: AsyncSession, *, run: m.AgentRun | None) -> str:
+    """A2 "Origin" line. `run.source` is the ck_agent_run_source CHECK
+    constraint's enum (manual/cron/event/webhook/delegation/decision/
+    handoff/chat). "delegation" gets a best-effort parent-agent name;
+    everything else is a flat label. A run_id-less call (e.g. a fixture
+    that builds Agent/Department/McpConnection directly and calls
+    run_agent with no AgentRun row at all) defaults to "manual run" --
+    there is no run to introspect, and a direct invocation is, mechanically,
+    the same shape as a manual one."""
+    if run is None:
+        return "manual run"
+    if run.source == "delegation":
+        task = await db.get(m.Task, run.task_id) if run.task_id else None
+        parent_task = (
+            await db.get(m.Task, task.parent_task_id) if task and task.parent_task_id else None
         )
-    return "\n\n".join(parts)
+        parent_agent = (
+            await db.get(m.Agent, parent_task.assigned_agent_id)
+            if parent_task and parent_task.assigned_agent_id
+            else None
+        )
+        if parent_agent is not None:
+            return f"delegation from {parent_agent.name}"
+        return "delegation"
+    return _ORIGIN_LABELS.get(run.source, run.source)
+
+
+def system_prompt(
+    agent: m.Agent,
+    *,
+    caps: ModelCaps,
+    tenant_name: str,
+    pinned: Mapping[str, Any] | None = None,
+) -> str:
+    """`pinned` is the run's resolved version (`resolve_version`); when given,
+    role title and mission come from it rather than the live row, so a
+    mid-run edit never rewrites the instructions a run is working to. `name`
+    and `presentation` (guardrails) are identity/operational state, not
+    versioned -- see `render_system_prompt`'s own docstring."""
+    prompt = render_system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned)
+    if agent.is_tenant_assistant:
+        prompt = f"{prompt}\n\n{TENANT_ASSISTANT_OPENER}"
+    return prompt
 
 
 @dataclass
@@ -104,9 +142,69 @@ class RunPreamble:
     #: fetched on demand.
     has_instruction_files: bool = False
     copilot_permissions: frozenset[str] = frozenset()
+    #: The Copilot only: whether a member is behind this turn (not a wake-up
+    #: after a delegated sub-task, nor an operator in a colleague's session).
+    #: Without one, `memory_write` has nobody to note for and is not offered.
+    copilot_has_member: bool = False
+    #: Whether the agent produces at least one live board: `board_write` is offered
+    #: to it alone (see oc8.boards.mission).
+    produces_board: bool = False
+    #: The tenant's resolved timezone label (resolve_timezone's first return
+    #: value) -- read back by engine.py/internal_agent.py after this call so
+    #: C3's step stamp (format_step_stamp) uses the SAME resolved zone as A2's
+    #: "Now" line, rather than re-resolving it a second time.
+    tz: str = "UTC"
 
 
-async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
+#: How many tool keys one roster line names before it says "…".
+ROSTER_TOOL_LIMIT = 8
+
+
+async def _published_narrowings(
+    db: AsyncSession, agents: list[m.Agent]
+) -> dict[uuid.UUID, Mapping[str, Any]]:
+    """Each agent's PUBLISHED narrowing (`resolve_version`'s source, a draft
+    grants nothing), in one query for the whole roster. An agent never
+    published, or a version that predates the column, reads its row -- the
+    same fallback `resolve_version` takes."""
+    from oc8.agents.versioning import version_payload
+
+    version_ids = [a.current_version_id for a in agents if a.current_version_id is not None]
+    versions: dict[uuid.UUID, m.AgentVersion] = {}
+    if version_ids:
+        versions = {
+            v.id: v
+            for v in (
+                await db.execute(select(m.AgentVersion).where(m.AgentVersion.id.in_(version_ids)))
+            ).scalars()
+        }
+    out: dict[uuid.UUID, Mapping[str, Any]] = {}
+    for a in agents:
+        version = versions.get(a.current_version_id) if a.current_version_id else None
+        payload = version_payload(version) if version is not None else {}
+        out[a.id] = (payload["narrowing"] if "narrowing" in payload else a.narrowing) or {}
+    return out
+
+
+def _tools_note(department: m.Department, narrowing: Mapping[str, Any]) -> str:
+    """` — tools: a, b` -- the tool keys enabled for the agent (its
+    department's frame intersected with its narrowing), sorted, at most
+    `ROSTER_TOOL_LIMIT`. Keys, not labels: the model calls tools by key."""
+    policies = effective_tool_policies(dict(department.frame or {}), dict(narrowing))
+    keys = sorted(key for key, policy in policies.items() if policy.enabled)
+    if not keys:
+        return ""
+    shown = ", ".join(keys[:ROSTER_TOOL_LIMIT])
+    return f" — tools: {shown}" + (", …" if len(keys) > ROSTER_TOOL_LIMIT else "")
+
+
+async def roster_block(
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    task: m.Task | None = None,
+    run: m.AgentRun | None = None,
+) -> str | None:
     """The agent's department colleagues, or None if it has none.
 
     A team lead can only name a real agent_id if it knows its colleagues, so
@@ -129,11 +227,19 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
     every turn instead of ever delegating. It gets the full tenant roster
     (grouped by department) instead of its own department's -- naming the same
     agents its own delegation guard would actually let it reach.
+
+    On a turn that acts for a person (`copilot_person` behind `task`, on any
+    door) it names only the agents that person may run -- exactly what
+    `_delegate` lets through --
+    and every line says which tools the agent has, so the Copilot can offer an
+    agent that already does the job instead of doing it itself.
     """
     if agent.is_tenant_assistant:
-        rows = (
+        from oc8.copilot.agent_match import member_run_reach, runnable_with
+
+        result = (
             await db.execute(
-                select(m.Agent, m.Department.name)
+                select(m.Agent, m.Department)
                 .join(m.Department, m.Department.id == m.Agent.department_id)
                 .where(
                     m.Agent.tenant_id == agent.tenant_id,
@@ -145,14 +251,39 @@ async def roster_block(db: AsyncSession, *, agent: m.Agent) -> str | None:
                 .order_by(m.Department.name, m.Agent.name)
             )
         ).all()
+        rows: list[tuple[m.Agent, m.Department]] = [(a, dept) for a, dept in result]
+        person = await copilot_person(db, tenant_id=agent.tenant_id, task=task)
+        if person is not None:
+            reach = await member_run_reach(
+                db,
+                member_id=person.id,
+                tenant_id=agent.tenant_id,
+                token_role=await person_token_role(
+                    db,
+                    tenant_id=agent.tenant_id,
+                    run_id=run.id if run is not None else None,
+                    person=person,
+                ),
+            )
+            rows = [(a, dept) for a, dept in rows if runnable_with(reach, a)]
         if not rows:
             return None
+        narrowings = await _published_narrowings(db, [a for a, _ in rows])
         lines = [
-            f"- {a.id}: {a.name} ({dept}" + (f", {a.role_title})" if a.role_title else ")")
+            f"- {a.id}: {a.name} ({dept.name}"
+            + (f", {a.role_title})" if a.role_title else ")")
+            + _tools_note(dept, narrowings[a.id])
             for a, dept in rows
         ]
-        return "Every agent in this tenant, by department -- delegate_task may reach any " \
+        if person is not None:
+            return (
+                "Every agent the person you are acting for may run, by department -- "
+                "delegate_task may reach any of them:\n" + "\n".join(lines)
+            )
+        return (
+            "Every agent in this tenant, by department -- delegate_task may reach any "
             "of them if the person you are acting for can:\n" + "\n".join(lines)
+        )
 
     mates = (
         (
@@ -183,6 +314,7 @@ async def _gated_copilot_permissions(
     tenant_id: uuid.UUID,
     task: m.Task | None,
     run_id: uuid.UUID | None,
+    actor: AgentActor | None,
 ) -> frozenset[str]:
     """Which of the 5 status tools' permissions this run's Assistant may
     offer, mirroring `require_departmental`'s admission formula
@@ -192,12 +324,15 @@ async def _gated_copilot_permissions(
     task behind it -- every other agent, and every non-chat origin
     (delegated/scheduled runs have no chat session), gets the empty set,
     which is exactly what `offered_tools` needs to withhold all 5 tools.
+
+    `actor` is `build_run_preamble`'s own already-resolved
+    `_resolve_agent_actor` call (for A2's "Acting for" line) passed straight
+    through -- both need the identical `(tenant_id, task, run_id)` lookup, so
+    resolving it twice per run would be a pointless duplicate query.
     """
     if not agent.is_tenant_assistant or task is None:
         return frozenset()
-    agent_actor = await _resolve_agent_actor(
-        db, tenant_id=tenant_id, task=task, run_id=run_id
-    )
+    agent_actor = actor
     if agent_actor is None:
         return frozenset()
     authority = await authority_for_member(
@@ -209,9 +344,7 @@ async def _gated_copilot_permissions(
     # Seat-grantable: a departmental seat alone is enough (SEAT_PERMISSIONS
     # includes all three of these for both SEAT_VIEWER and SEAT_APPROVER).
     for permission in (perm(APPROVAL, VIEW), perm(DEPARTMENT, VIEW), perm(AGENT, VIEW)):
-        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(
-            permission
-        ):
+        if permission in authority.tenant_wide or agent_actor.scope.holds_anywhere(permission):
             granted.add(permission)
     # Tenant-wide only: not in SEAT_PERMISSIONS, so no seat can ever grant
     # these -- checked against authority.tenant_wide alone.
@@ -229,18 +362,77 @@ async def build_run_preamble(
     task_text: str,
     frame: dict[str, Any],
     model_locality: str,
+    caps: ModelCaps,
+    max_steps: int,
     task_images: list[ImagePart] | None = None,
     supports_vision: bool = False,
     task: m.Task | None = None,
     run_id: uuid.UUID | None = None,
+    pinned: Mapping[str, Any] | None = None,
 ) -> RunPreamble:
     """Seed a run's conversation: system context first, the task last.
 
     Message order is part of the contract -- the task must be the final turn, so
     the model reads its instructions against context already established.
+
+    `pinned` is the run's resolved agent version (`resolve_version`). Every
+    runtime passes it; None (a direct call with no run) reads the live row.
     """
+    org = await db.get(m.Organization, tenant_id)
+    tenant_name = org.name if org is not None else "the organization"
+
+    tz_label, tz = resolve_timezone(org.timezone if org is not None else "UTC")
+    now = dt.datetime.now(tz)
+
+    # _resolve_agent_actor requires a real Task (it dereferences task.id); a
+    # delegated/scheduled run passes task=None, in which case there is no
+    # chat-driven human behind this run at all, the same fail-closed shape as
+    # _gated_copilot_permissions' own guard just below.
+    actor = (
+        await _resolve_agent_actor(db, tenant_id=tenant_id, task=task, run_id=run_id)
+        if task is not None
+        else None
+    )
+    if actor is not None:
+        acting_for = actor.member.display_name or actor.member.subject
+    else:
+        acting_for = "scheduled run, no acting person"
+
+    run = await db.get(m.AgentRun, run_id) if run_id is not None else None
+    origin = await _origin_label(db, run=run)
+
+    department = await db.get(m.Department, agent.department_id)
+    department_name = department.name if department is not None else "unassigned"
+
+    # The systems whose tools can actually be offered (authz.pdp.offers_tool),
+    # not every key the frame names: a connection switched off for the
+    # department or the agent, or granting nothing, is not reachable, and
+    # naming it sends the model looking for tools it never gets.
+    narrowing = (pinned["narrowing"] or {}) if pinned is not None else (agent.narrowing or {})
+    connection_names = reachable_connections(effective_tool_policies(frame, narrowing))
+    connection_details: dict[str, str] = {}
+    if connection_names:
+        # The tool's one row, whichever department the agent sits in (the
+        # policy above decided it reaches it).
+        rows = [
+            row
+            for row in await tool_connections(
+                db, names=connection_names, department_id=agent.department_id, connected_only=False
+            )
+            # A custom server in no department reaches no agent run.
+            if not needs_department(row)
+        ]
+        for row in rows:
+            cfg = row.config if isinstance(row.config, dict) else {}
+            instruction = cfg.get("server_instructions")
+            if isinstance(instruction, str) and instruction:
+                connection_details[row.name] = instruction
+
     messages: list[NeutralMessage] = [
-        NeutralMessage(role="system", content=system_prompt(agent))
+        NeutralMessage(
+            role="system",
+            content=system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned),
+        )
     ]
     # Said once, before anything a stranger wrote can arrive. Every answer a
     # connection returns is fenced as <external>, and this is what makes that
@@ -249,8 +441,20 @@ async def build_run_preamble(
     # limit in agent/blast_radius.py.
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
 
+    copilot_member = (
+        await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
+        if agent.is_tenant_assistant
+        else None
+    )
     memory_ctx = await retrieve_context(
-        db, agent=agent, tenant_id=tenant_id, frame=frame, query_text=task_text
+        db,
+        agent=agent,
+        tenant_id=tenant_id,
+        frame=frame,
+        query_text=task_text,
+        model_locality=model_locality,
+        narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
+        member_id=copilot_member,
     )
     if memory_ctx:
         messages.append(NeutralMessage(role="system", content=memory_ctx))
@@ -296,17 +500,55 @@ async def build_run_preamble(
             )
         )
 
-    if agent.is_team_lead:
+    is_team_lead = bool(pinned["is_team_lead"]) if pinned is not None else agent.is_team_lead
+    if is_team_lead:
         # Appended as its own system message (like memory/KB context) because
         # system_prompt is a pure sync function and this needs the DB.
-        roster = await roster_block(db, agent=agent)
+        roster = await roster_block(db, agent=agent, task=task, run=run)
         if roster is not None:
             messages.append(NeutralMessage(role="system", content=roster))
+
+    if agent.is_tenant_assistant:
+        # What the Copilot may offer to do itself (copilot direct access §3).
+        from oc8.copilot.direct_access import direct_access_block
+
+        block = await direct_access_block(
+            db,
+            run=run,
+            agent=agent,
+            narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
+        )
+        if block is not None:
+            messages.append(NeutralMessage(role="system", content=block))
+
+    from oc8.boards.mission import board_section
+
+    boards_text = None if agent.is_tenant_assistant else await board_section(db, agent=agent)
+    if boards_text is not None:
+        messages.append(NeutralMessage(role="system", content=boards_text))
 
     assigned_skills = await load_assigned_skills(db, agent=agent, tenant_id=tenant_id)
     catalog = catalog_block(assigned_skills)
     if catalog:
         messages.append(NeutralMessage(role="system", content=catalog))
+
+    messages.append(
+        NeutralMessage(
+            role="user",
+            content=run_context_block(
+                now=now,
+                tz_label=tz_label,
+                acting_for=acting_for,
+                origin=origin,
+                department=department_name,
+                connection_names=connection_names,
+                max_steps=max_steps,
+                instruction_file_count=instruction_file_count,
+                task_attachment_count=len(task_images) if task_images else 0,
+                connection_details=connection_details or None,
+            ),
+        )
+    )
 
     if task_images and supports_vision:
         messages.append(
@@ -322,7 +564,7 @@ async def build_run_preamble(
         messages.append(NeutralMessage(role="user", content=task_text + note))
 
     copilot_permissions = await _gated_copilot_permissions(
-        db, agent=agent, tenant_id=tenant_id, task=task, run_id=run_id
+        db, agent=agent, tenant_id=tenant_id, task=task, run_id=run_id, actor=actor
     )
     return RunPreamble(
         messages=messages,
@@ -335,4 +577,7 @@ async def build_run_preamble(
         has_knowledge=has_knowledge,
         has_instruction_files=has_instruction_files,
         copilot_permissions=copilot_permissions,
+        copilot_has_member=copilot_member is not None,
+        produces_board=boards_text is not None,
+        tz=tz_label,
     )

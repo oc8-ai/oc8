@@ -1,0 +1,493 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { ApiError } from "@/lib/api";
+import type { AgentBuilderDTO } from "@/lib/agent-builder-api";
+import { builderRefusalText } from "@/lib/agent-builder-api";
+
+const m = vi.hoisted(() => ({
+  card: undefined as unknown,
+  error: false,
+  apply: vi.fn(),
+  request: vi.fn(),
+  run: vi.fn(),
+  navigate: vi.fn(),
+  may: true,
+  applyError: null as unknown,
+  applyPending: false,
+}));
+vi.mock("@/lib/agent-builder-api", async (orig) => ({
+  ...(await orig<typeof import("@/lib/agent-builder-api")>()),
+  useAgentBuilder: () => ({ data: m.card, isLoading: false, isError: m.error }),
+  useApplyAgentBuilder: () => ({
+    mutate: m.apply,
+    isPending: m.applyPending,
+    error: m.applyError,
+  }),
+  useRequestAgentBuilder: () => ({ mutate: m.request, isPending: false, error: null }),
+}));
+vi.mock("@/lib/hooks", async (orig) => ({
+  ...(await orig<typeof import("@/lib/hooks")>()),
+  useRunAgent: () => ({ mutate: m.run, isPending: false }),
+}));
+vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => m.may }));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => m.navigate,
+  Link: ({ children }: { children: React.ReactNode }) => <a href="#agent">{children}</a>,
+}));
+
+import { AgentBuilderCard } from "@/components/conversation/agent-builder-card";
+
+const draft: AgentBuilderDTO = {
+  id: "p1",
+  status: "draft",
+  sessionId: "s1",
+  departmentId: "d1",
+  departmentName: "Buchhaltung",
+  newDepartment: false,
+  name: "Rechnungsprüfer",
+  roleTitle: "Buchhaltung",
+  mission: "Prüft jeden Morgen offene Rechnungen.",
+  model: { id: "m1", label: "Mistral" },
+  skills: [{ id: "s1", label: "Rechnungen prüfen" }],
+  triggers: [
+    {
+      kind: "cron",
+      cronExpression: "0 7 * * 1-5",
+      timezone: "Europe/Berlin",
+      eventSource: null,
+      eventType: null,
+      taskText: "Prüfe die offenen Rechnungen.",
+    },
+  ],
+  systems: ["odoo"],
+  limits: [{ connectionName: "odoo", function: "post_invoice", decision: "approval_required" }],
+  expiresAt: "2026-11-16T09:00:00Z",
+  mayCreate: true,
+  mayRequest: true,
+  readOnly: false,
+  refusal: null,
+  failedStep: null,
+  failedReason: null,
+  rejectedReason: null,
+  agent: null,
+  kind: "agent",
+  board: null,
+};
+
+const boardDraft: AgentBuilderDTO = {
+  ...draft,
+  kind: "board",
+  name: "",
+  roleTitle: "",
+  mission: "",
+  model: null,
+  skills: [],
+  triggers: [],
+  systems: [],
+  limits: [],
+  board: {
+    boardId: null,
+    mode: "create",
+    title: "Umsatz",
+    datasets: [
+      { key: "sales", label: "Sales", grain: "day", fieldCount: 3 },
+      { key: "stock", label: "Stock", grain: "moment", fieldCount: 1 },
+    ],
+    blockCount: 4,
+  },
+};
+
+beforeEach(() => {
+  m.apply.mockReset();
+  m.request.mockReset();
+  m.run.mockReset();
+  m.navigate.mockReset();
+  m.may = true;
+  m.error = false;
+  m.applyError = null;
+  m.applyPending = false;
+});
+
+describe("AgentBuilderCard", () => {
+  it("reads a schedule without a zone as UTC", () => {
+    m.card = { ...draft, triggers: [{ ...draft.triggers[0], timezone: null }] };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Every weekday at 7:00 (UTC)")).toBeInTheDocument();
+  });
+
+  it("shows what will be created and creates it", () => {
+    m.card = draft;
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Rechnungsprüfer")).toBeInTheDocument();
+    expect(screen.getByText("Buchhaltung", { selector: "dd" })).toBeInTheDocument();
+    expect(screen.getByText("Mistral")).toBeInTheDocument();
+    expect(screen.getByText("Rechnungen prüfen")).toBeInTheDocument();
+    expect(screen.getByText("odoo")).toBeInTheDocument();
+    // The schedule in plain words with the zone it runs in, not the cron.
+    expect(screen.getByText("Every weekday at 7:00 (Europe/Berlin)")).toBeInTheDocument();
+    expect(screen.queryByText(/0 7 \* \* 1-5/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Create this agent" }));
+    expect(m.apply).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Send for approval" })).not.toBeInTheDocument();
+  });
+
+  it("says when the agent goes into a new department", () => {
+    m.card = { ...draft, departmentId: null, departmentName: "Vertrieb", newDepartment: true };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("New department: Vertrieb", { selector: "dd" })).toBeInTheDocument();
+  });
+
+  it.each([403, 404])("says the preview is unavailable when the read fails (%i)", () => {
+    m.card = undefined;
+    m.error = true;
+    const { container } = render(<AgentBuilderCard proposalId="p1" heading="What happens" />);
+    expect(screen.getByText("Preview unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("What happens")).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(container.querySelector(".animate-pulse")).toBeNull();
+  });
+
+  it("shows its heading once the card is there", () => {
+    m.card = draft;
+    render(<AgentBuilderCard proposalId="p1" readOnly heading="What happens" />);
+    expect(screen.getByText("What happens")).toBeInTheDocument();
+  });
+
+  it("offers approval to a member who may not create", () => {
+    m.card = { ...draft, mayCreate: false };
+    render(<AgentBuilderCard proposalId="p1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Send for approval" }));
+    expect(m.request).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Create this agent" })).not.toBeInTheDocument();
+  });
+
+  it("says it is waiting while the approval is open", () => {
+    m.card = { ...draft, status: "awaiting_approval", mayCreate: false, mayRequest: false };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Waiting for approval")).toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: /create|approval/i })).toHaveLength(0);
+  });
+
+  it("links the created agent and starts a test run", () => {
+    m.card = {
+      ...draft,
+      status: "applied",
+      mayCreate: false,
+      mayRequest: false,
+      agent: { id: "ag1", name: "Rechnungsprüfer", status: "stopped" },
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Created: Rechnungsprüfer")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Test now" }));
+    expect(m.run).toHaveBeenCalledWith(
+      { agentId: "ag1", task: "Prüfe die offenen Rechnungen." },
+      expect.anything(),
+    );
+  });
+
+  it("says the created agent waits for hiring approval", () => {
+    m.card = {
+      ...draft,
+      status: "applied",
+      mayCreate: false,
+      mayRequest: false,
+      agent: { id: "ag1", name: "Rechnungsprüfer", status: "pending_approval" },
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Created: Rechnungsprüfer")).toBeInTheDocument();
+    expect(screen.getByText("Waiting for hiring approval")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Test now" })).not.toBeInTheDocument();
+  });
+
+  it("says so when the test run could not start", () => {
+    m.run.mockImplementation((_vars: unknown, opts: { onError?: (e: Error) => void }) =>
+      opts.onError?.(new ApiError("boom", 500)),
+    );
+    m.card = {
+      ...draft,
+      status: "applied",
+      mayCreate: false,
+      mayRequest: false,
+      agent: { id: "ag1", name: "Rechnungsprüfer", status: "stopped" },
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Test now" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not start the test");
+    expect(m.navigate).not.toHaveBeenCalled();
+  });
+
+  it("hides the test run without run:start", () => {
+    m.may = false;
+    m.card = {
+      ...draft,
+      status: "applied",
+      agent: { id: "ag1", name: "Rechnungsprüfer", status: "stopped" },
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.queryByRole("button", { name: "Test now" })).not.toBeInTheDocument();
+  });
+
+  it("shows a rejection with its reason", () => {
+    m.card = { ...draft, status: "rejected", rejectedReason: "Zu teuer" };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Rejected: Zu teuer")).toBeInTheDocument();
+  });
+
+  it("collapses a superseded proposal to one line", () => {
+    m.card = { ...draft, status: "superseded" };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Replaced by a newer proposal")).toBeInTheDocument();
+    expect(screen.queryByText("Rechnungsprüfer")).not.toBeInTheDocument();
+  });
+
+  it("offers a new proposal once expired", () => {
+    const propose = vi.fn();
+    m.card = { ...draft, status: "expired" };
+    render(<AgentBuilderCard proposalId="p1" onPropose={propose} />);
+    fireEvent.click(screen.getByRole("button", { name: "Propose again" }));
+    expect(propose).toHaveBeenCalled();
+  });
+
+  it("reads only, in an approver's pane", () => {
+    m.card = { ...draft, readOnly: true, mayCreate: false, mayRequest: false };
+    render(<AgentBuilderCard proposalId="p1" readOnly />);
+    expect(screen.queryAllByRole("button", { name: /create|approval/i })).toHaveLength(0);
+  });
+
+  it("says why a step failed, not only its number", () => {
+    m.card = {
+      ...draft,
+      refusal: "step_failed",
+      failedStep: 2,
+      failedReason: "skill_requirements_missing",
+    };
+    render(<AgentBuilderCard proposalId="p1" />);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Step 3 could not be applied");
+    expect(alert).toHaveTextContent("The skill needs a system this agent does not have");
+    expect(alert).toHaveTextContent("Nothing was created.");
+  });
+
+  it("names why the last apply was refused", () => {
+    m.card = { ...draft, refusal: "name_taken", failedStep: 0 };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("That name is already taken.");
+  });
+
+  it("says so when the agent was already created", () => {
+    m.card = draft;
+    m.applyError = new ApiError("agent_builder:already_applied", 409);
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("This agent was already created.");
+  });
+
+  it("shows the generic text for any other failure", () => {
+    m.card = draft;
+    m.applyError = new ApiError("boom", 500);
+    const { unmount } = render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("The agent was not created. Try again.");
+    unmount();
+    m.applyError = new TypeError("Failed to fetch");
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("The agent was not created. Try again.");
+  });
+
+  it("prefers the refusal stored on the proposal over a client error", () => {
+    m.card = { ...draft, refusal: "name_taken" };
+    m.applyError = new ApiError("boom", 500);
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("That name is already taken.");
+  });
+
+  it("disables the button while creating", () => {
+    m.card = draft;
+    m.applyPending = true;
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("button", { name: "Create this agent" })).toBeDisabled();
+  });
+
+  it("labels the applied and expired states", () => {
+    m.card = { ...draft, status: "applied", mayCreate: false, agent: null };
+    const { unmount } = render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Created");
+    unmount();
+    m.card = { ...draft, status: "expired" };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Expired");
+  });
+
+  it("asks the copilot to propose again", () => {
+    const propose = vi.fn();
+    m.card = { ...draft, status: "expired" };
+    render(<AgentBuilderCard proposalId="p1" onPropose={propose} />);
+    fireEvent.click(screen.getByRole("button", { name: "Propose again" }));
+    expect(propose).toHaveBeenCalledWith("/agent Please propose Rechnungsprüfer again.");
+  });
+});
+
+describe("AgentBuilderCard for a dashboard", () => {
+  it("renders a board-only proposal without agent fields", () => {
+    m.card = boardDraft;
+    render(<AgentBuilderCard proposalId="p1" />);
+    const section = screen.getByRole("region", { name: "Dashboard" });
+    expect(section).toHaveTextContent("Umsatz");
+    expect(screen.getByText("sales · day · 3 fields")).toBeInTheDocument();
+    expect(screen.getByText("stock · moment · 1 field")).toBeInTheDocument();
+    expect(screen.getByText("4 blocks")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.getByText("Buchhaltung", { selector: "dd" })).toBeInTheDocument();
+    // No agent rows: name, role, mission, model, skills, triggers.
+    expect(screen.queryByText("When it works")).toBeNull();
+    expect(screen.queryByText("Model")).toBeNull();
+    expect(screen.queryByText("Skills")).toBeNull();
+    expect(screen.queryByText("Mission")).toBeNull();
+    expect(screen.queryByText("New agent")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create this agent" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create this dashboard" }));
+    expect(m.apply).toHaveBeenCalled();
+  });
+
+  it("marks a change to an existing dashboard", () => {
+    m.card = { ...boardDraft, board: { ...boardDraft.board!, mode: "update", boardId: "b1" } };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Changed")).toBeInTheDocument();
+    expect(screen.queryByText("New")).toBeNull();
+  });
+
+  it("shows the dashboard next to the agent an agent proposal creates", () => {
+    m.card = { ...draft, board: boardDraft.board };
+    render(<AgentBuilderCard proposalId="p1" />);
+    expect(screen.getByText("Rechnungsprüfer")).toBeInTheDocument();
+    expect(screen.getByText("Every weekday at 7:00 (Europe/Berlin)")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Dashboard" })).toHaveTextContent("Umsatz");
+  });
+
+  it("never says the agent was not created for a dashboard refusal", () => {
+    m.card = { ...boardDraft, refusal: "failed" };
+    render(<AgentBuilderCard proposalId="p1" />);
+    const alert = screen.getByRole("alert");
+    expect(alert).not.toHaveTextContent(/agent/i);
+    expect(alert).toHaveTextContent("The dashboard was not saved. Try again.");
+  });
+});
+
+describe("builderRefusalText", () => {
+  const t = (en: string) => en;
+  const codes = [
+    "name_taken",
+    "department_unknown",
+    "connection_not_allowed",
+    "model_not_allowed",
+    "skill_not_allowed",
+    "secret_value",
+    "already_applied",
+    "expired",
+    "not_open",
+    "superseded_concurrently",
+    "step_failed",
+    "something_else",
+  ];
+  it("has a distinct non-empty text for every code", () => {
+    const texts = codes.map((c) => builderRefusalText(c, 1, t));
+    for (const x of texts) expect(x).not.toBe("");
+    expect(new Set(texts).size).toBe(codes.length);
+  });
+  it("numbers the failed step and tolerates none", () => {
+    expect(builderRefusalText("step_failed", 2, t)).toContain("Step 3");
+    expect(builderRefusalText("step_failed", null, t)).toContain("Step 1");
+  });
+  it("gives every step reason its own sentence, in German with du", () => {
+    const reasons = [
+      "skill_requirements_missing",
+      "runtime_lacks_skills",
+      "trigger_invalid",
+      "model_manual_only",
+      "system_outside_frame",
+      "system_login_needed",
+      "system_no_amount_limit",
+    ];
+    const de = (_en: string, de: string) => de;
+    const texts = reasons.map((r) => builderRefusalText("step_failed", 0, t, r));
+    expect(new Set(texts).size).toBe(reasons.length);
+    for (const x of texts) expect(x).not.toBe(builderRefusalText("step_failed", 0, t));
+    expect(builderRefusalText("step_failed", 0, de, "trigger_invalid")).toMatch(/Schritt 1/);
+    expect(builderRefusalText("step_failed", 0, t, "unknown_reason")).toBe(
+      builderRefusalText("step_failed", 0, t),
+    );
+  });
+  it("explains a skill that needs a system when proposing", () => {
+    expect(builderRefusalText("skill_needs_system", null, t)).toMatch(/skill needs a system/);
+  });
+  it("tells the approver to reject a dashboard that moved departments", () => {
+    const de = (_en: string, de: string) => de;
+    const text = builderRefusalText("department_changed", 0, t, null, "board");
+    expect(text).toMatch(/moved to another department/);
+    expect(text).toMatch(/Reject this request/);
+    expect(builderRefusalText("department_changed", 0, de, null, "board")).toMatch(
+      /Lehne diese Anfrage ab/,
+    );
+  });
+  it("has its own text for every dashboard refusal", () => {
+    const boardCodes = [
+      "department_changed",
+      "board_unknown",
+      "agent_unknown",
+      "agent_other_department",
+      "board_version_unknown",
+      "board_changed",
+      "board_spec_invalid",
+      "artifact_not_available",
+      "board_builder_only",
+    ];
+    const fallback = builderRefusalText("something_else", null, t, null, "board");
+    const texts = boardCodes.map((c) => builderRefusalText(c, null, t, null, "board"));
+    expect(new Set(texts).size).toBe(boardCodes.length);
+    for (const x of texts) expect(x).not.toBe(fallback);
+    // A board code inside a failed step gets its sentence too.
+    expect(builderRefusalText("step_failed", 0, t, "board_spec_invalid", "board")).toMatch(
+      /layout/,
+    );
+    expect(fallback).not.toMatch(/agent/i);
+  });
+  it("asks to propose again when the dashboard changed since the proposal", () => {
+    const de = (_en: string, de: string) => de;
+    expect(builderRefusalText("step_failed", 0, t, "board_changed", "board")).toMatch(
+      /^Step 1 could not be applied: The dashboard changed since this proposal\..*Nothing was saved\.$/,
+    );
+    expect(builderRefusalText("step_failed", 0, de, "board_changed", "board")).toMatch(
+      /Das Dashboard hat sich seit diesem Vorschlag geändert/,
+    );
+  });
+  it("says what a dashboard change may not do", () => {
+    const de = (_en: string, de: string) => de;
+    const additive = [
+      "dataset_removed",
+      "field_removed",
+      "grain_changed",
+      "field_type_changed",
+      "currency_changed",
+    ];
+    const generic = builderRefusalText("step_failed", 0, t, null, "board");
+    const texts = additive.map((r) => builderRefusalText("step_failed", 0, t, r, "board"));
+    expect(new Set(texts).size).toBe(additive.length);
+    for (const x of texts) {
+      expect(x).not.toBe(generic);
+      expect(x).toMatch(/^Step 1 could not be applied: .+ Nothing was saved\.$/);
+    }
+    expect(texts[1]).toContain("an existing field can't be removed");
+    expect(texts[3]).toContain("A field's type can't change");
+    expect(builderRefusalText("dataset_removed", null, t, null, "board")).toBe(
+      "A dashboard change may only add datasets; an existing dataset can't be removed.",
+    );
+    expect(builderRefusalText("step_failed", 0, de, "currency_changed", "board")).toMatch(
+      /Die Währung eines Felds kann sich nicht ändern/,
+    );
+  });
+  it("names a concurrent replacement", () => {
+    expect(builderRefusalText("superseded_concurrently", null, t)).toBe(
+      "Replaced by a newer proposal meanwhile.",
+    );
+  });
+});

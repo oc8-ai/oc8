@@ -10,13 +10,20 @@ from oc8.agents.hire import require_hire_approval, set_require_hire_approval
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.audit import append_event
 from oc8.authz.permissions import MANAGE, SETTINGS, VIEW, perm
+from oc8.copilot.followups import max_active_followups
 from oc8.credentials.service import list_credentials
+from oc8.schemas.base import CamelModel
+from oc8.triggers.zones import valid_timezone
 
 router = APIRouter()
 
 
 class HireApprovalSetting(BaseModel):
     enabled: bool
+
+
+class CopilotSettings(CamelModel):
+    max_active_followups: int = Field(ge=1, le=100)
 
 
 class OrganizationSettings(BaseModel):
@@ -30,6 +37,8 @@ class OrganizationSettings(BaseModel):
     #: `None` means no mail server is configured, and every `send_mail`
     #: for this tenant quietly returns False.
     active_smtp_credential_id: str | None = None
+    #: IANA zone a new agent schedule is read in unless it names another.
+    timezone: str = "UTC"
 
 
 class OrganizationSettingsUpdate(BaseModel):
@@ -43,6 +52,13 @@ class OrganizationSettingsUpdate(BaseModel):
     #: disconnected the mail server every time an admin renamed the org, and
     #: password reset would stop working with nothing on screen to say why.
     active_smtp_credential_id: str | None = None
+    #: Omitted leaves the zone as it is (forms that post only name/region).
+    timezone: str | None = Field(default=None, max_length=64)
+
+    @field_validator("timezone")
+    @classmethod
+    def known_zone(cls, value: str | None) -> str | None:
+        return valid_timezone(value) if value is not None else None
 
     @field_validator("name", "region")
     @classmethod
@@ -61,6 +77,7 @@ def _organization_to_dto(organization: m.Organization) -> OrganizationSettings:
         tier=organization.tier,
         region=organization.region,
         active_smtp_credential_id=organization.settings.get("active_smtp_credential_id"),
+        timezone=organization.timezone,
     )
 
 
@@ -93,12 +110,20 @@ async def put_organization_settings(
         raise HTTPException(status_code=404, detail="organization not found")
     organization.name = body.name
     organization.region = body.region
+    resource: dict[str, object] = {"organization_id": str(organization.id), "by": principal.subject}
+    if body.timezone is not None and body.timezone != organization.timezone:
+        # New schedules move to it; recorded so a changed default is traceable.
+        resource["timezone"] = {"from": organization.timezone, "to": body.timezone}
+        organization.timezone = body.timezone
     if "active_smtp_credential_id" in body.model_fields_set:
         if body.active_smtp_credential_id is not None:
             # Server-side filter (credentials/service.py:108-115), so this
             # never walks every credential the tenant owns.
             smtp_credentials = await list_credentials(
-                db, tenant_id=principal.tenant_id, credential_type="smtp_server"
+                db,
+                tenant_id=principal.tenant_id,
+                credential_type="smtp_server",
+                owner="organisation",
             )
             if not any(str(c.id) == body.active_smtp_credential_id for c in smtp_credentials):
                 raise HTTPException(status_code=404, detail="smtp_server credential not found")
@@ -113,7 +138,7 @@ async def put_organization_settings(
         actor_id=None,
         category="admin",
         action="organization.settings.updated",
-        resource={"organization_id": str(organization.id), "by": principal.subject},
+        resource=resource,
         principal=principal,
     )
     await db.commit()
@@ -143,3 +168,43 @@ async def put_hire_approval(
     await set_require_hire_approval(db, tenant_id=principal.tenant_id, enabled=body.enabled)
     await db.commit()
     return HireApprovalSetting(enabled=body.enabled)
+
+
+@router.get(
+    "/settings/copilot",
+    response_model=CopilotSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, VIEW)))],
+)
+async def get_copilot_settings(db: DbSession, principal: CurrentPrincipal) -> CopilotSettings:
+    return CopilotSettings(
+        max_active_followups=await max_active_followups(db, tenant_id=principal.tenant_id)
+    )
+
+
+@router.put(
+    "/settings/copilot",
+    response_model=CopilotSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, MANAGE)))],
+)
+async def put_copilot_settings(
+    body: CopilotSettings, db: DbSession, principal: CurrentPrincipal
+) -> CopilotSettings:
+    organization = await db.get(m.Organization, principal.tenant_id)
+    if organization is None:
+        raise HTTPException(status_code=404, detail="organization not found")
+    organization.settings = {
+        **organization.settings,
+        "copilot_max_active_followups": body.max_active_followups,
+    }
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="organization.settings.updated",
+        resource={"organization_id": str(organization.id), "by": principal.subject},
+        principal=principal,
+    )
+    await db.commit()
+    return body

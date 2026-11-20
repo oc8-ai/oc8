@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from oc8 import models as m
+from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
@@ -40,7 +41,7 @@ from oc8.modelrouter import (
     estimate_tokens,
     get_model_router,
 )
-from oc8.modelrouter.fallback import stream_completion_with_fallback
+from oc8.modelrouter.fallback import limit_reason, stream_completion_with_fallback
 from oc8.modelrouter.http_errors import describe_upstream_error, explain_upstream_error
 from oc8.modelrouter.router import ClassificationViolation, TenantKeyRequired
 from oc8.modelrouter.sampling import resolve_params
@@ -66,6 +67,14 @@ class GatewayCaller(BaseModel):
     tenant_id: uuid.UUID
     agent: m.Agent
     run_id: uuid.UUID
+    #: The agent version the run is pinned to (`resolve_version`). Model and
+    #: sampling come from here, never the live row: a container calls this
+    #: gateway once per turn, and a model switch must not reach a running run.
+    pinned: dict[str, Any]
+    #: Set once restricted or local-only text entered this run (a
+    #: `search_knowledge` lookup through the tool gateway marks it). Every
+    #: completion carries it, so the router refuses a cloud model or fallback.
+    contains_restricted: bool = False
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -96,7 +105,13 @@ async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
     agent = await db.get(m.Agent, run.agent_id)
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
-    return GatewayCaller(tenant_id=run.tenant_id, agent=agent, run_id=run_id)
+    return GatewayCaller(
+        tenant_id=run.tenant_id,
+        agent=agent,
+        run_id=run_id,
+        pinned=await resolve_version(db, run, agent),
+        contains_restricted=bool((run.context or {}).get("contains_restricted", False)),
+    )
 
 
 # ------------------------------------------------------------------- inbound
@@ -269,9 +284,8 @@ async def _prepare(
     agent must not be able to pick the endpoint whose budget check is weaker.
     """
     agent = caller.agent
-    model_config = (
-        await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
-    )
+    pinned_model_id = pinned_model_config_id(caller.pinned)
+    model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
     settings = get_settings()
     if model_config is not None:
         provider, model = model_config.provider, model_config.model
@@ -299,9 +313,9 @@ async def _prepare(
         no_config_model=model,
         messages=messages,
         tools=tools,
-        params=resolve_params(model_config, agent=agent),
+        params=resolve_params(model_config, agent=agent, definition=caller.pinned["definition"]),
         request_id=request_id,
-        contains_restricted=False,
+        contains_restricted=caller.contains_restricted,
     )
     return common, request_id, provider, model, model_config
 
@@ -317,6 +331,12 @@ async def _complete_or_raise(db: DbSession, common: dict[str, Any]) -> Completio
     except HTTPException:
         raise
     except Exception as exc:  # upstream failed after the chain was exhausted
+        # A spent quota or a throttling provider is a limit, not a broken
+        # upstream: 429, so a harness backs off, with a detail naming which one.
+        reason = limit_reason(exc)
+        if reason is not None:
+            logger.warning("llm gateway model turn refused: %s", exc)
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, reason) from exc
         # LOG it too, not only in the 502 body. A harness usually reports "502 from
         # the gateway" and nothing else, so the provider's own reason has to be
         # readable server-side or the failure has to be reproduced by hand.

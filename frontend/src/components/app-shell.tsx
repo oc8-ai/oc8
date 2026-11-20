@@ -1,3 +1,4 @@
+import { NotificationBell } from "@/components/notification-bell";
 import { Link, Outlet, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Activity,
@@ -17,6 +18,9 @@ import {
   LayoutGrid,
   LogOut,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plug,
   Puzzle,
   Settings,
   ShieldCheck,
@@ -26,7 +30,7 @@ import {
   TrendingUp,
   Users,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -39,9 +43,14 @@ import {
 import { NotificationsSheet, OPEN_NOTIFICATIONS_EVENT } from "@/components/inbox-sheets";
 import { GlobalSearch } from "@/components/global-search";
 import { CopilotDock } from "@/components/copilot-dock";
+import { CopilotAvatar } from "@/components/copilot-persona";
+import { TonePill } from "@/components/run-state-badge";
+import { useCopilotProfile } from "@/lib/hooks-copilot";
+import { mascotState } from "@/lib/copilot-status";
 import { cn } from "@/lib/utils";
+import { APP_VERSION } from "@/lib/app-version";
 import { useAgents, useApprovals, useClarifications, useStanding } from "@/lib/hooks";
-import { useAssignedRoleName, useCan, useMay } from "@/lib/governance-hooks";
+import { useAssignedRoleName, useCallerCapabilities, useCan, useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { hasCommunitySession, logoutCommunity, logoutDev } from "@/lib/api";
 import {
@@ -49,7 +58,9 @@ import {
   listenForPushSubscriptionChanges,
   unsubscribeFromPush,
 } from "@/lib/push-notifications";
-import { useFrontendEdition } from "@/edition/composition";
+import { isPathBlocked, useFrontendEdition, visibleEditionNavigation } from "@/edition/composition";
+import type { EditionNavigationItem } from "@/edition/contracts";
+import { EditionSidebarFooter, EditionSidebarHeader } from "@/edition/slots";
 
 /** Hand this device's push subscription back before the session ends.
  *
@@ -110,6 +121,8 @@ interface NavLink {
   to: string;
   label: string;
   icon: typeof Building2;
+  /** Optional element drawn right after the label (the Copilot's avatar). */
+  adornment?: ReactNode;
   exact?: boolean;
   /** The tenant-wide permission the screen's data sits behind. A screen he may
    *  not open is a screen he is not shown — an employee's role is `member`,
@@ -216,51 +229,88 @@ function useCollapsedSections(): [Set<string>, (id: string) => void, (id: string
   return [closed, toggle, reveal];
 }
 
+const SIDEBAR_COLLAPSED_KEY = "oc8-sidebar-collapsed";
+
+/** The reader's own persisted choice for every page EXCEPT /workspace, which always
+ *  forces the rail regardless of this value (see AppShell's `collapsed`). */
+function usePersistedSidebarCollapsed(): [boolean, (next: boolean) => void] {
+  const [collapsed, setCollapsedState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1";
+  });
+  const setCollapsed = useCallback((next: boolean) => {
+    setCollapsedState(next);
+    try {
+      window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+    } catch {
+      /* noop, matches the sections-state precedent */
+    }
+  }, []);
+  return [collapsed, setCollapsed];
+}
+
 function NavItemLink({
   item,
   pathname,
   nested = false,
+  collapsed = false,
 }: {
   item: NavLink;
   pathname: string;
   nested?: boolean;
+  /** Whole-sidebar rail state (not this item's own state) -- hides the label
+   *  and swaps the numeric badge pill for a plain dot, since neither fits an
+   *  icon-only column. */
+  collapsed?: boolean;
 }) {
   const active = item.exact ? pathname === item.to : pathname.startsWith(item.to);
   const Icon = item.icon;
+  const hasBadge = item.badge != null && item.badge > 0;
   return (
     <Link
       to={item.to as "/"}
+      title={collapsed ? item.label : undefined}
       className={cn(
         "group flex items-center gap-3 rounded-md py-2 text-sm transition-colors",
         // Nested items are indented by the rule to their left rather than by
         // padding alone, so the label keeps its width and still truncates
         // cleanly when the sidebar is the narrowest it ever gets.
-        nested ? "pl-3 pr-3" : "px-3",
+        collapsed ? "justify-center px-2" : nested ? "pl-3 pr-3" : "px-3",
         active
           ? "bg-primary/10 text-primary"
           : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
       )}
       aria-current={active ? "page" : undefined}
     >
-      <Icon
-        className={cn(
-          "h-4 w-4 shrink-0",
-          active ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
-        )}
-      />
-      <span className="truncate">{item.label}</span>
-      {item.badge != null && item.badge > 0 && (
-        <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
-          {item.badge}
-        </span>
-      )}
-      {active && (
-        <span
+      <span className="relative inline-flex shrink-0">
+        <Icon
           className={cn(
-            "h-1.5 w-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_10px_var(--primary)]",
-            item.badge ? "ml-1.5" : "ml-auto",
+            "h-4 w-4 shrink-0",
+            active ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
           )}
         />
+        {collapsed && hasBadge && (
+          <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-[color:var(--status-warning)]" />
+        )}
+      </span>
+      {!collapsed && (
+        <>
+          <span className="truncate">{item.label}</span>
+          {item.adornment}
+          {hasBadge && (
+            <span className="ml-auto grid h-5 min-w-5 place-items-center rounded-full bg-[color:var(--status-warning)] px-1 text-[10px] font-semibold text-black">
+              {item.badge}
+            </span>
+          )}
+          {active && (
+            <span
+              className={cn(
+                "h-1.5 w-1.5 shrink-0 rounded-full bg-primary shadow-[0_0_10px_var(--primary)]",
+                item.badge ? "ml-1.5" : "ml-auto",
+              )}
+            />
+          )}
+        </>
       )}
     </Link>
   );
@@ -283,6 +333,8 @@ function NavItemSection({
   collapsed,
   onToggle,
   onReveal,
+  sidebarCollapsed = false,
+  onExpandSidebar,
 }: {
   section: NavSection;
   items: NavLink[];
@@ -290,6 +342,13 @@ function NavItemSection({
   collapsed: boolean;
   onToggle: () => void;
   onReveal: (id: string) => void;
+  /** Whole-sidebar rail state. An icon column has no room for this section's
+   *  own chevron/children, so while this is true the section renders as a
+   *  single icon-only item instead (see the early return below). */
+  sidebarCollapsed?: boolean;
+  /** Un-collapses the whole sidebar -- the same setter the dock's toggle
+   *  button uses. Only called from the rail-mode click handler below. */
+  onExpandSidebar?: () => void;
 }) {
   const t = useT();
   const holdsActive = items.some((c) => (c.exact ? pathname === c.to : pathname.startsWith(c.to)));
@@ -300,6 +359,41 @@ function NavItemSection({
   const open = !collapsed;
   const Icon = section.icon;
   const panelId = `nav-section-${section.section}`;
+
+  // The rail has no room for a chevron or its children -- clicking the
+  // section here does two things at once: it un-collapses the whole sidebar
+  // AND reveals this section, so the reader lands exactly where they clicked
+  // rather than on a still-closed section in a now-wide sidebar.
+  if (sidebarCollapsed) {
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          onExpandSidebar?.();
+          onReveal(id);
+        }}
+        title={section.label}
+        className={cn(
+          "group flex w-full items-center justify-center rounded-md py-2 text-sm transition-colors",
+          holdsActive
+            ? "text-sidebar-foreground"
+            : "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-foreground",
+        )}
+      >
+        <span className="relative inline-flex shrink-0">
+          <Icon
+            className={cn(
+              "h-4 w-4 shrink-0",
+              holdsActive ? "text-primary" : "text-muted-foreground group-hover:text-foreground",
+            )}
+          />
+          {holdsActive && (
+            <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-primary shadow-[0_0_10px_var(--primary)]" />
+          )}
+        </span>
+      </button>
+    );
+  }
 
   return (
     <div>
@@ -352,6 +446,72 @@ function NavItemSection({
   );
 }
 
+/** The top bar's title for a core page; `undefined` when the path is not one. */
+export function corePageTitle(
+  p: string,
+  t: (en: string, de: string) => string,
+): string | undefined {
+  if (p === "/") return t("Office", "Büro");
+  if (p.startsWith("/workspace")) return t("My work", "Meine Arbeit");
+  if (p.startsWith("/copilot")) return t("My Copilot", "Mein Copilot");
+  if (p.startsWith("/departments")) return t("Departments", "Abteilungen");
+  if (p.startsWith("/agents")) return t("Agents", "Agenten");
+  if (p.startsWith("/skills")) return t("Skills", "Skills");
+  if (p.startsWith("/handoffs")) return t("Handoffs", "Übergaben");
+  if (p.startsWith("/flows")) return t("Flows", "Abläufe");
+  if (p.startsWith("/capas")) return t("Capas", "Capas");
+  if (p.startsWith("/knowledge")) return t("Knowledge", "Wissen");
+  if (p.startsWith("/activity")) return t("Activity", "Aktivität");
+  if (p.startsWith("/audit")) return t("Audit", "Prüfprotokoll");
+  if (p.startsWith("/governance")) return t("Access & roles", "Zugriff & Rollen");
+  if (p.startsWith("/members")) return t("Users", "Benutzer");
+  if (p.startsWith("/models")) return t("Models", "Modelle");
+  if (p.startsWith("/costs")) return t("Costs", "Kosten");
+  if (p.startsWith("/statistics")) return t("Statistics", "Statistiken");
+  if (p.startsWith("/settings")) return t("Settings", "Einstellungen");
+  if (p.startsWith("/connections")) return t("Connections", "Verbindungen");
+  return undefined;
+}
+
+/** The label of the edition navigation item a path belongs to, if any. */
+export function editionPageTitle(
+  items: readonly EditionNavigationItem[],
+  path: string,
+  t: (en: string, de: string) => string,
+): string | undefined {
+  const item = items.find((i) => path === i.to || path.startsWith(`${i.to}/`));
+  return item ? t(item.label.en, item.label.de) : undefined;
+}
+
+/** Notices an edition shows above every page, in the order it lists them. */
+export function EditionBanners() {
+  const { banners } = useFrontendEdition();
+  return (
+    <>
+      {banners.map(({ id, component: Banner }) => (
+        <Banner key={id} />
+      ))}
+    </>
+  );
+}
+
+/** Renders the page, or a neutral panel when the path is an edition feature the
+ *  caller's organisation cannot use. */
+export function EditionCapabilityGate({ path, children }: { path: string; children: ReactNode }) {
+  const { gates } = useFrontendEdition();
+  const callerCapabilities = useCallerCapabilities();
+  const t = useT();
+  if (!isPathBlocked(gates, path, callerCapabilities)) return <>{children}</>;
+  return (
+    <div role="alert" className="mx-auto max-w-md py-16 text-center text-sm text-muted-foreground">
+      {t(
+        "This feature is not available for your organisation.",
+        "Diese Funktion ist für deine Organisation nicht verfügbar.",
+      )}
+    </div>
+  );
+}
+
 export function AppShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
@@ -366,6 +526,31 @@ export function AppShell() {
   const assignedRole = useAssignedRoleName();
   const [closedSections, toggleSection, revealSection] = useCollapsedSections();
 
+  // Two mechanisms, deliberately kept apart -- see `usePersistedSidebarCollapsed`'s
+  // doc comment and the design note in the sidebar-collapse spec. `userCollapsed`
+  // is the reader's own persisted choice, honoured on every route except
+  // /workspace. `workspaceExpandOverride` is a same-visit-only override that
+  // reverts the moment the reader arrives at /workspace fresh -- it is never
+  // written to storage, so it can never leak into `userCollapsed`'s behaviour
+  // elsewhere, and clicking it while on /workspace never touches the persisted key.
+  const [userCollapsed, setUserCollapsed] = usePersistedSidebarCollapsed();
+  const onWorkspace = pathname.startsWith("/workspace");
+  const [workspaceExpandOverride, setWorkspaceExpandOverride] = useState(false);
+  useEffect(() => {
+    if (onWorkspace) setWorkspaceExpandOverride(false);
+  }, [onWorkspace]);
+  const collapsed = onWorkspace ? !workspaceExpandOverride : userCollapsed;
+  const toggleSidebar = () => {
+    if (onWorkspace) setWorkspaceExpandOverride((v) => !v);
+    else setUserCollapsed(!userCollapsed);
+  };
+  // Passed to a collapsed section's rail-mode click handler -- un-collapsing
+  // is a one-way expand there, never a toggle (see `NavItemSection`).
+  const expandSidebar = useCallback(() => {
+    if (onWorkspace) setWorkspaceExpandOverride(true);
+    else setUserCollapsed(false);
+  }, [onWorkspace, setUserCollapsed]);
+
   const { data: approvals = [] } = useApprovals("pending");
   const { data: clarifications = [] } = useClarifications();
   // Sidebar notification badge over every agent, not a paginated list view.
@@ -375,8 +560,25 @@ export function AppShell() {
   // a count that only knew about approvals would send somebody past a question
   // an agent has been parked on for two hours.
   const workCount = approvals.length + clarifications.length;
+  const { data: copilotProfile } = useCopilotProfile(can("copilot:use"));
+  const copilotAdornment = (
+    <span className="inline-flex items-center gap-1" data-testid="nav-copilot-adornment">
+      <CopilotAvatar
+        avatar={copilotProfile?.avatar ?? { shape: "round", color: "indigo" }}
+        state={mascotState(copilotProfile?.status ?? "ready")}
+        size={16}
+      />
+      {copilotProfile?.status === "working" && (
+        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)]" />
+      )}
+      {copilotProfile?.status === "waiting" && (
+        <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-warning)]" />
+      )}
+    </span>
+  );
   const notifCount = agents.filter((a) => a.status === "warning" || a.status === "error").length;
   const edition = useFrontendEdition();
+  const callerCapabilities = useCallerCapabilities();
 
   const nav: NavEntry[] = [
     { to: "/", label: t("Office", "Büro"), icon: Building2, exact: true, needs: "department:view" },
@@ -391,6 +593,13 @@ export function AppShell() {
       label: t("My work", "Meine Arbeit"),
       icon: Inbox,
       badge: workCount,
+    },
+    {
+      to: "/copilot",
+      label: t("Copilot", "Copilot"),
+      icon: Sparkles,
+      needs: "copilot:use",
+      adornment: copilotAdornment,
     },
     {
       to: "/departments",
@@ -477,13 +686,14 @@ export function AppShell() {
         },
         // Declares provider endpoints that `pdp.py` believes about locality.
         { to: "/models", label: t("Models", "Modelle"), icon: Cpu, needs: "model:view" },
-        // Reusable connections to other services (§12.3 secret store metadata).
-        // Gated on the same `secret:view` the backend endpoints require.
+        // Everybody's own accounts at other services, and -- for admins --
+        // the organisation's accesses (connections design). Every built-in
+        // role holds connection:own.
         {
-          to: "/credentials",
-          label: t("Credentials", "Zugangsdaten"),
-          icon: KeyRound,
-          needs: "secret:view",
+          to: "/connections",
+          label: t("Connections", "Verbindungen"),
+          icon: Plug,
+          needs: "connection:own",
         },
         // The compliance archive, read rarely and by few. `/activity` is the
         // operational feed and stays above; this is the tamper-evident record.
@@ -502,7 +712,7 @@ export function AppShell() {
         },
       ],
     },
-    ...edition.navigation.map(
+    ...visibleEditionNavigation(edition.navigation, edition.gates, callerCapabilities).map(
       (item): NavLink => ({
         to: item.to,
         label: t(item.label.en, item.label.de),
@@ -532,31 +742,13 @@ export function AppShell() {
     (item.strict ? may(item.needs) : can(item.needs)) ||
     (SEAT_VISIBLE_NAV.has(item.to) && seated);
 
-  const pageTitle = (p: string) => {
-    if (p === "/") return t("Office", "Büro");
-    if (p.startsWith("/workspace")) return t("My work", "Meine Arbeit");
-    if (p.startsWith("/departments")) return t("Departments", "Abteilungen");
-    if (p.startsWith("/agents")) return t("Agents", "Agenten");
-    if (p.startsWith("/skills")) return t("Skills", "Skills");
-    if (p.startsWith("/handoffs")) return t("Handoffs", "Übergaben");
-    if (p.startsWith("/flows")) return t("Flows", "Abläufe");
-    if (p.startsWith("/capas")) return t("Capas", "Capas");
-    if (p.startsWith("/knowledge")) return t("Knowledge", "Wissen");
-    if (p.startsWith("/activity")) return t("Activity", "Aktivität");
-    if (p.startsWith("/audit")) return t("Audit", "Prüfprotokoll");
-    if (p.startsWith("/governance")) return t("Access & roles", "Zugriff & Rollen");
-    if (p.startsWith("/members")) return t("Users", "Benutzer");
-    if (p.startsWith("/models")) return t("Models", "Modelle");
-    if (p.startsWith("/costs")) return t("Costs", "Kosten");
-    if (p.startsWith("/statistics")) return t("Statistics", "Statistiken");
-    if (p.startsWith("/settings")) return t("Settings", "Einstellungen");
-    return "oc8";
-  };
+  const pageTitle = (p: string) =>
+    corePageTitle(p, t) ?? editionPageTitle(edition.navigation, p, t) ?? "oc8";
   const pageSubtitle = (p: string) => {
     if (p === "/")
       return t(
         "Your company as a living floor — each department a room.",
-        "Ihr Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum.",
+        "Dein Unternehmen als lebendiges Stockwerk — jede Abteilung ein Raum.",
       );
     // The departments you cover, so the page says whose desk it is before you
     // read a row. Names, not ids, and never a hardcoded department: they come
@@ -616,12 +808,12 @@ export function AppShell() {
     if (p.startsWith("/governance"))
       return t(
         "Who may do what — and why you were refused.",
-        "Wer was darf — und warum Sie abgewiesen wurden.",
+        "Wer was darf — und warum du abgewiesen wurdest.",
       );
     if (p.startsWith("/members"))
       return t(
         "Manage user roles for your organization.",
-        "Verwalten Sie Benutzerrollen für Ihre Organisation.",
+        "Verwalte Benutzerrollen für deine Organisation.",
       );
     if (p.startsWith("/models"))
       return t("LLM providers, costs, and assignments.", "LLM-Anbieter, Kosten und Zuweisungen.");
@@ -629,6 +821,11 @@ export function AppShell() {
       return t(
         "Token spend across agents and departments.",
         "Token-Verbrauch über Agenten und Abteilungen.",
+      );
+    if (p.startsWith("/connections"))
+      return t(
+        "Your accounts and the organisation's accesses that agents work with.",
+        "Deine Konten und die Zugänge der Organisation, mit denen Agenten arbeiten.",
       );
     if (p.startsWith("/statistics"))
       return t(
@@ -660,28 +857,68 @@ export function AppShell() {
 
   return (
     <div className="flex min-h-screen w-full bg-background text-foreground">
-      <aside className="hidden md:flex md:w-64 shrink-0 flex-col border-r border-border bg-sidebar">
-        <div className="flex flex-col items-start gap-1.5 px-6 py-6">
+      <aside
+        className={cn(
+          "hidden md:flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200",
+          collapsed ? "md:w-[4.25rem]" : "md:w-64",
+        )}
+      >
+        <div
+          className={cn(
+            "flex items-center justify-between gap-2 py-5 pr-3 pl-6",
+            collapsed && "justify-center px-0",
+          )}
+        >
           {/* The lockup SVG already draws "oc8" as artwork (brand sheet:
               "Wordmark -- drawn artwork, not type -- never reset in a
               font") -- a second, separately-typeset "oc8" beside it was a
-              duplicate wordmark, not a second brand element. */}
-          <img
-            src={theme === "dark" ? "/oc8_Logo_white.svg" : "/oc8_Logo.svg"}
-            alt="oc8"
-            className="h-9 w-auto shrink-0 select-none"
-            draggable={false}
-          />
-          <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
-            <span>{t("Control Panel", "Leitstand")}</span>
-          </div>
+              duplicate wordmark, not a second brand element. Collapsed to the
+              rail, there is no room for the wordmark -- rather than inventing
+              a second, square mark, the toggle takes its place, so the way
+              back out sits where the collapse happened. */}
+          {!collapsed && (
+            <img
+              src={theme === "dark" ? "/oc8_Logo_white.svg" : "/oc8_Logo.svg"}
+              alt="oc8"
+              className="h-9 w-auto shrink-0 select-none"
+              draggable={false}
+            />
+          )}
+          <button
+            type="button"
+            onClick={toggleSidebar}
+            aria-expanded={!collapsed}
+            aria-label={
+              collapsed
+                ? t("Expand sidebar", "Seitenleiste ausklappen")
+                : t("Collapse sidebar", "Seitenleiste einklappen")
+            }
+            title={
+              collapsed
+                ? t("Expand sidebar", "Seitenleiste ausklappen")
+                : t("Collapse sidebar", "Seitenleiste einklappen")
+            }
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-sidebar-ring focus-visible:outline-none"
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </button>
         </div>
+        <EditionSidebarHeader collapsed={collapsed} />
 
         <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-2">
           {nav.map((entry) => {
             if (!isSection(entry)) {
               return visible(entry) ? (
-                <NavItemLink key={entry.to} item={entry} pathname={pathname} />
+                <NavItemLink
+                  key={entry.to}
+                  item={entry}
+                  pathname={pathname}
+                  collapsed={collapsed}
+                />
               ) : null;
             }
             // A section with nothing in it the caller may open is not rendered
@@ -699,23 +936,35 @@ export function AppShell() {
                 collapsed={closedSections.has(entry.section)}
                 onToggle={() => toggleSection(entry.section)}
                 onReveal={revealSection}
+                sidebarCollapsed={collapsed}
+                onExpandSidebar={expandSidebar}
               />
             );
           })}
         </nav>
+        <EditionSidebarFooter collapsed={collapsed} />
 
-        <div className="border-t border-sidebar-border px-4 py-4 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between">
-            <span className="inline-flex items-center gap-2">
-              <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
-              {t("All systems operational", "Alle Systeme betriebsbereit")}
-            </span>
-            <span className="text-[10px]">v0.9</span>
-          </div>
+        <div
+          className={cn(
+            "border-t border-sidebar-border px-4 py-4 text-xs text-muted-foreground",
+            collapsed && "flex justify-center px-0",
+          )}
+        >
+          {collapsed ? (
+            <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+          ) : (
+            <div className="flex items-center justify-between">
+              <span className="inline-flex items-center gap-2">
+                <span className="status-dot text-[color:var(--status-running)] bg-[color:var(--status-running)]" />
+                {t("All systems operational", "Alle Systeme betriebsbereit")}
+              </span>
+              {APP_VERSION && <span className="font-mono text-xs">v{APP_VERSION}</span>}
+            </div>
+          )}
         </div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={cn("flex min-w-0 flex-1 flex-col", pathname === "/copilot" && "h-screen")}>
         <header className="sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border bg-background/85 px-4 py-4 backdrop-blur md:px-8">
           {/* `min-w-[12rem]` (not `min-w-0`) on purpose: `flex-1` alone lets this
               shrink to nothing before the fixed-width controls to its right ever
@@ -826,6 +1075,7 @@ export function AppShell() {
             >
               <LogOut className="h-3.5 w-3.5" />
             </button>
+            <NotificationBell />
             <DropdownMenu>
               <DropdownMenuTrigger
                 aria-label={t("Change language", "Sprache ändern")}
@@ -867,8 +1117,18 @@ export function AppShell() {
           </div>
         </header>
 
-        <main className="min-w-0 flex-1 px-4 py-6 md:px-8 md:py-8">
-          <Outlet />
+        <main
+          className={cn(
+            "min-w-0 flex-1",
+            // The Copilot page owns its own scrolling: a bounded flex column
+            // lets the chat fill the height under the header.
+            pathname === "/copilot" ? "flex min-h-0 flex-col" : "px-4 py-6 md:px-8 md:py-8",
+          )}
+        >
+          <EditionBanners />
+          <EditionCapabilityGate path={pathname}>
+            <Outlet />
+          </EditionCapabilityGate>
         </main>
       </div>
       <NotificationsSheet
@@ -882,7 +1142,7 @@ export function AppShell() {
         and `sonner` does not replay toasts raised before a Toaster mounted. It
         still follows this theme -- root reads the same persisted "bf-theme".
       */}
-      {pathname !== "/workspace" && <CopilotDock />}
+      {pathname !== "/workspace" && pathname !== "/copilot" && <CopilotDock />}
     </div>
   );
 }
@@ -927,23 +1187,5 @@ export function StatusPill({
       color: "var(--status-waiting-for-task)",
     },
   }[status];
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] font-medium",
-        className,
-      )}
-      style={{
-        color: meta.color,
-        borderColor: `color-mix(in oklab, ${meta.color} 35%, transparent)`,
-        background: `color-mix(in oklab, ${meta.color} 10%, transparent)`,
-      }}
-    >
-      <span
-        className="h-1.5 w-1.5 rounded-full"
-        style={{ background: meta.color, boxShadow: `0 0 8px ${meta.color}` }}
-      />
-      {meta.label}
-    </span>
-  );
+  return <TonePill label={meta.label} color={meta.color} className={className} />;
 }

@@ -12,7 +12,7 @@ key = "department"
 label = "Department"
 kind = "department"
 required = false
-help = "Agents in this department will use this connection automatically."
+help = "The chosen login is enabled for this department; leave it empty to enable it for all departments."
 
 # Required (not `required = false` like a bare password field would be):
 # nothing on this form is prefilled from an existing connection, and this one
@@ -25,4 +25,4 @@ key = "system"
 label = "Odoo system"
 kind = "credential"
 credential_type = "odoo_login"
-help = "URL, database, and login, resolved from the shared credentials store only while the bridge starts."
+help = "The login is only chosen here, never copied: its URL, database and user are read from the login each time the bridge starts, so editing the login takes effect everywhere."

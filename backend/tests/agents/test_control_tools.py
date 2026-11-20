@@ -15,8 +15,10 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agent.components import COMPONENT_CATALOG
 from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
+    RENDER_COMPONENT,
     ControlOutcome,
     execute_control_tool,
     offered_tools,
@@ -125,9 +127,9 @@ def test_an_ordinary_team_lead_still_gets_ask_user() -> None:
     assert "ask_user" in names
 
 
-def test_an_active_skill_narrows_the_connection_tools() -> None:
-    """An active skill focuses the model on its own tools. OFFERING only --
-    _authorize still checks the frame on every call, so this cannot widen."""
+def test_an_active_skill_keeps_every_connection_tool_offered() -> None:
+    """The skill narrows what is inline, later, in select_completion_tools.
+    Dropping the other tools here would leave find_tools nothing to pin."""
     skill = _skill("skill_x", requires=["read_record"])
     names = [
         t.name
@@ -135,14 +137,13 @@ def test_an_active_skill_narrows_the_connection_tools() -> None:
             _agent(), assigned_skills=[skill], active_skills=[skill], mcp_tools=MCP_TOOLS
         )
     ]
-    assert "read_record" in names
-    assert "create_record" not in names
-    assert "send_email" not in names
+    for tool in MCP_TOOLS:
+        assert tool.name in names
 
 
 def test_a_skill_requiring_nothing_available_falls_back_to_all_tools() -> None:
-    """A skill whose required tools this connection does not have must not leave
-    the model with no connection tools at all -- it would be unable to act."""
+    """A skill that names a tool this run does not have still leaves every
+    connection tool offered. Hiding them would leave the model unable to act."""
     skill = _skill("skill_x", requires=["nonexistent_tool"])
     names = [
         t.name
@@ -178,13 +179,22 @@ def test_without_an_active_skill_all_connection_tools_are_offered() -> None:
 
 def test_control_tool_names_matches_the_schemas() -> None:
     assert CONTROL_TOOL_NAMES == {
+        "responsibility_open",
+        "responsibility_update",
+        "responsibility_close",
+        "schedule_followup",
+        "cancel_followup",
         "memory_write",
+        "suggest_replies",
+        "read_resource",
         "ask_user",
         "delegate_task",
         "request_decision",
         "search_knowledge",
+        "read_context",
         "search_memory",
         "render_component",
+        "board_write",
         "propose_change",
         "decide_approval",
         "read_reference_file",
@@ -196,20 +206,29 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "kpi_overview",
         "fetch_url",
         "todo_write",
+        "find_tools",
+        "procedure_step_done",
         "write_output_file",
+        "run_shell",
+        "run_program",
         "read_run_file",
+        "enter_agent_mode",
+        "builder_options",
+        "propose_agent",
+        "propose_board",
+        "offer_direct_access",
     }
 
 
 def test_render_component_is_offered_to_every_agent() -> None:
-    """Withholding it would not be a real gate -- the ComponentGrant check
-    inside execute_control_tool is the gate; offering only hides, and "a
-    grant that only hides is not a grant that holds" (see pdp.py)."""
-    names = [
-        t.name
-        for t in offered_tools(_agent(), assigned_skills=[], active_skills=[], mcp_tools=MCP_TOOLS)
-    ]
-    assert "render_component" in names
+    """Components are presentation only and on by default -- every agent,
+    the tenant Assistant included, is offered render_component."""
+    for agent in (_agent(), _agent(is_tenant_assistant=True)):
+        names = [
+            t.name
+            for t in offered_tools(agent, assigned_skills=[], active_skills=[], mcp_tools=MCP_TOOLS)
+        ]
+        assert "render_component" in names
 
 
 def test_search_knowledge_is_withheld_without_a_knowledge_base_grant() -> None:
@@ -653,6 +672,21 @@ async def _human_behind(
     return member
 
 
+async def _may_start_runs(db: Any, tenant: uuid.UUID, member: m.OrgMember) -> None:
+    """Give `member` a tenant-defined role holding `run:start` -- reaching the
+    departments they hold a seat in, as `POST /agents/{id}/run` would. Since
+    the Copilot delegates only to agents its person may run, seeing a
+    department alone no longer lets it cross."""
+    from oc8.authz.permissions import RUN_START
+
+    role = m.Role(tenant_id=tenant, name=f"r-{uuid.uuid4().hex[:8]}", kind="human")
+    db.add(role)
+    await db.flush()
+    db.add(m.RolePermission(tenant_id=tenant, role_id=role.id, permission=RUN_START))
+    member.role_id = role.id
+    await db.flush()
+
+
 async def _try_delegate(
     db: Any,
     tenant: uuid.UUID,
@@ -695,7 +729,12 @@ async def test_assistant_may_delegate_cross_department_when_member_has_access(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
-        await _human_behind(db, tenant, task, all_departments=True)
+        from oc8.authz.permissions import OPERATOR
+
+        member = await _human_behind(db, tenant, task, all_departments=True)
+        # The right to run, company-wide: a built-in role (`tenant_wide_read`).
+        member.role_id = (await _builtin_role(db, tenant, OPERATOR)).id
+        await db.flush()
         outcome = await _try_delegate(db, tenant, lead, task, stranger)
         assert outcome.pending_run is not None
         assert "delegated to Fremd" in outcome.output
@@ -708,7 +747,8 @@ async def test_a_live_seat_in_the_target_department_is_enough(app_session: Any) 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
-        await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        await _may_start_runs(db, tenant, member)
         outcome = await _try_delegate(db, tenant, lead, task, stranger)
         assert outcome.pending_run is not None
 
@@ -974,6 +1014,400 @@ async def test_an_ordinary_team_lead_still_cannot_cross_departments(app_session:
         assert "your own department" in outcome.output
 
 
+# ------------------------- the Copilot delegates only to agents the person may run
+
+
+async def _web_turn_for(
+    db: Any,
+    tenant: uuid.UUID,
+    lead: m.Agent,
+    task: m.Task,
+    member: m.OrgMember,
+    *,
+    operator_role: str | None = None,
+) -> m.AgentRun:
+    """A live web turn the conversation's own member wrote -- the one shape of
+    run that acts for a present person (`direct_access_run`)."""
+    session = await db.scalar(select(m.ChatSession).where(m.ChatSession.task_id == task.id))
+    context: dict[str, Any] = {
+        "door": "web",
+        "on_behalf_of": str(member.id),
+        "chat_session_id": str(session.id),
+    }
+    if operator_role is not None:
+        context["operator_role"] = operator_role
+    run = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=lead.id,
+        task_id=task.id,
+        source="chat",
+        state="running",
+        context=context,
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+async def _delegations(db: Any, tenant: uuid.UUID) -> list[m.AgentRun]:
+    return list(
+        (
+            await db.execute(
+                select(m.AgentRun).where(
+                    m.AgentRun.tenant_id == tenant, m.AgentRun.source == "delegation"
+                )
+            )
+        ).scalars()
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_copilot_cannot_delegate_to_an_agent_the_person_may_not_run(
+    app_session: Any,
+) -> None:
+    """The person may SEE the department (a seat), but holds no `run:start`:
+    asking the Copilot must not start what they could not start themselves."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _web_turn_for(db, tenant, lead, task, member)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
+@pytest.mark.asyncio
+async def test_the_copilot_delegates_to_an_agent_the_person_may_run(app_session: Any) -> None:
+    """`run:start` from the acting token's role, a seat in the target's
+    department: exactly what `POST /agents/{id}/run` would admit."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _web_turn_for(db, tenant, lead, task, member, operator_role=OPERATOR)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Fremd" in outcome.output
+        assert [r.id for r in await _delegations(db, tenant)] == [outcome.pending_run]
+
+
+async def _turn_for(
+    db: Any, tenant: uuid.UUID, lead: m.Agent, task: m.Task, context: dict[str, Any]
+) -> m.AgentRun:
+    """A Copilot chat run on `task`'s conversation through another door."""
+    session = await db.scalar(select(m.ChatSession).where(m.ChatSession.task_id == task.id))
+    run = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=lead.id,
+        task_id=task.id,
+        source="chat",
+        state="running",
+        context={"chat_session_id": str(session.id), **context},
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+@pytest.mark.asyncio
+async def test_a_copilot_followup_cannot_delegate_to_an_agent_the_person_may_not_run(
+    app_session: Any,
+) -> None:
+    """A follow-up the Copilot scheduled on a refused web turn still acts for
+    that person: it must not start what the web turn could not."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _turn_for(
+            db, tenant, lead, task, {"door": "followup", "followup": {"id": str(uuid.uuid4())}}
+        )
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
+@pytest.mark.asyncio
+async def test_a_telegram_turn_cannot_delegate_to_an_agent_the_person_may_not_run(
+    app_session: Any,
+) -> None:
+    """A messenger turn has no token role; only an assigned role counts, and
+    a seat alone (view) is not the right to run."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        run = await _turn_for(
+            db,
+            tenant,
+            lead,
+            task,
+            {"door": "telegram", "chat_channel": "telegram", "chat_channel_external_id": "42"},
+        )
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
+async def _persons_web_turn(
+    db: Any,
+    tenant: uuid.UUID,
+    lead: m.Agent,
+    task: m.Task,
+    member: m.OrgMember,
+    operator_role: str | None,
+    *,
+    subject: str | None = None,
+    age: dt.timedelta | None = None,
+) -> m.AgentRun:
+    """A web turn `subject` (default: the member) wrote, as `send_message`
+    records it: the acting subject and, from the live token, its role."""
+    context: dict[str, Any] = {
+        "door": "web",
+        "originating_operator": subject or member.subject,
+        "reply_to_message_id": str(uuid.uuid4()),
+    }
+    if operator_role is not None:
+        context["operator_role"] = operator_role
+    run = await _turn_for(db, tenant, lead, task, context)
+    run.state = "done"
+    if age is not None:
+        run.created_at = dt.datetime.now(dt.UTC) - age
+    await db.flush()
+    return run
+
+
+async def _wake_up_after(
+    db: Any,
+    tenant: uuid.UUID,
+    lead: m.Agent,
+    task: m.Task,
+    member: m.OrgMember,
+    delegating: m.AgentRun,
+) -> m.AgentRun:
+    """`delegating` delegated a sub-task; its result wakes the Copilot. The
+    sub-run and the wake-up as `_create_delegation` and
+    `executor._maybe_wake_parent` record them: causal links, never
+    `operator_role`."""
+    sub = m.AgentRun(
+        tenant_id=tenant,
+        agent_id=lead.id,
+        source="delegation",
+        state="done",
+        context={"parent_task_id": str(task.id), "parent_run_id": str(delegating.id)},
+    )
+    db.add(sub)
+    await db.flush()
+    return await _turn_for(
+        db,
+        tenant,
+        lead,
+        task,
+        {
+            "task": 'Sub-task "x" completed.\n\nResult: done',
+            "parent_task_id": str(task.id),
+            "delegation_depth": 1,
+            "door": "web",
+            "originating_operator": member.subject,
+            "wake_of_run_id": str(sub.id),
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_roleless_member_can_still_delegate_after_a_wake_up_turn(
+    app_session: Any,
+) -> None:
+    """No assigned role, a role claim on their own web turn: the Copilot's
+    wake-up after the first delegated result inherits that claim along its
+    causal chain, so a second step can be delegated."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        web = await _persons_web_turn(db, tenant, lead, task, member, OPERATOR)
+        wake = await _wake_up_after(db, tenant, lead, task, member, web)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=wake.id)
+        assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Fremd" in outcome.output
+        # The new sub-run links back to the wake-up, so a further hop finds
+        # the same web turn.
+        sub = await db.get(m.AgentRun, outcome.pending_run)
+        assert sub.context["parent_run_id"] == str(wake.id)
+
+
+@pytest.mark.asyncio
+async def test_a_wake_up_records_the_sub_run_that_woke_it(app_session: Any) -> None:
+    """The executor's half of the causal chain: the wake-up names the sub-run
+    whose result it carries -- and carries no role claim of its own."""
+    from oc8.runtime.executor import _maybe_wake_parent
+    from oc8.runtime.repository import RunRepository
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        finished = uuid.uuid4()
+        wake_id = await _maybe_wake_parent(
+            db,
+            repo=RunRepository(db),
+            tenant_id=tenant,
+            parent_task_id=task.id,
+            delegation_depth=1,
+            finished_agent_id=stranger.id,
+            sub_task_label="job",
+            output="done",
+            succeeded=True,
+            mcp_conn=None,
+            chat_session_id=str(uuid.uuid4()),
+            finished_run_id=finished,
+        )
+        assert wake_id is not None
+        wake = await db.get(m.AgentRun, wake_id)
+        assert wake is not None and wake.agent_id == lead.id
+        assert wake.context["wake_of_run_id"] == str(finished)
+        assert "operator_role" not in wake.context
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "door",
+    [
+        {"door": "followup", "followup": {"id": "f1"}},
+        {"door": "telegram", "chat_channel": "telegram", "chat_channel_external_id": "42"},
+    ],
+    ids=["followup", "telegram"],
+)
+async def test_a_followup_or_telegram_turn_does_not_inherit_an_old_web_role(
+    app_session: Any, door: dict[str, Any]
+) -> None:
+    """A follow-up or a messenger turn has no causal web parent: the role on
+    the person's earlier web turn in the same conversation is not replayed."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        await _persons_web_turn(db, tenant, lead, task, member, OPERATOR)
+        run = await _turn_for(db, tenant, lead, task, door)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=run.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+        assert await _delegations(db, tenant) == []
+
+
+@pytest.mark.asyncio
+async def test_a_role_older_than_a_day_is_not_inherited(app_session: Any) -> None:
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        web = await _persons_web_turn(
+            db, tenant, lead, task, member, OPERATOR, age=dt.timedelta(hours=25)
+        )
+        wake = await _wake_up_after(db, tenant, lead, task, member, web)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=wake.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+
+
+@pytest.mark.asyncio
+async def test_a_role_is_read_only_from_the_causal_parent_not_another_run_in_the_session(
+    app_session: Any,
+) -> None:
+    """The wake-up's causal web turn carries no claim; a newer web turn of the
+    same person in the same conversation does: it lends the wake-up nothing."""
+    from oc8.authz.permissions import OPERATOR
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        web = await _persons_web_turn(db, tenant, lead, task, member, None)
+        await _persons_web_turn(db, tenant, lead, task, member, OPERATOR)
+        wake = await _wake_up_after(db, tenant, lead, task, member, web)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=wake.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+
+
+@pytest.mark.asyncio
+async def test_no_recorded_role_anywhere_fails_closed(app_session: Any) -> None:
+    """The causal web turn is another subject's (an admin overseeing the
+    conversation) and carries their claim: it is not the person's, so the
+    wake-up decides on the assigned role alone -- none."""
+    from oc8.authz.permissions import ORG_ADMIN
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task, stranger = await _lead_and_stranger(db, tenant, is_tenant_assistant=True)
+        member = await _human_behind(db, tenant, task, seat_in=stranger.department_id)
+        admins = await _persons_web_turn(
+            db, tenant, lead, task, member, ORG_ADMIN, subject="admin"
+        )
+        wake = await _wake_up_after(db, tenant, lead, task, member, admins)
+        outcome = await _try_delegate(db, tenant, lead, task, stranger, run_id=wake.id)
+        assert outcome.pending_run is None
+        assert outcome.output == "refused: the person may not run Fremd"
+
+
+@pytest.mark.asyncio
+async def test_a_copilot_run_without_a_person_delegates_as_before(app_session: Any) -> None:
+    """Nobody behind the task at all (no chat session): no run-right check,
+    today's rule alone -- a target in the Copilot's own department is reached."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task = await _dept_agent_task(db, tenant, is_team_lead=True)
+        lead.is_tenant_assistant = True
+        mate = m.Agent(
+            tenant_id=tenant,
+            department_id=lead.department_id,
+            name="Rico",
+            status="idle",
+            definition={},
+            presentation={},
+        )
+        db.add(mate)
+        await db.flush()
+        outcome = await _try_delegate(db, tenant, lead, task, mate)
+        assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Rico" in outcome.output
+
+
+@pytest.mark.asyncio
+async def test_a_department_lead_delegates_as_before(app_session: Any) -> None:
+    """No person check for an ordinary lead: even on a web turn of a person
+    who may run nothing, it delegates to its own department as it always did."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        lead, task = await _dept_agent_task(db, tenant, is_team_lead=True)
+        mate = m.Agent(
+            tenant_id=tenant,
+            department_id=lead.department_id,
+            name="Rico",
+            status="idle",
+            definition={},
+            presentation={},
+        )
+        db.add(mate)
+        await db.flush()
+        member = await _human_behind(db, tenant, task)
+        run = await _web_turn_for(db, tenant, lead, task, member)
+        outcome = await _try_delegate(db, tenant, lead, task, mate, run_id=run.id)
+        assert outcome.pending_run is not None, outcome.output
+        assert "delegated to Rico" in outcome.output
+
+
 @pytest.mark.asyncio
 async def test_the_depth_limit_deny_warns_an_operator(app_session: Any) -> None:
     """A runaway delegation chain must be visible to a human, not only to the
@@ -1128,6 +1562,14 @@ def test_each_control_tool_declares_its_required_arguments(name: str) -> None:
         "agent_status",
         "budget_overview",
         "kpi_overview",
+        # `question` OR `questions` (spec §4.1) -- a JSON-schema "one of these"
+        # many providers reject, so the handler enforces it instead.
+        "ask_user",
+        # The builder's door and its read of the options take no arguments.
+        "enter_agent_mode",
+        "builder_options",
+        # Exactly one of agentId/boardId, enforced by the handler like ask_user.
+        "propose_board",
     }
     if name not in optional_tools:
         assert schema.parameters["required"]
@@ -1232,8 +1674,34 @@ async def test_in_process_skill_instruction_lands_after_the_tool_result(
     assert "system" not in roles[i + 1 :], f"no message may be inserted, got {roles}"
 
 
+_MINIMAL_PROPS: dict[str, dict[str, Any]] = {
+    "record_card": {"title": "x"},
+    "data_table": {"title": "x", "columns": [{"key": "a", "label": "A"}], "rows": [{"a": "1"}]},
+    "bar_chart": {"title": "x", "labels": ["a"], "series": [{"name": "s", "values": [1.0]}]},
+    "line_chart": {"title": "x", "labels": ["a"], "series": [{"name": "s", "values": [1.0]}]},
+}
+
+
+def test_every_catalogue_component_has_minimal_props_in_this_test() -> None:
+    """Keeps the parametrised test below honest as the catalogue grows."""
+    assert set(_MINIMAL_PROPS) == set(COMPONENT_CATALOG)
+
+
+def test_render_component_names_every_catalogue_component_to_the_model() -> None:
+    """Components are on by default, so the model is told the full catalogue --
+    no "one you have been granted" hedge that made models give up on them."""
+    schema = RENDER_COMPONENT.parameters["properties"]["component_key"]
+    assert schema["enum"] == list(COMPONENT_CATALOG)
+    assert "granted" not in RENDER_COMPONENT.description
+    for key in COMPONENT_CATALOG:
+        assert key in RENDER_COMPONENT.description
+
+
 @pytest.mark.asyncio
-async def test_render_component_is_refused_without_a_grant(app_session: Any) -> None:
+@pytest.mark.parametrize("component_key", sorted(_MINIMAL_PROPS))
+async def test_render_component_needs_no_grant(app_session: Any, component_key: str) -> None:
+    """Components are presentation only and on by default: an agent with no
+    ComponentGrant row at all renders every catalogue layout."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
@@ -1245,7 +1713,7 @@ async def test_render_component_is_refused_without_a_grant(app_session: Any) -> 
             tc=ToolCall(
                 id="c1",
                 name="render_component",
-                arguments={"component_key": "record_card", "props": {"title": "x"}},
+                arguments={"component_key": component_key, "props": _MINIMAL_PROPS[component_key]},
             ),
             decision=Decision(Effect.ALLOW),
             assigned_skills=[],
@@ -1254,8 +1722,9 @@ async def test_render_component_is_refused_without_a_grant(app_session: Any) -> 
             originating_operator=None,
         )
         assert outcome is not None
-    assert outcome.output.startswith("ERROR:")
-    assert outcome.rendered_component is None
+    assert not outcome.output.startswith("ERROR"), outcome.output
+    assert outcome.rendered_component is not None
+    assert outcome.rendered_component["component_key"] == component_key
 
 
 @pytest.mark.asyncio
@@ -1263,14 +1732,6 @@ async def test_render_component_rejects_an_unknown_component_key(app_session: An
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         await db.flush()
         outcome = await execute_control_tool(
             db,
@@ -1297,14 +1758,6 @@ async def test_render_component_rejects_invalid_props(app_session: Any) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         await db.flush()
         outcome = await execute_control_tool(
             db,
@@ -1327,18 +1780,10 @@ async def test_render_component_rejects_invalid_props(app_session: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_granted_agent_can_render_a_record_card(app_session: Any) -> None:
+async def test_an_agent_without_any_grant_renders_a_record_card(app_session: Any) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         await db.flush()
         outcome = await execute_control_tool(
             db,
@@ -1371,40 +1816,6 @@ async def test_a_granted_agent_can_render_a_record_card(app_session: Any) -> Non
             "link_url": None,
         },
     }
-
-
-@pytest.mark.asyncio
-async def test_a_department_wide_grant_covers_every_agent_in_it(app_session: Any) -> None:
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="department",
-                grantee_id=agent.department_id,
-            )
-        )
-        await db.flush()
-        outcome = await execute_control_tool(
-            db,
-            tenant_id=tenant,
-            agent=agent,
-            task=task,
-            tc=ToolCall(
-                id="c1",
-                name="render_component",
-                arguments={"component_key": "record_card", "props": {"title": "x"}},
-            ),
-            decision=Decision(Effect.ALLOW),
-            assigned_skills=[],
-            active_skills=[],
-            mcp_conn=None,
-            originating_operator=None,
-        )
-        assert outcome is not None
-    assert not outcome.output.startswith("ERROR")
 
 
 @pytest.mark.asyncio
@@ -1465,14 +1876,6 @@ async def test_run_agent_publishes_a_rendered_component(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, _task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
         db.add(run)
         await db.flush()
@@ -1622,14 +2025,6 @@ async def test_run_agent_returns_rendered_components_durably(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent, _task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
         run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running", context={})
         db.add(run)
         await db.flush()
@@ -1649,52 +2044,6 @@ async def test_run_agent_returns_rendered_components_durably(
             },
         },
     ]
-
-
-@pytest.mark.asyncio
-async def test_a_direct_and_a_department_grant_can_coexist(app_session: Any) -> None:
-    """ComponentGrant's own UniqueConstraint allows one row per grantee_type,
-    so an agent can legitimately hold BOTH a direct grant and a department-wide
-    grant for the same component_key at once -- this must not crash the grant
-    check with MultipleResultsFound."""
-    tenant = uuid.uuid4()
-    async with app_session(tenant) as db:
-        agent, task = await _dept_agent_task(db, tenant)
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent.id,
-            )
-        )
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="department",
-                grantee_id=agent.department_id,
-            )
-        )
-        await db.flush()
-        outcome = await execute_control_tool(
-            db,
-            tenant_id=tenant,
-            agent=agent,
-            task=task,
-            tc=ToolCall(
-                id="c1",
-                name="render_component",
-                arguments={"component_key": "record_card", "props": {"title": "x"}},
-            ),
-            decision=Decision(Effect.ALLOW),
-            assigned_skills=[],
-            active_skills=[],
-            mcp_conn=None,
-            originating_operator=None,
-        )
-        assert outcome is not None
-    assert not outcome.output.startswith("ERROR")
 
 
 # ------------------------------------------ the Assistant's propose_change seam
@@ -2629,3 +2978,17 @@ async def test_kpi_overview_dispatch_is_refused_for_a_non_assistant_agent(
         agent, task = await _dept_agent_task(db, tenant, is_team_lead=True)
         outcome = await _kpi_overview(db, tenant, agent, task, {})
         assert outcome.output.startswith("ERROR")
+
+
+def test_propose_agent_asks_for_a_full_mission_and_a_run_text() -> None:
+    from oc8.agent.control_tools import PROPOSE_AGENT
+
+    props = PROPOSE_AGENT.parameters["properties"]
+    assert "full working instructions" in props["mission"]["description"]
+    assert "mission guide" in props["mission"]["description"]
+    assert "Not a copy of the mission" in props["taskText"]["description"]
+    step = props["operations"]["items"]["properties"]
+    assert "mission guide" in step["mission"]["description"]
+    assert "Not a copy of the mission" in step["taskText"]["description"]
+    assert "Pass taskText with it" in props["schedule"]["description"]
+    assert "Pass taskText with it" in props["eventType"]["description"]

@@ -127,4 +127,41 @@ describe("TaskBoardWidget", () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     expect(vi.mocked(toast.error).mock.calls[0][0]).toMatch(/no team lead/i);
   });
+
+  it("draws its title once and its columns have no border of their own", () => {
+    vi.spyOn(hooks, "useTaskBoard").mockReturnValue({
+      data: [
+        {
+          id: "t1",
+          title: "Tickets",
+          state: "waiting",
+          column: "waiting",
+          departmentId: "dept-1",
+          departmentName: "Kundenservice",
+          agentId: null,
+          agentName: null,
+          requestedByMemberId: null,
+          parentTaskId: null,
+          delegationDepth: 0,
+          createdAt: "2026-11-01T00:00:00Z",
+        },
+      ],
+      isPending: false,
+    } as never);
+    vi.spyOn(hooks, "useDepartments").mockReturnValue({
+      data: { items: departments, totalCount: 2 },
+      isPending: false,
+    } as never);
+    vi.spyOn(hooks, "useCreateTask").mockReturnValue({
+      mutateAsync: vi.fn(),
+      isPending: false,
+    } as never);
+    const { container } = render(<TaskBoardWidget config={{}} onConfigChange={vi.fn()} />, {
+      wrapper,
+    });
+    expect(screen.getAllByText("Task Board")).toHaveLength(1);
+    const cols = container.querySelectorAll("[data-column]");
+    expect(cols).toHaveLength(4);
+    for (const col of cols) expect(col.className).not.toMatch(/\bborder\b/);
+  });
 });

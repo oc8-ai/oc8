@@ -190,3 +190,29 @@ async def test_recover_fails_job_stuck_running_between_claim_and_run(
             await db.execute(select(m.KbChunk).where(m.KbChunk.tenant_id == tenant))
         ).scalars().all()
         assert len(chunk_count) == 0  # run_source_sync never ran -- no chunks written
+
+
+async def test_ingestion_of_an_inactive_organisation_is_dropped(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        job, _ = await _setup(db, tenant)
+        job_id = job.id
+        await db.commit()
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    await ingest_job(RunMessage(run_id=str(job_id), tenant_id=str(tenant),
+                                entry_id="1-0", redelivered=False))
+
+    async with app_session(tenant) as db:
+        after = await db.get(m.IngestionJob, job_id)
+        assert after is not None
+        assert after.status == "failed"
+        assert after.stats.get("error") == "organisation is not active"
+        assert after.stats.get("chunks", 0) == 0

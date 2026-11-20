@@ -1,0 +1,326 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const m = vi.hoisted(() => ({
+  mobile: false,
+  sessions: [] as Array<{ id: string; agentId: string }>,
+  linked: undefined as { id: string; agentId: string } | undefined,
+  sent: [] as string[],
+  workCount: 0,
+}));
+
+vi.mock("@tanstack/react-router", () => ({
+  createFileRoute: () => (opts: unknown) => opts,
+  useRouter: () => null,
+}));
+vi.mock("@/lib/conversation-api", () => ({
+  useChatSession: (id: string | null) => ({ data: id ? m.linked : undefined }),
+}));
+vi.mock("@/lib/hooks", () => ({
+  useAgent: (id: string) => ({ data: { id, name: "Stock agent" } }),
+  useAuth: () => ({ data: { memberId: "me" }, isError: false }),
+}));
+vi.mock("@/lib/copilot-work-count", () => ({ useCopilotWorkCount: () => m.workCount }));
+vi.mock("@/lib/agent-builder-api", () => ({
+  useAgentIdeas: () => ({
+    data: [
+      {
+        key: "invoice_checker",
+        title: { en: "Invoice checker", de: "Rechnungsprüfer" },
+        subtitle: {
+          en: "Checks open invoices every morning",
+          de: "Prüft jeden Morgen offene Rechnungen",
+        },
+        prompt: {
+          en: "/agent Set up an invoice checker.",
+          de: "/agent Leg mir einen Rechnungsprüfer an.",
+        },
+      },
+    ],
+  }),
+}));
+vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => m.mobile }));
+vi.mock("@/lib/governance-hooks", () => ({
+  useCallerCapabilities: () => null,
+  useMay: () => () => true,
+}));
+vi.mock("@/lib/hooks-chat", () => ({ useChatSessions: () => ({ data: m.sessions }) }));
+vi.mock("@/lib/hooks-copilot", () => ({
+  useCopilotProfile: () => ({
+    data: {
+      displayName: "Pip",
+      avatar: { shape: "round", color: "indigo" },
+      pausedAt: null,
+      status: "waiting",
+      activeCount: 3,
+      agentId: "agent-1",
+    },
+  }),
+  usePauseCopilot: () => ({ mutate: vi.fn(), isPending: false }),
+  useResumeCopilot: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+vi.mock("@/components/conversation", () => ({
+  Conversation: ({
+    sessionId,
+    onSessionChange,
+    emptyState,
+    promptStarters = [],
+  }: {
+    sessionId: string | null;
+    onSessionChange: (id: string) => void;
+    emptyState?: React.ReactNode | ((send: (text: string) => void) => React.ReactNode);
+    promptStarters?: { title: string; subtitle: string; prompt?: string }[];
+  }) => (
+    <div data-testid="chat" data-session={sessionId ?? ""}>
+      <button type="button" onClick={() => onSessionChange("s-8")}>
+        switch
+      </button>
+      {typeof emptyState === "function" ? emptyState((text) => m.sent.push(text)) : emptyState}
+      {promptStarters.map((s) => (
+        <button key={s.title} type="button" onClick={() => m.sent.push(s.prompt ?? s.title)}>
+          {s.title}
+        </button>
+      ))}
+    </div>
+  ),
+}));
+vi.mock("@/components/conversation/copilot-sidebar", () => ({
+  CopilotSidebar: ({ onSelect }: { onSelect: (id: string | null) => void }) => (
+    <nav aria-label="Chats">
+      <button type="button" onClick={() => onSelect("s-sidebar")}>
+        sidebar pick
+      </button>
+      <button type="button" onClick={() => onSelect(null)}>
+        new chat
+      </button>
+    </nav>
+  ),
+}));
+vi.mock("@/components/copilot-work-panel", () => ({
+  CopilotWorkPanel: () => <div data-testid="work-panel" />,
+}));
+
+import { CopilotPage } from "@/routes/copilot";
+
+function wrap() {
+  return render(
+    <QueryClientProvider client={new QueryClient()}>
+      <CopilotPage />
+    </QueryClientProvider>,
+  );
+}
+
+beforeEach(() => {
+  m.mobile = false;
+  m.sessions = [];
+  m.linked = undefined;
+  m.sent = [];
+  m.workCount = 0;
+});
+
+describe("CopilotPage", () => {
+  it("opens the Copilot's own session a /copilot?session= link names", () => {
+    m.sessions = [{ id: "s-7", agentId: "agent-1" }];
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-7" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+  });
+
+  it("adopts a linked session it learns belongs to the Copilot", () => {
+    m.linked = { id: "s-7", agentId: "agent-1" };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-7" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+  });
+
+  it("does not open another agent's conversation and links to that agent instead", () => {
+    m.linked = { id: "s-9", agentId: "agent-2" };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-9" />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
+    expect(screen.getByText(/This chat belongs to/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Stock agent" })).toHaveAttribute(
+      "href",
+      "/agents/agent-2",
+    );
+  });
+
+  it("re-selects the linked session when the same link is followed again", () => {
+    m.sessions = [{ id: "s-7", agentId: "agent-1" }];
+    const ui = (navKey: string) => (
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-7" navKey={navKey} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui("k1"));
+    fireEvent.click(screen.getByRole("button", { name: "switch" }));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-8");
+    // The address follows the switch first, as the route does.
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId="s-8" navKey="k1b" />
+      </QueryClientProvider>,
+    );
+    rerender(ui("k2"));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+  });
+
+  it("keeps a new chat empty while the address still names the old one", () => {
+    // The router hands out the new navigation's key before its search, so for
+    // one render the page sees a fresh key with the chat it just left.
+    m.sessions = [{ id: "s-7", agentId: "agent-1" }];
+    const ui = (session: string | undefined, navKey: string) => (
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage initialSessionId={session ?? null} navKey={navKey} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui("s-7", "k1"));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-7");
+    fireEvent.click(screen.getByRole("button", { name: "new chat" }));
+    rerender(ui("s-7", "k2"));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
+    rerender(ui(undefined, "k2"));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "");
+  });
+
+  it("desktop shows the persona header, the chat and the inline work panel", () => {
+    m.workCount = 2;
+    wrap();
+    expect(screen.getByText("Pip")).toBeInTheDocument();
+    expect(screen.getByTestId("chat")).toBeInTheDocument();
+    expect(screen.getByTestId("work-panel").closest("aside")).not.toBeNull();
+  });
+
+  it("mobile hides the aside and opens the panel in a bottom sheet", () => {
+    m.mobile = true;
+    wrap();
+    expect(screen.queryByTestId("work-panel")).toBeNull();
+    const btn = screen.getByRole("button", { name: /Work/ });
+    expect(btn).toHaveTextContent("3");
+    fireEvent.click(btn);
+    const panel = screen.getByTestId("work-panel");
+    expect(panel.closest("aside")).toBeNull();
+    expect(panel.closest('[role="dialog"]')).not.toBeNull();
+  });
+
+  it("replaces the Chats picker with the sidebar and selects from it", () => {
+    wrap();
+    expect(screen.queryByTestId("picker")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "sidebar pick" }));
+    expect(screen.getByTestId("chat")).toHaveAttribute("data-session", "s-sidebar");
+  });
+
+  it("replaces the address with the chat picked in the sidebar or created by the chat", () => {
+    const opened = vi.fn();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <CopilotPage onSessionOpened={opened} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "sidebar pick" }));
+    expect(opened).toHaveBeenLastCalledWith("s-sidebar");
+    fireEvent.click(screen.getByRole("button", { name: "switch" }));
+    expect(opened).toHaveBeenLastCalledWith("s-8");
+    expect(opened).toHaveBeenCalledTimes(2);
+  });
+
+  it("sends a prompt starter from the empty chat", () => {
+    wrap();
+    fireEvent.click(screen.getByRole("button", { name: "What is waiting on me?" }));
+    expect(m.sent).toEqual(["What is waiting on me?"]);
+  });
+
+  it("puts agent ideas in front of the usual starters", () => {
+    wrap();
+    const buttons = screen.getAllByRole("button").map((b) => b.textContent);
+    expect(buttons.indexOf("Invoice checker")).toBeLessThan(
+      buttons.indexOf("Keep an eye on something for me"),
+    );
+    fireEvent.click(screen.getByText("Invoice checker"));
+    expect(m.sent).toContain("/agent Set up an invoice checker.");
+  });
+
+  describe("work rail", () => {
+    const toggle = () => screen.getByRole("button", { name: /work panel/i });
+
+    it("stays folded while there is nothing to show", () => {
+      wrap();
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      expect(toggle()).toHaveAttribute("aria-expanded", "false");
+      const rail = document.getElementById(toggle().getAttribute("aria-controls")!);
+      expect(rail?.tagName).toBe("ASIDE");
+      expect(rail).toHaveAttribute("data-state", "closed");
+      expect(screen.queryByTestId("work-rail-count")).toBeNull();
+    });
+
+    it("opens by itself when the first item shows up, and stays open after", () => {
+      const { rerender } = wrap();
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      m.workCount = 1;
+      rerender(
+        <QueryClientProvider client={new QueryClient()}>
+          <CopilotPage />
+        </QueryClientProvider>,
+      );
+      expect(screen.getByTestId("work-panel").closest("aside")).not.toBeNull();
+      expect(toggle()).toHaveAttribute("aria-expanded", "true");
+      m.workCount = 0;
+      rerender(
+        <QueryClientProvider client={new QueryClient()}>
+          <CopilotPage />
+        </QueryClientProvider>,
+      );
+      expect(screen.getByTestId("work-panel")).toBeInTheDocument();
+    });
+
+    it("remembers a member's own collapse, and new work does not reopen it", () => {
+      m.workCount = 2;
+      const first = wrap();
+      fireEvent.click(toggle());
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      expect(toggle()).toHaveAttribute("aria-expanded", "false");
+      expect(screen.getByTestId("work-rail-count")).toHaveTextContent("2");
+      expect(toggle()).toHaveAccessibleName(/2/);
+      expect(window.localStorage.getItem("oc8-copilot-work-rail-me")).toBe("closed");
+      first.unmount();
+
+      // Next visit, more work: still folded, count on the toggle.
+      m.workCount = 5;
+      wrap();
+      expect(screen.queryByTestId("work-panel")).toBeNull();
+      expect(screen.getByTestId("work-rail-count")).toHaveTextContent("5");
+      fireEvent.click(toggle());
+      expect(screen.getByTestId("work-panel")).toBeInTheDocument();
+      expect(window.localStorage.getItem("oc8-copilot-work-rail-me")).toBe("open");
+    });
+
+    it("keeps working when storage throws", () => {
+      const spy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+        throw new Error("blocked");
+      });
+      const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        throw new Error("blocked");
+      });
+      try {
+        m.workCount = 1;
+        wrap();
+        expect(screen.getByTestId("work-panel")).toBeInTheDocument();
+        fireEvent.click(toggle());
+        expect(screen.queryByTestId("work-panel")).toBeNull();
+      } finally {
+        spy.mockRestore();
+        set.mockRestore();
+      }
+    });
+  });
+});

@@ -5,47 +5,67 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission, require_scope, unguarded
 from oc8.api.v1._serializers import department_to_dto
 from oc8.auth import Principal
 from oc8.authz.permissions import MANAGE, PLUGIN, VIEW, perm
-from oc8.capas.discovery import DiscoveredPlugin, discover_plugins, find_plugin
+from oc8.capas.discovery import discover_plugins, find_plugin
 from oc8.capas.i18n import translations_for
 from oc8.capas.lifecycle import (
     ConsentError,
+    NotDeferredError,
+    NotEnabledError,
     QuarantinedError,
+    consent_required,
+    deferred_permissions,
     disable_plugin,
     enable_plugin,
+    forget_plugin_runtime,
+    grant_deferred_permission,
 )
 from oc8.capas.loader import TRUSTED, LoaderError, import_entry_point
 from oc8.capas.manifest import (
+    DEFERRABLE_PERMISSIONS,
     Manifest,
     ManifestError,
     PluginSetupSpec,
     SetupFieldSpec,
     SetupOAuthProvision,
+    ToolPackConnection,
+    http_api_login_in_base_url,
     parse_manifest,
 )
 from oc8.capas.service import (
-    DuplicateVersionError,
+    MissingDependencyError,
     PluginError,
+    SetupValidationError,
     install_plugin,
+    install_with_dependencies,
     instantiate_agent,
     instantiate_department,
+    validate_setup_values,
 )
+from oc8.connections.credential_env import credential_env_targets
+from oc8.connections.tool_connection import not_retired, without_reserved
+from oc8.credentials.enablement import choose_for_department, enable_for_department
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
     CredentialFieldNotSet,
     CredentialNotFound,
+    IncompleteCredential,
     get_credential,
+    keep_origins,
+    missing_required,
     resolve_credential_field,
 )
 from oc8.knowledge.connectors.base import ConnectorError
@@ -153,6 +173,9 @@ class DiscoveredPluginDTO(CamelModel):
     #: the UI reads this to NOT treat that one reason as archived.
     disabled_reason: str | None = None
     permissions: list[str] = []
+    #: The subset of `permissions` enabling does not grant: each waits for its
+    #: own consent (`POST /capas/{id}/grant`), so an Enable must leave it out.
+    deferred_permissions: list[str] = []
     capabilities: list[str] = []
     surfaces: list[str] = []
     setup: dict[str, Any] | None = None
@@ -223,10 +246,18 @@ def _resolve_setup_translations(
 
 class InstallFromDiskRequest(CamelModel):
     plugin_id: str
+    #: Make it available in the same step (connections design: "installing
+    #: makes it available"). An update that asks for more permissions than
+    #: were granted still needs the explicit enable/consent step.
+    enable: bool = True
 
 
 class EnableRequest(CamelModel):
     granted_permissions: list[str] = []
+
+
+class GrantRequest(CamelModel):
+    permission: str
 
 
 class DisableRequest(CamelModel):
@@ -248,6 +279,9 @@ class PluginSetupResult(CamelModel):
     # None when the plugin's setup has no `mcp` block -- nothing was
     # materialised to point at, because there was nothing to materialise.
     connection_id: str | None = None
+    # The login the setup chose, when the tool's bridge takes a login: the
+    # row holds none of its values, so testing the row needs it named.
+    credential_id: str | None = None
 
 
 _PLUGIN_SURFACES: dict[str, list[str]] = {
@@ -398,6 +432,10 @@ async def list_available(
                 installation_status=installation.status if installation is not None else None,
                 disabled_reason=installation.disabled_reason if installation is not None else None,
                 permissions=list((d.manifest or {}).get("permissions", [])),
+                deferred_permissions=sorted(
+                    set((d.manifest or {}).get("deferred_permissions") or [])
+                    & DEFERRABLE_PERMISSIONS
+                ),
                 capabilities=list((d.manifest or {}).get("capabilities", [])),
                 surfaces=_PLUGIN_SURFACES.get(d.type, []),
                 setup=_resolve_setup_translations((d.manifest or {}).get("setup"), d.i18n),
@@ -445,6 +483,7 @@ async def list_available(
                     installation.disabled_reason if installation is not None else None
                 ),
                 permissions=list(pv.permissions),
+                deferred_permissions=sorted(deferred_permissions(pv)),
                 capabilities=list(pv.capabilities),
                 surfaces=_PLUGIN_SURFACES.get(row.type, []),
                 setup=_resolve_setup_translations(manifest.get("setup"), {}),
@@ -487,52 +526,85 @@ async def configure_plugin(
     against the installed manifest, encrypts password fields, and maps the
     remaining values into the plugin's materialised MCP connection.
     """
-    plugin = await db.get(m.Capa, capa_id)
+    # The capa row is locked before its manifest is read: the setup of a
+    # further department seeds its row from that manifest, and an edit of the
+    # connection's tools (PATCH /mcp/connections/{id}/http-tools) rewrites it
+    # under the same lock. Both take the capa first, then its rows.
+    plugin = await _lock_capa(db, principal.tenant_id, capa_id)
     if plugin is None or plugin.current_version_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin not found")
     installation = (
         await db.execute(select(m.CapaInstallation).where(m.CapaInstallation.capa_id == plugin.id))
     ).scalar_one_or_none()
-    if installation is None or installation.status != "enabled":
-        raise HTTPException(status.HTTP_409_CONFLICT, "plugin must be enabled before setup")
     version = await db.get(m.CapaVersion, plugin.current_version_id)
     assert version is not None
+    if installation is not None and installation.status != "installed":
+        if installation.status != "enabled":
+            raise HTTPException(status.HTTP_409_CONFLICT, "plugin must be enabled before setup")
+        return await _apply_plugin_setup(plugin, version, installation, body, db, principal)
+    # Installed before "installing makes it available" and never enabled:
+    # setting it up (plugin:manage, like enable) makes it available now. Any
+    # failure below rolls the transaction back -- the enable included -- so
+    # its in-process registration is dropped too (fail closed).
+    installation = await enable_plugin(
+        db,
+        tenant_id=principal.tenant_id,
+        capa_id=plugin.id,
+        granted_permissions=consent_required(version),
+    )
+    try:
+        return await _apply_plugin_setup(plugin, version, installation, body, db, principal)
+    except BaseException:
+        await forget_plugin_runtime(principal.tenant_id, plugin.id)
+        raise
+
+
+async def _lock_capa(db: AsyncSession, tenant_id: uuid.UUID, capa_id: uuid.UUID) -> m.Capa | None:
+    """The capa row, locked for this transaction and read afresh: the one mutex
+    for a plugin's manifest and all of its connection rows (always taken before
+    any of those rows)."""
+    return (
+        await db.execute(
+            select(m.Capa)
+            .where(m.Capa.tenant_id == tenant_id, m.Capa.id == capa_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
+async def _apply_plugin_setup(
+    plugin: m.Capa,
+    version: m.CapaVersion,
+    installation: m.CapaInstallation,
+    body: PluginSetupRequest,
+    db: AsyncSession,
+    principal: Principal,
+) -> PluginSetupResult:
+    """Validate and apply the setup form of an enabled plugin (configure_plugin).
+
+    Runs with the capa row locked (`configure_plugin` takes the lock before it
+    reads the version), so the manifest a new department's row is seeded from
+    cannot be replaced by a concurrent tools edit halfway through.
+    """
     manifest = parse_manifest(version.manifest)
     setup = manifest.setup
     if setup is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "plugin has no setup contract")
+    if (problem := http_api_login_in_base_url(manifest)) is not None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, problem)
 
     fields = {field.key: field for field in setup.fields}
-    unknown = sorted(set(body.values) - set(fields))
-    if unknown:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"unknown setup fields: {', '.join(unknown)}",
-        )
-    for field in setup.fields:
-        if field.required and not body.values.get(field.key, field.default).strip():
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"setup field {field.key!r} is required",
-            )
-    for alternative in setup.validation.any_of:
-        unknown_fields = sorted(set(alternative) - set(fields))
-        if unknown_fields:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                f"setup validation references unknown fields: {', '.join(unknown_fields)}",
-            )
-    if setup.validation.any_of and not any(
-        all(body.values.get(key, fields[key].default).strip() for key in alternative)
-        for alternative in setup.validation.any_of
-    ):
-        alternatives = " or ".join(" + ".join(group) for group in setup.validation.any_of)
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_CONTENT,
-            f"provide one complete credential set: {alternatives}",
-        )
+    try:
+        validate_setup_values(setup, fields, body.values)
+    except SetupValidationError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
 
     values = {key: body.values.get(key, field.default).strip() for key, field in fields.items()}
+    # A tool whose bridge takes a login only CHOOSES one here: the login is
+    # checked for completeness before anything is written, and none of its
+    # values is copied onto the tool's row or into a secret of the plugin.
+    chosen = await _chosen_login(db, principal, manifest, setup, values)
     # A later failure anywhere in this request -- the 409 below, an unresolved
     # env mapping, a setup_validate rejection -- rolls this whole transaction
     # back (tenant_session's except/rollback in db/session.py), so storing a
@@ -557,6 +629,8 @@ async def configure_plugin(
     credential_plain_keys: set[str] = set()
     for field in setup.fields:
         if field.kind not in ("password", "credential") or not values[field.key]:
+            continue
+        if chosen is not None and field.key == chosen.field_key:
             continue
         secret_ref = field.secret_ref or f"plugin:{manifest.name}:{field.key}"
         # Which raw key `provisioned_fields()` would name -- for kind="credential"
@@ -590,6 +664,7 @@ async def configure_plugin(
                     tenant_id=principal.tenant_id,
                     credential_id=credential_id,
                     field_key=secret_fields[0].key,
+                    owner="organisation",
                 )
             except CredentialNotFound as exc:
                 raise HTTPException(
@@ -618,18 +693,23 @@ async def configure_plugin(
             # instead, so writing the plaintext here is safe.
             try:
                 cred_row = await get_credential(
-                    db, tenant_id=principal.tenant_id, credential_id=credential_id
+                    db,
+                    tenant_id=principal.tenant_id,
+                    credential_id=credential_id,
+                    owner="organisation",
                 )
             except CredentialNotFound as exc:
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_CONTENT,
                     f"setup field {field.key!r}: no such credential",
                 ) from exc
+            # A credential saved before its address was cut to the origin.
+            stored = keep_origins(cred_type, cred_row.field_values or {})
             for other in cred_type.fields:
                 values[other.key] = (
                     resolved_value
                     if other.key == secret_fields[0].key
-                    else str(cred_row.field_values.get(other.key, ""))
+                    else str(stored.get(other.key, ""))
                 )
             credential_plain_keys.update(
                 other.key for other in cred_type.fields if other.kind != "password"
@@ -665,7 +745,19 @@ async def configure_plugin(
             credential_plain_keys=frozenset(credential_plain_keys),
         )
 
-    connections = (await db.execute(select(m.McpConnection))).scalars().all()
+    connections = (
+        (
+            await db.execute(
+                select(m.McpConnection)
+                .where(m.McpConnection.credential_id.is_(None), not_retired())
+                .order_by(m.McpConnection.created_at, m.McpConnection.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # A row pinned to one login (an older `/mcp/logins` row) is never the
+    # tool's row, even though it carries the plugin's stamp.
     candidates = [
         item
         for item in connections
@@ -680,6 +772,10 @@ async def configure_plugin(
 
     env = dict(setup.mcp.env)
     for env_name, field_key in setup.mcp.env_fields.items():
+        if chosen is not None and field_key not in fields:
+            # One of the chosen login's own fields: read from the login when
+            # the bridge starts, never copied here.
+            continue
         if field_key not in values:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -716,58 +812,25 @@ async def configure_plugin(
                 raise HTTPException(
                     status.HTTP_422_UNPROCESSABLE_CONTENT, "invalid department id"
                 ) from exc
-            if await db.get(m.Department, target_department_id) is None:
+            # RLS hides another organisation's department; an archived one
+            # runs no agent, so a connection placed there would reach nobody.
+            target = await db.get(m.Department, target_department_id)
+            if target is None or target.deleted_at is not None:
                 raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
 
-    # One connection PER DEPARTMENT. Setting the same tool pack up for a second
-    # department used to move the single materialised connection and reset it to
-    # disconnected, so configuring it for support silently cut sales off from the
-    # same system -- no error, no warning, just a later run with no tools.
-    conn = next((c for c in candidates if c.department_id == target_department_id), None)
-    if conn is None:
-        # An unbound connection is the freshly materialised one: adopt it rather
-        # than leaving an orphan behind. Otherwise this department gets its own,
-        # seeded from the MANIFEST so it carries the same value/focus specs the
-        # first one got -- a copy of the sibling row would drift the moment the
-        # plugin ships a new version.
-        conn = next((c for c in candidates if c.department_id is None), None)
-    if conn is None:
-        template = dict(candidates[0].config or {})
-        manifest_conn = next(
-            (
-                c
-                for c in (manifest.tool_pack.connections if manifest.tool_pack else [])
-                if c.key == setup.mcp.connection_key
-            ),
-            None,
+    if chosen is not None:
+        # One row per tool, in no department: who reaches it is the frame's
+        # decision, which login it runs with the resolver's. A further
+        # department's setup never adds a row or moves this one.
+        conn = await _tool_row(db, principal, manifest, setup, candidates)
+    else:
+        # A setup that chooses no login keeps its department's own row: a
+        # custom server's department is what makes it reachable at all
+        # (connections.usable.needs_department), and an app-only OAuth setup
+        # is its department's own (connections.access.department_setup).
+        conn = await _department_setup_row(
+            db, principal, manifest, setup, candidates, target_department_id
         )
-        base_config = dict(manifest_conn.config) if manifest_conn is not None else template
-        base_config["_plugin_name"] = manifest.name
-        base_config["_connection_key"] = setup.mcp.connection_key
-        # Same source as base_config, for the same reason: a second department's
-        # connection is never materialised by materialise.py, so a bare
-        # `list(setup.mcp.scopes)` (empty for every tool pack in this repo) would
-        # leave it with no read/send classification at all -- and pdp.py reads
-        # "no classification" as "write", which every preset here forbids. That
-        # department would get a connection with zero usable tools.
-        base_scopes: list[str] | dict[str, Any] = list(setup.mcp.scopes)
-        if not base_scopes:
-            base_scopes = (
-                manifest_conn.scopes if manifest_conn is not None else candidates[0].scopes
-            )
-        conn = m.McpConnection(
-            tenant_id=principal.tenant_id,
-            name=setup.mcp.name,
-            transport=candidates[0].transport,
-            server_url=candidates[0].server_url,
-            scopes=base_scopes,
-            config=base_config,
-            connected=False,
-            health={},
-        )
-        db.add(conn)
-        await db.flush()
-    conn.department_id = target_department_id
 
     cfg = dict(conn.config or {})
     # Only the entries this form actually MANAGES are replaced. A manifest may
@@ -778,6 +841,11 @@ async def configure_plugin(
     # that could not import itself and had no token.
     managed_env = set(setup.mcp.env) | set(setup.mcp.env_fields)
     managed_secret_env = set(setup.mcp.secret_env_fields)
+    if chosen is not None:
+        # Every name the login sets at launch: a value an earlier setup
+        # copied here must not outlive the choice.
+        managed_env |= chosen.env_targets
+        managed_secret_env |= chosen.env_targets
     env = {k: v for k, v in dict(cfg.get("env", {})).items() if k not in managed_env} | env
     secret_env = {
         k: v for k, v in dict(cfg.get("secret_env", {})).items() if k not in managed_secret_env
@@ -838,11 +906,200 @@ async def configure_plugin(
     # not manage" rule as the env/secret_env merge above.
     if setup.mcp.scopes:
         conn.scopes = list(setup.mcp.scopes)
-    conn.config = cfg
-    conn.connected = False
-    conn.health = {}
+    if chosen is None or cfg != (conn.config or {}):
+        # The bridge itself changed: it is tested again. Choosing a login for
+        # a department leaves the bridge -- shared by every department -- as
+        # it is, so it stays connected for the others.
+        conn.config = cfg
+        conn.connected = False
+        conn.health = {}
+    if chosen is not None:
+        if target_department_id is not None:
+            # The setup names THE department's login: it replaces any other
+            # of the type there (never two, which would be ambiguous).
+            await choose_for_department(db, chosen.credential, target_department_id)
+        else:
+            await enable_for_department(db, chosen.credential, None)
     await db.commit()
-    return PluginSetupResult(connection_id=str(conn.id))
+    return PluginSetupResult(
+        connection_id=str(conn.id),
+        credential_id=str(chosen.credential.id) if chosen is not None else None,
+    )
+
+
+@dataclass(frozen=True)
+class _ChosenLogin:
+    """The organisation login a setup chose for a tool whose bridge takes one."""
+
+    field_key: str
+    credential: m.Credential
+    #: Every env name the login sets when the bridge starts.
+    env_targets: frozenset[str]
+
+
+def _login_connection(
+    manifest: Manifest, setup: PluginSetupSpec
+) -> tuple[SetupFieldSpec, ToolPackConnection] | None:
+    """The setup field that chooses the tool's login, with the tool pack
+    connection it is for: a `kind="credential"` field of the type the
+    connection names, on a connection that maps that type's fields onto its
+    bridge's environment (`credential_env_fields`) -- so the runtime can start
+    the bridge from the login itself. Any other setup is applied as before."""
+    if setup.mcp is None or setup.oauth_provision is not None or manifest.tool_pack is None:
+        return None
+    conn = next(
+        (c for c in manifest.tool_pack.connections if c.key == setup.mcp.connection_key), None
+    )
+    if conn is None or not conn.credential_type or not conn.credential_env_fields:
+        return None
+    field = next(
+        (
+            f
+            for f in setup.fields
+            if f.kind == "credential" and f.credential_type == conn.credential_type
+        ),
+        None,
+    )
+    return (field, conn) if field is not None else None
+
+
+async def _chosen_login(
+    db: AsyncSession,
+    principal: Principal,
+    manifest: Manifest,
+    setup: PluginSetupSpec,
+    values: dict[str, str],
+) -> _ChosenLogin | None:
+    """The login the form chose, refused when missing or incomplete (422
+    `credential_incomplete`, before anything is written). None for a setup
+    that chooses no login."""
+    found = _login_connection(manifest, setup)
+    if found is None:
+        return None
+    field, conn = found
+    raw = values.get(field.key, "")
+    if not raw:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"setup field {field.key!r}: choose a login"
+        )
+    try:
+        credential_id = uuid.UUID(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"setup field {field.key!r}: not a valid credential id",
+        ) from exc
+    try:
+        cred = await get_credential(
+            db, tenant_id=principal.tenant_id, credential_id=credential_id, owner="organisation"
+        )
+    except CredentialNotFound as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"setup field {field.key!r}: no such credential"
+        ) from exc
+    if cred.credential_type != conn.credential_type:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"setup field {field.key!r}: credential {cred.name!r} is no {conn.credential_type!r}",
+        )
+    cred_type = await get_credential_type(
+        db, tenant_id=principal.tenant_id, name=conn.credential_type
+    )
+    missing = missing_required(cred_type, cred.field_values or {}, cred.secret_refs or {})
+    if missing:
+        raise IncompleteCredential(missing)
+    return _ChosenLogin(
+        field_key=field.key,
+        credential=cred,
+        env_targets=frozenset(credential_env_targets(cred_type, conn.credential_env_fields)),
+    )
+
+
+async def _new_row(
+    db: AsyncSession,
+    principal: Principal,
+    manifest: Manifest,
+    setup: PluginSetupSpec,
+    candidates: list[m.McpConnection],
+) -> m.McpConnection:
+    """A further row of the tool, seeded from the MANIFEST so it carries the
+    same value/focus specs the first one got -- a copy of the sibling row
+    would drift the moment the plugin ships a new version."""
+    assert setup.mcp is not None
+    template = dict(candidates[0].config or {})
+    manifest_conn = next(
+        (
+            c
+            for c in (manifest.tool_pack.connections if manifest.tool_pack else [])
+            if c.key == setup.mcp.connection_key
+        ),
+        None,
+    )
+    # Never a consolidation marker of the row it is copied from.
+    base_config = without_reserved(
+        dict(manifest_conn.config) if manifest_conn is not None else dict(template)
+    )
+    base_config["_plugin_name"] = manifest.name
+    base_config["_connection_key"] = setup.mcp.connection_key
+    # Same source as base_config, for the same reason: a further row is never
+    # materialised by materialise.py, so a bare `list(setup.mcp.scopes)` (empty
+    # for every tool pack in this repo) would leave it with no read/send
+    # classification at all -- and pdp.py reads "no classification" as
+    # "write", which every preset here forbids. It would get a connection with
+    # zero usable tools.
+    base_scopes: list[str] | dict[str, Any] = list(setup.mcp.scopes)
+    if not base_scopes:
+        base_scopes = manifest_conn.scopes if manifest_conn is not None else candidates[0].scopes
+    conn = m.McpConnection(
+        tenant_id=principal.tenant_id,
+        name=setup.mcp.name,
+        transport=candidates[0].transport,
+        server_url=candidates[0].server_url,
+        scopes=base_scopes,
+        config=base_config,
+        connected=False,
+        health={},
+    )
+    db.add(conn)
+    await db.flush()
+    return conn
+
+
+async def _tool_row(
+    db: AsyncSession,
+    principal: Principal,
+    manifest: Manifest,
+    setup: PluginSetupSpec,
+    candidates: list[m.McpConnection],
+) -> m.McpConnection:
+    """The tool's one row (in no department), created from the manifest only
+    when every materialised row is still owned by a department (a tenant
+    set up before rows were consolidated)."""
+    shared = next((c for c in candidates if c.department_id is None), None)
+    if shared is not None:
+        return shared
+    return await _new_row(db, principal, manifest, setup, candidates)
+
+
+async def _department_setup_row(
+    db: AsyncSession,
+    principal: Principal,
+    manifest: Manifest,
+    setup: PluginSetupSpec,
+    candidates: list[m.McpConnection],
+    department_id: uuid.UUID | None,
+) -> m.McpConnection:
+    """The row of a setup that chooses no login: the department's own. An
+    unbound row is the freshly materialised one and is adopted rather than
+    left as an orphan; otherwise the department gets its own -- setting the
+    tool up for a second department must not move the first one's row."""
+    conn = next((c for c in candidates if c.department_id == department_id), None)
+    if conn is None:
+        conn = next((c for c in candidates if c.department_id is None), None)
+    if conn is None:
+        conn = await _new_row(db, principal, manifest, setup, candidates)
+    conn.department_id = department_id
+    return conn
 
 
 def _build_delegated_identity_config(
@@ -1032,72 +1289,6 @@ async def _configure_without_connection(
     return PluginSetupResult(connection_id=None)
 
 
-async def _install_with_dependencies(
-    db: DbSession,
-    *,
-    tenant_id: uuid.UUID,
-    found: DiscoveredPlugin,
-    origin: str,
-    _seen: set[str] | None = None,
-) -> m.CapaVersion | None:
-    """Install `found` for `tenant_id`, first recursively installing any
-    not-yet-installed `plugin_depends` entries (design §9). Never enables a
-    dependency -- only `install_plugin` runs for it, exactly as if an
-    operator had installed it manually and not yet clicked Enable. Raises
-    `HTTPException` naming the missing plugin if a `plugin_depends` entry
-    does not exist on disk at all.
-
-    Takes an ALREADY-RESOLVED `DiscoveredPlugin` rather than an id: the caller
-    (`install_from_disk`) has already called `find_plugin(body.plugin_id)`, and
-    `find_plugin` runs a full `discover_plugins()` -- every root, every folder,
-    every TOML parse, plus the cycle DFS. Re-resolving the same id here would
-    repeat that entire scan for a result the caller is holding. A dependency
-    still costs one `find_plugin` (its `DiscoveredPlugin` genuinely is not in
-    hand yet); the point is that no plugin is resolved twice.
-    """
-    plugin_id = found.plugin_id
-    seen = _seen if _seen is not None else set()
-    if plugin_id in seen:
-        # Already installed earlier in THIS call chain. Cycle detection ran at
-        # discovery time (Step 3) and marks every member of a real cycle
-        # invalid long before this function is reached, so re-entry here is a
-        # genuine no-op -- and it must BE one. Installing again would raise
-        # DuplicateVersionError and 400 the whole request.
-        return None
-    seen.add(plugin_id)
-
-    if not found.valid or found.manifest is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, found.error or "invalid manifest")
-
-    for dep_name in found.manifest.get("plugin_depends") or []:
-        already_installed = (
-            await db.execute(
-                select(m.Capa).where(m.Capa.tenant_id == tenant_id, m.Capa.name == dep_name)
-            )
-        ).scalar_one_or_none()
-        if already_installed is None:
-            dep = find_plugin(dep_name)
-            if dep is None:
-                raise HTTPException(
-                    status.HTTP_404_NOT_FOUND,
-                    f"{plugin_id} depends on a plugin not found on disk: {dep_name}",
-                )
-            await _install_with_dependencies(
-                db, tenant_id=tenant_id, found=dep, origin=origin, _seen=seen
-            )
-
-    try:
-        return await install_plugin(
-            db, tenant_id=tenant_id, manifest_data=found.manifest, origin=origin
-        )
-    except DuplicateVersionError:
-        # This plugin (not a dependency -- the one the operator actually asked
-        # for) is already installed at this exact version; that is the normal
-        # "install-from-disk twice" case the endpoint already tolerates via
-        # its own PluginError -> 400 mapping below. Re-raise unchanged.
-        raise
-
-
 @router.post(
     "/capas/install-from-disk",
     response_model=PluginVersionDTO,
@@ -1118,36 +1309,64 @@ async def install_from_disk(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin not found on disk")
     if not found.valid or found.manifest is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, found.error or "invalid manifest")
-    # Updating an enabled plugin is a two-step consent flow. Disable the old
-    # version before switching current_version_id; the UI will then require an
-    # explicit Enable for the new manifest and its permissions.
+    # Updating an enabled plugin disables the old version before switching
+    # current_version_id; below it is re-enabled only when the new manifest
+    # asks for no new permission, otherwise the UI requires an explicit Enable.
     existing_plugin = (
         await db.execute(select(m.Capa).where(m.Capa.name == found.name))
     ).scalar_one_or_none()
+    existing_installation: m.CapaInstallation | None = None
     if existing_plugin is not None:
         existing_installation = (
             await db.execute(
                 select(m.CapaInstallation).where(m.CapaInstallation.capa_id == existing_plugin.id)
             )
         ).scalar_one_or_none()
-        if existing_installation is not None and existing_installation.status == "enabled":
-            await disable_plugin(
-                db,
-                tenant_id=principal.tenant_id,
-                capa_id=existing_plugin.id,
-                reason="plugin update pending consent",
-            )
+    # Captured before the update flow below disables the old version.
+    granted_before = (
+        set(existing_installation.granted_permissions)
+        if existing_installation is not None
+        else set()
+    )
+    was_status = existing_installation.status if existing_installation is not None else None
+    if existing_installation is not None and existing_installation.status == "enabled":
+        await disable_plugin(
+            db,
+            tenant_id=principal.tenant_id,
+            capa_id=existing_installation.capa_id,
+            reason="plugin update pending consent",
+        )
     try:
         # origin stays "local": ck_plugin_origin allows only local|store, and a
         # plugin read off this installation's filesystem IS local (as opposed to
         # fetched from a store). Provenance is anyway derivable -- /capas/available
         # cross-references installed rows against what discovery finds on disk.
-        version = await _install_with_dependencies(
+        version = await install_with_dependencies(
             db, tenant_id=principal.tenant_id, found=found, origin="local"
         )
+    except MissingDependencyError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     assert version is not None  # the requested plugin is never in `_seen` on entry
+    # Installing makes it available: a fresh (or never-enabled) install is
+    # enabled with what its manifest asks for -- the installer holds
+    # plugin:manage, the same permission the explicit enable needs. An update
+    # of an enabled plugin is re-enabled only when it asks for no permission
+    # beyond those already granted; anything new keeps the explicit consent
+    # step. A deliberately disabled or quarantined plugin stays as it is.
+    # Deferred permissions are never asked for here: they are granted later
+    # (POST /capas/{id}/grant), and one already granted is kept.
+    deferred = deferred_permissions(version)
+    required = set(version.permissions) - deferred
+    fresh = was_status in (None, "installed")
+    if body.enable and (fresh or (was_status == "enabled" and required <= granted_before)):
+        await enable_plugin(
+            db,
+            tenant_id=principal.tenant_id,
+            capa_id=version.capa_id,
+            granted_permissions=sorted(required | (granted_before & deferred)),
+        )
     plugin = await db.get(m.Capa, version.capa_id)
     assert plugin is not None
     return PluginVersionDTO(
@@ -1434,6 +1653,10 @@ async def export_capas(
 async def enable(
     capa_id: uuid.UUID, body: EnableRequest, db: DbSession, principal: CurrentPrincipal
 ) -> InstallationDTO:
+    # Enabling rewrites each connection row's scopes from the manifest: lock the
+    # capa first, in the order an edit of its tools takes (capa, then rows), so
+    # an enable and an edit run one after the other and the edit is not undone.
+    await _lock_capa(db, principal.tenant_id, capa_id)
     try:
         inst = await enable_plugin(
             db,
@@ -1444,6 +1667,36 @@ async def enable(
     except ConsentError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except QuarantinedError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except PluginError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    return InstallationDTO(
+        plugin_id=str(inst.capa_id),
+        status=inst.status,
+        granted_permissions=list(inst.granted_permissions),
+        failure_count=inst.failure_count,
+    )
+
+
+@router.post(
+    "/capas/{capa_id}/grant",
+    response_model=InstallationDTO,
+    dependencies=[Depends(require_permission(perm(PLUGIN, MANAGE)))],
+)
+async def grant(
+    capa_id: uuid.UUID, body: GrantRequest, db: DbSession, principal: CurrentPrincipal
+) -> InstallationDTO:
+    """Grant a permission the capa deferred at enable, e.g. `knowledge:write`
+    the first time its knowledge connectors are used."""
+    # Same lock order as enable: the grant re-enables with the widened consent.
+    await _lock_capa(db, principal.tenant_id, capa_id)
+    try:
+        inst = await grant_deferred_permission(
+            db, tenant_id=principal.tenant_id, capa_id=capa_id, permission=body.permission
+        )
+    except NotDeferredError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except NotEnabledError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc

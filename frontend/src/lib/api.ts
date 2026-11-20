@@ -10,10 +10,42 @@ const API_URL =
 const TOKEN_KEY = "oc8-dev-token";
 export const COMMUNITY_TOKEN_KEY = "oc8-community-token";
 
+/** Where the access token is read, written and cleared. */
+export interface TokenStore {
+  get(): string | null;
+  set(token: string): void;
+  clear(): void;
+}
+
+/** The default: the access token lives in localStorage under `COMMUNITY_TOKEN_KEY`. */
+const localStorageTokenStore: TokenStore = {
+  get: () =>
+    typeof window !== "undefined" ? window.localStorage.getItem(COMMUNITY_TOKEN_KEY) : null,
+  set: (token) => {
+    if (typeof window !== "undefined") window.localStorage.setItem(COMMUNITY_TOKEN_KEY, token);
+  },
+  clear: () => {
+    if (typeof window !== "undefined") window.localStorage.removeItem(COMMUNITY_TOKEN_KEY);
+  },
+};
+
+let tokenStore: TokenStore = localStorageTokenStore;
+
+/** An edition may keep the access token elsewhere, for example in memory.
+ *  `null` restores the default localStorage store. Every read, write and
+ *  clear of the access token in core goes through the store set here. */
+export function setTokenStore(store: TokenStore | null): void {
+  tokenStore = store ?? localStorageTokenStore;
+}
+
+/** Keeps a freshly issued access token in the current token store. */
+export function setCommunityToken(token: string): void {
+  tokenStore.set(token);
+}
+
 async function getToken(): Promise<string> {
   // Check for community token first (single-instance auth)
-  const communityToken =
-    typeof window !== "undefined" ? window.localStorage.getItem(COMMUNITY_TOKEN_KEY) : null;
+  const communityToken = tokenStore.get();
   if (communityToken) return communityToken;
   // Fall back to dev token
   const stored = typeof window !== "undefined" ? window.localStorage.getItem(TOKEN_KEY) : null;
@@ -22,7 +54,7 @@ async function getToken(): Promise<string> {
 }
 
 export function hasCommunitySession(): boolean {
-  return typeof window !== "undefined" && window.localStorage.getItem(COMMUNITY_TOKEN_KEY) !== null;
+  return tokenStore.get() !== null;
 }
 
 /** Clears the local session and, if the identity provider has an external SSO
@@ -32,7 +64,7 @@ export function hasCommunitySession(): boolean {
  *  SSO redirect and win, silently cancelling it. */
 export async function logoutCommunity(): Promise<void> {
   if (typeof window === "undefined") return;
-  window.localStorage.removeItem(COMMUNITY_TOKEN_KEY);
+  tokenStore.clear();
   // /auth/config is unguarded, so this works with the token already gone.
   try {
     const res = await fetch(`${API_URL}/auth/config`);
@@ -134,26 +166,58 @@ export async function createDevTenant(
   return (await res.json()) as DevTenant;
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const token = await getToken();
-  const res = await fetch(`${API_URL}${path}`, {
-    method,
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${token}`,
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (res.status === 401) {
-    // The token died (its TTL, or a role that stopped resolving) -- there is
-    // nothing to silently retry with, since minting no longer happens
-    // implicitly. Drop it and reload: <DevSignIn>/<CommunitySignIn> reappears
-    // because `hasDevSession()`/`hasCommunitySession()` is now false, which is
-    // a real screen a person can act on instead of every open query failing
-    // red one at a time. Community mode is checked first, mirroring
-    // `getToken()`'s own precedence above -- clearing the wrong key here left
-    // the expired community token in place, so the reload just re-sent it and
-    // got another 401, forever.
+/** Asked on a 401 before the session is dropped. Resolves `true` once a fresh
+ *  token is in place for `getToken()` to read, `false` (or rejects) when the
+ *  session cannot be renewed. Unset by default: a deployment that can renew
+ *  the session registers one; without it a 401 signs out at once. */
+export type SessionRenewer = () => Promise<boolean>;
+
+let sessionRenewer: SessionRenewer | null = null;
+// The renewal in flight, if any. Every request that hits a 401 while it runs
+// waits on this same promise, so a burst of expired requests (a laptop waking
+// up, say) costs one renewal, not one per request.
+let renewal: Promise<boolean> | null = null;
+
+export function setSessionRenewer(fn: SessionRenewer | null): void {
+  sessionRenewer = fn;
+  renewal = null;
+  signingOut = null;
+}
+
+function renewSession(): Promise<boolean> {
+  const renewer = sessionRenewer;
+  if (!renewer) return Promise.resolve(false);
+  if (!renewal) {
+    const attempt: Promise<boolean> = (async () => {
+      try {
+        return (await renewer()) === true;
+      } catch {
+        return false;
+      }
+    })().finally(() => {
+      if (renewal === attempt) renewal = null;
+    });
+    renewal = attempt;
+  }
+  return renewal;
+}
+
+// The sign-out in flight, if any. When a renewal fails, every request that
+// waited on it resumes at once; without this, the first one clears the token
+// and awaits `/auth/config`, and the rest see no community session, take the
+// dev branch and reload -- cancelling the SSO logout redirect.
+let signingOut: Promise<never> | null = null;
+
+function signOutExpired(): Promise<never> {
+  signingOut ??= (async (): Promise<never> => {
+    // The token died (its TTL, or a role that stopped resolving) and nothing
+    // could renew it. Drop it and reload: <DevSignIn>/<CommunitySignIn>
+    // reappears because `hasDevSession()`/`hasCommunitySession()` is now
+    // false, which is a real screen a person can act on instead of every open
+    // query failing red one at a time. Community mode is checked first,
+    // mirroring `getToken()`'s own precedence above -- clearing the wrong key
+    // here left the expired community token in place, so the reload just
+    // re-sent it and got another 401, forever.
     if (hasCommunitySession()) {
       // Owns its own reload/SSO-redirect -- see its doc comment.
       await logoutCommunity();
@@ -162,6 +226,37 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       if (typeof window !== "undefined") window.location.reload();
     }
     throw new Error("session expired — signing in again");
+  })();
+  return signingOut;
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const send = (token: string) =>
+    fetch(`${API_URL}${path}`, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  const token = await getToken();
+  let res = await send(token);
+  if (res.status === 401) {
+    if (!sessionRenewer) return signOutExpired();
+    // One retry at most, and only with a token that differs from the one just
+    // refused: either another request already renewed the session while this
+    // one was in flight, or the renewer just did. A second 401 signs out --
+    // it never asks again, so a renewer that "succeeds" with a token the API
+    // still refuses cannot loop. A truly revoked token therefore costs one
+    // renewal before the sign-out.
+    let current = await getToken().catch(() => null);
+    if (current === token && (await renewSession())) {
+      current = await getToken().catch(() => null);
+    }
+    if (current === null || current === token) return signOutExpired();
+    res = await send(current);
+    if (res.status === 401) return signOutExpired();
   }
   if (!res.ok) throw await toError(res);
   if (res.status === 204) return undefined as T;
@@ -176,21 +271,46 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 // only ever read `.message`, and this is still a plain `Error` to them.
 export class ApiError extends Error {
   status: number;
-  constructor(message: string, status: number) {
+  /** The parsed JSON body, when there was one (typed errors such as the
+   *  OAuth completion's `{error, adminConsentUrl}` carry no `detail`). */
+  body?: unknown;
+  constructor(message: string, status: number, body?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.body = body;
   }
+}
+
+/** A query's `retry`: a refusal (4xx -- gone, not yours, invalid) is final;
+ *  only a server or network failure is tried again, up to three times. */
+export function retryUnlessRefused(failures: number, error: unknown): boolean {
+  return !(error instanceof ApiError && error.status >= 400 && error.status < 500) && failures < 3;
 }
 
 async function toError(res: Response): Promise<Error> {
   let detail: unknown;
+  let body: unknown;
   try {
-    detail = (await res.json()).detail;
+    body = await res.json();
+    detail = (body as { detail?: unknown }).detail;
+    if (detail === undefined && typeof (body as { error?: unknown }).error === "string") {
+      detail = (body as { error: string }).error;
+    }
   } catch {
     detail = res.statusText;
   }
-  return new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), res.status);
+  // A validation refusal's `detail` is a list of `{loc, msg}`: its first
+  // message reads better than the list as JSON.
+  if (Array.isArray(detail)) {
+    const first = detail[0] as { msg?: unknown } | undefined;
+    if (typeof first?.msg === "string") detail = first.msg;
+  }
+  return new ApiError(
+    typeof detail === "string" ? detail : JSON.stringify(detail),
+    res.status,
+    body,
+  );
 }
 
 export const api = {
@@ -415,6 +535,53 @@ export interface FileAttachmentDTO {
  * the same instant it is picked, instead of after uploading all of it just
  * to be told 413. Never treat it as a security boundary. */
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
+/** The chat attachment types, mirroring `ALLOWED_CONTENT_TYPES` in
+ * `backend/src/oc8/storage/attachments.py` (minus `text/html`, which the
+ * composer does not offer). One list for the file picker's `accept` and for
+ * dropped and pasted files, so no path lets through what another refuses.
+ * Like the size cap, a convenience -- the server decides. */
+export const ATTACHMENT_CONTENT_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "text/csv",
+  "text/plain",
+  "text/markdown",
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+] as const;
+
+export const ATTACHMENT_EXTENSIONS = [
+  ".pdf",
+  ".docx",
+  ".xlsx",
+  ".csv",
+  ".txt",
+  ".md",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+] as const;
+
+/** For `<input type="file" accept>`. */
+export const ATTACHMENT_ACCEPT = [...ATTACHMENT_EXTENSIONS, ...ATTACHMENT_CONTENT_TYPES].join(",");
+
+/** Whether `file` is a type the chat accepts. A declared MIME type decides
+ * when there is one the browser knows; otherwise the extension does (some
+ * systems report `.md` or `.csv` with an empty or generic type). */
+export function isAllowedAttachment(file: { name: string; type: string }): boolean {
+  const type = file.type.toLowerCase();
+  if ((ATTACHMENT_CONTENT_TYPES as readonly string[]).includes(type)) return true;
+  if (type && type !== "application/octet-stream") return false;
+  const dot = file.name.lastIndexOf(".");
+  const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : "";
+  return (ATTACHMENT_EXTENSIONS as readonly string[]).includes(ext);
+}
 
 export async function uploadChatAttachment(
   sessionId: string,

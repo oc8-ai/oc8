@@ -231,3 +231,43 @@ async def test_instantiate_agent_rejects_an_invalid_cron_trigger(
                 version=version,
                 department_id=dept.id,
             )
+
+
+async def test_instantiate_agent_substitutes_template_values_from_installation_config(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = m.Department(tenant_id=tenant, name="Finance", frame={})
+        s.add(dept)
+        await s.flush()
+        version = await install_plugin(
+            s,
+            tenant_id=tenant,
+            manifest_data=_agent_template_manifest(
+                mission="Reconcile {{account}} every {{cadence}}.",
+                trigger={
+                    "kind": "cron",
+                    "cron_expression": "0 9 * * *",
+                    "task_text": "Reconcile {{account}}",
+                },
+            ),
+        )
+        s.add(
+            m.CapaInstallation(
+                tenant_id=tenant,
+                capa_id=version.capa_id,
+                status="enabled",
+                config={"account": "cash-eur", "cadence": "daily"},
+            )
+        )
+        await s.flush()
+
+        agent = await instantiate_agent(
+            s, tenant_id=tenant, version=version, department_id=dept.id
+        )
+        assert agent.mission == "Reconcile cash-eur every daily."
+        trigger = (
+            await s.execute(select(m.Trigger).where(m.Trigger.agent_id == agent.id))
+        ).scalar_one()
+        assert trigger.task_text == "Reconcile cash-eur"

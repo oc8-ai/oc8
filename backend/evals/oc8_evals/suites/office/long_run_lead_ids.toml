@@ -1,0 +1,22 @@
+id = "long_run_lead_ids"
+systems = ["odoo"]
+origin = "manual"
+scenario = "long_run_lead_ids"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+context_window_tokens = 2000
+task_text = """
+There are 30 leads named "{prefix}Lead 01" through "{prefix}Lead 30", and one partner named "{prefix}Summary".
+Read each of those 30 leads, then write every lead name into the summary partner's comment, one name per line.
+Do not change any other partner or lead.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 40
+max_tokens = 400000

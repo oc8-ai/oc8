@@ -10,8 +10,8 @@ Once roles can be tenant-defined this endpoint has to answer three more things
 without becoming the one place a seatless caller can read the tenant's authority
 map:
 
-* **the caller's OWN resolved authority and its SOURCE** -- "aus Ihrer Rolle
-  `operator`" versus "aus der Rolle *Freigabe Vertrieb*, die Ihnen zugewiesen
+* **the caller's OWN resolved authority and its SOURCE** -- "aus deiner Rolle
+  `operator`" versus "aus der Rolle *Freigabe Vertrieb*, die dir zugewiesen
   wurde". `callerPermissions` was `permissions_for(principal.role)`, which for
   exactly the population this slice creates renders "holds 0 of 52";
 * **nothing at all about anybody else's** -- the tenant's role catalogue lives at
@@ -227,8 +227,8 @@ async def test_agent_roles_are_a_separate_list_from_human_roles() -> None:
 async def test_governance_names_the_source_of_the_callers_authority(
     app_session: AppSessionFactory,
 ) -> None:
-    """ "Aus Ihrer Rolle `operator`" versus "aus der Rolle *Freigabe Vertrieb*,
-    die Ihnen zugewiesen wurde".
+    """ "Aus deiner Rolle `operator`" versus "aus der Rolle *Freigabe Vertrieb*,
+    die dir zugewiesen wurde".
 
     Without the source, the panel that answers "why is my screen empty" says the
     same thing to somebody whose IdP group nobody mapped and to somebody an

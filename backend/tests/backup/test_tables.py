@@ -48,8 +48,20 @@ def test_exported_tables_excludes_the_denylist() -> None:
     # stays INCLUDED too -- unlike push_subscription/secret/tenant_dek, its
     # token_hash carries no instance-bound key material, just sha256 of a
     # random secret the member already holds, so it still validates
-    # correctly after a restore into another instance.
-    assert len(exported) == 57
+    # correctly after a restore into another instance; chat_project (a
+    # member's named group of chat sessions) and run_input (a message queued
+    # for a running agent), added by this branch's migrations (0111-0113), stay INCLUDED --
+    # both are portable company data with no instance-bound key material.
+    # The count is a tripwire for a new table, not a statement about this list:
+    # it also covers the tables earlier migrations added since the last update.
+    assert len(exported) == 63
+
+
+def test_board_shares_and_settings_export_but_the_inbox_does_not() -> None:
+    exported = exported_tables()
+    assert "data_board_share" in exported
+    assert "member_notification_setting" in exported
+    assert "member_notification" not in exported
 
 
 def test_table_by_name_returns_a_real_table() -> None:
@@ -119,3 +131,29 @@ async def test_every_table_the_app_may_not_delete_is_excluded_from_the_export(
         "tables the app may not DELETE, yet the restore would try to: "
         f"{sorted(exported_but_undeletable)}"
     )
+
+
+_BOARD_TABLES = {"data_board", "data_board_spec_version", "data_board_batch", "data_board_record"}
+
+
+def test_board_tables_are_exported() -> None:
+    assert _BOARD_TABLES <= exported_tables()
+
+
+async def test_dependency_order_puts_boards_before_records(
+    app_session: AppSessionFactory,
+) -> None:
+    async with app_session(uuid.uuid4()) as s:
+        order = await dependency_order(s, exported_tables())
+    assert order.index("data_board") < order.index("data_board_batch")
+    assert order.index("data_board_batch") < order.index("data_board_record")
+    assert order.index("data_board") < order.index("data_board_spec_version")
+
+
+async def test_dependency_order_puts_boards_members_and_departments_before_shares(
+    app_session: AppSessionFactory,
+) -> None:
+    async with app_session(uuid.uuid4()) as s:
+        order = await dependency_order(s, exported_tables())
+    for parent in ("data_board", "org_member", "department"):
+        assert order.index(parent) < order.index("data_board_share"), parent

@@ -71,6 +71,11 @@ max_steps = 22
 # needs it and Jan does not, and which agent may use a skill is decided by
 # the assignment, not by which plugin ships it.
 skills = ["Ticket aus dem Eingang", "Ticket-Erstantwort", "Wartendes Gespräch", "Produktfehler melden", "Menschliche Entscheidung", "Auftrag zerlegen"]
+prompt_starters = [
+    "Which tickets came in today?",
+    "Summarise the oldest open ticket",
+    "What is waiting on a customer reply?",
+]
 persona = "# Sina — First-Line Support\nRuhig, konkret, kundenorientiert. Löst was sie lösen kann, eskaliert den Rest sauber."
 mission = """
 Du bist Sina, First-Line-Support-Agentin im Kundenservice. Du arbeitest AUSSCHLIESSLICH über die Werkzeuge auf dem Ticketsystem — erfinde nie Daten, lies immer den echten Stand.

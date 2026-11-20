@@ -46,6 +46,9 @@ oc8:
   env: dev
   seedOnStart: true
   capasPath: /app/capas
+  # Private targets live checks and website sources may reach: comma-separated
+  # CIDRs and/or exact hostnames. Empty = none (cloud metadata is always refused).
+  outboundAllowedPrivate: ""
   pythonPath: /app/capas/cli_harness
 
   # Model provider keys (optional — can also configure in the UI).
@@ -63,6 +66,17 @@ oc8:
     retentionDays: 0
 
   ollamaBaseUrl: "" # set automatically when ollama.enabled=true
+  # Embedding model for new knowledge bases and for memory. Empty keeps the
+  # backend default (nomic-embed-text on Ollama). Any `<provider>/<model>`
+  # whose provider can embed (OpenAI-compatible) works too; each organisation
+  # then needs its own key for that provider. Must produce 768-dim vectors.
+  defaultEmbeddingModel: ""
+  # With an external OIDC identity provider: the page where people change
+  # their own sign-in email and password (e.g. Keycloak's
+  # https://id.example.com/realms/<realm>/account). The members and profile
+  # screens link to it. Empty shows only a "managed by your identity
+  # provider" hint.
+  accountManagementUrl: ""
 
   otelSdkDisabled: true
 

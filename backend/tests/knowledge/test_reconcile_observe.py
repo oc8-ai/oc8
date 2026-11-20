@@ -37,6 +37,7 @@ from oc8.knowledge.ingest import run_source_sync
 from oc8.knowledge.reconcile import observe_listing, sweep_knowledge_deletions
 from oc8.knowledge.tombstone import RECONCILE_HELD
 from oc8.models.knowledge import EMBED_DIM
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -46,7 +47,7 @@ T0 = dt.datetime(2026, 3, 1, 9, 0, tzinfo=dt.UTC)
 
 
 class _FakeEmbedRouter:
-    async def embed(self, text: str, model: str | None = None) -> list[float]:
+    async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
         seed = sum(ord(c) for c in text) or 1
         return [float((seed + i) % 23) for i in range(EMBED_DIM)]
 
@@ -167,6 +168,8 @@ async def _marks(db: Any, kb_id: uuid.UUID) -> dict[str, dt.datetime | None]:
 
 
 async def _held_events(db: Any, tenant: uuid.UUID) -> list[m.AuditEvent]:
+    # Staged events reach the chain at commit; write them so they read back.
+    await flush_audit(db)
     rows = await db.execute(
         select(m.AuditEvent).where(
             m.AuditEvent.tenant_id == tenant, m.AuditEvent.action == RECONCILE_HELD

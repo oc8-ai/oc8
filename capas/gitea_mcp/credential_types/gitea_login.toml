@@ -5,7 +5,7 @@ display_name = "Gitea system"
 key = "url"
 label = "Gitea URL, as reachable from the oc8 backend container"
 kind = "url"
-placeholder = "http://host.docker.internal:3000"
+placeholder = "https://gitea.your-company.com"
 help = "For an instance in a separate Docker Compose project on macOS, use host.docker.internal and the published port."
 
 [[fields]]

@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from oc8.sandbox.scratch import validate_scratch
 from oc8.sandbox.types import BindMount, SandboxError, SandboxSpec
 
 
@@ -44,6 +45,8 @@ class ProvisionerPolicy:
     max_memory_bytes: int = 2 * 1024**3
     max_pids: int = 512
     max_cpu: float = 2.0
+    max_scratch_mb: int = 10 * 1024
+    """Total scratch one sandbox may ask for, across all its dirs."""
 
     def validate(self, spec: SandboxSpec) -> SandboxSpec:
         if spec.image not in self.allowed_images:
@@ -64,9 +67,20 @@ class ProvisionerPolicy:
 
         for mount in spec.mounts:
             self._validate_mount(mount)
+        self._validate_scratch(spec)
+        if spec.max_lifetime_s is not None and spec.max_lifetime_s <= 0:
+            raise SandboxError("max lifetime must be positive")
 
         # The Docker adapter also enforces no-new-privileges and privileged=False.
         return replace(spec, cap_drop=["ALL"])
+
+    def _validate_scratch(self, spec: SandboxSpec) -> None:
+        # A scratch dir is a fresh volume inside the container, so it cannot
+        # reach the host. The path rules are the driver's own (shared, so a
+        # direct Docker caller gets them too); the budget is the policy's.
+        validate_scratch(spec)
+        if sum(entry.size_mb for entry in spec.scratch) > self.max_scratch_mb:
+            raise SandboxError("scratch size exceeds policy")
 
     def _validate_mount(self, mount: BindMount) -> None:
         if _is_within(mount.host_path, self.session_root):

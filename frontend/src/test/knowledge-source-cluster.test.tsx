@@ -173,6 +173,8 @@ const S3_CREDENTIAL_TYPE = {
 const EXISTING_CREDENTIAL = { id: "cred-1", name: "Prod S3", credentialType: "s3_api" };
 
 const knowledgeConnectorsMock = vi.fn();
+const knowledgeVectorIndexesMock = vi.fn();
+const embeddingModelsMock = vi.fn();
 
 vi.mock("@/lib/knowledge-connector-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/knowledge-connector-hooks")>();
@@ -183,6 +185,8 @@ vi.mock("@/lib/knowledge-connector-hooks", async (importOriginal) => {
     useDeleteSource: () => ({ mutate: deleteSourceMock, isPending: false }),
     useCreateSource: () => ({ mutate: createSourceMock, isPending: false }),
     useKnowledgeConnectors: () => knowledgeConnectorsMock(),
+    useKnowledgeVectorIndexes: () => knowledgeVectorIndexesMock(),
+    useEmbeddingModels: () => embeddingModelsMock(),
     useOAuthConnections: () => EMPTY_OAUTH_RESPONSE,
   };
 });
@@ -205,6 +209,10 @@ beforeEach(() => {
   createCredentialMock.mockResolvedValue({ id: "new-cred-id" });
   knowledgeConnectorsMock.mockReset();
   knowledgeConnectorsMock.mockReturnValue(STUB_CONNECTORS_RESPONSE);
+  knowledgeVectorIndexesMock.mockReset();
+  knowledgeVectorIndexesMock.mockReturnValue({ data: [], isLoading: false });
+  embeddingModelsMock.mockReset();
+  embeddingModelsMock.mockReturnValue({ data: undefined });
 });
 
 describe("SourceEditDrawer", () => {
@@ -539,10 +547,11 @@ describe("KbDetailDrawer delete", () => {
 });
 
 // Regression coverage for the reported bug: the embedding-model picker
-// offered google/openai options even though this deployment can never
-// route embeddings to a cloud provider (ModelRouter.embed() always uses
-// the local Ollama instance) -- and the wizard offered no way to add
-// sources at creation time, only afterward.
+// offered hardcoded google/openai options that no tenant was set up to use
+// -- and the wizard offered no way to add sources at creation time, only
+// afterward. The picker now offers the deployment's own default (which may
+// be a cloud provider, from GET /knowledge/embedding-models) plus the local
+// models, and only the local ones until that answers.
 describe("BaseWizard", () => {
   beforeEach(() => {
     createKnowledgeBaseMock.mockReset();
@@ -568,6 +577,22 @@ describe("BaseWizard", () => {
     expect(values).toEqual(["local/nomic-embed-text"]);
     expect(values.some((v) => v.includes("bge-large"))).toBe(false);
     expect(values.some((v) => v.includes("google") || v.includes("openai"))).toBe(false);
+  });
+
+  it("puts the deployment's default embedding model first and creates the base with it", () => {
+    embeddingModelsMock.mockReturnValue({
+      data: {
+        defaultModel: "acme_ai/embed-768",
+        models: ["acme_ai/embed-768", "local/nomic-embed-text"],
+      },
+    });
+    renderWithClient(<BaseWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    goToStep(3);
+
+    const select = screen.getByRole("combobox") as HTMLSelectElement;
+    expect(select.value).toBe("acme_ai/embed-768");
+    const values = (screen.getAllByRole("option") as HTMLOptionElement[]).map((o) => o.value);
+    expect(values).toEqual(["acme_ai/embed-768", "local/nomic-embed-text"]);
   });
 
   it("syncs each selected source into the newly created base", () => {
@@ -791,6 +816,10 @@ describe("SourceWizard credential-backed connector fields", () => {
     fireEvent.change(screen.getByLabelText("Access key"), {
       target: { value: "AKIA_X" },
     });
+    // Every required field of the login is filled, or Save stays disabled.
+    fireEvent.change(screen.getByLabelText("Secret key"), {
+      target: { value: "SECRET_X" },
+    });
     fireEvent.change(screen.getByLabelText(/^name$/i), { target: { value: "New S3 credential" } });
     fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
     await vi.waitFor(() => expect(createCredentialMock).toHaveBeenCalled());
@@ -859,5 +888,94 @@ describe("SourceWizard persistent error banner", () => {
     });
 
     expect(screen.queryByText(rejection)).not.toBeInTheDocument();
+  });
+});
+
+const QDRANT_INDEX = {
+  typeId: "qdrant",
+  label: "Qdrant",
+  description: "Search an existing Qdrant collection",
+  credentialType: "qdrant_api",
+  configSchema: {
+    properties: {
+      collection: { type: "string", title: "Collection" },
+    },
+    required: ["collection"],
+  },
+};
+
+const QDRANT_CREDENTIAL_TYPE = {
+  name: "qdrant_api",
+  displayName: "Qdrant",
+  fields: [
+    {
+      key: "url",
+      label: "URL",
+      kind: "url",
+      required: true,
+      default: "",
+      placeholder: "",
+      help: "",
+    },
+    {
+      key: "api_key",
+      label: "API key",
+      kind: "password",
+      required: false,
+      default: "",
+      placeholder: "",
+      help: "",
+    },
+  ],
+};
+
+const QDRANT_CREDENTIAL = { id: "qdrant-cred-1", name: "Prod Qdrant", credentialType: "qdrant_api" };
+
+describe("BaseWizard connect existing vector index", () => {
+  beforeEach(() => {
+    createKnowledgeBaseMock.mockReset();
+    knowledgeVectorIndexesMock.mockReturnValue({ data: [QDRANT_INDEX], isLoading: false });
+    credentialsMock.mockImplementation((credentialType?: string) => ({
+      data:
+        !credentialType || credentialType === "qdrant_api" ? [QDRANT_CREDENTIAL] : [EXISTING_CREDENTIAL],
+    }));
+    credentialTypesMock.mockReturnValue({ data: [QDRANT_CREDENTIAL_TYPE, S3_CREDENTIAL_TYPE] });
+  });
+
+  it("renders CredentialPicker for the index credential, not a raw password input", () => {
+    renderWithClient(<BaseWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText(/sales kb/i), { target: { value: "HR Index" } });
+    fireEvent.click(screen.getByLabelText(/connect existing vector index/i));
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /qdrant/i }));
+
+    expect(screen.getByText("Prod Qdrant", { selector: "option" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create new/i })).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^api key$/i)).not.toBeInTheDocument();
+  });
+
+  it("submits indexType, indexConfig, and credentialId — no secrets in the body", async () => {
+    renderWithClient(<BaseWizard onClose={vi.fn()} onCreate={vi.fn()} />);
+    fireEvent.change(screen.getByPlaceholderText(/sales kb/i), { target: { value: "HR Index" } });
+    fireEvent.click(screen.getByLabelText(/connect existing vector index/i));
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /qdrant/i }));
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "qdrant-cred-1" } });
+    fireEvent.change(screen.getByLabelText(/collection/i), { target: { value: "hr_docs" } });
+    fireEvent.click(screen.getByRole("button", { name: /^continue$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^connect index$/i }));
+
+    await vi.waitFor(() => expect(createKnowledgeBaseMock).toHaveBeenCalled());
+    const [body] = createKnowledgeBaseMock.mock.calls[0];
+    expect(body).toEqual(
+      expect.objectContaining({
+        name: "HR Index",
+        indexType: "qdrant",
+        credentialId: "qdrant-cred-1",
+        indexConfig: expect.objectContaining({ collection: "hr_docs" }),
+      }),
+    );
+    expect(JSON.stringify(body)).not.toMatch(/api[_-]?key/i);
+    expect(JSON.stringify(body)).not.toMatch(/password/i);
   });
 });

@@ -159,7 +159,7 @@ async def test_the_flag_is_off_for_every_caller_who_is_not_broken(
         employee = _headers(tenant, "mitarbeiterin", MEMBER_ROLE)
         assert (await http.get("/api/v1/me", headers=employee)).status_code == 200
         body = (await http.get("/api/v1/governance", headers=employee)).json()
-        assert body["callerPermissions"] == ["copilot:use"]
+        assert body["callerPermissions"] == ["connection:own", "copilot:use"]
         assert body["callerRoleUnusable"] is False, (
             "a correctly-provisioned employee must not be told his assignment is broken"
         )

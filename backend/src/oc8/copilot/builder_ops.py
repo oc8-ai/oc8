@@ -1,0 +1,468 @@
+"""Forward references inside one builder proposal (Copilot Agent Builder §3.2).
+
+A builder proposal creates exactly one agent and configures it in the same
+step. The first operation is `agent.create` with `ref: "$new"`; every later
+operation names that agent with `agentRef: "$new"` instead of an `agentId`,
+because the id does not exist until apply. This module is pure: it validates
+the shape, gives the storage form and resolves a reference at apply time. The
+closed operation schemas stay `capabilities.py`'s -- every step is parsed by
+`parse_operations` with a placeholder id, so a builder step can carry nothing
+an ordinary operation could not.
+
+A builder proposal may only ever touch the agent it creates: a raw `agentId`
+is refused on every step, at validation and again at resolve time, and a ref
+resolves only to an `agent.create` earlier in the same proposal.
+
+A proposal may instead be board-only: exactly one `board.create` (naming its
+producing agent with `agentId`) or `board.update`, and nothing else. The agent
+builder is the one way a board operation reaches a tenant (generic proposals
+refuse them), so its department rule decides whether it applies or waits for
+approval.
+
+When no department fits, the proposal may open with one `department.create`
+carrying its own ref; `agent.create` then names it with `departmentRef`
+instead of a `departmentId`. Whether the member may create departments is the
+caller's check (`builder.create_builder_proposal`), not this module's.
+"""
+
+from __future__ import annotations
+
+import re
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Final
+
+from oc8.copilot.capabilities import (
+    InvalidOperation,
+    Operation,
+    operation_data,
+    parse_operations,
+)
+
+#: The operations that may follow `agent.create` and point at it.
+REF_TARGETS: Final = frozenset(
+    {
+        "agent.mission.set",
+        "agent.model.switch",
+        "agent.skill.assign",
+        "trigger.create",
+        "agent.guardrail.set",
+        "agent.narrowing.set",
+        "board.create",
+        "board.update",
+    }
+)
+#: A proposal of exactly one of these, and no `agent.create`, is board-only.
+BOARD_ONLY_TYPES: Final = frozenset({"board.create", "board.update"})
+#: What an `agentRef` step is validated with before the agent exists.
+PLACEHOLDER_AGENT_ID: Final = uuid.UUID(int=0)
+#: What an `agent.create` with `departmentRef` is validated with before the
+#: department exists.
+PLACEHOLDER_DEPARTMENT_ID: Final = uuid.UUID(int=0)
+#: One agent with its settings; anything longer is not a builder proposal.
+MAX_BUILDER_STEPS: Final = 24
+_CREATE: Final = "agent.create"
+_NEW_DEPARTMENT: Final = "department.create"
+_REF = re.compile(r"^\$[a-z][a-z0-9_]{0,31}$")
+_REF_KEYS: Final = ("ref", "agentRef", "departmentRef")
+
+
+class BuilderInvalid(ValueError):
+    """A builder proposal refused with a value-free code and, when one step is
+    to blame, its index. Never carries submitted text."""
+
+    def __init__(self, code: str, step: int | None = None) -> None:
+        super().__init__(f"agent builder proposal refused: {code}")
+        self.code = code
+        self.step = step
+
+
+@dataclass(frozen=True)
+class BuilderStep:
+    operation: Operation
+    #: Set on the `agent.create` step: the name later steps use.
+    ref: str | None = None
+    #: Set on every later step: the `ref` it points at.
+    agent_ref: str | None = None
+    #: Set on an `agent.create` placed in the proposal's new department: the
+    #: `ref` of its `department.create`.
+    department_ref: str | None = None
+
+
+def _is_ref(value: object) -> bool:
+    return isinstance(value, str) and _REF.match(value) is not None
+
+
+def _invalid(exc: InvalidOperation, step: int) -> BuilderInvalid:
+    """A step that failed its closed schema. A refused board spec keeps its own
+    fixed code; anything else is `invalid` (both value-free)."""
+    code = "board_spec_invalid" if exc.reason == "board_spec_invalid" else "invalid"
+    return BuilderInvalid(code, step)
+
+
+def _board_only(raw: list[dict[str, Any]]) -> list[BuilderStep] | None:
+    """The one step of a board-only proposal, or None when `raw` is not one."""
+    if len(raw) != 1:
+        return None
+    data = raw[0]
+    kind = data.get("type")
+    if kind not in BOARD_ONLY_TYPES or any(key in data for key in _REF_KEYS):
+        return None
+    if kind == "board.create" and "agentId" not in data:
+        return None
+    try:
+        operation = parse_operations([dict(data)])[0]
+    except InvalidOperation as exc:
+        raise _invalid(exc, 0) from exc
+    return [BuilderStep(operation=operation)]
+
+
+def is_board_only(steps: list[BuilderStep]) -> bool:
+    """Whether a parsed proposal is one board operation and no new agent."""
+    return (
+        len(steps) == 1
+        and steps[0].operation.type in BOARD_ONLY_TYPES
+        and steps[0].agent_ref is None
+        and steps[0].ref is None
+    )
+
+
+def _new_department(
+    raw: list[dict[str, Any]],
+) -> tuple[BuilderStep | None, list[dict[str, Any]]]:
+    """The opening `department.create`, when there is one, and the rest. Only
+    the first step may create a department, it needs a ref, and the agent must
+    be placed in it -- a department the agent does not use is not part of a
+    builder proposal."""
+    if any(item.get("type") == _NEW_DEPARTMENT for item in raw[1:]):
+        index = next(i for i, item in enumerate(raw) if i and item.get("type") == _NEW_DEPARTMENT)
+        raise BuilderInvalid("type_not_allowed", index)
+    if raw[0].get("type") != _NEW_DEPARTMENT:
+        return None, raw
+    data = dict(raw[0])
+    ref = data.pop("ref", None)
+    if not _is_ref(ref) or "agentRef" in data or "departmentRef" in data:
+        raise BuilderInvalid("missing_ref" if ref is None else "invalid", 0)
+    try:
+        operation = parse_operations([data])[0]
+    except InvalidOperation as exc:
+        raise _invalid(exc, 0) from exc
+    return BuilderStep(operation=operation, ref=ref), raw[1:]
+
+
+def parse_builder_operations(raw: object) -> list[BuilderStep]:
+    """Validate a builder proposal. Rules: exactly one `agent.create`, first --
+    or second, after one `department.create` with its own ref that the agent
+    is placed in (`departmentRef`) -- carrying a `ref`; every later step is a
+    `REF_TARGETS` type pointing at that ref with `agentRef` and no `agentId`;
+    each step passes its closed schema. Without an `agent.create`, only a
+    board-only proposal parses (`BOARD_ONLY_TYPES`)."""
+    if not isinstance(raw, list) or not raw or len(raw) > MAX_BUILDER_STEPS:
+        raise BuilderInvalid("invalid")
+    if not all(isinstance(item, dict) for item in raw):
+        raise BuilderInvalid("invalid")
+    if not any(item.get("type") == _CREATE for item in raw):
+        board_only = _board_only(raw)
+        if board_only is None:
+            raise BuilderInvalid("missing_create")
+        return board_only
+    department_step, rest = _new_department(raw)
+    offset = len(raw) - len(rest)
+    declared_anywhere = {item.get("ref") for item in rest if _is_ref(item.get("ref"))}
+    defined: set[str] = set()
+    steps: list[BuilderStep] = [department_step] if department_step is not None else []
+    for index, item in enumerate(rest, start=offset):
+        data = dict(item)
+        ref = data.pop("ref", None)
+        agent_ref = data.pop("agentRef", None)
+        department_ref = data.pop("departmentRef", None)
+        kind = data.get("type")
+        if kind == _CREATE:
+            if ref is None:
+                raise BuilderInvalid("missing_ref", index)
+            if not _is_ref(ref) or agent_ref is not None:
+                raise BuilderInvalid("invalid", index)
+            if defined:
+                raise BuilderInvalid("two_refs", index)
+            if department_step is not None:
+                # Placed in the new department, and only there.
+                if department_ref != department_step.ref or "departmentId" in data:
+                    raise BuilderInvalid("unknown_department_ref", index)
+                if ref == department_step.ref:
+                    raise BuilderInvalid("two_refs", index)
+                data["departmentId"] = str(PLACEHOLDER_DEPARTMENT_ID)
+            elif department_ref is not None:
+                raise BuilderInvalid("unknown_department_ref", index)
+            defined.add(ref)
+        else:
+            if department_ref is not None:
+                raise BuilderInvalid("invalid", index)
+            if ref is not None:
+                raise BuilderInvalid("invalid", index)
+            if kind not in REF_TARGETS:
+                raise BuilderInvalid("type_not_allowed", index)
+            if "agentId" in data:
+                raise BuilderInvalid("agent_id_not_allowed", index)
+            if not _is_ref(agent_ref):
+                raise BuilderInvalid("unknown_ref", index)
+            if agent_ref not in defined:
+                code = "ref_before_create" if agent_ref in declared_anywhere else "unknown_ref"
+                raise BuilderInvalid(code, index)
+            data["agentId"] = str(PLACEHOLDER_AGENT_ID)
+        try:
+            operation = parse_operations([data])[0]
+        except InvalidOperation as exc:
+            raise _invalid(exc, index) from exc
+        if kind == _CREATE:
+            steps.append(
+                BuilderStep(
+                    operation=operation,
+                    ref=ref,
+                    department_ref=department_step.ref if department_step else None,
+                )
+            )
+        else:
+            steps.append(BuilderStep(operation=operation, agent_ref=agent_ref))
+    return steps
+
+
+def builder_operation_data(step: BuilderStep) -> dict[str, Any]:
+    """The persisted form: the validated operation, with `ref`/`agentRef` in
+    place of the placeholder id. `parse_builder_operations` reads it back."""
+    data = operation_data(step.operation)
+    if step.agent_ref is not None:
+        data.pop("agentId", None)
+        data["agentRef"] = step.agent_ref
+    if step.department_ref is not None:
+        data.pop("departmentId", None)
+        data["departmentRef"] = step.department_ref
+    if step.ref is not None:
+        data["ref"] = step.ref
+    return data
+
+
+def resolve_step(
+    data: Mapping[str, Any], refs: Mapping[str, uuid.UUID], *, board_only: bool = False
+) -> tuple[dict[str, Any], str | None]:
+    """One stored step made applicable: `agentRef` becomes the created agent's
+    id. Returns the operation data and the `ref` this step defines (if any).
+
+    The stored form never carries an `agentId`, so one found here is refused
+    rather than applied: only a ref already created in this apply resolves.
+    The exception is a board-only proposal's one step (`board_only`), which
+    names an existing board and agent and passes through unchanged."""
+    out = dict(data)
+    if board_only:
+        if out.get("type") not in BOARD_ONLY_TYPES or any(key in out for key in _REF_KEYS):
+            raise BuilderInvalid("invalid")
+        return out, None
+    ref = out.pop("ref", None)
+    agent_ref = out.pop("agentRef", None)
+    department_ref = out.pop("departmentRef", None)
+    if "agentId" in out:
+        raise BuilderInvalid("agent_id_not_allowed")
+    if out.get("type") == _NEW_DEPARTMENT:
+        if agent_ref is not None or department_ref is not None:
+            raise BuilderInvalid("invalid")
+        return out, (str(ref) if ref is not None else None)
+    if out.get("type") == _CREATE:
+        if agent_ref is not None:
+            raise BuilderInvalid("invalid")
+        if department_ref is not None:
+            # Only a department this very apply created.
+            department = refs.get(department_ref) if isinstance(department_ref, str) else None
+            if department is None or "departmentId" in out:
+                raise BuilderInvalid("unknown_department_ref")
+            out["departmentId"] = str(department)
+        return out, (str(ref) if ref is not None else None)
+    if ref is not None or department_ref is not None:
+        raise BuilderInvalid("invalid")
+    created = refs.get(agent_ref) if isinstance(agent_ref, str) else None
+    if created is None:
+        raise BuilderInvalid("unknown_ref")
+    out["agentId"] = str(created)
+    return out, None
+
+
+# -- The flat propose_agent shape ---------------------------------------------
+#
+# Small local models (qwen2.5:7b in the browser E2E) never produced a valid
+# ordered `operations` list with refs. They fill a flat record reliably, so
+# propose_agent also takes one agent's fields directly and this module expands
+# them into the very operations a capable model would write. The expansion
+# only rearranges what it was given: every value still goes through
+# `parse_builder_operations` and the same selection and secret checks.
+
+#: The one ref a flat proposal's operations use.
+NEW_REF: Final = "$new"
+#: The ref of a flat proposal's new department.
+NEW_DEPARTMENT_REF: Final = "$department"
+#: What the flat shape takes; anything else is refused, never dropped.
+FLAT_FIELDS: Final = frozenset(
+    {
+        "departmentId",
+        "newDepartment",
+        "name",
+        "roleTitle",
+        "mission",
+        "modelId",
+        "skillIds",
+        "schedule",
+        "timezone",
+        "eventSource",
+        "eventType",
+        "taskText",
+        "systems",
+        "limits",
+        "board",
+    }
+)
+#: A flat `board`'s own keys: the new agent's dashboard.
+_BOARD_KEYS: Final = frozenset({"title", "description", "spec"})
+#: A flat limit's own keys; `system` is the guardrail's `connectionName`.
+_LIMIT_KEYS: Final = {"system": "connectionName"}
+
+
+def _given(value: object) -> bool:
+    """Small models send null, "" or [] for a field they mean to leave out."""
+    return value not in (None, "", [], {})
+
+
+def _listed(value: object) -> list[object]:
+    """A list field; one bare string is read as a list of one."""
+    if not _given(value):
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return list(value)
+    raise BuilderInvalid("invalid")
+
+
+def _system_policy(frame: Mapping[str, Any] | None, system: str) -> dict[str, Any]:
+    """The narrowing entry that lets the new agent use `system` as far as the
+    department's frame allows -- the frame's own rights, never more, so it can
+    not widen anything (`pdp.narrowing_within_frame`). A system the frame does
+    not list is an agent-exclusive grant: reading on, writing off (a write
+    stays something a person grants on the agent's page). Without a frame
+    (unknown department) nothing is granted; the proposal is refused anyway."""
+    tools = (frame or {}).get("tools")
+    raw = tools.get(system) if isinstance(tools, dict) else None
+    if frame is not None and system not in (tools if isinstance(tools, dict) else {}):
+        return {"enabled": True, "read": True, "modify": False}
+    policy = raw if isinstance(raw, dict) else {}
+    return {
+        "enabled": True,
+        "read": bool(policy.get("read")),
+        "modify": bool(policy.get("modify")),
+    }
+
+
+def flat_operations(
+    fields: Mapping[str, Any], *, frame: Mapping[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """The ordered builder operations one flat proposal stands for:
+    agent.create (ref "$new"), then the model, each skill, the schedule and/or
+    event trigger, the systems as one narrowing and each limit as a guardrail,
+    every one with agentRef "$new", and last the agent's board. `frame` is the
+    chosen department's frame; it only decides which rights a named system
+    keeps."""
+    unknown = set(fields) - FLAT_FIELDS
+    if unknown:
+        raise BuilderInvalid("unknown_field")
+    create: dict[str, Any] = {"type": "agent.create", "ref": NEW_REF}
+    for key in ("departmentId", "name", "roleTitle", "mission"):
+        if key in fields and fields[key] is not None:
+            create[key] = fields[key]
+    ops: list[dict[str, Any]] = [create]
+    new_department = fields.get("newDepartment")
+    if _given(new_department):
+        if _given(fields.get("departmentId")):
+            raise BuilderInvalid("two_departments")
+        if not isinstance(new_department, Mapping) or set(new_department) - {"name", "goal"}:
+            raise BuilderInvalid("invalid", 0)
+        department: dict[str, Any] = {"type": _NEW_DEPARTMENT, "ref": NEW_DEPARTMENT_REF}
+        department.update({k: v for k, v in new_department.items() if v is not None})
+        create.pop("departmentId", None)
+        create["departmentRef"] = NEW_DEPARTMENT_REF
+        ops.insert(0, department)
+
+    def follow(op_type: str, /, **data: Any) -> None:
+        ops.append({"type": op_type, "agentRef": NEW_REF, **data})
+
+    if _given(fields.get("modelId")):
+        follow("agent.model.switch", modelConfigId=fields["modelId"])
+    for skill in _listed(fields.get("skillIds")):
+        follow("agent.skill.assign", skillVersionId=skill)
+    task = fields.get("taskText") if _given(fields.get("taskText")) else fields.get("mission")
+    if _given(fields.get("schedule")):
+        zone = {"timezone": fields["timezone"]} if _given(fields.get("timezone")) else {}
+        follow(
+            "trigger.create",
+            kind="cron",
+            cronExpression=fields["schedule"],
+            **zone,
+            taskText=task,
+        )
+    if _given(fields.get("eventSource")) or _given(fields.get("eventType")):
+        follow(
+            "trigger.create",
+            kind="event",
+            eventSource=fields.get("eventSource"),
+            eventType=fields.get("eventType"),
+            taskText=task,
+        )
+    systems = _listed(fields.get("systems"))
+    if systems:
+        if not all(isinstance(s, str) for s in systems):
+            raise BuilderInvalid("invalid", len(ops))
+        tools = {str(s): _system_policy(frame, str(s)) for s in systems}
+        follow("agent.narrowing.set", narrowing={"tools": tools})
+    for limit in _listed(fields.get("limits")):
+        if not isinstance(limit, dict):
+            raise BuilderInvalid("invalid", len(ops))
+        follow(
+            "agent.guardrail.set",
+            **{_LIMIT_KEYS.get(str(key), str(key)): value for key, value in limit.items()},
+        )
+    board = fields.get("board")
+    if _given(board):
+        if not isinstance(board, Mapping) or set(board) - _BOARD_KEYS:
+            raise BuilderInvalid("invalid", len(ops))
+        follow("board.create", **{str(k): v for k, v in board.items() if v is not None})
+    return ops
+
+
+def proposal_operations(arguments: object, *, frame: Mapping[str, Any] | None = None) -> object:
+    """The operations one propose_agent call carries, in either shape: the
+    explicit `operations` list as given, or the flat fields expanded by
+    `flat_operations`. Both, or neither, is refused. The result is still
+    unvalidated -- `parse_builder_operations` judges it."""
+    if not isinstance(arguments, Mapping):
+        raise BuilderInvalid("invalid")
+    flat = {key: value for key, value in arguments.items() if key != "operations"}
+    if "operations" in arguments:
+        if any(_given(value) for value in flat.values()):
+            raise BuilderInvalid("mixed_shapes")
+        return arguments["operations"]
+    if not any(_given(value) for value in flat.values()):
+        raise BuilderInvalid("missing_agent")
+    return flat_operations(flat, frame=frame)
+
+
+def flat_new_department(arguments: object) -> bool:
+    """Whether a flat proposal asks for a new department."""
+    return (
+        isinstance(arguments, Mapping)
+        and "operations" not in arguments
+        and _given(arguments.get("newDepartment"))
+    )
+
+
+def flat_department_id(arguments: object) -> str | None:
+    """The department a flat proposal names, to read its frame by."""
+    if isinstance(arguments, Mapping) and "operations" not in arguments:
+        value = arguments.get("departmentId")
+        return value if isinstance(value, str) else None
+    return None

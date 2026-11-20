@@ -8,21 +8,22 @@ import logging
 import os
 import re
 import tempfile
-import urllib.parse
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
-import httpx
 import httpx2
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
-from oc8.constants import CORE_VERSION
+from oc8.agent.http_tools import BLOCKED_MESSAGE, HttpLogin, HttpToolSession, guarded_ip
 from oc8.modelrouter.types import NeutralTool
+from oc8.net.outbound import USER_AGENT, OutboundBlocked
 
 if TYPE_CHECKING:
     from typing import TextIO
@@ -82,7 +83,7 @@ def _safe_env(overrides: dict[str, str] | None) -> dict[str, str]:
     # Workspace/config for the demo servers, but never secrets.
     env.update({k: v for k, v in os.environ.items() if k.startswith("OC8_MCP_")})
     env.update(overrides or {})
-    env["OC8_USER_AGENT"] = f"oc8/{CORE_VERSION}"
+    env["OC8_USER_AGENT"] = USER_AGENT
     # Prepended, not overwritten: a plugin (microsoft365, google_workspace)
     # may already need its own PYTHONPATH entry for its bridge package
     # (tool_pack.toml's env.PYTHONPATH) -- both must stay importable.
@@ -93,6 +94,66 @@ def _safe_env(overrides: dict[str, str] | None) -> dict[str, str]:
         else _SITECUSTOMIZE_DIR
     )
     return env
+
+
+def _origin2(url: httpx2.URL) -> tuple[str, str, int | None]:
+    return (url.scheme, url.host, url.port)
+
+
+class _GuardedMcpTransport(httpx2.AsyncBaseTransport):
+    """The transport of a remote MCP server's client. The SDK speaks httpx2
+    and follows redirects itself; every request it sends, each redirect hop
+    included, comes through here, so each one is
+
+    - checked by the outbound guard and connected to exactly the address
+      that was checked (the URL host is swapped for that IP; the Host header
+      and the TLS server name stay the real name, so certificates are still
+      verified against it): no second DNS answer at connect time;
+    - stripped of the connection's own headers (a custom API-key header
+      httpx2 would carry along; it drops only `Authorization`) when it goes
+      to another origin than the configured server.
+    """
+
+    def __init__(self, server_url: str, own_headers: frozenset[str]) -> None:
+        self._origin = _origin2(httpx2.URL(server_url))
+        self._own_headers = own_headers
+        self._inner = httpx2.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx2.Request) -> httpx2.Response:
+        ip = await guarded_ip(str(request.url))
+        url = request.url
+        headers = httpx2.Headers(request.headers)
+        if _origin2(url) != self._origin:
+            for name in self._own_headers:
+                headers.pop(name, None)
+        headers["Host"] = url.host if url.port is None else f"{url.host}:{url.port}"
+        pinned = httpx2.Request(
+            request.method,
+            url.copy_with(host=ip),
+            headers=headers,
+            stream=request.stream,
+            extensions={**request.extensions, "sni_hostname": url.host},
+        )
+        return await self._inner.handle_async_request(pinned)
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _blocked_in(exc: BaseException) -> OutboundBlocked | None:
+    """The `OutboundBlocked` inside `exc`: the SDK runs the transport in a
+    task group, so a refused hop arrives wrapped in an exception group."""
+    if isinstance(exc, OutboundBlocked):
+        return exc
+    if isinstance(exc, BaseExceptionGroup):
+        for inner in exc.exceptions:
+            found = _blocked_in(inner)
+            if found is not None:
+                return found
+    cause = exc.__cause__ or exc.__context__
+    if isinstance(cause, OutboundBlocked):
+        return cause
+    return None
 
 
 def _read_timeout(seconds: float) -> Any:
@@ -121,6 +182,10 @@ def _read_timeout(seconds: float) -> Any:
 
 class McpServerStartupError(RuntimeError):
     """A stdio MCP server failed to come up, with the reason it printed."""
+
+
+class McpToolError(RuntimeError):
+    """Protocol-level tool failure (`CallToolResult.is_error`)."""
 
 
 #: `package.module.SomeError: message` -- a raised exception with its origin,
@@ -220,6 +285,21 @@ class _StderrTail:
         return ""
 
 
+_ANNOTATION_KEYS = ("readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint")
+
+
+def _annotations_of(tool: Any) -> dict[str, Any] | None:
+    raw = getattr(tool, "annotations", None)
+    if raw is None:
+        return None
+    out: dict[str, Any] = {}
+    for key in _ANNOTATION_KEYS:
+        val = raw.get(key) if isinstance(raw, dict) else getattr(raw, key, None)
+        if val is not None:
+            out[key] = bool(val)
+    return out or None
+
+
 def _schema_of(tool: Any) -> dict[str, Any]:
     """A tool's parameter schema, whichever major of the MCP SDK is installed.
 
@@ -230,6 +310,45 @@ def _schema_of(tool: Any) -> dict[str, Any]:
     """
     schema = getattr(tool, "input_schema", None) or getattr(tool, "inputSchema", None)
     return schema or {"type": "object", "properties": {}}
+
+
+async def _list_resources(session: ClientSession) -> list[dict[str, str]]:
+    """Names and descriptions. A server with no resources, or an older SDK, lists none."""
+    list_resources = getattr(session, "list_resources", None)
+    if list_resources is None:
+        return []
+    try:
+        listed = await list_resources()
+    except Exception:
+        return []
+    out: list[dict[str, str]] = []
+    for resource in getattr(listed, "resources", []) or []:
+        uri = getattr(resource, "uri", None)
+        if uri is None:
+            continue
+        out.append(
+            {
+                "uri": str(uri),
+                "name": str(getattr(resource, "name", "") or ""),
+                "description": str(getattr(resource, "description", "") or ""),
+            }
+        )
+    return out
+
+
+async def _list_prompt_names(session: ClientSession) -> list[str]:
+    list_prompts = getattr(session, "list_prompts", None)
+    if list_prompts is None:
+        return []
+    try:
+        listed = await list_prompts()
+    except Exception:
+        return []
+    return [
+        str(prompt.name)
+        for prompt in (getattr(listed, "prompts", []) or [])
+        if getattr(prompt, "name", None)
+    ]
 
 
 class McpSession:
@@ -243,6 +362,7 @@ class McpSession:
         server_url: str = "",
         headers: dict[str, str] | None = None,
         timeout_s: float | None = None,
+        on_step: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self._transport = transport
         self._server_url = server_url
@@ -256,17 +376,40 @@ class McpSession:
         self._session: ClientSession | None = None
         self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
         self.tools: list[NeutralTool] = []
+        self.resources: list[dict[str, str]] = []
+        self.prompt_names: list[str] = []
         self._errlog = _StderrTail()
+        # Only "Test connection" passes this -- every other caller (the agent
+        # pool, the isolated runtime's tool gateway) launches sessions by the
+        # dozen and has no per-step UI waiting on them, so it stays optional
+        # and costs them nothing.
+        self._on_step = on_step
 
     async def __aenter__(self) -> McpSession:
         try:
+            if self._on_step is not None:
+                await self._on_step("spawn")
             if self._transport == "http":
-                # Create an HTTP client with configured headers and timeout,
-                # then pass it to the streamable-HTTP transport.
+                # Refuse a blocked server before anything is opened; the
+                # transport then checks and pins every request, redirect
+                # hops included. The client is otherwise what the SDK's
+                # `create_mcp_http_client` builds (redirects on, its
+                # default timeouts when none is set).
+                await guarded_ip(self._server_url)
                 http_client = await self._stack.enter_async_context(
-                    create_mcp_http_client(
+                    httpx2.AsyncClient(
                         headers=self._headers or None,
-                        timeout=httpx2.Timeout(self._timeout_s) if self._timeout_s else None,
+                        timeout=(
+                            httpx2.Timeout(self._timeout_s)
+                            if self._timeout_s
+                            else httpx2.Timeout(
+                                MCP_DEFAULT_TIMEOUT, read=MCP_DEFAULT_SSE_READ_TIMEOUT
+                            )
+                        ),
+                        follow_redirects=True,
+                        transport=_GuardedMcpTransport(
+                            self._server_url, frozenset(k.lower() for k in self._headers)
+                        ),
                     )
                 )
                 read, write = await self._stack.enter_async_context(
@@ -296,17 +439,32 @@ class McpSession:
                 ClientSession(read, write, read_timeout_seconds=_read_timeout(self._timeout_s))
             )
             await self._session.initialize()
+            if self._on_step is not None:
+                await self._on_step("handshake")
             listed = await self._session.list_tools()
+            if self._on_step is not None:
+                await self._on_step("list_tools")
         except BaseException as exc:
             # A server that never answers `initialize` raises here -- but the
             # subprocess and session are already pushed onto the stack, and
             # __aexit__ is never called when __aenter__ raises. Without this,
             # that child process leaks for as long as it keeps running.
-            await self._stack.aclose()
+            try:
+                await self._stack.aclose()
+            except BaseException as close_exc:
+                # A refused remote MCP hop surfaces here, wrapped in the SDK's
+                # task-group error: hand the caller the plain refusal.
+                if self._transport == "http" and _blocked_in(close_exc) is not None:
+                    self._errlog.close()
+                    raise OutboundBlocked(BLOCKED_MESSAGE) from close_exc
+                raise
             reason = self._errlog.last_meaningful_line() if self._transport == "stdio" else ""
             if self._transport == "stdio":
                 self._errlog.tee_to_log(connection=self._params.command)  # type: ignore[union-attr]
             self._errlog.close()
+            blocked = _blocked_in(exc) if self._transport == "http" else None
+            if blocked is not None and blocked is not exc:
+                raise OutboundBlocked(BLOCKED_MESSAGE) from exc
             if reason and isinstance(exc, Exception):
                 raise McpServerStartupError(f"{exc or type(exc).__name__}: {reason}") from exc
             raise
@@ -315,9 +473,12 @@ class McpSession:
                 name=t.name,
                 description=t.description or "",
                 parameters=_schema_of(t),
+                annotations=_annotations_of(t),
             )
             for t in listed.tools
         ]
+        self.resources = await _list_resources(self._session)
+        self.prompt_names = await _list_prompt_names(self._session)
         return self
 
     async def __aexit__(
@@ -337,7 +498,17 @@ class McpSession:
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
         if self._session is None:
             raise RuntimeError("MCP session not started")
-        result = await self._session.call_tool(name, arguments)
+        try:
+            result = await self._session.call_tool(name, arguments, allow_input_required=True)
+        except TypeError as exc:
+            if "allow_input_required" not in str(exc):
+                raise
+            result = await self._session.call_tool(name, arguments)
+        from oc8.agent.elicitation import ElicitationNeeded, elicitation_message
+
+        question = elicitation_message(result)
+        if question is not None:
+            raise ElicitationNeeded(question)
         parts: list[str] = []
         for block in result.content:
             text = getattr(block, "text", None)
@@ -355,88 +526,20 @@ class McpSession:
         # and the department cache (oc8.agent.cache_flow) had no signal to
         # avoid replaying the failing request. Live-observed 2026-08-26.
         if result.is_error:
-            raise RuntimeError(text)
+            raise McpToolError(text)
         return text
 
-
-class HttpToolSession:
-    """A drop-in substitute for `McpSession` over a plain REST API with no
-    MCP support at all: tools are declared manually in the connection's
-    config (`transport="manual_http"`) rather than discovered via a
-    handshake, so `__aenter__` performs no network I/O."""
-
-    def __init__(
-        self,
-        base_url: str,
-        http_tools: list[dict[str, Any]],
-        *,
-        headers: dict[str, str] | None = None,
-        timeout_s: float | None = None,
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._http_tools = {str(t["name"]): t for t in http_tools}
-        self._headers = dict(headers or {})
-        self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
-        self._client: httpx.AsyncClient | None = None
-        self.tools: list[NeutralTool] = []
-
-    async def __aenter__(self) -> HttpToolSession:
-        self._client = httpx.AsyncClient(timeout=self._timeout_s)
-        self.tools = [
-            NeutralTool(
-                name=str(t["name"]),
-                description=str(t.get("description", "")),
-                parameters=t.get("param_schema") or {"type": "object", "properties": {}},
-            )
-            for t in self._http_tools.values()
-        ]
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        if self._client is not None:
-            await self._client.aclose()
-
-    async def call(self, name: str, arguments: dict[str, Any]) -> str:
-        if self._client is None:
-            raise RuntimeError("HTTP tool session not started")
-        tool = self._http_tools.get(name)
-        if tool is None:
-            raise RuntimeError(f"unknown tool {name!r}")
-        url_template = str(tool.get("url_template", ""))
-        placeholders = set(re.findall(r"\{(\w+)\}", url_template))
-        try:
-            # Quoted so a model-supplied value (e.g. containing `../`, `?` or
-            # `#`) can't escape the path segment it was meant to fill or
-            # rewrite the query/URL structure.
-            url = self._base_url + url_template.format(
-                **{k: urllib.parse.quote(str(arguments[k]), safe="") for k in placeholders}
-            )
-        except KeyError as exc:
-            raise RuntimeError(f"missing required parameter {exc}") from exc
-        # Placeholders already consumed by the URL template are not also sent
-        # as a query param or body field.
-        remaining = {k: v for k, v in arguments.items() if k not in placeholders}
-        method = str(tool.get("method", "GET")).upper()
-        try:
-            if method in ("GET", "DELETE"):
-                resp = await self._client.request(
-                    method, url, headers=self._headers, params=remaining
-                )
-            else:
-                resp = await self._client.request(
-                    method, url, headers=self._headers, json=remaining
-                )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"{exc.response.status_code}: {exc.response.text[:500]}") from exc
-        except httpx.HTTPError as exc:
-            raise RuntimeError(str(exc)) from exc
-        return resp.text or "(no output)"
+    async def read_resource(self, uri: str) -> str:
+        """The body of one resource. Listing never includes this."""
+        if self._session is None:
+            raise RuntimeError("MCP session not started")
+        result = await self._session.read_resource(uri)
+        parts: list[str] = []
+        for block in getattr(result, "contents", []) or []:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "\n".join(parts) if parts else "(no output)"
 
 
 def resolve_auth_header(cfg: dict[str, Any], env: dict[str, str]) -> dict[str, str]:
@@ -459,8 +562,10 @@ async def open_tool_session(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     env: dict[str, str] | None = None,
     timeout_s: float | None = None,
+    on_step: Callable[[str], Awaitable[None]] | None = None,
 ) -> McpSession | HttpToolSession:
     """The single place that knows which session class a connection's
     transport needs -- every caller that used to construct `McpSession`
@@ -468,16 +573,28 @@ async def open_tool_session(
     them. Returns an UNENTERED session; this is a plain async function, not
     an async context manager, so callers write
     `tool_session = await open_tool_session(...)` then
-    `async with tool_session as session:`."""
+    `async with tool_session as session:`.
+
+    `on_step` is not accepted by `manual_http`: `HttpToolSession.__aenter__`
+    does no network I/O at all (its tools are declared in config, not
+    discovered), so there is no spawn/handshake/list_tools progression for
+    it to report -- "Test connection" still gets a final result line, just
+    not the three that precede it."""
     if transport == "manual_http":
         return HttpToolSession(
-            server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s
+            server_url, list(http_tools or []), headers=headers, timeout_s=timeout_s, login=login
         )
     if transport == "http":
         return McpSession(
-            "", [], env, transport="http", server_url=server_url, headers=headers,
+            "",
+            [],
+            env,
+            transport="http",
+            server_url=server_url,
+            headers=headers,
             timeout_s=timeout_s,
+            on_step=on_step,
         )
     if transport == "stdio":
-        return McpSession(command, args or [], env, timeout_s=timeout_s)
+        return McpSession(command, args or [], env, timeout_s=timeout_s, on_step=on_step)
     raise ValueError(f"unsupported transport {transport!r}")

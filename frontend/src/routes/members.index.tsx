@@ -12,6 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAssignees, useCreateMember, type RoleAssignee } from "@/lib/roles-hooks";
+import { ApiError } from "@/lib/api";
 import { useAuthConfig } from "@/lib/hooks";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
@@ -49,7 +50,7 @@ export function MembersPage() {
             <p className="mt-2 text-sm text-muted-foreground">
               {t(
                 "Your role does not include member:manage, so you cannot manage users. Ask your administrator for access.",
-                "Ihre Rolle enthält member:manage nicht, daher können Sie Benutzer nicht verwalten. Bitten Sie Ihren Administrator um Zugriff.",
+                "Deine Rolle enthält member:manage nicht, daher kannst du Benutzer nicht verwalten. Bitte deinen Administrator um Zugriff.",
               )}
             </p>
           </div>
@@ -70,7 +71,7 @@ export function MembersPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               {t(
                 "Manage user roles for your organization.",
-                "Verwalten Sie Benutzerrollen für Ihre Organisation.",
+                "Verwalte Benutzerrollen für deine Organisation.",
               )}
             </p>
           </div>
@@ -133,7 +134,7 @@ function InviteLinkDialog({
           <DialogDescription>
             {t(
               "No mail server is configured for this instance, so the invite could not be emailed. Copy this link and send it to the new user yourself — it lets them set their own password.",
-              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopieren Sie diesen Link und senden Sie ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen.",
+              "Für diese Instanz ist kein Mailserver konfiguriert, daher konnte die Einladung nicht per E-Mail versendet werden. Kopiere diesen Link und sende ihn selbst an den neuen Benutzer — damit kann er sein eigenes Passwort festlegen.",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -166,6 +167,34 @@ function InviteLinkDialog({
   );
 }
 
+/** Roles an invitation can carry, least to most; the deployment refuses one
+ *  above the inviter's own. */
+const INVITE_ROLES = ["member", "auditor", "operator", "dept_manager", "org_admin"];
+
+interface InviteRefusal {
+  message: string;
+  /** Where the deployment suggests going next; only same-app paths are kept. */
+  action: { label: string; url: string } | null;
+}
+
+/** A structured refusal from the deployment's inviter, else null. */
+function inviteRefusal(err: unknown): InviteRefusal | null {
+  if (!(err instanceof ApiError)) return null;
+  let detail: { code?: string; message?: string; actionLabel?: string; actionUrl?: string };
+  try {
+    detail = JSON.parse(err.message);
+  } catch {
+    return null;
+  }
+  if (!detail || typeof detail.code !== "string" || typeof detail.message !== "string") return null;
+  const url = detail.actionUrl;
+  const sameApp = typeof url === "string" && url.startsWith("/") && !url.startsWith("//") && !url.startsWith("/\\");
+  return {
+    message: detail.message,
+    action: sameApp && detail.actionLabel ? { label: detail.actionLabel, url } : null,
+  };
+}
+
 function CreateMemberDialog({
   open,
   onOpenChange,
@@ -182,21 +211,28 @@ function CreateMemberDialog({
   const t = useT();
   const createMember = useCreateMember();
   const { data: authConfig } = useAuthConfig();
-  const localAuth = authConfig?.mode === "community";
+  // The deployment invites people itself: they get a role, no password,
+  // and it may refuse with its own message.
+  const externalInvites = authConfig?.memberInvites === "external";
+  const localAuth = authConfig?.mode === "community" && !externalInvites;
   const [subject, setSubject] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [role, setRole] = useState("member");
+  const [refusal, setRefusal] = useState<InviteRefusal | null>(null);
 
   const reset = () => {
     setSubject("");
     setDisplayName("");
     setPassword("");
+    setRole("member");
+    setRefusal(null);
   };
 
   const submit = () => {
     const trimmed = subject.trim();
     if (!trimmed) {
-      toast.error(t("Enter a sign-in email or username.", "Geben Sie eine Anmelde-E-Mail oder einen Benutzernamen ein."));
+      toast.error(t("Enter a sign-in email or username.", "Gib eine Anmelde-E-Mail oder einen Benutzernamen ein."));
       return;
     }
     if (localAuth && password.length > 0 && password.length < 8) {
@@ -208,6 +244,7 @@ function CreateMemberDialog({
         subject: trimmed,
         displayName: displayName.trim(),
         ...(localAuth && password.length > 0 ? { password } : {}),
+        ...(externalInvites ? { role } : {}),
       },
       {
         onSuccess: (created) => {
@@ -225,12 +262,18 @@ function CreateMemberDialog({
           reset();
           onOpenChange(false);
         },
-        onError: (err) =>
+        onError: (err) => {
+          const refused = externalInvites ? inviteRefusal(err) : null;
+          if (refused) {
+            setRefusal(refused);
+            return;
+          }
           toast.error(
             err instanceof Error
               ? err.message
-              : t("Could not create user. Try again.", "Benutzer konnte nicht angelegt werden. Versuchen Sie es erneut."),
-          ),
+              : t("Could not create user. Try again.", "Benutzer konnte nicht angelegt werden. Versuch es erneut."),
+          );
+        },
       },
     );
   };
@@ -249,7 +292,7 @@ function CreateMemberDialog({
           <DialogDescription>
             {t(
               "Enrol somebody by their sign-in identity. They can also be added automatically the first time they sign in — this just lets you set them up (and assign a role) ahead of time.",
-              "Legen Sie jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so können Sie vorab einrichten (und eine Rolle zuweisen).",
+              "Lege jemanden über seine Anmelde-Identität an. Personen werden auch automatisch beim ersten Anmelden hinzugefügt — so kannst du vorab einrichten (und eine Rolle zuweisen).",
             )}
           </DialogDescription>
         </DialogHeader>
@@ -273,6 +316,36 @@ function CreateMemberDialog({
               className="rounded-md border border-input bg-background px-3 py-2"
             />
           </label>
+          {externalInvites && (
+            <label className="grid gap-1.5">
+              <span>{t("Role", "Rolle")}</span>
+              <select
+                aria-label={t("Role", "Rolle")}
+                value={role}
+                onChange={(e) => setRole(e.target.value)}
+                className="rounded-md border border-input bg-background px-3 py-2"
+              >
+                {INVITE_ROLES.map((name) => (
+                  <option key={name} value={name}>
+                    {roleLabel(name, t)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {refusal && (
+            <p role="alert" className="text-xs text-destructive">
+              {refusal.message}
+              {refusal.action && (
+                <>
+                  {" "}
+                  <a href={refusal.action.url} className="underline">
+                    {refusal.action.label}
+                  </a>
+                </>
+              )}
+            </p>
+          )}
           {localAuth && (
             <label className="grid gap-1.5">
               <span>{t("Password (optional)", "Passwort (optional)")}</span>
@@ -304,7 +377,11 @@ function CreateMemberDialog({
             disabled={createMember.isPending}
             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
-            {createMember.isPending ? t("Creating…", "Wird angelegt…") : t("Create user", "Benutzer anlegen")}
+            {createMember.isPending
+              ? t("Creating…", "Wird angelegt…")
+              : externalInvites
+                ? t("Invite", "Einladen")
+                : t("Create user", "Benutzer anlegen")}
           </button>
         </div>
       </DialogContent>
@@ -377,7 +454,7 @@ function MembersTable() {
                     {t("Name", "Name")}
                   </th>
                   <th className="py-3 text-left font-medium text-muted-foreground">
-                    {t("Sign-in", "Anmeldung")}
+                    {t("Sign-in email", "Anmelde-E-Mail")}
                   </th>
                   <th className="py-3 text-left font-medium text-muted-foreground">
                     {t("Role", "Rolle")}
@@ -406,6 +483,9 @@ interface MemberRowProps {
 }
 
 function MemberRow({ member, t }: MemberRowProps) {
+  // `subject` is the identity provider's id for the person -- with an external
+  // OIDC provider often a uuid -- so the address it reports comes first.
+  const signInEmail = member.email || member.subject;
   const currentRoleName = member.roleName
     ? roleLabel(member.roleName, t)
     : t("from their sign-in", "aus ihrer Anmeldung");
@@ -414,13 +494,10 @@ function MemberRow({ member, t }: MemberRowProps) {
     <tr className="border-b border-border/50 hover:bg-muted/20">
       <td className="py-3">
         <Link to="/members/$memberId" params={{ memberId: member.id }} className="block hover:underline">
-          <div className="font-medium">{member.displayName || member.subject}</div>
-          {member.displayName && (
-            <div className="text-xs text-muted-foreground">{member.subject}</div>
-          )}
+          <div className="font-medium">{member.displayName || signInEmail}</div>
         </Link>
       </td>
-      <td className="py-3 text-muted-foreground">{member.subject}</td>
+      <td className="py-3 text-muted-foreground">{signInEmail}</td>
       <td className="py-3">
         <span className="text-sm">{currentRoleName}</span>
       </td>

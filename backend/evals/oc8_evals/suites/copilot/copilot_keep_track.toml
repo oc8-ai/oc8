@@ -1,0 +1,14 @@
+id = "copilot_keep_track"
+systems = []
+origin = "manual"
+scenario = "copilot_keep_track"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Behalte bitte die Helpdesk-Queue für mich im Blick und sag mir werktags um 9, wenn etwas Dringendes dabei ist — bis Ende des Monats.
+"""
+
+[budget]
+max_steps = 20
+max_tokens = 200000

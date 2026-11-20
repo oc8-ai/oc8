@@ -19,6 +19,7 @@ from oc8.channels import ChannelCapabilities, ChannelLink
 from oc8.channels.base import ApprovalChannel
 from oc8.channels.binding import issue_code
 from oc8.channels.poll import _poll_channel, _poll_tenant, poll_tick
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -214,7 +215,7 @@ async def test_poll_tick_never_raises_even_if_a_tenant_fails(
     app_session: AppSessionFactory,
 ) -> None:
     with patch(
-        "oc8.channels.poll.list_active_tenant_ids",
+        "oc8.channels.poll.list_runnable_tenant_ids",
         new=AsyncMock(return_value=[uuid.uuid4()]),
     ):
         with patch(
@@ -222,3 +223,40 @@ async def test_poll_tick_never_raises_even_if_a_tenant_fails(
         ):
             processed = await poll_tick()  # must not raise
     assert processed == 0
+
+
+async def test_poll_tick_skips_an_inactive_organisation(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant_a = uuid.uuid4()
+    tenant_b = uuid.uuid4()
+    for tenant in (tenant_a, tenant_b):
+        async with app_session(tenant) as db:
+            db.add(
+                m.Organization(
+                    id=tenant,
+                    slug=f"test-{tenant.hex[:12]}",
+                    name="Test Org",
+                    tier="standard",
+                    region="eu",
+                )
+            )
+    channel_a = FakePollChannel(to_return=[([], 0)])
+    channel_b = FakePollChannel(to_return=[([], 0)])
+    channels: dict[uuid.UUID, dict[str, Any]] = {
+        tenant_a: {CHANNEL: channel_a},
+        tenant_b: {CHANNEL: channel_b},
+    }
+
+    async def fake_channels_for_tenant(db: Any, *, tenant_id: uuid.UUID) -> dict[str, Any]:
+        return channels.get(tenant_id, {})
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant_a
+
+    set_tenant_activity_gate(gate)
+    with patch("oc8.channels.poll.channels_for_tenant", new=fake_channels_for_tenant):
+        await poll_tick()
+
+    assert channel_a.calls == [], "an organisation that may not run is not polled"
+    assert channel_b.calls == [0]

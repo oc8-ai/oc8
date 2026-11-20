@@ -9,7 +9,13 @@ from oc8.config import get_settings
 from oc8.sandbox.docker_driver import DockerSandboxDriver
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.provisioner_driver import ProvisionerSandboxDriver
-from oc8.sandbox.types import ExecResult, SandboxError, SandboxHandle, SandboxSpec
+from oc8.sandbox.types import (
+    ExecResult,
+    SandboxError,
+    SandboxHandle,
+    SandboxSpec,
+    ScratchDir,
+)
 
 __all__ = [
     "DockerSandboxDriver",
@@ -19,6 +25,7 @@ __all__ = [
     "SandboxError",
     "SandboxHandle",
     "SandboxSpec",
+    "ScratchDir",
     "get_sandbox_driver",
     "sandbox_session",
     "set_sandbox_driver",

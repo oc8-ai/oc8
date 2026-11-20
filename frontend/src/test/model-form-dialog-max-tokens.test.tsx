@@ -94,7 +94,7 @@ describe("Model edit dialog's max output tokens field", () => {
     renderPage();
 
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    const field = screen.getByPlaceholderText("1536") as HTMLInputElement;
+    const field = screen.getByPlaceholderText("4096") as HTMLInputElement;
     expect(field.value).toBe("8192");
   });
 
@@ -103,7 +103,7 @@ describe("Model edit dialog's max output tokens field", () => {
     renderPage();
 
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    const field = screen.getByPlaceholderText("1536") as HTMLInputElement;
+    const field = screen.getByPlaceholderText("4096") as HTMLInputElement;
     fireEvent.change(field, { target: { value: "8192" } });
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 
@@ -118,7 +118,7 @@ describe("Model edit dialog's max output tokens field", () => {
     renderPage();
 
     fireEvent.click(screen.getByRole("button", { name: /edit/i }));
-    const field = screen.getByPlaceholderText("1536") as HTMLInputElement;
+    const field = screen.getByPlaceholderText("4096") as HTMLInputElement;
     fireEvent.change(field, { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: /save changes/i }));
 

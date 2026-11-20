@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useT } from "@/lib/i18n";
+import { setCommunityToken } from "@/lib/api";
 import { PublicAuthLayout } from "@/components/public-auth-layout";
 import { TotpChallenge } from "@/components/totp-challenge";
 import { TotpEnroll } from "@/components/totp-enroll";
@@ -33,9 +34,9 @@ export function LoginPage() {
   const [celebrating, setCelebrating] = useState(false);
   const [alreadyInitializedNotice, setAlreadyInitializedNotice] = useState<string | null>(null);
   // Narrow, single-purpose tokens handed back by POST /auth/login when the
-  // password alone is not enough. Deliberately NOT stored in
-  // "oc8-community-token" -- that key is the real session, and anything
-  // holding it is treated as logged in.
+  // password alone is not enough. Deliberately NOT kept in the token store
+  // (`setCommunityToken`) -- that is the real session, and anything holding
+  // it is treated as logged in.
   const [totpChallengeToken, setTotpChallengeToken] = useState<string | null>(null);
   const [totpEnrollToken, setTotpEnrollToken] = useState<string | null>(null);
 
@@ -109,7 +110,7 @@ export function LoginPage() {
           setMode("login");
           const notice = t(
             "Instance already initialized. Please log in.",
-            "Instanz bereits initialisiert. Bitte melden Sie sich an.",
+            "Instanz bereits initialisiert. Bitte melde dich an.",
           );
           setAlreadyInitializedNotice(notice);
           toast.info(notice);
@@ -122,9 +123,7 @@ export function LoginPage() {
 
       const result = await response.json();
       // Store token and redirect to welcome
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("oc8-community-token", result.token);
-      }
+      setCommunityToken(result.token);
       toast.success(t("Account created successfully", "Konto erfolgreich erstellt"));
       setLoading(false);
       celebrateAndNavigate("/welcome");
@@ -157,7 +156,7 @@ export function LoginPage() {
           toast.info(
             t(
               "Instance not yet initialized. Please complete setup.",
-              "Instanz noch nicht initialisiert. Bitte führen Sie das Setup durch.",
+              "Instanz noch nicht initialisiert. Bitte führ das Setup durch.",
             ),
           );
         } else {
@@ -200,16 +199,14 @@ export function LoginPage() {
         toast.warning(
           t(
             `Set up two-factor authentication within ${days} day(s), or you will be locked out.`,
-            `Richten Sie die Zwei-Faktor-Authentifizierung innerhalb von ${days} Tag(en) ein, sonst werden Sie ausgesperrt.`,
+            `Richte die Zwei-Faktor-Authentifizierung innerhalb von ${days} Tag(en) ein, sonst wirst du ausgesperrt.`,
           ),
           { duration: 10000 },
         );
       }
 
       // Store token and redirect to dashboard
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem("oc8-community-token", result.token);
-      }
+      setCommunityToken(result.token);
       toast.success(t("Logged in successfully", "Erfolgreich angemeldet"));
       setLoading(false);
       celebrateAndNavigate("/");
@@ -227,9 +224,7 @@ export function LoginPage() {
         <TotpChallenge
           token={totpChallengeToken}
           onVerified={(sessionToken) => {
-            if (typeof window !== "undefined") {
-              window.localStorage.setItem("oc8-community-token", sessionToken);
-            }
+            setCommunityToken(sessionToken);
             celebrateAndNavigate("/");
           }}
         />
@@ -330,7 +325,7 @@ function SetupForm({
         <p className="mt-1 text-sm text-muted-foreground">
           {t(
             "Set up your first administrator account to get started.",
-            "Richten Sie Ihr erstes Administrator-Konto ein.",
+            "Richte dein erstes Administrator-Konto ein.",
           )}
         </p>
       </div>
@@ -360,7 +355,7 @@ function SetupForm({
             type="text"
             value={displayName}
             onChange={(e) => setDisplayName(e.target.value)}
-            placeholder={t("Your name", "Ihr Name")}
+            placeholder={t("Your name", "Dein Name")}
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
           />
         </div>
@@ -390,7 +385,7 @@ function SetupForm({
             type="password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
-            placeholder={t("Repeat your password", "Wiederholen Sie Ihr Passwort")}
+            placeholder={t("Repeat your password", "Wiederhole dein Passwort")}
             minLength={8}
             required
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
@@ -432,7 +427,7 @@ function LoginForm({
       <div>
         <h2 className="text-lg font-semibold">{t("Sign In", "Anmelden")}</h2>
         <p className="mt-1 text-sm text-muted-foreground">
-          {t("Enter your credentials to continue.", "Geben Sie Ihre Zugangsdaten ein.")}
+          {t("Enter your credentials to continue.", "Gib deine Zugangsdaten ein.")}
         </p>
       </div>
 
@@ -461,7 +456,7 @@ function LoginForm({
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            placeholder={t("Your password", "Ihr Passwort")}
+            placeholder={t("Your password", "Dein Passwort")}
             required
             className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
           />

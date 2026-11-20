@@ -67,6 +67,10 @@ def render(notice: ApprovalNotice) -> str:
         lines.append(notice.amount_text)
     if notice.detail:
         lines += ["", notice.detail]
+    if notice.record_url:
+        # Bare URL, same reasoning as the Telegram renderer: WhatsApp has no
+        # markup and auto-links a plain URL.
+        lines += ["", notice.record_url]
     return "\n".join(lines)[:_MAX_BODY]
 
 

@@ -19,7 +19,8 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     source-specific push -- GitHub today) and no cron_expression/
     webhook_token; kind='webhook' rows carry webhook_token (a generic,
     n8n-Webhook-node-style trigger -- ANY caller that can POST JSON to its
-    one unguessable URL fires it, no per-source adapter code, no signature).
+    one unguessable URL fires it, no per-source adapter code, no signature);
+    kind='once' rows carry next_run_at only (a Copilot follow-up's single instant).
     Enforced by ck_trigger_kind_fields below."""
 
     __tablename__ = "trigger"
@@ -43,15 +44,49 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     # RLS means no unbound query can filter by tenant first).
     webhook_token: Mapped[str | None] = mapped_column(Text, unique=True)
 
+    #: Set only on a Copilot follow-up (design §7a.4): the member's conversation
+    #: it fires into, and the responsibility it serves.
+    chat_session_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    responsibility_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: IANA zone the cron expression is read in. Required for a follow-up.
+    timezone: Mapped[str | None] = mapped_column(Text)
+    ends_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Why the last due fire did not run ("paused", "busy", ...); None after a
+    #: real fire. Lets a resume catch up exactly what the pause skipped.
+    last_skip_reason: Mapped[str | None] = mapped_column(Text)
+    #: The member who created (or last re-saved) this trigger: whose own
+    #: account a tool runs through when the agent's access is "in the user's
+    #: context". NULL for triggers made before migration 0107.
+    created_by_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: kind='webhook'/'event' only: the creator chose to let this trigger act
+    #: through their account (anyone who can reach the URL fires it, so this is
+    #: never the default). A schedule needs no such flag. Reset when someone
+    #: else edits the trigger.
+    acts_for_creator: Mapped[bool] = mapped_column(
+        nullable=False, default=False, server_default="false"
+    )
+    #: The agent's access fingerprint (connections.access.trigger_fingerprint)
+    #: when the creator last created or saved this trigger. Its runs act
+    #: through the creator's own account only while it still matches; NULL
+    #: (saved before migration 0110) never does.
+    access_fingerprint: Mapped[str | None] = mapped_column(Text)
+
     __table_args__ = (
-        CheckConstraint("kind IN ('cron','event','webhook')", name="ck_trigger_kind"),
+        CheckConstraint("kind IN ('cron','event','webhook','once')", name="ck_trigger_kind"),
         CheckConstraint(
             "(kind = 'cron' AND cron_expression IS NOT NULL "
             "AND event_source IS NULL AND event_type IS NULL AND webhook_token IS NULL) "
             "OR (kind = 'event' AND event_source IS NOT NULL AND event_type IS NOT NULL "
             "AND cron_expression IS NULL AND webhook_token IS NULL) "
             "OR (kind = 'webhook' AND webhook_token IS NOT NULL "
-            "AND cron_expression IS NULL AND event_source IS NULL AND event_type IS NULL)",
+            "AND cron_expression IS NULL AND event_source IS NULL AND event_type IS NULL) "
+            "OR (kind = 'once' AND next_run_at IS NOT NULL AND cron_expression IS NULL "
+            "AND event_source IS NULL AND event_type IS NULL AND webhook_token IS NULL)",
             name="ck_trigger_kind_fields",
+        ),
+        CheckConstraint(
+            "chat_session_id IS NULL OR (responsibility_id IS NOT NULL AND timezone IS NOT NULL "
+            "AND (kind <> 'cron' OR ends_at IS NOT NULL) AND kind IN ('cron','once'))",
+            name="ck_trigger_followup_fields",
         ),
     )

@@ -60,6 +60,10 @@ class ApprovalNotice:
     #: True once `redacted()` has taken the content out, so a channel can say
     #: "open oc8" rather than pretending the message is complete.
     content_withheld: bool = False
+    #: Deep link to the record this request is about, or empty (§6). Empty --
+    #: not None -- to match every other optional text field on this frozen
+    #: dataclass, so a renderer only ever has to test truthiness.
+    record_url: str = ""
 
     def redacted(self) -> ApprovalNotice:
         """The same request, announced without saying what it is about.
@@ -75,6 +79,9 @@ class ApprovalNotice:
             amount_text="",
             options=(),
             content_withheld=True,
+            # The URL names the system, the entity and the record id -- the same
+            # disclosure the buttons are withheld for.
+            record_url="",
         )
 
 

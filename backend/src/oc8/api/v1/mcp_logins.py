@@ -1,23 +1,40 @@
-"""Create/list a login: a Credential paired 1:1 with a McpConnection,
-tenant-global by default and optionally scoped to one department (agent tool
-login selection design). Distinct from `api/v1/mcp.py`'s existing
-department-scoped connection CRUD, which stays untouched for the OAuth/legacy
-tool packs that still use it."""
+"""Create/list tool logins (unified connections design, "Storage").
+
+Creating a login makes (or reuses) an organisation `Credential`; for an agent
+it becomes the agent's fixed access (`AgentToolAccess`). No connection row is
+created per login any more -- the tool has one row, and the run resolves which
+login it starts with. The listing still shows the login-pinned rows older
+versions created, until the tenant's rows are consolidated."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
-from oc8.api.v1.mcp import _manifest_connection
+from oc8.api.v1.agent_tool_access import (
+    authorized_agent,
+    connectable_integration,
+    save_tool_access,
+)
+from oc8.auth import Principal
 from oc8.authz.permissions import INTEGRATION, MANAGE, VIEW, perm
+from oc8.authz.scope import HumanActor, scope_for_principal
+from oc8.connections.integrations import Integration
+from oc8.connections.tool_connection import tool_connection
+from oc8.credentials.enablement import choose_for_department
 from oc8.credentials.registry import CredentialTypeNotFound, get_credential_type
-from oc8.credentials.service import CredentialNotFound, create_credential, get_credential
+from oc8.credentials.service import (
+    CredentialNotFound,
+    create_credential,
+    get_credential,
+    require_complete,
+)
 from oc8.schemas.dto import McpLoginDTO
-from oc8.schemas.requests import CreateMcpLoginRequest
+from oc8.schemas.requests import CreateMcpLoginRequest, SetAgentToolAccessRequest
 from oc8.secrets.keyprovider import SecretStoreUnavailable
 
 router = APIRouter()
@@ -42,65 +59,51 @@ def _to_dto(c: m.McpConnection) -> McpLoginDTO:
     dependencies=[Depends(require_permission(perm(INTEGRATION, MANAGE)))],
 )
 async def create_login(
-    body: CreateMcpLoginRequest, db: DbSession, principal: CurrentPrincipal
+    body: CreateMcpLoginRequest, request: Request, db: DbSession, principal: CurrentPrincipal
 ) -> McpLoginDTO:
+    """Create (or reuse) an organisation login for the tool `name`. With an
+    `agent_id` the login becomes that agent's fixed access for the tool --
+    the same row the agent's Tools tab writes; otherwise, with a
+    `department_id`, it is enabled for that department. Never a further
+    connection row: the tool keeps its one row, and the run resolves the
+    login."""
     try:
-        cred_type = await get_credential_type(
-            db, tenant_id=principal.tenant_id, name=body.credential_type
-        )
+        await get_credential_type(db, tenant_id=principal.tenant_id, name=body.credential_type)
     except CredentialTypeNotFound as exc:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, f"unknown credential type: {exc}"
-        ) from exc
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown credential type: {exc}") from exc
     dept: m.Department | None = None
     if body.department_id is not None:
         dept = await db.get(m.Department, body.department_id)
         if dept is None or dept.deleted_at is not None:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown department")
-    # Only conflict with another LOGIN-backed connection (credential_id IS NOT
-    # NULL) sharing the same NAME *and* the same department_id -- an existing,
-    # untouched OAuth/department-scoped connection may coincidentally share
-    # this name (a different, older mechanism this plan doesn't touch) and
-    # must not block a login from being created. Scoping by department_id
-    # (NULL-safe: two NULLs conflict, but NULL and a real department, or two
-    # different departments, do not) is what lets two distinct logins share a
-    # tool key -- e.g. two different Odoo logins, one per department -- while
-    # still refusing a second tenant-wide login of the same name. Checked
-    # before create_credential runs, so a name collision never leaves behind
-    # an orphaned Credential row with no paired connection. The DB has no
-    # UniqueConstraint enforcing this (unlike Credential's own
-    # uq_credential_tenant_name) because McpConnection is shared with the
-    # pre-existing, unconstrained OAuth flow -- this check is what a later
-    # by-name lookup (e.g. agents_write.py's login-backed connection
-    # resolution, Task 4) depends on to stay a bounded query instead of
-    # silently accumulating unrelated logins under one name.
-    department_filter = (
-        m.McpConnection.department_id.is_(None)
-        if body.department_id is None
-        else m.McpConnection.department_id == body.department_id
-    )
-    existing = (
-        await db.execute(
-            select(m.McpConnection.id).where(
-                m.McpConnection.tenant_id == principal.tenant_id,
-                m.McpConnection.name == body.name,
-                m.McpConnection.credential_id.is_not(None),
-                department_filter,
+    agent: m.Agent | None = None
+    actor: HumanActor | None = None
+    integ: Integration | None = None
+    if body.agent_id is not None:
+        # The same door as `PUT /agents/{id}/tool-access/{key}`: the right to
+        # change THIS agent, checked before anything is written.
+        actor = await _human_actor(db, principal)
+        agent = await authorized_agent(request, db, actor, body.agent_id)
+        integ = await connectable_integration(db, body.name)
+        if (
+            integ is None
+            or integ.kind != "credential"
+            or integ.credential_type != body.credential_type
+        ):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"{body.name!r} is no tool that takes a {body.credential_type!r} login",
             )
-        )
-    ).first()
-    if existing is not None:
-        scope = "for this tenant" if body.department_id is None else "for this department"
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"a login named {body.name!r} already exists {scope}"
-        )
     if body.credential_id is not None:
         # Reuse a credential that already exists -- e.g. one a capa's own
-        # setup form created -- instead of asking the operator to retype
+        # setup form chose -- instead of asking the operator to retype
         # values already sitting in the credential store.
         try:
             cred = await get_credential(
-                db, tenant_id=principal.tenant_id, credential_id=body.credential_id
+                db,
+                tenant_id=principal.tenant_id,
+                credential_id=body.credential_id,
+                owner="organisation",
             )
         except CredentialNotFound as exc:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "no such credential") from exc
@@ -111,14 +114,9 @@ async def create_login(
                 f"not a {body.credential_type!r}",
             )
     else:
-        # `Credential.name` has its own tenant-wide uniqueness constraint
-        # (uq_credential_tenant_name), independent of the McpConnection
-        # conflict check above -- department-scoping the LOGIN does nothing
-        # to relax it, so two departments both minting a brand-new "odoo"
-        # credential would otherwise collide there instead. Suffixed with
-        # the department's name (not id) so the Credentials list stays
-        # readable, and only when department-scoped: a tenant-wide login
-        # keeps the exact name it always has, since only one can ever exist.
+        # `Credential.name` is unique per tenant (uq_credential_tenant_name):
+        # a login created for a department is suffixed with the department's
+        # name (not id) so the Credentials list stays readable.
         cred_name = f"{body.name} ({dept.name})" if dept is not None else body.name
         try:
             cred = await create_credential(
@@ -135,103 +133,56 @@ async def create_login(
                 status.HTTP_409_CONFLICT, f"a credential named {cred_name!r} already exists"
             ) from exc
         await db.flush()
-    # A login is credential storage, not a spawn recipe -- the command/args/
-    # focus_spec/etc. a real MCP server needs to start still only exist on
-    # the manifest-materialised connection sharing this NAME (the same
-    # by-name convention `_resolve_mcp_connection` and `set_department_
-    # tools`'s cascade already use). Without this, a pinned login's own
-    # bare `config` (env/secret_env only) reached the runtime as `cfg.get(
-    # "command", "")` -> "" -> a subprocess spawn on an empty path, which
-    # surfaces as `PermissionError(13, 'Permission denied')` with no hint
-    # of the real cause (live bug report). `credential_id.is_(None)` picks
-    # the manifest row, never another login sharing this same tenant-global
-    # name.
-    source_conn = (
-        await db.execute(
-            select(m.McpConnection)
-            .where(
-                m.McpConnection.tenant_id == principal.tenant_id,
-                m.McpConnection.name == body.name,
-                m.McpConnection.credential_id.is_(None),
-            )
-            .order_by(m.McpConnection.created_at)
-            .limit(1)
+    if agent is not None:
+        assert actor is not None and integ is not None
+        await save_tool_access(
+            request,
+            db,
+            actor,
+            agent,
+            integ,
+            SetAgentToolAccessRequest(mode="fixed", credential_id=cred.id),
         )
-    ).scalar_one_or_none()
-    source_cfg = source_conn.config if source_conn and isinstance(source_conn.config, dict) else {}
-
-    # ENV_VAR_NAME -> credential field key (ToolPackConnection.
-    # credential_env_fields, e.g. odoo_mcp's {"ODOO_URL": "url", ...}) --
-    # only resolvable off the manifest object itself, since materialise.py
-    # never copies this field onto the row's own `config`. Inverted below to
-    # field key -> list of ENV_VAR_NAMEs, the direction the loop needs.
-    #
-    # A list, not a single name: odoo_mcp maps BOTH `ODOO_PASSWORD` and
-    # `ODOO_API_KEY` to the same `password` field (mcp-server-odoo treats
-    # them as two different auth modes to try, not two names for one var --
-    # see tool_pack.toml's own comment). A `{v: k for k, v in ...}` inversion
-    # silently keeps only the LAST env name written for a given field and
-    # drops the rest -- live-observed 2026-08-26: a login created after that
-    # mapping was added got ODOO_API_KEY only, never ODOO_PASSWORD, because
-    # dict inversion collapsed the two entries into one.
-    credential_env_fields: dict[str, str] = {}
-    if source_conn is not None:
-        resolved = _manifest_connection(source_conn)
-        if resolved is not None:
-            credential_env_fields = resolved[0].credential_env_fields
-    field_key_to_env_names: dict[str, list[str]] = {}
-    for env_name, field_key in credential_env_fields.items():
-        field_key_to_env_names.setdefault(field_key, []).append(env_name)
-
-    # Derive config["secret_env"]/["env"] from the credential's OWN stored
-    # refs/values -- resolve_mcp_env's existing per-entry loop (agent/mcp_env.py)
-    # already knows how to resolve a plain secret-store ref the same way
-    # resolve_credential_field does (both ultimately call
-    # oc8.secrets.service.resolve_secret), so no change to that resolution
-    # code is needed, only to what gets written here. A field with no entry
-    # in credential_env_fields (or no matching manifest connection at all)
-    # falls back to its own key, so a login with no matching manifest
-    # connection (credential_type registered but not yet wired to any tool
-    # pack) still gets a usable Credential + connection pair.
-    secret_env: dict[str, str] = {}
-    env: dict[str, str] = {}
-    secret_field_keys = {f.key for f in cred_type.fields if f.kind == "password"}
-    for field in cred_type.fields:
-        target_keys = field_key_to_env_names.get(field.key, [field.key])
-        if field.key in secret_field_keys:
-            ref = cred.secret_refs.get(field.key)
-            if ref:
-                for target_key in target_keys:
-                    secret_env[target_key] = ref
-        else:
-            value = cred.field_values.get(field.key)
-            if value:
-                for target_key in target_keys:
-                    env[target_key] = str(value)
-    # Everything from the manifest connection's own config EXCEPT env/
-    # secret_env (those are this login's credential, not the shared
-    # plugin's demo/default values) -- command, args, _plugin_name,
-    # focus_spec, value_spec, outward_tools, _connection_key, all carried
-    # over so the runtime can actually start this server.
-    config = {k: v for k, v in source_cfg.items() if k not in ("env", "secret_env")}
-    config["env"] = env
-    config["secret_env"] = secret_env
-    conn = m.McpConnection(
-        tenant_id=principal.tenant_id,
-        department_id=body.department_id,
-        credential_id=cred.id,
+    elif dept is not None:
+        if body.credential_id is not None:
+            # An existing login that is incomplete is refused, naming its
+            # empty fields (422 `credential_incomplete`), as the tool setup
+            # does. (An agent's choice is checked by `save_tool_access`,
+            # after its own authorization.)
+            await require_complete(db, cred)
+        # A department's login (the department's default for the tool): it
+        # replaces any other login of the type there, and stays enabled for
+        # any other department it serves.
+        await choose_for_department(db, cred, dept.id)
+    tool = await tool_connection(
+        db,
         name=body.name,
-        server_url="",
-        transport="stdio",
-        scopes=body.scopes,
-        config=config,
-        connected=False,
+        department_id=agent.department_id if agent is not None else body.department_id,
+        connected_only=False,
     )
-    db.add(conn)
-    await db.flush()
-    dto = _to_dto(conn)
+    dto = McpLoginDTO(
+        id=str(cred.id),
+        name=body.name,
+        credential_id=str(cred.id),
+        department_id=str(body.department_id) if body.department_id else None,
+        connected=bool(tool is not None and tool.connected),
+        scopes=tool.scopes if tool is not None else body.scopes,
+        health=(tool.health or {}) if tool is not None else {},
+    )
     await db.commit()
     return dto
+
+
+async def _human_actor(db: AsyncSession, principal: Principal) -> HumanActor:
+    """The caller as a person with a seat scope, resolved the way
+    `require_agent_write` does."""
+    try:
+        member, scope = await scope_for_principal(db, principal, upsert=True)
+    except PermissionError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    if member is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "requires a person")
+    return HumanActor(principal=principal, member=member, scope=scope)
 
 
 @router.get(

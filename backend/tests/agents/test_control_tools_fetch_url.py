@@ -107,7 +107,12 @@ async def test_a_blocked_address_is_a_plain_error_not_an_exception(
     app_session: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async def fake_safe_fetch(url: str, **_: Any) -> tuple[str, str]:
-        raise ConnectorError("blocked host: resolves to a private address")
+        from oc8.net.outbound import OutboundBlocked
+
+        try:
+            raise OutboundBlocked("blocked host 'intranet.example' -> 10.0.0.5")
+        except OutboundBlocked as exc:
+            raise ConnectorError(str(exc)) from exc
 
     monkeypatch.setattr("oc8.knowledge.connectors.fetcher.safe_fetch", fake_safe_fetch)
     tenant = uuid.uuid4()
@@ -131,7 +136,10 @@ async def test_a_blocked_address_is_a_plain_error_not_an_exception(
         )
     assert outcome is not None
     assert outcome.output.startswith("ERROR")
-    assert "blocked host" in outcome.output
+    # The guard's own text names the internal address a host resolved to;
+    # the model gets a plain sentence instead.
+    assert "10.0.0.5" not in outcome.output
+    assert "not reachable" in outcome.output
 
 
 @pytest.mark.asyncio

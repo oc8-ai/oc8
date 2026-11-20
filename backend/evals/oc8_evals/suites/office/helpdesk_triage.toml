@@ -1,0 +1,23 @@
+id = "helpdesk_triage"
+systems = ["odoo"]
+origin = "manual"
+scenario = "helpdesk_triage"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Three new helpdesk tickets arrived for "{prefix}Support". Triage them:
+- a ticket mentioning an outage or "cannot log in" gets priority Urgent (3);
+- a ticket asking for an invoice copy gets priority Low (0);
+- everything else gets priority Normal (1).
+Only set the priority; do not reply to the customers.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

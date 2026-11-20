@@ -97,3 +97,13 @@ wired end-to-end (the Google Drive connector authorizes, refreshes, and syncs
 through it). The natural next step is registering more providers — starting
 with ones like Slack or Microsoft — so self-hosters aren't limited to Google
 when connecting a business tool as a knowledge source.
+
+### ⚪ Interactive agent loop latency
+
+Office agents should feel closer to Cursor / Claude Code / Hermes on
+time-to-first-token and per-step wall clock, without weakening governance.
+Not part of harness Packages 11–12 (code mode / suite tuning). First ship a
+p50/p95 step-time + TTFT baseline on both runtimes, then attack measured
+overhead: prefix-cache stability, fewer synchronous extra model calls,
+tool/MCP round-trips, isolated cold start, and Live Log streaming perception.
+Tracked in the office-agent harness design §12 follow-ups.

@@ -497,7 +497,7 @@ export function SkillDrawer({
         </div>
       </Section>
 
-      <Section icon={BookOpen} title={t("Instructions", "Anleitung")}>
+      <Section icon={BookOpen} title={t("Instructions", "Anweisungen")}>
         <p className="text-sm text-muted-foreground">{skill.instructions}</p>
       </Section>
 
@@ -515,7 +515,7 @@ export function SkillDrawer({
       </Section>
 
       {skill.knowledge && skill.knowledge.length > 0 && (
-        <Section icon={BookOpen} title={t("Knowledge bases", "Wissensbasen")}>
+        <Section icon={BookOpen} title={t("Knowledge bases", "Wissensdatenbanken")}>
           <ul className="space-y-1 text-sm text-muted-foreground">
             {skill.knowledge.map((k) => (
               <li key={k} className="flex items-center gap-2">
@@ -673,7 +673,7 @@ function SkillWizard({
 
   const steps = [
     t("Basics", "Basis"),
-    t("Instructions", "Anleitung"),
+    t("Instructions", "Anweisungen"),
     t("Tools & Guardrails", "Tools & Guardrails"),
     t("Review", "Prüfen"),
   ];

@@ -91,6 +91,11 @@ def record_budget_exceeded(kind: str) -> None:
     _counter("oc8.budget.exceeded", desc="budget threshold breaches").add(1, {"kind": kind})
 
 
+def _http_signal_url(settings: Settings, signal: str) -> str:
+    """OTLP/HTTP takes a full per-signal URL: base endpoint + /v1/<signal>."""
+    return f"{settings.otel_exporter_otlp_endpoint.rstrip('/')}/v1/{signal}"
+
+
 def _build_span_exporter(settings: Settings) -> Any:
     if settings.otel_exporter == "console":
         from opentelemetry.sdk.trace.export import ConsoleSpanExporter
@@ -98,6 +103,12 @@ def _build_span_exporter(settings: Settings) -> Any:
         return ConsoleSpanExporter()
     if settings.otel_exporter == "none":
         return None
+    if settings.otel_exporter == "otlp_http":
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter as HttpSpanExporter,
+        )
+
+        return HttpSpanExporter(endpoint=_http_signal_url(settings, "traces"))
     from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
     return OTLPSpanExporter(endpoint=settings.otel_exporter_otlp_endpoint)
@@ -113,6 +124,14 @@ def _build_metric_reader(settings: Settings) -> Any:
         return PeriodicExportingMetricReader(ConsoleMetricExporter())
     if settings.otel_exporter == "none":
         return None
+    if settings.otel_exporter == "otlp_http":
+        from opentelemetry.exporter.otlp.proto.http.metric_exporter import (
+            OTLPMetricExporter as HttpMetricExporter,
+        )
+
+        return PeriodicExportingMetricReader(
+            HttpMetricExporter(endpoint=_http_signal_url(settings, "metrics"))
+        )
     from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import OTLPMetricExporter
 
     return PeriodicExportingMetricReader(
@@ -133,7 +152,7 @@ def setup_observability(settings: Settings) -> None:
 
         resource = Resource.create({SERVICE_NAME: settings.otel_service_name})
         tracer_provider = TracerProvider(resource=resource)
-        span_exporter = _build_span_exporter(settings)
+        span_exporter = _build_span_exporter(settings) if settings.otel_traces_enabled else None
         if span_exporter is not None:
             tracer_provider.add_span_processor(BatchSpanProcessor(span_exporter))
         trace.set_tracer_provider(tracer_provider)

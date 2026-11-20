@@ -113,10 +113,14 @@ def test_setup_swallows_exporter_failure(
     # (same root cause noted in tests/skills/test_runtime.py).
     logging.getLogger("oc8.observability").disabled = False
     with caplog.at_level(logging.WARNING, logger="oc8.observability"):
-        setup_observability(Settings(otel_enabled=True, otel_exporter="otlp",
-                                     otel_exporter_otlp_endpoint="http://x:4317"))
-    assert any("observability" in r.message.lower() or "otel" in r.message.lower()
-               for r in caplog.records)
+        setup_observability(
+            Settings(
+                otel_enabled=True, otel_exporter="otlp", otel_exporter_otlp_endpoint="http://x:4317"
+            )
+        )
+    assert any(
+        "observability" in r.message.lower() or "otel" in r.message.lower() for r in caplog.records
+    )
 
 
 def test_validator_requires_endpoint_for_otlp() -> None:
@@ -127,3 +131,62 @@ def test_validator_requires_endpoint_for_otlp() -> None:
 def test_disabled_suite_unaffected() -> None:
     # The default Settings must be otel-off.
     assert Settings().otel_enabled is False
+
+
+def test_validator_requires_endpoint_for_otlp_http() -> None:
+    with pytest.raises(ValueError, match="otel_exporter_otlp_endpoint"):
+        Settings(otel_enabled=True, otel_exporter="otlp_http", otel_exporter_otlp_endpoint="")
+
+
+def test_traces_enabled_by_default() -> None:
+    assert Settings().otel_traces_enabled is True
+
+
+def test_otlp_http_builds_http_exporters_with_signal_paths() -> None:
+    from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+
+    import oc8.observability as obs
+
+    s = Settings(
+        otel_enabled=True,
+        otel_exporter="otlp_http",
+        otel_exporter_otlp_endpoint="http://collector:4318/",
+    )
+    span_exporter = obs._build_span_exporter(s)
+    assert isinstance(span_exporter, OTLPSpanExporter)
+    assert span_exporter._endpoint == "http://collector:4318/v1/traces"
+    reader = obs._build_metric_reader(s)
+    assert isinstance(reader._exporter, OTLPMetricExporter)
+    assert reader._exporter._endpoint == "http://collector:4318/v1/metrics"
+
+
+def test_traces_disabled_attaches_no_span_processor_but_metrics_flow() -> None:
+    from opentelemetry import metrics, trace
+
+    setup_observability(
+        Settings(
+            otel_enabled=True,
+            otel_exporter="console",
+            otel_traces_enabled=False,
+            otel_metrics_enabled=True,
+        )
+    )
+    tracer_provider = trace.get_tracer_provider()
+    assert not tracer_provider._active_span_processor._span_processors  # type: ignore[attr-defined]
+    meter_provider = metrics.get_meter_provider()
+    readers = meter_provider._all_metric_readers  # type: ignore[attr-defined]
+    assert any(type(r).__name__ == "PeriodicExportingMetricReader" for r in readers)
+
+
+def test_traces_disabled_never_builds_span_exporter(monkeypatch: pytest.MonkeyPatch) -> None:
+    import oc8.observability as obs
+
+    def _boom(*a: object, **k: object) -> None:
+        raise AssertionError("span exporter must not be built")
+
+    monkeypatch.setattr(obs, "_build_span_exporter", _boom)
+    setup_observability(
+        Settings(otel_enabled=True, otel_exporter="console", otel_traces_enabled=False)
+    )
+    assert obs._providers_set is True

@@ -16,6 +16,7 @@ earlier SDK versions -- this repo's locked `mcp` dependency is 2.0.0, whose
 from __future__ import annotations
 
 import asyncio
+import json
 
 import mcp.server.stdio
 import mcp.types as types
@@ -44,6 +45,21 @@ async def _on_list_tools(
     return types.ListToolsResult(tools=ALL_TOOLS)
 
 
+def _result_text(result: object) -> str:
+    """Tool output as the model sees it. Non-strings are JSON (record links parse
+    them, and str(dict) is Python repr no parser reads). A bare string stays raw,
+    unless it LOOKS like JSON (document text can be anything): then it goes out
+    as a quoted JSON string, so core never parses attacker-authored file content
+    as records. Gated on shape, not on json.loads succeeding: core also parses
+    text with a trailing replay note stripped, which a parse check here would
+    disagree with."""
+    if not isinstance(result, str):
+        return json.dumps(result, ensure_ascii=False, default=str)
+    if result.lstrip().lstrip("\ufeff").lstrip().startswith(("[", "{")):
+        return json.dumps(result, ensure_ascii=False)
+    return result
+
+
 async def _on_call_tool(
     ctx: ServerRequestContext, params: types.CallToolRequestParams
 ) -> types.CallToolResult:
@@ -67,7 +83,8 @@ async def _on_call_tool(
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=f"ERROR: {exc}")], is_error=True
         )
-    return types.CallToolResult(content=[types.TextContent(type="text", text=str(result))])
+    text = _result_text(result)
+    return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
 
 
 server = Server("microsoft365", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)

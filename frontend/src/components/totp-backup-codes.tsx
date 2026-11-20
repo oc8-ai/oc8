@@ -16,12 +16,12 @@ export function BackupCodesReveal({
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold">
-        {t("Save your backup codes", "Speichern Sie Ihre Backup-Codes")}
+        {t("Save your backup codes", "Speicher deine Backup-Codes")}
       </h3>
       <p className="text-sm text-muted-foreground">
         {t(
           "Each code works once. Store them somewhere safe — you will not see them again.",
-          "Jeder Code funktioniert einmal. Bewahren Sie sie sicher auf — Sie sehen sie nicht erneut.",
+          "Jeder Code funktioniert einmal. Bewahre sie sicher auf — du siehst sie nicht erneut.",
         )}
       </p>
       <ul className="grid grid-cols-2 gap-2 rounded-md border border-border bg-background/40 p-3 font-mono text-sm">

@@ -15,10 +15,12 @@ from oc8.api.v1._serializers import integration_to_dto, model_to_dto, skill_to_d
 from oc8.authz.permissions import INTEGRATION, MANAGE, MODEL, SKILL, VIEW, perm
 from oc8.config import get_settings
 from oc8.credentials.service import create_credential
+from oc8.modelrouter.auto_router import AUTO_MODEL, AUTO_PROVIDER, TIER_ORDER, is_auto_config
 from oc8.modelrouter.discovery import DiscoveryError, discover_models
 from oc8.modelrouter.keys import resolve_model_base_url, resolve_model_key
 from oc8.modelrouter.registry import (
     available_provider_entries,
+    default_supports_reasoning,
     provider_infos,
     resolve_provider,
 )
@@ -41,6 +43,7 @@ from oc8.schemas.dto import (
     IntegrationDTO,
     ModelDiscoverResponse,
     ModelDTO,
+    ReasoningSupportDTO,
     SkillDTO,
 )
 from oc8.schemas.paging import Page
@@ -74,6 +77,26 @@ async def list_models(db: DbSession) -> list[ModelDTO]:
     return [_model_to_dto(mc, assigned.get(str(mc.id), [])) for mc in models]
 
 
+@router.get(
+    "/models/reasoning-support",
+    response_model=ReasoningSupportDTO,
+    dependencies=[Depends(require_permission(perm(MODEL, MANAGE)))],
+)
+async def get_reasoning_support(
+    db: DbSession,
+    _p: CurrentPrincipal,
+    provider: str = Query(min_length=1),
+    model: str = Query(min_length=1),
+) -> ReasoningSupportDTO:
+    """The model form's "Can think" suggestion while an admin types a model:
+    the same rule a create without `supportsReasoning` applies."""
+    return ReasoningSupportDTO(
+        supports_reasoning=await default_supports_reasoning(
+            db, tenant_id=_p.tenant_id, provider=provider, model=model
+        )
+    )
+
+
 @router.get("/models/providers", dependencies=[Depends(require_permission(perm(MODEL, VIEW)))])
 async def list_providers(db: DbSession, _p: CurrentPrincipal) -> list[dict[str, object]]:
     """Only what THIS tenant may configure: built-ins plus its enabled plugins."""
@@ -86,9 +109,92 @@ async def list_providers(db: DbSession, _p: CurrentPrincipal) -> list[dict[str, 
         key = await resolve_model_key(db, tenant_id=_p.tenant_id, provider=entry.canonical)
         if key:
             tenant_keys[entry.canonical] = key
-    return provider_infos(  # type: ignore[return-value]
-        get_settings(), tenant_keys=tenant_keys, entries=entries
+    infos: list[dict[str, object]] = list(
+        provider_infos(  # type: ignore[arg-type]
+            get_settings(), tenant_keys=tenant_keys, entries=entries
+        )
     )
+    # `connected`: the tenant has set this provider up (its own key, or a
+    # platform key that makes it usable). The Connected LLMs page shows these
+    # plus any provider with a model, not every provider that is `available`.
+    always = {e.canonical for e in entries if e.always_available}
+    for info in infos:
+        canonical = info["canonical"]
+        info["connected"] = canonical in tenant_keys or (
+            bool(info["available"]) and canonical not in always
+        )
+    # Virtual auto-router: always offered. It has no completion key of its own;
+    # concrete tiers carry credentials / BYOK.
+    infos.append(
+        {
+            "canonical": AUTO_PROVIDER,
+            "locality": "cloud",
+            "available": True,
+            "connected": False,
+            "label": "Auto (complexity router)",
+        }
+    )
+    return infos
+
+
+def _auto_params_from_body(body: ModelConfigWrite, existing: dict | None = None) -> dict:
+    """Build params for an auto ModelConfig from write fields."""
+    params = dict(existing or {})
+    if body.auto_tiers is not None:
+        cleaned: dict[str, str] = {}
+        for name, cfg_id in body.auto_tiers.items():
+            key = str(name).strip().lower()
+            if key not in TIER_ORDER:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    f"unknown auto tier {name!r}; expected one of {TIER_ORDER}",
+                )
+            cleaned[key] = str(cfg_id)
+        if not cleaned:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "auto_tiers must map at least one of fast|balanced|strong",
+            )
+        params["tiers"] = cleaned
+    if body.auto_shadow_only is not None:
+        params["shadow_only"] = bool(body.auto_shadow_only)
+    if body.auto_cascade_verify is not None:
+        params["cascade_verify"] = bool(body.auto_cascade_verify)
+    if body.auto_preference_router is not None:
+        params["preference_router"] = bool(body.auto_preference_router)
+    if body.auto_preference_examples is not None:
+        params["preference_examples"] = list(body.auto_preference_examples)
+    if "tiers" not in params:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "provider=auto requires auto_tiers",
+        )
+    return params
+
+
+async def _validate_auto_tier_targets(
+    db: DbSession, tenant_id: uuid.UUID, tiers: dict[str, str]
+) -> None:
+    """Tier targets must exist, belong to this tenant, and not be nested auto configs."""
+    for name, raw_id in tiers.items():
+        try:
+            cfg_id = uuid.UUID(str(raw_id))
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"auto tier {name!r} is not a valid model config id",
+            ) from exc
+        target = await db.get(m.ModelConfig, cfg_id)
+        if target is None or target.tenant_id != tenant_id:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"auto tier {name!r} points at an unknown model config",
+            )
+        if is_auto_config(target):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"auto tier {name!r} must not point at another auto model",
+            )
 
 
 @router.post(
@@ -107,6 +213,11 @@ async def discover_provider_models(
     is a real signal the same key will work at completion time too."""
     entry = await resolve_provider(db, tenant_id=_p.tenant_id, name=body.provider)
     if entry is None:
+        if body.provider.strip().lower() == AUTO_PROVIDER:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "Auto does not expose a model list; configure concrete tier models instead.",
+            )
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, f"unknown provider: {body.provider}"
         )
@@ -138,6 +249,13 @@ async def _validated(
     has no db session, so entitlement is decided here, at configuration time: a
     tenant can only name a provider that is built in or comes from a plugin it
     enabled. Unknown and not-entitled deliberately give the same answer."""
+    if body.provider.strip().lower() == AUTO_PROVIDER:
+        if body.locality not in ("cloud", "local"):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "locality must be cloud|local"
+            )
+        # Fixed sentinel model name for auto rows (tiers hold the real models).
+        return AUTO_PROVIDER, (body.model.strip() or AUTO_MODEL)
     entry = await resolve_provider(db, tenant_id=tenant_id, name=body.provider)
     if entry is None:
         raise HTTPException(
@@ -177,18 +295,39 @@ async def create_model(
     _p: CurrentPrincipal,
 ) -> ModelDTO:
     canon, model = await _validated(body, db, _p.tenant_id)
-    cfg = m.ModelConfig(
-        tenant_id=_p.tenant_id,
-        provider=canon,
-        model=model,
-        locality=body.locality,
-        display_name=body.display_name,
-        credential_id=uuid.UUID(body.credential_id) if body.credential_id else None,
-        params={"effort": body.effort.strip()} if body.effort and body.effort.strip() else {},
-    )
+    if canon == AUTO_PROVIDER:
+        params = _auto_params_from_body(body)
+        await _validate_auto_tier_targets(db, _p.tenant_id, params["tiers"])
+        cfg = m.ModelConfig(
+            tenant_id=_p.tenant_id,
+            provider=canon,
+            model=model,
+            locality=body.locality,
+            display_name=body.display_name or "Auto",
+            credential_id=None,
+            params=params,
+        )
+    else:
+        supports = (
+            body.supports_reasoning
+            if body.supports_reasoning is not None
+            else await default_supports_reasoning(
+                db, tenant_id=_p.tenant_id, provider=canon, model=model
+            )
+        )
+        cfg = m.ModelConfig(
+            tenant_id=_p.tenant_id,
+            provider=canon,
+            model=model,
+            locality=body.locality,
+            display_name=body.display_name,
+            credential_id=uuid.UUID(body.credential_id) if body.credential_id else None,
+            params={"effort": body.effort.strip()} if body.effort and body.effort.strip() else {},
+            supports_reasoning=supports,
+        )
     db.add(cfg)
     await db.flush()  # cfg.id must exist before the auto-activation count query below
-    if body.supports_vision or body.extra:
+    if canon != AUTO_PROVIDER and (body.supports_vision or body.extra):
         # jsonb: replaced whole, or SQLAlchemy never notices the mutation.
         params = dict(cfg.params or {})
         if body.supports_vision:
@@ -228,13 +367,50 @@ async def update_model(
     cfg = await db.get(m.ModelConfig, model_id)
     if cfg is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "model config not found")
+    was_auto = is_auto_config(cfg)
     canon, model = await _validated(body, db, _p.tenant_id)
     cfg.provider = canon
     cfg.model = model
+    if canon == AUTO_PROVIDER:
+        auto_fields = {
+            "auto_tiers",
+            "auto_shadow_only",
+            "auto_cascade_verify",
+            "auto_preference_router",
+            "auto_preference_examples",
+        }
+        if auto_fields & body.model_fields_set or not (cfg.params or {}).get("tiers"):
+            params = _auto_params_from_body(body, existing=cfg.params if was_auto else None)
+            await _validate_auto_tier_targets(db, _p.tenant_id, params["tiers"])
+            cfg.params = params
+        cfg.credential_id = None
     if "locality" in body.model_fields_set:
         cfg.locality = body.locality
     if "display_name" in body.model_fields_set:
         cfg.display_name = body.display_name
+    if body.chat_enabled is not None:
+        cfg.chat_enabled = body.chat_enabled
+    if body.supports_reasoning is not None:
+        cfg.supports_reasoning = body.supports_reasoning
+    if canon == AUTO_PROVIDER:
+        # Auto rows only carry router params; skip concrete-model fields below.
+        if "used_by_copilot" in body.model_fields_set:
+            await _apply_copilot_flag(db, _p.tenant_id, cfg, body.used_by_copilot)
+        await db.flush()
+        return _model_to_dto(cfg, [])
+    if was_auto:
+        # Leaving Auto: drop router-only keys so they don't leak onto a concrete model.
+        params = dict(cfg.params or {})
+        for key in (
+            "tiers",
+            "shadow_only",
+            "cascade_verify",
+            "preference_router",
+            "preference_examples",
+            "preference_learned",
+        ):
+            params.pop(key, None)
+        cfg.params = params
     if "context_window" in body.model_fields_set:
         # jsonb: replaced whole, or SQLAlchemy never notices the mutation.
         params = dict(cfg.params or {})
@@ -315,6 +491,30 @@ async def test_model(model_id: uuid.UUID, db: DbSession, _p: CurrentPrincipal) -
     if cfg is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "model config not found")
     now = datetime.now(tz=UTC).isoformat()
+    if is_auto_config(cfg):
+        # Auto is a policy layer; health is "ok" when every configured tier exists.
+        from oc8.modelrouter.auto_router import AutoRouterError, tier_map
+
+        try:
+            tiers = tier_map(cfg)
+        except AutoRouterError as exc:
+            cfg.health = {"status": "error", "checkedAt": now, "error": str(exc)[:500]}
+        else:
+            missing = []
+            for name, cfg_id in tiers.items():
+                target = await db.get(m.ModelConfig, cfg_id)
+                if target is None:
+                    missing.append(name)
+            if missing:
+                cfg.health = {
+                    "status": "error",
+                    "checkedAt": now,
+                    "error": f"missing tier targets: {', '.join(missing)}",
+                }
+            else:
+                cfg.health = {"status": "healthy", "checkedAt": now}
+        await db.commit()
+        return _model_to_dto(cfg, [])
     api_key = await resolve_model_key(
         db, tenant_id=_p.tenant_id, provider=cfg.provider, credential_id=cfg.credential_id
     )

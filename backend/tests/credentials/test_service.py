@@ -21,6 +21,7 @@ from oc8.credentials.service import (
     CredentialFieldNotSet,
     CredentialInUse,
     CredentialNotFound,
+    collect_required_values,
     create_credential,
     delete_credential,
     get_credential,
@@ -116,9 +117,15 @@ def _register_throwaway_credential_types() -> Iterator[None]:
         fields=[SetupFieldSpec(key="token", label="Token", kind="password", required=False)],
         validate_entry_point="tests.credentials.test_service:_validate_fail",
     )
+    registry.CORE_CREDENTIAL_TYPES["test_origin_url"] = CredentialTypeSpec(
+        name="test_origin_url",
+        display_name="Test: address kept to its origin",
+        fields=[SetupFieldSpec(key="url", label="URL", kind="url", origin_only=True)],
+    )
     try:
         yield
     finally:
+        registry.CORE_CREDENTIAL_TYPES.pop("test_origin_url", None)
         registry.CORE_CREDENTIAL_TYPES.pop("s3_api", None)
         registry.CORE_CREDENTIAL_TYPES.pop("telegram_bot", None)
         registry.CORE_CREDENTIAL_TYPES.pop("test_validate_ok", None)
@@ -438,7 +445,9 @@ async def test_test_credential_with_no_validate_entry_point_succeeds_trivially(
 
 
 async def test_test_credential_resolves_a_plugin_owned_validate_entry_point(
-    app_session: AppSessionFactory, _real_s3_source_plugin: None
+    app_session: AppSessionFactory,
+    _real_s3_source_plugin: None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bug 1 regression (Task 15 report, "Test button fails for plugin-owned
     credential types"). Exercises the REAL, shipped `s3_source` Capa and its
@@ -459,6 +468,9 @@ async def test_test_credential_resolves_a_plugin_owned_validate_entry_point(
     # the real, plugin-contributed one below. The autouse fixture's own
     # teardown re-pops "s3_api" afterwards regardless, so this is harmless.
     registry.CORE_CREDENTIAL_TYPES.pop("s3_api", None)
+    # The example endpoint has no DNS; the url guard needs it to resolve.
+    monkeypatch.setattr("oc8.net.outbound.resolve_ips", lambda host: ["10.9.9.9"])
+    monkeypatch.setattr(get_settings(), "outbound_allowed_private", "minio.example.test")
 
     tenant = uuid.uuid4()
     found = find_plugin("s3_source")
@@ -577,3 +589,50 @@ async def test_resolve_credential_field_raises_field_not_set_for_a_blank_optiona
             await resolve_credential_field(
                 db, tenant_id=tenant, credential_id=uuid.uuid4(), field_key="endpoint"
             )
+
+
+# An address copied from the browser bar carries the page's path and query
+# ("/odoo/crm", "/odoo/discuss?active_id=..."); a field declared
+# `origin_only` keeps scheme, host and port only, so the service behind it
+# is reached at its root.
+_BROWSER_BAR = "https://erp.acme.test:8443/odoo/discuss?active_id=discuss.channel_16#x"
+
+
+async def test_an_origin_only_address_is_stored_without_its_path(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cred = await create_credential(
+            db,
+            tenant_id=tenant,
+            name="ERP",
+            credential_type="test_origin_url",
+            field_values={"url": _BROWSER_BAR},
+        )
+        assert cred.field_values == {"url": "https://erp.acme.test:8443"}
+        await update_credential(
+            db,
+            tenant_id=tenant,
+            credential_id=cred.id,
+            field_values={"url": "https://erp2.acme.test/odoo/crm/"},
+        )
+        assert cred.field_values == {"url": "https://erp2.acme.test"}
+
+
+def test_an_origin_only_address_is_checked_without_its_path() -> None:
+    cred_type = registry.CORE_CREDENTIAL_TYPES["test_origin_url"]
+    assert collect_required_values(cred_type, {"url": _BROWSER_BAR}) == {
+        "url": "https://erp.acme.test:8443"
+    }
+
+
+def test_a_plain_url_field_keeps_its_path() -> None:
+    cred_type = CredentialTypeSpec(
+        name="t",
+        display_name="t",
+        fields=[SetupFieldSpec(key="url", label="URL", kind="url")],
+    )
+    assert collect_required_values(cred_type, {"url": "https://api.example.com/v1"}) == {
+        "url": "https://api.example.com/v1"
+    }

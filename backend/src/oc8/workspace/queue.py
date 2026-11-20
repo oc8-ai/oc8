@@ -25,7 +25,7 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
@@ -76,6 +76,8 @@ class ClarificationRow:
     question: str
     status: str
     created_at: dt.datetime
+    #: `run.context["pending_questions"]` of the run that asked (spec §4.1).
+    pending_questions: Any = None
 
 
 async def open_clarifications(
@@ -108,6 +110,7 @@ async def open_clarifications(
             Agent.name,
             Agent.department_id,
             Department.name,
+            AgentRun.context["pending_questions"],
         )
         # INNER on agent: the department comes from it, so a clarification whose
         # agent is unreadable here has no department and must not be shown to
@@ -119,6 +122,7 @@ async def open_clarifications(
         # LEFT on department: the name is decoration, and a renamed-away or
         # archived department must not delete the question from the queue.
         .outerjoin(Department, Department.id == Agent.department_id)
+        .outerjoin(AgentRun, AgentRun.id == Clarification.run_id)
         .where(Clarification.status == "open")
     )
 
@@ -151,6 +155,7 @@ async def open_clarifications(
             agent_name=row[6],
             department_id=row[7],
             department_name=row[8] or "",
+            pending_questions=row[9],
         )
         for row in (await db.execute(stmt)).all()
     ]
@@ -237,7 +242,25 @@ async def answer_clarification(
     # The one shared implementation, so the departmental door and the admin door
     # cannot fold the answer into `run.context` in two different shapes -- the
     # executor reads exactly one of them.
-    await resolve_clarification(db, run=run, answer=answer)
+    pending = (run.context or {}).get("pending_questions")
+    structured = await resolve_clarification(db, run=run, answer=answer)
+    # A chat run's question answered from the inbox still shows in its chat as
+    # the answered card (spec §4.1) -- the same turn every door writes.
+    from oc8.authz.scope import HumanActor
+    from oc8.chat.service import record_answer_turn
+
+    principal = actor.principal if isinstance(actor, HumanActor) else None
+    await record_answer_turn(
+        db,
+        run=run,
+        question=row.question,
+        pending=pending,
+        structured=structured,
+        text=answer,
+        author_member_id=actor.member.id,
+        acting_subject=principal.subject if principal is not None else None,
+        acting_role=principal.role if principal is not None else None,
+    )
 
     # WHO answered. There was no trail at all: `Clarification` has no
     # `answered_by` column and neither this door nor `POST /runs/{id}/answer`

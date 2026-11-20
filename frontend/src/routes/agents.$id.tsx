@@ -5,6 +5,8 @@ import {
   BookOpen,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Circle,
   CircleDot,
   Clock,
@@ -52,9 +54,12 @@ import {
   useDeleteAgent,
   useDeleteAgentMemory,
   useDeleteAgentTrigger,
+  isTerminalRunState,
   useKnowledgeBases,
   useRenameAgent,
+  useAgentRuns,
   useRun,
+  useAgentActiveRunState,
   useRunAgent,
   useSetAgentSupervisor,
   useSkills,
@@ -62,28 +67,40 @@ import {
   useSwitchAgentModel,
   useTenantKpis,
   useUnassignSkill,
-  useUpdateAgentTrigger,
   useMcpConnections,
   useMcpLogins,
-  useCreateMcpLogin,
   type McpLoginDTO,
   type ModelDTO,
   type RunDTO,
+  type RunSummaryDTO,
   type RunTodoDTO,
   type TriggerDTO,
 } from "@/lib/hooks";
+import {
+  useAgentToolAccess,
+  useResetAgentToolAccess,
+  useSetAgentToolAccess,
+} from "@/lib/connections";
+import { AgentBoardsSection } from "@/components/boards/agent-boards-section";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { CredentialPicker } from "@/components/credential-picker";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailTable, describeGuardrailSaveError } from "@/components/tool-guardrail-table";
-import { SUBSCRIPTION_PROVIDER, SubscriptionRiskBadge, supportsRawParams } from "@/routes/models";
+import {
+  AutoRouterBadge,
+  isAutoProvider,
+  modelAssignmentLabel,
+  SUBSCRIPTION_PROVIDER,
+  SubscriptionRiskBadge,
+  supportsRawParams,
+} from "@/routes/models";
 import {
   extraToPairs,
   pairsToExtra,
   RawParamsEditor,
   type RawParamPair,
 } from "@/components/raw-params-editor";
-import { CronBuilder } from "@/components/cron-builder";
 import { downloadFileAttachment } from "@/lib/api";
 import {
   useAgent,
@@ -101,18 +118,31 @@ import {
   type Supervisor,
 } from "@/lib/mock-data";
 import { type Skill } from "@/lib/skills";
+import { AgentPublishBar } from "@/components/agent-publish-bar";
+import { AgentVersionsTab } from "@/components/agent-versions-tab";
 import { AgentRuntimePanel } from "@/components/agent-runtime-panel";
-import { ChatWindow } from "@/components/chat-window";
-import { ComponentGrantPanel } from "@/components/component-grant-panel";
+import { LiveTimeline } from "@/components/conversation/live-timeline";
+import { urlId } from "@/lib/ids";
 import { InlineRename } from "@/components/inline-rename";
 import { AgentInstructionsPanel } from "@/components/agent-instructions-panel";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
 import { MemoryPanel } from "@/components/memory-panel";
-import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RunComponents } from "@/components/run-record-card";
+import { RunFailureReason, RunModelSteps } from "@/components/run-reasoning";
+import { EffortField } from "@/components/effort-field";
+import { AgentToolAccessPanel } from "@/components/connections/agent-tool-access";
+import { ConnectionRequiredNotice } from "@/components/connections/connection-required-notice";
+import { ToolNotices } from "@/components/connections/tool-notices";
+import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
+import { RunStartPhase } from "@/components/run-start-phase";
+import { isStartPhase, phaseLabel } from "@/lib/run-start-phase";
+import { TriggerOwner } from "@/components/connections/trigger-owner";
+import { ScheduleEditor } from "@/components/schedule-editor";
+import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
 import { formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { useT } from "@/lib/i18n";
+import { useLang, useT } from "@/lib/i18n";
 import { useMayManageAgent } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
 
@@ -132,7 +162,20 @@ function mapAgentStatus(s: string): AgentStatus {
   return "paused";
 }
 
+export interface AgentSearch {
+  /** The tab to open; the old "chat" tab is now "live". */
+  tab?: TabId;
+  /** A run for the Live Log ("Technical view" on the Live tab). */
+  runId?: string;
+}
+
 export const Route = createFileRoute("/agents/$id")({
+  validateSearch: (search: Record<string, unknown>): AgentSearch => {
+    const raw = search.tab === "chat" ? "live" : search.tab;
+    const tab = TAB_IDS.find((id) => id === raw);
+    const runId = urlId(search.runId);
+    return { ...(tab ? { tab } : {}), ...(runId ? { runId } : {}) };
+  },
   component: AgentDetail,
   notFoundComponent: () => (
     <div className="p-8 text-center text-muted-foreground">Agent not found.</div>
@@ -144,23 +187,66 @@ const TAB_IDS = [
   "instructions",
   "guardrails",
   "livelog",
-  "chat",
+  "live",
   "files",
   "config",
   "skills",
   "memory",
   "history",
+  "versions",
 ] as const;
 type TabId = (typeof TAB_IDS)[number];
 
+/** The agent page's tabs. The Live Log ("livelog") is no tab of its own: it
+ *  is the Live tab's technical view, opened from its "Technical view" link
+ *  (`?tab=livelog&runId=...`), so while it is open the Live tab is current. */
+export function AgentTabBar({ tab, onSelect }: { tab: TabId; onSelect: (tab: TabId) => void }) {
+  const t = useT();
+  const tabs: { id: TabId; label: string }[] = [
+    { id: "overview", label: t("Overview", "Übersicht") },
+    { id: "instructions", label: t("Instructions", "Anweisungen") },
+    { id: "guardrails", label: t("Tools & Access", "Tools & Zugriff") },
+    { id: "live", label: t("Live", "Live") },
+    { id: "files", label: t("Files", "Dateien") },
+    { id: "config", label: t("Configuration", "Konfiguration") },
+    { id: "skills", label: t("Skills", "Skills") },
+    { id: "memory", label: t("Memory", "Gedächtnis") },
+    { id: "history", label: t("History", "Verlauf") },
+    { id: "versions", label: t("Versions", "Versionen") },
+  ];
+  const current = tab === "livelog" ? "live" : tab;
+  return (
+    <div className="flex gap-1 overflow-x-auto border-b border-border">
+      {tabs.map((tb) => (
+        <button
+          key={tb.id}
+          type="button"
+          onClick={() => onSelect(tb.id)}
+          aria-current={current === tb.id ? "page" : undefined}
+          className={cn(
+            "-mb-px border-b-2 px-4 py-2 text-sm transition",
+            current === tb.id
+              ? "border-primary text-primary"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {tb.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function AgentDetail() {
   const t = useT();
-  const { id } = Route.useParams();
+  // Not a UUID: nothing is fetched and the page says the agent wasn't found.
+  const { id: rawId } = Route.useParams();
+  const id = urlId(rawId) ?? "";
   const { data: agent, isLoading } = useAgent(id);
   // Suppress toasts (Toast v2) for events about this agent while its Live Log
   // is open — the user is already watching it live.
   useEffect(() => {
-    setViewedAgent(id);
+    setViewedAgent(id || null);
     return () => setViewedAgent(null);
   }, [id]);
   // KB-assignment picker for this agent, not a paginated list view.
@@ -175,11 +261,30 @@ function AgentDetail() {
   // skill-assign button, and the model select.
   const mayManage = useMayManageAgent()(agent?.departmentId);
   const renameAgent = useRenameAgent();
-  const [tab, setTab] = useState<TabId>("overview");
+  const search = Route.useSearch();
+  const [tab, setTab] = useState<TabId>(search.tab ?? "overview");
   // Id of the most recently enqueued run for this agent (drives the Live Log
   // transcript below via useRun). Resets on page load — the user re-runs to
   // reattach to a fresh run; older runs remain visible in History.
-  const [runId, setRunId] = useState<string | null>(null);
+  const [runId, setRunId] = useState<string | null>(search.runId ?? null);
+  // A link into this page (the Live tab's "Technical view") picks the tab
+  // and the run, also when the page is already open.
+  useEffect(() => {
+    if (search.tab) setTab(search.tab);
+    if (search.runId) setRunId(search.runId);
+  }, [search.tab, search.runId]);
+  const navigate = useNavigate();
+  /** A tab click also goes into the address bar, so a stale ?tab= never
+   *  lingers and the same "Technical view" link works again. */
+  function selectTab(next: TabId) {
+    setTab(next);
+    void navigate({
+      to: "/agents/$id",
+      params: { id: rawId },
+      search: { tab: next },
+      replace: true,
+    });
+  }
   const [runPickerOpen, setRunPickerOpen] = useState(false);
   const [runTask, setRunTask] = useState("");
   // Which knowledge bases are enabled directly on this agent. Seeded from the
@@ -230,19 +335,6 @@ function AgentDetail() {
     ? allBases.filter((kb) => kb.linkedDepartments.includes(agent.departmentId!)).map((kb) => kb.id)
     : [];
 
-  const tabs: { id: TabId; label: string }[] = [
-    { id: "overview", label: t("Overview", "Übersicht") },
-    { id: "instructions", label: t("Instructions", "Anweisungen") },
-    { id: "guardrails", label: t("Tools & Access", "Tools & Zugriff") },
-    { id: "livelog", label: t("Live Log", "Live-Log") },
-    { id: "chat", label: t("Chat", "Chat") },
-    { id: "files", label: t("Files", "Dateien") },
-    { id: "config", label: t("Configuration", "Konfiguration") },
-    { id: "skills", label: t("Skills", "Skills") },
-    { id: "memory", label: t("Memory", "Gedächtnis") },
-    { id: "history", label: t("History", "Verlauf") },
-  ];
-
   function submitRun() {
     // Task is optional -- the agent's own Instructions (mission) are already
     // sent as its standing system prompt on every run (agent/preamble.py),
@@ -258,7 +350,7 @@ function AgentDetail() {
           setRunId(data.id);
           setRunPickerOpen(false);
           setRunTask("");
-          setTab("livelog");
+          setTab("live");
           toast.success(t(`Run started · ${agent!.name}`, `Lauf gestartet · ${agent!.name}`));
         },
         onError: () => toast.error(t("Couldn't start run", "Lauf konnte nicht gestartet werden")),
@@ -327,8 +419,9 @@ function AgentDetail() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <StatusPill status={status} />
+            <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
             <DeleteAgentButton agent={agent} mayManage={mayManage} />
+            <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
             <button
               type="button"
               onClick={() => setRunPickerOpen(true)}
@@ -341,6 +434,11 @@ function AgentDetail() {
           </div>
         </div>
       </Panel>
+
+      {/* Above the tabs, not inside one: an edit made on the Guardrails tab has
+          to be publishable from wherever the operator ends up, and a bar that
+          lives inside a tab is a bar half the people who need it never see. */}
+      <AgentPublishBar agentId={agent.id} mayManage={mayManage} />
 
       {runPickerOpen && (
         <div
@@ -404,22 +502,7 @@ function AgentDetail() {
         </div>
       )}
 
-      <div className="flex gap-1 overflow-x-auto border-b border-border">
-        {tabs.map((tb) => (
-          <button
-            key={tb.id}
-            onClick={() => setTab(tb.id)}
-            className={cn(
-              "-mb-px border-b-2 px-4 py-2 text-sm transition",
-              tab === tb.id
-                ? "border-primary text-primary"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {tb.label}
-          </button>
-        ))}
-      </div>
+      <AgentTabBar tab={tab} onSelect={selectTab} />
 
       {tab === "overview" && <OverviewTab agent={agent} />}
 
@@ -428,10 +511,22 @@ function AgentDetail() {
           followed too, which is what makes a cron-driven agent watchable at
           all. */}
       {tab === "livelog" && (
-        <LiveLog agentId={agent.id} runId={runId ?? agent.currentRunId ?? null} />
+        <LiveLog
+          agentId={agent.id}
+          runId={runId ?? agent.currentRunId ?? null}
+          onOpenVersions={() => setTab("versions")}
+          onBack={() => selectTab("live")}
+        />
       )}
 
-      {tab === "chat" && <ChatWindow key={agent.id} agentId={agent.id} agentName={agent.name} />}
+      {tab === "live" && (
+        <LiveTimeline
+          key={agent.id}
+          agentId={agent.id}
+          departmentId={agent.departmentId ?? null}
+          promptStarters={agent.promptStarters ?? []}
+        />
+      )}
 
       {tab === "files" && <WorkspaceFilesPanel agentId={agent.id} />}
 
@@ -473,12 +568,6 @@ function AgentDetail() {
               deptEnabled={deptEnabled}
             />
           </div>
-          <ComponentGrantPanel
-            granteeType="agent"
-            granteeId={agent.id}
-            mayManage={mayManage}
-            departmentId={agent.departmentId}
-          />
         </div>
       )}
 
@@ -492,7 +581,16 @@ function AgentDetail() {
       )}
 
       {tab === "guardrails" && agent.departmentId && (
-        <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
+        <>
+          <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
+          <AgentToolAccessPanel
+            agentId={agent.id}
+            toolKeys={Object.entries(agent.effectiveTools)
+              .filter(([, policy]) => policy?.enabled)
+              .map(([key]) => key)}
+            mayManage={mayManage}
+          />
+        </>
       )}
       {tab === "guardrails" && !agent.departmentId && (
         <Panel className="p-5 text-sm text-muted-foreground">
@@ -506,20 +604,14 @@ function AgentDetail() {
       {tab === "memory" && <AgentMemoryTab agentId={agent.id} mayManage={mayManage} />}
 
       {tab === "history" && (
-        <Panel className="p-10 text-center">
-          <Clock className="mx-auto mb-3 h-6 w-6 text-muted-foreground/60" />
-          <p className="text-sm text-muted-foreground">
-            {t(
-              "Run history browsing is not yet available.",
-              "Das Durchsuchen des Ausführungsverlaufs ist noch nicht verfügbar.",
-            )}
-          </p>
-        </Panel>
+        <AgentRunHistory agentId={agent.id} onOpenVersions={() => setTab("versions")} />
       )}
 
       {tab === "skills" && (
         <AgentSkillsTab agentId={agent.id} agentName={agent.name} mayManage={mayManage} />
       )}
+
+      {tab === "versions" && <AgentVersionsTab agentId={agent.id} mayManage={mayManage} />}
     </div>
   );
 }
@@ -642,6 +734,7 @@ export function OverviewTab({ agent }: { agent: AgentDetailData }) {
         <p className="text-sm">{agent.lastAction}</p>
         <div className="mt-3 text-xs text-muted-foreground">{agent.lastRun}</div>
       </Panel>
+      <AgentBoardsSection agentId={agent.id} className="md:col-span-3" />
     </div>
   );
 }
@@ -700,13 +793,13 @@ function AgentKnowledgeSection({
       {
         onSuccess: () => {
           setPickerOpen(false);
-          toast.success(t("Knowledge base assigned", "Wissensbasis zugewiesen"), {
+          toast.success(t("Knowledge base assigned", "Wissensdatenbank zugewiesen"), {
             description: `${kb.name} → ${agentName}`,
           });
         },
         onError: () =>
           toast.error(
-            t("Couldn't assign knowledge base", "Wissensbasis konnte nicht zugewiesen werden"),
+            t("Couldn't assign knowledge base", "Wissensdatenbank konnte nicht zugewiesen werden"),
             { description: kb.name },
           ),
       },
@@ -725,7 +818,7 @@ function AgentKnowledgeSection({
           disabled={!mayManage}
           className="inline-flex shrink-0 items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          <Plus className="h-4 w-4" /> {t("Assign knowledge base", "Wissensbasis zuweisen")}
+          <Plus className="h-4 w-4" /> {t("Assign knowledge base", "Wissensdatenbank zuweisen")}
         </button>
       </div>
       <KnowledgeAssignment
@@ -753,7 +846,7 @@ function AgentKnowledgeSection({
                   {t("Knowledge library", "Wissens-Bibliothek")}
                 </div>
                 <h2 className="font-serif text-xl">
-                  {t("Assign knowledge base", "Wissensbasis zuweisen")}
+                  {t("Assign knowledge base", "Wissensdatenbank zuweisen")}
                 </h2>
               </div>
               <button
@@ -769,7 +862,7 @@ function AgentKnowledgeSection({
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder={t("Search knowledge bases…", "Wissensbasen durchsuchen…")}
+                placeholder={t("Search knowledge bases…", "Wissensdatenbanken suchen…")}
                 className="w-full rounded-md border border-border bg-background/40 py-2 pl-8 pr-3 text-sm outline-none focus:border-primary/50"
               />
             </div>
@@ -779,11 +872,11 @@ function AgentKnowledgeSection({
                   {assignable.length === 0
                     ? t(
                         "All knowledge bases are already linked.",
-                        "Alle Wissensbasen sind bereits verknüpft.",
+                        "Alle Wissensdatenbanken sind bereits verknüpft.",
                       )
                     : t(
                         "No knowledge bases match your search.",
-                        "Keine Wissensbasen passen zur Suche.",
+                        "Keine Wissensdatenbanken passen zur Suche.",
                       )}
                 </div>
               )}
@@ -1108,7 +1201,13 @@ export function AssignedModelPanel({
   const t = useT();
   const switchModel = useSwitchAgentModel();
   const assigned = models.find((model) => model.id === agent.modelConfigId);
-  const showEffort = assigned?.provider === "anthropic";
+  const assignedIsAuto = !!assigned && isAutoProvider(assigned.provider);
+  // Only a model that can think receives a level or an effort (spec §5).
+  // An older backend does not send the flag: keep the old rule there.
+  const showEffort =
+    !!assigned &&
+    !assignedIsAuto &&
+    (assigned.supportsReasoning ?? assigned.provider === "anthropic");
   const showRawParams = !!assigned && supportsRawParams(assigned.provider);
 
   const [temperature, setTemperature] = useState(
@@ -1173,8 +1272,8 @@ export function AssignedModelPanel({
         modelConfigId: agent.modelConfigId,
         temperature: parsedTemp,
         maxTokens: parsedTokens,
-        // Never send an override for a field this model's provider doesn't
-        // expose -- switching away from anthropic must not silently wipe an
+        // Never send an override for a field this model doesn't expose --
+        // switching to a model that cannot think must not silently wipe an
         // effort value the operator can no longer even see to restore.
         effort: showEffort ? effort.trim() || null : undefined,
         extra: showRawParams ? (pairsToExtra(rawParams) ?? null) : undefined,
@@ -1204,6 +1303,19 @@ export function AssignedModelPanel({
           <SubscriptionRiskBadge />
         </div>
       )}
+      {assignedIsAuto && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <AutoRouterBadge />
+          {agent.autoRouterAffinityTier && (
+            <span className="text-[11px] text-muted-foreground">
+              {t(
+                `Uses ${agent.autoRouterAffinityTier} (affinity)`,
+                `Nutzt ${agent.autoRouterAffinityTier} (Affinity)`,
+              )}
+            </span>
+          )}
+        </div>
+      )}
       <select
         className="mt-4 w-full rounded-md border border-border bg-background/30 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60"
         value={agent.modelConfigId ?? ""}
@@ -1226,7 +1338,7 @@ export function AssignedModelPanel({
         </option>
         {models.map((model) => (
           <option key={model.id} value={model.id}>
-            {model.displayName || model.model} · {model.provider}
+            {modelAssignmentLabel(model)}
           </option>
         ))}
       </select>
@@ -1236,7 +1348,7 @@ export function AssignedModelPanel({
           "Die Änderung gilt für den nächsten Lauf. Modellkonfigurationen verwaltest du unter Modelle.",
         )}
         {!mayManage &&
-          ` ${t("Your role does not include agent:manage, so this assignment is read-only for you.", "Ihre Rolle enthält agent:manage nicht, deshalb ist diese Zuweisung für Sie schreibgeschützt.")}`}
+          ` ${t("Your role does not include agent:manage, so this assignment is read-only for you.", "Deine Rolle enthält agent:manage nicht, deshalb ist diese Zuweisung für dich schreibgeschützt.")}`}
       </p>
 
       {agent.modelConfigId && (
@@ -1281,19 +1393,22 @@ export function AssignedModelPanel({
               />
             </label>
             {showEffort && (
-              <label className="col-span-2 block">
-                <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+              <div className="col-span-2 block">
+                <label
+                  htmlFor="agent-effort"
+                  className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground"
+                >
                   {t("Effort", "Effort")}
-                </span>
-                <input
-                  type="text"
-                  placeholder={t("Inherited", "Geerbt")}
+                </label>
+                <EffortField
+                  id="agent-effort"
+                  key={agent.id}
                   value={effort}
+                  onChange={setEffort}
+                  emptyLabel={t("Inherited", "Geerbt")}
                   disabled={!mayManage}
-                  onChange={(e) => setEffort(e.target.value)}
-                  className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-60"
                 />
-              </label>
+              </div>
             )}
           </div>
           {showRawParams && (
@@ -1359,7 +1474,11 @@ export function AgentGuardrailsPanel({
   const update = useUpdateNarrowing(agent.id);
   const logins = useMcpLogins();
   const { data: connections = [] } = useMcpConnections();
-  const createLogin = useCreateMcpLogin();
+  // The login an agent uses for a tool is its fixed access (the same row
+  // the Tools tab's access setting writes), never a pinned connection.
+  const access = useAgentToolAccess(agent.id);
+  const setAccess = useSetAgentToolAccess(agent.id);
+  const resetAccess = useResetAgentToolAccess(agent.id);
   const frame = agent.departmentFrameTools;
   const narrowing = agent.narrowingTools;
   const effective = agent.effectiveTools;
@@ -1483,7 +1602,9 @@ export function AgentGuardrailsPanel({
         ? "narrowed"
         : "inherited";
     const connection = connectionByName.get(key);
+    const fixed = (access.data ?? []).find((a) => a.toolKey === key && a.mode === "fixed");
     const pickedCredentialId =
+      fixed?.credentialId ??
       (loginsByKey[key] ?? []).find((l) => l.id === effective[key]?.connectionId)?.credentialId ??
       "";
     return {
@@ -1498,30 +1619,15 @@ export function AgentGuardrailsPanel({
             credentialType={connection.credentialType}
             value={pickedCredentialId}
             onChange={async (credentialId) => {
-              if (!credentialId) {
-                persistOne(key, own, null);
-                return;
-              }
-              const existing = (loginsByKey[key] ?? []).find(
-                (l) => l.credentialId === credentialId,
-              );
-              if (existing) {
-                persistOne(key, own, existing.id);
-                return;
-              }
               try {
-                const login = await createLogin.mutateAsync({
-                  name: key,
-                  credentialType: connection.credentialType!,
-                  credentialId,
-                  scopes: [],
-                  // Scoped to this agent's own department, not tenant-wide:
-                  // lets a different department pin a different login under
-                  // the same tool key instead of hitting the "already
-                  // exists" conflict a tenant-wide login would.
-                  departmentId: agent.departmentId ?? undefined,
+                if (!credentialId) {
+                  if (fixed) await resetAccess.mutateAsync(key);
+                  return;
+                }
+                await setAccess.mutateAsync({
+                  toolKey: key,
+                  body: { mode: "fixed", credentialId },
                 });
-                persistOne(key, own, login.id);
               } catch (err) {
                 toast.error(
                   t(
@@ -1996,177 +2102,7 @@ function WebhookTriggerPanel({
         <Trash2 className="h-3 w-3" />
         {t("Remove webhook", "Webhook entfernen")}
       </button>
-    </div>
-  );
-}
-
-type TriggerMode = "continuous" | "24-7" | "schedule" | "on-demand" | "custom";
-
-// "schedule" (free-text "Weekly schedule") dropped from the preset list --
-// Custom cron already covers everything it could express, so it was a
-// redundant option. `detectTriggerMode` below still falls back to it for
-// an agent whose `agent.schedule` already holds an old free-text value, so
-// that legacy data keeps rendering rather than being reinterpreted as cron.
-const TRIGGER_PRESETS: { id: TriggerMode; label: string; example: string }[] = [
-  { id: "continuous", label: "Continuous", example: "Continuous" },
-  { id: "24-7", label: "24/7", example: "24/7" },
-  { id: "on-demand", label: "On-Demand", example: "On-Demand" },
-  { id: "custom", label: "Time scheduled", example: "0 */2 * * *" },
-];
-
-function detectTriggerMode(value: string): TriggerMode {
-  const v = value.trim().toLowerCase();
-  if (v === "continuous") return "continuous";
-  if (v === "24/7") return "24-7";
-  if (v === "on-demand") return "on-demand";
-  if (/^[0-9*/,\-\s]+$/.test(v)) return "custom";
-  return "schedule";
-}
-
-function ScheduleEditor({
-  initial,
-  agentName,
-  agentId,
-}: {
-  initial: string;
-  agentName: string;
-  agentId: string;
-}) {
-  const t = useT();
-  const { data: triggers } = useAgentTriggers(agentId);
-  const cronTrigger = triggers?.find((tr) => tr.kind === "cron");
-  const createTrigger = useCreateAgentTrigger();
-  const updateTrigger = useUpdateAgentTrigger();
-  const deleteTrigger = useDeleteAgentTrigger();
-  const [mode, setMode] = useState<TriggerMode>(() => detectTriggerMode(initial));
-  const [value, setValue] = useState<string>(initial);
-
-  useEffect(() => {
-    if (cronTrigger?.cronExpression) {
-      setMode("custom");
-      setValue(cronTrigger.cronExpression);
-    }
-  }, [cronTrigger?.cronExpression]);
-
-  function pickMode(next: TriggerMode) {
-    setMode(next);
-    const preset = TRIGGER_PRESETS.find((p) => p.id === next)!;
-    if (next !== "schedule" && next !== "custom") {
-      setValue(preset.example);
-    }
-    if (next === "custom") {
-      // Seed a valid cron if the current value is not one.
-      const isCron = /^[0-9*/,\-\s]+$/.test(value.trim());
-      if (!isCron) setValue("0 9 * * 1-5");
-    }
-  }
-
-  function save() {
-    const onFailed = () =>
-      toast.error(t("Couldn't update schedule", "Zeitplan konnte nicht aktualisiert werden"), {
-        description: t("Try again in a moment.", "Bitte versuche es in Kürze erneut."),
-      });
-    // Only "custom" mode produces a real cron string (via CronBuilder); the
-    // other presets are display-only and never touch the backend.
-    if (mode !== "custom") {
-      const onDone = () =>
-        toast.success(t("Schedule updated", "Zeitplan aktualisiert"), {
-          description: `${agentName} · ${value || TRIGGER_PRESETS.find((p) => p.id === mode)?.example || mode}`,
-        });
-      if (cronTrigger) {
-        deleteTrigger.mutate(
-          { agentId, triggerId: cronTrigger.id },
-          { onSuccess: onDone, onError: onFailed },
-        );
-      } else {
-        onDone();
-      }
-      return;
-    }
-    const onSaved = () =>
-      toast.success(t("Schedule updated", "Zeitplan aktualisiert"), {
-        description: `${agentName} · ${value}`,
-      });
-    if (cronTrigger) {
-      updateTrigger.mutate(
-        { agentId, triggerId: cronTrigger.id, cronExpression: value },
-        { onSuccess: onSaved, onError: onFailed },
-      );
-    } else {
-      createTrigger.mutate(
-        { agentId, cronExpression: value, taskText: `Scheduled run for ${agentName}` },
-        { onSuccess: onSaved, onError: onFailed },
-      );
-    }
-  }
-
-  const showTextInput = mode === "schedule" || mode === "custom";
-
-  return (
-    <div className="mt-4 space-y-3">
-      <div className="flex flex-wrap gap-1.5">
-        {TRIGGER_PRESETS.map((p) => {
-          const active = p.id === mode;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => pickMode(p.id)}
-              className={cn(
-                "rounded-full border px-2.5 py-1 text-[11px] transition",
-                active
-                  ? "border-primary/60 bg-primary/15 text-primary"
-                  : "border-border bg-background/40 text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {p.label}
-            </button>
-          );
-        })}
-      </div>
-      {showTextInput ? (
-        mode === "custom" ? (
-          <CronBuilder
-            initial={value}
-            onChange={setValue}
-            onSave={save}
-            saveLabel={t("Save", "Speichern")}
-          />
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <input
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="z. B. Mon–Fri, 09:00–17:00"
-              className="min-w-0 flex-1 rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-            />
-            <button
-              type="button"
-              onClick={save}
-              className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-            >
-              <Save className="h-3.5 w-3.5" /> {t("Save", "Speichern")}
-            </button>
-          </div>
-        )
-      ) : (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background/30 px-3 py-2 text-sm">
-          <span className="font-mono text-xs text-muted-foreground">{value}</span>
-          <button
-            type="button"
-            onClick={save}
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition hover:opacity-90"
-          >
-            <Save className="h-3.5 w-3.5" /> {t("Save", "Speichern")}
-          </button>
-        </div>
-      )}
-      <p className="text-[11px] text-muted-foreground">
-        {t(
-          "Pick a preset or define an exact schedule / cron expression.",
-          "Wähle einen Preset oder definiere einen exakten Zeitplan / Cron-Ausdruck.",
-        )}
-      </p>
+      <TriggerOwner agentId={agentId} trigger={trigger} />
     </div>
   );
 }
@@ -2323,7 +2259,7 @@ function WorkspaceFilesPanel({ agentId }: { agentId: string }) {
               <div className="py-10 text-center text-xs text-muted-foreground">
                 {t(
                   "No inline preview for this file type -- download it instead.",
-                  "Keine Inline-Vorschau für diesen Dateityp -- bitte herunterladen.",
+                  "Keine Inline-Vorschau für diesen Dateityp — lade die Datei herunter.",
                 )}
               </div>
             ) : (
@@ -2352,11 +2288,118 @@ function WorkspaceFilesPanel({ agentId }: { agentId: string }) {
 // slice of the activity feed (useActivity, live-patched by "activity.logged").
 // No client-side simulation — every line here comes from the backend.
 
-function isTerminalRunState(state: string): boolean {
-  return state === "done" || state === "failed" || state === "interrupted";
+// Ticks every second, but only while `active` -- a terminal run has no
+// reason to keep re-rendering its parent once a second forever.
+function useNow(active: boolean, intervalMs = 1000): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(id);
+  }, [active, intervalMs]);
+  return now;
 }
 
-function LiveLog({ agentId, runId }: { agentId: string; runId: string | null }) {
+// Matches backend/src/oc8/runtime/reconcile.py's ABANDONED_AFTER (10 min) and
+// worker.py's LEASE_LOST_AFTER_MS -- the same window the reconciler and the
+// queue's lease reclaim both use. Below this, a quiet run is unremarkable
+// (steps legitimately take a while); above it, the reconciler has already
+// closed it and this run is no longer live anyway.
+const ABANDON_AFTER_MS = 10 * 60 * 1000;
+// Threshold before we say anything at all -- steps routinely run past a
+// minute on their own, so flagging every gap between heartbeats would just
+// be noise. See the design discussion: chosen as a middle ground between
+// reacting on the first missed heartbeat (30s) and waiting for half the
+// abandon window.
+const STALE_AFTER_MS = 2 * 60 * 1000;
+
+export function StalenessNotice({ updatedAt }: { updatedAt: string }) {
+  const t = useT();
+  const now = useNow(true);
+  const staleMs = now - new Date(updatedAt).getTime();
+  if (staleMs < STALE_AFTER_MS) return null;
+  const remainingMs = Math.max(0, ABANDON_AFTER_MS - staleMs);
+  const staleMin = Math.floor(staleMs / 60_000);
+  const staleSec = Math.floor((staleMs % 60_000) / 1000);
+  const remainingMin = Math.max(1, Math.round(remainingMs / 60_000));
+  return (
+    <div className="flex items-center gap-1.5 text-xs text-[color:var(--status-warning)]">
+      <Clock className="h-3.5 w-3.5" />
+      {remainingMs > 0
+        ? t(
+            `No response for ${staleMin}m ${staleSec}s — oc8 will automatically retry this run in about ${remainingMin} min if it doesn't recover.`,
+            `Seit ${staleMin} Min ${staleSec} Sek keine Rückmeldung — oc8 versucht in ca. ${remainingMin} Min automatisch einen Neustart, falls sich das nicht von selbst löst.`,
+          )
+        : t(
+            `No response for ${staleMin}m ${staleSec}s — oc8 should be repairing this run now.`,
+            `Seit ${staleMin} Min ${staleSec} Sek keine Rückmeldung — oc8 sollte diesen Lauf jetzt reparieren.`,
+          )}
+    </div>
+  );
+}
+
+/** The version a run executed under. Exported for its own test, like
+ *  `OverviewTab` and `AgentSkillsTab` already are in this file.
+ *
+ *  A number and nothing else. Resolving the version's payload here would mean a
+ *  second request per run to render four characters, and the operator who wants
+ *  the configuration is one click away from it in the Versions tab. */
+export function RunPinnedVersion({
+  versionNo,
+  onOpenVersions,
+}: {
+  versionNo: number | null | undefined;
+  onOpenVersions: () => void;
+}) {
+  const t = useT();
+  // Null for a run created before pinning existed (migration 0099 deliberately
+  // did not backfill those). Rendering "v?" would send somebody looking for a
+  // version that was never recorded.
+  if (versionNo === null || versionNo === undefined) return null;
+  return (
+    <button
+      type="button"
+      onClick={onOpenVersions}
+      title={t(
+        "The configuration version this run is pinned to",
+        "Die Konfigurationsversion, auf die dieser Lauf festgelegt ist",
+      )}
+      className="inline-flex items-center gap-1 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground transition hover:text-foreground"
+    >
+      {`v${versionNo}`}
+    </button>
+  );
+}
+
+// Exported for its own test, like RunPinnedVersion above.
+/** The pill in the agent header. While a run of this agent is active it shows
+ *  that run's live state (the same pill the Live Log uses); otherwise it falls
+ *  back to the agent's own status. */
+export function HeaderStatusPill({
+  agentId,
+  status,
+  runId,
+}: {
+  agentId: string;
+  status: import("@/lib/mock-data").AgentStatus;
+  runId: string | null;
+}) {
+  const active = useAgentActiveRunState(agentId, runId);
+  return active ? <RunStateBadge state={active} /> : <StatusPill status={status} />;
+}
+
+export function LiveLog({
+  agentId,
+  runId,
+  onOpenVersions,
+  onBack,
+}: {
+  agentId: string;
+  runId: string | null;
+  onOpenVersions: () => void;
+  /** Back to the Live tab, whose technical view this is. */
+  onBack?: () => void;
+}) {
   const t = useT();
   const run = useRun(runId);
   // Asked of the server for THIS agent, and raised by "show more": filtering a
@@ -2377,24 +2420,46 @@ function LiveLog({ agentId, runId }: { agentId: string; runId: string | null }) 
   const [cancelledRunId, setCancelledRunId] = useState<string | null>(null);
   const alreadyRequestedCancel = !!runId && cancelledRunId === runId;
 
+  // Ticks the dot's color in step with StalenessNotice's own text below --
+  // both read the same threshold, but each keeps its own clock so this
+  // component doesn't have to know StalenessNotice renders anything at all.
+  const now = useNow(live);
+  const stale =
+    live && !!run.data && now - new Date(run.data.updatedAt).getTime() >= STALE_AFTER_MS;
+
   return (
     <div className="space-y-4">
       <Panel className="p-5">
-        <div className="mb-3 flex items-center justify-between gap-2">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
+            {onBack && (
+              <button
+                type="button"
+                onClick={onBack}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+              >
+                <ArrowLeft className="h-3.5 w-3.5" />
+                {t("Back to Live", "Zurück zu Live")}
+              </button>
+            )}
             <span
               className={cn(
                 "relative inline-flex h-2.5 w-2.5 rounded-full",
-                live ? "bg-[color:var(--status-running)]" : "bg-muted-foreground/60",
+                stale
+                  ? "bg-[color:var(--status-warning)]"
+                  : live
+                    ? "bg-[color:var(--status-running)]"
+                    : "bg-muted-foreground/60",
               )}
             >
-              {live && (
+              {live && !stale && (
                 <span className="absolute inset-0 animate-ping rounded-full bg-[color:var(--status-running)] opacity-60" />
               )}
             </span>
             <div className="text-xs uppercase tracking-wider text-muted-foreground">
               {t("Live Log · current run", "Live-Log · aktueller Lauf")}
             </div>
+            {stale && run.data && <StalenessNotice updatedAt={run.data.updatedAt} />}
           </div>
           <div className="flex items-center gap-2">
             {live && (
@@ -2422,9 +2487,13 @@ function LiveLog({ agentId, runId }: { agentId: string; runId: string | null }) 
                 <StopCircle className="h-3.5 w-3.5" />
                 {alreadyRequestedCancel
                   ? t("Cancelling…", "Wird abgebrochen…")
-                  : t("Stop", "Abbrechen")}
+                  : t("Stop", "Stoppen")}
               </button>
             )}
+            <RunPinnedVersion
+              versionNo={run.data?.agentVersionNo}
+              onOpenVersions={onOpenVersions}
+            />
             {run.data && <RunStateBadge state={run.data.state} />}
           </div>
         </div>
@@ -2469,32 +2538,35 @@ function RunTranscript({ run, pending }: { run: RunDTO | undefined; pending: boo
         <span className="rounded-md border border-border bg-background/40 px-2 py-1 font-mono">
           {t("run", "Lauf")} {run.id.slice(0, 8)}
         </span>
-        {run.phase && (
+        {run.phase && !isStartPhase(run.phase) && (
           <span className="rounded-md border border-border bg-background/40 px-2 py-1">
-            {t("phase", "Phase")}: {run.phase}
+            {t("phase", "Phase")}: {phaseLabel(run.phase, t)}
           </span>
         )}
       </div>
+      <RunStartPhase phase={run.phase} state={run.state} />
       {run.state === "waiting_for_input" && <WaitingForInputCallout run={run} />}
-      {run.liveAnswer && (
+      {run.state === "failed" && <RunFailureReason reason={run.failureReason ?? run.output} />}
+      <ConnectionRequiredNotice value={run.connectionRequired} agentId={run.agentId} />
+      <ToolNotices value={run.toolNotices} />
+      <ToolDeniedNotice value={run.toolDenied} />
+      <RunModelSteps
+        stepTimings={run.stepTimings}
+        liveReasoning={run.liveReasoning}
+        live={!isTerminalRunState(run.state)}
+      />
+      {run.liveAnswer ? (
         <LiveAnswerPane text={run.liveAnswer} live={!isTerminalRunState(run.state)} />
+      ) : (
+        // A run opened after it finished (the History tab, a reload) never saw
+        // the answer stream in; its stored output is the same text. A failed
+        // run's output is its failure reason, already shown above.
+        run.output && run.state === "done" && <LiveAnswerPane text={run.output} live={false} />
       )}
       {run.transcript && run.transcript.length > 0 && (
         <LiveTranscriptPane transcript={run.transcript} live={!isTerminalRunState(run.state)} />
       )}
-      {run.components && run.components.length > 0 && (
-        <div className="space-y-2">
-          {run.components.map((c, i) => {
-            const Renderer = Object.prototype.hasOwnProperty.call(
-              RUN_COMPONENT_REGISTRY,
-              c.componentKey,
-            )
-              ? RUN_COMPONENT_REGISTRY[c.componentKey]
-              : undefined;
-            return Renderer ? <Renderer key={i} props={c.props} /> : null;
-          })}
-        </div>
-      )}
+      <RunComponents components={run.components} />
       {run.todos && run.todos.length > 0 && <RunTodoList todos={run.todos} />}
       <div className="max-h-[360px] min-h-[160px] overflow-auto rounded-md border border-border bg-background/60 p-3 font-mono text-[12px] leading-relaxed">
         {run.toolCalls.length === 0 ? (
@@ -2656,59 +2728,6 @@ function WaitingForInputCallout({ run }: { run: RunDTO }) {
   );
 }
 
-function RunStateBadge({ state }: { state: string }) {
-  const map: Record<string, { icon: React.ReactNode; color: string }> = {
-    queued: {
-      icon: <Clock className="h-3 w-3" />,
-      color: "text-muted-foreground border-border bg-background/40",
-    },
-    running: {
-      icon: <Play className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-running)] border-[color:var(--status-running)]/40 bg-[color:var(--status-running)]/10",
-    },
-    waiting_for_input: {
-      icon: <AlertTriangle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-warning)] border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10",
-    },
-    waiting_for_approval: {
-      icon: <AlertTriangle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-warning)] border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10",
-    },
-    done: {
-      icon: <CheckCircle2 className="h-3 w-3" />,
-      color: "text-primary border-primary/40 bg-primary/10",
-    },
-    failed: {
-      icon: <XCircle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-error)] border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10",
-    },
-    interrupted: {
-      icon: <XCircle className="h-3 w-3" />,
-      color:
-        "text-[color:var(--status-error)] border-[color:var(--status-error)]/40 bg-[color:var(--status-error)]/10",
-    },
-  };
-  const m = map[state] ?? {
-    icon: <Clock className="h-3 w-3" />,
-    color: "text-muted-foreground border-border bg-background/40",
-  };
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium",
-        m.color,
-      )}
-    >
-      {m.icon}
-      {state}
-    </span>
-  );
-}
-
 // toolCalls is `Array<Record<string, unknown>>` with no fixed schema on the
 // wire yet — render whichever recognizable keys are present and fall back to
 // the raw JSON so nothing silently disappears.
@@ -2847,7 +2866,202 @@ function ActivityRow({ item }: { item: ActivityItem }) {
         <span className="min-w-0 flex-1 truncate text-foreground/90">{item.message}</span>
         <span className="font-mono text-xs text-muted-foreground">{item.time}</span>
       </div>
-      {item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>}
+      {item.detail?.startsWith("http://") || item.detail?.startsWith("https://") ? (
+        <a
+          href={item.detail}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 inline-block text-xs text-primary underline"
+        >
+          {t("Open record", "Datensatz öffnen")}
+        </a>
+      ) : (
+        item.detail && <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
+      )}
     </li>
+  );
+}
+
+// ---------- History ----------
+//
+// Every run of this agent, newest first, a page at a time (GET
+// /agents/{id}/runs). A row opens into the SAME transcript the Live Log shows
+// for the current run -- RunTranscript, with its per-step "Thought" blocks,
+// token budgets, tool calls, answer and failure reason -- fetched through
+// useRun, so a run that is still going keeps updating here too.
+
+const HISTORY_PAGE_SIZE = 20;
+
+function useRunSourceLabel(): (source: string) => string {
+  const t = useT();
+  return (source) =>
+    ({
+      manual: t("manual", "manuell"),
+      cron: t("schedule", "Zeitplan"),
+      event: t("event", "Ereignis"),
+      webhook: t("webhook", "Webhook"),
+      delegation: t("delegation", "Delegation"),
+      decision: t("decision", "Entscheidung"),
+      handoff: t("handoff", "Übergabe"),
+      chat: t("chat", "Chat"),
+    })[source] ?? source;
+}
+
+export function AgentRunHistory({
+  agentId,
+  onOpenVersions,
+}: {
+  agentId: string;
+  onOpenVersions: () => void;
+}) {
+  const t = useT();
+  const [offset, setOffset] = useState(0);
+  const [openRunId, setOpenRunId] = useState<string | null>(null);
+  const runs = useAgentRuns(agentId, { limit: HISTORY_PAGE_SIZE, offset });
+  const items = runs.data?.items ?? [];
+  const total = runs.data?.totalCount ?? 0;
+  const from = total === 0 ? 0 : offset + 1;
+  const to = offset + items.length;
+
+  return (
+    <Panel className="p-5">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs uppercase tracking-wider text-muted-foreground">
+          {t("Run history", "Ausführungsverlauf")}
+        </div>
+        {total > 0 && (
+          <span className="font-mono text-[10px] text-muted-foreground" data-testid="history-range">
+            {t(`${from}–${to} of ${total}`, `${from}–${to} von ${total}`)}
+          </span>
+        )}
+      </div>
+      {runs.isPending ? (
+        <div className="py-10 text-center text-xs text-muted-foreground">
+          {t("Loading runs…", "Läufe werden geladen…")}
+        </div>
+      ) : runs.isError ? (
+        <div className="py-10 text-center text-xs text-muted-foreground">
+          {t(
+            "Couldn't load the run history.",
+            "Der Ausführungsverlauf konnte nicht geladen werden.",
+          )}
+        </div>
+      ) : items.length === 0 ? (
+        <div className="py-10 text-center">
+          <Clock className="mx-auto mb-3 h-6 w-6 text-muted-foreground/60" />
+          <p className="text-sm text-muted-foreground">
+            {t(
+              "This agent has not run yet. Its runs will appear here.",
+              "Dieser Agent ist noch nicht gelaufen. Seine Läufe erscheinen hier.",
+            )}
+          </p>
+        </div>
+      ) : (
+        <ul className="divide-y divide-border rounded-md border border-border">
+          {items.map((run) => (
+            <RunHistoryRow
+              key={run.id}
+              run={run}
+              open={openRunId === run.id}
+              onToggle={() => setOpenRunId((cur) => (cur === run.id ? null : run.id))}
+              onOpenVersions={onOpenVersions}
+            />
+          ))}
+        </ul>
+      )}
+      {total > HISTORY_PAGE_SIZE && (
+        <div className="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setOffset((o) => Math.max(0, o - HISTORY_PAGE_SIZE))}
+            disabled={offset === 0}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("Newer", "Neuere")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOffset((o) => o + HISTORY_PAGE_SIZE)}
+            disabled={to >= total}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {t("Older", "Ältere")}
+          </button>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function RunHistoryRow({
+  run,
+  open,
+  onToggle,
+  onOpenVersions,
+}: {
+  run: RunSummaryDTO;
+  open: boolean;
+  onToggle: () => void;
+  onOpenVersions: () => void;
+}) {
+  const t = useT();
+  const { lang } = useLang();
+  const sourceLabel = useRunSourceLabel();
+  const started = new Date(run.startedAt ?? run.createdAt).toLocaleString(
+    lang === "de" ? "de-DE" : "en-US",
+    { dateStyle: "medium", timeStyle: "short" },
+  );
+  const excerpt = run.taskExcerpt ?? run.outputExcerpt ?? run.failureReason;
+  return (
+    <li data-testid="run-history-row">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-left text-xs transition hover:bg-muted/40"
+      >
+        {open ? (
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <RunStateBadge state={run.state} />
+        <span className="tabular-nums text-foreground/90">{started}</span>
+        <span className="tabular-nums text-muted-foreground" title={t("Duration", "Dauer")}>
+          {formatMs(run.durationMs)}
+        </span>
+        <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">
+          {sourceLabel(run.source)}
+        </span>
+        {excerpt && (
+          <span className="min-w-0 flex-1 basis-48 truncate text-muted-foreground">{excerpt}</span>
+        )}
+      </button>
+      {open && (
+        <div className="border-t border-border bg-background/30 p-3">
+          <RunHistoryDetail runId={run.id} onOpenVersions={onOpenVersions} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+function RunHistoryDetail({
+  runId,
+  onOpenVersions,
+}: {
+  runId: string;
+  onOpenVersions: () => void;
+}) {
+  const run = useRun(runId);
+  return (
+    <div className="space-y-2">
+      {run.data && (
+        <div className="flex justify-end">
+          <RunPinnedVersion versionNo={run.data.agentVersionNo} onOpenVersions={onOpenVersions} />
+        </div>
+      )}
+      <RunTranscript run={run.data} pending={run.isPending} />
+    </div>
   );
 }

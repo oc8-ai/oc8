@@ -1,7 +1,14 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import {
   api,
   ApiError,
@@ -17,6 +24,12 @@ import {
 } from "@/lib/api";
 import type { RuntimeOption } from "@/components/runtime-picker";
 import type { GuardrailLibraryEntry, GuardrailPreset } from "@/components/guardrail-preset-picker";
+import {
+  mcpTestLogKey,
+  runLiveStateKey,
+  type McpTestLogLine,
+  type RunLiveState,
+} from "@/lib/live/apply-event";
 import type {
   ActivityItem,
   Agent,
@@ -30,6 +43,7 @@ import type {
   Task,
 } from "@/lib/mock-data";
 import type { Skill } from "@/lib/skills";
+import type { QuestionDTO } from "@/lib/conversation-api";
 import { useLang } from "@/lib/i18n";
 import {
   localizeActivity,
@@ -68,6 +82,29 @@ export interface ApprovalOption {
   detail: string;
 }
 
+/** What a Copilot direct-access approval is about (copilot direct access §8). */
+export interface DirectAccessInfo {
+  sessionId: string;
+  toolKey: string;
+  label: string;
+  memberName: string;
+  account: "own" | "organisation" | null;
+  /** "member": the person decides; "department": its own policy holds the call. */
+  decider: "member" | "department";
+  grantId: string | null;
+  grantActive: boolean;
+  /** The person approved; the department whose policy holds the write still has to. */
+  awaitingDepartment?: boolean;
+  /** Existing agents that fit the request, best first; empty or absent when none. */
+  agents?: { id: string; name: string; department: string; score: number }[];
+  /** The name of the login the direct path would use. */
+  loginName?: string;
+  /** The person's own message that an agent would be handed. */
+  request?: string;
+  /** Set once the person chose an agent: the run it started. */
+  chosenAgent?: { id: string; name: string; runId: string } | null;
+}
+
 export interface Approval {
   id: string;
   agentId: string;
@@ -97,6 +134,11 @@ export interface Approval {
   agentName?: string;
   taskId?: string | null;
   taskTitle?: string;
+  // The run this approval is holding, when there is one (resolved backend-side
+  // from the approval's task -- ApprovalRequest has no run column). `null`/absent
+  // for an approval that blocks no run, which is what the needs-me queue sorts
+  // on: work parked mid-task outranks a standalone question.
+  runId?: string | null;
   // ISO-8601. `time` above is NOT this: it comes from payload["time"], which
   // only the demo seed writes, so it is "" on every real row. Age on a row has
   // to be computed from `createdAt` or it says nothing.
@@ -113,6 +155,16 @@ export interface Approval {
   // via `authorize_tool_call` (e.g. agent decision requests) -- `detail`
   // remains the only "why" for those.
   reasonContext?: Record<string, unknown> | null;
+  recordUrl?: string | null;
+  // Other records the held call names (a customer, a product), and once it
+  // ran, the record it created. Both already pass the server's safe-URL check.
+  relatedLinks?: { label: string; url: string }[];
+  resultUrl?: string | null;
+  // The builder proposal a "copilot.agent_builder" approval decides (the pane
+  // shows the same preview read-only). null/absent for every other kind.
+  proposalId?: string | null;
+  // A Copilot direct-access offer or held write; null/absent for every other kind.
+  directAccess?: DirectAccessInfo | null;
 }
 
 /** A question an agent parked mid-run. The other half of the workspace queue. */
@@ -126,6 +178,8 @@ export interface Clarification {
   question: string;
   status: string;
   createdAt: string;
+  /** The structured questions behind `question`; empty for a plain one. */
+  questions?: QuestionDTO[];
 }
 
 /** One card on the My Work task board -- across every department the caller
@@ -172,6 +226,10 @@ export interface McpConnection {
   command: string;
   args: string[];
   departmentId: string | null;
+  // In no department, and so reaching no agent's run until it gets one (the
+  // MCP gateway hands a run only its own department's connections). False for
+  // an integration or an organisation login, which reach agents unbound.
+  needsDepartment?: boolean;
   connected: boolean;
   scopes: string[];
   health: Record<string, unknown>;
@@ -240,8 +298,8 @@ export interface ModelDTO {
   locality: "cloud" | "local";
   displayName: string | null;
   // The completion budget resolve_params falls back to for any agent on this
-  // model that sets no per-agent override. null means "framework default"
-  // (1536), not "unlimited".
+  // model that sets no per-agent override. null means "server default"
+  // (OC8_DEFAULT_MAX_TOKENS, 4096 unless set), not "unlimited".
   maxTokens?: number | null;
   // Free-form reasoning-effort knob forwarded verbatim to providers that
   // support it (e.g. Anthropic). Not validated against a fixed set of
@@ -253,16 +311,34 @@ export interface ModelDTO {
   // these, the provider does. null/undefined means "none set".
   extra?: Record<string, unknown> | null;
   usedByCopilot: boolean;
+  // Whether members may pick this model in a chat. Absent on an older
+  // backend, where every model was pickable.
+  chatEnabled?: boolean;
   supportsVision?: boolean;
+  /** Whether this model can think; the chat shows its reasoning-level control
+   *  only then. Absent on an older backend. */
+  supportsReasoning?: boolean;
   credentialId: string | null;
   healthError: string | null;
   healthCheckedAt: string | null;
+  /** Auto-router (`provider="auto"`): tier → concrete ModelConfig id. */
+  autoTiers?: Record<string, string> | null;
+  autoShadowOnly?: boolean;
+  autoCascadeVerify?: boolean;
+  autoPreferenceRouter?: boolean;
+  autoPreferenceExamples?: Array<Record<string, unknown>> | null;
 }
 
 export interface ModelProviderDTO {
   canonical: string;
   locality: string;
   available: boolean;
+  /** Set up by this tenant (its own key, or a platform key). Ollama and the
+   * ChatGPT subscription are always `available` but only `connected` once
+   * the tenant has a key for them. */
+  connected?: boolean;
+  /** Optional display label (e.g. Auto's "Auto (complexity router)"). */
+  label?: string;
 }
 
 export interface OrganizationSettingsDTO {
@@ -280,6 +356,8 @@ export interface OrganizationSettingsDTO {
   // (not on every other field) only so existing fixtures that predate this
   // task (e.g. backup-panel.test.tsx's ORG) don't have to be touched.
   active_smtp_credential_id?: string | null;
+  /** IANA zone new agent schedules are read in (also on /me). */
+  timezone?: string;
 }
 
 export interface ModelWriteBody {
@@ -291,8 +369,15 @@ export interface ModelWriteBody {
   effort?: string;
   extra?: Record<string, unknown>;
   usedByCopilot?: boolean;
+  chatEnabled?: boolean;
   supportsVision?: boolean;
+  supportsReasoning?: boolean;
   credentialId?: string | null;
+  autoTiers?: Record<string, string> | null;
+  autoShadowOnly?: boolean;
+  autoCascadeVerify?: boolean;
+  autoPreferenceRouter?: boolean;
+  autoPreferenceExamples?: Array<Record<string, unknown>> | null;
 }
 
 export interface RunComponentDTO {
@@ -305,6 +390,11 @@ export interface RunTodoDTO {
   status: "pending" | "in_progress" | "completed";
 }
 
+export interface LiveReasoning {
+  step: number;
+  text: string;
+}
+
 export interface RunDTO {
   id: string;
   agentId: string;
@@ -312,6 +402,18 @@ export interface RunDTO {
   question?: string;
   phase?: string | null;
   output?: string | null;
+  // Why a failed run failed, in words an operator can act on (the runtime's
+  // own sentence, or the error that stopped it). Null for every other state.
+  failureReason?: string | null;
+  // A tool call needed an account that is not connected (connections): the
+  // chat and the run detail show a "connect" call to action for it.
+  connectionRequired?: ConnectionRequiredInfo | null;
+  // Tools the run could not offer for an admin's configuration error (an
+  // incomplete or ambiguous login): a quiet line each, not a call to action.
+  toolNotices?: ToolNoticeInfo[];
+  // A tool call the department frame (or the agent's own guardrails)
+  // withholds: the run detail and the chat say which and where it is allowed.
+  toolDenied?: ToolDeniedInfo | null;
   steps: number;
   toolCalls: Array<Record<string, unknown>>;
   taskId?: string | null;
@@ -319,6 +421,14 @@ export interface RunDTO {
   // append log — same durability as toolCalls/steps, present from the initial
   // GET /runs/{id} fetch, no WS-live patcher exists for it yet).
   todos?: RunTodoDTO[];
+  // One entry per model step, in step order: {step, modelWaitMs, ttftMs,
+  // toolWaitMs, stepWallMs}, plus {tokensIn, tokensOut, reasoningTokens,
+  // maxTokens, reasoning} where the step recorded them. From GET /runs/{id}, and kept current by the
+  // "run.step_timing" patcher (lib/live/apply-event.ts) as each step ends.
+  // Typed loosely on purpose, exactly like toolCalls above: this is a
+  // pass-through of a JSONB list, and lib/run-steps.ts is the one place that
+  // reads a key out of it.
+  stepTimings?: Array<Record<string, unknown>>;
   // Never returned by the backend -- populated client-side only, by the
   // "run.output_delta" live-event patcher (lib/live/apply-event.ts) as chunks
   // arrive over the WS. Absent until the first delta lands, so a fresh
@@ -336,6 +446,51 @@ export interface RunDTO {
   // every runtime, in-process or isolated. Same "never from GET, WS-only"
   // rule: absent until the first fragment lands.
   liveAnswer?: string;
+  // The model's reasoning for the step in progress, filled in by the
+  // "run.reasoning_delta" patcher and reset when a new step starts. Same
+  // "never from GET, WS-only" rule as liveAnswer: a finished step's reasoning
+  // is on its stepTimings entry instead.
+  liveReasoning?: LiveReasoning;
+  // The version this run is pinned to, by NUMBER -- what the Versions tab shows
+  // and what GET /agents/{id}/versions/{n} is addressed by. Null for a run
+  // created before pinning existed: migration 0099 deliberately did not
+  // backfill those, because inventing a version for a historical run is a claim
+  // about the past nothing supports.
+  agentVersionNo?: number | null;
+  // AgentRun.updated_at -- the run's heartbeat (backend/src/oc8/runtime/reconcile.py's
+  // HEARTBEAT_SECONDS/ABANDONED_AFTER). Only refreshed by the poll in useRun below:
+  // the "run.status" WS event fires on state transitions, not on a plain heartbeat
+  // tick, so a run sitting in "running" for minutes would otherwise show a stale
+  // value from whenever the page last fetched.
+  updatedAt: string;
+}
+
+export function isTerminalRunState(state: string): boolean {
+  return state === "done" || state === "failed" || state === "interrupted";
+}
+
+// GET /runs/{id} never carries liveAnswer (it arrives only on run.token_delta).
+// A poll that replaced the cache would wipe the text the model is still
+// streaming. Keep the fragments already on screen.
+//
+// Nor can it be trusted on `state` once a "run.status" event has spoken: the
+// executor publishes a transition before committing it, and an in-process run
+// keeps its RUNNING transition uncommitted until it ends -- so the GET keeps
+// reading "queued" for a run the header already shows as running. The event
+// is the newer word, and wins.
+export function mergePolledRun(
+  previous: RunDTO | undefined,
+  fresh: RunDTO,
+  live?: RunLiveState,
+): RunDTO {
+  let merged = fresh;
+  if (previous?.liveAnswer || previous?.liveReasoning) {
+    merged = { ...merged, liveAnswer: previous.liveAnswer, liveReasoning: previous.liveReasoning };
+  }
+  if (live && live.state !== fresh.state) {
+    merged = { ...merged, state: live.state, phase: live.phase ?? fresh.phase };
+  }
+  return merged;
 }
 
 const keys = {
@@ -413,12 +568,22 @@ export const useDepartments = (params: ListQueryParams = {}) => {
 /** "dev" | "community" -- which login mode this instance runs. The user
  *  detail page reads this to decide whether to show password controls: they
  *  render only in "community" mode, this edition's one real login door.
- *  `demo` is true when `OC8_DEMO=true` (ACME showcase seed). */
+ *  `demo` is true when `OC8_DEMO=true` (ACME showcase seed). `memberInvites`
+ *  is "external" when the deployment invites people itself (a role, no
+ *  password; it may refuse with its own message). */
 export const useAuthConfig = () =>
   useQuery({
     queryKey: ["auth", "config"] as const,
     queryFn: () =>
-      api.get<{ mode: "dev" | "community"; demo?: boolean; initialized?: boolean }>("/auth/config"),
+      api.get<{
+        mode: "dev" | "community";
+        demo?: boolean;
+        initialized?: boolean;
+        memberInvites?: "local" | "external";
+        /** The identity provider's self-service account page
+         *  (`OC8_ACCOUNT_MANAGEMENT_URL`); `null` when not configured. */
+        accountManagementUrl?: string | null;
+      }>("/auth/config"),
     staleTime: Infinity,
   });
 
@@ -426,8 +591,9 @@ export const useDepartment = (id: string) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: ["departments", id],
-    queryFn: () => api.get<Department>(`/departments/${id}`),
+    queryFn: () => api.get<Department>(`/departments/${encodeURIComponent(id)}`),
     select: (d) => localizeDepartment(d, lang),
+    enabled: !!id,
   });
 };
 
@@ -493,11 +659,12 @@ export const useDepartmentBoard = (id: string, limit = 25) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: [...keys.board(id), limit],
-    queryFn: () => api.get<Board>(`/departments/${id}/board?limit=${limit}`),
+    queryFn: () => api.get<Board>(`/departments/${encodeURIComponent(id)}/board?limit=${limit}`),
     select: (board) => ({
       ...board,
       tasks: board.tasks.map((t) => localizeTask(t, lang)),
     }),
+    enabled: !!id,
   });
 };
 
@@ -513,7 +680,7 @@ export interface DepartmentToolsDTO {
 export function useDepartmentTools(id: string) {
   return useQuery({
     queryKey: ["departments", id, "tools"],
-    queryFn: () => api.get<DepartmentToolsDTO>(`/departments/${id}/tools`),
+    queryFn: () => api.get<DepartmentToolsDTO>(`/departments/${encodeURIComponent(id)}/tools`),
     enabled: !!id,
     // A short staleTime, not zero: `useSetDepartmentTools` already
     // invalidates this exact key on every successful save, so a save made
@@ -528,7 +695,7 @@ export function useSetDepartmentTools(id: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (tools: Record<string, Record<string, unknown>>) =>
-      api.put<DepartmentToolsDTO>(`/departments/${id}/tools`, { tools }),
+      api.put<DepartmentToolsDTO>(`/departments/${encodeURIComponent(id)}/tools`, { tools }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["departments", id, "tools"] }),
   });
 }
@@ -536,12 +703,14 @@ export function useSetDepartmentTools(id: string) {
 export const useDepartmentAgents = (id: string) =>
   useQuery({
     queryKey: ["departments", id, "agents"],
-    queryFn: () => api.get<Agent[]>(`/departments/${id}/agents`),
+    queryFn: () => api.get<Agent[]>(`/departments/${encodeURIComponent(id)}/agents`),
     enabled: !!id,
   });
 
 export interface CurrentUser {
   subject: string;
+  /** The sign-in address from the token's `email` claim or the member row. */
+  email?: string | null;
   role: string;
   kind: string;
   // ---- department-scoped workspace (§5, additive; every field has a default
@@ -560,6 +729,10 @@ export interface CurrentUser {
   seats?: Seat[];
   /** Drives the /welcome redirect (design: gamified-onboarding-wizard-design.md). */
   onboardingStatus?: "pending" | "completed" | "skipped";
+  /** The caller's own welcome, shown by an edition that greets members. */
+  memberOnboardingStatus?: "pending" | "completed" | "skipped" | null;
+  /** The organisation's IANA zone: what a new schedule is read in by default. */
+  organisationTimezone?: string;
 }
 
 export function useAuth() {
@@ -616,6 +789,30 @@ export function useStanding(): {
     displayName: data?.displayName || data?.subject || "",
     role: data?.role ?? "",
   };
+}
+
+/** Whether the caller may act on a row, and the wire now says exactly.
+ *
+ * `decidesEverywhere` and not `unrestricted`. The two are different people and
+ * the backend has always known it — `authz/scope.py` carries two flags and
+ * documents at length why they must not become one — but `/me` sent only the
+ * first, so this returned true for an `auditor`, who holds `approval:view_any`,
+ * sees every department, and is 403'd by `require_departmental(approval:decide)`
+ * on every click. The role's entire value is that its account cannot have caused
+ * what it is auditing; offering it Approve was the screen contradicting that.
+ *
+ * Below that, authority is only the seats, so the seat role in that row's own
+ * department is the whole answer: a `dept_viewer` reads the queue and may not
+ * empty it, and hiding the buttons is the honest way to say so.
+ */
+export function mayActOn(
+  seats: Seat[],
+  decidesEverywhere: boolean,
+  departmentId: string | null,
+): boolean {
+  if (decidesEverywhere) return true;
+  if (!departmentId) return false;
+  return seats.some((s) => s.departmentId === departmentId && s.seatRole === "dept_approver");
 }
 
 export function useOrganizationSettings() {
@@ -700,9 +897,33 @@ export function useUpdateOrganizationSettings() {
     // mail-server pointer untouched, while including it with `null` clears it.
     mutationFn: (
       body: Pick<OrganizationSettingsDTO, "name" | "region"> &
-        Partial<Pick<OrganizationSettingsDTO, "active_smtp_credential_id">>,
+        Partial<Pick<OrganizationSettingsDTO, "active_smtp_credential_id" | "timezone">>,
     ) => api.put<OrganizationSettingsDTO>("/settings/organization", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", "organization"] }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["settings", "organization"] });
+      // /me carries the organisation's timezone, the schedule editors' default.
+      return qc.invalidateQueries({ queryKey: ["auth", "me"] });
+    },
+  });
+}
+
+export interface CopilotSettingsDTO {
+  maxActiveFollowups: number;
+}
+
+export function useCopilotSettings() {
+  return useQuery({
+    queryKey: ["settings", "copilot"],
+    queryFn: () => api.get<CopilotSettingsDTO>("/settings/copilot"),
+  });
+}
+
+export function useUpdateCopilotSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CopilotSettingsDTO) =>
+      api.put<CopilotSettingsDTO>("/settings/copilot", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", "copilot"] }),
   });
 }
 
@@ -751,8 +972,15 @@ export const useKnowledgeBases = (params: ListQueryParams = {}) => {
 export function useCreateKnowledgeBase() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { name: string; description?: string; embeddingModel?: string }) =>
-      api.post<KnowledgeBase>("/knowledge/bases", body),
+    mutationFn: (body: {
+      name: string;
+      description?: string;
+      embeddingModel?: string;
+      indexType?: string;
+      indexConfig?: Record<string, unknown>;
+      credentialId?: string;
+      classification?: string;
+    }) => api.post<KnowledgeBase>("/knowledge/bases", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.bases }),
   });
 }
@@ -772,7 +1000,7 @@ export function useUpdateKnowledgeBase() {
       name?: string;
       description?: string;
       embeddingModel?: string;
-    }) => api.patch<KnowledgeBase>(`/knowledge/bases/${kbId}`, body),
+    }) => api.patch<KnowledgeBase>(`/knowledge/bases/${encodeURIComponent(kbId)}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.bases }),
   });
 }
@@ -785,7 +1013,9 @@ export function useDeleteKnowledgeBase() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (kbId: string) =>
-      api.delete<{ kbId: string; documents: number; chunks: number }>(`/knowledge/bases/${kbId}`),
+      api.delete<{ kbId: string; documents: number; chunks: number }>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}`,
+      ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.bases });
       qc.invalidateQueries({ queryKey: keys.sources });
@@ -810,7 +1040,7 @@ export function useUnlinkSourceFromBase() {
         chunks: number;
         sha256: string | null;
         auditSeq: number | null;
-      }>(`/knowledge/bases/${kbId}/sources/${sourceId}`),
+      }>(`/knowledge/bases/${encodeURIComponent(kbId)}/sources/${encodeURIComponent(sourceId)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.bases });
       qc.invalidateQueries({ queryKey: keys.sources });
@@ -838,47 +1068,6 @@ export function useCreateGrant() {
   });
 }
 
-export interface ComponentGrantDTO {
-  id: string;
-  componentKey: string;
-  granteeType: "department" | "agent";
-  granteeId: string;
-}
-
-const COMPONENT_GRANTS_KEY = ["componentGrants"] as const;
-
-// Unlike knowledge grants, component grants DO support revoke (DELETE
-// /components/grants/{id}) -- the catalogue is a short, fixed list (4 keys),
-// not a tenant-created resource, so "list once, filter client-side" is cheap
-// enough that a toggle (grant/revoke) is the natural UI instead of a
-// one-directional "assign" picker.
-export function useComponentGrants() {
-  return useQuery({
-    queryKey: COMPONENT_GRANTS_KEY,
-    queryFn: () => api.get<ComponentGrantDTO[]>("/components/grants"),
-  });
-}
-
-export function useCreateComponentGrant() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (body: {
-      componentKey: string;
-      granteeType: "department" | "agent";
-      granteeId: string;
-    }) => api.post<ComponentGrantDTO>("/components/grants", body),
-    onSuccess: () => qc.invalidateQueries({ queryKey: COMPONENT_GRANTS_KEY }),
-  });
-}
-
-export function useDeleteComponentGrant() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (grantId: string) => api.delete<void>(`/components/grants/${grantId}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: COMPONENT_GRANTS_KEY }),
-  });
-}
-
 export const useDataSources = (params: ListQueryParams = {}) =>
   useQuery({
     queryKey: [...keys.sources, params] as const,
@@ -897,7 +1086,9 @@ export const useKbDocuments = (kbId: string, opts: { includeDeleted?: boolean } 
     queryFn: () => {
       const q = new URLSearchParams();
       if (opts.includeDeleted) q.set("includeDeleted", "true");
-      return api.get<KnowledgeDocument[]>(`/knowledge/bases/${kbId}/documents?${q.toString()}`);
+      return api.get<KnowledgeDocument[]>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/documents?${q.toString()}`,
+      );
     },
     enabled: Boolean(kbId),
   });
@@ -920,7 +1111,9 @@ export const useKbChunks = (kbId: string, params: KbChunkQueryParams = {}) =>
       if (params.sourceUri) q.set("sourceUri", params.sourceUri);
       q.set("limit", String(pageSize));
       q.set("offset", String(((params.page ?? 1) - 1) * pageSize));
-      return api.get<Page<KbChunk>>(`/knowledge/bases/${kbId}/chunks?${q.toString()}`);
+      return api.get<Page<KbChunk>>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/chunks?${q.toString()}`,
+      );
     },
     enabled: Boolean(kbId),
   });
@@ -930,7 +1123,10 @@ export const useKbChunks = (kbId: string, params: KbChunkQueryParams = {}) =>
 export const useSimilarChunks = (kbId: string, chunkId: string | null) =>
   useQuery({
     queryKey: ["similarChunks", kbId, chunkId] as const,
-    queryFn: () => api.get<SimilarChunk[]>(`/knowledge/bases/${kbId}/chunks/${chunkId}/similar`),
+    queryFn: () =>
+      api.get<SimilarChunk[]>(
+        `/knowledge/bases/${encodeURIComponent(kbId)}/chunks/${encodeURIComponent(chunkId ?? "")}/similar`,
+      ),
     enabled: Boolean(kbId) && Boolean(chunkId),
   });
 
@@ -950,12 +1146,15 @@ export const useActivity = (opts: { agentId?: string; limit?: number } = {}) => 
   });
 };
 
-export const useApprovals = (status = "pending") => {
+/** `enabled: false` sends nothing: for a surface that only shows approvals to
+ *  a caller holding `approval:view` (the chat), not the inbox itself. */
+export const useApprovals = (status = "pending", options: { enabled?: boolean } = {}) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: keys.approvals(status),
     queryFn: () => api.get<Approval[]>(`/approvals?status=${status}`),
     select: (rows) => rows.map((r) => localizeLabeled(r, lang)),
+    enabled: options.enabled ?? true,
   });
 };
 
@@ -965,7 +1164,7 @@ export const useApprovals = (status = "pending") => {
  * quietly returning the open ones, so there is no parameter here to get wrong.
  *
  * `refetchInterval` defaults to off (the sidebar badge only needs it on
- * navigation/focus) — chat-window.tsx passes one while a session's run is
+ * navigation/focus) — the Conversation composer passes one while a session's run is
  * outstanding, so a question that opens mid-chat surfaces without a reload.
  */
 export const useClarifications = (refetchInterval: number | false = false) =>
@@ -1070,7 +1269,13 @@ export function useDeleteAgent() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete<{ outcome: "deleted" | "archived" }>(`/agents/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: keys.agents }),
+    onSuccess: (_data, id) => {
+      // The agent is gone: drop its own queries rather than refetch them into
+      // a 404 that would unmount the page before the caller can navigate away.
+      qc.removeQueries({ queryKey: keys.agent(id) });
+      // Not awaited, so the caller's onSuccess (navigation) runs at once.
+      void qc.invalidateQueries({ queryKey: keys.agents });
+    },
   });
 }
 
@@ -1092,7 +1297,8 @@ export function useCreateDepartment() {
 export function useDeleteDepartment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete<{ outcome: string }>(`/departments/${id}`),
+    mutationFn: (id: string) =>
+      api.delete<{ outcome: string }>(`/departments/${encodeURIComponent(id)}`),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: keys.departments });
       qc.invalidateQueries({ queryKey: keys.agents });
@@ -1105,7 +1311,8 @@ export function useDeleteDepartment() {
 export function useRestoreDepartment() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<Department>(`/departments/${id}/restore`),
+    mutationFn: (id: string) =>
+      api.post<Department>(`/departments/${encodeURIComponent(id)}/restore`),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.departments }),
   });
 }
@@ -1118,7 +1325,7 @@ export function useUpdateDepartment(id: string) {
       goal?: string;
       icon?: string;
       promptCachingEnabled?: boolean;
-    }) => api.patch<Department>(`/departments/${id}`, body),
+    }) => api.patch<Department>(`/departments/${encodeURIComponent(id)}`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.departments }),
   });
 }
@@ -1135,6 +1342,22 @@ export function useSkipOnboarding() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.post<{ onboardingStatus: string }>("/onboarding/skip"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth", "me"] }),
+  });
+}
+
+export function useCompleteMemberOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ memberOnboardingStatus: string }>("/onboarding/member/complete"),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["auth", "me"] }),
+  });
+}
+
+export function useSkipMemberOnboarding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.post<{ memberOnboardingStatus: string }>("/onboarding/member/skip"),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["auth", "me"] }),
   });
 }
@@ -1167,6 +1390,21 @@ export function useDiscoverModels() {
   return useMutation({
     mutationFn: (body: { provider: string; credentialId?: string }) =>
       api.post<{ models: string[] }>("/models/discover", body),
+  });
+}
+
+/** The model form's "Can think" suggestion while an admin types a model:
+ *  the provider's declaration, the same rule a create without
+ *  `supportsReasoning` applies server-side. */
+export function useReasoningSupport(provider: string, model: string) {
+  return useQuery({
+    queryKey: ["models", "reasoning-support", provider, model],
+    queryFn: () =>
+      api.get<{ supportsReasoning: boolean }>(
+        `/models/reasoning-support?provider=${encodeURIComponent(provider)}&model=${encodeURIComponent(model)}`,
+      ),
+    enabled: !!provider && !!model && provider !== "auto",
+    staleTime: 60_000,
   });
 }
 
@@ -1406,7 +1644,8 @@ export function useAgentMemory(agentId: string) {
 export function useDeleteAgentMemory(agentId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (recordId: string) => api.delete<void>(`/agents/${agentId}/memory/${recordId}`),
+    mutationFn: (recordId: string) =>
+      api.delete<void>(`/agents/${agentId}/memory/${encodeURIComponent(recordId)}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["agents", agentId, "memory"] }),
   });
 }
@@ -1414,7 +1653,8 @@ export function useDeleteAgentMemory(agentId: string) {
 export function useDepartmentMemory(departmentId: string) {
   return useQuery({
     queryKey: ["departments", departmentId, "memory"],
-    queryFn: () => api.get<MemoryList>(`/departments/${departmentId}/memory`),
+    queryFn: () => api.get<MemoryList>(`/departments/${encodeURIComponent(departmentId)}/memory`),
+    enabled: !!departmentId,
   });
 }
 
@@ -1422,7 +1662,9 @@ export function useDeleteDepartmentMemory(departmentId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (recordId: string) =>
-      api.delete<void>(`/departments/${departmentId}/memory/${recordId}`),
+      api.delete<void>(
+        `/departments/${encodeURIComponent(departmentId)}/memory/${encodeURIComponent(recordId)}`,
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["departments", departmentId, "memory"] }),
   });
 }
@@ -1449,8 +1691,28 @@ export function useTestMcpConnection(id: string) {
 export function useTestMcpConnectionById() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.post<McpConnection>(`/mcp/connections/${id}/test`),
+    // `credentialId`: test the tool's connection with that login -- the one a
+    // setup just chose (the connection holds none of its values).
+    mutationFn: (arg: string | { id: string; credentialId?: string | null }) => {
+      const { id, credentialId } = typeof arg === "string" ? { id: arg, credentialId: null } : arg;
+      const query = credentialId ? `?credentialId=${encodeURIComponent(credentialId)}` : "";
+      return api.post<McpConnection>(`/mcp/connections/${id}/test${query}`);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
+  });
+}
+
+// The step-by-step "Test connection" log (McpTestLogDrawer): `enabled: false`
+// because, unlike every other useQuery in this file, there is no GET this
+// could fetch from -- the cache entry it reads is written ONLY by the
+// mcp.test.log live patcher (apply-event.ts) as events arrive over the
+// tenant's WebSocket. This hook exists purely to re-render on those writes.
+export function useMcpTestLog(connectionId: string) {
+  return useQuery({
+    queryKey: mcpTestLogKey(connectionId),
+    queryFn: () => [] as McpTestLogLine[],
+    enabled: false,
+    initialData: [] as McpTestLogLine[],
   });
 }
 
@@ -1509,10 +1771,11 @@ export function useCreateMcpLogin() {
       fieldValues?: Record<string, unknown>;
       credentialId?: string;
       scopes: string[] | Record<string, string[]>;
-      // Omitted/undefined creates a tenant-wide login; set it to scope the
-      // login to one department, so a second login can reuse the same
-      // `name` (tool key) for a different department.
+      // Only names a newly created credential after the department.
       departmentId?: string;
+      // The agent the login is chosen for: it becomes the agent's fixed
+      // access for the tool `name` (no extra connection is created).
+      agentId?: string;
     }) => api.post<McpLoginDTO>("/mcp/logins", body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["mcp-logins"] });
@@ -1550,9 +1813,119 @@ export function useRunAgent() {
 export function useRun(runId: string | null) {
   return useQuery({
     queryKey: ["run", runId],
-    queryFn: () => api.get<RunDTO>(`/runs/${runId}`),
+    queryFn: async ({ client }) => {
+      const fresh = await api.get<RunDTO>(`/runs/${encodeURIComponent(runId ?? "")}`);
+      // Read after the fetch so fragments that arrived while it was in
+      // flight stay in the string.
+      const previous = client.getQueryData<RunDTO>(["run", runId]);
+      const live = client.getQueryData<RunLiveState>(runLiveStateKey(runId!));
+      return mergePolledRun(previous, fresh, live);
+    },
     enabled: !!runId,
+    // Live runs only: keeps `updatedAt` fresh enough for the staleness
+    // indicator (see the field's comment above) without polling a run
+    // that's already finished.
+    refetchInterval: (query) => {
+      const state = (query.state.data as RunDTO | undefined)?.state;
+      return state && !isTerminalRunState(state) ? 20_000 : false;
+    },
   });
+}
+
+// The tenant's most recently touched runs -- `GET /runs`. The My Work
+// activity widget shows a step timeline per run, and the needs-me queue uses
+// the state filter to find work parked with nobody's name on it. Nothing else
+// lists runs: `activity_event` carries no run id, so the activity feed cannot
+// stand in for this.
+export function useRuns(opts: { state?: string; limit?: number } = {}) {
+  const params = new URLSearchParams();
+  if (opts.state) params.set("state", opts.state);
+  params.set("limit", String(opts.limit ?? 10));
+  const query = params.toString();
+  return useQuery({
+    queryKey: ["runs", opts.state ?? "all", opts.limit ?? 10],
+    queryFn: () => api.get<RunDTO[]>(`/runs?${query}`),
+  });
+}
+
+/** One row of an agent's run history (GET /agents/{id}/runs). The full run
+ *  -- steps, reasoning, tool calls -- is fetched with useRun when a row is
+ *  opened. */
+export interface RunSummaryDTO {
+  id: string;
+  agentId: string;
+  state: string;
+  /** manual | cron | event | webhook | delegation | decision | handoff | chat */
+  source: string;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  steps: number;
+  taskExcerpt: string | null;
+  outputExcerpt: string | null;
+  failureReason: string | null;
+}
+
+// Under the "runs" prefix on purpose: the "run.status" patcher invalidates
+// ["runs"] on every transition, so an open history page follows a run that
+// starts or finishes without a poll of its own.
+export function useAgentRuns(agentId: string, opts: { limit: number; offset: number }) {
+  return useQuery({
+    queryKey: ["runs", "agent", agentId, opts.limit, opts.offset],
+    queryFn: () =>
+      api.get<Page<RunSummaryDTO>>(
+        `/agents/${agentId}/runs?limit=${opts.limit}&offset=${opts.offset}`,
+      ),
+    enabled: !!agentId,
+    // Keep the current page on screen while the next one loads -- but never
+    // another agent's page.
+    placeholderData: (previous, previousQuery) =>
+      previousQuery?.queryKey[2] === agentId ? previous : undefined,
+  });
+}
+
+// How urgently a run state wants the reader's eye: a run that is working beats
+// one waiting on a person, which beats one still in the queue.
+const ACTIVE_RUN_RANK: Record<string, number> = {
+  running: 0,
+  waiting_for_input: 1,
+  waiting_for_approval: 1,
+  queued: 2,
+};
+
+/** The most relevant state among an agent's active runs (running before
+ *  waiting before queued), or null when none is active. `currentRunId` is the
+ *  run this page just started, known before the list has caught up.
+ *
+ *  Each state is the run's live "run.status" word where one has arrived, laid
+ *  over the listed state exactly as useRun does: the list can lag behind it. */
+export function useAgentActiveRunState(agentId: string, currentRunId: string | null) {
+  const runs = useAgentRuns(agentId, { limit: 20, offset: 0 });
+  const current = useRun(currentRunId);
+  const listed = (runs.data?.items ?? []).filter((r) => r.agentId === agentId);
+  const ids = [...new Set([...(currentRunId ? [currentRunId] : []), ...listed.map((r) => r.id)])];
+  // Observers only: the cache entry is written by the "run.status" patcher,
+  // never fetched, so the header re-renders when it changes.
+  const live = useQueries({
+    queries: ids.map((id) => ({
+      queryKey: runLiveStateKey(id),
+      queryFn: () => Promise.resolve<RunLiveState | null>(null),
+      enabled: false,
+    })),
+  });
+  const states = ids.map((id, i) => {
+    const fromEvent = (live[i]?.data as RunLiveState | null | undefined)?.state;
+    if (fromEvent) return fromEvent;
+    if (id === currentRunId && current.data) return current.data.state;
+    return listed.find((r) => r.id === id)?.state ?? "";
+  });
+  let best: string | null = null;
+  for (const state of states) {
+    const rank = ACTIVE_RUN_RANK[state];
+    if (rank !== undefined && (best === null || rank < ACTIVE_RUN_RANK[best])) best = state;
+  }
+  return best;
 }
 
 export interface ReportDTO {
@@ -1682,10 +2055,11 @@ export function useHandoffs() {
   return useQuery({ queryKey: ["handoffs"], queryFn: () => api.get<HandoffDTO[]>("/handoffs") });
 }
 
-export function useHandoffTypes() {
+export function useHandoffTypes(enabled = true) {
   return useQuery({
     queryKey: ["handoff-types"],
     queryFn: () => api.get<HandoffTypeDTO[]>("/handoff-types"),
+    enabled,
   });
 }
 
@@ -1723,17 +2097,37 @@ export function useHandoffAction() {
   });
 }
 
+/** Delete a handoff type nothing uses. A type handoffs were made with, or that a
+ *  binding or a live flow names, is refused with a 409 saying which. */
+export function useDeleteHandoffType() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/handoff-types/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["handoff-types"] }),
+  });
+}
+
 export interface BindingDTO {
   id: string;
   eventType: string;
+  handoffTypeId: string;
   sourceDepartmentId: string;
   targetDepartmentId: string;
 }
 
-export function useContractBindings() {
+export function useContractBindings(enabled = true) {
   return useQuery({
     queryKey: ["contract-bindings"],
     queryFn: () => api.get<BindingDTO[]>("/contract-bindings"),
+    enabled,
+  });
+}
+
+export function useDeleteContractBinding() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<void>(`/contract-bindings/${encodeURIComponent(id)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["contract-bindings"] }),
   });
 }
 
@@ -1749,7 +2143,10 @@ export function useEmitEvent() {
       eventType: string;
       payload: Record<string, unknown>;
     }) =>
-      api.post<{ handoffs: string[] }>(`/departments/${departmentId}/emit`, { eventType, payload }),
+      api.post<{ handoffs: string[] }>(`/departments/${encodeURIComponent(departmentId)}/emit`, {
+        eventType,
+        payload,
+      }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["handoffs"] }),
   });
 }
@@ -1780,6 +2177,32 @@ export function useFlowRuns() {
   return useQuery({
     queryKey: ["flow-runs"],
     queryFn: () => api.get<FlowRunDTO[]>("/flow-runs"),
+  });
+}
+
+/** Archive a flow: hidden from the list and no new runs; its runs stay. */
+export function useArchiveFlow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (flowId: string) =>
+      api.post<{ id: string; name: string; archived: boolean }>(
+        `/flows/${encodeURIComponent(flowId)}/archive`,
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["flows"] }),
+  });
+}
+
+/** Cancel a running flow run: its open handoffs are rejected and the agent
+ *  runs working them cancelled. */
+export function useCancelFlowRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (runId: string) =>
+      api.post<FlowRunDTO>(`/flow-runs/${encodeURIComponent(runId)}/cancel`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["flow-runs"] });
+      qc.invalidateQueries({ queryKey: ["handoffs"] });
+    },
   });
 }
 
@@ -1827,13 +2250,14 @@ export function useBudgets() {
   return useQuery({ queryKey: ["budgets"], queryFn: () => api.get<BudgetDTO[]>("/budgets") });
 }
 
-export function useBudgetStatus(departmentId: string | null) {
+export function useBudgetStatus(departmentId: string | null, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: ["budget-status", departmentId ?? "tenant"],
     queryFn: () =>
       api.get<BudgetStatusDTO>(
         departmentId ? `/budgets/status?department_id=${departmentId}` : "/budgets/status",
       ),
+    enabled: options?.enabled ?? true,
   });
 }
 
@@ -1886,7 +2310,8 @@ export interface DepartmentContractsDTO {
 export function useDepartmentContracts(departmentId: string) {
   return useQuery({
     queryKey: ["department-contracts", departmentId],
-    queryFn: () => api.get<DepartmentContractsDTO>(`/departments/${departmentId}/contracts`),
+    queryFn: () =>
+      api.get<DepartmentContractsDTO>(`/departments/${encodeURIComponent(departmentId)}/contracts`),
     enabled: !!departmentId,
   });
 }
@@ -1895,7 +2320,10 @@ export function useSetDepartmentContracts(departmentId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: DepartmentContractsDTO) =>
-      api.put<DepartmentContractsDTO>(`/departments/${departmentId}/contracts`, body),
+      api.put<DepartmentContractsDTO>(
+        `/departments/${encodeURIComponent(departmentId)}/contracts`,
+        body,
+      ),
     onSuccess: (data) => {
       qc.setQueryData(["department-contracts", departmentId], data);
     },
@@ -2002,6 +2430,9 @@ export interface TriggerDTO {
   taskText: string;
   enabled: boolean;
   cronExpression: string | null;
+  //: The IANA zone the cron expression is read in; null = UTC (saved before
+  //: triggers carried a zone).
+  timezone?: string | null;
   nextRunAt: string | null;
   lastRunAt: string | null;
   eventSource: string | null;
@@ -2010,6 +2441,15 @@ export interface TriggerDTO {
   //: one-time-reveal: fetched fresh on every GET /agents/{id}/triggers, so
   //: an operator can always come back and re-copy it.
   webhookUrl: string | null;
+  //: The member who saved the schedule, and whether its runs act as that
+  //: person (their personal accounts) rather than as nobody.
+  createdByMemberId: string | null;
+  createdByName: string | null;
+  actsForCreator: boolean;
+  //: Set for its creator only: the agent changed since they last saved the
+  //: trigger, so its runs no longer use their own accounts until they save
+  //: it again.
+  needsConfirmation: boolean;
 }
 
 export function useAgentTriggers(agentId: string) {
@@ -2028,6 +2468,7 @@ export function useCreateAgentTrigger() {
       taskText,
       kind = "cron",
       cronExpression,
+      timezone,
     }: {
       agentId: string;
       taskText: string;
@@ -2037,7 +2478,16 @@ export function useCreateAgentTrigger() {
       //: not be something the caller could have picked).
       kind?: "cron" | "webhook";
       cronExpression?: string;
-    }) => api.post<TriggerDTO>(`/agents/${agentId}/triggers`, { kind, taskText, cronExpression }),
+      //: The zone the cron is read in; the server uses the organisation's
+      //: when it is left out.
+      timezone?: string;
+    }) =>
+      api.post<TriggerDTO>(`/agents/${agentId}/triggers`, {
+        kind,
+        taskText,
+        cronExpression,
+        timezone,
+      }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });
 }
@@ -2049,11 +2499,22 @@ export function useUpdateAgentTrigger() {
       agentId,
       triggerId,
       cronExpression,
+      timezone,
+      actsForCreator,
     }: {
       agentId: string;
       triggerId: string;
-      cronExpression: string;
-    }) => api.patch<TriggerDTO>(`/triggers/${triggerId}`, { cronExpression }),
+      cronExpression?: string;
+      //: A new zone for the schedule; left out keeps the one it has.
+      timezone?: string;
+      //: Only the trigger's creator may switch this on (webhook/event).
+      actsForCreator?: boolean;
+    }) =>
+      api.patch<TriggerDTO>(`/triggers/${triggerId}`, {
+        cronExpression,
+        timezone,
+        actsForCreator,
+      }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });
 }
@@ -2094,6 +2555,9 @@ export interface DiscoveredCapa {
   // temporary state right after clicking Update -- see isArchivedInstall.
   disabledReason?: string | null;
   permissions: string[];
+  // The subset of `permissions` Enable must not grant: each waits for its own
+  // consent step (POST /capas/{id}/grant). See `enablePermissions`.
+  deferredPermissions?: string[];
   capabilities: string[];
   surfaces: string[];
   setup?: PluginSetupSpec | null;
@@ -2196,6 +2660,8 @@ export function useInstallPluginFromDisk() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins", "available"] });
       qc.invalidateQueries({ queryKey: ["plugins"] });
+      // Installing makes an integration available on the Connections page.
+      qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
 }
@@ -2248,6 +2714,7 @@ export function useEnablePlugin() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["plugins", "available"] });
       qc.invalidateQueries({ queryKey: ["knowledge", "connectors"] });
+      qc.invalidateQueries({ queryKey: ["connections"] });
     },
   });
 }
@@ -2268,7 +2735,10 @@ export function useConfigurePlugin(pluginId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (values: Record<string, string>) =>
-      api.post<{ connectionId: string | null }>(`/capas/${pluginId}/setup`, { values }),
+      api.post<{ connectionId: string | null; credentialId?: string | null }>(
+        `/capas/${pluginId}/setup`,
+        { values },
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.mcp }),
   });
 }
@@ -2459,6 +2929,13 @@ export interface CredentialDTO {
   lastTestOk: boolean | null;
   createdAt: string;
   updatedAt: string;
+  /** The departments this login is enabled for, or all of them. */
+  departmentIds?: string[];
+  allDepartments?: boolean;
+  /** Required field keys without a value. */
+  incomplete?: string[];
+  /** Departments enabled for (or wired to) it and agents that chose it. */
+  usedBy?: { departments: string[]; agents: string[] };
 }
 
 export function useCredentials(credentialType?: string) {
@@ -2505,10 +2982,16 @@ export function useUpdateCredential() {
   });
 }
 
+/** Deletes a credential: the id, or `{credentialId, force}` to delete one
+ *  still in use (the server answers 409 without `force`). */
 export function useDeleteCredential() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (credentialId: string) => api.delete<void>(`/credentials/${credentialId}`),
+    mutationFn: (target: string | { credentialId: string; force?: boolean }) => {
+      const { credentialId, force } =
+        typeof target === "string" ? { credentialId: target, force: false } : target;
+      return api.delete<void>(`/credentials/${credentialId}${force ? "?force=true" : ""}`);
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: ["credentials"] }),
   });
 }
@@ -2801,7 +3284,7 @@ export function useDepartmentKpis(departmentId: string, params?: KPIFilterParams
     queryKey: ["departments", departmentId, "kpis", params] as const,
     queryFn: () =>
       api.get<KPIData>(
-        `/departments/${departmentId}/kpis${buildQuery(params as Record<string, unknown>)}`,
+        `/departments/${encodeURIComponent(departmentId)}/kpis${buildQuery(params as Record<string, unknown>)}`,
       ),
     enabled: !!departmentId,
   });
@@ -2840,7 +3323,15 @@ export function useTenantKpis(params?: TenantKPIFilterParams) {
 
 // ---- Widget-based "My Work" dashboard (§ My Work Widget Dashboard plan) ----
 
-export type WidgetType = "chat" | "approvals" | "reports" | "budget" | "activity" | "tasks";
+export type WidgetType =
+  | "chat"
+  | "approvals"
+  | "reports"
+  | "budget"
+  | "activity"
+  | "tasks"
+  | "needs-me"
+  | "data_board";
 
 export interface WidgetInstance {
   id: string;

@@ -427,3 +427,68 @@ async def test_a_real_operator_override_survives_every_department_toggle_even_wh
         # happened to coincide with it.
         assert reloaded_agent.narrowing["tools"]["Odoo"]["enabled"] is True
         assert reloaded_agent.narrowing_overridden_keys == ["Odoo"]
+
+
+async def test_a_cascade_is_published_so_the_next_run_actually_gets_the_tool(
+    app_session: AppSessionFactory,
+) -> None:
+    """Runs execute an agent's PUBLISHED version. A cascade that only wrote the
+    live row would re-enable a tool that no run of this agent ever sees -- the
+    frame cannot widen a pinned narrowing that still says "disabled". An agent
+    with an operator draft in progress is not published behind that operator's
+    back: the cascade joins the draft instead."""
+    from oc8.agents.versioning import draft_status, publish_version, resolve_version
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant, name="Sales", frame={"tools": {"Odoo": {"enabled": False}}}
+        )
+        db.add(dept)
+        await db.flush()
+        clean = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Nora",
+            narrowing={"tools": {"Odoo": {"enabled": False}}},
+        )
+        mid_edit = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Max",
+            mission="published",
+            narrowing={"tools": {"Odoo": {"enabled": False}}},
+        )
+        db.add_all([clean, mid_edit])
+        await db.flush()
+        await publish_version(db, clean, note="v1")
+        await publish_version(db, mid_edit, note="v1")
+        mid_edit.mission = "an unfinished edit"
+        await db.flush()
+        dept_id, clean_id, mid_edit_id = dept.id, clean.id, mid_edit.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.put(
+                f"/api/v1/departments/{dept_id}/tools",
+                json={"tools": {"Odoo": {"enabled": True}}},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+        reloaded_clean = await db.get(m.Agent, clean_id)
+        reloaded_mid_edit = await db.get(m.Agent, mid_edit_id)
+        assert reloaded_clean is not None and reloaded_mid_edit is not None
+
+        pinned = await resolve_version(db, None, reloaded_clean)
+        assert pinned["narrowing"]["tools"]["Odoo"]["enabled"] is True
+        assert (await draft_status(db, reloaded_clean)).dirty is False
+
+        pinned = await resolve_version(db, None, reloaded_mid_edit)
+        assert pinned["mission"] == "published", "the operator's draft was not pushed live"
+        assert pinned["narrowing"]["tools"]["Odoo"]["enabled"] is False
+        status = await draft_status(db, reloaded_mid_edit)
+        assert status.dirty is True
+        assert "narrowing.tools" in status.changed_fields

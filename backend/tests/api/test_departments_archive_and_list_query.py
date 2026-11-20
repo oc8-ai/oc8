@@ -24,6 +24,7 @@ from contextlib import asynccontextmanager
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -127,6 +128,56 @@ async def test_delete_department_with_agents_cascades_to_archive_the_agents_too(
         archived = await db.get(m.Agent, with_history_id)
         assert archived is not None
         assert archived.deleted_at is not None
+
+
+async def test_delete_department_stops_the_triggers_and_runs_of_its_agents(
+    app_session: AppSessionFactory,
+) -> None:
+    """The cascade retires each agent exactly as `DELETE /agents/{id}` does:
+    the archived agent's trigger is disabled and its queued run cancelled; the
+    hard-deleted agent's trigger is deleted with it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
+        db.add(dept)
+        await db.flush()
+        no_history = m.Agent(tenant_id=tenant, department_id=dept.id, name="Fresh")
+        with_history = m.Agent(tenant_id=tenant, department_id=dept.id, name="Veteran")
+        db.add_all([no_history, with_history])
+        await db.flush()
+        run = m.AgentRun(tenant_id=tenant, agent_id=with_history.id, context={}, state="queued")
+        triggers = [
+            m.Trigger(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                kind="cron",
+                task_text="daily",
+                cron_expression="0 9 * * *",
+                enabled=True,
+            )
+            for agent in (no_history, with_history)
+        ]
+        db.add_all([run, *triggers])
+        await db.flush()
+        dept_id, run_id = dept.id, run.id
+        orphan_id, kept_id = triggers[0].id, triggers[1].id
+
+    async with _http() as http:
+        resp = await http.delete(f"/api/v1/departments/{dept_id}", headers=_headers(tenant))
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["outcome"] == "archived"
+
+    async with app_session(tenant) as db:
+        assert await db.get(m.Trigger, orphan_id) is None
+        kept = await db.get(m.Trigger, kept_id)
+        assert kept is not None
+        assert kept.enabled is False
+        cancelled = (
+            await db.execute(
+                select(m.RunCancellation.run_id).where(m.RunCancellation.run_id == run_id)
+            )
+        ).scalar_one_or_none()
+        assert cancelled == run_id
 
 
 async def test_delete_department_ignores_agents_already_archived(

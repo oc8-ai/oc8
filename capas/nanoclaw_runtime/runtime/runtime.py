@@ -5,6 +5,13 @@ model through /llm, every tool through /mcp -- so the PEP still sees every actio
 and no credential ever enters the container. That is the entire point; if this
 adapter ever passes a provider key or an MCP credential, the >3000 EUR approval
 stops being enforceable.
+
+Docker-only for now. Unlike the isolated, Claude Code, Codex and opencode
+runtimes, which run on scratch dirs and a seed, this one still bind-mounts host
+directories under ``runtime_session_root``: it exchanges messages with the
+harness through SQLite files both sides open live, which a seed and an archive
+read cannot replace. A sandbox driver without host mounts (Kubernetes) cannot
+run it.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import CancelCheck, InboxCheck, RunResult, open_run_task
+from oc8.agent.harness.caps import resolve_caps
 from oc8.agent.preamble import roster_block, system_prompt
 from oc8.auth import get_identity_provider
 from oc8.config import get_settings
@@ -34,7 +42,7 @@ from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.mounts import validate_mounts
 from oc8.sandbox.naming import container_name
-from oc8.sandbox.reaper import RUN_LABEL
+from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
 from oc8.sandbox.types import SandboxError, SandboxHandle, SandboxSpec
 from oc8.skills.runtime import catalog_block, load_assigned_skills
 
@@ -489,6 +497,7 @@ class NanoclawRuntime:
         driver = get_sandbox_driver()
         session = await provision_session(
             root,
+            tenant_id=tenant_id,
             agent_id=agent.id,
             run_id=run_id,
             image=provisioner_image(),
@@ -538,7 +547,7 @@ class NanoclawRuntime:
             image=agent_image(),
             name=container_name(agent.name, "agent", run_id),
             # Identity for the startup reaper; the name is only for humans.
-            labels={RUN_LABEL: str(run_id)},
+            labels={RUN_LABEL: str(run_id), TENANT_LABEL: str(tenant_id)},
             # The whole security claim of this runtime is this dict.
             env={
                 "ANTHROPIC_BASE_URL": f"{settings.internal_base_url}/llm",
@@ -676,8 +685,17 @@ class NanoclawRuntime:
         # Leaving it out here made a containerised lead strictly weaker than the
         # same lead in-process -- not a documented gap, just a missing block.
         roster = await roster_block(db, agent=agent) if agent.is_team_lead else None
+        # Live agent row, matching this function's own "everything here derives
+        # from the AGENT alone" contract above -- this plugin has never taken a
+        # pinned run version, so caps/tenant_name are resolved the same way.
+        model_config = (
+            await db.get(m.ModelConfig, agent.model_config_id) if agent.model_config_id else None
+        )
+        caps = resolve_caps(model_config.params if model_config is not None else None)
+        org = await db.get(m.Organization, tenant_id)
+        tenant_name = org.name if org is not None else "the organization"
         blocks = [
-            system_prompt(agent),
+            system_prompt(agent, caps=caps, tenant_name=tenant_name),
             # Prefixed: through the bridge the model sees these as
             # `mcp__oc8__skill_x`, and a catalogue naming the bare form sends it
             # hunting for a tool that is not on its list.

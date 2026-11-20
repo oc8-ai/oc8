@@ -12,6 +12,7 @@ import {
 } from "@/lib/hooks";
 import { api } from "@/lib/api";
 import { PluginSetupFields } from "@/components/plugin-setup-fields";
+import { enablePermissions } from "@/lib/capa-permissions";
 
 // Mirrors the un-exported `keys.mcp` query key in `@/lib/hooks` (`["mcp",
 // "connections"]`) -- that key isn't exported, so it's duplicated here
@@ -88,7 +89,10 @@ export function ToolConnectStep({
       }
       const databaseId = current.databaseId;
       if (current.installed && current.installationStatus !== "enabled" && databaseId) {
-        await enable.mutateAsync({ pluginId: databaseId, grantedPermissions: current.permissions });
+        await enable.mutateAsync({
+          pluginId: databaseId,
+          grantedPermissions: enablePermissions(current),
+        });
       }
       setTarget(current);
       setValues(
@@ -114,12 +118,15 @@ export function ToolConnectStep({
     }
     setSubmitting(true);
     try {
-      const result = await api.post<{ connectionId: string | null }>(
+      const result = await api.post<{ connectionId: string | null; credentialId?: string | null }>(
         `/capas/${target.databaseId}/setup`,
         { values },
       );
       if (target.setup.mcp && result.connectionId) {
-        const tested = await test.mutateAsync(result.connectionId);
+        const tested = await test.mutateAsync({
+          id: result.connectionId,
+          credentialId: result.credentialId,
+        });
         if (!tested.connected) {
           const detail =
             typeof tested.health?.error === "string" ? tested.health.error : "unknown error";

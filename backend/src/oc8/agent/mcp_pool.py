@@ -47,6 +47,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
+from oc8.agent.http_tools import HttpLogin
 from oc8.agent.mcp_client import HttpToolSession, McpSession, open_tool_session
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,7 @@ async def _own(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
 ) -> None:
     """Hold one session open for its whole life, in ONE task.
 
@@ -115,6 +117,7 @@ async def _own(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
             env=env,
         )
         async with await session_cm as session:
@@ -136,6 +139,7 @@ async def _start(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     keep: bool = True,
 ) -> _Live:
     """Open a session and return it, or raise what the far system raised.
@@ -158,6 +162,7 @@ async def _start(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         )
     )
     try:
@@ -213,6 +218,7 @@ async def _single_use(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
 ) -> AsyncIterator[McpSession | HttpToolSession]:
     """A session for exactly one use, then closed. Any cached one is dropped
     first: it was started with an environment we have now decided not to trust.
@@ -230,6 +236,7 @@ async def _single_use(
         server_url=server_url,
         headers=headers,
         http_tools=http_tools,
+        login=login,
         keep=False,
     )
     try:
@@ -250,6 +257,7 @@ async def call(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
 ) -> str:
@@ -282,6 +290,7 @@ async def call(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         ) as session:
             return await session.call(tool, arguments)
 
@@ -303,6 +312,7 @@ async def call(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         )
 
     async with entry.lock:
@@ -328,6 +338,7 @@ async def tools(
     server_url: str = "",
     headers: dict[str, str] | None = None,
     http_tools: list[dict[str, Any]] | None = None,
+    login: HttpLogin | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
 ) -> list[Any]:
@@ -348,6 +359,7 @@ async def tools(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         ) as session:
             return list(session.tools)
 
@@ -367,8 +379,86 @@ async def tools(
             server_url=server_url,
             headers=headers,
             http_tools=http_tools,
+            login=login,
         )
     return list(entry.session.tools)
+
+
+async def resources(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    now: dt.datetime | None = None,
+    reusable: bool = True,
+) -> list[dict[str, str]]:
+    """Resource names already collected when the session listed its tools."""
+    stamp = now or dt.datetime.now(tz=dt.UTC)
+    if not reusable:
+        async with _single_use(
+            connection_id, command=command, args=args, env=env, stamp=stamp
+        ) as session:
+            return list(getattr(session, "resources", []))
+    entry = _LIVE.get(connection_id)
+    if entry is None:
+        return []
+    return list(getattr(entry.session, "resources", []))
+
+
+async def prompt_names(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    now: dt.datetime | None = None,
+    reusable: bool = True,
+) -> list[str]:
+    stamp = now or dt.datetime.now(tz=dt.UTC)
+    if not reusable:
+        async with _single_use(
+            connection_id, command=command, args=args, env=env, stamp=stamp
+        ) as session:
+            return list(getattr(session, "prompt_names", []))
+    entry = _LIVE.get(connection_id)
+    if entry is None:
+        return []
+    return list(getattr(entry.session, "prompt_names", []))
+
+
+async def read_resource(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    uri: str,
+    now: dt.datetime | None = None,
+    reusable: bool = True,
+) -> str:
+    """The body of one resource, on the same pooled session as a tool call."""
+    stamp = now or dt.datetime.now(tz=dt.UTC)
+    if not reusable:
+        async with _single_use(
+            connection_id, command=command, args=args, env=env, stamp=stamp
+        ) as session:
+            return await session.read_resource(uri)
+    entry = _LIVE.get(connection_id)
+    if entry is not None and stamp - entry.opened_at > MAX_AGE:
+        _LIVE.pop(connection_id, None)
+        await _close(entry, connection_id, "aged out")
+        entry = None
+    if entry is None:
+        entry = await _start(connection_id, command=command, args=args, env=env, stamp=stamp)
+    async with entry.lock:
+        try:
+            return await entry.session.read_resource(uri)
+        except Exception:
+            if _LIVE.get(connection_id) is entry:
+                _LIVE.pop(connection_id, None)
+            await _close(entry, connection_id, "read_resource failed")
+            raise
 
 
 async def close_all() -> None:
@@ -376,3 +466,15 @@ async def close_all() -> None:
     for connection_id, entry in list(_LIVE.items()):
         _LIVE.pop(connection_id, None)
         await _close(entry, connection_id, "closing")
+
+
+async def close(connection_id: uuid.UUID) -> None:
+    """Drop one cached session. No-op when this process is not holding it.
+
+    Isolated `/finish` calls this so a per-run eval connection does not leave
+    a stdio child until MAX_AGE. The gateway does not have to call it.
+    """
+    entry = _LIVE.pop(connection_id, None)
+    if entry is None:
+        return
+    await _close(entry, connection_id, "closed")

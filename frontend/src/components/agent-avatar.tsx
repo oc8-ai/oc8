@@ -42,6 +42,9 @@ export function AgentAvatar({
       hue={hue}
       title={ariaHidden ? undefined : title}
       aria-hidden={ariaHidden || undefined}
+      // `size` is in design px; render it in rem so the picture keeps its
+      // proportion to the text when the root density changes (styles.css).
+      style={{ width: `${size / 16}rem`, height: `${size / 16}rem` }}
       className={cn("shrink-0", className)}
     />
   );

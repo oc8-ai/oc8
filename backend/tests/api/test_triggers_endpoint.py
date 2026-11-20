@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+import datetime as dt
 import uuid
+from zoneinfo import ZoneInfo
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -108,6 +110,43 @@ async def test_create_list_update_delete_cron_trigger(app_session: AppSessionFac
 
             listed_after = await client.get(f"/api/v1/agents/{agent_id}/triggers", headers=headers)
             assert all(t["id"] != trigger_id for t in listed_after.json())
+
+
+async def test_enabling_a_trigger_of_an_archived_agent_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """Like creating one: an archived agent gets no live trigger. Restoring the
+    agent comes first."""
+    tenant = uuid.uuid4()
+    agent_id, headers = await _agent_and_headers(app_session, tenant)
+    async with app_session(tenant) as s:
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent_id,
+            kind="cron",
+            task_text="daily",
+            cron_expression="0 9 * * *",
+            enabled=False,
+        )
+        s.add(trigger)
+        agent = await s.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.deleted_at = dt.datetime.now(tz=dt.UTC)
+        await s.flush()
+        trigger_id = trigger.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            resp = await client.patch(
+                f"/api/v1/triggers/{trigger_id}", json={"enabled": True}, headers=headers
+            )
+            assert resp.status_code == 409, resp.text
+
+    async with app_session(tenant) as s:
+        refreshed = await s.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
 
 
 async def test_create_trigger_rejects_invalid_cron(app_session: AppSessionFactory) -> None:
@@ -458,3 +497,119 @@ async def test_updating_other_fields_never_blocked_by_leaving_enabled_untouched(
             assert edited.status_code == 200, edited.text
             assert edited.json()["taskText"] == "y"
             assert edited.json()["enabled"] is True
+
+
+async def test_followup_triggers_are_invisible_to_the_trigger_api(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.followups import schedule_followup
+    from oc8.copilot.responsibilities import open_responsibility
+    from tests.copilot.helpers import copilot_seat, once_in_an_hour
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        seat = await copilot_seat(s, tenant, f"fu-{uuid.uuid4().hex[:8]}@example.com")
+        session = await s.get(m.ChatSession, seat.session_id)
+        assert session is not None
+        r = await open_responsibility(
+            s, tenant_id=tenant, member_id=seat.member_id, chat_session_id=seat.session_id,
+            title="t", goal="g", notify_rule="risks_and_decisions", origin_channel=None,
+            run_id=None, actor_agent_id=session.agent_id, member_subject=seat.subject,
+        )  # fmt: skip
+        fu = await schedule_followup(
+            s, tenant_id=tenant, member_id=seat.member_id, responsibility_id=r.id,
+            assistant_id=session.agent_id, spec=once_in_an_hour(), prompt="p",
+            member_subject=seat.subject,
+        )  # fmt: skip
+        copilot_id, followup_id = session.agent_id, fu.id
+    token = get_identity_provider().mint(tenant_id=tenant, subject="dev-user", role="org_admin")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            listed = await client.get(f"/api/v1/agents/{copilot_id}/triggers", headers=headers)
+            assert listed.status_code == 200
+            assert all(t["id"] != str(followup_id) for t in listed.json())
+            patched = await client.patch(
+                f"/api/v1/triggers/{followup_id}", json={"enabled": False}, headers=headers
+            )
+            assert patched.status_code == 404
+            deleted = await client.delete(f"/api/v1/triggers/{followup_id}", headers=headers)
+            assert deleted.status_code == 404
+    async with app_session(tenant) as s:
+        still = await s.get(m.Trigger, followup_id)
+        assert still is not None and still.enabled
+
+
+async def test_a_cron_trigger_carries_its_timezone_in_and_out(
+    app_session: AppSessionFactory,
+) -> None:
+    """Given a zone, the trigger keeps it; without one it takes the
+    organisation's; an unknown zone is a 422 that names the problem."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    agent_id, headers = await _agent_and_headers(app_session, tenant)
+    async with app_session(tenant) as s:
+        org = await s.get(m.Organization, tenant)
+        org_zone = org.timezone if org is not None else "UTC"
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            given = await client.post(
+                f"/api/v1/agents/{agent_id}/triggers",
+                json={
+                    "kind": "cron",
+                    "taskText": "daily report",
+                    "cronExpression": "0 7 * * 1-5",
+                    "timezone": "Europe/Berlin",
+                },
+                headers=headers,
+            )
+            assert given.status_code == 201
+            assert given.json()["timezone"] == "Europe/Berlin"
+            next_run = dt.datetime.fromisoformat(given.json()["nextRunAt"])
+            assert next_run.astimezone(ZoneInfo("Europe/Berlin")).hour == 7
+
+            defaulted = await client.post(
+                f"/api/v1/agents/{agent_id}/triggers",
+                json={"kind": "cron", "taskText": "x", "cronExpression": "0 9 * * *"},
+                headers=headers,
+            )
+            assert defaulted.status_code == 201
+            assert defaulted.json()["timezone"] == org_zone
+
+            unknown = await client.post(
+                f"/api/v1/agents/{agent_id}/triggers",
+                json={
+                    "kind": "cron",
+                    "taskText": "x",
+                    "cronExpression": "0 9 * * *",
+                    "timezone": "Mars/Olympus",
+                },
+                headers=headers,
+            )
+            assert unknown.status_code == 422
+            assert "unknown time zone" in unknown.json()["detail"]
+
+            moved = await client.patch(
+                f"/api/v1/triggers/{given.json()['id']}",
+                json={"timezone": "America/New_York"},
+                headers=headers,
+            )
+            assert moved.status_code == 200
+            assert moved.json()["timezone"] == "America/New_York"
+            assert moved.json()["cronExpression"] == "0 7 * * 1-5"
+            next_run = dt.datetime.fromisoformat(moved.json()["nextRunAt"])
+            assert next_run.astimezone(ZoneInfo("America/New_York")).hour == 7
+
+            refused = await client.patch(
+                f"/api/v1/triggers/{given.json()['id']}",
+                json={"timezone": "Mars/Olympus"},
+                headers=headers,
+            )
+            assert refused.status_code == 422
+            listed = await client.get(f"/api/v1/agents/{agent_id}/triggers", headers=headers)
+            row = next(t for t in listed.json() if t["id"] == given.json()["id"])
+            assert row["timezone"] == "America/New_York"

@@ -22,6 +22,7 @@ from oc8.backup.archive import export_archive
 from oc8.backup.secrets_envelope import WrongPassphrase
 from oc8.backup.service import preview_restore, restore_from_archive
 from oc8.secrets.service import resolve_secret, store_secret
+from tests.audit.helpers import flush_audit
 from tests.conftest import _ROLE_BOOTSTRAP, AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -313,6 +314,7 @@ async def test_audit_events_survive_a_restore_and_a_new_one_is_appended(
         action="agent.created",
         resource={"name": "Nora"},
     )
+    await flush_audit(db_session)  # staged audit events reach the chain at commit
     before_count = (
         await db_session.execute(
             m.AuditEvent.__table__.select().where(m.AuditEvent.tenant_id == acme_tenant)
@@ -329,6 +331,7 @@ async def test_audit_events_survive_a_restore_and_a_new_one_is_appended(
         actor_type="human",
         actor_id=actor,
     )
+    await flush_audit(db_session)
     after = (
         await db_session.execute(
             m.AuditEvent.__table__.select()

@@ -20,7 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.oauth.client import ResolvedClient, resolve_client
-from oc8.oauth.errors import OAuthError, OAuthExchangeFailed, OAuthReauthRequired
+from oc8.oauth.errors import (
+    OAuthAccountUnresolved,
+    OAuthConsentRequired,
+    OAuthError,
+    OAuthExchangeFailed,
+    OAuthReauthRequired,
+    OAuthTenantMismatch,
+)
 from oc8.oauth.http import get_client
 from oc8.oauth.providers import get_provider
 from oc8.secrets.service import SecretNotFound, delete_secret, resolve_secret, store_secret
@@ -41,7 +48,8 @@ def _token_url_for(conn: m.OAuthConnection) -> str:
     """The provider's token URL, with Microsoft's {tenant_id} placeholder filled
     in from the connection's own azure_tenant_id. Every other provider's
     token_url has no placeholder, so .format is a no-op for them."""
-    template = get_provider(conn.provider).token_url
+    provider = get_provider(conn.provider)
+    template = provider.app_token_url or provider.token_url
     return template.format(tenant_id=conn.azure_tenant_id or "")
 
 
@@ -90,6 +98,23 @@ def extract_chatgpt_account_id(id_token: str) -> str | None:
     return account_id if isinstance(account_id, str) else None
 
 
+def _unverified_claims(id_token: str | None) -> dict[str, object]:
+    if not id_token:
+        return {}
+    try:
+        return dict(_pyjwt.decode(id_token, options={"verify_signature": False}))
+    except _pyjwt.PyJWTError:
+        return {}
+
+
+def tenant_from_id_token(id_token: str | None) -> str | None:
+    """Microsoft's `tid` claim: the directory the person signed in from.
+    Read without signature verification -- it labels the row, it authorises
+    nothing (the access token itself is what Graph checks)."""
+    tid = _unverified_claims(id_token).get("tid")
+    return tid if isinstance(tid, str) and tid else None
+
+
 async def _post_token(
     provider_id: str, data: dict[str, str], *, url: str | None = None
 ) -> dict[str, object]:
@@ -102,6 +127,17 @@ async def _post_token(
         raise OAuthExchangeFailed(f"provider returned non-JSON ({resp.status_code})") from None
     if resp.status_code >= 400:
         err = body.get("error")
+        description = body.get("error_description")
+        if isinstance(description, str) and (
+            "AADSTS65001" in description or "AADSTS90094" in description
+        ):
+            raise OAuthConsentRequired(
+                "an administrator of the account's organisation must consent first"
+            )
+        if isinstance(description, str) and "AADSTS50194" in description:
+            raise OAuthTenantMismatch(
+                "the app registration is single-tenant and cannot sign in on /organizations"
+            )
         if err == "invalid_grant":
             raise OAuthReauthRequired("refresh token rejected by the provider")
         raise OAuthExchangeFailed(f"provider error {resp.status_code}: {err!r}")
@@ -131,23 +167,55 @@ async def exchange_code(
     )
 
 
-async def fetch_account_label(*, provider_id: str, access_token: str) -> str:
-    """Best-effort human label for the connected account."""
+@dataclass(frozen=True)
+class AccountIdentity:
+    """Who a connection belongs to: `subject` is stable and unique per
+    provider (matching key); `label` is only for display."""
+
+    subject: str
+    label: str
+
+
+async def fetch_account_identity(
+    *, provider_id: str, access_token: str, id_token: str | None = None
+) -> AccountIdentity:
+    """Stable identity plus display label of the connected account.
+
+    Microsoft: subject `{tid}:{oid}` (id token claims, Graph `id` as the oid
+    fallback), label the userPrincipalName, else mail. Google: subject `sub`,
+    label the e-mail, only when Google marks it verified. Raises
+    OAuthAccountUnresolved rather than returning a guess."""
     provider = get_provider(provider_id)
     if provider.userinfo_url is None:
-        return "unknown"
+        raise OAuthAccountUnresolved("provider has no userinfo endpoint")
+    url = provider.userinfo_url
+    if provider_id == "microsoft":
+        url += "?$select=id,userPrincipalName,mail"
     async with get_client() as http_client:
-        resp = await http_client.get(
-            provider.userinfo_url, headers={"Authorization": f"Bearer {access_token}"}
-        )
+        resp = await http_client.get(url, headers={"Authorization": f"Bearer {access_token}"})
     if resp.status_code >= 400:
-        return "unknown"
+        raise OAuthAccountUnresolved(f"userinfo failed ({resp.status_code})")
     try:
         body: dict[str, object] = resp.json()
     except ValueError:
-        return "unknown"
-    email = body.get("email")
-    return email if isinstance(email, str) and email else "unknown"
+        raise OAuthAccountUnresolved("userinfo returned non-JSON") from None
+
+    def _str(key: str) -> str | None:
+        value = body.get(key)
+        return value if isinstance(value, str) and value else None
+
+    if provider_id == "microsoft":
+        claims = _unverified_claims(id_token)
+        tid = claims.get("tid")
+        oid = claims.get("oid") or _str("id")
+        label = _str("userPrincipalName") or _str("mail")
+        if not (isinstance(tid, str) and tid and isinstance(oid, str) and oid and label):
+            raise OAuthAccountUnresolved("microsoft identity is incomplete")
+        return AccountIdentity(subject=f"{tid}:{oid}", label=label)
+    subject, label = _str("sub"), _str("email")
+    if not subject or not label or body.get("email_verified") is not True:
+        raise OAuthAccountUnresolved("no verified e-mail on the account")
+    return AccountIdentity(subject=subject, label=label)
 
 
 def expiry_from(expires_in: int | None) -> dt.datetime | None:
@@ -298,6 +366,8 @@ async def _mint_client_credentials(db: AsyncSession, conn: m.OAuthConnection) ->
     assert conn.refresh_secret_ref is not None  # set at connection-creation time (Task 3)
     client_secret = await resolve_secret(db, tenant_id=conn.tenant_id, ref=conn.refresh_secret_ref)
     provider = get_provider(conn.provider)
+    if not provider.app_scope:
+        raise OAuthError(f"provider {conn.provider} has no app-only scope")
     tokens = _parse(
         await _post_token(
             conn.provider,
@@ -305,7 +375,7 @@ async def _mint_client_credentials(db: AsyncSession, conn: m.OAuthConnection) ->
                 "grant_type": "client_credentials",
                 "client_id": conn.account_label,  # Microsoft's client_id; see Task 3's note
                 "client_secret": client_secret,
-                "scope": provider.default_scopes[0],
+                "scope": provider.app_scope,
             },
             url=_token_url_for(conn),
         )

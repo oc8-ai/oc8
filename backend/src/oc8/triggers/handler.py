@@ -12,7 +12,8 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.db.session import tenant_session
 from oc8.events.types import InboundEvent
-from oc8.triggers.scheduler import fire_trigger, list_active_tenant_ids
+from oc8.tenants.activity import TenantInactive
+from oc8.triggers.scheduler import fire_trigger, list_runnable_tenant_ids
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ async def handle_inbound_event(event: InboundEvent) -> None:
     """Each fire opens its own tenant_session -- see scheduler.run_scheduler_tick's
     docstring for why sharing one session across multiple fires is unsafe
     (fire_trigger()'s commit drops the transaction-local tenant binding)."""
-    for tenant_id in await list_active_tenant_ids():
+    for tenant_id in await list_runnable_tenant_ids():
         try:
             async with tenant_session(tenant_id) as db:
                 result = await db.execute(
@@ -52,6 +53,14 @@ async def handle_inbound_event(event: InboundEvent) -> None:
                             else None
                         ),
                     )
+            except TenantInactive:
+                # The organisation stopped being allowed to run after it was
+                # listed. Expected, not an error.
+                logger.info(
+                    "event handling skipped trigger %s: organisation %s is not active",
+                    trigger_id,
+                    tenant_id,
+                )
             except Exception:
                 logger.exception(
                     "event handling failed to fire trigger %s for tenant %s", trigger_id, tenant_id

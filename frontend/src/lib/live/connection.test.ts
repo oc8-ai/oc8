@@ -26,14 +26,28 @@ class FakeWebSocket {
   onmessage: ((ev: MessageEvent) => void) | null = null;
   onclose: ((ev: CloseEvent) => void) | null = null;
   onerror: (() => void) | null = null;
+  sent: string[] = [];
+  readyState = 0;
 
   constructor(public url: string) {
     FakeWebSocket.instances.push(this);
   }
 
+  send(data: string) {
+    this.sent.push(data);
+  }
+
   close(code = 1000) {
     this.onclose?.({ code } as CloseEvent);
   }
+
+  receive(frame: unknown) {
+    this.onmessage?.({ data: JSON.stringify(frame) } as MessageEvent);
+  }
+}
+
+function sentFrames(ws: FakeWebSocket) {
+  return ws.sent.map((s) => JSON.parse(s) as unknown);
 }
 
 describe("useLiveConnection", () => {
@@ -64,5 +78,88 @@ describe("useLiveConnection", () => {
     // Unmount before the reconnect backoff timer this close scheduled can
     // fire and create a second socket after the test has already finished.
     unmount();
+  });
+
+  it("sends run.watch once open and re-sends watches after reconnect", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result, unmount } = renderHook(() => useLiveConnection(vi.fn(), vi.fn(), vi.fn()));
+    result.current.watch("run-1");
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const first = FakeWebSocket.instances[0];
+    first.readyState = 1;
+    first.onopen?.();
+    expect(first.sent.map((s) => JSON.parse(s))).toEqual([{ type: "run.watch", runId: "run-1" }]);
+
+    first.close(1006);
+    await vi.advanceTimersByTimeAsync(1100);
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const second = FakeWebSocket.instances[1];
+    second.readyState = 1;
+    second.onopen?.();
+    expect(second.sent.map((s) => JSON.parse(s))).toEqual([{ type: "run.watch", runId: "run-1" }]);
+
+    result.current.unwatch("run-1");
+    second.close(1006);
+    await vi.advanceTimersByTimeAsync(2100);
+    const third = FakeWebSocket.instances[2];
+    third.readyState = 1;
+    third.onopen?.();
+    expect(third.sent).toEqual([]);
+    unmount();
+    vi.useRealTimers();
+  });
+
+  it("sends run.watch straight away on an open socket", async () => {
+    const { result, unmount } = renderHook(() => useLiveConnection(vi.fn(), vi.fn(), vi.fn()));
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const ws = FakeWebSocket.instances[0];
+    ws.readyState = 1;
+    ws.onopen?.();
+    result.current.watch("run-2");
+    expect(sentFrames(ws)).toEqual([{ type: "run.watch", runId: "run-2" }]);
+    unmount();
+  });
+
+  it("keeps a run watched until every watcher has let it go", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { result, unmount } = renderHook(() => useLiveConnection(vi.fn(), vi.fn(), vi.fn()));
+    result.current.watch("run-1");
+    result.current.watch("run-1");
+    result.current.unwatch("run-1");
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const first = FakeWebSocket.instances[0];
+    first.readyState = 1;
+    first.onopen?.();
+    expect(sentFrames(first)).toEqual([{ type: "run.watch", runId: "run-1" }]);
+    unmount();
+    vi.useRealTimers();
+  });
+
+  it("drops a watch the server ended and reports it, without passing control frames on", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const onEvent = vi.fn();
+    const onUnwatched = vi.fn();
+    const { result, unmount } = renderHook(() =>
+      useLiveConnection(onEvent, vi.fn(), vi.fn(), onUnwatched),
+    );
+    result.current.watch("run-1");
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const first = FakeWebSocket.instances[0];
+    first.readyState = 1;
+    first.onopen?.();
+    first.receive({ type: "run.watching", runId: "run-1" });
+    first.receive({ type: "run.unwatched", runId: "run-1", reason: "access" });
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(onUnwatched).toHaveBeenCalledWith("run-1");
+
+    first.close(1006);
+    await vi.advanceTimersByTimeAsync(1100);
+    await waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+    const second = FakeWebSocket.instances[1];
+    second.readyState = 1;
+    second.onopen?.();
+    expect(second.sent).toEqual([]);
+    unmount();
+    vi.useRealTimers();
   });
 });

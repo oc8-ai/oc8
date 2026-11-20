@@ -767,7 +767,7 @@ export function GuardrailFunctionRules({
           >
             <img src="/octopus_oc8.svg" alt="" className="h-3.5 w-3.5" draggable={false} />
             {suggesting
-              ? t("Thinking…", "Denkt nach…")
+              ? t("Thinking…", "Denkt nach …")
               : t("Suggest from instructions", "Aus Instruction vorschlagen")}
           </button>
         )}

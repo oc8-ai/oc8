@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { RecordCard, RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RecordCard, RUN_COMPONENT_REGISTRY, RunComponents } from "@/components/run-record-card";
 
 describe("RecordCard", () => {
   it("renders a title, subtitle, fields, and link", () => {
@@ -39,5 +39,26 @@ describe("RecordCard", () => {
       />,
     );
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+});
+
+describe("RunComponents", () => {
+  it("renders known components and nothing for unknown or prototype keys", () => {
+    const { container } = render(
+      <RunComponents
+        components={[
+          { componentKey: "record_card", props: { title: "Known card" } },
+          { componentKey: "nope", props: {} },
+          { componentKey: "toString", props: {} },
+        ]}
+      />,
+    );
+    expect(screen.getByText("Known card")).toBeInTheDocument();
+    expect(container.firstElementChild?.children).toHaveLength(1);
+  });
+
+  it("renders nothing for no components", () => {
+    const { container } = render(<RunComponents components={[]} />);
+    expect(container).toBeEmptyDOMElement();
   });
 });

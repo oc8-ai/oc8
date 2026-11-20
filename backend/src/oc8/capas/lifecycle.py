@@ -19,7 +19,8 @@ import uuid
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.capas.discovery import find_plugin
+from oc8.capas.discovery import find_plugin, on_disk_deferred_permissions
+from oc8.capas.manifest import DEFERRABLE_PERMISSIONS
 from oc8.capas.materialise import materialise_plugin_data
 from oc8.capas.service import PluginError
 from oc8.capas.claude_hooks import register_claude_hooks_for_capa, unregister_claude_hooks_for_capa
@@ -108,6 +109,30 @@ async def _installation(
     return inst
 
 
+def deferred_permissions(version: CapaVersion) -> set[str]:
+    """The permissions this version lets a tenant grant after enabling.
+
+    Re-checked against ``DEFERRABLE_PERMISSIONS`` here, not only when the
+    manifest is parsed: the stored row is what enable reads, and a stale or
+    edited one must not turn an ordinary permission into one nobody consents to.
+    """
+    declared = set((version.manifest or {}).get("deferred_permissions") or [])
+    return declared & DEFERRABLE_PERMISSIONS
+
+
+def effective_deferred_permissions(version: CapaVersion, name: str) -> set[str]:
+    """Deferred if EITHER the installed version or the manifest on disk defers
+    it. Fails closed: a stale install never skips the consent the disk code
+    asks for."""
+    return deferred_permissions(version) | on_disk_deferred_permissions(name)
+
+
+def consent_required(version: CapaVersion) -> list[str]:
+    """What enabling this version must be granted: its permissions minus the
+    deferred ones. What an enable on the operator's behalf passes."""
+    return sorted(set(version.permissions) - deferred_permissions(version))
+
+
 async def _current_version(db: AsyncSession, plugin: Capa) -> CapaVersion | None:
     if plugin.current_version_id is None:
         return None
@@ -153,7 +178,9 @@ def _register_hooks(
     is_community = plugin.trust_level == "community"
     offered = {} if is_community else _trusted_handlers(plugin)
     executor: object = (
-        SandboxedExecutor(grants={str(plugin.id): granted}) if is_community else InProcessExecutor()
+        SandboxedExecutor(tenant_id=tenant_id, grants={str(plugin.id): granted})
+        if is_community
+        else InProcessExecutor()
     )
     for binding in version.manifest.get("handles", []):
         point = binding["point"] if isinstance(binding, dict) else binding.point
@@ -192,14 +219,25 @@ async def enable_plugin(
     tenant_id: uuid.UUID,
     capa_id: uuid.UUID,
     granted_permissions: list[str],
+    grant_deferred: str | None = None,
 ) -> CapaInstallation:
+    """Enable the capa's current version with the caller's consent.
+
+    A deferred permission is never granted here, whatever the caller asks
+    for: only ``grant_deferred_permission`` grants one, through the internal
+    ``grant_deferred`` parameter. One granted earlier is kept for as long as
+    the version still defers it, even when the caller leaves it out.
+    """
     plugin = await db.get(Capa, capa_id)
     if plugin is None:
         raise PluginError("plugin not found")
     version = await _current_version(db, plugin)
     if version is None:
         raise PluginError("plugin has no current version")
-    required = set(version.permissions)
+    # A deferred permission is granted later (grant_deferred_permission), so
+    # enabling never waits on it.
+    deferred = effective_deferred_permissions(version, plugin.name)
+    required = set(version.permissions) - deferred
     if not required.issubset(set(granted_permissions)):
         raise ConsentError(f"missing consent for: {sorted(required - set(granted_permissions))}")
     inst = await _installation(db, tenant_id, capa_id)
@@ -218,6 +256,11 @@ async def enable_plugin(
         # double-count and disabling cannot under-count.
         await _unregister_and_teardown(get_hook_registry(tenant_id), capa_id)
         _unregister_claude_hooks(tenant_id, capa_id)
+    kept = set(inst.granted_permissions or []) & deferred
+    if grant_deferred is not None and grant_deferred in deferred:
+        kept.add(grant_deferred)
+    requested = [p for p in dict.fromkeys(granted_permissions) if p not in deferred]
+    granted_permissions = [*requested, *sorted(kept)]
     inst.status = "enabled"
     inst.version_id = version.id
     inst.granted_permissions = list(granted_permissions)
@@ -225,13 +268,75 @@ async def enable_plugin(
     inst.disabled_reason = None
     inst.failure_count = 0
     await db.flush()
-    _register_hooks(tenant_id, plugin, version, list(granted_permissions))
-    _register_claude_hooks(tenant_id, plugin, version, list(granted_permissions))
-    # Data-only plugin types (skill / flow_template / tool_pack) become real rows
-    # here: they carry no code, so enable is the only moment they can take
-    # effect. Idempotent, and never undone by disable_plugin.
-    await materialise_plugin_data(db, tenant_id=tenant_id, version=version)
+    try:
+        _register_hooks(tenant_id, plugin, version, list(granted_permissions))
+        _register_claude_hooks(tenant_id, plugin, version, list(granted_permissions))
+        # Data-only plugin types (skill / flow_template / tool_pack) become real
+        # rows here: they carry no code, so enable is the only moment they can
+        # take effect. Idempotent, and never undone by disable_plugin.
+        await materialise_plugin_data(db, tenant_id=tenant_id, version=version)
+    except BaseException:
+        # The caller's transaction rolls back on this error; the in-process
+        # registries must not keep handlers for a plugin the database never
+        # enabled (fail closed).
+        await forget_plugin_runtime(tenant_id, capa_id)
+        raise
     return inst
+
+
+class NotDeferredError(PluginError):
+    """The permission is not one the capa's current version defers."""
+
+
+class NotEnabledError(PluginError):
+    """A deferred permission is granted on an enabled installation only."""
+
+
+async def grant_deferred_permission(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    capa_id: uuid.UUID,
+    permission: str,
+) -> CapaInstallation:
+    """Grant one permission the capa deferred at enable. Idempotent.
+
+    Goes through ``enable_plugin`` with the widened grant, so hooks are
+    re-registered with it and the grant is recorded exactly as an enable is.
+    """
+    plugin = await db.get(Capa, capa_id)
+    if plugin is None:
+        raise PluginError("plugin not found")
+    version = await _current_version(db, plugin)
+    if version is None:
+        raise PluginError("plugin has no current version")
+    if permission not in effective_deferred_permissions(version, plugin.name):
+        raise NotDeferredError(f"{permission!r} is not a deferred permission of this capa")
+    inst = (
+        await db.execute(select(CapaInstallation).where(CapaInstallation.capa_id == capa_id))
+    ).scalar_one_or_none()
+    if inst is None or inst.status != "enabled":
+        raise NotEnabledError("a deferred permission is granted on an enabled capa only")
+    if permission in inst.granted_permissions:
+        return inst
+    # A full re-enable, on purpose: hooks re-register with the widened grant,
+    # and like any re-enable it resets `failure_count` and `enabled_at` and
+    # re-runs the (idempotent) materialise step.
+    return await enable_plugin(
+        db,
+        tenant_id=tenant_id,
+        capa_id=capa_id,
+        granted_permissions=list(inst.granted_permissions),
+        grant_deferred=permission,
+    )
+
+
+async def forget_plugin_runtime(tenant_id: uuid.UUID, capa_id: uuid.UUID) -> None:
+    """Drop a plugin's in-process hook and Claude-hook registrations without
+    touching the database -- for undoing an enable whose transaction is about
+    to roll back."""
+    await _unregister_and_teardown(get_hook_registry(tenant_id), capa_id)
+    _unregister_claude_hooks(tenant_id, capa_id)
 
 
 async def disable_plugin(

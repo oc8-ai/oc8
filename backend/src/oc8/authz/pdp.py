@@ -218,6 +218,14 @@ class ToolPolicy:
         return self.only is None or tool in self.only
 
 
+#: `Decision.reason_code` of the frame's DENY for a CORE tool that has no
+#: branch of its own in `authorize`: decided against the run's bound
+#: connection, which the tool does not belong to. The verdict says nothing
+#: about the tool, so a reading core tool still runs under it -- and under no
+#: other denial (see `execute_control_tool`).
+NOT_THIS_CONNECTION = "not_this_connection"
+
+
 @dataclass(frozen=True)
 class Decision:
     effect: Effect
@@ -231,8 +239,10 @@ class Decision:
     #: showing `reason`'s raw, un-i18n'd English string verbatim (today's
     #: approval-pane behaviour, kept as the fallback for any reason that
     #: predates this field or any DENY path that never set one -- see
-    #: `approvals/service.py`'s own docstring on `detail`). None for every
-    #: DENY/no-grant path, which this pass leaves as free text only.
+    #: `approvals/service.py`'s own docstring on `detail`). On a DENY, only
+    #: the four frame denials of `authorize_tool_call` set one
+    #: ("connection_not_in_frame", "connection_disabled", "right_not_granted",
+    #: "tool_not_in_frame"); every other DENY stays free text only.
     reason_code: str | None = None
     context: dict[str, Any] = field(default_factory=dict)
 
@@ -622,11 +632,114 @@ def required_right(tool_name: str, scopes: Mapping[str, Any] | None) -> str:
     """
     if not scopes:
         return "modify"
+    # A tool listed under both rights is the more dangerous one, whatever
+    # order the lists come in.
+    modify = scopes.get("modify")
+    if isinstance(modify, (list, tuple)) and tool_name in modify:
+        return "modify"
     for right in RIGHTS:
         names = scopes.get(right)
         if isinstance(names, (list, tuple)) and tool_name in names:
             return right
     return "modify"
+
+
+def frame_denial(
+    policies: Mapping[str, ToolPolicy],
+    *,
+    connection_key: str | None,
+    right: str,
+    tool: str | None,
+) -> Decision | None:
+    """The frame's own DENY for a tool call, or None when the frame permits it.
+
+    The part of `authorize_tool_call` that does not depend on the call's
+    arguments: is the connection granted and switched on, does it grant the
+    tool's right, is the tool on its surface (`only`, already narrowed by the
+    agent). `offers_tool` asks exactly this, so what a model is offered and
+    what the gate lets through cannot drift apart.
+    """
+    if connection_key is None:
+        return Decision(Effect.DENY, "no tool connection bound to this run")
+    if right not in RIGHTS:
+        return Decision(Effect.DENY, f"unknown right {right!r}")
+    # The four frame denials name themselves (`reason_code`) and their terms:
+    # the run records them so the person learns WHICH tool the frame withholds
+    # and where it is allowed (oc8.connections.tool_denied). Only that -- the
+    # decision and its reason text are what they always were.
+    terms = {"connection": connection_key, "tool": tool, "right": right}
+    policy = policies.get(connection_key)
+    if policy is None:
+        return Decision(
+            Effect.DENY,
+            f"no grant for {connection_key!r} in this frame",
+            reason_code="connection_not_in_frame",
+            context=terms,
+        )
+    if not policy.enabled:
+        return Decision(
+            Effect.DENY,
+            f"{connection_key!r} is disabled in this frame",
+            reason_code="connection_disabled",
+            context=terms,
+        )
+    if not getattr(policy, right, False):
+        return Decision(
+            Effect.DENY,
+            f"{connection_key!r} does not grant {right!r}",
+            reason_code="right_not_granted",
+            context=terms,
+        )
+    if tool is not None and not policy.offers(tool):
+        return Decision(
+            Effect.DENY,
+            f"{connection_key!r} does not grant the tool {tool!r} in this frame",
+            reason_code="tool_not_in_frame",
+            context=terms,
+        )
+    return None
+
+
+def offers_tool(
+    policies: Mapping[str, ToolPolicy],
+    *,
+    connection_key: str | None,
+    tool: str,
+    scopes: Mapping[str, Any] | None,
+) -> bool:
+    """Whether a connection's tool may be OFFERED to the model at all.
+
+    One rule for offer and authorise: a tool is offered exactly when
+    `authorize_tool_call` would not deny it on frame grounds -- the connection
+    granted and enabled, the tool's right (`required_right` over the
+    manifest's `scopes`, unlisted = modify) granted, the tool on the effective
+    `only` surface. A tool that needs approval is still offered: it is
+    allowed, with a human in the loop. Offering a tool the gate always refuses
+    only spends the model's steps on denials (observed live 2026-11-13: an
+    office agent offered every mail_*/teams_* tool its department's `only`
+    withholds).
+
+    The gate stays the authority at call time; this only stops the offer
+    leaking.
+    """
+    right = required_right(tool, scopes)
+    return frame_denial(policies, connection_key=connection_key, right=right, tool=tool) is None
+
+
+def reachable_connections(policies: Mapping[str, ToolPolicy]) -> list[str]:
+    """The connections whose tools can be offered at all, sorted.
+
+    For the run context's "Systems you can reach": a connection switched off,
+    granting no right, or narrowed to an empty surface offers nothing, so
+    naming it only invites the model to look for tools it will never get.
+    """
+    return sorted(
+        key
+        for key, policy in policies.items()
+        if policy.enabled
+        and any(policy.has_right(right) for right in RIGHTS)
+        and (policy.only is None or bool(policy.only))
+    )
 
 
 def authorize_tool_call(
@@ -662,21 +775,11 @@ def authorize_tool_call(
     conflated `tool_key`; see the comment on it for why the two do not
     collapse into one function.
     """
-    if connection_key is None:
-        return Decision(Effect.DENY, "no tool connection bound to this run")
-    if right not in RIGHTS:
-        return Decision(Effect.DENY, f"unknown right {right!r}")
-    policy = policies.get(connection_key)
-    if policy is None:
-        return Decision(Effect.DENY, f"no grant for {connection_key!r} in this frame")
-    if not policy.enabled:
-        return Decision(Effect.DENY, f"{connection_key!r} is disabled in this frame")
-    if not getattr(policy, right, False):
-        return Decision(Effect.DENY, f"{connection_key!r} does not grant {right!r}")
-    if tool is not None and not policy.offers(tool):
-        return Decision(
-            Effect.DENY, f"{connection_key!r} does not grant the tool {tool!r} in this frame"
-        )
+    denied = frame_denial(policies, connection_key=connection_key, right=right, tool=tool)
+    if denied is not None:
+        return denied
+    # Both present: `frame_denial` denies a missing connection or policy.
+    policy = policies[connection_key or ""]
 
     if right in policy.approval_actions or (tool is not None and tool in policy.approval_actions):
         # Deliberately AFTER every DENY check above and BEFORE the euro

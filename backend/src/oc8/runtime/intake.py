@@ -7,14 +7,16 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from oc8.models.run import AgentRun
 from oc8.runtime.queue import get_run_queue
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.states import RunState
+from oc8.tenants.activity import TenantInactive, tenant_may_run
 
 
 async def enqueue_run(
@@ -60,7 +62,13 @@ async def enqueue_run(
     key, so a later redelivery of the same delivery would find no unique-index
     conflict and create a duplicate run. With a key present, the create-with-key
     path is the sole dedup and the key is always stored.
+
+    Raises ``TenantInactive`` for an organisation that may not run
+    (``oc8.tenants.activity``), before any query: nothing is created, reused
+    or committed, and ``db`` keeps whatever its caller had pending.
     """
+    if not await tenant_may_run(tenant_id):
+        raise TenantInactive(tenant_id)
     # 1. Coalesce (best-effort): fold a repeat fire onto a still-queued run so
     #    it doesn't stack a second identical job. RLS scopes this to the tenant.
     #    Gate on ``idempotency_key is None``: coalescing only matches
@@ -98,7 +106,26 @@ async def enqueue_run(
             )
         ).scalar_one_or_none()
         if existing is not None:
-            existing.coalesced_count += 1
+            # A statement rather than `+= 1`, and it carries `updated_at`
+            # forward unchanged: through the ORM, onupdate would stamp now()
+            # on it, and a queued run's `updated_at` is the clock
+            # `reconcile.recover_stranded_runs` reads. A cron folding onto its
+            # own stranded run every minute would keep it looking fresh for
+            # ever -- the trigger that wants the work done would be exactly
+            # what stops it being recovered.
+            count = (
+                await db.execute(
+                    update(AgentRun)
+                    .where(AgentRun.id == existing.id)
+                    .values(
+                        coalesced_count=AgentRun.coalesced_count + 1,
+                        updated_at=AgentRun.updated_at,
+                    )
+                    .returning(AgentRun.coalesced_count)
+                    .execution_options(synchronize_session=False)
+                )
+            ).scalar_one()
+            set_committed_value(existing, "coalesced_count", count)
             await db.commit()
             return existing, False
 
@@ -107,6 +134,8 @@ async def enqueue_run(
     #    only the savepoint unwinds, leaving the outer transaction -- and its
     #    transaction-local tenant binding -- alive, so the follow-up SELECT is
     #    still RLS-scoped and can see the row that won the race.
+    # `repo.create` pins the run to the agent's current version -- see its
+    # docstring; every run-creation path gets that from the same funnel.
     repo = RunRepository(db)
     try:
         async with db.begin_nested():
@@ -121,9 +150,7 @@ async def enqueue_run(
             )
     except IntegrityError:
         existing = (
-            await db.execute(
-                select(AgentRun).where(AgentRun.idempotency_key == idempotency_key)
-            )
+            await db.execute(select(AgentRun).where(AgentRun.idempotency_key == idempotency_key))
         ).scalar_one()
         await db.commit()
         return existing, False

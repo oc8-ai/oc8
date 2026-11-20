@@ -1,0 +1,251 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\n"
+
+msgid "Administration with approval"
+msgstr "Verwaltung mit Freigabe"
+
+msgid "Agents in this department will use this connection automatically."
+msgstr "Agenten in dieser Abteilung nutzen diese Verbindung automatisch."
+
+msgid "Assist with approval"
+msgstr "Unterstützen mit Freigabe"
+
+msgid "Can look at courses, participants, grades, submissions and forums, but changes nothing and contacts nobody."
+msgstr "Kann Kurse, Teilnehmende, Bewertungen, Abgaben und Foren ansehen, ändert aber nichts und kontaktiert niemanden."
+
+msgid "Checked"
+msgstr "Geprüft"
+
+msgid "Checking progress"
+msgstr "Prüft Fortschritt"
+
+msgid "Checking the Moodle connection"
+msgstr "Prüft die Moodle-Verbindung"
+
+msgid "Checks progress of"
+msgstr "Prüft Fortschritt von"
+
+msgid "Communication with approval"
+msgstr "Kommunikation mit Freigabe"
+
+msgid "Connect Moodle — courses, participants, grades, submissions, enrolments and messages"
+msgstr "Moodle verbinden – Kurse, Teilnehmende, Bewertungen, Abgaben, Einschreibungen und Nachrichten"
+
+msgid "Connect a Moodle site (4.1 or newer) through a web service user. In Moodle, enable web services and REST, add an external service \"oc8\" with the functions listed in the guide, and create a token for a dedicated service user — oc8 sees only what that user may see. Step-by-step guide: https://docs.oc8.ai/user/integrations/moodle"
+msgstr "Verbinde eine Moodle-Seite (ab 4.1) über einen Webservice-Nutzer. Aktiviere in Moodle Webservices und REST, lege einen externen Dienst „oc8“ mit den in der Anleitung genannten Funktionen an und erzeuge ein Token für einen eigenen Service-Nutzer – oc8 sieht nur, was dieser Nutzer sehen darf. Schritt-für-Schritt-Anleitung: https://docs.oc8.ai/user/integrations/moodle"
+
+msgid "Created"
+msgstr "Angelegt"
+
+msgid "Creates and updates courses and accounts and manages enrolments, each after approval. Moodle may send its own account and welcome emails. Never grades, messages or posts to a forum."
+msgstr "Legt Kurse und Konten an, ändert sie und verwaltet Einschreibungen – jeweils nach Freigabe. Moodle kann dabei eigene Konto- und Willkommens-E-Mails verschicken. Bewertet nie, schreibt keine Nachrichten und keine Forenbeiträge."
+
+msgid "Creating a course"
+msgstr "Legt einen Kurs an"
+
+msgid "Creating a user account"
+msgstr "Legt ein Nutzerkonto an"
+
+msgid "Department"
+msgstr "Abteilung"
+
+msgid "Enrolled"
+msgstr "Eingeschrieben"
+
+msgid "Enrolling user {user_id}"
+msgstr "Schreibt Nutzer {user_id} ein"
+
+msgid "Enrols"
+msgstr "Schreibt ein"
+
+msgid "Graded"
+msgstr "Bewertet"
+
+msgid "Grades"
+msgstr "Bewertet"
+
+msgid "Grading a submission"
+msgstr "Bewertet eine Abgabe"
+
+msgid "Listed"
+msgstr "Aufgelistet"
+
+msgid "Listing assignments"
+msgstr "Listet Aufgaben auf"
+
+msgid "Listing participants"
+msgstr "Listet Teilnehmende auf"
+
+msgid "Looked up"
+msgstr "Gesucht"
+
+msgid "Looking up courses"
+msgstr "Sucht Kurse"
+
+msgid "Looking up users"
+msgstr "Sucht Nutzer"
+
+msgid "Moodle"
+msgstr "Moodle"
+
+msgid "Moodle site"
+msgstr "Moodle-Seite"
+
+msgid "Moodle site URL"
+msgstr "Adresse der Moodle-Seite"
+
+msgid "Moodle web service token"
+msgstr "Moodle-Webservice-Token"
+
+msgid "Posted"
+msgstr "Gepostet"
+
+msgid "Posting in the forum"
+msgstr "Schreibt im Forum"
+
+msgid "Posts in"
+msgstr "Schreibt in"
+
+msgid "Read"
+msgstr "Gelesen"
+
+msgid "Read only"
+msgstr "Nur lesen"
+
+msgid "Reading course {course_id}"
+msgstr "Liest Kurs {course_id}"
+
+msgid "Reading forum posts"
+msgstr "Liest Forenbeiträge"
+
+msgid "Reading grades"
+msgstr "Liest Bewertungen"
+
+msgid "Reading submissions"
+msgstr "Liest Abgaben"
+
+msgid "Reads freely; every change — grades, enrolments, accounts, courses, messages and forum posts — waits for a person to approve it."
+msgstr "Liest frei; jede Änderung – Bewertungen, Einschreibungen, Konten, Kurse, Nachrichten und Forenbeiträge – wartet auf die Freigabe durch eine Person."
+
+msgid "Reviews submissions and progress and enters grades with feedback after approval. Cannot enrol, change accounts or courses, or send messages and forum posts."
+msgstr "Sichtet Abgaben und Fortschritt und trägt nach Freigabe Bewertungen mit Feedback ein. Kann nicht einschreiben, keine Konten oder Kurse ändern und keine Nachrichten oder Forenbeiträge senden."
+
+msgid "Save & test"
+msgstr "Speichern & testen"
+
+msgid "Searches"
+msgstr "Durchsucht"
+
+msgid "Sending a Moodle message"
+msgstr "Sendet eine Moodle-Nachricht"
+
+msgid "Sends Moodle messages and forum posts — reminders, announcements, answers — each only after approval. Changes no grades, enrolments, accounts or courses."
+msgstr "Sendet Moodle-Nachrichten und Forenbeiträge – Erinnerungen, Ankündigungen, Antworten – jeweils erst nach Freigabe. Ändert keine Bewertungen, Einschreibungen, Konten oder Kurse."
+
+msgid "Sent"
+msgstr "Gesendet"
+
+msgid "Set up Moodle"
+msgstr "Moodle einrichten"
+
+msgid "Site URL and web service token, resolved from the shared credentials store only while the bridge starts."
+msgstr "Adresse und Webservice-Token, die nur beim Start der Bridge aus dem gemeinsamen Zugangsdaten-Speicher gelesen werden."
+
+msgid "Site administration → Server → Web services → Manage tokens: a token for the oc8 service user and the oc8 external service."
+msgstr "Website-Administration → Server → Webservices → Tokens verwalten: ein Token für den oc8-Service-Nutzer und den externen Dienst oc8."
+
+msgid "Teaching assistant"
+msgstr "Lehrassistenz"
+
+msgid "The address you open Moodle at, without /login or any other path."
+msgstr "Die Adresse, unter der du Moodle öffnest – ohne /login oder einen anderen Pfad."
+
+msgid "Unenrolled"
+msgstr "Ausgetragen"
+
+msgid "Unenrolling user {user_id}"
+msgstr "Trägt Nutzer {user_id} aus"
+
+msgid "Unenrols"
+msgstr "Trägt aus"
+
+msgid "Updated"
+msgstr "Geändert"
+
+msgid "Updates"
+msgstr "Ändert"
+
+msgid "Updating course {course_id}"
+msgstr "Ändert Kurs {course_id}"
+
+msgid "Updating user {user_id}"
+msgstr "Ändert Nutzer {user_id}"
+
+msgid "Web service token"
+msgstr "Webservice-Token"
+
+msgid "a Moodle message"
+msgstr "eine Moodle-Nachricht"
+
+msgid "a course"
+msgstr "einen Kurs"
+
+msgid "a user account"
+msgstr "ein Nutzerkonto"
+
+msgid "assignments of course {course_id}"
+msgstr "Aufgaben von Kurs {course_id}"
+
+msgid "course"
+msgstr "Kurs"
+
+msgid "course {course_id}"
+msgstr "Kurs {course_id}"
+
+msgid "courses"
+msgstr "Kurse"
+
+msgid "forum"
+msgstr "Forum"
+
+msgid "forum posts"
+msgstr "Forenbeiträge"
+
+msgid "grades of course {course_id}"
+msgstr "Bewertungen von Kurs {course_id}"
+
+msgid "in the forum"
+msgstr "im Forum"
+
+msgid "participants of course {course_id}"
+msgstr "Teilnehmende von Kurs {course_id}"
+
+msgid "progress of user {user_id}"
+msgstr "Fortschritt von Nutzer {user_id}"
+
+msgid "student"
+msgstr "Lernende Person"
+
+msgid "submissions"
+msgstr "Abgaben"
+
+msgid "the Moodle connection"
+msgstr "die Moodle-Verbindung"
+
+msgid "the submission of user {user_id}"
+msgstr "die Abgabe von Nutzer {user_id}"
+
+msgid "user"
+msgstr "Nutzer"
+
+msgid "user {user_id}"
+msgstr "Nutzer {user_id}"
+
+msgid "user {user_id} from course {course_id}"
+msgstr "Nutzer {user_id} aus Kurs {course_id}"
+
+msgid "user {user_id} in course {course_id}"
+msgstr "Nutzer {user_id} in Kurs {course_id}"
+
+msgid "users"
+msgstr "Nutzer"

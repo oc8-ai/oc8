@@ -5,6 +5,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select
+from tests.audit.helpers import flush_audit
 from tests.conftest import AppSessionFactory
 
 from oc8 import models as m
@@ -56,8 +57,11 @@ async def test_run_agent_audit_attributes_to_originating_operator(
             s, agent=agent, task_text="do a thing", tenant_id=tenant,
             originating_operator="alice",
         )
+        await flush_audit(s)  # the run's events reach the chain at commit
         ev = (await s.execute(
-            select(m.AuditEvent).where(m.AuditEvent.category == "tool_action")
+            select(m.AuditEvent).where(
+                m.AuditEvent.category == "tool_action", m.AuditEvent.actor_id == agent.id
+            )
         )).scalars().first()
         assert ev is not None, "run_agent should have written a tool.call audit event"
         # attributed to the triggering operator, NOT the agent

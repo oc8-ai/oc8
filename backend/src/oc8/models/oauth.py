@@ -45,6 +45,11 @@ class OAuthConnection(Base, PkMixin, TenantMixin, TimestampMixin):
     # this is not just descriptive -- _post_token needs it to build the URL.
     azure_tenant_id: Mapped[str | None] = mapped_column(Text)
     created_by_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: Whose account this is: NULL for the organisation (every row before
+    #: migration 0107, and every admin-created one), otherwise the one member
+    #: it belongs to. A personal connection is used only for that member's own
+    #: runs, or by an agent explicitly bound to it (`agent_tool_access`).
+    owner_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
     # Small, non-secret, provider-defined facts a connection's own flow needs
     # to remember (design: ChatGPT subscription auth §2's chatgpt_account_id).
     # Generic and provider-agnostic on purpose -- see migration 0076.
@@ -52,7 +57,12 @@ class OAuthConnection(Base, PkMixin, TenantMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "provider", "account_label", name="uq_oauth_conn_tenant_provider_account"
+            "tenant_id",
+            "provider",
+            "owner_member_id",
+            "account_label",
+            name="uq_oauth_conn_tenant_provider_owner_account",
+            postgresql_nulls_not_distinct=True,
         ),
         CheckConstraint(
             "status IN ('active','needs_reauth','revoked')", name="ck_oauth_conn_status"

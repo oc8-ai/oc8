@@ -5,8 +5,8 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
@@ -130,6 +130,78 @@ async def list_types(db: DbSession, principal: CurrentPrincipal) -> list[Handoff
     return [
         HandoffTypeDTO(id=str(t.id), name=t.name, classification=t.classification) for t in rows
     ]
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+async def _flows_using(db: DbSession, type_name: str) -> int:
+    """Live flows whose current version has a stage handing off this type.
+    Archived flows do not count: they start no runs."""
+    rows = (
+        await db.execute(
+            select(m.FlowVersion.spec)
+            .join(m.Flow, m.Flow.current_version_id == m.FlowVersion.id)
+            .where(m.Flow.archived_at.is_(None))
+        )
+    ).scalars()
+    return sum(
+        1
+        for spec in rows
+        if any(
+            isinstance(stage, dict)
+            and isinstance(stage.get("handoff"), dict)
+            and stage["handoff"].get("type") == type_name
+            for stage in (spec or {}).get("stages", [])
+        )
+    )
+
+
+@router.delete(
+    "/handoff-types/{type_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission(perm(HANDOFF, MANAGE)))],
+)
+async def delete_type(type_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal) -> Response:
+    """Delete a handoff type nothing uses. Handoffs keep their type for their
+    history, so a type that was ever handed off stays; so does one a contract
+    binding or a live flow still names. 409 says which."""
+    ht = await db.get(m.HandoffType, type_id)
+    if ht is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "handoff type not found")
+    handoffs = (
+        await db.execute(
+            select(func.count()).select_from(m.Handoff).where(m.Handoff.handoff_type_id == ht.id)
+        )
+    ).scalar_one()
+    bindings = (
+        await db.execute(
+            select(func.count())
+            .select_from(m.ContractBinding)
+            .where(m.ContractBinding.handoff_type_id == ht.id)
+        )
+    ).scalar_one()
+    flows = await _flows_using(db, ht.name)
+    uses = [
+        _plural(n, word)
+        for n, word in (
+            (handoffs, "handoff"),
+            (bindings, "contract binding"),
+            (flows, "flow"),
+        )
+        if n
+    ]
+    if uses:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f'handoff type "{ht.name}" is still used by {", ".join(uses)}. '
+            "Remove the contract bindings and archive the flows first; a type that "
+            "handoffs were made with stays for their history.",
+        )
+    await db.delete(ht)
+    await db.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

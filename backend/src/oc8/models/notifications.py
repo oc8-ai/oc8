@@ -3,9 +3,22 @@ opted into push notifications on."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
+from typing import Any
 
-from sqlalchemy import ForeignKey, Text, UniqueConstraint, Uuid
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -42,3 +55,58 @@ class PushSubscription(Base, PkMixin, TenantMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("tenant_id", "endpoint", name="uq_push_subscription_endpoint"),
     )
+
+
+class MemberNotification(Base, PkMixin, TenantMixin):
+    """One entry in a member's inbox.
+
+    At most one UNREAD row exists per `(member_id, kind, subject_id)`: the
+    partial unique index is NULLS NOT DISTINCT, so a NULL `subject_id` collapses
+    too. `title`/`body` are `{"en": ..., "de": ...}`."""
+
+    __tablename__ = "member_notification"
+
+    member_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("org_member.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    subject_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    title: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    body: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    link: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    read_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_member_notification_member_created", "member_id", text("created_at DESC")),
+        Index(
+            "uq_member_notification_unread",
+            "member_id",
+            "kind",
+            "subject_id",
+            unique=True,
+            postgresql_where=text("read_at IS NULL"),
+            postgresql_nulls_not_distinct=True,
+        ),
+    )
+
+
+class MemberNotificationSetting(Base, PkMixin, TenantMixin):
+    """A member's per-kind channel opt-outs (absent row = both enabled)."""
+
+    __tablename__ = "member_notification_setting"
+
+    member_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("org_member.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(Text, nullable=False)
+    push_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    messenger_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+
+    __table_args__ = (UniqueConstraint("member_id", "kind", name="uq_member_notification_setting"),)

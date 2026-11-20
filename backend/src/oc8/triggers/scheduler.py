@@ -16,8 +16,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.retire import AGENT_MISSING
 from oc8.db.session import tenant_session
+from oc8.runtime.cancellation import AGENT_ARCHIVED
 from oc8.runtime.intake import enqueue_run
+from oc8.tenants.activity import TenantInactive, tenant_may_run
 from oc8.triggers.service import compute_next_run
 
 logger = logging.getLogger(__name__)
@@ -33,6 +36,42 @@ async def list_active_tenant_ids() -> list[uuid.UUID]:
         return list(result.scalars().all())
 
 
+async def list_runnable_tenant_ids() -> list[uuid.UUID]:
+    """Tenants that may run background work now. Cleanup sweeps keep using
+    list_active_tenant_ids(): they must visit every organisation."""
+    return [t for t in await list_active_tenant_ids() if await tenant_may_run(t)]
+
+
+async def _advance_without_firing(tenant_id: uuid.UUID) -> None:
+    """An organisation that may not run: move its due schedules on without
+    firing them, so nothing is caught up once it may run again. One-shot
+    follow-ups stay due and fire once afterwards."""
+    # tenant_session commits on a clean exit, so no explicit commit here.
+    async with tenant_session(tenant_id) as db:
+        now = datetime.now(tz=UTC)
+        due = (
+            (
+                await db.execute(
+                    select(m.Trigger)
+                    .where(
+                        m.Trigger.kind == "cron",
+                        m.Trigger.enabled.is_(True),
+                        m.Trigger.next_run_at <= now,
+                        m.Trigger.cron_expression.is_not(None),
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for trigger in due:
+            assert trigger.cron_expression is not None
+            trigger.next_run_at = compute_next_run(
+                trigger.cron_expression, after=now, timezone=trigger.timezone
+            )
+
+
 async def fire_trigger(
     db: AsyncSession,
     trigger: m.Trigger,
@@ -40,7 +79,7 @@ async def fire_trigger(
     tenant_id: uuid.UUID,
     idempotency_key: str | None = None,
     payload: dict[str, Any] | None = None,
-) -> None:
+) -> bool:
     """Enqueue an AgentRun for `trigger` -- the same durable intake path
     POST /agents/{id}/run uses. Records last_run_at for any kind, and
     (cron-kind only) recomputes next_run_at.
@@ -57,11 +96,29 @@ async def fire_trigger(
     from it -- unlike kind='event', a webhook can carry literally anything --
     so it is folded straight into the task text the model reads, the only
     context field build_run_preamble actually surfaces (agent/preamble.py).
+
+    `trigger_id` lets a tool in the user's context act through the trigger
+    creator's account.
+
+    Returns False, without enqueueing, when the trigger's agent is archived or
+    no longer exists: the trigger is disabled instead, so it stops coming due.
+    Deleting an agent retires its triggers (`oc8.agents.retire`); this catches
+    the ones left behind before it did, and anything that got past it.
     """
+    agent = await db.get(m.Agent, trigger.agent_id)
+    if agent is None or agent.deleted_at is not None:
+        trigger.enabled = False
+        trigger.last_skip_reason = AGENT_MISSING if agent is None else AGENT_ARCHIVED
+        logger.info(
+            "trigger %s disabled instead of fired: %s", trigger.id, trigger.last_skip_reason
+        )
+        return False
     now = datetime.now(tz=UTC)
     trigger.last_run_at = now
     if trigger.kind == "cron" and trigger.cron_expression is not None:
-        trigger.next_run_at = compute_next_run(trigger.cron_expression, after=now)
+        trigger.next_run_at = compute_next_run(
+            trigger.cron_expression, after=now, timezone=trigger.timezone
+        )
     task = trigger.task_text
     if payload is not None:
         task = f"{task}\n\nWebhook payload:\n{json.dumps(payload, indent=2, default=str)}"
@@ -69,7 +126,7 @@ async def fire_trigger(
         db,
         tenant_id=tenant_id,
         agent_id=trigger.agent_id,
-        context={"task": task},
+        context={"task": task, "trigger_id": str(trigger.id)},
         source=trigger.kind,
         coalesce_key=f"trigger:{trigger.id}",
         idempotency_key=idempotency_key,
@@ -78,6 +135,7 @@ async def fire_trigger(
         # past that point would drop it.
         fold_running=trigger.kind == "cron",
     )
+    return True
 
 
 async def run_scheduler_tick() -> int:
@@ -93,12 +151,24 @@ async def run_scheduler_tick() -> int:
     commit."""
     fired = 0
     for tenant_id in await list_active_tenant_ids():
+        if not await tenant_may_run(tenant_id):
+            # An organisation that may not run: its due cron triggers are not
+            # fired, and their next_run_at moves past now so nothing is caught
+            # up once it may run again. Due one-shot follow-ups are left due;
+            # they fire once afterwards.
+            try:
+                await _advance_without_firing(tenant_id)
+            except Exception:
+                logger.exception(
+                    "scheduler tick failed to advance schedules for tenant %s", tenant_id
+                )
+            continue
         try:
             async with tenant_session(tenant_id) as db:
                 now = datetime.now(tz=UTC)
                 result = await db.execute(
                     select(m.Trigger.id).where(
-                        m.Trigger.kind == "cron",
+                        m.Trigger.kind.in_(("cron", "once")),
                         m.Trigger.enabled.is_(True),
                         m.Trigger.next_run_at <= now,
                     )
@@ -131,8 +201,26 @@ async def run_scheduler_tick() -> int:
                     ).scalar_one_or_none()
                     if trigger is None:
                         continue  # another scheduler took it, or it is no longer due
-                    await fire_trigger(db, trigger, tenant_id=tenant_id)
+                    if trigger.chat_session_id is not None:
+                        from oc8.copilot.followups import fire_followup
+
+                        await fire_followup(db, trigger, tenant_id=tenant_id)
+                    elif trigger.kind == "once":
+                        # A one-shot only ever exists as a follow-up in a chat
+                        # session; without one there is nothing to fire into.
+                        trigger.enabled = False
+                        continue
+                    elif not await fire_trigger(db, trigger, tenant_id=tenant_id):
+                        continue  # its agent is gone; fire_trigger disabled it
                     fired += 1
+            except TenantInactive:
+                # The organisation stopped being allowed to run after the
+                # check above; the trigger stays due. Expected, not an error.
+                logger.info(
+                    "scheduler tick skipped trigger %s: organisation %s is not active",
+                    trigger_id,
+                    tenant_id,
+                )
             except Exception:
                 logger.exception(
                     "scheduler tick failed to fire trigger %s for tenant %s", trigger_id, tenant_id
@@ -141,7 +229,7 @@ async def run_scheduler_tick() -> int:
 
 
 async def run_scheduler(*, once: bool = False, interval_seconds: float = 30.0) -> None:
-    # Deferred: oc8.channels.poll imports list_active_tenant_ids from this
+    # Deferred: oc8.channels.poll imports list_runnable_tenant_ids from this
     # module, so importing it at module scope here would be circular.
     from oc8.channels.poll import poll_tick
 

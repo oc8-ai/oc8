@@ -79,7 +79,9 @@ async def _bound_credential(
     "bound" pick exactly."""
     if credential_id is not None:
         row = await db.get(m.Credential, credential_id)
-        if row is None or row.tenant_id != tenant_id:
+        if row is None or row.tenant_id != tenant_id or row.owner_member_id is not None:
+            # A personal credential never serves a model: model keys are the
+            # organisation's.
             return None
         return row
     return (
@@ -88,6 +90,7 @@ async def _bound_credential(
             .where(
                 m.Credential.tenant_id == tenant_id,
                 m.Credential.credential_type == f"{canonical}_api_key",
+                m.Credential.owner_member_id.is_(None),
             )
             .order_by(m.Credential.name)
             .limit(1)
@@ -124,6 +127,9 @@ async def resolve_model_key(
         if not oauth_connection_id:
             return None
         connection_id = uuid.UUID(oauth_connection_id)
+        pointed = await db.get(m.OAuthConnection, connection_id)
+        if pointed is not None and pointed.owner_member_id is not None:
+            return None
         try:
             access_token = await get_access_token(
                 db, tenant_id=tenant_id, connection_id=connection_id

@@ -6,7 +6,10 @@ validate_entry_point = "credential:validate_odoo_login"
 key = "url"
 label = "Odoo URL, as reachable from the oc8 backend container"
 kind = "url"
-placeholder = "http://host.docker.internal:1000"
+# Odoo answers its JSON-RPC and XML-RPC at the root: an address copied from
+# the browser ("/odoo/crm", "/odoo/discuss?...") is cut to scheme and host.
+origin_only = true
+placeholder = "https://your-company.odoo.com"
 
 [[fields]]
 key = "database"

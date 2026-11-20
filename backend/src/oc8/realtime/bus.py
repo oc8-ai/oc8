@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 import redis.asyncio as redis
@@ -55,6 +56,29 @@ class EventBus:
                 task = asyncio.create_task(self._send_push(tenant_id, str(approval_id), data))
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
+
+    async def publish_member_event(
+        self,
+        tenant_id: uuid.UUID,
+        member_ids: Sequence[uuid.UUID],
+        type_: str,
+        data: dict[str, Any],
+        *,
+        source: str,
+    ) -> None:
+        """An event for named members only (spec §2.4). Same tenant channel --
+        one subscriber per tenant stays the isolation unit -- but the envelope
+        carries its audience and `ConnectionManager` delivers it to those
+        members' sockets and nobody else's, feed sockets included."""
+        if not member_ids:
+            return
+        env = build_envelope(tenant_id, type_, data, source, audience=member_ids)
+        try:
+            await self._client.publish(channel_for(tenant_id), json.dumps(env))
+        except Exception:
+            logger.warning(
+                "member event publish failed (type=%s tenant=%s)", type_, tenant_id, exc_info=True
+            )
 
     async def _send_push(
         self, tenant_id: uuid.UUID, approval_id: str, data: dict[str, Any]

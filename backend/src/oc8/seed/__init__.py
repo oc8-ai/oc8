@@ -29,7 +29,7 @@ from oc8.audit import append_event
 from oc8.authz.permissions import role_kind
 from oc8.config import get_settings
 from oc8.constants import ACME_TENANT_ID, GLOBEX_TENANT_ID
-from oc8.modelrouter.registry import canonical_provider
+from oc8.modelrouter.registry import canonical_provider, supports_reasoning_for
 from oc8.seed.demo_i18n import (
     ACTIVITY_DE,
     AGENTS_DE,
@@ -928,6 +928,7 @@ async def _seed_acme(session: AsyncSession) -> None:
                 display_name=name,
                 cost_meta=cost_meta,
                 health={"status": status_, "latency": latency},
+                supports_reasoning=supports_reasoning_for(provider, model_tag),
             )
         )
 
@@ -1296,6 +1297,7 @@ async def _seed_demo_admin(session: AsyncSession) -> None:
             id=det(tid, "member", "demo-admin"),
             tenant_id=tid,
             subject=email,
+            email=email,
             # Match password_setup's subject_uuid derivation (local auth, not
             # subject_uuid_for / messenger door).
             subject_uuid=uuid.uuid5(uuid.NAMESPACE_URL, f"oc8:local:{email}"),

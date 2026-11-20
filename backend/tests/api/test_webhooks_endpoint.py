@@ -6,6 +6,7 @@ Trigger its token names."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 import pytest
@@ -16,6 +17,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.main import create_app
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -121,6 +123,38 @@ async def test_disabled_webhook_trigger_is_404(app_session: AppSessionFactory) -
             assert r.status_code == 404, r.text
 
 
+async def test_webhook_of_an_archived_agent_is_404_and_turns_the_trigger_off(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A webhook still enabled from before archiving stopped an agent's
+    triggers answers like an unknown one, creates no run, and is disabled."""
+    tenant = uuid.uuid4()
+    agent_id, token, _ = await _webhook_trigger(app_session, tenant)
+    async with app_session(tenant) as s:
+        agent = await s.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.deleted_at = dt.datetime.now(tz=dt.UTC)
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert r.status_code == 404, r.text
+
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []
+        trigger = (
+            await s.execute(select(m.Trigger).where(m.Trigger.agent_id == agent_id))
+        ).scalar_one()
+        assert trigger.enabled is False
+        assert trigger.last_skip_reason == "agent_archived"
+
+
 async def test_non_json_body_does_not_crash_the_endpoint(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
@@ -164,3 +198,99 @@ async def test_empty_body_still_fires(app_session: AppSessionFactory, redis_url:
             .all()
         )
         assert len(count) == 1
+
+
+async def test_webhook_of_an_inactive_organisation_is_not_found(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id, token, _ = await _webhook_trigger(app_session, tenant)
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert r.status_code == 404, r.text
+            assert r.json()["detail"] == "unknown or disabled webhook"
+
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []
+
+
+async def test_a_webhook_asks_the_activity_gate_at_most_once_per_request(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The gate is asked only for the organisation whose trigger matches the
+    token, not for every organisation on each unauthenticated request."""
+    tenant = uuid.uuid4()
+    _, token, _ = await _webhook_trigger(app_session, tenant)
+    # A second organisation, so a loop that asked the gate for every
+    # organisation would ask it more than once.
+    await _webhook_trigger(app_session, uuid.uuid4())
+
+    asked: list[uuid.UUID] = []
+    may_run = {"answer": False}
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        asked.append(tenant_id)
+        return may_run["answer"]
+
+    set_tenant_activity_gate(gate)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            # Inactive: the lookup asks once, for the matching organisation.
+            refused = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert refused.status_code == 404, refused.text
+            assert refused.json()["detail"] == "unknown or disabled webhook"
+            assert asked == [tenant]
+
+            # Unknown token: the gate is never asked.
+            asked.clear()
+            unknown = await c.post(f"/api/v1/webhooks/{uuid.uuid4().hex}", json={})
+            assert unknown.status_code == 404, unknown.text
+            assert asked == []
+
+            # Active: once by the lookup, once more by enqueue_run as it fires.
+            asked.clear()
+            may_run["answer"] = True
+            accepted = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert accepted.status_code == 202, accepted.text
+            assert asked == [tenant, tenant]
+
+
+async def test_a_webhook_refused_between_lookup_and_fire_is_not_found(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The gate can change between the lookup's check and the intake's own."""
+    tenant = uuid.uuid4()
+    agent_id, token, _ = await _webhook_trigger(app_session, tenant)
+    answers = iter([True, False])
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return next(answers)
+
+    set_tenant_activity_gate(gate)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/webhooks/{token}", json={"anything": "goes"})
+            assert r.status_code == 404, r.text
+            assert r.json()["detail"] == "unknown or disabled webhook"
+
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []

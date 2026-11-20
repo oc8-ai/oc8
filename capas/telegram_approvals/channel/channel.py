@@ -93,6 +93,13 @@ def render(notice: ApprovalNotice) -> str:
         lines.append(f"<b>{_escape(notice.amount_text)}</b>")
     if notice.detail:
         lines += ["", _escape(notice.detail)]
+    if notice.record_url:
+        # A bare URL, deliberately unlabelled: Telegram auto-links it, and this
+        # renderer's surrounding copy is historically German while capa code is
+        # English-only -- a URL needs neither language. Placed before the
+        # expiry line so the _MAX_TEXT truncation below can never cut a link in
+        # half (a half URL is worse than none).
+        lines += ["", _escape(notice.record_url)]
     if notice.expires_at is not None:
         lines += ["", f"Läuft ab: {notice.expires_at:%d.%m.%Y %H:%M}"]
     return "\n".join(lines)[:_MAX_TEXT]

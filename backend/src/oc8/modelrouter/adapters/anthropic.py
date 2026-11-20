@@ -12,12 +12,19 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import araise_for_status_with_body, raise_for_status_with_body
+from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
+from oc8.modelrouter.reasoning_support import (
+    anthropic_has_effort,
+    anthropic_hides_thinking,
+    anthropic_thinking_style,
+)
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
     CompletionResult,
     ImagePart,
     NeutralMessage,
+    ReasoningLevel,
     TextPart,
     ToolCall,
     ToolCallDelta,
@@ -51,10 +58,29 @@ def _content_blocks(content: str | list[Any]) -> list[dict[str, Any]] | str:
     return blocks
 
 
+#: Block types Anthropic requires back, unmodified, on the assistant turns of
+#: an ongoing tool-use exchange when extended thinking is on.
+_THINKING_BLOCK_TYPES = frozenset({"thinking", "redacted_thinking"})
+
+
+def _current_exchange_start(messages: list[NeutralMessage]) -> int:
+    """Index of the first message after the last plain user turn.
+
+    Anthropic requires thinking blocks back only on the assistant turns of the
+    tool-use exchange still in progress; earlier turns' reasoning is not sent
+    (it would only be stripped again, at the caller's expense).
+    """
+    for index in range(len(messages) - 1, -1, -1):
+        if messages[index].role == "user":
+            return index + 1
+    return 0
+
+
 def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[dict[str, Any]]]:
     system_parts: list[str] = []
     out: list[dict[str, Any]] = []
-    for msg in messages:
+    exchange_start = _current_exchange_start(messages)
+    for position, msg in enumerate(messages):
         if msg.role == "system":
             # System messages never carry images in this design -- Anthropic's
             # system param is text-only.
@@ -64,6 +90,14 @@ def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[di
             out.append({"role": "user", "content": _content_blocks(msg.content)})
         elif msg.role == "assistant":
             blocks: list[dict[str, Any]] = []
+            if position >= exchange_start and msg.tool_calls:
+                # Signed blocks go first and verbatim, or the API rejects the
+                # tool result that follows.
+                blocks.extend(
+                    block
+                    for block in msg.replay_blocks
+                    if block.get("type") in _THINKING_BLOCK_TYPES
+                )
             if msg.content:
                 content_blocks = _content_blocks(msg.content)
                 if isinstance(content_blocks, str):
@@ -93,9 +127,56 @@ def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[di
 
 #: Keys this adapter always sets itself. An operator-supplied `extra` key
 #: matching one of these is dropped rather than applied -- see _build_payload.
+#: `effort` is here although the adapter never sends it: Anthropic takes effort
+#: only inside `output_config`, and a stray top-level copy would 400.
 _RESERVED_PAYLOAD_KEYS = frozenset(
     {"model", "max_tokens", "messages", "temperature", "effort", "system", "tools", "stream"}
 )
+
+#: `budget_tokens` per level for models that think on a budget (Claude 3.7 to
+#: 4.5). The API takes >= 1024 and < max_tokens; fast forces no thinking.
+_THINKING_BUDGET: dict[ReasoningLevel, int] = {"balanced": 4096, "thorough": 16384}
+_MIN_THINKING_BUDGET = 1024
+
+
+def _thinking_config(model: str, level: ReasoningLevel, max_tokens: int) -> dict[str, Any] | None:
+    """The `thinking` block for `level`, or None to leave thinking alone.
+
+    Fast forces nothing: the lowest effort is the whole ask. Balanced and
+    thorough turn thinking on, since Claude 4.6 to 4.8 and every budget model
+    run without it otherwise.
+    """
+    if level == "fast":
+        return None
+    style = anthropic_thinking_style(model)
+    if style == "adaptive":
+        config: dict[str, Any] = {"type": "adaptive"}
+        if anthropic_hides_thinking(model):
+            config["display"] = "summarized"
+        return config
+    if style == "budget":
+        # Half the room at most, so the answer itself still fits.
+        budget = min(_THINKING_BUDGET[level], max_tokens // 2)
+        if budget < _MIN_THINKING_BUDGET:
+            return None
+        return {"type": "enabled", "budget_tokens": budget}
+    return None
+
+
+def _reasoning_fields(req: CompletionRequest) -> tuple[str | None, dict[str, Any] | None]:
+    """(`output_config.effort`, `thinking`) for this request (spec 2026-11-11 §6).
+
+    A level maps to low/medium/high and, above fast, to thinking. Without a
+    level, a configured free-form effort goes through verbatim. A model that
+    takes no effort gets none either way.
+    """
+    level = req.params.reasoning
+    if level is not None:
+        effort = EFFORT_FOR_LEVEL[level] if anthropic_has_effort(req.model) else None
+        return effort, _thinking_config(req.model, level, req.params.max_tokens)
+    if req.params.effort and anthropic_has_effort(req.model):
+        return req.params.effort, None
+    return None, None
 
 
 def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) -> dict[str, Any]:
@@ -105,10 +186,11 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
         "max_tokens": req.params.max_tokens,
         "messages": messages,
     }
-    if include_temperature:
-        payload["temperature"] = req.params.temperature
-    if req.params.effort:
-        payload["effort"] = req.params.effort
+    effort, thinking = _reasoning_fields(req)
+    if effort is not None:
+        payload["output_config"] = {"effort": effort}
+    if thinking is not None:
+        payload["thinking"] = thinking
     if system:
         payload["system"] = system
     if req.tools:
@@ -118,10 +200,22 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
         ]
     # Applied last so an operator-typed key can never clobber a field this
     # adapter relies on -- see ModelParams.extra.
-    if req.params.extra:
-        for key, value in req.params.extra.items():
-            if key not in _RESERVED_PAYLOAD_KEYS:
-                payload[key] = value
+    for key, value in (req.params.extra or {}).items():
+        if key in _RESERVED_PAYLOAD_KEYS:
+            continue
+        if key == "thinking" and thinking is not None:
+            continue
+        if key == "output_config" and effort is not None:
+            # Other keys (a response `format`) still apply; the effort set
+            # from the level or the configured value wins.
+            if isinstance(value, dict):
+                payload["output_config"] = {**value, "effort": effort}
+            continue
+        payload[key] = value
+    # Sampling parameters are incompatible with thinking, whether the level or
+    # an operator's `extra` turned it on.
+    if include_temperature and "thinking" not in payload:
+        payload["temperature"] = req.params.temperature
     return payload
 
 
@@ -170,10 +264,16 @@ class AnthropicAdapter:
             data = resp.json()
 
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
+        replay_blocks: list[dict[str, Any]] = []
         tool_calls: list[ToolCall] = []
         for block in data.get("content", []):
             if block.get("type") == "text":
                 text_parts.append(block.get("text", ""))
+            elif block.get("type") in _THINKING_BLOCK_TYPES:
+                replay_blocks.append(block)
+                if block.get("thinking"):
+                    thinking_parts.append(str(block["thinking"]))
             elif block.get("type") == "tool_use":
                 tool_calls.append(
                     ToolCall(
@@ -187,6 +287,7 @@ class AnthropicAdapter:
             tokens_in=int(usage_raw.get("input_tokens", 0)),
             tokens_out=int(usage_raw.get("output_tokens", 0)),
         )
+        reasoning = "\n\n".join(thinking_parts).strip()
         return CompletionResult(
             text="".join(text_parts),
             tool_calls=tool_calls,
@@ -194,6 +295,8 @@ class AnthropicAdapter:
             stop_reason=data.get("stop_reason", "stop"),
             provider=self.provider,
             model=req.model,
+            reasoning=reasoning or None,
+            replay_blocks=replay_blocks,
         )
 
     async def stream(self, req: CompletionRequest) -> AsyncIterator[CompletionChunk]:
@@ -234,6 +337,10 @@ class AnthropicAdapter:
         # forward or it reads as "0 input tokens" once message_delta's
         # smaller usage object overwrites message_start's.
         tokens_in = 0
+        # Thinking blocks under construction, by content-block index: their
+        # text and signature arrive as deltas, and only the finished block may
+        # be replayed.
+        thinking: dict[int, dict[str, Any]] = {}
         async with httpx.AsyncClient(timeout=180.0) as client:
             async with client.stream(
                 "POST", _API_URL, json=payload, headers=self._headers()
@@ -254,6 +361,9 @@ class AnthropicAdapter:
                     except (ValueError, TypeError):
                         logger.debug("skipping unparseable anthropic stream line: %r", line[:120])
                         continue
+                    block_done = _track_thinking_block(event_type, data, thinking)
+                    if block_done is not None:
+                        yield CompletionChunk(replay_blocks=[block_done])
                     chunk = _chunk_from_event(event_type, data)
                     if chunk is None:
                         continue
@@ -263,6 +373,29 @@ class AnthropicAdapter:
                         elif event_type == "message_delta":
                             chunk.usage.tokens_in = tokens_in
                     yield chunk
+
+
+def _track_thinking_block(
+    event_type: str, data: dict[str, Any], open_blocks: dict[int, dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Assemble streamed thinking blocks; return one once it is complete."""
+    index = int(data.get("index", 0) or 0)
+    if event_type == "content_block_start":
+        block = data.get("content_block") or {}
+        if block.get("type") in _THINKING_BLOCK_TYPES:
+            open_blocks[index] = dict(block)
+        return None
+    if event_type == "content_block_delta" and index in open_blocks:
+        delta = data.get("delta") or {}
+        block = open_blocks[index]
+        if delta.get("type") == "thinking_delta":
+            block["thinking"] = str(block.get("thinking") or "") + str(delta.get("thinking", ""))
+        elif delta.get("type") == "signature_delta":
+            block["signature"] = str(block.get("signature") or "") + str(delta.get("signature", ""))
+        return None
+    if event_type == "content_block_stop":
+        return open_blocks.pop(index, None)
+    return None
 
 
 def _chunk_from_event(event_type: str, data: dict[str, Any]) -> CompletionChunk | None:
@@ -291,6 +424,8 @@ def _chunk_from_event(event_type: str, data: dict[str, Any]) -> CompletionChunk 
         delta = data.get("delta") or {}
         if delta.get("type") == "text_delta":
             return CompletionChunk(text=str(delta.get("text", "")))
+        if delta.get("type") == "thinking_delta":
+            return CompletionChunk(reasoning=str(delta.get("thinking", "")))
         if delta.get("type") == "input_json_delta":
             return CompletionChunk(
                 tool_calls=[

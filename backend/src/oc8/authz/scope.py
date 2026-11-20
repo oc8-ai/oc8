@@ -416,7 +416,9 @@ async def _member_by_subject(
     return (await db.execute(stmt)).scalars().first()
 
 
-async def _upsert_member(db: AsyncSession, tenant_id: uuid.UUID, subject: str) -> OrgMember:
+async def _upsert_member(
+    db: AsyncSession, tenant_id: uuid.UUID, subject: str, email: str | None = None
+) -> OrgMember:
     """SELECT, then INSERT ... ON CONFLICT DO NOTHING, then SELECT again (§1).
 
     Three properties, each one a bug that has bitten this repository:
@@ -436,9 +438,15 @@ async def _upsert_member(db: AsyncSession, tenant_id: uuid.UUID, subject: str) -
     * **Core insert, not `db.add()` + flush.** A flush that raises IntegrityError
       leaves the session needing rollback, so the caller's next statement dies
       with PendingRollbackError -- turning a harmless race into a failed request.
+
+    The token's `email` claim, when there is one, is copied onto the row only
+    when it differs, so a returning person's request writes nothing and takes
+    no row lock. It is display data and never part of the lookup.
     """
     existing = await _member_by_subject(db, tenant_id, subject)
     if existing is not None:
+        if email and existing.email != email:
+            existing.email = email
         return existing
 
     await db.execute(
@@ -448,6 +456,7 @@ async def _upsert_member(db: AsyncSession, tenant_id: uuid.UUID, subject: str) -
             tenant_id=tenant_id,
             subject=subject,
             subject_uuid=subject_uuid_for(subject),
+            email=email,
         )
         # Untargeted on purpose: `org_member` carries TWO partial unique indexes
         # (subject and subject_uuid) and either can be the one that fires.
@@ -574,7 +583,9 @@ async def scope_for_principal(
         raise PermissionError("only an operator principal stands in a department")
 
     if upsert:
-        member: OrgMember | None = await _upsert_member(db, principal.tenant_id, principal.subject)
+        member: OrgMember | None = await _upsert_member(
+            db, principal.tenant_id, principal.subject, principal.email
+        )
     else:
         member = await _member_by_subject(db, principal.tenant_id, principal.subject)
 

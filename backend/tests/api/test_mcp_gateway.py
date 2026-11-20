@@ -314,9 +314,60 @@ async def test_tools_list_hides_what_the_frame_forbids(
         "memory_write",
         "ask_user",
         "render_component",
+        "suggest_replies",
     }
     assert [n for n in names if n not in core] == ["search_records"], names
     assert core <= set(names)
+
+
+async def test_tools_list_follows_the_frames_only_and_keeps_an_approval_gated_tool(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Offer and gate share one rule (authz.pdp.offers_tool): a tool outside
+    `only` is never listed; a tool that needs approval still is."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    frame = {
+        "tools": {
+            "odoo": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "only": ["create_record"],
+                "approval_actions": ["create_record"],
+            }
+        }
+    }
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=frame)
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    names = {t["name"] for t in body["result"]["tools"]}
+    assert "create_record" in names
+    assert "search_records" not in names
+
+
+async def test_tools_list_offers_read_context_to_a_turn_with_readable_pins(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An isolated runtime reaches what the member pinned the same way the
+    in-process engine does (offered_tools' has_context)."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "context_manifest": [{"ref_id": "file:1", "kind": "file", "readable": True}],
+        }
+        await db.commit()
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    assert "read_context" in [t["name"] for t in body["result"]["tools"]]
 
 
 # ------------------------------------------------ a connection whose env expires
@@ -499,6 +550,119 @@ async def test_a_denied_call_is_a_readable_tool_error_not_a_transport_error(
     assert "error" not in body, "a policy decision is not a protocol failure"
     assert body["result"]["isError"] is True
     assert _FakeMcp.calls == [], "nothing may reach the tool server"
+
+
+async def test_a_frame_denial_is_recorded_and_told_to_the_model_plainly(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    read_only = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=read_only)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "sale.order"}},
+    )
+    assert code == 200, body
+    text = body["result"]["content"][0]["text"]
+    assert "department does not allow the tool 'create_record'" in text
+    assert "department's guardrails" in text
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        denied = run.context["tool_denied"]
+    assert denied["tool"] == "create_record"
+    assert denied["reason"] == "right_not_granted"
+    assert denied["scope"] == "department"
+
+
+async def _pin_then_tighten_narrowing(
+    db: Any, tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    """Publish v1 with no narrowing, pin the run to it, then publish v2 with
+    the connection narrowed to read-only -- the mid-run change the gateway
+    must NOT apply to a run already in flight."""
+    from oc8.agents.versioning import publish_version
+
+    agent = await db.get(m.Agent, agent_id)
+    run = await db.get(m.AgentRun, run_id)
+    assert agent is not None and run is not None
+    await publish_version(db, agent)
+    run.agent_version_id = agent.current_version_id
+    agent.narrowing = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
+    await publish_version(db, agent)
+    await db.flush()
+
+
+async def test_a_midrun_narrowing_change_does_not_reach_a_running_calls_authorization(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: `_call_tool` read `agent.narrowing` live on every call, so a
+    narrowing published between two tool calls of the same containerized run
+    changed what that run was allowed to do. The run is pinned to the version
+    it started with; only a NEW run picks up the tighter narrowing."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        await _pin_then_tighten_narrowing(db, tenant, agent_id, run_id)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "sale.order"}},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is False, body
+    assert _FakeMcp.calls and _FakeMcp.calls[0][0] == "create_record"
+
+
+async def test_a_midrun_narrowing_change_does_not_reach_a_running_tools_list(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same regression on `tools/list`: the write tool the pinned version grants
+    stays offered after a mid-run publish narrows it away."""
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        await _pin_then_tighten_narrowing(db, tenant, agent_id, run_id)
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    names = [t["name"] for t in body["result"]["tools"]]
+    assert "create_record" in names, names
+
+
+async def test_a_run_pinned_after_the_narrowing_change_gets_the_tighter_narrowing(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the pin: a run pinned to the tightened version is denied."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        await _pin_then_tighten_narrowing(db, tenant, agent_id, run_id)
+        agent = await db.get(m.Agent, agent_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        run.agent_version_id = agent.current_version_id
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "sale.order"}},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True, body
+    assert _FakeMcp.calls == []
 
 
 async def test_a_repeated_write_is_idempotent(
@@ -1177,6 +1341,33 @@ async def test_ask_user_is_withheld_from_the_tenant_assistant_through_the_gatewa
     assert "delegate_task" in names, "the withholding must be scoped to ask_user only"
 
 
+async def test_the_tenant_assistant_reaches_no_connection_through_the_gateway(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Copilot direct access is wired into the in-process engine only. The
+    gateway (and the isolated runtime behind it) decides the Copilot's
+    connection calls against no grants at all, so every one is refused --
+    fail closed, never through the Copilot's own department."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.is_tenant_assistant = True
+        await db.flush()
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "search_records", "arguments": {"model": "crm.lead"}},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True
+    assert _FakeMcp.calls == [], "nothing may reach the tool server"
+
+
 async def test_search_knowledge_is_offered_through_the_gateway(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1224,7 +1415,28 @@ async def test_render_component_is_offered_through_the_gateway(
     assert "render_component" in [t["name"] for t in listed["result"]["tools"]]
 
 
-async def test_rendering_a_granted_component_publishes_a_realtime_event(
+async def test_render_component_is_offered_to_the_tenant_assistant_through_the_gateway(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Components are on by default on the isolated path too -- the tenant
+    Assistant included, with the full catalogue in the advertised schema."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.is_tenant_assistant = True
+        await db.flush()
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+
+    _c, listed = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    by_name = {t["name"]: t for t in listed["result"]["tools"]}
+    assert "render_component" in by_name
+    key_schema = by_name["render_component"]["inputSchema"]["properties"]["component_key"]
+    assert key_schema["enum"] == ["record_card", "data_table", "bar_chart", "line_chart"]
+
+
+async def test_rendering_a_component_without_any_grant_publishes_a_realtime_event(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     published: list[tuple[str, dict[str, Any]]] = []
@@ -1242,14 +1454,6 @@ async def test_rendering_a_granted_component_publishes_a_realtime_event(
         agent_id, run_id, _t = await _seed(db, tenant)
         agent = await db.get(m.Agent, agent_id)
         assert agent is not None
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent_id,
-            )
-        )
         await db.commit()
 
     code, body = await _rpc(
@@ -1278,7 +1482,7 @@ async def test_rendering_a_granted_component_publishes_a_realtime_event(
     ) in published
 
 
-async def test_rendering_an_ungranted_component_is_an_error_not_a_silent_no_op(
+async def test_rendering_an_unknown_component_is_an_error_not_a_silent_no_op(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
@@ -1291,12 +1495,12 @@ async def test_rendering_an_ungranted_component_is_an_error_not_a_silent_no_op(
         "tools/call",
         {
             "name": "render_component",
-            "arguments": {"component_key": "record_card", "props": {"title": "Acme"}},
+            "arguments": {"component_key": "nope", "props": {"title": "Acme"}},
         },
     )
     assert code == 200, body
     assert body["result"]["isError"] is True
-    assert "not been granted" in body["result"]["content"][0]["text"]
+    assert "no such component 'nope'" in body["result"]["content"][0]["text"]
 
 
 async def test_the_memory_tools_are_offered_and_the_tier_policy_still_applies(
@@ -1922,7 +2126,7 @@ async def test_ask_user_through_a_plugin_creates_exactly_one_clarification(
     _plugin_path: None,
     app_session: AppSessionFactory,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Any,
+    minio_url: str,
 ) -> None:
     """The whole ask_user path, end to end, across the three files that own a
     piece of it -- which is where the bug lived that no single one of their
@@ -1983,7 +2187,16 @@ async def test_ask_user_through_a_plugin_creates_exactly_one_clarification(
             raise TimeoutError("still running")
 
         async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
-            raise NotImplementedError
+            # The output sync's listing: no files in /workspace/output.
+            return ExecResult(exit_code=0, output="")
+
+        async def get_archive(
+            self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+        ) -> bytes:
+            # The CLI home saved at the park: empty here.
+            from oc8.runtime.run_state import pack_files
+
+            return pack_files({})
 
         async def fs_write(self, handle: SandboxHandle, path: str, content: bytes) -> None:
             raise NotImplementedError
@@ -1999,7 +2212,6 @@ async def test_ask_user_through_a_plugin_creates_exactly_one_clarification(
 
     driver = _AsksOnFirstPoll()
     monkeypatch.setattr("runtime.runtime.get_sandbox_driver", lambda: driver)
-    monkeypatch.setattr("runtime.runtime.SESSION_ROOT_OVERRIDE", str(tmp_path))
 
     await execute_run(
         RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
@@ -2136,3 +2348,91 @@ async def test_a_connection_without_requirements_is_launched_verbatim(
     code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
     assert code == 200, body
     assert launched[-1] == ("python", ["-m", "bridge"])
+
+
+async def test_restricted_knowledge_fetched_through_the_gateway_marks_the_run(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The LLM gateway decides from the run whether a completion carries
+    restricted material. A lookup that returned restricted text has to leave
+    that mark, or the next completion goes out as unrestricted."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+
+    async def fake_retrieve(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "salary table", True
+
+    monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", fake_retrieve)
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "search_knowledge", "arguments": {"query": "salary"}},
+    )
+    assert code == 200, body
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context.get("contains_restricted") is True
+
+
+_STRUCTURED_ASK = {
+    "questions": [
+        {
+            "id": "r",
+            "prompt": "Region?",
+            "kind": "single",
+            "options": [{"key": "eu", "label": "EU"}, {"key": "us", "label": "US"}],
+        }
+    ]
+}
+
+
+async def test_a_structured_ask_parks_with_its_questions_beside_the_text(
+    app_session: AppSessionFactory,
+) -> None:
+    """Spec §4.1 through the CLI runtimes' door: the readable question is the
+    verdict's output, the validated questions travel in their own field."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "ask_user", "arguments": _STRUCTURED_ASK},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        verdict = run.context["isolated_result"]
+        assert verdict["status"] == "waiting_for_input"
+        assert verdict["output"] == "Region?\n- EU\n- US"
+        assert verdict["questions"][0]["id"] == "r"
+
+
+async def test_a_malformed_structured_ask_is_a_model_error_not_a_park(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+
+    too_many = {"questions": [{"id": f"q{i}", "prompt": "x", "kind": "text"} for i in range(7)]}
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "ask_user", "arguments": too_many},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True
+    assert "at most 6" in body["result"]["content"][0]["text"]
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert "isolated_result" not in run.context

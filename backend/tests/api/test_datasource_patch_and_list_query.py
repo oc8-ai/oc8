@@ -9,6 +9,7 @@ there is no restore-the-row endpoint for a DataSource, on purpose.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -16,10 +17,26 @@ from httpx import ASGITransport, AsyncClient
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
+from oc8.knowledge.connectors import registry
+from oc8.knowledge.connectors.base import ValidationResult
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
+
+
+class _AcceptingConnector:
+    """A PATCH with `config` now re-validates the merged config, so the merge
+    test needs a connector that is registered and says yes."""
+
+    type_id = "test_patch_merge"
+    requires_oauth: str | None = None
+    label = "Stub"
+    description = "test connector"
+    config_schema: dict[str, Any] = {"type": "object", "properties": {}}
+
+    async def validate(self, config: dict[str, Any], auth: Any = None) -> ValidationResult:
+        return ValidationResult(ok=True)
 
 
 def _headers(tenant: uuid.UUID, role: str = "org_admin") -> dict[str, str]:
@@ -90,17 +107,18 @@ async def test_patch_source_updates_name_and_classification(
 
 
 async def test_patch_source_config_is_merged_not_replaced(
-    app_session: AppSessionFactory,
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A source's `config` (e.g. a credential-typed field) must be MERGED, not
     replaced wholesale -- an operator changing which credential a source uses
     must never accidentally wipe its bucket/prefix/other config in the same
     call just because the client didn't resend them."""
+    monkeypatch.setitem(registry._CONNECTORS, _AcceptingConnector.type_id, _AcceptingConnector())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         ds = m.DataSource(
             tenant_id=tenant,
-            connector_type="s3",
+            connector_type=_AcceptingConnector.type_id,
             name="src",
             config={"bucket": "reports", "prefix": "2026/", "credential": "old-cred-id"},
             classification="internal",

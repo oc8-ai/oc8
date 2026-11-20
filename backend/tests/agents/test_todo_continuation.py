@@ -13,7 +13,8 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
-from oc8.agent.engine import TODO_CONTINUATION_MAX_ROUNDS, run_agent
+from oc8.agent.engine import run_agent
+from oc8.agent.harness.stages.d_todo import TODO_CONTINUATION_MAX_ROUNDS
 from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
 from tests.conftest import AppSessionFactory
 

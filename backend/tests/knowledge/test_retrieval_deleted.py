@@ -32,7 +32,7 @@ def _vec(text: str) -> list[float]:
 
 
 class _FakeEmbedRouter:
-    async def embed(self, text: str, model: str | None = None) -> list[float]:
+    async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
         return _vec(text)
 
 

@@ -13,6 +13,7 @@ from oc8.hooks.types import HookCtx, HookHandler
 from oc8.sandbox import get_sandbox_driver
 from oc8.sandbox.driver import SandboxDriver
 from oc8.sandbox.naming import container_name
+from oc8.sandbox.reaper import TENANT_LABEL
 from oc8.sandbox.types import SandboxHandle, SandboxSpec
 
 WORKER_REQUEST_PATH = "/workspace/req.json"
@@ -58,9 +59,11 @@ def make_scoped_token(tenant_id: uuid.UUID, plugin_id: str, scopes: list[str]) -
 
 @dataclass
 class SandboxedExecutor:
-    """Pooled: one hardened worker per (tenant, plugin_version). Worker code
+    """Pooled: one hardened worker per plugin, and one executor per
+    organisation (``tenant_id``), so the pool is per organisation. Worker code
     receives a scoped token, never DB creds."""
 
+    tenant_id: uuid.UUID
     driver: SandboxDriver | None = None
     image: str = "docker.io/library/python:3.13-alpine"
     regime: dict[str, Any] = field(default_factory=lambda: dict(DEFAULT_COMMUNITY_REGIME))
@@ -76,6 +79,8 @@ class SandboxedExecutor:
                 image=self.image,
                 # No run id: this worker is POOLED and outlives any one run.
                 name=container_name(key, "hook"),
+                # Last, so nothing can override it.
+                labels={TENANT_LABEL: str(self.tenant_id)},
                 command=["sleep", "3600"],
                 runtime=self.regime.get("runtime"),
                 read_only=bool(self.regime.get("read_only", False)),

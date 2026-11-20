@@ -37,6 +37,8 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
+import ipaddress
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 from urllib.parse import quote
@@ -150,6 +152,41 @@ def sign_request(
     }
 
 
+_REGION = re.compile(r"[a-z0-9-]{1,32}")
+_BUCKET = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+
+
+def valid_region(region: str) -> bool:
+    """A region name ("eu-central-1", "fsn1"): it becomes part of a host name."""
+    return _REGION.fullmatch(region) is not None
+
+
+def valid_bucket(bucket: str) -> bool:
+    """S3 bucket naming rules: 3-63 lowercase letters, digits, dots and
+    hyphens, starting and ending with a letter or digit, not an IP address.
+    On AWS the bucket becomes the first label of the host name."""
+    if _BUCKET.fullmatch(bucket) is None:
+        return False
+    try:
+        ipaddress.ip_address(bucket)
+    except ValueError:
+        return True
+    return False
+
+
+_PATH_BUCKET_FORBIDDEN = re.compile(r"[/?#@:\\\s\x00-\x1f\x7f]")
+
+
+def valid_path_bucket(bucket: str) -> bool:
+    """A bucket that goes into the path of a custom endpoint: any name a
+    self-hosted store allows, as long as it cannot change the URL's structure
+    (no separators, userinfo, whitespace or control characters, no dot
+    segments)."""
+    if not bucket or len(bucket) > 255 or bucket in (".", ".."):
+        return False
+    return _PATH_BUCKET_FORBIDDEN.search(bucket) is None
+
+
 def _now() -> dt.datetime:
     return dt.datetime.now(tz=dt.UTC)
 
@@ -158,10 +195,23 @@ class _Client:
     """Just enough S3: sign a GET, send it, and complain usefully on failure."""
 
     def __init__(
-        self, bucket: str, region: str, endpoint: str, access_key: str, secret_key: str
+        self,
+        bucket: str,
+        region: str,
+        endpoint: str,
+        access_key: str,
+        secret_key: str,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
+        #: Optional: connect through this transport (a pinned, already-checked
+        #: address) instead of resolving the endpoint again.
+        self.transport = transport
         self.bucket = bucket
         self.region = region or "us-east-1"
+        # The region is part of the AWS host name; a value outside the
+        # naming rules could redirect the request elsewhere.
+        if not valid_region(self.region):
+            raise ConnectorError("The region is not a valid S3 region name")
         self.access_key = access_key
         self.secret_key = secret_key
         endpoint = endpoint.strip().rstrip("/")
@@ -170,10 +220,22 @@ class _Client:
             self.scheme, _, self.host = endpoint.partition("://")
             if not self.host:
                 self.host, self.scheme = self.scheme, "https"
-            self.prefix_path = f"/{self.bucket}"
+            # The bucket stays in the path, so a self-hosted store's own
+            # names (Ceph: "My_Bucket") are fine; only what could change the
+            # URL's structure is refused, and the rest is percent-encoded.
+            if bucket and not valid_path_bucket(bucket):
+                raise ConnectorError("The bucket is not a valid S3 bucket name")
+            self.prefix_path = f"/{quote(bucket, safe='')}" if bucket else ""
         else:
+            # Virtual-hosted style: the bucket becomes the first host label,
+            # so the strict S3 naming rules apply.
+            if bucket and not valid_bucket(bucket):
+                raise ConnectorError("The bucket is not a valid S3 bucket name")
             self.scheme = "https"
-            self.host = f"{self.bucket}.s3.{self.region}.amazonaws.com"
+            # Without a bucket (checking the keys alone) the regional
+            # service endpoint answers.
+            service = f"s3.{self.region}.amazonaws.com"
+            self.host = f"{self.bucket}.{service}" if self.bucket else service
             self.prefix_path = ""
 
     async def _request(
@@ -198,7 +260,7 @@ class _Client:
         url = f"{self.scheme}://{self.host}{full_path}"
         if canonical_query:
             url = f"{url}?{canonical_query}"
-        async with get_client() as client:
+        async with get_client(transport=self.transport) as client:
             resp = await client.get(url, headers=headers)
         if resp.status_code == 403:
             raise ConnectorError(
@@ -207,7 +269,8 @@ class _Client:
         if resp.status_code == 404:
             raise ConnectorError(f"S3 bucket or object not found: {self.bucket}")
         if resp.status_code != 200:
-            raise ConnectorError(f"S3 error (HTTP {resp.status_code}): {resp.text[:200]}")
+            # Not the body: it can carry internal addresses or upstream detail.
+            raise ConnectorError(f"S3 answered with HTTP {resp.status_code}")
         if len(resp.content) > _MAX_BYTES:
             raise ConnectorError("S3 object exceeds the 5 MB limit")
         return resp

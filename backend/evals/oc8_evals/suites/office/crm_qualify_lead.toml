@@ -1,0 +1,21 @@
+id = "crm_qualify_lead"
+systems = ["odoo"]
+origin = "manual"
+scenario = "crm_qualify_lead"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+A new inbound lead named "{prefix}Bergmann GmbH — website inquiry" came in via the website form.
+Qualify it: move it to the "Qualified" stage and schedule a follow-up call activity for next week.
+Do not touch any other lead.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

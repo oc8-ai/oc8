@@ -69,6 +69,7 @@ async def test_the_pinned_image_creates_the_columns_oc8_uses(tmp_path: Path) -> 
     agent, run = uuid.uuid4(), uuid.uuid4()
     session = await provision_session(
         str(tmp_path),
+        tenant_id=uuid.uuid4(),
         agent_id=agent,
         run_id=run,
         image=provisioner_image(),
@@ -89,6 +90,7 @@ async def test_the_session_dbs_use_the_journal_mode_the_harness_requires(tmp_pat
     agent, run = uuid.uuid4(), uuid.uuid4()
     session = await provision_session(
         str(tmp_path),
+        tenant_id=uuid.uuid4(),
         agent_id=agent,
         run_id=run,
         image=provisioner_image(),

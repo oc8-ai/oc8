@@ -1,6 +1,10 @@
 """ComponentGrant: which agent or department may render which governed
 component (see docs/superpowers/plans/2026-08-21-governed-components.md).
 
+No longer consulted: every catalogue component is available to every agent
+(components are presentation only). The table is kept so existing rows and
+the migration history stay intact.
+
 Deliberately the same department/agent grant shape as KnowledgeGrant
 (oc8.models.knowledge) -- "may this agent use X" is the same question whether
 X is a knowledge base or a UI layout, and oc8.knowledge.retrieval already

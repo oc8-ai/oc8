@@ -9,19 +9,25 @@ from __future__ import annotations
 
 import httpx
 
+from oc8.credentials.errors import CredentialCheckFailed
+
 from .channel import API
 
 
 async def validate(values: dict[str, str]) -> None:
+    # Fixed wording only: a transport error carries the request URL, which
+    # holds the token, and Telegram's own text is not ours to show.
     token = values.get("bot_token", "")
     if not token:
-        raise ValueError("no bot token submitted")
+        raise CredentialCheckFailed("no bot token submitted", reason="invalid")
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             response = await client.get(f"{API}/bot{token}/getMe")
         except httpx.HTTPError as exc:
-            raise ValueError(f"could not reach Telegram: {exc}") from exc
-    body = response.json()
-    if not body.get("ok"):
-        reason = body.get("description") or "unknown error"
-        raise ValueError(f"Telegram rejected this token: {reason}")
+            raise CredentialCheckFailed("Could not reach Telegram", reason="unreachable") from exc
+    try:
+        ok = response.json().get("ok")
+    except ValueError:
+        ok = False
+    if response.status_code != 200 or not ok:
+        raise CredentialCheckFailed("Telegram rejected this bot token", reason="auth")

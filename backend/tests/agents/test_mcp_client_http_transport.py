@@ -15,7 +15,7 @@ import pytest
 
 from oc8.agent.mcp_client import McpSession
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("allow_loopback_outbound")]
 
 _ECHO_SERVER = """
 import asyncio

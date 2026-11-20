@@ -4,13 +4,23 @@ from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.models.account import AccountVerificationToken
 from oc8.models.api_keys import ApiKey
 from oc8.models.attachments import FileAttachment
+from oc8.models.boards import (
+    DataBoard,
+    DataBoardBatch,
+    DataBoardRecord,
+    DataBoardShare,
+    DataBoardSpecVersion,
+)
 from oc8.models.capas import Capa, CapaInstallation, CapaVersion
 from oc8.models.channels import ApprovalChannelBinding, ChannelPollCursor
-from oc8.models.chat import ChatMessage, ChatSession
+from oc8.models.chat import ChatMessage, ChatProject, ChatSession
 from oc8.models.collab import ContractBinding, Handoff, HandoffType
 from oc8.models.components import ComponentGrant
+from oc8.models.connections import AgentToolAccess
+from oc8.models.copilot import CopilotProfile, Responsibility
 from oc8.models.core import (
     Agent,
+    AgentVersion,
     Department,
     ModelConfig,
     Organization,
@@ -18,7 +28,8 @@ from oc8.models.core import (
     Role,
     RolePermission,
 )
-from oc8.models.credentials import Credential
+from oc8.models.credentials import Credential, CredentialDepartment
+from oc8.models.direct_access import DirectAccessGrant
 from oc8.models.flow import Flow, FlowRun, FlowVersion
 from oc8.models.identity import (
     DashboardPreset,
@@ -38,7 +49,11 @@ from oc8.models.knowledge import (
     MemoryStore,
 )
 from oc8.models.kpi import RunStateTransition
-from oc8.models.notifications import PushSubscription
+from oc8.models.notifications import (
+    MemberNotification,
+    MemberNotificationSetting,
+    PushSubscription,
+)
 from oc8.models.oauth import OAuthConnection
 from oc8.models.ops import (
     ActivityEvent,
@@ -47,10 +62,12 @@ from oc8.models.ops import (
     AuditEvent,
     Budget,
     Integration,
+    ProviderBudget,
     Task,
     TokenUsageRecord,
 )
 from oc8.models.pricing import ModelCostReconciliation, ModelPrice
+from oc8.models.records import RecordLink
 from oc8.models.run import (
     AgentRun,
     Clarification,
@@ -59,6 +76,7 @@ from oc8.models.run import (
     RunMessage,
     ToolInvocation,
 )
+from oc8.models.run_input import RunInput
 from oc8.models.secrets import Secret, TenantDek
 from oc8.models.skills import ImportedSkillFile, Skill, SkillAssignment, SkillVersion
 from oc8.models.triggers import Trigger
@@ -68,6 +86,8 @@ __all__ = [
     "ActivityEvent",
     "Agent",
     "AgentRun",
+    "AgentToolAccess",
+    "AgentVersion",
     "ApiKey",
     "ApprovalChannelBinding",
     "ApprovalRequest",
@@ -79,16 +99,25 @@ __all__ = [
     "CapaVersion",
     "ChannelPollCursor",
     "ChatMessage",
+    "ChatProject",
     "ChatSession",
     "Clarification",
     "ComponentGrant",
     "ContractBinding",
     "CopilotOperation",
+    "CopilotProfile",
     "CopilotProposal",
     "Credential",
+    "CredentialDepartment",
     "DashboardPreset",
+    "DataBoard",
+    "DataBoardBatch",
+    "DataBoardRecord",
+    "DataBoardShare",
+    "DataBoardSpecVersion",
     "DataSource",
     "Department",
+    "DirectAccessGrant",
     "FileAttachment",
     "Flow",
     "FlowRun",
@@ -103,6 +132,8 @@ __all__ = [
     "KnowledgeGrant",
     "McpConnection",
     "MemberDashboardLayout",
+    "MemberNotification",
+    "MemberNotificationSetting",
     "MemoryRecord",
     "MemoryStore",
     "ModelConfig",
@@ -113,11 +144,15 @@ __all__ = [
     "OrgMemberDepartment",
     "Organization",
     "Permission",
+    "ProviderBudget",
     "PushSubscription",
     "RecordClaim",
+    "RecordLink",
+    "Responsibility",
     "Role",
     "RolePermission",
     "RunCancellation",
+    "RunInput",
     "RunMessage",
     "RunStateTransition",
     "Secret",

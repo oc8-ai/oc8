@@ -17,6 +17,7 @@ Microsoft 365 plugin's Task 7; this file mirrors that confirmed-correct shape).
 from __future__ import annotations
 
 import asyncio
+import json
 
 import mcp.server.stdio
 import mcp.types as types
@@ -59,15 +60,28 @@ async def _on_list_tools(
     return types.ListToolsResult(tools=ALL_TOOLS)
 
 
+def _result_text(result: object) -> str:
+    """Tool output as the model sees it. Non-strings are JSON (record links parse
+    them, and str(dict) is Python repr no parser reads). A bare string stays raw,
+    unless it LOOKS like JSON (document text can be anything): then it goes out
+    as a quoted JSON string, so core never parses attacker-authored file content
+    as records. Gated on shape, not on json.loads succeeding: core also parses
+    text with a trailing replay note stripped, which a parse check here would
+    disagree with."""
+    if not isinstance(result, str):
+        return json.dumps(result, ensure_ascii=False, default=str)
+    if result.lstrip().lstrip("\ufeff").lstrip().startswith(("[", "{")):
+        return json.dumps(result, ensure_ascii=False)
+    return result
+
+
 async def _on_call_tool(
     ctx: ServerRequestContext, params: types.CallToolRequestParams
 ) -> types.CallToolResult:
     handler = ALL_HANDLERS.get(params.name)
     if handler is None:
         return types.CallToolResult(
-            content=[
-                types.TextContent(type="text", text=f"unknown tool: {params.name}")
-            ],
+            content=[types.TextContent(type="text", text=f"unknown tool: {params.name}")],
             is_error=True,
         )
     try:
@@ -77,14 +91,11 @@ async def _on_call_tool(
             content=[types.TextContent(type="text", text=f"ERROR: {exc}")],
             is_error=True,
         )
-    return types.CallToolResult(
-        content=[types.TextContent(type="text", text=str(result))]
-    )
+    text = _result_text(result)
+    return types.CallToolResult(content=[types.TextContent(type="text", text=text)])
 
 
-server = Server(
-    "google_workspace", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool
-)
+server = Server("google_workspace", on_list_tools=_on_list_tools, on_call_tool=_on_call_tool)
 
 
 async def _run() -> None:

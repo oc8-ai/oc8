@@ -70,6 +70,37 @@ class _AlwaysTruncated:
         yield chunk_from_result(await self.complete(req))
 
 
+class _LengthRetryOverflowsOnce:
+    """The length retry overflows, compacts, then succeeds on its one retry."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.request_ids: list[uuid.UUID] = []
+
+    async def complete(self, req: Any) -> CompletionResult:
+        self.calls += 1
+        self.request_ids.append(req.request_id)
+        if self.calls == 1:
+            return CompletionResult(
+                text="", tool_calls=[], usage=Usage(6832, 1536),
+                stop_reason="length", provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        if self.calls == 2:
+            raise RuntimeError("max_tokens must be at least 1, got -7075")
+        if self.calls == 3:
+            return CompletionResult(
+                text="Task remains; retry the completion.", tool_calls=[], usage=Usage(5000, 30),
+                stop_reason="stop", provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        return CompletionResult(
+            text="Ticket resolved after compaction.", tool_calls=[], usage=Usage(5100, 20),
+            stop_reason="stop", provider="openrouter", model="z-ai/glm-5.3-flash",
+        )
+
+    async def stream(self, req: Any) -> Any:
+        yield chunk_from_result(await self.complete(req))
+
+
 class _TruncatedButWithAToolCall:
     """Truncated (stop_reason == "length") but a tool call still came through
     -- this is NOT the empty-truncation case and must proceed normally,
@@ -139,6 +170,28 @@ async def test_persistent_empty_truncation_reports_failed_not_done(
     assert router.calls == 2
 
 
+async def test_length_retry_compacts_and_retries_once_on_overflow(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = _LengthRetryOverflowsOnce()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="IT-Support", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Lennart")
+        db.add(agent)
+        await db.flush()
+        result = await run_agent(
+            db, agent=agent, task_text="Handle the ticket", tenant_id=tenant
+        )
+    assert result.status == "done"
+    assert result.output == "Ticket resolved after compaction."
+    assert router.calls == 4
+    assert len(set(router.request_ids)) == 4
+
+
 async def test_a_truncated_call_that_still_produced_a_tool_call_is_not_retried(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -158,3 +211,76 @@ async def test_a_truncated_call_that_still_produced_a_tool_call_is_not_retried(
     assert result.status == "done"
     # One completion, one tool call, one closing completion -- no retry inserted.
     assert router.calls == 2
+
+
+class _ThinksAwayItsBudget:
+    """Streams reasoning, then stops at max_tokens with nothing else -- on
+    every call, so the run fails on the budget."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete(self, req: Any) -> CompletionResult:
+        self.calls += 1
+        return CompletionResult(
+            text="",
+            tool_calls=[],
+            usage=Usage(8000, req.params.max_tokens, req.params.max_tokens),
+            stop_reason="length",
+            provider="openrouter",
+            model="z-ai/glm-5.3-flash",
+            reasoning=f"thinking hard, attempt {self.calls}",
+        )
+
+    async def stream(self, req: Any) -> Any:
+        yield chunk_from_result(await self.complete(req))
+
+
+async def _lennart(db: Any, tenant: uuid.UUID) -> m.Agent:
+    dept = m.Department(tenant_id=tenant, name="IT-Support", frame={})
+    db.add(dept)
+    await db.flush()
+    agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Lennart")
+    db.add(agent)
+    await db.flush()
+    return agent
+
+
+async def test_a_budget_failure_says_what_to_do_and_keeps_the_reasoning(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = _ThinksAwayItsBudget()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _lennart(db, tenant)
+        result = await run_agent(db, agent=agent, task_text="Handle the ticket", tenant_id=tenant)
+    assert result.status == "failed"
+    # The retry's budget is the one named, and the message names the fixes.
+    retry_budget = result.step_timings[-1]["max_tokens"]
+    assert f"{retry_budget:,} tokens" in result.output
+    assert "OC8_DEFAULT_MAX_TOKENS" in result.output
+    step = result.step_timings[-1]
+    assert step["reasoning"] == "thinking hard, attempt 2"
+    assert step["tokens_out"] == step["reasoning_tokens"]
+    assert step["tokens_out"] > retry_budget  # both attempts add up
+
+
+async def test_no_length_retry_when_the_budget_is_already_at_the_provider_cap(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter.sampling import DEFAULT_MAX_TOKENS
+
+    router = _AlwaysTruncated()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+    monkeypatch.setattr(
+        "oc8.modelrouter.sampling.provider_max_tokens", lambda provider: DEFAULT_MAX_TOKENS
+    )
+    monkeypatch.setattr("oc8.modelrouter.sampling.default_max_tokens", lambda: DEFAULT_MAX_TOKENS)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _lennart(db, tenant)
+        result = await run_agent(db, agent=agent, task_text="Handle the ticket", tenant_id=tenant)
+    assert result.status == "failed"
+    # A doubled budget would be cut back to the same cap: no point retrying.
+    assert router.calls == 1

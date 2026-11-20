@@ -6,11 +6,13 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.constants import ACME_TENANT_ID
 from oc8.main import create_app
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -101,3 +103,71 @@ async def test_run_todos_reach_the_wire(app_session: AppSessionFactory) -> None:
             r = await client.get(f"/api/v1/runs/{run_id}", headers=headers)
             assert r.status_code == 200, r.text
             assert r.json()["todos"] == [{"content": "Check the invoice", "status": "in_progress"}]
+
+
+async def test_run_updated_at_reaches_the_wire(app_session: AppSessionFactory) -> None:
+    """`AgentRun.updated_at` is the run's heartbeat (runtime/reconcile.py's
+    HEARTBEAT_SECONDS/ABANDONED_AFTER) and must round-trip through
+    `GET /runs/{id}` as `updatedAt` -- the frontend's staleness indicator on
+    the agent detail page has nothing to compare "now" against otherwise."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Dev")
+        s.add(agent)
+        await s.flush()
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="running")
+        s.add(run)
+        await s.flush()
+        run_id = run.id
+        expected_updated_at = run.updated_at
+
+    app = create_app()
+    token = get_identity_provider().mint(tenant_id=tenant, subject="dev-user", role="org_admin")
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {token}"}
+            r = await client.get(f"/api/v1/runs/{run_id}", headers=headers)
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert "updatedAt" in body
+            assert body["updatedAt"] == expected_updated_at.isoformat()
+
+
+async def test_starting_a_run_over_the_api_answers_tenant_inactive(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Dev")
+        s.add(agent)
+        await s.flush()
+        agent_id = agent.id
+
+    app = create_app()
+    fake = _FakeQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: fake)
+    token = get_identity_provider().mint(tenant_id=tenant, subject="dev-user", role="org_admin")
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.post(
+                f"/api/v1/agents/{agent_id}/run",
+                json={"task": "build it"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 403
+    assert r.json() == {"detail": "tenant_inactive"}
+    assert fake.enqueued == []
+    async with app_session(tenant) as s:
+        runs = (
+            (await s.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []

@@ -7,7 +7,9 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,7 @@ PluginType = Literal[
     "agent_template",
     "department_template",
     "connector",
+    "vector_index",
     "model_adapter",
     "runtime_adapter",
     "tool_pack",
@@ -33,6 +36,13 @@ CLAUDE_HOOK_PERMISSIONS = {
     "http": "hooks:claude:http",
     "mcp_tool": "hooks:claude:mcp",
 }
+
+#: The only permissions a capa may defer (`Manifest.deferred_permissions`).
+#: Each one gates a single kind of contribution that stays off until it is
+#: granted; a permission off this list is always consented to at enable.
+#: `oc8.capas.lifecycle.deferred_permissions` applies it to stored manifests
+#: too, so a stale or edited row cannot widen it.
+DEFERRABLE_PERMISSIONS: frozenset[str] = frozenset({"knowledge:write"})
 
 
 class ManifestError(ValueError):
@@ -81,6 +91,10 @@ class SandboxManifest(BaseModel):
     image: str | None = None
     build: str | None = None
     services: list[str] = []
+    # Setup-field key whose credential authenticates a pull of `image`.
+    # Empty means a missing image is pulled anonymously. The credential
+    # never becomes a container environment variable.
+    registry_credential: str = ""
 
 
 class TemplateAgentTrigger(BaseModel):
@@ -112,6 +126,33 @@ class TemplateAgent(BaseModel):
     # Component 3). None = no trigger, the same as every pre-existing
     # manifest that predates this field.
     trigger: TemplateAgentTrigger | None = None
+    # Setup-field key holding how many copies of this agent hire creates.
+    # Empty means one agent, the historical behavior. The value is a whole
+    # number; the core clamps the upper bound so a setup form cannot hire
+    # an unbounded team. `{{n}}` in the name (and in the texts hire already
+    # substitutes) is the copy's index, starting at 1.
+    repeat_from_setup: str = ""
+    # Plugin name of a runtime_adapter to assign at hire. Empty leaves
+    # runtime_ref unset, the same as every template written before this field.
+    runtime: str = ""
+    #: Opening questions this agent's composer offers on an empty conversation
+    #: (§5.3 of the AI workplace design). Content, like `mission` and `skills`
+    #: -- the pack author knows what this agent is good for, and a generic
+    #: "What can you do?" teaches nobody anything.
+    #:
+    #: Capped at six because the composer shows at most three and a picker is
+    #: not a manual; each one capped at 120 characters because a starter that
+    #: wraps twice is not a starter.
+    prompt_starters: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("prompt_starters")
+    @classmethod
+    def _starters_are_short_and_non_empty(cls, v: list[str]) -> list[str]:
+        cleaned = [s.strip() for s in v if s.strip()]
+        too_long = [s for s in cleaned if len(s) > 120]
+        if too_long:
+            raise ValueError(f"prompt starter is longer than 120 characters: {too_long[0]!r}")
+        return cleaned
 
 
 class DepartmentTemplateSpec(BaseModel):
@@ -261,6 +302,170 @@ class GuardrailAttribute(BaseModel):
         return self
 
 
+class ToolLabel(BaseModel):
+    """How one of this connection's tools reads to an end user.
+
+    `search_records` is what the model calls; "Looked up deals" is what a
+    salesperson should see. The pack declares this because core has no idea
+    what a deal is -- the same reason guardrail presets and guardrail
+    attributes live here rather than in `authz/` or in the frontend.
+
+    Every string is ENGLISH, like every other capa-authored string in this
+    file. German (and any other locale) comes from the plugin's own
+    `i18n/*.po` catalog, resolved through `oc8.capas.i18n.translations_for`
+    exactly as `GuardrailPreset.label` already is -- a `verb_de` field would
+    buy German and nothing else, and would be the only place in the codebase
+    where a translation lives outside a catalog.
+
+    Placeholders are `{name}`, filled from the CALL: `{model_label}` (the
+    `model_labels` entry for whatever the call's `model` argument says) plus
+    any top-level argument by its own name (`{id}`, `{subtype}`, ...). A
+    placeholder that cannot be filled makes the whole label fall back to the
+    right-derived one ("Read from odoo") rather than rendering a literal
+    `{count}` on somebody's screen -- see the frontend's `tool-labels.ts`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: Past tense, because a timeline row describes something that happened:
+    #: "Looked up", "Created", "Replied to".
+    verb: str
+    #: What the verb acted on, e.g. "{model_label}" or "ticket {id}". Empty
+    #: for a tool whose verb says everything ("Listed the available models").
+    object: str = ""
+    #: Present participle shown while the call is still in flight, e.g.
+    #: "Looking up {model_label}". Empty means the timeline shows the verb
+    #: form while running too, which reads oddly but is never wrong.
+    running: str = ""
+
+
+RECORD_URL_BUILTIN_PLACEHOLDERS: frozenset[str] = frozenset({"base_url", "model", "id"})
+_PLACEHOLDER_KINDS = ("arg:", "item:", "config:")
+
+
+class RecordUrlTemplate(BaseModel):
+    """Where ONE record lives in the system behind this connection (§6 of the
+    AI workplace design).
+
+    The only vendor-specific thing in the whole approval-link feature, and it
+    lives here for the same reason `guardrail_presets` does: an approval that
+    says "wants to create a quotation for EUR 4,200" should link to that
+    quotation, and core must not learn a single URL shape to make that happen.
+
+    Core substitutes exactly three names and validates that up front:
+
+    * `{base_url}` -- read out of the CONNECTION's own `config` at
+      `base_url_path` (e.g. `["env", "ODOO_URL"]`). Not declared as a literal
+      here, because it is per-installation: the same pack points at a
+      customer's own host.
+    * `{model}` -- `models[entity]`, where `entity` is what `focus_spec`
+      already resolves a call's record to (`agent/tool_semantics.py::
+      record_identity`). Only listed entities produce a link; anything else
+      resolves to None, the same "only listed entities are surfaced" rule
+      `focus_spec.labels` already uses.
+    * `{id}` -- that record's reference, likewise from `record_identity`.
+
+    Declared at the connection's TOP LEVEL rather than inside `config`
+    deliberately: `capas/materialise.py::_refresh_declared_seams` only carries
+    the five `DECLARED_SEAMS` config keys onto an already-installed row, and
+    only on a re-enable, so a `config` entry would be frozen at whatever
+    version created the connection. Read live off the manifest instead, like
+    `scopes` and `guardrail_presets`.
+
+    Beyond the three built-in names a pack may declare its own placeholders
+    (`placeholders`), each with an ordered list of sources -- `arg:<dot.path>`
+    into the call's arguments, `item:<dot.path>` into the record inside the
+    result, `config:<dot.path>` into the connection config. A per-entity
+    `templates` override covers systems whose kinds live under different
+    paths (GitHub issues vs pulls). `native_url_fields` names fields in a
+    result record that already hold the system's own link, preferred over the
+    template. `related_fields` maps an argument path of a CREATE to the entity
+    it references, so an approval for a not-yet-existing record still links
+    its context (the customer of a new quotation).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: e.g. "{base_url}/odoo/{model}/{id}"
+    template: str = ""
+    #: Path into the connection's own `config` holding the installation's base
+    #: URL, e.g. `["env", "ODOO_URL"]`. Same "a path is a list of keys" shape
+    #: `value_spec.line_items.path` already uses.
+    base_url_path: list[str] = []
+    #: focus entity -> the segment that goes in `{model}`. An entity absent
+    #: from this map gets no link.
+    models: dict[str, str] = {}
+    #: Per-entity template overrides for systems with different URL patterns
+    templates: dict[str, str] = {}
+    #: Custom placeholder names and their source paths
+    placeholders: dict[str, list[str]] = {}
+    #: Native URL fields in result records that hold the system's own link
+    native_url_fields: list[str] = []
+    #: Hosts a native URL may point at besides the base URL's own: an exact host
+    #: or "*.suffix" (any subdomain of suffix, not suffix itself), or
+    #: "host/path-prefix" for a shared host trusted on one path only. A tool result
+    #: is untrusted text, so a native URL elsewhere is ignored, never issued.
+    native_url_hosts: list[str] = []
+    #: Maps argument paths to entity models for CREATE context linking
+    related_fields: dict[str, str] = {}
+
+    def templates_for(self, entity: str) -> str:
+        """The template for `entity`: its override, else the shared one."""
+        return self.templates.get(entity) or self.template
+
+    @model_validator(mode="after")
+    def _only_known_placeholders(self) -> RecordUrlTemplate:
+        from string import Formatter
+
+        all_templates = [t for t in [self.template, *self.templates.values()] if t]
+        if not all_templates and not self.native_url_fields:
+            raise ValueError(
+                "record_url declares neither a template nor native_url_fields, "
+                "so it can never produce a link"
+            )
+        if self.native_url_fields and not (self.native_url_hosts or self.base_url_path):
+            raise ValueError(
+                "native_url_fields need native_url_hosts or a base_url_path to bound their hosts"
+            )
+        for entry in self.native_url_hosts:
+            if not entry.strip() or entry.startswith("/"):
+                raise ValueError(f"native_url_hosts entry {entry!r} must start with a host")
+        known = RECORD_URL_BUILTIN_PLACEHOLDERS | set(self.placeholders)
+        for tpl in all_templates:
+            fields = {name for _lit, name, _spec, _conv in Formatter().parse(tpl) if name}
+            unknown = sorted(fields - known)
+            if unknown:
+                raise ValueError(
+                    f"record_url template has undeclared placeholder(s): {', '.join(unknown)} "
+                    "-- declare a source for each under record_url.placeholders"
+                )
+            if not (tpl.startswith("{base_url}") or tpl.startswith(("https://", "http://"))):
+                raise ValueError(
+                    "record_url template must start with {base_url} or https:// -- a "
+                    "relative link is useless to an approver reading it on a phone"
+                )
+            if "base_url" in fields and not self.base_url_path:
+                raise ValueError(
+                    "record_url template references {base_url} but declares no "
+                    "base_url_path to read it from"
+                )
+        for name, sources in self.placeholders.items():
+            if not sources or not all(s.startswith(_PLACEHOLDER_KINDS) for s in sources):
+                raise ValueError(
+                    f"record_url placeholder {name!r} needs sources starting with "
+                    "arg:, item: or config:"
+                )
+        if all_templates and not self.models:
+            raise ValueError(
+                "record_url declares a template but no models, so it can never produce a link"
+            )
+        stray = sorted(set(self.templates) - set(self.models))
+        if stray:
+            raise ValueError(f"record_url templates name unlisted models: {', '.join(stray)}")
+        stray = sorted(set(self.related_fields.values()) - set(self.models))
+        if stray:
+            raise ValueError(f"record_url related_fields name unlisted models: {', '.join(stray)}")
+        return self
+
+
 class ToolPackConnection(BaseModel):
     """An MCP server a tool pack describes. It is materialised DISCONNECTED --
     a manifest may describe a server, but only an operator may declare it
@@ -291,6 +496,55 @@ class ToolPackConnection(BaseModel):
     #: limits" Conditions (see `GuardrailAttribute`). Empty for a connection
     #: that predates the generic condition model or has nothing to gate on.
     guardrail_attributes: list[GuardrailAttribute] = []
+    #: Where one of this connection's records lives, for the deep link on an
+    #: approval (§6). None for a pack that has no answer -- which degrades to
+    #: exactly today's behaviour: no link, no error.
+    record_url: RecordUrlTemplate | None = None
+    #: How this connection's tools read to an end user, keyed by tool name
+    #: (see `ToolLabel`). Empty for a pack that has not written any, which is
+    #: every pack but odoo_mcp today -- the consumer then falls back to the
+    #: tool's own right ("Read from <connection>"), never to the raw name.
+    tool_labels: dict[str, ToolLabel] = {}
+    #: English plural nouns for the entity values this connection's calls
+    #: carry, keyed by the raw value (e.g. "crm.lead" -> "deals"). Referenced
+    #: from a `ToolLabel` as `{model_label}`. A value absent here has no
+    #: label, and a label needing one falls back rather than printing the raw
+    #: vendor identifier at a user.
+    model_labels: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _http_api_classification(self) -> ToolPackConnection:
+        """An HTTP API's read/modify classification, held at install (and at
+        every later parse) to the rules `PATCH /mcp/connections/{id}/http-tools`
+        enforces -- normalised fail-closed rather than refused, so a stored
+        manifest always still parses: a tool in both lists is `modify`, and a
+        name that is no declared tool is dropped (it classifies nothing; an
+        unlisted tool is `modify` anyway)."""
+        if self.transport != "manual_http" or not isinstance(self.scopes, dict):
+            return self
+        tools = self.config.get("http_tools")
+        known = (
+            {t["name"] for t in tools if isinstance(t, dict) and isinstance(t.get("name"), str)}
+            if isinstance(tools, list)
+            else None
+        )
+
+        def names(key: str) -> list[str]:
+            value = self.scopes.get(key)
+            listed = value if isinstance(value, list) else []
+            out: list[str] = []
+            for name in listed:
+                if isinstance(name, str) and name not in out and (known is None or name in known):
+                    out.append(name)
+            return out
+
+        modify = names("modify")
+        read = [name for name in names("read") if name not in modify]
+        if "read" in self.scopes or read:
+            self.scopes["read"] = read
+        if "modify" in self.scopes or modify:
+            self.scopes["modify"] = modify
+        return self
 
     @model_validator(mode="after")
     def _validate_guardrail_presets(self) -> ToolPackConnection:
@@ -328,6 +582,19 @@ class ToolPackConnection(BaseModel):
                         self.key,
                     )
                     preset.approval_eur = None
+        # A label keyed by a tool this connection does not have is a typo that
+        # would otherwise show up as "the label just doesn't appear", which is
+        # indistinguishable from "the pack ships no labels". The design spec
+        # itself demonstrated the failure mode -- its example named
+        # `search_read`, which is not one of this pack's nine tools.
+        if self.tool_labels and isinstance(self.scopes, dict):
+            known = {name for names in self.scopes.values() for name in names}
+            unknown = sorted(set(self.tool_labels) - known)
+            if unknown:
+                raise ValueError(
+                    f"connection '{self.key}' declares tool_labels for unknown tool(s): "
+                    f"{', '.join(unknown)}"
+                )
         return self
 
 
@@ -347,6 +614,10 @@ class SetupFieldSpec(BaseModel):
     default: str = ""
     placeholder: str = ""
     help: str = ""
+    # A `url` field whose service answers at its root: only scheme, host and
+    # port are kept, so an address copied from the browser bar (with a page
+    # path and query behind it) still reaches the service.
+    origin_only: bool = False
     # Where a `password`-kind value is stored. Empty means the default
     # `plugin:{manifest.name}:{key}` convention (what an MCP tool pack uses);
     # a plugin whose OWN code already reads a fixed name -- an approval
@@ -613,6 +884,12 @@ class Manifest(BaseModel):
     # means the UI falls back to a generic icon for `type`.
     icon: str | None = None
     permissions: list[str] = []
+    # The subset of `permissions` a tenant grants later, when it first uses
+    # the contribution that needs it (e.g. `knowledge:write` for a capa's
+    # knowledge connectors) -- not at enable. Enabling, and an update that only
+    # adds a deferred permission, never ask for it; what it gates stays off
+    # until POST /capas/{id}/grant records it.
+    deferred_permissions: list[str] = []
     capabilities: list[str] = []
     provides: list[str] = []
     entry_points: dict[str, str] = {}
@@ -675,6 +952,21 @@ class Manifest(BaseModel):
     #: How this capa was assembled on disk — metadata for UI and debugging.
     source_format: SourceFormat = "oc8"
 
+    @model_validator(mode="after")
+    def _deferred_permissions_are_declared(self) -> Manifest:
+        not_deferrable = sorted(set(self.deferred_permissions) - DEFERRABLE_PERMISSIONS)
+        if not_deferrable:
+            raise ValueError(
+                f"deferred_permissions {not_deferrable} cannot be deferred; "
+                f"only {sorted(DEFERRABLE_PERMISSIONS)} can"
+            )
+        undeclared = sorted(set(self.deferred_permissions) - set(self.permissions))
+        if undeclared:
+            raise ValueError(
+                f"deferred_permissions {undeclared} must also be listed in permissions"
+            )
+        return self
+
 
 def claude_hook_permissions(spec: ClaudeHooksSpec | None) -> list[str]:
     """Derive consent permissions from declared Claude hook action types."""
@@ -690,6 +982,15 @@ def claude_hook_permissions(spec: ClaudeHooksSpec | None) -> list[str]:
                     seen.add(perm)
                     out.append(perm)
     return out
+
+
+def http_api_login_in_base_url(manifest: Manifest) -> str | None:
+    """`LOGIN_IN_BASE_URL` naming the first HTTP API connection whose base URL
+    carries a login, or None. The URL itself is never repeated."""
+    for conn in manifest.tool_pack.connections if manifest.tool_pack else []:
+        if conn.transport == "manual_http" and base_url_has_login(conn.server_url):
+            return f"{conn.name}: {LOGIN_IN_BASE_URL}"
+    return None
 
 
 def parse_manifest(data: dict[str, Any]) -> Manifest:

@@ -175,6 +175,28 @@ async def test_a_search_still_labels_a_task_that_has_nothing_yet(
         assert task.meta_label == "Durchsucht Ticket"
 
 
+async def test_a_record_url_lands_on_the_card_and_in_the_feed(
+    app_session: AppSessionFactory,
+) -> None:
+    """The phrase says which record; the URL is how an operator opens it."""
+    tenant = uuid.uuid4()
+    url = "https://odoo.example/web#id=43&model=helpdesk.ticket&view_type=form"
+    async with app_session(tenant) as db:
+        task = await _task(db, tenant)
+        await note_focus(
+            db,
+            tenant_id=tenant,
+            agent_id=uuid.uuid4(),
+            task_id=task.id,
+            focus="Bearbeitet Ticket 43",
+            record_url=url,
+        )
+        await db.refresh(task)
+        assert (task.payload or {}).get("record_url") == url
+        events = (await db.execute(m.ActivityEvent.__table__.select())).fetchall()
+        assert any(e.detail == url for e in events)
+
+
 # --------------------------------------------------------------- record titles
 
 

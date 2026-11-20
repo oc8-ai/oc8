@@ -20,7 +20,7 @@ pytestmark = pytest.mark.asyncio
 
 
 class _FakeEmbedRouter:
-    async def embed(self, text: str, model: str | None = None) -> list[float]:
+    async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
         seed = sum(ord(c) for c in text) or 1
         return [float((seed + i) % 23) for i in range(EMBED_DIM)]
 
@@ -87,7 +87,7 @@ async def test_ingest_raw_document_uses_the_knowledge_bases_own_embedding_model(
     seen_models: list[str | None] = []
 
     class _RecordingRouter:
-        async def embed(self, text: str, model: str | None = None) -> list[float]:
+        async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
             seen_models.append(model)
             seed = sum(ord(c) for c in text) or 1
             return [float((seed + i) % 23) for i in range(EMBED_DIM)]

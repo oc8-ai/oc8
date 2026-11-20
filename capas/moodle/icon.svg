@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+  <!-- Generic mortarboard standing in for an LMS; not Moodle's own logo
+       (no licence to redistribute that here). -->
+  <path d="M8 2 0.5 5.5 8 9l6-2.8V10h1.5V5.5z"/>
+  <path d="M3.5 8.2v2.6C4.6 12.1 6.2 12.8 8 12.8s3.4-.7 4.5-2V8.2L8 10.3z"/>
+</svg>

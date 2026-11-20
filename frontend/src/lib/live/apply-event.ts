@@ -3,6 +3,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { Agent, ActivityItem } from "@/lib/mock-data";
 import type { RealtimeEvent } from "@/lib/live/types";
 import type { RunComponentDTO } from "@/lib/hooks";
+import { notificationKeys } from "@/lib/notifications-api";
 
 // Query keys that carry live-updatable data (resynced on reconnect).
 export const liveQueryKeys: readonly unknown[][] = [
@@ -12,24 +13,108 @@ export const liveQueryKeys: readonly unknown[][] = [
   ["clarifications"],
   ["handoffs"],
   ["flow-runs"],
+  ["runs"],
   ["supervision-interventions"],
   ["departments"],
+  ["copilot", "profile"],
+  ["copilot", "responsibilities"],
+  ["copilot", "followups"],
+  ["copilot", "delegations"],
+  ["copilot", "notes"],
+  // The chat no longer polls: a turn whose "chat.message_created" arrived
+  // while the socket was down only shows up through this resync.
+  ["chat", "messages"],
+  ["chat", "session"],
+  ["chat", "sessions"],
+  // The Live tab: runs that started or ended, inputs a run read, while down.
+  ["chat", "live"],
+  ["run-steering"],
+  // The bell: a notification created while the socket was down.
+  [...notificationKeys.all],
 ];
+
+export interface McpTestLogLine {
+  step: string;
+  message: string;
+}
+
+// Not in liveQueryKeys above: unlike those, this cache entry has no backing
+// GET endpoint to resync from on reconnect -- it exists only while a "Test
+// connection" log drawer is open, reset by the caller (McpTestLogDrawer)
+// each time a new test starts.
+export function mcpTestLogKey(connectionId: string): unknown[] {
+  return ["mcp-test-log", connectionId];
+}
+
+/** The state the last "run.status" event announced for a run. */
+export interface RunLiveState {
+  state: string;
+  phase: string | null;
+}
+
+// Not in liveQueryKeys either: written only by the "run.status" patcher below,
+// read by useRun (lib/hooks.ts) over every fetch, and dropped on reconnect,
+// when an event may have been missed and the server is the better source again.
+export function runLiveStateKey(runId: string): unknown[] {
+  return ["run-live-state", runId];
+}
+
+// The answer's fragments as they streamed, kept apart from the run like
+// runLiveStateKey: a fragment can land before the run's first GET has
+// answered (an in-process run starts streaming within a second), and the
+// run's own cache entry does not exist yet to take it. useTurnRun lays this
+// over its fetch, so the answer never starts mid-sentence.
+export function runLiveAnswerKey(runId: string): unknown[] {
+  return ["run-live-answer", runId];
+}
 
 type Patcher = (qc: QueryClient, data: Record<string, unknown>) => void;
 
 const patchers: Record<string, Patcher> = {
   "run.status": (qc, d) => {
     const runId = d.run_id as string | undefined;
-    if (runId) {
+    if (runId && typeof d.state === "string") {
+      const live: RunLiveState = {
+        state: d.state,
+        phase: (d.phase as string | null | undefined) ?? null,
+      };
+      // Kept apart from the run itself, and written even when the run is not
+      // cached yet: the event can land while the first GET /runs/{id} is still
+      // in flight, and that GET can answer with the state from BEFORE this
+      // transition -- the executor publishes it before it commits, and an
+      // in-process run commits only when it ends. useRun lays this over every
+      // fetch, so a poll can no longer put a running run back to "queued".
+      qc.setQueryData(runLiveStateKey(runId), live);
       qc.setQueryData(["run", runId], (prev: unknown) =>
-        prev ? { ...(prev as object), state: d.state, phase: d.phase } : prev,
+        prev ? { ...(prev as object), state: live.state, phase: live.phase } : prev,
       );
     }
+    // The list a state filter selects from -- a run that just parked or just
+    // finished belongs in a different bucket than a moment ago.
+    qc.invalidateQueries({ queryKey: ["runs"] });
+    // The copilot's status (activeCount, status field) follows runs live on every state change.
+    qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "delegations"] });
+    // A dot tool's own copilot.* event is published before its run commits, so
+    // the refetch it triggers can miss the change; the run's next status
+    // event lands after the commit and keeps the work panel current.
+    qc.invalidateQueries({ queryKey: ["copilot", "responsibilities"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "followups"] });
     // terminal states free the agent -> reflect in the agents list (mirrors the
     // old useRun poll's terminal-state agents invalidation)
     if (d.state === "done" || d.state === "failed" || d.state === "interrupted") {
       qc.invalidateQueries({ queryKey: ["agents"] });
+      // The answer lands as a chat message in the same commit that ends the
+      // run; chat.message_created normally says so, this is the backstop.
+      qc.invalidateQueries({ queryKey: ["chat", "session"] });
+      qc.invalidateQueries({ queryKey: ["chat", "messages"] });
+      // The server may have withheld this run's deltas while a watch's access
+      // re-check was failing (backend realtime/manager.py), so what streamed in
+      // can be short. The persisted run is complete once it has ended.
+      if (runId) qc.invalidateQueries({ queryKey: ["run", runId] });
+      // The Live tab's timeline carries the run's final output and state.
+      qc.invalidateQueries({ queryKey: ["chat", "live"] });
+      if (runId) qc.invalidateQueries({ queryKey: ["run-steering", runId] });
     }
     // A run parking on a question is the only signal that a clarification
     // appeared — there is no `clarification.created` event. Narrowed to that one
@@ -37,6 +122,9 @@ const patchers: Record<string, Patcher> = {
     // the workspace queue on all of them would be a request per step.
     if (d.state === "waiting_for_input") {
       qc.invalidateQueries({ queryKey: ["clarifications"] });
+      // The chat's session detail carries the parked question (pendingQuestion)
+      // its QuestionCard shows above the composer.
+      qc.invalidateQueries({ queryKey: ["chat", "session"] });
     }
   },
   // Incremental container stdout, fired by the three containerized runtimes
@@ -106,6 +194,30 @@ const patchers: Record<string, Patcher> = {
         : prev,
     );
   },
+  // One finished step's latency record (oc8.runtime.step_record), published
+  // by both runtimes as the NEXT step starts -- see
+  // backend/src/oc8/realtime/emit.py's publish_run_step_timing. Appended,
+  // same as run.tool_call above and for the same reason: the backend already
+  // persisted this entry to context->'stepTimings' before publishing, so a
+  // fresh page load gets it from the initial GET too; this only spares an
+  // already-open timeline the wait for a refetch before it can show that
+  // step's duration.
+  "run.step_timing": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    const timing = d.timing as Record<string, unknown> | undefined;
+    if (!runId || !timing) return;
+    qc.setQueryData(["run", runId], (prev: unknown) =>
+      prev
+        ? {
+            ...(prev as { stepTimings?: Record<string, unknown>[] }),
+            stepTimings: [
+              ...((prev as { stepTimings?: Record<string, unknown>[] }).stepTimings ?? []),
+              timing,
+            ],
+          }
+        : prev,
+    );
+  },
   // One text fragment of the model's own answer as it streams in (Stage 2
   // token streaming) -- see backend/src/oc8/realtime/emit.py's
   // publish_run_token_delta, called from BOTH engines' streaming accumulator
@@ -117,6 +229,7 @@ const patchers: Record<string, Patcher> = {
     const runId = d.run_id as string | undefined;
     const text = d.text as string | undefined;
     if (!runId || !text) return;
+    qc.setQueryData<string>(runLiveAnswerKey(runId), (prev) => (prev ?? "") + text);
     qc.setQueryData(["run", runId], (prev: unknown) =>
       prev
         ? {
@@ -125,6 +238,23 @@ const patchers: Record<string, Patcher> = {
           }
         : prev,
     );
+  },
+  // One fragment of the model's reasoning for step `step`, as it streams in
+  // -- see backend/src/oc8/realtime/emit.py's publish_run_reasoning_delta.
+  // Concatenated like run.token_delta, but per step: a fragment for a new
+  // step starts the text over, since the finished step's reasoning already
+  // lands on its stepTimings entry (run.step_timing).
+  "run.reasoning_delta": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    const text = d.text as string | undefined;
+    const step = typeof d.step === "number" ? d.step : 0;
+    if (!runId || !text) return;
+    qc.setQueryData(["run", runId], (prev: unknown) => {
+      if (!prev) return prev;
+      const current = (prev as { liveReasoning?: { step: number; text: string } }).liveReasoning;
+      const base = current && current.step === step ? current.text : "";
+      return { ...(prev as object), liveReasoning: { step, text: base + text } };
+    });
   },
   // The agent's whole to-do list as of the last todo_write call (whole-list
   // replace, not appended like toolCalls/components above) -- see
@@ -137,6 +267,12 @@ const patchers: Record<string, Patcher> = {
     qc.setQueryData(["run", runId], (prev: unknown) =>
       prev ? { ...(prev as object), todos } : prev,
     );
+  },
+  // A message written to a running run was read at step N (backend
+  // runtime/run_inputs.py publish_inputs_consumed).
+  "run.input_consumed": (qc, d) => {
+    const runId = d.run_id as string | undefined;
+    if (runId) qc.invalidateQueries({ queryKey: ["run-steering", runId] });
   },
   "agent.status": (qc, d) => {
     const agentId = d.agent_id as string | undefined;
@@ -159,6 +295,58 @@ const patchers: Record<string, Patcher> = {
   "flow_run.status": (qc) => qc.invalidateQueries({ queryKey: ["flow-runs"] }),
   "supervision.intervention": (qc) =>
     qc.invalidateQueries({ queryKey: ["supervision-interventions"] }),
+  // One step of a "Test connection" run (spawn/handshake/list_tools/result)
+  // -- see backend/src/oc8/realtime/emit.py's publish_mcp_test_log. Appended,
+  // same shape as run.output_delta: nothing here is replayed from history,
+  // so a drawer opened after the test finished only shows what arrives on
+  // the NEXT test run.
+  "mcp.test.log": (qc, d) => {
+    const connectionId = d.connection_id as string | undefined;
+    const step = d.step as string | undefined;
+    const message = d.message as string | undefined;
+    if (!connectionId || !step || !message) return;
+    qc.setQueryData(mcpTestLogKey(connectionId), (prev: McpTestLogLine[] | undefined) => [
+      ...(prev ?? []),
+      { step, message },
+    ]);
+  },
+  // A notification row was created for this member (backend publishes only
+  // {kind}): refetch the bell's count and list.
+  "notification.created": (qc) => qc.invalidateQueries({ queryKey: notificationKeys.all }),
+  "copilot.profile": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "profile"] }),
+  "copilot.responsibility": (qc) => {
+    qc.invalidateQueries({ queryKey: ["copilot", "responsibilities"] });
+    qc.invalidateQueries({ queryKey: ["copilot", "profile"] });
+  },
+  "copilot.followup": (qc) => qc.invalidateQueries({ queryKey: ["copilot", "followups"] }),
+  // A builder proposal's status changed (published after the commit). Ids
+  // only, to the requester: refetch the card.
+  "copilot.agent_builder": (qc, d) => {
+    const proposalId = d.proposal_id as string | undefined;
+    if (!proposalId) return;
+    qc.invalidateQueries({ queryKey: ["copilot", "builder", proposalId] });
+  },
+  // A new turn in a chat this browser's member may open (backend
+  // realtime/emit.py publish_chat_message_created). Ids only, delivered per
+  // member: refetch rather than patch, so the message arrives with its
+  // attachments and author resolved exactly as GET returns them.
+  "chat.message_created": (qc, d) => {
+    const sessionId = d.session_id as string | undefined;
+    if (!sessionId) return;
+    qc.invalidateQueries({ queryKey: ["chat", "messages", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "session", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+  },
+  // A chat's own fields changed -- its title, generated after the first
+  // message or renamed in another tab (backend realtime/emit.py
+  // publish_chat_session_updated). Ids only: refetch the lists and the chat,
+  // not its transcript, which did not change.
+  "chat.session_updated": (qc, d) => {
+    const sessionId = d.session_id as string | undefined;
+    if (!sessionId) return;
+    qc.invalidateQueries({ queryKey: ["chat", "session", sessionId] });
+    qc.invalidateQueries({ queryKey: ["chat", "sessions"] });
+  },
 };
 
 // backend agent.status -> mock UI AgentStatus (running|warning|error|paused|waiting_for_task)

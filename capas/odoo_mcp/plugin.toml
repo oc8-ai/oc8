@@ -20,10 +20,19 @@
 
 [plugin]
 name = "odoo_mcp"
-version = "1.8.5"
+label = "Odoo"
+version = "1.11.0"
 type = "tool_pack"
 trust = "first_party"
-summary = "Connect Odoo — CRM, sales and contacts over the Model Context Protocol"
-permissions = ["mcp:connect", "secrets:use"]
+summary = "Connect Odoo — CRM, sales and contacts over the Model Context Protocol, and Odoo Documents and Knowledge as a knowledge source"
+permissions = ["mcp:connect", "secrets:use", "knowledge:write"]
+# `knowledge:write` is asked for when a tenant first creates an Odoo knowledge
+# source, not at enable: an update that adds it leaves existing installs running.
+deferred_permissions = ["knowledge:write"]
 capabilities = ["integration:odoo"]
+
+# The `odoo_knowledge` connector (Documents and Knowledge as a knowledge source).
+# Sources are created in the knowledge source wizard, never from setup/*.toml.
+[plugin.entry_points]
+connectors = "connector.connector:register"
 

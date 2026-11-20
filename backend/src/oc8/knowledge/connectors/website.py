@@ -7,6 +7,8 @@ from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urldefrag, urljoin, urlparse
 
+import httpx
+
 from oc8.knowledge.connectors.base import (
     AuthContext,
     Connector,
@@ -80,7 +82,8 @@ class WebsiteConnector:
             visited.add(url)
             try:
                 text, ctype = await safe_fetch(url)
-            except ConnectorError:
+            except (ConnectorError, httpx.HTTPError):
+                # One unreachable page is skipped, not the whole sync.
                 continue
             fetched += 1
             h = hashlib.sha256(text.encode()).hexdigest()

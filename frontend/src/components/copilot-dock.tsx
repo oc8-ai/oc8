@@ -1,28 +1,29 @@
-import { ChevronDown, Plus, Send, Sparkles, WifiOff, X } from "lucide-react";
+import { ChevronDown, Plus, Sparkles, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import { ChatMarkdown } from "@/components/chat-markdown";
-import { CopilotRunActivity, CopilotStreamingAnswer } from "@/components/copilot-run-activity";
-import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { urlId } from "@/lib/ids";
+import { CopilotPersonaHeader } from "@/components/copilot-persona";
+import type { SigilItem } from "@/components/composer-sigils";
+import { Conversation } from "@/components/conversation";
+import { copilotStarters } from "@/components/conversation/copilot-starters";
 import { useT } from "@/lib/i18n";
-import { useCan } from "@/lib/governance-hooks";
+import { useCan, useMay } from "@/lib/governance-hooks";
 import type { CopilotProposal } from "@/lib/hooks";
 import {
+  useAgents,
   useApplyCopilotProposal,
   useAssistant,
   useAuth,
   useCopilotProposals,
+  useDepartments,
   useRejectCopilotProposal,
 } from "@/lib/hooks";
-import {
-  useChatSessions,
-  useCreateChatSession,
-  useChatMessages,
-  useCopilotRunActivity,
-  useSendChatMessage,
-} from "@/lib/hooks-chat";
+import { mostRecentSession } from "@/lib/chat-sessions";
+import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
-import { ChatSessionPicker } from "@/components/chat-window";
+import { ChatTitleText } from "@/components/conversation/chat-title";
+import { SessionPicker } from "@/components/conversation/session-picker";
 
 // Set by DoneStep right before the full-page navigation into "/" that follows
 // onboarding — sessionStorage (not React state) because that navigation
@@ -35,12 +36,6 @@ function greeting(de: boolean): string {
     : "Hi, I'm the oc8 copilot. I know your agents, departments and guardrails — ask me anything or let me configure something.";
 }
 
-function unavailableText(de: boolean): string {
-  return de
-    ? "Der Copilot ist gerade nicht erreichbar. Versuch es gleich noch einmal."
-    : "The copilot is unavailable right now. Try again in a moment.";
-}
-
 function proposalFailedText(de: boolean): string {
   return de
     ? "Der Vorschlag konnte nicht bearbeitet werden — vielleicht hat ihn jemand anderes schon beantwortet. Lade die Seite neu oder versuch es noch einmal."
@@ -48,13 +43,13 @@ function proposalFailedText(de: boolean): string {
 }
 
 // The tab bar's fallback label for a tab whose session doesn't exist yet
-// (a brand new blank tab) or whose session exists but has no title yet (the
-// same "no title" state ChatSessionPicker itself falls back on, worded the
-// same way, deliberately NOT "New chat" -- that copy is reserved for the
-// header's own "reset to a blank tab" button, and re-using it here would
-// make a tab pill and that button indistinguishable by accessible name).
+// (a brand new blank tab) or whose session has no title yet -- it gets one
+// named after its first message in the background (backend
+// `oc8.chat.titles`), so until then it is the new chat it is, worded the way
+// SessionPicker words it. The pill's accessible name stays apart from the
+// header's own "New chat" button: the pill is "New chat tab".
 function untitledChatText(de: boolean): string {
-  return de ? "Unbenannter Chat" : "Untitled chat";
+  return de ? "Neuer Chat" : "New chat";
 }
 
 // A proposal the Assistant drafted, with the two buttons that answer it.
@@ -175,6 +170,10 @@ export function PendingProposals({ de }: { de: boolean }) {
 export interface CopilotTab {
   uiId: string;
   sessionId: string | null;
+  /** Which agent this tab is talking to. Absent = the tenant assistant, which
+   *  is every tab until somebody types `@`. Persisted with the tab, so a
+   *  reopened dock reopens the same conversation with the same agent. */
+  agentId?: string;
 }
 
 function tabsStorageKey(memberId: string): string {
@@ -187,10 +186,18 @@ function loadTabs(memberId: string): CopilotTab[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (t): t is CopilotTab =>
-        typeof t === "object" && t !== null && typeof (t as CopilotTab).uiId === "string",
-    );
+    // Stored ids go into API paths: a tab whose ids are not UUIDs keeps its
+    // place but starts a new chat with the assistant.
+    return parsed
+      .filter(
+        (t): t is CopilotTab =>
+          typeof t === "object" && t !== null && typeof (t as CopilotTab).uiId === "string",
+      )
+      .map((t) => ({
+        uiId: t.uiId,
+        sessionId: urlId(t.sessionId) ?? null,
+        agentId: urlId(t.agentId),
+      }));
   } catch {
     return [];
   }
@@ -216,16 +223,12 @@ export function CopilotDock() {
 
 // The floating oc8 Copilot dock -- a direct 1:1 chat with the tenant's
 // standing Assistant agent (GET /assistant), rendered as a compact overlay
-// instead of a full page like ChatWindow/chat-window.tsx. Reuses the exact
-// same session/message hooks and session-bootstrap logic as ChatWindow (see
-// its own doc comment) rather than a separate mechanism.
+// instead of the full Copilot page. Both mount the same `Conversation`.
 //
 // This panel owns the tab bar: which sessions are open (`tabs`, persisted to
 // localStorage per member), which one is active, and the header/proposals
-// that are shared across every tab. Each tab's own single-session lifecycle
-// (composer draft, send-in-flight state, the lazy-create-on-send flow) lives
-// in `CopilotChatTab` below, unchanged from what this file used to do with
-// one session at a time.
+// that are shared across every tab. The active tab's chat itself is the one
+// `Conversation` every chat surface mounts (spec §2.1).
 function CopilotDockPanel() {
   const t = useT();
   const de = t("en", "de") === "de";
@@ -234,6 +237,14 @@ function CopilotDockPanel() {
   const { data: assistant } = useAssistant();
   const assistantAgentId = assistant?.agentId;
   const { data: sessions } = useChatSessions(assistantAgentId);
+  // Titles for EVERY session this member has, not just the assistant's: a tab
+  // may now address another agent, and its title comes from the same list.
+  // `useChatSessions(assistantAgentId)` above stays as-is -- SessionPicker
+  // is the assistant's own history and must not start listing other agents'.
+  const { data: allSessions } = useChatSessions();
+  const may = useMay();
+  const { data: agentPage } = useAgents({ pageSize: 100 });
+  const { data: departmentPage } = useDepartments({ pageSize: 100 });
   const liveConnectionStatus = useLiveConnectionStatus();
 
   const { data: me, isError: authFailed } = useAuth();
@@ -260,10 +271,9 @@ function CopilotDockPanel() {
   // the NEXT render, by which point `tabs` genuinely reflects the load.
   const [loadedMemberId, setLoadedMemberId] = useState<string | undefined>(undefined);
 
-  // Composer draft text, keyed by uiId, lifted out of `CopilotChatTab` so it
-  // survives that tab's instance unmounting and remounting when the dock is
-  // closed and reopened (every `CopilotChatTab` lives inside `{open && ...}`
-  // below, so closing the dock unmounts them all).
+  // Composer draft text, keyed by uiId, kept here so it survives the active
+  // tab's chat unmounting on a tab switch or when the dock is closed and
+  // reopened (the chat lives inside `{open && ...}` below).
   const [drafts, setDrafts] = useState<Record<string, string>>({});
 
   function setDraft(uiId: string, text: string) {
@@ -299,9 +309,26 @@ function CopilotDockPanel() {
     if (tabs.length > 0) return;
     if (!sessions) return;
     const uiId = crypto.randomUUID();
-    setTabs([{ uiId, sessionId: sessions[0]?.id ?? null }]);
+    setTabs([{ uiId, sessionId: mostRecentSession(sessions)?.id ?? null }]);
     setActiveUiId(uiId);
   }, [memberId, loadedMemberId, tabs.length, sessions]);
+
+  // Tabs persisted while the member had no chat yet are all blank. Once per
+  // load, the active one opens the most recent chat instead, so the dock
+  // never greets a member who has chats with an empty one. A tab blanked
+  // later (New chat, New tab) stays blank.
+  const seededFor = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (loadedMemberId === undefined || loadedMemberId !== memberId) return;
+    if (seededFor.current === loadedMemberId || !sessions) return;
+    seededFor.current = loadedMemberId;
+    const recent = mostRecentSession(sessions);
+    if (!recent || tabs.length === 0 || tabs.some((tab) => tab.sessionId)) return;
+    const target = activeUiId ?? tabs[0].uiId;
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === target ? { ...tab, sessionId: recent.id } : tab)),
+    );
+  }, [memberId, loadedMemberId, sessions, tabs, activeUiId]);
 
   function openNewTab() {
     const uiId = crypto.randomUUID();
@@ -339,6 +366,15 @@ function CopilotDockPanel() {
     setTabs((prev) => prev.map((tab) => (tab.uiId === uiId ? { ...tab, sessionId } : tab)));
   }
 
+  function setTabAgent(uiId: string, agentId: string | undefined) {
+    // A new addressee is a new conversation: `ChatSession.agent_id` and its
+    // Task are a pair (oc8/chat/service.py), so the session is reset rather
+    // than re-pointed. Phase 2 replaces this with a real participant list.
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === uiId ? { ...tab, agentId, sessionId: null } : tab)),
+    );
+  }
+
   useEffect(() => {
     if (window.sessionStorage.getItem(COPILOT_AUTO_OPEN_KEY) === "1") {
       window.sessionStorage.removeItem(COPILOT_AUTO_OPEN_KEY);
@@ -347,56 +383,79 @@ function CopilotDockPanel() {
   }, []);
 
   const activeTab = tabs.find((tab) => tab.uiId === activeUiId);
+  const activeAgentId = activeTab?.agentId ?? assistantAgentId;
+  const agents = agentPage?.items ?? [];
+  const activeAgentName = activeTab?.agentId
+    ? agents.find((a) => a.id === activeTab.agentId)?.name
+    : undefined;
+  const mayStartRuns = may("run:start");
+  // The `@` list -- this is the front door, so switching who you are talking
+  // to belongs here (§5.4). The composer filters it by what is typed.
+  const agentItems: SigilItem[] = agents
+    .filter((a) => !a.deletedAt)
+    .map((a) => ({
+      id: a.id,
+      label: a.name,
+      hint:
+        [a.role, departmentPage?.items.find((d) => d.id === a.departmentId)?.name]
+          .filter(Boolean)
+          .join(" · ") || undefined,
+      // Shown but not choosable, with the reason: POST
+      // /chat/sessions/{id}/messages needs run:start for any agent that is not
+      // the assistant, so offering it silently would end in a 403.
+      blocked:
+        !mayStartRuns && a.id !== activeAgentId
+          ? t(
+              "You may not start runs for another agent.",
+              "Du darfst für andere Agenten keine Läufe starten.",
+            )
+          : undefined,
+    }));
 
   return (
     <>
       {open && (
         <div className="fixed bottom-24 right-5 z-50 flex h-[min(72vh,600px)] w-[min(94vw,400px)] flex-col overflow-hidden rounded-2xl border border-border bg-panel shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]">
           <header className="flex items-center gap-2.5 border-b border-border px-4 py-3">
-            <img
-              src="/octopus_oc8.svg"
-              alt=""
-              className="h-8 w-8 shrink-0 select-none"
-              draggable={false}
-            />
-            <div className="min-w-0 flex-1 leading-tight">
-              <div className="font-serif text-base lowercase">oc8 copilot</div>
-              <div className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                <span className="h-1.5 w-1.5 rounded-full bg-[color:var(--status-running)] shadow-[0_0_8px_var(--status-running)]" />
-                {de ? "bereit" : "ready"}
-              </div>
-            </div>
-            {assistantAgentId && (
+            <CopilotPersonaHeader variant="dock">
+              {assistantAgentId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    // Resets the ACTIVE tab back to a blank, not-yet-created
+                    // session -- same affordance as the old single-session
+                    // dock's "New chat" button, just aimed at whichever tab is
+                    // currently focused instead of the dock's only session.
+                    if (activeUiId) setTabSession(activeUiId, null);
+                  }}
+                  aria-label={de ? "Neuer Chat" : "New chat"}
+                  title={de ? "Neuer Chat" : "New chat"}
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                >
+                  <Plus className="h-4 w-4" />
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => {
-                  // Resets the ACTIVE tab back to a blank, not-yet-created
-                  // session -- same affordance as the old single-session
-                  // dock's "New chat" button, just aimed at whichever tab is
-                  // currently focused instead of the dock's only session.
-                  if (activeUiId) setTabSession(activeUiId, null);
-                }}
-                aria-label={de ? "Neuer Chat" : "New chat"}
-                title={de ? "Neuer Chat" : "New chat"}
-                className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                onClick={() => setOpen(false)}
+                aria-label={de ? "Copilot schließen" : "Close copilot"}
+                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
               >
-                <Plus className="h-4 w-4" />
+                <ChevronDown className="h-4 w-4" />
               </button>
-            )}
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              aria-label={de ? "Copilot schließen" : "Close copilot"}
-              className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
-            >
-              <ChevronDown className="h-4 w-4" />
-            </button>
+              <Link to="/copilot" className="text-xs underline-offset-2 hover:underline">
+                {de ? "Copilot öffnen" : "Open Copilot"}
+              </Link>
+            </CopilotPersonaHeader>
           </header>
 
           <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1">
             {tabs.map((tab) => {
-              const title =
-                sessions?.find((s) => s.id === tab.sessionId)?.title || untitledChatText(de);
+              const session = allSessions?.find((s) => s.id === tab.sessionId);
+              const agentName = tab.agentId
+                ? (agentPage?.items.find((a) => a.id === tab.agentId)?.name ?? untitledChatText(de))
+                : null;
+              const title = session?.title || agentName || untitledChatText(de);
               return (
                 <div
                   key={tab.uiId}
@@ -412,7 +471,7 @@ function CopilotDockPanel() {
                     aria-label={de ? `${title} – Tab` : `${title} tab`}
                     className="max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1"
                   >
-                    {title}
+                    <ChatTitleText title={title} />
                   </button>
                   <button
                     type="button"
@@ -434,13 +493,12 @@ function CopilotDockPanel() {
               <Plus className="h-4 w-4" />
             </button>
             {assistantAgentId && sessions && sessions.length > 0 && (
-              <ChatSessionPicker
-                agentId={assistantAgentId}
+              <SessionPicker
                 sessions={sessions}
                 sessionId={activeTab?.sessionId ?? null}
                 onSelect={(sid) => {
                   if (sid === null) {
-                    // ChatSessionPicker calls onSelect(null) after deleting
+                    // SessionPicker calls onSelect(null) after deleting
                     // the ACTIVE session -- reset that tab to blank, same as
                     // the header's own "New chat" button, rather than opening
                     // a new tab.
@@ -454,7 +512,7 @@ function CopilotDockPanel() {
           </div>
 
           {liveConnectionStatus === "disconnected" && (
-            <div className="flex items-center gap-1.5 border-b border-amber-500/30 bg-amber-500/10 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+            <div className="flex items-center gap-1.5 border-b border-status-warning/30 bg-status-warning/10 px-3 py-1 text-xs text-status-warning">
               <WifiOff className="h-3.5 w-3.5" />
               <span>
                 {t(
@@ -467,17 +525,37 @@ function CopilotDockPanel() {
 
           <PendingProposals de={de} />
 
-          {tabs.map((tab) => (
-            <CopilotChatTab
-              key={tab.uiId}
-              active={tab.uiId === activeUiId}
-              sessionId={tab.sessionId}
-              onSessionChange={(sid) => setTabSession(tab.uiId, sid)}
-              assistantAgentId={assistantAgentId}
-              draft={drafts[tab.uiId] ?? ""}
-              onDraftChange={(text) => setDraft(tab.uiId, text)}
+          {activeTab && activeAgentId && (
+            <Conversation
+              key={activeTab.uiId}
+              agentId={activeAgentId}
+              sessionId={activeTab.sessionId}
+              onSessionChange={(sid) => setTabSession(activeTab.uiId, sid)}
+              variant="compact"
+              // A tab addressed to another agent is that agent's chat.
+              agentMode={!activeTab.agentId}
+              autoFocus
+              draft={drafts[activeTab.uiId] ?? ""}
+              onDraftChange={(text) => setDraft(activeTab.uiId, text)}
+              agentItems={agentItems}
+              onAddressAgent={(agentId) =>
+                setTabAgent(activeTab.uiId, agentId === assistantAgentId ? undefined : agentId)
+              }
+              placeholder={t("Configure or ask oc8…", "oc8 konfigurieren oder fragen …")}
+              emptyState={<p className="py-6 text-sm text-muted-foreground">{greeting(de)}</p>}
+              promptStarters={activeTab.agentId ? undefined : copilotStarters(t)}
+              composerAbove={
+                activeTab.agentId ? (
+                  <p className="text-xs text-muted-foreground">
+                    {t(
+                      `This chat goes to ${activeAgentName ?? "an agent"} — not the copilot.`,
+                      `Dieser Chat geht an ${activeAgentName ?? "einen Agenten"} — nicht an den Copilot.`,
+                    )}
+                  </p>
+                ) : undefined
+              }
             />
-          ))}
+          )}
           {tabs.length === 0 && (
             <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
               {greeting(de)}
@@ -503,290 +581,6 @@ function CopilotDockPanel() {
           </>
         )}
       </button>
-    </>
-  );
-}
-
-// One tab's entire single-session state machine -- the dock's whole body
-// before Task 16, extracted unchanged: `input`, `sendError`, `pendingSend`,
-// the lazy-create-on-send flow, and the full message-list/composer render
-// tree. `sessionId`/`onSessionChange` replace what used to be this
-// component's own `useState`, so the session lives in the parent's `tabs`
-// array instead -- everything else behaves exactly as it did as a single
-// dock instance.
-//
-// `active` doesn't gate any of the hooks above -- only the JSX this returns.
-// An inactive tab keeps its own `useChatMessages` poll running (so a
-// background tab's transcript doesn't go stale while unfocused, the same way
-// a real multi-tab chat client behaves) and keeps its component instance
-// (and therefore its `input` draft) alive across a tab switch; it just
-// renders nothing while another tab is focused, which is what keeps two
-// tabs' composers/messages from both landing in the DOM at once.
-export function CopilotChatTab({
-  sessionId,
-  onSessionChange,
-  assistantAgentId,
-  active,
-  draft,
-  onDraftChange,
-}: {
-  sessionId: string | null;
-  onSessionChange: (sessionId: string | null) => void;
-  assistantAgentId: string | undefined;
-  active: boolean;
-  draft: string;
-  onDraftChange: (text: string) => void;
-}) {
-  const t = useT();
-  const de = t("en", "de") === "de";
-  const [input, setInputState] = useState(() => draft);
-  function setInput(text: string) {
-    setInputState(text);
-    onDraftChange(text);
-  }
-  const scroller = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
-
-  const createSession = useCreateChatSession();
-
-  const { data: messages } = useChatMessages(sessionId);
-  const sendMessage = useSendChatMessage(sessionId ?? "");
-
-  // A send that failed (session creation OR the message post itself): shown
-  // as a transcript bubble, same as the pre-rewrite dock's own
-  // "Der Copilot ist gerade nicht erreichbar..." notice, since a chat
-  // surface losing a message silently with no toast and no trace is worse
-  // here than elsewhere -- the reader has no other way to tell their message
-  // never went anywhere.
-  const [sendError, setSendError] = useState(false);
-
-  function fail(text: string) {
-    setSendError(true);
-    // Put the text back so a retry doesn't mean retyping it.
-    setInput(text);
-  }
-
-  // The run-activity strip's own tracking id -- set from the same-response
-  // signal useSendChatMessage's onSuccess receives (the one place the real
-  // run_id actually exists; the user's own persisted ChatMessage row never
-  // gets one, only the assistant's terminal reply does), and reset before
-  // every new send so a prior run's id can't leak into a new one. Deriving
-  // this from `messages` instead (as before) broke the moment the 2s poll
-  // replaced the cache with the persisted, runId-less user row.
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
-
-  // A message typed before any session exists yet: send() creates the
-  // session first, then this fires once `sessionId` (and therefore a
-  // `sendMessage` bound to the right session) lands on the next render.
-  const [pendingSend, setPendingSend] = useState<string | null>(null);
-  useEffect(() => {
-    if (!sessionId || pendingSend === null) return;
-    const text = pendingSend;
-    setPendingSend(null);
-    sendMessage.mutate(
-      { message: text },
-      {
-        onSuccess: (message) => setActiveRunId(message.runId),
-        onError: () => fail(text),
-      },
-    );
-    // sendMessage/fail are fresh every render; only sessionId/pendingSend
-    // should re-trigger this.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionId, pendingSend]);
-
-  useEffect(() => {
-    const el = scroller.current;
-    if (el && typeof el.scrollTo === "function") {
-      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
-    }
-  }, [messages, sendError]);
-
-  // Focus once, on mount -- a tab only ever mounts while the dock itself is
-  // open (the parent nests every `CopilotChatTab` inside `{open && (...)}`),
-  // so "just mounted" already means "the dock/tab just became visible", the
-  // same moment the old single-session dock used to focus on `open` flipping
-  // true.
-  useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
-
-  // Same "is the agent still typing" signal as ChatWindow: the transcript's
-  // own last turn.
-  const waitingOnAgent =
-    !!messages && messages.length > 0 && messages[messages.length - 1].role === "user";
-  const busy = createSession.isPending || sendMessage.isPending || waitingOnAgent;
-  // Same ["run", runId] cache CopilotStreamingAnswer itself reads -- calling
-  // the hook again here is a cache hit, not a second request, and is what
-  // lets the typing dots above give way to that component the instant the
-  // first "run.token_delta" fragment lands instead of staying dots for the
-  // whole turn.
-  const { data: activeRun } = useCopilotRunActivity(sessionId, activeRunId);
-  const streamingAnswer = !!activeRun?.liveAnswer;
-
-  function send() {
-    const text = input.trim();
-    if (!text || busy || !assistantAgentId) return;
-    setSendError(false);
-    setInput("");
-    setActiveRunId(null);
-    if (!sessionId) {
-      createSession.mutate(assistantAgentId, {
-        onSuccess: (session) => {
-          onSessionChange(session.id);
-          setPendingSend(text);
-        },
-        onError: () => fail(text),
-      });
-      return;
-    }
-    sendMessage.mutate(
-      { message: text },
-      {
-        onSuccess: (message) => setActiveRunId(message.runId),
-        onError: () => fail(text),
-      },
-    );
-  }
-
-  const suggestions = de
-    ? ["Was wartet auf Freigabe?", "Kosten diesen Monat?", "Neuen Agenten anlegen"]
-    : ["What needs approval?", "Cost this month?", "Create a new agent"];
-  const hasMessages = !!messages && messages.length > 0;
-
-  if (!active) return null;
-
-  return (
-    <>
-      <CopilotRunActivity sessionId={sessionId} runId={activeRunId} />
-      <div ref={scroller} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
-        {!hasMessages && (
-          <div className="flex gap-2">
-            <img
-              src="/octopus_oc8.svg"
-              alt=""
-              className="mt-0.5 h-6 w-6 shrink-0"
-              draggable={false}
-            />
-            <ChatMarkdown text={greeting(de)} className="max-w-[88%]" />
-          </div>
-        )}
-        {messages?.map((m) =>
-          m.role === "user" ? (
-            <div key={m.id} className="flex justify-end">
-              <div className="max-w-[85%] rounded-2xl rounded-br-sm bg-primary px-3 py-2 text-sm text-primary-foreground">
-                {m.content}
-              </div>
-            </div>
-          ) : (
-            <div key={m.id} className="flex flex-col gap-1">
-              <div className="flex gap-2">
-                <img
-                  src="/octopus_oc8.svg"
-                  alt=""
-                  className="mt-0.5 h-6 w-6 shrink-0"
-                  draggable={false}
-                />
-                <ChatMarkdown text={m.content} className="max-w-[88%]" />
-              </div>
-              {m.renderedComponents.length > 0 && (
-                <div className="ml-8 space-y-2">
-                  {m.renderedComponents.map((c, i) => {
-                    const Renderer = Object.prototype.hasOwnProperty.call(
-                      RUN_COMPONENT_REGISTRY,
-                      c.componentKey,
-                    )
-                      ? RUN_COMPONENT_REGISTRY[c.componentKey]
-                      : undefined;
-                    return Renderer ? <Renderer key={i} props={c.props} /> : null;
-                  })}
-                </div>
-              )}
-            </div>
-          ),
-        )}
-        {waitingOnAgent &&
-          (streamingAnswer ? (
-            <CopilotStreamingAnswer sessionId={sessionId} runId={activeRunId} />
-          ) : (
-            <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <img src="/octopus_oc8.svg" alt="" className="h-6 w-6 shrink-0" draggable={false} />
-              <span className="inline-flex gap-1">
-                {[0, 1, 2].map((i) => (
-                  <span
-                    key={i}
-                    className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary"
-                    style={{ animationDelay: `${i * 150}ms` }}
-                  />
-                ))}
-              </span>
-            </div>
-          ))}
-        {sendError && (
-          <div className="flex gap-2">
-            <img
-              src="/octopus_oc8.svg"
-              alt=""
-              className="mt-0.5 h-6 w-6 shrink-0"
-              draggable={false}
-            />
-            <div className="max-w-[88%] rounded-xl border border-border bg-background/40 px-3 py-2 text-sm text-muted-foreground">
-              {unavailableText(de)}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {!hasMessages && (
-        <div className="flex flex-wrap gap-1.5 px-4 pb-2">
-          {suggestions.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => {
-                setInput(s);
-                inputRef.current?.focus();
-              }}
-              className="rounded-full border border-border bg-background/40 px-2.5 py-1 text-[11px] text-muted-foreground transition hover:text-foreground"
-            >
-              {s}
-            </button>
-          ))}
-        </div>
-      )}
-
-      <div className="border-t border-border p-3">
-        <div className="flex items-end gap-2 rounded-xl border border-border bg-background/40 px-3 py-2 focus-within:border-primary/50">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                send();
-              }
-            }}
-            rows={1}
-            placeholder={de ? "oc8 konfigurieren oder fragen…" : "Configure or ask oc8…"}
-            className="max-h-28 min-h-[24px] flex-1 resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground"
-          />
-          <button
-            type="button"
-            onClick={send}
-            disabled={!input.trim() || busy || !assistantAgentId}
-            aria-label={de ? "Senden" : "Send"}
-            className={cn(
-              "grid h-8 w-8 shrink-0 place-items-center rounded-lg transition",
-              input.trim() && !busy && assistantAgentId
-                ? "bg-primary text-primary-foreground hover:brightness-110"
-                : "bg-muted/40 text-muted-foreground",
-            )}
-          >
-            <Send className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
     </>
   );
 }

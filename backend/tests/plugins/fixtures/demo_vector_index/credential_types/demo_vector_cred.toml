@@ -1,0 +1,7 @@
+name = "demo_vector_cred"
+display_name = "Demo vector credential"
+
+[[fields]]
+key = "token"
+label = "Token"
+kind = "password"

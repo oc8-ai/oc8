@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -56,6 +57,31 @@ async def test_put_layout_creates_then_get_returns_the_stored_shape() -> None:
             assert get_r.status_code == 200
             assert get_r.json()["widgets"] == body["widgets"]
             assert get_r.json()["templateId"] == "focus-chat"
+
+
+async def test_layout_accepts_a_data_board_tile() -> None:
+    """A dashboard tile stores only its board id (and saved filters); the
+    board itself is read through `/boards`, never from the layout."""
+    app = create_app()
+    tile = {
+        "id": "w1",
+        "type": "data_board",
+        "x": 0,
+        "y": 0,
+        "w": 6,
+        "h": 10,
+        "config": {"boardId": str(uuid.uuid4()), "filters": {"preset": "year_to_date"}},
+    }
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(subject='board-tile')}"}
+            put_r = await client.put(
+                "/api/v1/dashboard/layout", json={"widgets": [tile]}, headers=headers
+            )
+            assert put_r.status_code == 200, put_r.text
+            get_r = await client.get("/api/v1/dashboard/layout", headers=headers)
+    assert get_r.json()["widgets"] == [tile]
 
 
 async def test_put_layout_fully_replaces_not_merges(app_session: AppSessionFactory) -> None:
@@ -201,7 +227,47 @@ async def test_command_center_template_leads_with_a_dominant_chat_tile() -> None
                 assert chat_area > w["w"] * w["h"], f"chat should dominate over {wtype}"
 
 
-def _preset_body(name: str = "My layout", scope: str = "personal") -> dict:
+async def test_templates_use_forty_pixel_rows() -> None:
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(subject='templates-reader')}"}
+            r = await client.get("/api/v1/dashboard/templates", headers=headers)
+            assert r.status_code == 200
+            by_id = {t["id"]: {w["type"]: w for w in t["widgets"]} for t in r.json()}
+
+    def box(w: dict[str, Any]) -> dict[str, int]:
+        return {k: w[k] for k in ("x", "y", "w", "h")}
+
+    assert box(by_id["command-center"]["chat"]) == {"x": 0, "y": 0, "w": 8, "h": 16}
+    assert box(by_id["overview"]["budget"]) == {"x": 0, "y": 10, "w": 6, "h": 6}
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [{"y": 10001}, {"h": 1001}, {"h": 0}, {"x": 13}, {"x": -1}, {"w": 0}, {"w": 13}, {"y": -1}],
+)
+async def test_out_of_range_widget_positions_are_refused(patch: dict[str, int]) -> None:
+    widget = {"id": "w1", "type": "chat", "x": 0, "y": 0, "w": 6, "h": 6, "config": {}} | patch
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(subject='bounds-writer')}"}
+            put_r = await client.put(
+                "/api/v1/dashboard/layout", json={"widgets": [widget]}, headers=headers
+            )
+            post_r = await client.post(
+                "/api/v1/dashboard/presets",
+                json={"name": "x", "scope": "personal", "widgets": [widget]},
+                headers=headers,
+            )
+    assert put_r.status_code == 422, put_r.text
+    assert post_r.status_code == 422, post_r.text
+
+
+def _preset_body(name: str = "My layout", scope: str = "personal") -> dict[str, Any]:
     return {
         "name": name,
         "scope": scope,

@@ -7,33 +7,91 @@ existing resources and invoke their established server-side service.
 
 from __future__ import annotations
 
+import datetime as dt
+import logging
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
+from fastapi import HTTPException
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from pydantic_core import PydanticCustomError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import require_hire_approval
+from oc8.agents.presentation import show_model
+from oc8.agents.publish_hooks import PublishHookFailed
+from oc8.agents.retire import delete_or_archive_agent
+from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
+from oc8.audit import append_event
+from oc8.auth import Principal
 from oc8.authz import pdp
 from oc8.automation.catalogue import list_installed_automation_events
-from oc8.capas.discovery import resolve_tool_pack_connection
-from oc8.capas.lifecycle import enable_plugin
-from oc8.capas.manifest import GuardrailAttribute
+from oc8.boards.lifecycle import (
+    archive_department_boards,
+    lock_live_board,
+    restore_department_boards,
+)
+from oc8.boards.spec import (
+    BoardSpecInvalid,
+    SpecChangeRefused,
+    check_additive,
+    parse_board_spec,
+)
+from oc8.capas.discovery import (
+    connection_supports_value_spec,
+    find_plugin,
+    resolve_tool_pack_connection,
+)
+from oc8.capas.lifecycle import disable_plugin, enable_plugin
+from oc8.capas.manifest import GuardrailAttribute, parse_manifest
+from oc8.capas.service import (
+    PluginError,
+    SetupValidationError,
+    install_with_dependencies,
+    validate_setup_values,
+)
+from oc8.connections.tool_connection import not_retired
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     attributes_for_function,
     parse_conditions,
 )
-from oc8.modelrouter.subscription_guard import SubscriptionModelNotManualOnly
-from oc8.triggers.service import create_trigger
+from oc8.modelrouter.subscription_guard import (
+    SubscriptionModelNotManualOnly,
+    assert_manual_only_compatible,
+)
+from oc8.notifications.events import on_board_created
+from oc8.runtime.registry import (
+    RuntimeCapabilityError,
+    RuntimeNotExecutableError,
+    RuntimeNotFoundError,
+    assign_runtime,
+    check_runtime_capabilities,
+    resolve_runtime_plugin,
+)
+from oc8.triggers.service import InvalidTriggerConfig, create_trigger
+from oc8.triggers.zones import valid_timezone
+
+logger = logging.getLogger(__name__)
 
 
 class _Operation(BaseModel):
     # JSON UUID references arrive as strings. Strict primitive validation still
     # comes from each field's declared type and the closed extra-key policy.
     model_config = ConfigDict(extra="forbid")
+
+
+_LIFECYCLE = {"start": "running", "pause": "paused", "stop": "stopped"}
 
 
 class MissionSet(_Operation):
@@ -48,8 +106,17 @@ class TriggerCreate(_Operation):
     kind: Literal["cron", "event"]
     taskText: str = Field(min_length=1, max_length=10_000)
     cronExpression: str | None = Field(default=None, max_length=256)
+    #: IANA zone the cron expression is read in; the organisation's when absent.
+    timezone: str | None = Field(default=None, max_length=64)
     eventSource: str | None = Field(default=None, max_length=128)
     eventType: str | None = Field(default=None, max_length=128)
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_zone(cls, value: str | None) -> str | None:
+        # Refused when proposed, not only when applied: the person confirms
+        # a card that names the zone.
+        return valid_timezone(value) if value else None
 
 
 class PluginEnable(_Operation):
@@ -66,11 +133,60 @@ class IntegrationPrepare(_Operation):
     configurationRef: uuid.UUID | None = None
 
 
+class CapaInstall(_Operation):
+    """`diskPluginId` names a plugin FOLDER on disk (`find_plugin`'s id
+    space, e.g. "github_mcp") -- a different kind of identifier from every
+    other capa operation's `capaId`, which is an installed `Capa` row's
+    database id. Named distinctly on purpose: nothing here has been
+    installed yet, so there is no database id to reference."""
+
+    type: Literal["capa.install"]
+    diskPluginId: str = Field(min_length=1, max_length=200)
+
+
+class CapaDisable(_Operation):
+    type: Literal["capa.disable"]
+    capaId: uuid.UUID
+    reason: str | None = Field(default=None, max_length=1_000)
+
+
+class CapaConfigure(_Operation):
+    """Scoped to capas with no MCP connection (`manifest.setup.mcp is None`)
+    and no password/credential setup field -- see Task 9's scope decision.
+    Any submitted key naming a password/credential field is rejected
+    OUTRIGHT (the whole operation, not just that key) in apply_operation,
+    before `values` is used for anything: this is the hard requirement that
+    no secret material may ever pass through the external Copilot client.
+    """
+
+    type: Literal["capa.configure"]
+    capaId: uuid.UUID
+    values: dict[str, str] = Field(default_factory=dict, max_length=64)
+
+
 class DepartmentCreate(_Operation):
     type: Literal["department.create"]
     name: str = Field(min_length=1, max_length=200)
     goal: str = Field(default="", max_length=2_000)
     icon: str = Field(default="building", max_length=100)
+
+
+class DepartmentUpdate(_Operation):
+    type: Literal["department.update"]
+    departmentId: uuid.UUID
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    goal: str | None = Field(default=None, max_length=2_000)
+    icon: str | None = Field(default=None, max_length=100)
+
+
+class DepartmentDelete(_Operation):
+    type: Literal["department.delete"]
+    departmentId: uuid.UUID
+
+
+class DepartmentRestore(_Operation):
+    type: Literal["department.restore"]
+    departmentId: uuid.UUID
 
 
 class AgentCreate(_Operation):
@@ -79,6 +195,64 @@ class AgentCreate(_Operation):
     name: str = Field(min_length=1, max_length=200)
     roleTitle: str = Field(default="", max_length=200)
     mission: str = Field(default="", max_length=10_000)
+
+
+class AgentRename(_Operation):
+    type: Literal["agent.rename"]
+    agentId: uuid.UUID
+    name: str = Field(min_length=1, max_length=200)
+
+
+class AgentLifecycleSet(_Operation):
+    type: Literal["agent.lifecycle.set"]
+    agentId: uuid.UUID
+    action: Literal["start", "pause", "stop"]
+
+
+class AgentDelete(_Operation):
+    type: Literal["agent.delete"]
+    agentId: uuid.UUID
+
+
+class AgentRestore(_Operation):
+    type: Literal["agent.restore"]
+    agentId: uuid.UUID
+
+
+class AgentNarrowingSet(_Operation):
+    type: Literal["agent.narrowing.set"]
+    agentId: uuid.UUID
+    narrowing: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentNarrowingReset(_Operation):
+    type: Literal["agent.narrowing.reset"]
+    agentId: uuid.UUID
+    connectionName: str = Field(min_length=1, max_length=200)
+
+
+class AgentRuntimeAssign(_Operation):
+    """`runtimePluginId` has no default -- the key must always be present in
+    the payload, and null explicitly clears the runtime. Same strictness
+    `RuntimeAssignRequest` enforces on the REST route, for the same reason:
+    an absent key silently means something different from an explicit null,
+    and only the latter is what "clear the runtime" should ever mean."""
+
+    type: Literal["agent.runtime.assign"]
+    agentId: uuid.UUID
+    runtimePluginId: str | None
+
+
+class AgentModelSwitch(_Operation):
+    type: Literal["agent.model.switch"]
+    agentId: uuid.UUID
+    modelConfigId: uuid.UUID
+
+
+class AgentSkillAssign(_Operation):
+    type: Literal["agent.skill.assign"]
+    agentId: uuid.UUID
+    skillVersionId: uuid.UUID
 
 
 class GuardrailConditionInput(BaseModel):
@@ -116,29 +290,130 @@ class GuardrailSet(_Operation):
     conditions: list[GuardrailConditionInput] = Field(default_factory=list, max_length=20)
 
 
+#: The pydantic error type a refused board spec becomes. Its message is fixed:
+#: `BoardSpecInvalid` names submitted keys (meant for the agent's `board_write`),
+#: and nothing submitted may reach an `InvalidOperation` (F13).
+_BOARD_SPEC_ERROR = "board_spec_invalid"
+
+
+def _board_spec(value: object) -> object:
+    """A spec in its normalized form, or the fixed `board_spec_invalid` error."""
+    try:
+        return parse_board_spec(value).model_dump(mode="json")
+    except BoardSpecInvalid:
+        raise PydanticCustomError(_BOARD_SPEC_ERROR, "invalid board spec") from None
+
+
+class BoardCreate(_Operation):
+    """A new data board. Its department is not part of the operation: it is
+    always the producing agent's, pinned at apply (§6.8.5)."""
+
+    type: Literal["board.create"]
+    agentId: uuid.UUID
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2_000)
+    spec: dict[str, Any]
+
+    @field_validator("spec", mode="before")
+    @classmethod
+    def _valid_spec(cls, value: object) -> object:
+        return _board_spec(value)
+
+
+class BoardUpdate(_Operation):
+    """Changes a board's view, never its records. `spec` must be additive
+    (`check_additive`); `restoreVersion` is the undo: that version's blocks over
+    the CURRENT datasets, since datasets may only grow (§6.2, §6.8.3).
+    `agentId` hands the board to another agent of its own department."""
+
+    type: Literal["board.update"]
+    boardId: uuid.UUID
+    agentId: uuid.UUID | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2_000)
+    spec: dict[str, Any] | None = None
+    restoreVersion: int | None = Field(default=None, ge=1)
+
+    @field_validator("spec", mode="before")
+    @classmethod
+    def _valid_spec(cls, value: object) -> object:
+        return None if value is None else _board_spec(value)
+
+    @model_validator(mode="after")
+    def _one_view_change(self) -> BoardUpdate:
+        if self.spec is not None and self.restoreVersion is not None:
+            raise ValueError("spec and restoreVersion are mutually exclusive")
+        return self
+
+
+#: Board operations reach a tenant only through builder proposals, which apply
+#: the department rule (apply, or ask for approval); generic proposals refuse
+#: them (`proposals.create_proposal`, F11).
+BOARD_OPERATION_TYPES: frozenset[str] = frozenset({"board.create", "board.update"})
+
+
 Operation = (
     MissionSet
     | TriggerCreate
     | PluginEnable
+    | CapaInstall
+    | CapaDisable
+    | CapaConfigure
     | IntegrationPrepare
     | DepartmentCreate
+    | DepartmentUpdate
+    | DepartmentDelete
+    | DepartmentRestore
     | AgentCreate
+    | AgentRename
+    | AgentLifecycleSet
+    | AgentDelete
+    | AgentRestore
+    | AgentNarrowingSet
+    | AgentNarrowingReset
+    | AgentRuntimeAssign
+    | AgentModelSwitch
+    | AgentSkillAssign
     | GuardrailSet
+    | BoardCreate
+    | BoardUpdate
 )
 _OPERATIONS = TypeAdapter(list[Operation])
 
 
 class InvalidOperation(ValueError):
-    """Safe, value-free validation failure exposed at every boundary."""
+    """Safe, value-free validation failure exposed at every boundary.
 
-    def __init__(self) -> None:
+    `reason` is an optional fixed code saying why (never submitted text), so
+    the agent builder can tell the member which rule a step broke."""
+
+    def __init__(self, reason: str | None = None) -> None:
         super().__init__("invalid copilot operation")
+        self.reason = reason
+
+
+def _names_a_board_operation(raw: object) -> bool:
+    return isinstance(raw, list) and any(
+        isinstance(item, dict) and item.get("type") in BOARD_OPERATION_TYPES for item in raw
+    )
 
 
 def parse_operations(raw: object) -> list[Operation]:
     try:
         operations = _OPERATIONS.validate_python(raw)
-    except (ValidationError, TypeError, ValueError) as exc:
+    except ValidationError as exc:
+        if any(
+            error["type"] == _BOARD_SPEC_ERROR
+            for error in exc.errors(include_input=False, include_url=False, include_context=False)
+        ):
+            # Not chained: the validation error carries the submitted spec.
+            raise InvalidOperation(_BOARD_SPEC_ERROR) from None
+        if _names_a_board_operation(raw):
+            # Nor for any other refused board field: its validation error
+            # carries the submitted title, description or spec too.
+            raise InvalidOperation() from None
+        raise InvalidOperation() from exc
+    except (TypeError, ValueError) as exc:
         raise InvalidOperation() from exc
     if not operations:
         raise InvalidOperation()
@@ -173,6 +448,7 @@ def operation_references(data: dict[str, Any]) -> dict[str, str]:
         "integrationId",
         "configurationRef",
         "departmentId",
+        "boardId",
         "connectionName",
         "function",
         "decision",
@@ -192,15 +468,66 @@ async def target_revision(
     between the stale check and the capability applier. Proposal creation only
     snapshots and therefore never takes a lock.
 
-    `DepartmentCreate`/`AgentCreate` have no existing row to go stale --
+    `DepartmentCreate`/`AgentCreate`/`CapaInstall` have no existing row to go stale --
     `None` here always compares equal to itself in `_is_stale`, so a create
     proposal is never rejected as stale. `apply_operation` still validates
     `AgentCreate.departmentId` exists at apply time, which is the one thing
     that actually could have changed underneath it.
     """
-    if isinstance(operation, (DepartmentCreate, AgentCreate)):
+    if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall, BoardCreate)):
         return None
-    if isinstance(operation, (MissionSet, TriggerCreate, GuardrailSet)):
+    if isinstance(operation, BoardUpdate):
+        # A builder proposal's base (`builder._board_base`, `_check_board_base`);
+        # generic proposals never carry board operations. The board row first
+        # and nothing else: the same lock `board_write` and the delete route
+        # take, so a view change serializes with writes.
+        board_statement = select(m.DataBoard.spec_version).where(
+            m.DataBoard.id == operation.boardId,
+            m.DataBoard.deleted_at.is_(None),
+            m.DataBoard.removed_at.is_(None),
+        )
+        version = await db.scalar(
+            board_statement.with_for_update() if lock_for_apply else board_statement
+        )
+        if version is None:
+            raise InvalidOperation()
+        return str(version)
+    if isinstance(operation, (DepartmentUpdate, DepartmentDelete)):
+        statement = select(m.Department.config_revision).where(
+            m.Department.id == operation.departmentId, m.Department.deleted_at.is_(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(operation, DepartmentRestore):
+        # The one target that must exist ARCHIVED, not live -- restoring a
+        # department that is already live is meaningless, and a bare
+        # deleted_at.is_(None) filter (every other department branch's
+        # filter) would make target_revision() raise InvalidOperation for
+        # every legitimate restore.
+        statement = select(m.Department.config_revision).where(
+            m.Department.id == operation.departmentId, m.Department.deleted_at.is_not(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(
+        operation,
+        (
+            MissionSet,
+            TriggerCreate,
+            GuardrailSet,
+            AgentRename,
+            AgentLifecycleSet,
+            AgentNarrowingSet,
+            AgentNarrowingReset,
+            AgentRuntimeAssign,
+            AgentModelSwitch,
+            AgentSkillAssign,
+        ),
+    ):
         statement = select(m.Agent.config_revision).where(
             m.Agent.id == operation.agentId, m.Agent.deleted_at.is_(None)
         )
@@ -208,8 +535,36 @@ async def target_revision(
         if changed is None:
             raise InvalidOperation()
         return str(changed)
+    if isinstance(operation, AgentDelete):
+        statement = select(m.Agent.config_revision).where(
+            m.Agent.id == operation.agentId, m.Agent.deleted_at.is_(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(operation, AgentRestore):
+        statement = select(m.Agent.config_revision).where(
+            m.Agent.id == operation.agentId, m.Agent.deleted_at.is_not(None)
+        )
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
     if isinstance(operation, PluginEnable):
         statement = select(m.Capa.config_revision).where(m.Capa.id == operation.pluginId)
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(operation, CapaDisable):
+        statement = select(m.Capa.config_revision).where(m.Capa.id == operation.capaId)
+        changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
+        if changed is None:
+            raise InvalidOperation()
+        return str(changed)
+    if isinstance(operation, CapaConfigure):
+        statement = select(m.Capa.config_revision).where(m.Capa.id == operation.capaId)
         changed = await db.scalar(statement.with_for_update() if lock_for_apply else statement)
         if changed is None:
             raise InvalidOperation()
@@ -223,16 +578,95 @@ async def target_revision(
     return str(changed)
 
 
-async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[str, Any]) -> None:
-    """Apply exactly one validated operation through existing service boundaries."""
+def new_department_frame() -> dict[str, Any]:
+    """A new department's frame -- the same POST /departments writes: no tool
+    listed (so none is switched off: an enabled integration stays usable,
+    `connections.usable`), and the department-tier memory grant every other
+    department has, so its agents can remember."""
+    return {
+        "tools": {},
+        "kbs": [],
+        "memory": {"department": ["read", "write"], "company": ["read"]},
+    }
+
+
+async def _has_no_draft(db: AsyncSession, agent: m.Agent) -> bool:
+    """Whether `agent`'s working copy is exactly its published version -- read
+    BEFORE a Copilot write, to decide whether that write may be published on
+    its own (`_publish_copilot_change`)."""
+    return not (await draft_status(db, agent)).dirty
+
+
+async def _publish_copilot_change(
+    db: AsyncSession, agent: m.Agent, *, had_no_draft: bool, what: str, publish: bool = True
+) -> None:
+    """Make an operator-approved Copilot change to a versioned agent field
+    actually take effect: runs execute the PUBLISHED version, so a write to the
+    live row alone would never reach one.
+
+    Published only when the agent had no pending draft before the write, so
+    the new version contains the Copilot's change and nothing else. With a
+    draft pending, publishing would also push the operator's own unfinished
+    edits live behind their back -- so instead the change joins that draft and
+    shows in the agent's publish bar with the rest of it, for the operator to
+    publish (the same `assistant.py` trade-off, which can always publish
+    because the Assistant has no operator draft to protect).
+
+    `NoChangesToPublish` is suppressed like `assistant.py` does (the operation
+    wrote the value the version already has). A publish hook veto rejects the
+    operation, which rolls the whole proposal back -- the same outcome as any
+    other refusal here.
+
+    `publish=False`: the caller publishes once itself, after its last step
+    (the agent builder's brand-new agent -- `apply_builder_proposal`).
+    """
+    if not publish:
+        return
+    if not had_no_draft:
+        logger.info(
+            "copilot change deferred to existing draft: agent=%s what=%s",
+            agent.id,
+            what,
+        )
+        return
+    try:
+        await publish_version(db, agent, note=f"Copilot: {what}")
+    except NoChangesToPublish:
+        pass
+    except PublishHookFailed as exc:
+        raise InvalidOperation() from exc
+
+
+async def apply_operation(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    data: dict[str, Any],
+    actor_member_id: uuid.UUID | None = None,
+    publish: bool = True,
+) -> uuid.UUID | None:
+    """Apply exactly one validated operation through existing service boundaries.
+
+    Returns the new agent's id for `agent.create` and the new department's
+    for `department.create` (builder proposals map their `ref` to it), and
+    None for every other operation.
+
+    `publish=False` leaves an agent change in the working copy -- `agent.create`
+    then writes no v1 either -- for a caller that publishes the agent once
+    after its last step (`apply_builder_proposal`: the person's "Create" is
+    one decision, so the new agent's first version holds all of it)."""
     operation = parse_operations([data])[0]
     if isinstance(operation, MissionSet):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
             raise InvalidOperation()
+        had_no_draft = await _has_no_draft(db, agent)
         agent.mission = operation.mission
         await db.flush()
-        return
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="mission", publish=publish
+        )
+        return None
     if isinstance(operation, TriggerCreate):
         events = await list_installed_automation_events(db)
         try:
@@ -243,9 +677,11 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
                 kind=operation.kind,
                 task_text=operation.taskText,
                 cron_expression=operation.cronExpression,
+                timezone=operation.timezone,
                 event_source=operation.eventSource,
                 event_type=operation.eventType,
                 declared_events={(event.source, event.type) for event in events},
+                created_by_member_id=actor_member_id,
             )
         except SubscriptionModelNotManualOnly as exc:
             # A ChatGPT-subscription-backed agent may not be given an
@@ -255,8 +691,12 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             # rejection convention (`InvalidOperation`, which `apply_proposal`
             # turns into a rejected proposal and a 409) rather than a new
             # error surface, and value-free like every other InvalidOperation.
-            raise InvalidOperation() from exc
-        return
+            raise InvalidOperation("model_manual_only") from exc
+        except InvalidTriggerConfig as exc:
+            # A bad cron expression or an undeclared event: this module's one
+            # value-free rejection, not a raw ValueError escaping the proposal.
+            raise InvalidOperation("trigger_invalid") from exc
+        return None
     if isinstance(operation, PluginEnable):
         await enable_plugin(
             db,
@@ -264,7 +704,68 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             capa_id=operation.pluginId,
             granted_permissions=operation.grantedPermissions,
         )
-        return
+        return None
+    if isinstance(operation, CapaInstall):
+        found = find_plugin(operation.diskPluginId)
+        if found is None:
+            raise InvalidOperation()
+        try:
+            await install_with_dependencies(db, tenant_id=tenant_id, found=found, origin="local")
+        except PluginError as exc:
+            raise InvalidOperation() from exc
+        return None
+    if isinstance(operation, CapaDisable):
+        try:
+            await disable_plugin(
+                db, tenant_id=tenant_id, capa_id=operation.capaId, reason=operation.reason
+            )
+        except PluginError as exc:
+            raise InvalidOperation() from exc
+        return None
+    if isinstance(operation, CapaConfigure):
+        plugin = await db.get(m.Capa, operation.capaId)
+        if plugin is None or plugin.current_version_id is None:
+            raise InvalidOperation()
+        installation = (
+            await db.execute(
+                select(m.CapaInstallation).where(m.CapaInstallation.capa_id == plugin.id)
+            )
+        ).scalar_one_or_none()
+        if installation is None or installation.status != "enabled":
+            raise InvalidOperation()
+        version = await db.get(m.CapaVersion, plugin.current_version_id)
+        assert version is not None
+        manifest = parse_manifest(version.manifest)
+        setup = manifest.setup
+        if setup is None or setup.mcp is not None:
+            # No setup contract, or an MCP-connected capa -- out of scope,
+            # see Task 9's scope decision. Never falls through to the
+            # secret-handling REST route logic this module deliberately
+            # never imports.
+            raise InvalidOperation()
+        fields = {field.key: field for field in setup.fields}
+        if any(field.kind in ("password", "credential") for field in setup.fields):
+            # Hard requirement: even a capa that also has a plain text field
+            # is refused wholesale if ANY of its declared fields is secret-
+            # shaped -- this operation can never learn to tell "this specific
+            # submission happens not to touch the secret field" from "this
+            # capa has no secret fields at all" without depending on exactly
+            # which keys the caller chose to send, which is not a safe line
+            # to draw for a hard security requirement.
+            raise InvalidOperation()
+        try:
+            validate_setup_values(setup, fields, operation.values)
+        except SetupValidationError as exc:
+            raise InvalidOperation() from exc
+        plain = {
+            key: operation.values[key]
+            for key, field in fields.items()
+            if field.kind not in ("password", "credential") and operation.values.get(key)
+        }
+        if plain:
+            installation.config = {**(installation.config or {}), **plain}
+        await db.flush()
+        return None
     if isinstance(operation, DepartmentCreate):
         # Same defaults POST /departments uses (departments.py's
         # create_department): an empty tools frame plus the department-tier
@@ -274,16 +775,67 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
             tenant_id=tenant_id,
             name=operation.name,
             goal=operation.goal,
-            frame={
-                "tools": {},
-                "kbs": [],
-                "memory": {"department": ["read", "write"], "company": ["read"]},
-            },
+            frame=new_department_frame(),
             presentation={"icon": operation.icon},
         )
         db.add(dept)
         await db.flush()
-        return
+        # The agent builder places its new agent in it (`departmentRef`).
+        return dept.id
+    if isinstance(operation, DepartmentUpdate):
+        dept = await db.get(m.Department, operation.departmentId)
+        if dept is None or dept.deleted_at is not None:
+            raise InvalidOperation()
+        if operation.name is not None:
+            dept.name = operation.name
+        if operation.goal is not None:
+            dept.goal = operation.goal
+        if operation.icon is not None:
+            dept.presentation = {**(dept.presentation or {}), "icon": operation.icon}
+        await db.flush()
+        return None
+    if isinstance(operation, DepartmentDelete):
+        dept = await db.get(m.Department, operation.departmentId)
+        if dept is None or dept.deleted_at is not None:
+            raise InvalidOperation()
+        live_agents = (
+            (
+                await db.execute(
+                    select(m.Agent).where(
+                        m.Agent.department_id == operation.departmentId,
+                        m.Agent.deleted_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        now = dt.datetime.now(tz=dt.UTC)
+        if not live_agents:
+            await db.delete(dept)
+        else:
+            dept.deleted_at = now
+            await archive_department_boards(db, department_id=dept.id, now=now)
+            for agent in live_agents:
+                # The same step `DELETE /departments/{id}` takes for each agent.
+                await delete_or_archive_agent(
+                    db,
+                    agent,
+                    principal=None,
+                    actor_id=actor_member_id,
+                    now=now,
+                    resource_extra={"cascaded_from_department_id": str(dept.id)},
+                )
+        await db.flush()
+        return None
+    if isinstance(operation, DepartmentRestore):
+        dept = await db.get(m.Department, operation.departmentId)
+        if dept is None or dept.deleted_at is None:
+            raise InvalidOperation()
+        dept.deleted_at = None
+        await restore_department_boards(db, department_id=dept.id)
+        await db.flush()
+        return None
     if isinstance(operation, AgentCreate):
         target_dept = await db.get(m.Department, operation.departmentId)
         if target_dept is None or target_dept.deleted_at is not None:
@@ -309,14 +861,392 @@ async def apply_operation(db: AsyncSession, *, tenant_id: uuid.UUID, data: dict[
         await db.flush()
         db.add(m.MemoryStore(tenant_id=tenant_id, tier="agent", owner_id=agent.id))
         await db.flush()
-        return
+        # v1 in the same transaction as the create, like every other creation
+        # path (api/v1/agents_write.py::create_agent): runs are pinned to a
+        # version, and an agent without one would run off its live row.
+        if publish:
+            await publish_version(db, agent, note="created by the Copilot")
+        return agent.id
+    if isinstance(operation, AgentRename):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        agent.name = operation.name
+        await db.flush()
+        return None
+    if isinstance(operation, AgentLifecycleSet):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        if agent.status == "pending_approval":
+            raise InvalidOperation()
+        agent.status = _LIFECYCLE[operation.action]
+        await db.flush()
+        return None
+    if isinstance(operation, AgentDelete):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        # The same step `DELETE /agents/{id}` takes.
+        await delete_or_archive_agent(db, agent, principal=None, actor_id=actor_member_id)
+        await db.flush()
+        return None
+    if isinstance(operation, AgentRestore):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is None:
+            raise InvalidOperation()
+        try:
+            await assert_manual_only_compatible(
+                db, agent_id=agent.id, model_config_id=agent.model_config_id
+            )
+        except SubscriptionModelNotManualOnly as exc:
+            raise InvalidOperation() from exc
+        agent.deleted_at = None
+        await db.flush()
+        return None
+    if isinstance(operation, AgentNarrowingSet):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        dept = await db.get(m.Department, agent.department_id)
+        frame = dept.frame if dept else {}
+        if pdp.narrowing_within_frame(frame, operation.narrowing):
+            raise InvalidOperation("system_outside_frame")
+        raw_tools = (
+            operation.narrowing.get("tools", {}) if isinstance(operation.narrowing, dict) else {}
+        )
+        if isinstance(raw_tools, dict):
+            for key, raw in raw_tools.items():
+                if not isinstance(raw, dict) or raw.get("approval_eur") is None:
+                    continue
+                mcp_conn = (
+                    await db.execute(
+                        select(m.McpConnection)
+                        .where(
+                            m.McpConnection.tenant_id == tenant_id,
+                            m.McpConnection.name == key,
+                            m.McpConnection.credential_id.is_(None),
+                            not_retired(),
+                        )
+                        .order_by(m.McpConnection.created_at)
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+                cfg = (
+                    mcp_conn.config
+                    if mcp_conn is not None and isinstance(mcp_conn.config, dict)
+                    else {}
+                )
+                manifest_conn = resolve_tool_pack_connection(
+                    str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
+                )
+                if not connection_supports_value_spec(manifest_conn):
+                    raise InvalidOperation("system_no_amount_limit")
+        # Deferred import: `oc8.api.v1`'s package __init__ eagerly aggregates
+        # every route module for the router, including `copilot.py`, which
+        # imports back from this module -- a top-level import here would make
+        # `capabilities.py` (whenever it is the first thing to touch
+        # `oc8.api.v1`, e.g. a test importing `oc8.copilot.*` directly)
+        # trip over its own partially-initialised module. Importing at call
+        # time, after this module has finished loading, sidesteps that
+        # without weakening the layering exception -- this remains the one
+        # and only place `capabilities.py` depends on `api/v1/*`.
+        from oc8.api.v1.agents_write import enforce_narrowing_logins
+
+        # Read BEFORE `enforce_narrowing_logins`: it records the override in
+        # `narrowing_overridden_keys`, a versioned column, so reading after it
+        # always saw a draft and never published the Copilot's change.
+        had_no_draft = await _has_no_draft(db, agent)
+        try:
+            await enforce_narrowing_logins(
+                db, tenant_id=tenant_id, agent=agent, narrowing=operation.narrowing, frame=frame
+            )
+        except HTTPException as exc:
+            raise InvalidOperation("system_login_needed") from exc
+        agent.narrowing = operation.narrowing
+        await db.flush()
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="tool access", publish=publish
+        )
+        return None
+    if isinstance(operation, AgentNarrowingReset):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        raw_tools = dict((agent.narrowing or {}).get("tools", {}))
+        if operation.connectionName not in raw_tools:
+            raise InvalidOperation()
+        had_no_draft = await _has_no_draft(db, agent)
+        new_tools = dict(raw_tools)
+        del new_tools[operation.connectionName]
+        narrowing = dict(agent.narrowing or {})
+        narrowing["tools"] = new_tools
+        agent.narrowing = narrowing
+        overridden = set(agent.narrowing_overridden_keys or [])
+        overridden.discard(operation.connectionName)
+        agent.narrowing_overridden_keys = sorted(overridden)
+        await db.flush()
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="tool access reset", publish=publish
+        )
+        return None
+    if isinstance(operation, AgentRuntimeAssign):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        principal = Principal(subject="copilot", tenant_id=tenant_id, role="org_admin")
+        had_no_draft = await _has_no_draft(db, agent)
+        try:
+            await assign_runtime(
+                db,
+                tenant_id=tenant_id,
+                agent=agent,
+                runtime_ref=operation.runtimePluginId,
+                principal=principal,
+            )
+        except (RuntimeNotFoundError, RuntimeNotExecutableError, RuntimeCapabilityError) as exc:
+            raise InvalidOperation() from exc
+        await db.flush()
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="runtime", publish=publish
+        )
+        return None
+    if isinstance(operation, AgentModelSwitch):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        mc = await db.get(m.ModelConfig, operation.modelConfigId)
+        if mc is None:
+            raise InvalidOperation()
+        try:
+            await assert_manual_only_compatible(db, agent_id=agent.id, model_config_id=mc.id)
+        except SubscriptionModelNotManualOnly as exc:
+            raise InvalidOperation("model_manual_only") from exc
+        had_no_draft = await _has_no_draft(db, agent)
+        agent.model_config_id = mc.id
+        show_model(agent, mc)
+        await db.flush()
+        await _publish_copilot_change(
+            db, agent, had_no_draft=had_no_draft, what="model", publish=publish
+        )
+        return None
+    if isinstance(operation, AgentSkillAssign):
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation()
+        version = await db.get(m.SkillVersion, operation.skillVersionId)
+        if version is None:
+            raise InvalidOperation()
+        dept = await db.get(m.Department, agent.department_id)
+        frame = dept.frame if dept else {}
+        requires = version.definition.get("requires", {})
+        granted = await db.execute(
+            select(m.KnowledgeGrant.kb_id).where(
+                m.KnowledgeGrant.grantee_id.in_([agent.id, agent.department_id])
+            )
+        )
+        granted_kb_ids = {str(k) for k in granted.scalars().all()}
+        if pdp.missing_skill_requirements(frame, agent.narrowing, requires, granted_kb_ids):
+            raise InvalidOperation("skill_requirements_missing")
+        resolved = await resolve_runtime_plugin(db, tenant_id=tenant_id, agent=agent)
+        if resolved is not None:
+            _, runtime_version = resolved
+            if check_runtime_capabilities(
+                has_supervision=False,
+                has_enabled_skills=True,
+                runtime_capabilities=list(runtime_version.capabilities),
+            ):
+                raise InvalidOperation("runtime_lacks_skills")
+        # Already assigned is not an error worth surfacing as a raised
+        # exception -- same reasoning as `assign_skill`'s own comment
+        # (`api/v1/agents_write.py:1061-1085`): the unique index would report
+        # the duplicate faithfully, but an uncaught IntegrityError tells an
+        # operator that oc8 broke rather than that nothing needed doing.
+        # Unlike the REST route this function has no response body to
+        # distinguish "assigned" from "already_assigned" -- every path here
+        # converges on the same successful `flush(); return`.
+        existing = (
+            await db.execute(
+                select(m.SkillAssignment).where(
+                    m.SkillAssignment.tenant_id == tenant_id,
+                    m.SkillAssignment.agent_id == agent.id,
+                    m.SkillAssignment.skill_version_id == version.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            if not existing.enabled:
+                existing.enabled = True
+                await db.flush()
+            return None
+        # Same row shape `assign_skill` (`api/v1/agents_write.py`, the
+        # `db.add(m.SkillAssignment(...))` call around line 1087) inserts on
+        # the fresh-assignment path: tenant_id/agent_id/skill_version_id plus
+        # an explicit enabled=True. `SkillAssignment` has no `granted_by`/
+        # `source` column (see `oc8.models.skills.SkillAssignment`) -- that
+        # was only ever a possibility to rule out, not a real field.
+        db.add(
+            m.SkillAssignment(
+                tenant_id=tenant_id,
+                agent_id=agent.id,
+                skill_version_id=version.id,
+                enabled=True,
+            )
+        )
+        await db.flush()
+        return None
     if isinstance(operation, GuardrailSet):
-        await _apply_guardrail_set(db, tenant_id=tenant_id, operation=operation)
-        return
+        await _apply_guardrail_set(db, tenant_id=tenant_id, operation=operation, publish=publish)
+        return None
+    if isinstance(operation, BoardCreate):
+        return await _apply_board_create(
+            db, tenant_id=tenant_id, operation=operation, actor_member_id=actor_member_id
+        )
+    if isinstance(operation, BoardUpdate):
+        await _apply_board_update(
+            db, tenant_id=tenant_id, operation=operation, actor_member_id=actor_member_id
+        )
+        return None
     # Integration prepare validates the opaque reference still identifies a
     # tenant-visible integration. It deliberately does not configure credentials.
     if await db.get(m.Integration, operation.integrationId) is None:
         raise InvalidOperation()
+    return None
+
+
+async def _apply_board_create(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    operation: BoardCreate,
+    actor_member_id: uuid.UUID | None,
+) -> uuid.UUID:
+    """A new board, in its producing agent's department. Returns its id."""
+    agent = await db.get(m.Agent, operation.agentId)
+    if agent is None or agent.deleted_at is not None:
+        raise InvalidOperation("agent_unknown")
+    board = m.DataBoard(
+        tenant_id=tenant_id,
+        department_id=agent.department_id,
+        agent_id=agent.id,
+        title=operation.title,
+        description=operation.description,
+        spec=operation.spec,
+        spec_version=1,
+    )
+    db.add(board)
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="operator",
+        actor_id=actor_member_id,
+        category="copilot",
+        action="board.created",
+        resource={
+            "board_id": str(board.id),
+            "agent_id": str(agent.id),
+            "department_id": str(board.department_id),
+        },
+    )
+    await on_board_created(db, board=board, actor_member_id=actor_member_id)
+    return board.id
+
+
+async def _restored_spec(db: AsyncSession, board: m.DataBoard, version: int) -> dict[str, Any]:
+    """The undo: `version`'s blocks over the board's current datasets."""
+    if version == board.spec_version:
+        old: dict[str, Any] | None = board.spec
+    else:
+        old = await db.scalar(
+            select(m.DataBoardSpecVersion.spec).where(
+                m.DataBoardSpecVersion.board_id == board.id,
+                m.DataBoardSpecVersion.version == version,
+            )
+        )
+    if old is None:
+        raise InvalidOperation("board_version_unknown")
+    candidate = {"datasets": board.spec.get("datasets"), "blocks": old.get("blocks")}
+    try:
+        return parse_board_spec(candidate).model_dump(mode="json")
+    except BoardSpecInvalid:
+        raise InvalidOperation(_BOARD_SPEC_ERROR) from None
+
+
+async def _apply_board_update(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    operation: BoardUpdate,
+    actor_member_id: uuid.UUID | None,
+) -> None:
+    """Change a board's view, title or producing agent. Records are never
+    touched; the previous spec is kept as a version so the change can be undone."""
+    board = await lock_live_board(db, operation.boardId)
+    if board is None or board.deleted_at is not None:
+        raise InvalidOperation("board_unknown")
+    if operation.agentId is not None:
+        agent = await db.get(m.Agent, operation.agentId)
+        if agent is None or agent.deleted_at is not None:
+            raise InvalidOperation("agent_unknown")
+        if agent.department_id != board.department_id:
+            # A board's department is its producing agent's (§6.8.5).
+            raise InvalidOperation("agent_other_department")
+    new_spec: dict[str, Any] | None = None
+    if operation.spec is not None:
+        new_spec = operation.spec
+    elif operation.restoreVersion is not None:
+        new_spec = await _restored_spec(db, board, operation.restoreVersion)
+    if new_spec is not None:
+        try:
+            check_additive(parse_board_spec(board.spec), parse_board_spec(new_spec))
+        except BoardSpecInvalid:
+            raise InvalidOperation(_BOARD_SPEC_ERROR) from None
+        except SpecChangeRefused as exc:
+            # Its message is its stable code; nothing submitted.
+            raise InvalidOperation(exc.code) from exc
+        db.add(
+            m.DataBoardSpecVersion(
+                tenant_id=tenant_id,
+                board_id=board.id,
+                version=board.spec_version,
+                title=board.title,
+                spec=board.spec,
+            )
+        )
+        board.spec = new_spec
+        board.spec_version += 1
+    if operation.agentId is not None:
+        board.agent_id = operation.agentId
+    if operation.title is not None:
+        board.title = operation.title
+    if operation.description is not None:
+        board.description = operation.description
+    # Fixed names only, never the values.
+    changed = [
+        name
+        for name, given in (
+            ("title", operation.title is not None),
+            ("description", operation.description is not None),
+            ("spec", new_spec is not None),
+            ("agent", operation.agentId is not None),
+        )
+        if given
+    ]
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="operator",
+        actor_id=actor_member_id,
+        category="copilot",
+        action="board.updated",
+        resource={
+            "board_id": str(board.id),
+            "spec_version": board.spec_version,
+            "changed": changed,
+        },
+    )
 
 
 def _connection_tool_names(conn: m.McpConnection) -> frozenset[str]:
@@ -356,7 +1286,7 @@ def _connection_guardrail_attributes(conn: m.McpConnection) -> list[GuardrailAtt
 
 
 async def _apply_guardrail_set(
-    db: AsyncSession, *, tenant_id: uuid.UUID, operation: GuardrailSet
+    db: AsyncSession, *, tenant_id: uuid.UUID, operation: GuardrailSet, publish: bool = True
 ) -> None:
     """The one Copilot capability that touches real authorization: translates
     a single (connection, function, decision) triple into the same
@@ -397,6 +1327,7 @@ async def _apply_guardrail_set(
                 m.McpConnection.tenant_id == tenant_id,
                 m.McpConnection.name == operation.connectionName,
                 m.McpConnection.credential_id.is_(None),
+                not_retired(),
             )
             .order_by(m.McpConnection.created_at)
             .limit(1)
@@ -488,9 +1419,13 @@ async def _apply_guardrail_set(
     if violations:
         raise InvalidOperation()
 
+    had_no_draft = await _has_no_draft(db, agent)
     agent.narrowing = narrowing
     overridden = list(agent.narrowing_overridden_keys or [])
     if operation.connectionName not in overridden:
         overridden.append(operation.connectionName)
     agent.narrowing_overridden_keys = overridden
     await db.flush()
+    await _publish_copilot_change(
+        db, agent, had_no_draft=had_no_draft, what="guardrail", publish=publish
+    )

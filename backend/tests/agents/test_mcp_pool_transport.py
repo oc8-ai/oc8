@@ -15,7 +15,7 @@ import pytest
 
 from oc8.agent import mcp_pool
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.asyncio, pytest.mark.usefixtures("allow_loopback_outbound")]
 
 # Same real FastMCP-over-streamable-HTTP fixture pattern as
 # tests/agents/test_mcp_client_http_transport.py -- duplicated here per this

@@ -134,6 +134,37 @@ describe("Capas list page", () => {
     expect(enableMock).toHaveBeenCalledWith({ pluginId: "db-2", grantedPermissions: [] });
   });
 
+  it("restores without granting a permission the capa defers to its own consent step", () => {
+    useAvailablePluginsMock.mockReturnValue({
+      data: {
+        items: [
+          capa({
+            pluginId: "deferring",
+            name: "deferring",
+            label: "Deferring",
+            installed: true,
+            databaseId: "db-4",
+            installationStatus: "disabled",
+            permissions: ["mcp:connect", "knowledge:write"],
+            deferredPermissions: ["knowledge:write"],
+          }),
+        ],
+        totalCount: 1,
+      },
+      isLoading: false,
+      error: null,
+    });
+
+    renderPage();
+    fireEvent.click(screen.getByText(/show disabled/i));
+    fireEvent.click(screen.getByRole("button", { name: /restore/i }));
+
+    expect(enableMock).toHaveBeenCalledWith({
+      pluginId: "db-4",
+      grantedPermissions: ["mcp:connect"],
+    });
+  });
+
   it("hides a quarantined-but-installed capa by default, same as a disabled one", () => {
     const quarantinedCapa = capa({
       pluginId: "quarantined_one",

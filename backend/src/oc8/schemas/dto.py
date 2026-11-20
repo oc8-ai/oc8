@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import Field
 
+from oc8.modelrouter.types import ReasoningLevel
 from oc8.schemas.base import CamelModel
+from oc8.schemas.paging import Page
 
 
 class AgentDTO(CamelModel):
@@ -26,6 +30,10 @@ class AgentDTO(CamelModel):
     department_id: str | None = None
     model_config_id: str | None = None
     is_lead: bool = False
+    #: Opening questions the composer offers on an empty conversation (§5.3).
+    #: Empty for every agent whose template shipped none -- the composer then
+    #: falls back to three generic starters.
+    prompt_starters: list[str] = []
     deleted_at: str | None = None
     #: Demo-seed locale overlays (`{de: "…"}`). Empty on live agents.
     role_translations: dict[str, str] = {}
@@ -61,6 +69,8 @@ class TaskDTO(CamelModel):
     agent_id: str | None = None
     column: str  # backlog | in_progress | waiting | done
     meta: str | None = None
+    #: Form URL of the record this task is on, when the connection can name one.
+    record_url: str | None = None
     title_translations: dict[str, str] = {}
     meta_translations: dict[str, str] = {}
 
@@ -89,10 +99,80 @@ class BoardDTO(CamelModel):
     totals: dict[str, int] = {}
 
 
+class RecordLinkDTO(CamelModel):
+    label: str
+    url: str
+
+
+class RecordLinkVerdictDTO(CamelModel):
+    url: str
+    #: The server's reading of the URL's host (`records.registry.host_of`).
+    host: str
+    connected: bool
+    issued: bool
+
+
+class RecordLinkVerdictsDTO(CamelModel):
+    links: list[RecordLinkVerdictDTO]
+
+
 class ApprovalOptionDTO(CamelModel):
     key: str
     label: str
     detail: str = ""
+
+
+class DirectAccessAgentDTO(CamelModel):
+    """An agent that fits the offer's request and the person may run."""
+
+    id: str
+    name: str
+    department: str
+    score: float
+
+
+class DirectAccessChosenAgentDTO(CamelModel):
+    """The agent the person chose to run instead, and its run."""
+
+    id: str
+    name: str
+    run_id: str
+
+
+class DirectAccessInfoDTO(CamelModel):
+    """What a direct-access approval is about (copilot direct access §8). The
+    localized title is `ApprovalDTO.title_translations`, as for every card."""
+
+    session_id: str
+    tool_key: str
+    label: str
+    member_name: str
+    #: "own" | "organisation"; null when it could not be resolved.
+    account: str | None = None
+    #: "member" (the person decides) | "department" (its policy holds it).
+    decider: str = "member"
+    grant_id: str | None = None
+    grant_active: bool = False
+    #: The person approved; the department whose own policy holds the write
+    #: still has to (person first, then the department -- spec §1).
+    awaiting_department: bool = False
+    #: Fitting agents the person may run instead, best first (may be empty).
+    agents: list[DirectAccessAgentDTO] = []
+    #: The login the direct path would use ("Do it myself with {login}").
+    login_name: str = ""
+    #: The person's own request a chosen agent is handed (with the purpose).
+    request: str = ""
+    #: Set once the person chose one of `agents`: the card shows it is on it.
+    chosen_agent: DirectAccessChosenAgentDTO | None = None
+
+
+class DirectAccessGrantDTO(CamelModel):
+    id: str
+    session_id: str
+    tool_key: str
+    label: str
+    approval_id: str
+    granted_at: str
 
 
 class ApprovalDTO(CamelModel):
@@ -140,6 +220,13 @@ class ApprovalDTO(CamelModel):
     agent_name: str = ""
     task_id: str | None = None
     task_title: str = ""
+    #: The run this approval is holding, when there is one -- resolved from
+    #: the approval's `task_id` (an ApprovalRequest has no run_id column; the
+    #: run is what carries the task). `null` for an approval raised outside a
+    #: run (a budget incident, a `request_decision` on a task with no run
+    #: left), which is exactly the distinction the queue sorts on: an item
+    #: with a parked run behind it is blocking work, one without it is not.
+    run_id: str | None = None
     #: ISO-8601. What "vor 2 Std." on the row is computed from. There was no
     #: timestamp on this DTO at all, so the inbox could not say how long anything
     #: had been waiting.
@@ -162,6 +249,48 @@ class ApprovalDTO(CamelModel):
     #: `None` for every approval not raised that way -- `detail` remains the
     #: only "why" for those.
     reason_context: dict[str, Any] | None = None
+    #: The record in the source system, when the held call names one.
+    record_url: str | None = None
+    #: The builder proposal a `copilot.agent_builder` approval decides, so the
+    #: pane can show the same preview read-only. None for every other kind.
+    proposal_id: str | None = None
+    #: Set on a direct-access offer and on a write the Copilot made through a
+    #: person's connection: on whose behalf, which system, which account.
+    direct_access: DirectAccessInfoDTO | None = None
+    #: Records the approved call references, e.g. the customer for a new quotation.
+    #: Links to EXISTING records only (resolved at raise time, filtered for safe URLs).
+    related_links: list[RecordLinkDTO] = []
+    #: The record produced by the approved call, set once it runs.
+    #: NULL until the call has run, and for tools that return no link.
+    result_url: str | None = None
+
+
+class QuestionOptionDTO(CamelModel):
+    key: str
+    label: str
+    detail: str = ""
+
+
+class QuestionDTO(CamelModel):
+    """One structured `ask_user` question (spec §4.1)."""
+
+    id: str
+    prompt: str
+    kind: str  # single | multi | text
+    options: list[QuestionOptionDTO] = []
+    allow_other: bool = False
+    required: bool = True
+
+
+class PendingQuestionDTO(CamelModel):
+    """What the chat's active run is parked on, for the question card.
+
+    `questions` is empty for a plain question: `text` is then all there is."""
+
+    clarification_id: str
+    run_id: str
+    text: str
+    questions: list[QuestionDTO] = []
 
 
 class ClarificationDTO(CamelModel):
@@ -184,6 +313,9 @@ class ClarificationDTO(CamelModel):
     question: str
     status: str  # open | answered
     created_at: str = ""
+    #: The structured questions behind `question` (spec §4.1); empty for a
+    #: plain question.
+    questions: list[QuestionDTO] = []
 
 
 class TaskBoardRowDTO(CamelModel):
@@ -237,7 +369,12 @@ class SeatDTO(CamelModel):
 
 class MemberDTO(CamelModel):
     id: str
+    #: The identity provider's stable id for this person (the token's `sub`).
+    #: With an external OIDC provider this is often a uuid, not an address.
     subject: str
+    #: The address they sign in with, as the identity provider last reported
+    #: it. `null` when it never has; the screen then falls back to `subject`.
+    email: str | None = None
     display_name: str = ""
     #: Sees and decides in every department, including ones created after the row
     #: was written. Written at an authenticated moment and revocable; never
@@ -273,6 +410,18 @@ class MemberDTO(CamelModel):
     invite_sent: bool = False
 
 
+class MemberPasswordResetDTO(CamelModel):
+    """What `POST /members/{id}/password-reset` hands back.
+
+    Always carries `reset_link` so an administrator can copy it even when
+    mail is configured -- a send that lands in spam is not a failed mint.
+    `reset_sent` is whether `deliver` actually handed it to the relay.
+    """
+
+    reset_link: str
+    reset_sent: bool = False
+
+
 class MeDTO(CamelModel):
     """The caller, and where they stand.
 
@@ -299,6 +448,9 @@ class MeDTO(CamelModel):
     #: an empty list costs nothing.
     scopes: list[str] = []
     display_name: str = ""
+    #: The caller's sign-in address, from the token's `email` claim or the
+    #: member row. `null` when neither has one.
+    email: str | None = None
     #: `null` only for a principal that cannot stand in a department at all (a
     #: plugin token). Every operator has one from their first request on, which is
     #: also what keeps `approval_request.decided_by` from being NULL.
@@ -316,6 +468,13 @@ class MeDTO(CamelModel):
     #: with no member/scope at all (the existing PermissionError branch in
     #: `me()`) -- never a human admin, so the redirect check never sees it.
     onboarding_status: str | None = None
+    #: The caller's own first-run welcome ('pending'/'completed'/'skipped'),
+    #: read by an edition that greets members. None only for a principal with
+    #: no member row at all (a plugin token).
+    member_onboarding_status: str | None = None
+    #: The organisation's IANA timezone (UTC when unset or unknown): what a new
+    #: schedule is read in unless the editor names another.
+    organisation_timezone: str = "UTC"
 
 
 class IntegrationDTO(CamelModel):
@@ -351,15 +510,31 @@ class ModelDTO(CamelModel):
     #: Free-form raw parameters forwarded verbatim; see ModelConfigWrite.extra.
     extra: dict[str, Any] | None = None
     used_by_copilot: bool = False
+    #: Whether members may pick this model in a chat (`oc8.chat.model_choice`).
+    chat_enabled: bool = True
+    #: Whether this model can think; gates the chat's reasoning-level control.
+    supports_reasoning: bool = False
     credential_id: str | None = None
     #: Set only when `status` is "error"/"unknown" -- the real reason from
     #: the last POST /models/{id}/test check (see catalog.py).
     health_error: str | None = None
     health_checked_at: str | None = None
+    #: Auto-router (`provider="auto"`): tier → concrete ModelConfig id.
+    auto_tiers: dict[str, str] | None = None
+    auto_shadow_only: bool = False
+    auto_cascade_verify: bool = False
+    auto_preference_router: bool = False
+    auto_preference_examples: list[dict[str, Any]] | None = None
 
 
 class ModelDiscoverResponse(CamelModel):
     models: list[str]
+
+
+class ReasoningSupportDTO(CamelModel):
+    """The model form's "Can think" suggestion for a provider and model."""
+
+    supports_reasoning: bool
 
 
 class ModelPriceDTO(CamelModel):
@@ -428,6 +603,12 @@ class DataSourceDTO(CamelModel):
     last_sync_status: str | None = None
     #: Set only while `last_sync_status == "failed"`.
     last_sync_error: str | None = None
+    #: Documents the last finished sync left out, by reason (`unsupported_type`,
+    #: `too_large`, `url_document`, or whatever the connector reported). Null
+    #: when nothing was skipped or the source has not synced yet.
+    last_sync_skipped: dict[str, int] | None = None
+    #: Note codes the last finished sync recorded (e.g. `api_key_recommended`).
+    last_sync_notes: list[str] | None = None
     deleted_at: str | None = None
     #: Non-secret connector config only (e.g. `bucket`, `prefix`, and a
     #: `credential`-typed property's CREDENTIAL ID -- never a resolved
@@ -553,18 +734,14 @@ class KnowledgeBaseDTO(CamelModel):
     deleted_at: str | None = None
     name_translations: dict[str, str] = {}
     description_translations: dict[str, str] = {}
+    index_type: str = "internal"
+    index_config: dict[str, Any] = {}
+    credential_id: str | None = None
 
 
 class GrantDTO(CamelModel):
     id: str
     kb_id: str
-    grantee_type: str
-    grantee_id: str
-
-
-class ComponentGrantDTO(CamelModel):
-    id: str
-    component_key: str
     grantee_type: str
     grantee_id: str
 
@@ -655,6 +832,20 @@ class AgentDetailDTO(AgentDTO):
     #: ["max_steps"], a top-level key -- see engine._max_steps). None means
     #: "inherit settings.agent_max_steps", not a framework default value.
     max_steps: int | None = None
+    #: The version that actually runs. The thin shape `lib/skills.ts` already
+    #: uses for skills -- an id plus the number, and no client-side version
+    #: state machine. Whether the working copy has DRIFTED from it is a separate
+    #: question with its own endpoint (`GET /agents/{id}/draft-status`), because
+    #: it changes on a different schedule: thirteen write endpoints move it and
+    #: a publish clears it, while the rest of this payload is stable.
+    #:
+    #: Null only for a row written outside `create_agent` -- a fixture, a
+    #: restore, a psql insert. Every hired agent has a v1 from birth.
+    current_version_id: str | None = None
+    current_version_no: int | None = None
+    #: Last successful Auto-router tier for this agent
+    #: (``definition["auto_router_affinity"]["tier"]``): fast | balanced | strong.
+    auto_router_affinity_tier: str | None = None
 
 
 class AgentInstructionRevisionDTO(CamelModel):
@@ -678,6 +869,71 @@ class AgentInstructionHistoryDTO(CamelModel):
     #: Cursor for the next older page (an audit_event.seq); null once the
     #: oldest revision has been returned.
     next_before_seq: int | None = None
+
+
+class AgentVersionSummaryDTO(CamelModel):
+    """One published agent version, as the Versions list renders it.
+
+    The list deliberately does NOT carry `payload`: a tenant with a hundred
+    versions of an agent whose `definition` is a grab-bag would ship a hundred
+    full configurations to render ten rows. `GET /agents/{id}/versions/{n}`
+    returns the payload for the one row somebody opened.
+    """
+
+    id: str
+    version_no: int
+    note: str | None = None
+    #: The `org_member.id` of whoever published it, or null for a version
+    #: written by something other than a person -- `create_agent`'s v1 when the
+    #: caller is a system principal, and the migration's backfilled v1 for
+    #: every agent that predates versioning.
+    published_by: str | None = None
+    published_at: str
+    is_current: bool = False
+    #: Set when this version was produced by a rollback, naming the version it
+    #: copied. Read out of the payload's reserved `_meta` key
+    #: (`agents.versioning.version_meta`), not out of a column -- a rollback is
+    #: rare and a column for it would be null on almost every row.
+    rolled_back_from: int | None = None
+
+
+class AgentVersionDTO(AgentVersionSummaryDTO):
+    """One version including its full configuration snapshot."""
+
+    payload: dict[str, Any] = {}
+    #: Hex, not bytes and not base64: JSON has no bytes type, and hex is the
+    #: spelling an operator can compare against `digest()` output in psql.
+    payload_hash: str = ""
+
+
+class AgentVersionFieldDiffDTO(CamelModel):
+    """One changed field. `field` is either a payload key (`mission`) or a
+    key one level inside a JSONB one (`narrowing.odoo`, `definition.max_steps`)
+    -- see `agents.versioning.diff_payloads` for why one level and no more."""
+
+    field: str
+    before: Any = None
+    after: Any = None
+
+
+class AgentVersionDiffDTO(CamelModel):
+    to_version_no: int | None = None
+    from_version_no: int
+    entries: list[AgentVersionFieldDiffDTO] = []
+
+
+class AgentDraftStatusDTO(CamelModel):
+    """The working copy versus the current version (spec §4).
+
+    `dirty` comes from the payload HASH and `changed_fields` from the diff, and
+    the boolean is the authority -- the publish endpoint's no-op 409 compares
+    hashes too, so a `dirty` derived from the field list could show a publish
+    bar for a publish the API would refuse.
+    """
+
+    dirty: bool = False
+    changed_fields: list[str] = []
+    current_version_no: int | None = None
 
 
 class MemoryRecordDTO(CamelModel):
@@ -706,6 +962,31 @@ class PrincipalUsageDTO(CamelModel):
     saved_tokens_in: int
     saved_tokens_out: int
     saved_cost_micros: int
+
+
+class TokenUsageExportRowDTO(CamelModel):
+    """One `token_usage_record` row for `GET /usage/export` -- one row per
+    metered request, unlike `PrincipalUsageDTO`'s per-day/per-group rollup.
+    `cost_micros` is computed at render time from the versioned `ModelPrice`
+    table (see `metering/pricing.py`); cost is deliberately not stored on the
+    record itself."""
+
+    ts: str
+    agent_id: str | None
+    agent_name: str | None
+    department_id: str | None
+    department_name: str | None
+    model: str
+    provider: str
+    tokens_in: int
+    tokens_out: int
+    cache_hit: bool
+    saved_tokens_in: int
+    saved_tokens_out: int
+    platform_units: int
+    cost_micros: int | None
+    skill_id: str | None
+    request_id: str
 
 
 class GuardrailPresetDTO(CamelModel):
@@ -812,6 +1093,9 @@ class McpConnectionDTO(CamelModel):
     command: str = ""
     args: list[str] = []
     department_id: str | None = None
+    #: In no department, and no run reaches it until it gets one
+    #: (`connections.usable.needs_department`).
+    needs_department: bool = False
     connected: bool
     scopes: list[str] = []
     health: dict[str, object] = {}
@@ -851,6 +1135,64 @@ class McpConnectionDTO(CamelModel):
     credential_type: str | None = None
 
 
+class HttpTestCallResultDTO(CamelModel):
+    """One test call of an HTTP API tool; `excerpt` never carries a secret."""
+
+    ok: bool
+    status: int | None = None
+    duration_ms: int = 0
+    excerpt: str = ""
+    truncated: bool = False
+    error_class: Literal["auth", "token", "blocked", "unreachable", "http"] | None = None
+    message: str = ""
+
+
+class HttpToolDTO(CamelModel):
+    name: str
+    description: str = ""
+    method: str = "GET"
+    url_template: str = ""
+    param_schema: dict[str, Any] = Field(default_factory=dict)
+    param_locations: dict[str, str] = Field(default_factory=dict)
+    body_param: str | None = None
+    group: str = ""
+
+
+class HttpToolScopesDTO(CamelModel):
+    read: list[str] = Field(default_factory=list)
+    modify: list[str] = Field(default_factory=list)
+
+
+class HttpLoginShapeDTO(CamelModel):
+    """A connection's login without its secret."""
+
+    kind: str
+    location: str | None = Field(default=None, alias="in")
+    name: str | None = None
+    username: str | None = None
+    token_url: str | None = None
+    client_id: str | None = None
+    scope: str | None = None
+
+
+class ImportMetadataDTO(CamelModel):
+    source_url: str | None = None
+    fingerprint: str = ""
+    imported_at: str = ""
+    title: str = ""
+    version: str = ""
+
+
+class HttpToolsSnapshotDTO(CamelModel):
+    connection_id: str
+    name: str
+    base_url: str
+    http_tools: list[HttpToolDTO]
+    scopes: HttpToolScopesDTO
+    auth: HttpLoginShapeDTO | None = None
+    openapi: ImportMetadataDTO | None = None
+
+
 class ConnectionToolNamesDTO(CamelModel):
     names: list[str] = []
     #: Same names split by `authz.pdp.required_right`'s classification, so a
@@ -859,6 +1201,50 @@ class ConnectionToolNamesDTO(CamelModel):
     #: both at once (`required_right` fails closed to "modify" for anything
     #: unlisted in the connection's `scopes`, so `read` here is a strict
     #: subset of `names`, never the other way around).
+    read: list[str] = []
+    modify: list[str] = []
+
+
+class ToolLabelDTO(CamelModel):
+    """One tool's human label, resolved for the browser.
+
+    English source strings plus every translation the pack's own `i18n/*.po`
+    catalogs carry, the same `<field>Translations` arrangement
+    `GuardrailPresetDTO` uses -- the frontend picks a locale with
+    `resolveTranslation()` and never parses a manifest or a catalog itself.
+    """
+
+    tool: str
+    verb: str
+    object: str = ""
+    running: str = ""
+    verb_translations: dict[str, str] = {}
+    object_translations: dict[str, str] = {}
+    running_translations: dict[str, str] = {}
+
+
+class ModelLabelDTO(CamelModel):
+    """One entity value's human plural, e.g. `crm.lead` -> "deals"."""
+
+    key: str
+    label: str
+    label_translations: dict[str, str] = {}
+
+
+class ConnectionToolLabelsDTO(CamelModel):
+    """Everything the step timeline needs to write one row's sentence without
+    knowing anything about the connected software.
+
+    `read`/`modify` are carried alongside the labels on purpose: they are the
+    SECOND tier of the label resolution order (a tool with no declared label
+    still becomes "Read from odoo" / "Changed something in odoo"), and
+    fetching them from a second endpoint would let a timeline render raw tool
+    names for as long as that request was in flight.
+    """
+
+    connection: str
+    labels: list[ToolLabelDTO] = []
+    model_labels: list[ModelLabelDTO] = []
     read: list[str] = []
     modify: list[str] = []
 
@@ -894,10 +1280,18 @@ class RunDTO(CamelModel):
     state: str
     phase: str | None = None
     output: str | None = None
+    #: Why a `failed` run failed, in words an operator can act on (see
+    #: `oc8.api.v1.run.failure_reason`). None for every other state, and for a
+    #: failed run that recorded no reason.
+    failure_reason: str | None = None
     steps: int = 0
     tool_calls: list[dict[str, object]] = []
     task_id: str | None = None
     question: str | None = None
+    # AgentRun.updated_at, i.e. the run's heartbeat (see runtime/reconcile.py's
+    # HEARTBEAT_SECONDS/ABANDONED_AFTER) -- lets the frontend tell a run that's
+    # genuinely wedged from one that's just doing a slow step.
+    updated_at: str
     # Durable copy of every render_component call this run made (agent/engine.py's
     # RunResult.rendered_components / internal_agent.py's ctx["rendered_components"]).
     # Unlike the live-only `run.component_rendered` WS event, this survives a page
@@ -908,6 +1302,87 @@ class RunDTO(CamelModel):
     # .py's ctx["todos"]). Empty means either the agent never called todo_write,
     # or it cleared the list on its last call -- both render as "no todos".
     todos: list[TodoDTO] = []
+    #: The version this run is pinned to (`agent_run.agent_version_id`), by
+    #: NUMBER rather than id -- that is what the Versions tab shows and what
+    #: `GET /agents/{id}/versions/{n}` is addressed by, so a transcript can link
+    #: straight to the configuration that produced it.
+    #:
+    #: Null for a run created before version pinning existed. Migration 0099
+    #: deliberately did not backfill those: inventing a version for a historical
+    #: run is a claim about the past nothing can support, and the runtimes
+    #: already treat null as "read the live row".
+    agent_version_no: int | None = None
+    # One entry per model step (oc8.runtime.step_record), in step order:
+    # {"step", "modelWaitMs", "ttftMs", "toolWaitMs", "stepWallMs"}. Unlike
+    # tool_calls above, this is NOT a verbatim pass-through: the stored JSONB
+    # (context["stepTimings"]) keeps the snake_case keys
+    # oc8.agent.harness.step_timing writes (model_wait_ms, ttft_ms, etc) --
+    # that format must never change, since the eval CLI and that module's own
+    # latency_lines() read it directly. run_to_dto translates each entry to
+    # the camelCase shape above via oc8.runtime.step_record.step_timing_dto
+    # before it ever reaches this field.
+    #
+    # Empty for a run older than this field, and for a run whose runtime
+    # never recorded one: the timeline renders a missing duration as nothing
+    # at all rather than as zero.
+    step_timings: list[dict[str, object]] = []
+    #: Why a tool call could not run: `{integration, provider, label, reason}`
+    #: (connections design). The chat and the run history show a "connect"
+    #: call to action for it.
+    connection_required: dict[str, Any] | None = None
+    #: Tools a listing skipped for an admin's configuration error (an
+    #: incomplete or ambiguous login): `[{tool, integration, label, reason,
+    #: missing}]`. Non-blocking; the chat shows a quiet line for each.
+    tool_notices: list[dict[str, Any]] = []
+    #: A tool call the department frame (or the agent's own guardrails)
+    #: withholds: `{connection, tool, label, right, reason, scope,
+    #: departmentId, agentId}` (oc8.connections.tool_denied). The chat and the
+    #: run history say which tool and where an admin allows it.
+    tool_denied: dict[str, Any] | None = None
+
+
+class RunSummaryDTO(CamelModel):
+    """One row of an agent's run history (`GET /agents/{id}/runs`).
+
+    Deliberately NOT a `RunDTO`: that one carries every tool call and every
+    step's reasoning, which is what the detail view fetches for the ONE run an
+    operator opens (`GET /runs/{id}`), not what a page of twenty rows needs.
+    """
+
+    id: str
+    agent_id: str
+    state: str
+    #: What started the run: manual, cron, event, webhook, delegation,
+    #: decision, handoff or chat (`agent_run.source`).
+    source: str
+    created_at: str
+    #: The first transition into `running`; None for a run that never started.
+    started_at: str | None = None
+    #: The transition into a terminal state; None while the run is still open.
+    finished_at: str | None = None
+    #: finished_at - started_at, or None while either is missing.
+    duration_ms: int | None = None
+    steps: int = 0
+    #: The first characters of the task / answer, never the whole text.
+    task_excerpt: str | None = None
+    output_excerpt: str | None = None
+    failure_reason: str | None = None
+
+
+class ActiveRunDTO(CamelModel):
+    run_id: str
+    reply_to_id: str | None = None
+    state: str
+
+
+class ContextRefViewDTO(CamelModel):
+    """A pinned ref as the caller sees it now. `available` is False when the
+    caller can no longer see it; the label is then the one stored at pin time."""
+
+    kind: str
+    id: str
+    label: str
+    available: bool
 
 
 class ChatSessionDTO(CamelModel):
@@ -916,6 +1391,165 @@ class ChatSessionDTO(CamelModel):
     title: str
     created_at: str
     last_message_at: str | None = None
+    model_override_id: str | None = None
+    kind: str = "chat"
+    active_runs: list[ActiveRunDTO] = []
+    #: True when the caller sees this chat through a read-only share (C5).
+    read_only: bool = False
+    #: The question this chat's active run is parked on, if any (spec §4.1).
+    pending_question: PendingQuestionDTO | None = None
+    task_id: str | None = None
+    #: The chat's pinned context, re-checked for the caller. Filled on the
+    #: single-chat routes; the list leaves it empty.
+    pinned_refs: list[ContextRefViewDTO] = []
+    project_id: str | None = None
+    #: Pinned chats list first.
+    pinned: bool = False
+    #: The sticky mode this chat is in ("agent"), or None.
+    mode: str | None = None
+    #: The reasoning level kept on this chat, or None for the default.
+    effort: ReasoningLevel | None = None
+
+
+class BuilderChoiceDTO(CamelModel):
+    id: str
+    label: str
+
+
+class BuilderTriggerDTO(CamelModel):
+    kind: str  # cron | event
+    cron_expression: str | None = None
+    #: The zone the schedule will be read in (cron only).
+    timezone: str | None = None
+    event_source: str | None = None
+    event_type: str | None = None
+    task_text: str = ""
+
+
+class BuilderLimitDTO(CamelModel):
+    connection_name: str
+    function: str
+    decision: str
+
+
+class BuilderAgentDTO(CamelModel):
+    id: str
+    name: str
+    status: str
+
+
+class BuilderDatasetDTO(CamelModel):
+    key: str
+    label: str
+    grain: str
+    field_count: int
+
+
+class BuilderBoardDTO(CamelModel):
+    """The dashboard a builder proposal creates or changes."""
+
+    #: The board changed, or once applied the board created; None before.
+    board_id: str | None = None
+    mode: Literal["create", "update"]
+    title: str = ""
+    datasets: list[BuilderDatasetDTO] = []
+    block_count: int = 0
+
+
+class AgentBuilderDTO(CamelModel):
+    """One "Agent anlegen" card (Copilot Agent Builder §3.3). The mission is
+    the member's own content in their own chat: the owner and the approver
+    deciding about exactly that text read it; any other reader gets it blank."""
+
+    id: str
+    status: str  # draft | awaiting_approval | applied | rejected | expired | superseded
+    session_id: str | None = None
+    #: None while the agent goes into a department the proposal creates
+    #: (`new_department`); once applied, the department it was created in.
+    department_id: str | None = None
+    department_name: str = ""
+    #: The proposal creates `department_name` for its agent.
+    new_department: bool = False
+    name: str
+    role_title: str = ""
+    mission: str = ""
+    model: BuilderChoiceDTO | None = None
+    skills: list[BuilderChoiceDTO] = []
+    triggers: list[BuilderTriggerDTO] = []
+    systems: list[str] = []
+    limits: list[BuilderLimitDTO] = []
+    expires_at: str | None = None
+    #: The caller may press "Anlegen" now.
+    may_create: bool = False
+    #: The caller may press "Zur Freigabe senden" now.
+    may_request: bool = False
+    #: The caller is not the owner (an approver or reviewer reading it).
+    read_only: bool = False
+    #: Why the last apply was refused (`agent_builder` code), and at which step.
+    refusal: str | None = None
+    failed_step: int | None = None
+    #: Why that step failed (`InvalidOperation.reason` code), when it said.
+    failed_reason: str | None = None
+    rejected_reason: str | None = None
+    agent: BuilderAgentDTO | None = None
+    #: "board" for a board-only proposal: no new agent, so `name`, `role_title`
+    #: and `mission` are empty and the department is the board's (or its
+    #: producing agent's).
+    kind: Literal["agent", "board"] = "agent"
+    board: BuilderBoardDTO | None = None
+
+
+class ContextSearchItemDTO(CamelModel):
+    """One `#` search hit. The member's own picker, not the model's context:
+    restricted items may appear here."""
+
+    kind: str
+    id: str
+    label: str
+    hint: str | None = None
+    #: False for a data source that is not connected.
+    connected: bool = True
+
+
+class BrowseEntryDTO(CamelModel):
+    id: str
+    name: str
+    is_folder: bool
+    size: int | None = None
+    content_type: str | None = None
+    kind: str | None = None
+    note: str | None = None
+    #: An app entry's name in every locale its capa's `i18n/*.po` translates
+    #: it into. Empty for any other entry: a folder's name is the user's own.
+    name_translations: dict[str, str] = {}
+
+
+class BrowseListingDTO(CamelModel):
+    entries: list[BrowseEntryDTO]
+    #: True when the source holds more entries than are listed.
+    truncated: bool
+
+
+class ChatProjectDTO(CamelModel):
+    id: str
+    name: str
+    instructions: str
+    pinned_refs: list[ContextRefViewDTO]
+    created_at: str
+
+
+class ChatModelOptionDTO(CamelModel):
+    id: str | None
+    label: str
+    provider: str
+    locality: str
+    is_default: bool
+    #: Whether this model can think; the composer shows the reasoning-level
+    #: control only then. For "Auto", the agent's default model's value.
+    supports_reasoning: bool = False
+    #: The level that applies without a chat pick, or "custom" for a
+    #: configured value that maps to no level.
+    default_effort: str = "balanced"
 
 
 class FileAttachmentDTO(CamelModel):
@@ -927,6 +1561,30 @@ class FileAttachmentDTO(CamelModel):
     created_at: str
 
 
+class ChatContextRefDTO(CamelModel):
+    kind: str
+    id: str
+    label: str
+
+
+class ChatModeDTO(CamelModel):
+    """One slash command the composer may offer (§5.2). Served from
+    `oc8.chat.modes` so the picker and the enforcement cannot disagree about
+    which commands exist.
+
+    `summary` is ENGLISH -- backend strings are. The frontend translates a key
+    it knows and falls back to this text for one it does not, so a mode added
+    later is readable without a frontend release.
+    """
+
+    key: str
+    summary: str
+    allows_tools: bool
+    allows_writes: bool
+    #: Stays on the chat after the turn that set it (`PUT .../mode` keeps it).
+    sticky: bool = False
+
+
 class ChatMessageDTO(CamelModel):
     id: str
     session_id: str
@@ -936,6 +1594,18 @@ class ChatMessageDTO(CamelModel):
     rendered_components: list[RenderedComponentDTO] = []
     created_at: str
     attachments: list[FileAttachmentDTO] = []
+    #: How this turn was asked -- see `oc8.chat.modes`. Null for an ordinary
+    #: message. The composer renders it as a badge on the sent turn.
+    mode: str | None = None
+    context_refs: list[ChatContextRefDTO] = []
+    author_member_id: str | None = None
+    author_name: str | None = None
+    reply_to_id: str | None = None
+    #: Typed parts (e.g. `{"type": "answers", "questions": [...], "answers":
+    #: {...}}` for an answered question card). Null for plain-text turns.
+    parts: list[dict[str, Any]] | None = None
+    #: One-click replies from the `suggest_replies` part, derived for convenience.
+    suggestions: list[str] = []
 
 
 class ReportDTO(CamelModel):
@@ -990,10 +1660,21 @@ class TriggerDTO(CamelModel):
     task_text: str
     enabled: bool
     cron_expression: str | None = None
+    #: The zone the cron expression is read in; None = UTC (saved before
+    #: triggers carried a zone).
+    timezone: str | None = None
     next_run_at: str | None = None
     last_run_at: str | None = None
     event_source: str | None = None
     event_type: str | None = None
+    created_by_member_id: str | None = None
+    #: The owner's display name, for showing whose trigger it is.
+    created_by_name: str | None = None
+    acts_for_creator: bool = False
+    #: Shown to its creator only: the agent changed since they last saved this
+    #: trigger, so it no longer acts through their own account until they save
+    #: it again (connection_required "schedule_needs_confirmation").
+    needs_confirmation: bool = False
     #: kind='webhook' only -- the full POST /webhooks/{token} URL, built
     #: server-side from the same base URL external OAuth redirects use
     #: (oauth_redirect_base_url). Not one-time-reveal: unlike a password, an
@@ -1004,6 +1685,9 @@ class TriggerDTO(CamelModel):
 
 class AuthConfig(CamelModel):
     mode: str  # "dev" | "community"
+    #: "external" when the deployment registered a member inviter
+    #: (oc8.workspace.inviter): invitations then ask for a role and no password.
+    member_invites: str = "local"
     auth_server_url: str
     realm: str
     client_id: str
@@ -1023,6 +1707,11 @@ class AuthConfig(CamelModel):
     #: logout), if it has one. None for the dev/community provider, which has
     #: no external session to terminate.
     sso_logout_url: str | None = None
+    #: Where a person manages their own sign-in email and password at the
+    #: identity provider (for example Keycloak's account console), from
+    #: `OC8_ACCOUNT_MANAGEMENT_URL`. None when not configured; the screen then
+    #: only says those details are managed elsewhere.
+    account_management_url: str | None = None
 
 
 class SecretDTO(CamelModel):
@@ -1033,6 +1722,17 @@ class SecretDTO(CamelModel):
     kind: str
     key_version: str
     created_at: str
+
+
+class ConnectionUsedByDTO(CamelModel):
+    """What a credential is used by: departments enabled for it or wired to
+    it, agents that chose it, and data sources that read it."""
+
+    departments: list[str] = []
+    agents: list[str] = []
+    #: Names of the data sources that read it (a deletion never overrides
+    #: them, not even forced).
+    data_sources: list[str] = []
 
 
 class CredentialDTO(CamelModel):
@@ -1048,6 +1748,12 @@ class CredentialDTO(CamelModel):
     last_test_ok: bool | None
     created_at: str
     updated_at: str
+    #: The departments this login is enabled for, or all of them.
+    department_ids: list[str] = []
+    all_departments: bool = False
+    #: Required field keys without a value.
+    incomplete: list[str] = []
+    used_by: ConnectionUsedByDTO = ConnectionUsedByDTO()
 
 
 class CredentialTypeDTO(CamelModel):
@@ -1109,6 +1815,10 @@ class OAuthStartDTO(CamelModel):
     authorization_url: str
 
 
+class AdminConsentUrlDTO(CamelModel):
+    url: str
+
+
 class OAuthConnectionDTO(CamelModel):
     """Connection metadata only — token material is never serialized."""
 
@@ -1120,6 +1830,104 @@ class OAuthConnectionDTO(CamelModel):
     client_source: str
     expires_at: str | None = None
     created_at: str
+
+
+class ConnectableIntegrationDTO(CamelModel):
+    """An installed plugin a person or an admin can connect (connections design)."""
+
+    name: str
+    label: str
+    summary: str
+    tool_key: str
+    kind: str  # "oauth" | "credential"
+    provider: str | None = None
+    credential_type: str | None = None
+    #: The credential type's fields (label/help/placeholder plus translations),
+    #: for the form; secrets are never pre-filled.
+    credential_fields: list[dict[str, Any]] = []
+    available: bool
+    capa_id: str
+    #: What making it available grants (the plugin's requested permissions).
+    permissions: list[str] = []
+
+
+class ConnectionDTO(CamelModel):
+    """One OAuth connection or credential as the Connections page shows it --
+    metadata only, never a token, a secret ref or a secret value."""
+
+    id: str
+    kind: str  # "oauth" | "credential"
+    integration: str | None = None
+    provider: str | None = None
+    credential_type: str | None = None
+    account_label: str
+    owner: str  # "me" | "organisation" | "member"
+    owner_member_id: str | None = None
+    owner_name: str | None = None
+    status: str
+    grant_type: str | None = None
+    created_at: str
+    created_by_name: str | None = None
+    last_tested_at: str | None = None
+    last_test_ok: bool | None = None
+    #: A credential only: the departments it is enabled for, or all of them.
+    department_ids: list[str] = []
+    all_departments: bool = False
+    #: A credential only: required field keys without a value.
+    incomplete: list[str] = []
+    used_by: ConnectionUsedByDTO = ConnectionUsedByDTO()
+
+
+class CredentialCheckDTO(CamelModel):
+    ok: bool
+    #: "auth" | "unreachable" | "invalid"; None when ok.
+    reason: str | None = None
+    detail: str | None = None
+
+
+class AgentToolAccessDTO(CamelModel):
+    """The account one agent uses for one connectable tool."""
+
+    tool_key: str
+    integration: str
+    label: str
+    kind: str  # "oauth" | "credential"
+    mode: str  # "default" | "user" | "fixed"
+    default_mode: str  # "user" | "organisation"
+    oauth_connection_id: str | None = None
+    credential_id: str | None = None
+    target_label: str | None = None
+    target_owner_name: str | None = None
+    #: A fixed binding whose connection or credential was removed.
+    target_missing: bool = False
+    #: A fixed binding the runtime refuses until its owner or an
+    #: administrator saves it again (`binding_needs_confirmation`).
+    needs_confirmation: bool = False
+    #: "not_confirmed" | "agent_changed" when `needs_confirmation`.
+    confirmation_reason: str | None = None
+
+
+class EffectiveLoginDTO(CamelModel):
+    """The login an agent's tool uses for the person looking (their own
+    chat), and where it comes from -- or why there is none."""
+
+    #: The login's id (a credential, or for a sign-in tool the account).
+    credential_id: str | None = None
+    credential_name: str | None = None
+    #: "agent" | "own" | "department" | "organisation" | "legacy"
+    source: str | None = None
+    #: None | "not_configured" | "ambiguous" | "incomplete" | "not_connected"
+    reason: str | None = None
+    #: `incomplete`: the required field keys the login leaves empty.
+    missing: list[str] = []
+
+
+class AccessOptionDTO(CamelModel):
+    kind: str  # "user" | "oauth" | "credential"
+    id: str | None = None
+    label: str
+    owner: str | None = None  # "organisation" | "me" | "member"
+    owner_name: str | None = None
 
 
 class DeviceLoginStartDTO(CamelModel):
@@ -1280,11 +2088,13 @@ class WidgetInstanceDTO(CamelModel):
     """
 
     id: str
-    type: Literal["chat", "approvals", "reports", "budget", "activity", "tasks"]
-    x: int
-    y: int
-    w: int
-    h: int
+    type: Literal[
+        "chat", "approvals", "reports", "budget", "activity", "tasks", "needs-me", "data_board"
+    ]
+    x: int = Field(ge=0, le=12)
+    y: int = Field(ge=0, le=10000)
+    w: int = Field(ge=1, le=12)
+    h: int = Field(ge=1, le=1000)
     config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -1344,3 +2154,218 @@ class CoreI18nCatalogDTO(CamelModel):
     #: is never a key here -- it is the `msgid` source text the frontend
     #: already has inline, needing no lookup at all.
     locales: list[CoreLocaleDTO]
+
+
+class CopilotProfileDTO(CamelModel):
+    display_name: str
+    avatar: dict[str, Any]
+    paused_at: datetime | None = None
+    status: str
+    active_count: int
+    agent_id: str
+
+
+class ResponsibilityDTO(CamelModel):
+    id: str
+    title: str
+    goal: str
+    state: str
+    next_step: str
+    notify_rule: str
+    origin_channel: str | None = None
+    last_update_at: datetime | None = None
+    created_at: datetime
+    chat_session_id: str
+
+
+class FollowupDTO(CamelModel):
+    id: str
+    responsibility_id: str
+    responsibility_title: str
+    kind: str
+    cron_expression: str | None = None
+    timezone: str | None = None
+    next_run_at: datetime | None = None
+    ends_at: datetime | None = None
+    enabled: bool
+    last_skip_reason: str | None = None
+
+
+class CopilotNoteDTO(CamelModel):
+    id: str
+    content: str
+    created_at: datetime
+
+
+class RunInputDTO(CamelModel):
+    """A message written to a running run (spec §3.2)."""
+
+    id: str
+    text: str
+    author_name: str
+    created_at: str
+    consumed_at: str | None = None
+    consumed_step: int | None = None
+
+
+class RunSteeringDTO(CamelModel):
+    """What the composer under a running run may do: write to it (`may_write`
+    -- still running), and whether its runtime takes messages at all
+    (`accepts_inputs`; when not, the composer offers Stop instead)."""
+
+    may_write: bool
+    accepts_inputs: bool
+    inputs: list[RunInputDTO] = []
+
+
+class LiveTriggerDTO(CamelModel):
+    """The run's trigger line: `kind` is its source, `label` the name beside
+    it ("Delegated by <label>", "From <label>")."""
+
+    kind: str
+    label: str | None = None
+    #: A schedule's zone (IANA), so the client can say when it differs.
+    timezone: str | None = None
+
+
+class LiveRunDTO(CamelModel):
+    """A run on the Live timeline (spec §3.1). Deliberately no `task` and no
+    `context`: for a colleague's chat run that would be their message text.
+    For a colleague's run (under "All runs") `tool_calls`/`step_timings` are
+    cut to step labels (Ruling 15, `api/v1/chat_live.py`). Its `output`, the
+    final result, is kept and may quote their message -- deliberate: the spec
+    gives managers that run's result."""
+
+    id: str
+    state: str
+    source: str
+    created_at: str
+    trigger: LiveTriggerDTO
+    output: str | None = None
+    steps: int = 0
+    tool_calls: list[dict[str, Any]] = []
+    step_timings: list[dict[str, Any]] = []
+    started_by: str | None = None
+    #: A colleague's run under "All runs", cut to step labels (Ruling 15) --
+    #: the client shows it as labels only and never watches it live.
+    redacted: bool = False
+    #: The cards the run rendered (`context["rendered_components"]`), so they
+    #: outlive the live socket. Always empty for a `redacted` run.
+    rendered_components: list[RenderedComponentDTO] = []
+
+
+class LiveItemDTO(CamelModel):
+    kind: str
+    at: str
+    message: ChatMessageDTO | None = None
+    run: LiveRunDTO | None = None
+
+
+class LiveTimelineDTO(CamelModel):
+    """`next_before` is the cursor for the next older page, `None` at the
+    start of the timeline."""
+
+    session_id: str
+    items: list[LiveItemDTO]
+    next_before: str | None = None
+    may_view_all_runs: bool
+
+
+class CompleteOAuthDTO(CamelModel):
+    connected: str
+    connection: ConnectionDTO
+
+
+class LocalizedTextDTO(CamelModel):
+    en: str
+    de: str
+
+
+class NotificationDTO(CamelModel):
+    id: uuid.UUID
+    kind: str
+    subject_id: uuid.UUID | None
+    title: LocalizedTextDTO
+    body: LocalizedTextDTO
+    link: str
+    created_at: datetime
+    read: bool
+
+
+class NotificationPageDTO(Page[NotificationDTO]):
+    """`Page` plus the keyset cursor of the next page (None on the last)."""
+
+    next_cursor: str | None = None
+
+
+class UnreadCountDTO(CamelModel):
+    count: int
+
+
+class NotificationSettingDTO(CamelModel):
+    kind: Literal["board.available", "run.failed", "approval.decided"]
+    push_enabled: bool = True
+    messenger_enabled: bool = True
+
+
+class AgentIdeaDTO(CamelModel):
+    """One agent idea for the empty Copilot chat. Both languages travel: the
+    texts are catalogue data, not UI strings the frontend's t() knows."""
+
+    key: str
+    title: LocalizedTextDTO
+    subtitle: LocalizedTextDTO
+    prompt: LocalizedTextDTO
+
+
+class BoardSummaryDTO(CamelModel):
+    """One dashboard in a list. `stale` = no producing agent any more (banner
+    "no longer updated"). `may_run` = the viewer may start the producing agent
+    now (POST /agents/{agent_id}/run would admit them)."""
+
+    id: str
+    title: str
+    description: str
+    department_id: str
+    agent_id: str | None
+    agent_name: str | None
+    stale: bool
+    record_count: int
+    last_recorded_at: str | None
+    may_delete: bool
+    may_run: bool
+    #: May share and unshare: the same rule as `may_delete`.
+    may_share: bool
+    #: Visible to the caller only through a share, not through their own reach.
+    shared_with_me: bool
+
+
+class BoardShareDTO(CamelModel):
+    """One share of a board: exactly one of member and department is set."""
+
+    id: str
+    member_id: str | None = None
+    member_name: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
+    created_at: str
+
+
+class ShareTargetDTO(CamelModel):
+    id: str
+    name: str
+
+
+class ShareTargetsDTO(CamelModel):
+    """Who a board can be shared with, matching the search (at most 20 of each)."""
+
+    members: list[ShareTargetDTO]
+    departments: list[ShareTargetDTO]
+
+
+class DataBoardDTO(BoardSummaryDTO):
+    """A dashboard with its spec. Named `DataBoard...` because `BoardDTO` is the
+    department task board."""
+
+    spec: dict[str, Any]
+    spec_version: int

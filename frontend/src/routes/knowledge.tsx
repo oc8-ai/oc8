@@ -44,23 +44,50 @@ import {
   useUnlinkSourceFromBase,
 } from "@/lib/hooks";
 import { CredentialPicker } from "@/components/credential-picker";
+import { ScopePicker, type ScopeItem } from "@/components/knowledge/scope-picker";
 import {
+  CONSENT_PREFIX,
   JOB_TERMINAL_STATUSES,
+  type ConnectorCatalogEntry,
   useCreateSource,
   useDeleteSource,
   useIngestionJob,
+  useEmbeddingModels,
+  useGrantCapaPermission,
   useKnowledgeConnectors,
+  useKnowledgeVectorIndexes,
   useOAuthConnections,
   useSyncSource,
   useUpdateSource,
 } from "@/lib/knowledge-connector-hooks";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { useMay } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
 
 export const Route = createFileRoute("/knowledge")({
   component: KnowledgePage,
 });
+
+type ConnectorSchema = ConnectorCatalogEntry["configSchema"];
+
+/** The config properties a connector marks as its scope (`x-oc8-picker`). */
+function pickerKeys(schema: ConnectorSchema | undefined): string[] {
+  return Object.entries(schema?.properties ?? {})
+    .filter(([, field]) => field["x-oc8-picker"] === true)
+    .map(([key]) => key);
+}
+
+/** A picker value the backend would refuse: missing, or nothing picked. */
+function isEmptyPick(value: unknown): boolean {
+  return !value || (Array.isArray(value) && value.length === 0);
+}
+
+/** The draft config a <ScopePicker> browses with: everything but the pickers. */
+function withoutPickers(config: Record<string, unknown>, keys: string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(config).filter(([key]) => !keys.includes(key)));
+}
 
 type Tab = "sources" | "bases";
 
@@ -364,6 +391,8 @@ export function SourcesTab({
                 </p>
               )}
 
+              {!archived && <SyncReport skipped={s.lastSyncSkipped} notes={s.lastSyncNotes} />}
+
               {!archived && (
                 <div className="mt-4 flex items-center gap-2">
                   {s.connected ? (
@@ -489,15 +518,33 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
     ([, field]) => field.credentialType,
   );
   const [credentialValues, setCredentialValues] = useState<Record<string, string>>({});
+  // The scope (`x-oc8-picker` properties), picked again from the connector's
+  // own listing. Only a picker the admin touched is sent: the PATCH merges
+  // config, and a changed scope is audited and pruned on the next sync.
+  const pickers = pickerKeys(connector?.configSchema);
+  const [pickerValues, setPickerValues] = useState<Record<string, ScopeItem[]>>({});
+  const savedPick = (key: string): ScopeItem[] => {
+    const saved = source.config?.[key];
+    return Array.isArray(saved) ? (saved as ScopeItem[]) : [];
+  };
+  // The backend refuses an empty picker on any config PATCH, and a saved
+  // selection that is already empty is just as unsaveable as an emptied one.
+  const pickerEmpty = pickers.some((key) => isEmptyPick(pickerValues[key] ?? savedPick(key)));
+  const browseConfig = withoutPickers({ ...(source.config ?? {}), ...credentialValues }, pickers);
+  // The server's refusal (e.g. an empty picker), kept in the drawer: a toast
+  // fades before anyone acts on it.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleSave = () => {
-    if (!name.trim()) return;
+    if (!name.trim() || pickerEmpty) return;
+    const config = { ...credentialValues, ...pickerValues };
+    setSaveError(null);
     updateSource.mutate(
       {
         sourceId: source.id,
         name: name.trim(),
         classification: sensitivity,
-        ...(Object.keys(credentialValues).length > 0 ? { config: credentialValues } : {}),
+        ...(Object.keys(config).length > 0 ? { config } : {}),
       },
       {
         onSuccess: () => {
@@ -506,12 +553,14 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
           });
           onClose();
         },
-        onError: (e: unknown) =>
-          toast.error(
+        onError: (e: unknown) => {
+          const message =
             e instanceof Error
               ? e.message
-              : t("Could not save changes.", "Änderungen konnten nicht gespeichert werden."),
-          ),
+              : t("Could not save changes.", "Änderungen konnten nicht gespeichert werden.");
+          toast.error(message);
+          setSaveError(message);
+        },
       },
     );
   };
@@ -569,7 +618,7 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
           </button>
           <button
             type="button"
-            disabled={!name.trim() || updateSource.isPending}
+            disabled={!name.trim() || pickerEmpty || updateSource.isPending}
             onClick={handleSave}
             className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
           >
@@ -616,6 +665,38 @@ function SourceEditDrawer({ source, onClose }: { source: DataSource; onClose: ()
           </div>
         </div>
       ))}
+      {connector &&
+        pickers.map((key) => {
+          const field = connector.configSchema.properties?.[key];
+          return (
+            <div key={key} className="mt-4">
+              <label className="text-xs font-medium text-muted-foreground">
+                {field?.title ?? key.replace(/([A-Z])/g, " $1")}
+              </label>
+              <div className="mt-1">
+                <ScopePicker
+                  typeId={connector.typeId}
+                  config={browseConfig}
+                  value={pickerValues[key] ?? savedPick(key)}
+                  onChange={(next) => {
+                    setPickerValues((cur) => ({ ...cur, [key]: next }));
+                    setSaveError(null);
+                  }}
+                />
+              </div>
+              {isEmptyPick(pickerValues[key] ?? savedPick(key)) && (
+                <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+                  {t("Pick at least one entry.", "Wähle mindestens einen Eintrag aus.")}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      {saveError && (
+        <div className="mt-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {saveError}
+        </div>
+      )}
       {ConfirmDialog}
     </DetailSheet>
   );
@@ -1329,17 +1410,47 @@ export function SourceWizard({
   const [schedule, setSchedule] = useState<"hourly" | "daily" | "manual">("daily");
   const [sensitivity, setSensitivity] = useState<SensitivityLevel>("internal");
 
-  const connector = connectors.find((entry) => entry.typeId === kind) ?? connectors[0];
+  const t = useT();
+  const may = useMay();
+  const grantPermission = useGrantCapaPermission();
+  // Connectors whose deferred permission was granted from this wizard: usable
+  // now, even before GET /knowledge/connectors has been fetched again.
+  const [granted, setGranted] = useState<Set<string>>(() => new Set());
+  // The permission a connector's capa still waits for ("knowledge:write"),
+  // or null. Such a connector can be picked, but needs that consent first.
+  const consentPending = (entry: ConnectorCatalogEntry): string | null =>
+    entry.usable === false &&
+    entry.missing?.startsWith(CONSENT_PREFIX) &&
+    !granted.has(entry.typeId)
+      ? entry.missing.slice(CONSENT_PREFIX.length)
+      : null;
+  // A connector the organisation has not connected yet is shown, but cannot
+  // be picked (`usable` from GET /knowledge/connectors).
+  const orgOnlyHint = t(
+    "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it.",
+    "Hier zählt nur eine Verbindung der Organisation. Eine Datenquelle füttert Wissen, das alle in der Organisation nutzen, deshalb wird deine persönliche Anmeldung dafür nie verwendet.",
+  );
+  const selectable = (entry: ConnectorCatalogEntry) =>
+    entry.usable !== false ||
+    granted.has(entry.typeId) ||
+    !!entry.missing?.startsWith(CONSENT_PREFIX);
+  const usableConnectors = connectors.filter((entry) => entry.usable !== false);
+  const connector =
+    connectors.filter(selectable).find((entry) => entry.typeId === kind) ?? usableConnectors[0];
+  const pendingPermission = connector ? consentPending(connector) : null;
   const schema = connector?.configSchema;
   const connectorLabel = connector?.label ?? kind.replace(/[-_]/g, " ");
+  const pickers = pickerKeys(schema);
+  const pickerEmpty = pickers.some((key) => isEmptyPick(connectorConfig[key]));
   const createSource = useCreateSource();
   const { data: kbsForCreatePage } = useKnowledgeBases({ pageSize: 200 });
   const kbsForCreate = kbsForCreatePage?.items ?? [];
   const targetKbId = kbsForCreate[0]?.id;
   const createKb = useCreateKnowledgeBase();
   const [newKbName, setNewKbName] = useState("");
-  const [newKbModel, setNewKbModel] =
-    useState<(typeof LOCAL_EMBEDDING_MODELS)[number]>("local/nomic-embed-text");
+  const embeddingChoices = useEmbeddingModelChoices();
+  const [chosenKbModel, setNewKbModel] = useState("");
+  const newKbModel = chosenKbModel || embeddingChoices.defaultModel;
   // A toast alone was too easy to miss for a validation message the user
   // needs to actually act on (e.g. "prefix is the same as the bucket
   // name") -- this stays visible on whatever step they're on until they
@@ -1347,12 +1458,44 @@ export function SourceWizard({
   const [createError, setCreateError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!connectors.length) return;
-    if (!connectors.some((entry) => entry.typeId === kind)) setKind(connectors[0].typeId);
+    const usable = connectors.filter((entry) => entry.usable !== false);
+    if (!usable.length) return;
+    const stillSelectable = connectors.some(
+      (entry) =>
+        entry.typeId === kind &&
+        (entry.usable !== false || !!entry.missing?.startsWith(CONSENT_PREFIX)),
+    );
+    if (!stillSelectable) setKind(usable[0].typeId);
   }, [connectors, kind]);
 
+  function allow() {
+    if (!connector?.capaId || !pendingPermission) return;
+    const typeId = connector.typeId;
+    setCreateError(null);
+    grantPermission.mutate(
+      { capaId: connector.capaId, permission: pendingPermission },
+      {
+        onSuccess: () => {
+          setGranted((current) => new Set(current).add(typeId));
+          setStep(2);
+        },
+        onError: (err) => {
+          const message = err instanceof Error ? err.message : String(err);
+          toast.error(message);
+          setCreateError(message);
+        },
+      },
+    );
+  }
+
+  // Reset to the connector's defaults when the chosen connector changes --
+  // not when the catalog is merely fetched again (a grant refetches it while
+  // the admin is already filling in step 2).
+  const configFor = useRef<string | null>(null);
+  const connectorTypeId = connector?.typeId ?? null;
   useEffect(() => {
-    if (!schema) return;
+    if (!schema || configFor.current === connectorTypeId) return;
+    configFor.current = connectorTypeId;
     setConnectorConfig(
       Object.fromEntries(
         Object.entries(schema.properties ?? {}).flatMap(([key, field]) =>
@@ -1361,13 +1504,17 @@ export function SourceWizard({
       ),
     );
     setOauthConnectionId("");
-  }, [kind, schema]);
+  }, [connectorTypeId, schema]);
 
   async function finish() {
     if (!connector || !targetKbId) return;
     const required = schema?.required ?? [];
     if (required.some((key) => !String(connectorConfig[key] ?? "").trim())) return;
+    if (pickerEmpty || pendingPermission) return;
     if (connector.requiresOauth && !oauthConnectionId) return;
+    const firstPicked = pickers
+      .flatMap((key) => connectorConfig[key] as ScopeItem[] | undefined)
+      .find(Boolean);
     setCreateError(null);
 
     // A `credential`-kind field's value is already a credential id by the
@@ -1383,6 +1530,7 @@ export function SourceWizard({
             connectorConfig.url ??
             connectorConfig.folderId ??
             connectorConfig.bucket ??
+            firstPicked?.label ??
             "Source",
         )}`,
         config: connectorConfig,
@@ -1433,7 +1581,11 @@ export function SourceWizard({
           )}
           {step < 4 ? (
             <button
-              disabled={step === 3 && !targetKbId}
+              disabled={
+                (step === 1 && (!connector || !!pendingPermission)) ||
+                (step === 2 && pickerEmpty) ||
+                (step === 3 && !targetKbId)
+              }
               onClick={() => setStep((s) => s + 1)}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40 hover:brightness-110"
             >
@@ -1445,6 +1597,8 @@ export function SourceWizard({
               disabled={
                 createSource.isPending ||
                 !connector ||
+                !!pendingPermission ||
+                pickerEmpty ||
                 !targetKbId ||
                 (schema?.required ?? []).some(
                   (key) => !String(connectorConfig[key] ?? "").trim(),
@@ -1467,6 +1621,47 @@ export function SourceWizard({
           <div className="grid grid-cols-2 gap-2">
             {connectors.map((entry) => {
               const Icon = KIND_ICON[entry.typeId as DataSourceKind] ?? FileText;
+              if (!selectable(entry)) {
+                return (
+                  <TooltipProvider key={entry.typeId} delayDuration={150}>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div
+                          tabIndex={0}
+                          className="flex flex-col gap-1 rounded-md border border-dashed border-border bg-background/20 p-3 text-xs"
+                        >
+                          <button
+                            type="button"
+                            disabled
+                            className="flex cursor-not-allowed items-center gap-2 text-left opacity-60"
+                          >
+                            <Icon className="h-4 w-4 text-muted-foreground" />
+                            <div className="min-w-0 flex-1">
+                              <div className="truncate font-medium">
+                                {entry.label ?? entry.typeId.replace(/[-_]/g, " ")}
+                              </div>
+                              <div className="truncate text-[10px] text-muted-foreground">
+                                {t(
+                                  "Needs an organisation connection",
+                                  "Braucht eine Verbindung der Organisation",
+                                )}
+                              </div>
+                            </div>
+                          </button>
+                          <Link
+                            to="/connections"
+                            search={{ tab: "organisation" }}
+                            className="text-[11px] font-medium text-primary hover:underline"
+                          >
+                            {t("Connect first", "Erst verbinden")} →
+                          </Link>
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">{orgOnlyHint}</TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                );
+              }
               const active = kind === entry.typeId;
               return (
                 <button
@@ -1487,7 +1682,9 @@ export function SourceWizard({
                       </div>
                     </div>
                     <div className="truncate text-[10px] text-muted-foreground">
-                      {entry.description ?? "Installed connector"}
+                      {consentPending(entry)
+                        ? t("Needs your permission", "Braucht deine Erlaubnis")
+                        : (entry.description ?? "Installed connector")}
                     </div>
                   </div>
                 </button>
@@ -1499,6 +1696,39 @@ export function SourceWizard({
               </p>
             )}
           </div>
+          {connector && pendingPermission && (
+            <div className="space-y-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 p-3 text-xs">
+              <p className="font-medium text-foreground">
+                {t(
+                  "{label} may write content to knowledge bases",
+                  "{label} darf Inhalte in Wissensdatenbanken schreiben",
+                ).replace("{label}", connectorLabel)}
+              </p>
+              {!may("plugin:manage") ? (
+                <p className="text-muted-foreground">
+                  {t("Ask an admin to allow this", "Bitte eine Admin-Person, das zu erlauben")}
+                </p>
+              ) : !connector.capaId ? (
+                <p className="text-muted-foreground">
+                  {t(
+                    "This connector can't be allowed from here.",
+                    "Dieser Connector lässt sich hier nicht erlauben.",
+                  )}
+                </p>
+              ) : (
+                <button
+                  type="button"
+                  disabled={grantPermission.isPending}
+                  onClick={allow}
+                  className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
+                >
+                  {grantPermission.isPending
+                    ? t("Allowing…", "Wird erlaubt …")
+                    : t("Allow", "Erlauben")}
+                </button>
+              )}
+            </div>
+          )}
         </>
       )}
       {step === 2 && (
@@ -1507,6 +1737,7 @@ export function SourceWizard({
             Connect · {connectorLabel}
           </div>
           <DynamicConnectorFields
+            typeId={connector?.typeId ?? ""}
             schema={schema}
             config={connectorConfig}
             onChange={(key, value) => {
@@ -1536,13 +1767,11 @@ export function SourceWizard({
                 />
                 <select
                   value={newKbModel}
-                  onChange={(e) =>
-                    setNewKbModel(e.target.value as (typeof LOCAL_EMBEDDING_MODELS)[number])
-                  }
+                  onChange={(e) => setNewKbModel(e.target.value)}
                   title="Embedding model"
                   className="rounded-md border border-border bg-background/40 px-2 py-1.5 text-xs outline-none focus:border-primary/50"
                 >
-                  {LOCAL_EMBEDDING_MODELS.map((m) => (
+                  {embeddingChoices.models.map((m) => (
                     <option key={m} value={m}>
                       {m}
                     </option>
@@ -1644,6 +1873,7 @@ export function SourceWizard({
 }
 
 function DynamicConnectorFields({
+  typeId,
   schema,
   config,
   onChange,
@@ -1652,19 +1882,8 @@ function DynamicConnectorFields({
   oauthConnectionId,
   onOAuthConnectionChange,
 }: {
-  schema?: {
-    properties?: Record<
-      string,
-      {
-        type?: string;
-        title?: string;
-        description?: string;
-        minimum?: number;
-        maximum?: number;
-        credentialType?: string;
-      }
-    >;
-  };
+  typeId: string;
+  schema?: ConnectorSchema;
   config: Record<string, unknown>;
   onChange: (key: string, value: unknown) => void;
   oauthProvider: string | null;
@@ -1672,7 +1891,15 @@ function DynamicConnectorFields({
   oauthConnectionId: string;
   onOAuthConnectionChange: (id: string) => void;
 }) {
+  const t = useT();
   const fields = Object.entries(schema?.properties ?? {});
+  // A scope picker browses with the rest of the draft config, so it waits
+  // until every other required property has a value.
+  const pickers = pickerKeys(schema);
+  const othersFilled = (schema?.required ?? [])
+    .filter((key) => !pickers.includes(key))
+    .every((key) => String(config[key] ?? "").trim());
+  const browseConfig = withoutPickers(config, pickers);
   const connections = oauthConnections.filter(
     (connection) => connection.provider === oauthProvider && connection.status === "active",
   );
@@ -1695,7 +1922,17 @@ function DynamicConnectorFields({
           </select>
           {!connections.length && (
             <span className="mt-1 block text-[11px] text-[color:var(--status-warning)]">
-              No active {oauthProvider} account is connected yet. Configure OAuth first.
+              {t(
+                `The organisation has no active ${oauthProvider} connection yet.`,
+                `Die Organisation hat noch keine aktive Verbindung zu ${oauthProvider}.`,
+              )}{" "}
+              <Link
+                to="/connections"
+                search={{ tab: "organisation" }}
+                className="font-medium underline"
+              >
+                {t("Connect first", "Erst verbinden")}
+              </Link>
             </span>
           )}
         </label>
@@ -1703,6 +1940,25 @@ function DynamicConnectorFields({
       {fields.map(([key, field]) => {
         const label = field.title ?? key.replace(/([A-Z])/g, " $1");
         const value = config[key];
+        if (field["x-oc8-picker"] === true) {
+          return (
+            <div key={key} className="block text-xs text-muted-foreground">
+              {label}
+              <div className="mt-1">
+                <ScopePicker
+                  typeId={typeId}
+                  config={browseConfig}
+                  value={Array.isArray(value) ? (value as ScopeItem[]) : []}
+                  onChange={(next) => onChange(key, next)}
+                  disabled={!othersFilled}
+                />
+              </div>
+              {field.description && (
+                <span className="mt-1 block text-[11px]">{field.description}</span>
+              )}
+            </div>
+          );
+        }
         if (field.credentialType) {
           return (
             <label key={key} className="block text-xs text-muted-foreground">
@@ -1760,13 +2016,10 @@ function DynamicConnectorFields({
   );
 }
 
-// Embedding is ALWAYS routed to the local Ollama instance in this deployment
-// (ModelRouter.embed() -- Anthropic has no embeddings API, and no cloud
-// provider is wired through for embeddings yet, so `google/...` or
-// `openai/...` would raise EmbeddingUnavailable the moment a document is
-// actually ingested). Not a live discovery call (no endpoint for that exists
-// yet), but at least honest about what "local/" means here instead of
-// listing providers that can never work.
+// The fallback until GET /knowledge/embedding-models answers. That endpoint
+// puts the deployment's own default first (OC8_DEFAULT_EMBEDDING_MODEL, which
+// an operator may point at a cloud `<provider>/<model>` the tenant has a key
+// for), followed by these local models.
 //
 // bge-large was offered here too until live-verified (2026-08-20, via
 // POST /api/embed against this deployment's Ollama) to produce 1024-dim
@@ -1777,6 +2030,12 @@ function DynamicConnectorFields({
 // bge-large lost data -- but every document synced into one would fail to
 // ingest. Only list models whose output width actually matches EMBED_DIM.
 const LOCAL_EMBEDDING_MODELS = ["local/nomic-embed-text"] as const;
+
+function useEmbeddingModelChoices(): { defaultModel: string; models: string[] } {
+  const { data } = useEmbeddingModels();
+  const models = data?.models?.length ? data.models : [...LOCAL_EMBEDDING_MODELS];
+  return { defaultModel: data?.defaultModel || models[0], models };
+}
 
 export function BaseWizard({
   onClose,
@@ -1789,12 +2048,20 @@ export function BaseWizard({
   const createKnowledgeBase = useCreateKnowledgeBase();
   const syncSource = useSyncSource();
   const { data: sourcesPage } = useDataSources({ pageSize: 200 });
+  const { data: vectorIndexes = [] } = useKnowledgeVectorIndexes();
   const availableSources = (sourcesPage?.items ?? []).filter((s) => s.connected && !s.deletedAt);
   const [step, setStep] = useState(1);
   const [name, setName] = useState("");
-  const [model, setModel] =
-    useState<(typeof LOCAL_EMBEDDING_MODELS)[number]>("local/nomic-embed-text");
+  const [mode, setMode] = useState<"ingest" | "connect">("ingest");
+  const embeddingChoices = useEmbeddingModelChoices();
+  const [chosenModel, setModel] = useState("");
+  const model = chosenModel || embeddingChoices.defaultModel;
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const [indexType, setIndexType] = useState("");
+  const [credentialId, setCredentialId] = useState("");
+  const [indexConfig, setIndexConfig] = useState<Record<string, unknown>>({});
+
+  const selectedIndex = vectorIndexes.find((v) => v.typeId === indexType) ?? null;
 
   function toggleSource(id: string) {
     setSelectedSourceIds((prev) =>
@@ -1803,6 +2070,27 @@ export function BaseWizard({
   }
 
   function finish() {
+    if (mode === "connect") {
+      if (!selectedIndex || !credentialId) return;
+      createKnowledgeBase.mutate(
+        {
+          name: name.trim(),
+          description: "",
+          embeddingModel: model,
+          indexType: selectedIndex.typeId,
+          indexConfig,
+          credentialId,
+        },
+        {
+          onSuccess: (kb) => onCreate(kb),
+          onError: (error) =>
+            toast.error("Could not connect vector index", {
+              description: error instanceof Error ? error.message : String(error),
+            }),
+        },
+      );
+      return;
+    }
     createKnowledgeBase.mutate(
       { name: name.trim(), description: "", embeddingModel: model },
       {
@@ -1828,11 +2116,24 @@ export function BaseWizard({
     );
   }
 
+  const totalSteps = 3;
+  const canContinueStep1 = Boolean(name.trim());
+  const canContinueStep2 =
+    mode === "ingest" || (Boolean(indexType) && Boolean(credentialId) && Boolean(selectedIndex));
+  const finishLabel =
+    mode === "connect"
+      ? createKnowledgeBase.isPending
+        ? "Connecting…"
+        : "Connect index"
+      : createKnowledgeBase.isPending
+        ? "Creating…"
+        : "Create knowledge base";
+
   return (
     <Wizard
-      title="Create knowledge base"
+      title={mode === "connect" ? "Connect existing index" : "Create knowledge base"}
       step={step}
-      totalSteps={3}
+      totalSteps={totalSteps}
       onClose={onClose}
       footer={
         <>
@@ -1844,10 +2145,10 @@ export function BaseWizard({
               Back
             </button>
           )}
-          {step < 3 ? (
+          {step < totalSteps ? (
             <button
               onClick={() => setStep((s) => s + 1)}
-              disabled={step === 1 && !name}
+              disabled={step === 1 ? !canContinueStep1 : !canContinueStep2}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
             >
               Continue
@@ -1855,32 +2156,83 @@ export function BaseWizard({
           ) : (
             <button
               onClick={finish}
-              disabled={createKnowledgeBase.isPending}
+              disabled={createKnowledgeBase.isPending || (mode === "connect" && !canContinueStep2)}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:brightness-110 disabled:opacity-50"
             >
-              {createKnowledgeBase.isPending ? "Creating…" : "Create knowledge base"}
+              {finishLabel}
             </button>
           )}
         </>
       }
     >
       {step === 1 && (
-        <label className="block">
-          <div className="text-xs uppercase tracking-widest text-muted-foreground">Name</div>
-          <input
-            autoFocus
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Sales KB"
-            className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-          />
-          <p className="mt-2 text-xs text-muted-foreground">
-            A knowledge base bundles one or more data sources and exposes them to agents through
-            retrieval.
-          </p>
-        </label>
+        <div className="space-y-4">
+          <label className="block">
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">Name</div>
+            <input
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Sales KB"
+              className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+            />
+          </label>
+          <div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">
+              {t("How should this base get content?", "Wie soll diese Basis Inhalt bekommen?")}
+            </div>
+            <div className="mt-2 space-y-1.5">
+              <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background/40 px-3 py-2 text-xs hover:border-primary/40">
+                <input
+                  type="radio"
+                  name="kb-mode"
+                  checked={mode === "ingest"}
+                  onChange={() => setMode("ingest")}
+                  className="mt-0.5"
+                />
+                <span>
+                  <span className="font-medium">
+                    {t("Ingest sources into oc8", "Quellen in oc8 ingestieren")}
+                  </span>
+                  <span className="mt-0.5 block text-muted-foreground">
+                    {t(
+                      "Sync connected sources or upload documents into this base.",
+                      "Verbundene Quellen syncen oder Dokumente in diese Basis laden.",
+                    )}
+                  </span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-background/40 px-3 py-2 text-xs hover:border-primary/40">
+                <input
+                  type="radio"
+                  name="kb-mode"
+                  checked={mode === "connect"}
+                  onChange={() => setMode("connect")}
+                  className="mt-0.5"
+                  disabled={vectorIndexes.length === 0}
+                />
+                <span>
+                  <span className="font-medium">
+                    {t("Connect existing vector index", "Bestehenden Vector-Index verbinden")}
+                  </span>
+                  <span className="mt-0.5 block text-muted-foreground">
+                    {vectorIndexes.length === 0
+                      ? t(
+                          "Enable a vector-index capa (Qdrant, pgvector) first.",
+                          "Aktiviere zuerst eine Vector-Index-Capa (Qdrant, pgvector).",
+                        )
+                      : t(
+                          "Search an existing Qdrant or pgvector collection — query-only, no copy into oc8.",
+                          "Eine bestehende Qdrant- oder pgvector-Collection durchsuchen — nur lesen, ohne Kopie in oc8.",
+                        )}
+                  </span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
       )}
-      {step === 2 && (
+      {step === 2 && mode === "ingest" && (
         <div>
           <div className="text-xs uppercase tracking-widest text-muted-foreground">
             {t("Data sources (optional)", "Datenquellen (optional)")}
@@ -1918,6 +2270,84 @@ export function BaseWizard({
           </div>
         </div>
       )}
+      {step === 2 && mode === "connect" && selectedIndex === null && (
+        <div>
+          <div className="text-xs uppercase tracking-widest text-muted-foreground">
+            {t("Index type", "Index-Typ")}
+          </div>
+          <div className="mt-2 space-y-1.5">
+            {vectorIndexes.map((v) => (
+              <button
+                key={v.typeId}
+                type="button"
+                onClick={() => {
+                  setIndexType(v.typeId);
+                  setCredentialId("");
+                  const defaults: Record<string, unknown> = {};
+                  for (const [key, field] of Object.entries(v.configSchema.properties ?? {})) {
+                    if (field.default !== undefined) defaults[key] = field.default;
+                  }
+                  setIndexConfig(defaults);
+                }}
+                className={cn(
+                  "w-full rounded-md border px-3 py-2 text-left text-xs",
+                  indexType === v.typeId
+                    ? "border-primary/50 bg-primary/10"
+                    : "border-border bg-background/40 hover:border-primary/40",
+                )}
+              >
+                <div className="font-medium">{v.label ?? v.typeId}</div>
+                {v.description && (
+                  <div className="mt-0.5 text-muted-foreground">{v.description}</div>
+                )}
+              </button>
+            ))}
+          </div>
+          {indexType && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t(
+                "Continue to configure the selected index.",
+                "Weiter, um den Index zu konfigurieren.",
+              )}
+            </p>
+          )}
+        </div>
+      )}
+      {step === 2 && mode === "connect" && selectedIndex !== null && (
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => setIndexType("")}
+            className="text-[11px] text-muted-foreground underline"
+          >
+            {t("Change index type", "Index-Typ ändern")}
+          </button>
+          <label className="block text-xs text-muted-foreground">
+            {t("Credentials", "Zugangsdaten")}
+            <div className="mt-1">
+              <CredentialPicker
+                credentialType={selectedIndex.credentialType}
+                value={credentialId}
+                onChange={setCredentialId}
+              />
+            </div>
+          </label>
+          {Object.entries(selectedIndex.configSchema.properties ?? {}).map(([key, field]) => (
+            <label key={key} className="block text-xs text-muted-foreground">
+              {field.title ?? key}
+              <input
+                type="text"
+                value={String(indexConfig[key] ?? "")}
+                onChange={(e) => setIndexConfig((prev) => ({ ...prev, [key]: e.target.value }))}
+                className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm text-foreground"
+              />
+              {field.description && (
+                <span className="mt-1 block text-[11px]">{field.description}</span>
+              )}
+            </label>
+          ))}
+        </div>
+      )}
       {step === 3 && (
         <>
           <div>
@@ -1926,14 +2356,22 @@ export function BaseWizard({
             </div>
             <div className="mt-1 rounded-md border border-border bg-background/40 p-3 text-xs">
               <div className="flex items-center justify-between">
-                <span className="font-medium">Recommended defaults</span>
+                <span className="font-medium">
+                  {mode === "connect"
+                    ? t("Must match the remote collection", "Muss zur Remote-Collection passen")
+                    : "Recommended defaults"}
+                </span>
                 <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[10px] text-primary">
-                  auto
+                  {mode === "connect" ? "required" : "auto"}
                 </span>
               </div>
               <p className="mt-1 text-muted-foreground">
-                Chunk size 800 · overlap 120 · model <span className="font-mono">{model}</span>.
-                Good for most document-heavy sources.
+                {mode === "connect"
+                  ? t(
+                      "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise.",
+                      "Das Embedding-Modell für Abfragen muss dieselbe Familie (und Dimension) haben wie die Remote-Collection — sonst liefert die Suche Müll.",
+                    )
+                  : `Chunk size 800 · overlap 120 · model ${model}. Good for most document-heavy sources.`}
               </p>
             </div>
           </div>
@@ -1943,12 +2381,12 @@ export function BaseWizard({
             </div>
             <select
               value={model}
-              onChange={(e) => setModel(e.target.value as (typeof LOCAL_EMBEDDING_MODELS)[number])}
+              onChange={(e) => setModel(e.target.value)}
               className="mt-1 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
             >
-              {LOCAL_EMBEDDING_MODELS.map((m) => (
+              {embeddingChoices.models.map((m) => (
                 <option key={m} value={m}>
-                  {m} (on-prem)
+                  {m.startsWith("local/") ? `${m} (on-prem)` : m}
                 </option>
               ))}
             </select>
@@ -1966,6 +2404,70 @@ export function BaseWizard({
 }
 
 // ============================= Small parts =============================
+
+// Reasons a connector reports for a file it skipped, in the order they are
+// listed; any other reason still counts, under "other".
+const SKIP_REASONS = ["unsupported_type", "too_large", "url_document", "unreadable"] as const;
+
+/** What the last finished sync skipped, by reason, and the notes it left for
+ *  the admin. Renders nothing for a sync that skipped and noted nothing, and
+ *  nothing for a note code it does not know. */
+function SyncReport({
+  skipped,
+  notes,
+}: {
+  skipped?: Record<string, number> | null;
+  notes?: string[] | null;
+}) {
+  const t = useT();
+  const reasonLabel: Record<(typeof SKIP_REASONS)[number], string> = {
+    unsupported_type: t("unsupported file type", "Dateityp nicht unterstützt"),
+    too_large: t("too large", "zu groß"),
+    url_document: t("link instead of file", "Link statt Datei"),
+    unreadable: t("unreadable", "nicht lesbar"),
+  };
+  const noteText: Record<string, string> = {
+    api_key_recommended: t(
+      "We recommend an API key instead of a password.",
+      "Wir empfehlen einen API-Schlüssel statt eines Passworts.",
+    ),
+    scope_emptied: t(
+      "The selection was empty at the last sync – its content is hidden and can be restored.",
+      "Die Auswahl war beim letzten Abgleich leer – die Inhalte sind ausgeblendet und lassen sich wiederherstellen.",
+    ),
+  };
+  const counts = Object.entries(skipped ?? {}).filter(([, n]) => typeof n === "number" && n > 0);
+  const total = counts.reduce((sum, [, n]) => sum + n, 0);
+  const known = new Set<string>(SKIP_REASONS);
+  const other = counts.filter(([reason]) => !known.has(reason)).reduce((sum, [, n]) => sum + n, 0);
+  const parts = [
+    ...SKIP_REASONS.filter((reason) => skipped?.[reason]).map(
+      (reason) => `${reasonLabel[reason]} (${skipped?.[reason]})`,
+    ),
+    ...(other > 0 ? [`${t("other", "sonstige")} (${other})`] : []),
+  ];
+  const shownNotes = (notes ?? []).filter((code) => code in noteText);
+  if (total === 0 && shownNotes.length === 0) return null;
+  return (
+    <div className="mt-3 space-y-1.5 text-xs">
+      {total > 0 && (
+        <p className="text-muted-foreground">
+          {t("{n} skipped: {reasons}", "{n} übersprungen: {reasons}")
+            .replace("{n}", String(total))
+            .replace("{reasons}", parts.join(", "))}
+        </p>
+      )}
+      {shownNotes.map((code) => (
+        <p
+          key={code}
+          className="rounded-md border border-[color:var(--status-warning)]/30 bg-[color:var(--status-warning)]/5 px-2.5 py-1.5 text-[color:var(--status-warning)]"
+        >
+          {noteText[code]}
+        </p>
+      ))}
+    </div>
+  );
+}
 
 function Stat({ label, value }: { label: string; value: React.ReactNode }) {
   return (

@@ -24,7 +24,6 @@ import { InlineRename } from "@/components/inline-rename";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
 import { MemoryEditor } from "@/components/memory-editor";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
-import { ComponentGrantPanel } from "@/components/component-grant-panel";
 import type { Condition, GuardrailValue } from "@/components/guardrail-preset-picker";
 import {
   ToolGuardrailTable,
@@ -32,6 +31,8 @@ import {
   describeGuardrailSaveError,
 } from "@/components/tool-guardrail-table";
 import { StatCard } from "@/components/stat-card";
+import { ContractBindingsPanel } from "@/components/contract-bindings-panel";
+import { initialDepartmentTab, type DepartmentTab } from "@/lib/department-tabs";
 import { contractsFor, type IntakeContract } from "@/lib/collaboration";
 import { formatMs } from "@/lib/format";
 import {
@@ -61,6 +62,7 @@ import {
 } from "lucide-react";
 import { type Agent, type Supervisor, type Task, type TaskColumn } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
+import { urlId } from "@/lib/ids";
 import { useT } from "@/lib/i18n";
 
 const iconMap = {
@@ -104,7 +106,9 @@ const nowTime = () => {
 
 function DepartmentDetail() {
   const t = useT();
-  const { id } = Route.useParams();
+  // Not a UUID: nothing is fetched and the page says it wasn't found.
+  const { id: rawId } = Route.useParams();
+  const id = urlId(rawId) ?? "";
   // Real identity: the id in the URL is the backend's uuid7 (see
   // departments.index.tsx), so it's resolved via the real GET
   // /departments/{id} + /departments/{id}/agents endpoints — not the mock
@@ -123,7 +127,8 @@ function DepartmentDetail() {
   // KB grants for this department, not a paginated list view.
   const { data: allBasesPage } = useKnowledgeBases({ pageSize: 200 });
   const allBases = allBasesPage?.items ?? [];
-  const [tab, setTab] = useState<"overview" | "guardrails" | "collab" | "settings">("overview");
+  // `?tab=` (e.g. a run's "open guardrails" link) is read once on arrival.
+  const [tab, setTab] = useState<DepartmentTab>(initialDepartmentTab);
   const [hireOpen, setHireOpen] = useState(false);
   const updateDepartment = useUpdateDepartment(id);
 
@@ -555,8 +560,6 @@ function DepartmentDetail() {
             departmentId={dept.id}
             enabled={deptKbs}
           />
-
-          <ComponentGrantPanel granteeType="department" granteeId={dept.id} mayManage />
         </>
       )}
 
@@ -820,7 +823,9 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
   const agentCount = existing?.agentCount ?? 0;
   const toolKeys = Object.keys(tools);
   const connectionByName = new Map(connections.map((c) => [c.name, c] as const));
-  const addableNames = connections.map((c) => c.name).filter((n) => !toolKeys.includes(n));
+  // A key that exists but is disabled is not a row above, so it must stay
+  // addable here -- otherwise a once-disabled tool can never come back.
+  const addableNames = connections.map((c) => c.name).filter((n) => !tools[n]?.enabled);
 
   function toGuardrailValue(key: string): GuardrailValue {
     const raw = (tools[key] ?? {}) as Record<string, unknown>;
@@ -901,23 +906,25 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
         hint={t("tool access and guardrails", "Tool-Zugriff und Guardrails")}
         title={t("Guardrails", "Guardrails")}
       />
-      {rows.length === 0 ? (
+      {/* The table carries the "Add tool" button, so it must render even with
+          zero rows -- otherwise a fresh department can never get its first
+          tool, and every connection assigned to it stays unusable. */}
+      {rows.length === 0 && (
         <p className="mt-3 rounded-md border border-dashed border-border/70 bg-background/30 p-4 text-center text-xs text-muted-foreground">
           {t("No tools enabled yet.", "Noch keine Tools aktiviert.")}
         </p>
-      ) : (
-        <div className="mt-3">
-          <ToolGuardrailTable
-            level="department"
-            rows={rows}
-            addableNames={addableNames}
-            connections={connections}
-            onSave={persistOne}
-            onAdd={addTool}
-            saving={setTools.isPending}
-          />
-        </div>
       )}
+      <div className="mt-3">
+        <ToolGuardrailTable
+          level="department"
+          rows={rows}
+          addableNames={addableNames}
+          connections={connections}
+          onSave={persistOne}
+          onAdd={addTool}
+          saving={setTools.isPending}
+        />
+      </div>
     </Panel>
   );
 }
@@ -948,9 +955,19 @@ function TaskCard({ task, members }: { task: Task; members: Agent[] }) {
         <span className={cn("leading-snug", isDone && "line-through")}>{task.title}</span>
         <AgentBadge agentId={task.agentId} members={members} />
       </div>
-      {task.meta && (
-        <div className="mt-1 font-mono text-[10px] text-muted-foreground">{task.meta}</div>
-      )}
+      {task.meta &&
+        (task.recordUrl?.startsWith("http://") || task.recordUrl?.startsWith("https://") ? (
+          <a
+            href={task.recordUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="mt-1 block font-mono text-[10px] text-primary underline"
+          >
+            {task.meta}
+          </a>
+        ) : (
+          <div className="mt-1 font-mono text-[10px] text-muted-foreground">{task.meta}</div>
+        ))}
     </div>
   );
 }
@@ -1460,6 +1477,8 @@ function CollaborationTab({ deptId }: { deptId: string }) {
           </table>
         </div>
       </Panel>
+
+      <ContractBindingsPanel departmentId={deptId} />
 
       {currentSchema && (
         <div

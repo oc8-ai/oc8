@@ -2,10 +2,22 @@
 // Distinct from the mock integration catalog on the same page: this panel only
 // ever shows what the backend actually reported — an untested connection reads
 // "untested", never a fake "connected".
-import { ChevronDown, ChevronRight, Plus, RefreshCw, Server, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Server,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { EditHttpToolsDialog } from "@/components/edit-http-tools-dialog";
+import { McpTestLogDrawer } from "@/components/mcp-test-log-drawer";
+import { useCustomServerSources } from "@/edition/composition";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
   useCreateMcpConnection,
@@ -13,8 +25,11 @@ import {
   useDepartments,
   useMcpConnections,
   useTestMcpConnection,
+  useUpdateMcpConnection,
   type McpConnection,
 } from "@/lib/hooks";
+import { useMay } from "@/lib/governance-hooks";
+import { useHttpTools } from "@/lib/http-tools";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -232,6 +247,71 @@ function McpConnectionCard({ connection }: { connection: McpConnection }) {
 // used standalone above (wrapped in its own Panel) and embedded directly
 // inside a Capa's own card on /capas, where the Capa's name is already the
 // card's header and a second bordered box nested inside it would be noise.
+/** A connection in no department reaches no agent: say so, and let an operator
+ * move it into the department whose agents should get its tools. */
+function AssignDepartment({ connection }: { connection: McpConnection }) {
+  const t = useT();
+  const { data: departmentsPage } = useDepartments({ pageSize: 200 });
+  const departments = departmentsPage?.items ?? [];
+  const update = useUpdateMcpConnection(connection.id);
+  // Moving a connection is PATCH /mcp/connections/{id}: integration:manage.
+  const mayManage = useMay()("integration:manage");
+  if (!mayManage) {
+    return (
+      <div className="mt-3 rounded-md border border-[color:var(--status-warning)]/40 bg-background/30 p-2.5">
+        <p className="text-[11px] text-muted-foreground">
+          {t(
+            "This connection is in no department, so no agent gets its tools yet. Someone who manages integrations can choose the department.",
+            "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agent ihre Tools. Jemand, der Integrationen verwaltet, kann die Abteilung wählen.",
+          )}
+        </p>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-3 rounded-md border border-[color:var(--status-warning)]/40 bg-background/30 p-2.5">
+      <p className="text-[11px] text-muted-foreground">
+        {t(
+          "This connection is in no department, so no agent gets its tools yet. Choose the department whose agents should use it.",
+          "Diese Verbindung ist in keiner Abteilung, deshalb bekommt noch kein Agent ihre Tools. Wähle die Abteilung, deren Agents sie nutzen sollen.",
+        )}
+      </p>
+      <select
+        aria-label={t("Department", "Abteilung")}
+        value=""
+        disabled={update.isPending || departments.length === 0}
+        onChange={(e) => {
+          const departmentId = e.target.value;
+          if (!departmentId) return;
+          update.mutate(
+            { departmentId },
+            {
+              onSuccess: () => toast.success(t("Department assigned", "Abteilung zugewiesen")),
+              onError: (err: unknown) =>
+                toast.error(
+                  err instanceof Error
+                    ? err.message
+                    : t(
+                        "Could not assign the department.",
+                        "Abteilung konnte nicht zugewiesen werden.",
+                      ),
+                ),
+            },
+          );
+        }}
+        className="mt-2 w-full rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-xs text-foreground"
+      >
+        <option value="">{t("Choose a department", "Abteilung wählen")}</option>
+        {departments.map((d) => (
+          <option key={d.id} value={d.id}>
+            {d.name}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 export function McpConnectionBody({ connection }: { connection: McpConnection }) {
   const t = useT();
   const testConnection = useTestMcpConnection(connection.id);
@@ -246,6 +326,17 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
   // dominates the page's scroll height before the reader even reaches the
   // Capas below it.
   const [toolsOpen, setToolsOpen] = useState(false);
+  // Offered only when a custom server source can edit this connection: core
+  // has no editor of its own for these endpoints. Editing rewrites the
+  // plugin's manifest, hence plugin:manage.
+  const editors = useCustomServerSources().filter((s) => s.canEdit);
+  const may = useMay();
+  const mayEditTools =
+    connection.transport === "manual_http" && editors.length > 0 && may("plugin:manage");
+  const { data: httpTools } = useHttpTools(mayEditTools ? connection.id : null);
+  const editor =
+    mayEditTools && httpTools ? editors.find((s) => s.canEdit?.(httpTools)) : undefined;
+  const [editingTools, setEditingTools] = useState(false);
   const status = healthStatusOf(connection);
   const tools = Array.isArray(connection.health?.tools)
     ? (connection.health.tools as unknown[]).filter((x): x is string => typeof x === "string")
@@ -277,9 +368,26 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
   return (
     <div>
       {ConfirmDialog}
+      {editingTools && editor && httpTools && (
+        <EditHttpToolsDialog
+          source={editor}
+          snapshot={httpTools}
+          onClose={() => setEditingTools(false)}
+        />
+      )}
       <div className="flex items-center justify-between">
         <HealthBadge status={status} />
         <div className="flex items-center gap-1.5">
+          {editor && (
+            <button
+              type="button"
+              onClick={() => setEditingTools(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              <Pencil className="h-3 w-3" />
+              {t("Edit endpoints", "Endpunkte bearbeiten")}
+            </button>
+          )}
           <button
             type="button"
             onClick={onDelete}
@@ -301,6 +409,8 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
           </button>
         </div>
       </div>
+
+      {connection.needsDepartment && <AssignDepartment connection={connection} />}
 
       {status === "ok" && tools.length > 0 && (
         <div className="mt-3">
@@ -330,6 +440,8 @@ export function McpConnectionBody({ connection }: { connection: McpConnection })
       {status === "error" && error && (
         <p className="mt-3 text-xs text-[color:var(--status-error)]">{error}</p>
       )}
+
+      <McpTestLogDrawer connectionId={connection.id} busy={testConnection.isPending} />
     </div>
   );
 }

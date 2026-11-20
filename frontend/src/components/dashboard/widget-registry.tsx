@@ -2,15 +2,27 @@
 // short, compiled lookup table, not a plugin system. A WidgetInstance whose
 // `type` is absent from this table (a future/removed type) is handled by
 // DashboardGrid's own fallback -- this registry itself only ever holds the
-// six current types.
-import { Activity, CheckCircle2, Kanban, MessageSquare, PieChart, Wallet } from "lucide-react";
-import type { ReactElement } from "react";
+// eight current types.
+import {
+  Activity,
+  CheckCircle2,
+  Inbox,
+  Kanban,
+  LayoutDashboard,
+  MessageSquare,
+  PieChart,
+  Wallet,
+} from "lucide-react";
+import type { ReactElement, ReactNode } from "react";
 import { ActivityWidget } from "@/components/dashboard/widgets/activity-widget";
 import { ApprovalsWidget } from "@/components/dashboard/widgets/approvals-widget";
 import { BudgetWidget } from "@/components/dashboard/widgets/budget-widget";
 import { ChatWidget } from "@/components/dashboard/widgets/chat-widget";
+import { DataBoardMenu, DataBoardWidget } from "@/components/dashboard/widgets/data-board-widget";
+import { NeedsMeWidget } from "@/components/dashboard/widgets/needs-me-widget";
 import { ReportsWidget } from "@/components/dashboard/widgets/reports-widget";
 import { TaskBoardWidget } from "@/components/dashboard/widgets/task-board-widget";
+import { WIDGET_LABELS } from "@/components/dashboard/widget-labels";
 import type { WidgetType } from "@/lib/hooks";
 
 type WidgetComponentProps = {
@@ -28,42 +40,64 @@ export const WIDGET_REGISTRY: Record<
      * decorative, keep separate from `component` so the preview can render
      * without mounting a widget's (potentially data-fetching) full body. */
     icon: typeof MessageSquare;
+    /** Extra edit-mode controls drawn in the frame header next to the remove
+     * button. The entry supplies a component that reads what it needs, so
+     * the frame itself never fetches. */
+    menu?: (config: Record<string, unknown>) => ReactNode;
+    /** Listed in the picker's generic widgets (default true). A tile that
+     * needs a config to mean anything (a dashboard tile needs its board) is
+     * added from its own picker section instead. */
+    pickable?: boolean;
   }
 > = {
   chat: {
-    label: (de) => (de ? "Chat" : "Chat"),
+    label: (de) => (de ? WIDGET_LABELS["chat"].de : WIDGET_LABELS["chat"].en),
     component: ChatWidget,
-    defaultSize: { w: 6, h: 6 },
+    defaultSize: { w: 6, h: 12 },
     icon: MessageSquare,
   },
   approvals: {
-    label: (de) => (de ? "Freigaben" : "Approvals"),
+    label: (de) => (de ? WIDGET_LABELS["approvals"].de : WIDGET_LABELS["approvals"].en),
     component: ApprovalsWidget,
-    defaultSize: { w: 4, h: 5 },
+    defaultSize: { w: 4, h: 10 },
     icon: CheckCircle2,
   },
+  "needs-me": {
+    label: (de) => (de ? WIDGET_LABELS["needs-me"].de : WIDGET_LABELS["needs-me"].en),
+    component: NeedsMeWidget,
+    defaultSize: { w: 4, h: 12 },
+    icon: Inbox,
+  },
   reports: {
-    label: (de) => (de ? "Reports" : "Reports"),
+    label: (de) => (de ? WIDGET_LABELS["reports"].de : WIDGET_LABELS["reports"].en),
     component: ReportsWidget,
-    defaultSize: { w: 4, h: 4 },
+    defaultSize: { w: 4, h: 8 },
     icon: PieChart,
   },
   budget: {
-    label: (de) => (de ? "Budget" : "Budget"),
+    label: (de) => (de ? WIDGET_LABELS["budget"].de : WIDGET_LABELS["budget"].en),
     component: BudgetWidget,
-    defaultSize: { w: 3, h: 3 },
+    defaultSize: { w: 3, h: 6 },
     icon: Wallet,
   },
   activity: {
-    label: (de) => (de ? "Aktivität" : "Activity"),
+    label: (de) => (de ? WIDGET_LABELS["activity"].de : WIDGET_LABELS["activity"].en),
     component: ActivityWidget,
-    defaultSize: { w: 3, h: 4 },
+    defaultSize: { w: 3, h: 8 },
     icon: Activity,
   },
   tasks: {
-    label: (de) => (de ? "Aufgaben-Board" : "Task Board"),
+    label: (de) => (de ? WIDGET_LABELS["tasks"].de : WIDGET_LABELS["tasks"].en),
     component: TaskBoardWidget,
-    defaultSize: { w: 6, h: 5 },
+    defaultSize: { w: 6, h: 10 },
     icon: Kanban,
+  },
+  data_board: {
+    label: (de) => (de ? WIDGET_LABELS["data_board"].de : WIDGET_LABELS["data_board"].en),
+    component: DataBoardWidget,
+    defaultSize: { w: 6, h: 10 },
+    icon: LayoutDashboard,
+    menu: (config) => <DataBoardMenu config={config} />,
+    pickable: false,
   },
 };

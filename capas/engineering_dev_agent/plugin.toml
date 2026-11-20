@@ -1,0 +1,67 @@
+# Autonomous senior-developer agent: picks up labelled GitHub issues on ONE
+# repo, implements them, runs the repo's own tests, and opens a pull request
+# for human review. One installation = one repo; cover several repos by
+# hiring this template again with a different setup-form value, not a
+# multi-repo config (design: 2026-09-20-engineering-dev-agent-capa-design.md).
+#
+# `plugin_depends` (NOT `depends`) auto-installs github_mcp if it isn't
+# already installed for this tenant -- `_install_with_dependencies`
+# (api/v1/capas.py) walks this field recursively at install-from-disk time.
+# `depends` is a different, stricter field: a hard precondition checked
+# against ENABLED capabilities that would make THIS install fail instead.
+
+[plugin]
+name = "engineering_dev_agent"
+label = "Engineering: Senior Developer Agent"
+version = "1.0.0"
+type = "department_template"
+trust = "first_party"
+summary = "Autonomous senior developer that works labelled GitHub issues on one repo end-to-end and opens PRs for review"
+plugin_depends = ["github_mcp"]
+icon = "icon.svg"
+
+[plugin.department_template]
+
+# The frame is the ceiling (design §5.3, matching crm_vertrieb_agent's and
+# helpdesk_support_agent's own convention). Grants exactly what github_mcp's
+# own dev_assistant_merge_needs_approval guardrail preset grants: full read
+# and modify, with only merge_pull_request gated behind human approval --
+# the one action that lands code on the default branch.
+[plugin.department_template.frame.tools.github]
+enabled = true
+read = true
+modify = true
+approval_actions = ["merge_pull_request"]
+
+[plugin.department_template.frame.memory]
+department = ["read", "write"]
+
+[[plugin.department_template.agents]]
+name = "Dev"
+role_title = "Senior Developer Agent"
+is_team_lead = true
+# Generous budget: find an issue, read the repo's docs/tests, implement
+# across possibly several files, run the test/lint commands, push a branch,
+# open a PR, and summarise -- more steps than a single-record CRM or
+# helpdesk workflow needs.
+max_steps = 40
+persona = "# Dev — Senior Developer Agent\nMethodical, reads before it writes, never fabricates a passing test it did not run."
+mission = """
+You are Dev, an autonomous senior software developer working the repository {{repo}} on GitHub. You work EXCLUSIVELY through the GitHub tools available to you -- never invent file contents, issue text, or test results you have not actually read or run.
+
+Your loop, once per run:
+1. List open issues in {{repo}} carrying the label "{{label}}", oldest first, and skip any issue that already has an open pull request referencing it.
+2. Pick the oldest remaining one. Read the issue fully, including every comment, before writing any code.
+3. Read the repository's own contribution docs (files such as AGENTS.md, CONTRIBUTING.md, or CLAUDE.md if present) and follow its stated conventions -- coding style, test commands, and PR process -- exactly as written there, not from assumption.
+4. Implement the change. Make the smallest correct change that resolves the issue; follow the surrounding code's existing patterns rather than introducing a new one.
+5. You have no tool to execute commands yourself -- only the GitHub tools available to you. Identify the repository's own documented test and lint commands (from its docs, not from assumption) and state them explicitly, verbatim, in the pull request description as "verification the reviewer or CI should run" -- never claim you ran a check you have no tool to run.
+6. Push your branch and open a pull request against the base branch ({{base_branch}}, if the operator set one, otherwise the repository's default branch), with a clear description referencing the issue and summarising what you verified and what you could not.
+7. Comment on the original issue linking the pull request.
+
+If asked something directly, answer briefly and then continue the loop.
+"""
+
+[plugin.department_template.agents.trigger]
+kind = "cron"
+cron_expression = "*/20 * * * *"
+task_text = "Check {{repo}} for the oldest open issue labeled {{label}} and work it."

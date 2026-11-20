@@ -25,7 +25,16 @@ function cooled(key: string): boolean {
   return true;
 }
 
-export function toastForEvent(e: RealtimeEvent): void {
+type Translate = (en: string, de?: string) => string;
+const english: Translate = (en) => en;
+
+/** A run some chat is answering with: its answer streams in that chat (the
+ *  reader's own, or the one they have open), so it is no background work. */
+function isChatRun(e: RealtimeEvent): boolean {
+  return e.data.source === "chat";
+}
+
+export function toastForEvent(e: RealtimeEvent, t: Translate = english): void {
   if (AGENT_SCOPED_TYPES.has(e.type)) {
     const agentId = e.data.agent_id as string | undefined;
     if (agentId && agentId === viewedAgentId) return; // already watching this agent live
@@ -39,18 +48,28 @@ export function toastForEvent(e: RealtimeEvent): void {
     // where you're watching this run live.
     const state = e.data.state as string | undefined;
     if (state !== "done" && state !== "failed" && state !== "interrupted") return;
+    if (isChatRun(e)) return;
     if (!cooled(e.type)) return;
     if (state === "done") {
-      toast.success("Agent-Run abgeschlossen", {
-        description: "Ein Hintergrund-Agent hat seinen Lauf beendet.",
+      toast.success(t("Agent run finished", "Agent-Run abgeschlossen"), {
+        description: t(
+          "A background agent finished its run.",
+          "Ein Hintergrund-Agent hat seinen Lauf beendet.",
+        ),
       });
     } else if (state === "failed") {
-      toast.error("Agent-Run fehlgeschlagen", {
-        description: "Ein Hintergrund-Agent-Lauf ist fehlgeschlagen.",
+      toast.error(t("Agent run failed", "Agent-Run fehlgeschlagen"), {
+        description: t(
+          "A background agent's run failed.",
+          "Ein Hintergrund-Agent-Lauf ist fehlgeschlagen.",
+        ),
       });
     } else {
-      toast.warning("Agent-Run unterbrochen", {
-        description: "Ein Hintergrund-Agent-Lauf wurde unterbrochen.",
+      toast.warning(t("Agent run interrupted", "Agent-Run unterbrochen"), {
+        description: t(
+          "A background agent's run was interrupted.",
+          "Ein Hintergrund-Agent-Lauf wurde unterbrochen.",
+        ),
       });
     }
     return;
@@ -58,8 +77,11 @@ export function toastForEvent(e: RealtimeEvent): void {
 
   if (e.type === "approval.created") {
     if (!cooled(e.type)) return;
-    toast.info("Neue Freigabe angefordert", {
-      description: "Ein Agent wartet auf deine Entscheidung.",
+    toast.info(t("New approval requested", "Neue Freigabe angefordert"), {
+      description: t(
+        "An agent is waiting for your decision.",
+        "Ein Agent wartet auf deine Entscheidung.",
+      ),
     });
     return;
   }
@@ -67,16 +89,22 @@ export function toastForEvent(e: RealtimeEvent): void {
   if (e.type === "approval.decided") {
     if (!cooled(e.type)) return;
     const status = e.data.status as string | undefined;
-    toast(status === "approved" ? "Freigabe erteilt" : "Freigabe abgelehnt", {
-      description: "Eine Entscheidung wurde getroffen.",
-    });
+    toast(
+      status === "approved"
+        ? t("Approval granted", "Freigabe erteilt")
+        : t("Approval rejected", "Freigabe abgelehnt"),
+      { description: t("A decision was made.", "Eine Entscheidung wurde getroffen.") },
+    );
     return;
   }
 
   if (e.type === "handoff.status") {
     if (!cooled(e.type)) return;
-    toast("Übergabe aktualisiert", {
-      description: "Der Status einer Agenten-Übergabe hat sich geändert.",
+    toast(t("Handoff updated", "Übergabe aktualisiert"), {
+      description: t(
+        "The status of an agent handoff changed.",
+        "Der Status einer Agenten-Übergabe hat sich geändert.",
+      ),
     });
     return;
   }

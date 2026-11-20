@@ -89,6 +89,11 @@ document:
   plus `tool_pack.toml`, ten `guardrails/*.toml` files, and a three-file
   `setup/`. `google_workspace/` is the other capa in this shape (its
   `setup/` has all four files, including `validation.toml`).
+- **`moodle/`** — a tool-pack capa with its own stdio bridge (`mcp_bridge/`)
+  over Moodle's web service REST API: courses, participants, grades,
+  submissions, enrolments, messages and forum posts, with read/modify scopes,
+  outward marks and five guardrails. One `moodle_token` credential (site URL +
+  token) per site.
 
 Two other complete working examples ship in this directory:
 

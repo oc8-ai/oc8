@@ -1,0 +1,89 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => true }));
+
+import { ApprovalPane } from "@/components/dashboard/widgets/approvals-widget";
+import type { Approval } from "@/lib/hooks";
+
+const BASE: Approval = {
+  id: "a1",
+  agentId: "agent-1",
+  agentName: "Nora",
+  title: "Nora wants to create a quotation",
+  detail: "over 3000 EUR",
+  amount: "4.200,00 €",
+  time: "",
+  status: "pending",
+  actionType: "tool_send",
+  toolName: "create_record",
+  toolArguments: { model: "sale.order" },
+};
+
+function renderPane(approval: Approval) {
+  return render(
+    <ApprovalPane
+      approval={approval}
+      mayAct={false}
+      viewOnlyBecause="role"
+      busy={false}
+      onDecide={() => {}}
+    />,
+  );
+}
+
+describe("the approval pane's record link", () => {
+  it("links straight to the record when the approval carries a URL", () => {
+    renderPane({ ...BASE, recordUrl: "https://odoo.example.com/odoo/sale.order/42" });
+    const link = screen.getByRole("link", { name: /open the record/i });
+    expect(link).toHaveAttribute("href", "https://odoo.example.com/odoo/sale.order/42");
+    // The href comes from a tool call's own arguments -- the opened page must
+    // not get a handle on this window.
+    expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+  });
+
+  it("shows no link at all when the approval carries none", () => {
+    renderPane(BASE);
+    expect(screen.queryByRole("link", { name: /open the record/i })).toBeNull();
+  });
+
+  it("refuses to render a non-http(s) URL", () => {
+    // The backend resolver already refuses anything but http(s), but this
+    // field also has to survive a future caller that does not go through it
+    // -- defense in depth against a `javascript:` URI in an `href`.
+    renderPane({ ...BASE, recordUrl: "javascript:alert(1)" });
+    expect(screen.queryByRole("link", { name: /open the record/i })).toBeNull();
+  });
+
+  it("still renders the approval itself without a link", () => {
+    renderPane(BASE);
+    expect(screen.getByText("Nora wants to create a quotation")).toBeInTheDocument();
+  });
+});
+
+describe("the approval pane's related and result links", () => {
+  it("links each related record and the record the decision created", () => {
+    renderPane({
+      ...BASE,
+      recordUrl: "https://o.example/odoo/sale.order/42",
+      relatedLinks: [
+        { label: "Kontakt #7", url: "https://o.example/odoo/res.partner/7" },
+        { label: "Sneaky", url: "javascript:alert(1)" },
+      ],
+      resultUrl: "https://o.example/odoo/sale.order/43",
+    });
+    expect(screen.getByRole("link", { name: /Kontakt #7/ })).toHaveAttribute(
+      "href",
+      "https://o.example/odoo/res.partner/7",
+    );
+    const result = screen.getByRole("link", { name: /created record/i });
+    expect(result).toHaveAttribute("href", "https://o.example/odoo/sale.order/43");
+    expect(result).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    expect(screen.queryByRole("link", { name: /Sneaky/ })).toBeNull();
+  });
+
+  it("shows neither when the approval carries none", () => {
+    renderPane({ ...BASE, relatedLinks: [], resultUrl: null });
+    expect(screen.queryByRole("link", { name: /created record|↗/i })).toBeNull();
+  });
+});

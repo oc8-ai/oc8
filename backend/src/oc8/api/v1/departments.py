@@ -32,16 +32,20 @@ bug class and the exact same fix.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.repo import visible_agents
+from oc8.agents.retire import delete_or_archive_agent
+from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, task_to_dto
 from oc8.audit import append_event
@@ -49,11 +53,15 @@ from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ConditionDatatype, ConditionOperator, Effect
 from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
+from oc8.connections.tool_connection import not_retired
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDTO, TaskDTO
 from oc8.schemas.paging import Page
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -273,7 +281,8 @@ def _deviation_counts(tools: dict[str, Any], agents: Sequence[m.Agent]) -> dict[
     return counts
 
 
-def _cascade_department_tools_change(
+async def _cascade_department_tools_change(
+    db: DbSession,
     *,
     old_tools: dict[str, Any],
     new_tools: dict[str, Any],
@@ -292,6 +301,16 @@ def _cascade_department_tools_change(
     it to) still cascades that removal to agents who never overrode it --
     `new_tools.get(key, {})` there is an empty `ToolPolicy`, i.e. "disabled,
     no rights", the correct meaning of "this tool no longer exists here".
+
+    Every touched agent is then PUBLISHED, because runs execute an agent's
+    published version and not its row: without it, re-enabling a tool at the
+    department would never reach a single agent (the frame alone cannot widen
+    a pinned narrowing that says "disabled"). Only an agent with no pending
+    draft is published, so the new version holds the cascade and nothing else;
+    for one mid-edit, publishing would push that operator's unfinished draft
+    live, so the cascade joins the draft instead and shows in its publish bar.
+    A publish hook refusing rejects the whole department change (422, and
+    `get_db` rolls every write back) rather than leave agents half-published.
     """
     changed_keys = {
         key
@@ -299,6 +318,13 @@ def _cascade_department_tools_change(
         if bool(new_tools.get(key, {}).get("enabled", False))
         != bool(old_tools.get(key, {}).get("enabled", False))
     }
+    touched = [
+        agent
+        for agent in agents
+        if any(key not in (agent.narrowing_overridden_keys or []) for key in changed_keys)
+    ]
+    # Read BEFORE the write below, which would make every one of them dirty.
+    publishable = {agent.id for agent in touched if not (await draft_status(db, agent)).dirty}
     for key in changed_keys:
         new_policy = new_tools.get(key, {})
         for agent in agents:
@@ -309,6 +335,29 @@ def _cascade_department_tools_change(
             agent_tools[key] = dict(new_policy)
             narrowing["tools"] = agent_tools
             agent.narrowing = narrowing
+    await db.flush()
+    for agent in touched:
+        if agent.id not in publishable:
+            logger.info(
+                "department tool cascade deferred to existing draft: agent=%s",
+                agent.id,
+            )
+            continue
+        try:
+            await publish_version(db, agent, note="department tool access changed")
+        except NoChangesToPublish:
+            # The cascade wrote what the version already had.
+            continue
+        except PublishHookFailed as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                {
+                    "error": "publish_hook_rejected",
+                    "agentId": str(agent.id),
+                    "hook": exc.hook_name,
+                    "reason": str(exc.cause),
+                },
+            ) from exc
 
 
 async def _get_department(db: DbSession, dept_id: uuid.UUID) -> m.Department:
@@ -366,9 +415,10 @@ async def delete_department(
     makes for one agent on its own (by its own run history, not blanket
     archival), so an agent with no runs is actually removed and one with
     history is archived, same as calling that endpoint on it directly would
-    do. This is the ONLY writer that cascades into `agent` from a department
-    mutation -- `set_department_tools`'s own cascade (its docstring) only
-    ever touches `agent.narrowing`, never `deleted_at`."""
+    do, and each is retired the same way (`oc8.agents.retire`). This is the
+    ONLY writer that cascades into `agent` from a department mutation --
+    `set_department_tools`'s own cascade (its docstring) only ever touches
+    `agent.narrowing`, never `deleted_at`."""
     dept = await _get_department(db, dept_id)
     live_agents = (
         (
@@ -388,20 +438,17 @@ async def delete_department(
     else:
         dept.deleted_at = now
         outcome = "archived"
+        await archive_department_boards(db, department_id=dept_id, now=now)
         for agent in live_agents:
-            agent_dependents = (
-                await db.execute(
-                    select(func.count())
-                    .select_from(m.AgentRun)
-                    .where(m.AgentRun.agent_id == agent.id)
-                )
-            ).scalar_one()
-            if agent_dependents == 0:
-                await db.delete(agent)
-                agent_outcome = "deleted"
-            else:
-                agent.deleted_at = now
-                agent_outcome = "archived"
+            agent_id = agent.id
+            # The same delete-or-archive-and-retire step `delete_agent` takes.
+            agent_outcome = await delete_or_archive_agent(
+                db,
+                agent,
+                principal=principal,
+                now=now,
+                resource_extra={"cascaded_from_department_id": str(dept_id)},
+            )
             await append_event(
                 db,
                 tenant_id=principal.tenant_id,
@@ -410,7 +457,7 @@ async def delete_department(
                 category="admin",
                 action=f"agent.{agent_outcome}",
                 resource={
-                    "agent_id": str(agent.id),
+                    "agent_id": str(agent_id),
                     "by": principal.subject,
                     "cascaded_from_department_id": str(dept_id),
                 },
@@ -446,6 +493,7 @@ async def restore_department(
     if dept is None or dept.deleted_at is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no archived department with that id")
     dept.deleted_at = None
+    await restore_department_boards(db, department_id=dept_id)
     await db.flush()
     # `department_to_dto` is a pure in-memory serialization of the already-
     # loaded `dept` row -- no DB read of its own, so building the DTO here
@@ -567,6 +615,7 @@ async def set_department_tools(
                     m.McpConnection.tenant_id == _p.tenant_id,
                     m.McpConnection.name == key,
                     m.McpConnection.credential_id.is_(None),
+                    not_retired(),
                 )
                 .order_by(m.McpConnection.created_at)
                 .limit(1)
@@ -635,7 +684,9 @@ async def set_department_tools(
         .scalars()
         .all()
     )
-    _cascade_department_tools_change(old_tools=old_tools, new_tools=frame["tools"], agents=agents)
+    await _cascade_department_tools_change(
+        db, old_tools=old_tools, new_tools=frame["tools"], agents=agents
+    )
 
     await db.flush()
     return DepartmentToolsDTO(
@@ -696,7 +747,9 @@ async def reset_department_tool(
         .scalars()
         .all()
     )
-    _cascade_department_tools_change(old_tools=old_tools, new_tools=new_tools, agents=agents)
+    await _cascade_department_tools_change(
+        db, old_tools=old_tools, new_tools=new_tools, agents=agents
+    )
 
     await db.flush()
     await append_event(

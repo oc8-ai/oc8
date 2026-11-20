@@ -1,0 +1,23 @@
+# Curated use-case library entry: what it grants AND what it deliberately does not.
+kind = "library"
+key = "teaching_assistant"
+label = "Teaching assistant"
+summary = "Reviews submissions and progress and enters grades with feedback after approval. Cannot enrol, change accounts or courses, or send messages and forum posts."
+use_case = "teaching"
+read = true
+modify = true
+approval_actions = ["modify"]
+approval_eur = ""
+only = [
+    "moodle_site_info",
+    "moodle_search_courses",
+    "moodle_get_course_contents",
+    "moodle_list_participants",
+    "moodle_find_users",
+    "moodle_get_grades",
+    "moodle_get_completion",
+    "moodle_list_assignments",
+    "moodle_list_submissions",
+    "moodle_list_forum_discussions",
+    "moodle_grade_submission",
+]

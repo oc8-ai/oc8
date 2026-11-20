@@ -198,6 +198,7 @@ class _RecordingSession:
         env: dict[str, str] | None = None,
         *,
         timeout_s: float | None = None,
+        on_step: Any = None,
     ) -> None:
         _RecordingSession.env = dict(env or {})
         self.tools: list[Any] = []
@@ -367,6 +368,7 @@ async def test_the_engine_reaches_a_real_remote_mcp_server_over_http(
     app_session: AppSessionFactory,
     monkeypatch: pytest.MonkeyPatch,
     echo_http_server: str,
+    allow_loopback_outbound: None,
 ) -> None:
     """A `transport="http"` connection must route the in-process agent loop
     through `open_tool_session`'s remote branch -- not just at "test

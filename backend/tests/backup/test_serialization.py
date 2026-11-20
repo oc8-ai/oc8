@@ -112,17 +112,55 @@ def test_null_round_trips_as_null_for_every_nullable_column() -> None:
 
 def test_every_exported_table_round_trips_a_fully_populated_row() -> None:
     tables = exported_tables()
-    # guards against a silently-shrunk table list (57 since migration 0086's
+    # guards against a silently-shrunk table list (63 now, see test_tables.py;
+    # 57 since migration 0086's
     # file_attachment, migration 0088's member_dashboard_layout, migration
     # 0089's dashboard_preset, and migration 0093's api_key joined the export
     # -- see test_tables.py's own comment on why a chat/instruction
     # attachment's row, a member's saved widget-grid arrangements, and a
     # self-issued API key are all portable company data, not instance-bound)
-    assert len(tables) == 57
+    assert len(tables) == 63
     for name in sorted(tables):
-        table = table_by_name(name)
-        row = {col.name: _sample_value(col.type, i) for i, col in enumerate(table.columns)}
-        _assert_round_trips(table, row)
+        _round_trip_populated(name)
+
+
+def _round_trip_populated(name: str) -> None:
+    """One fully populated row of table `name` survives encode and decode."""
+    table = table_by_name(name)
+    row = {col.name: _sample_value(col.type, i) for i, col in enumerate(table.columns)}
+    _assert_round_trips(table, row)
+
+
+#: The dashboards' tables, exported since 0121/0122.
+_BOARD_TABLES = (
+    "data_board",
+    "data_board_spec_version",
+    "data_board_batch",
+    "data_board_record",
+)
+
+
+def test_board_tables_round_trip_a_fully_populated_row() -> None:
+    """The board tables run the same body as the all-tables test above, on
+    their own: that test stops at its pinned table count before the loop."""
+    tables = exported_tables()
+    for name in _BOARD_TABLES:
+        assert name in tables
+        _round_trip_populated(name)
+
+
+#: Board sharing's tables (0124): a board's shares and a member's delivery
+#: settings are company data. `member_notification`, the inbox, is excluded.
+_SHARING_TABLES = ("data_board_share", "member_notification_setting")
+
+
+def test_sharing_tables_round_trip_a_fully_populated_row() -> None:
+    """Like the board tables above: covered on their own, past the pinned count."""
+    tables = exported_tables()
+    for name in _SHARING_TABLES:
+        assert name in tables
+        _round_trip_populated(name)
+    assert "member_notification" not in tables
 
 
 def test_embeddings_encode_little_endian_regardless_of_host() -> None:

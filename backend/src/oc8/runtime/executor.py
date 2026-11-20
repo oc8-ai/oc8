@@ -12,18 +12,46 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.versioning import resolve_version
+from oc8.approvals.repo import DIRECT_ACCESS_ACTION
+from oc8.connections.acting import (
+    NO_ACTING_PERSON,
+    ActingPerson,
+    carried_person,
+    resolve_acting_person,
+)
+from oc8.connections.login import login_chosen
+from oc8.connections.tool_connection import (
+    connection_for_context,
+    tool_connections,
+    unconsolidated_connection,
+)
 from oc8.db.session import tenant_session
 from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
+from oc8.records.registry import link_scope
+from oc8.records.vetting import vet_answer_links
 from oc8.runtime.adapter import RuntimeAdapter
+from oc8.runtime.agent_status import (
+    RunningGuard,
+    expected_status,
+    mark_agent_running,
+    remember_claimed_status,
+    settle_agent_status,
+    take_run_slot,
+)
+from oc8.runtime.cancellation import AGENT_ARCHIVED, AGENT_ARCHIVED_OUTPUT, agent_archived
 from oc8.runtime.intake import publish_run
+from oc8.runtime.person import FOR_PERSON, SEVERAL_PEOPLE, person_behind
 from oc8.runtime.queue import RunMessage
 from oc8.runtime.reconcile import ABANDONED_AFTER, heartbeat
 from oc8.runtime.registry import resolve_runtime
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
-from oc8.runtime.states import RunState
+from oc8.runtime.run_inputs import has_pending_run_inputs, lock_run_inputs
+from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.workspace import sync_run_output
+from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +116,68 @@ _CHAT_WAITING_FOR_APPROVAL = "This needs an approval before I can continue -- se
 #: `repr(exc)`: the exception text is already on the run (`context["error"]`)
 #: where an operator can read it, and a chat transcript is the one place it
 #: would be shown to whoever happens to be in the conversation.
-_CHAT_RUN_FAILED = "That didn't work out -- see the run in oc8 for what happened."
+_CHAT_RUN_FAILED = "That didn't work out \u2013 see the run in oc8 for what happened."
+
+
+def _chat_run_failed_answer(run_id: uuid.UUID) -> str:
+    """The same sentence for the chat transcript, with the run as an object
+    link (`oc8://run/<id>`) the web chat opens in place. Channels get the
+    plain `_CHAT_RUN_FAILED`: they cannot open an oc8 link."""
+    return f"That didn't work out \u2013 [see the run](oc8://run/{run_id}) for what happened."
+
+
+async def _answer_failed_chat_run(
+    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
+) -> None:
+    """A chat turn that FAILED without an output of its own still answers: the
+    canned failure line in the transcript, the plain one to a channel sender,
+    and the unread follow-ups told they were not read. No-op for other runs."""
+    if run.source != "chat":
+        return
+    from oc8.chat.service import record_assistant_reply
+
+    await record_assistant_reply(db, run=run, output=_chat_run_failed_answer(run.id))
+    sender = await _current_chat_sender(db, run)
+    if sender is not None:
+        channel, external_id = sender
+        channel_replies.append((run.tenant_id, channel, external_id, _CHAT_RUN_FAILED))
+    await _tell_unread_inputs(db, run, channel_replies)
+
+
+async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, str] | None:
+    """`_chat_channel_sender_of`, but for a follow-up re-resolved against the
+    member's CURRENT binding at send time (invariant 12): a binding revoked
+    since firing means web only; a re-linked one means the new chat id."""
+    sender = _chat_channel_sender_of(run)
+    if sender is None or not isinstance((run.context or {}).get("followup"), dict):
+        return sender
+    from oc8.copilot.followups import live_binding_external_id
+
+    session_raw = (run.context or {}).get("chat_session_id")
+    session = await db.get(m.ChatSession, uuid.UUID(str(session_raw))) if session_raw else None
+    if session is None:
+        return None
+    current = await live_binding_external_id(
+        db, tenant_id=run.tenant_id, member_id=session.member_id, channel=sender[0]
+    )
+    return (sender[0], current) if current else None
+
+
+#: Told once to a messenger sender whose failed run never read what they
+#: wrote to it (Ruling 59): it is not carried over, so they must know.
+_UNREAD_AFTER_FAILURE = "Deine letzte Nachricht kam nicht mehr an – schick sie bitte nochmal."  # noqa: RUF001
+
+
+async def _tell_unread_inputs(
+    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
+) -> None:
+    """A failed messenger turn with inputs it never read: say so, once, on the
+    run's channel (gated, like every reply). The inputs stay unread."""
+    sender = await _current_chat_sender(db, run)
+    if sender is None or not await has_pending_run_inputs(db, run_id=run.id):
+        return
+    channel, external_id = sender
+    channel_replies.append((run.tenant_id, channel, external_id, _UNREAD_AFTER_FAILURE))
 
 
 def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
@@ -139,8 +228,39 @@ async def requeue_if_already_decided(db: AsyncSession, *, run: m.AgentRun) -> bo
     Together the two leave no window: every decision is either visible here
     already, or the operator's own re-read sees the park it was blocked behind.
     """
-    entries = (run.context or {}).get("resolved_tool_approvals") or []
-    if not entries or run.task_id is None:
+    context = run.context or {}
+    entries = context.get("resolved_tool_approvals") or []
+    if run.task_id is None:
+        return False
+    if entries or isinstance(context.get("resolved_direct_access"), dict):
+        # A Copilot run may be parked on its direct-access offer
+        # (`offer_direct_access`) instead: when the latest hold on the task is
+        # this run's offer, THIS park waits for it -- decided already, the run
+        # must not wait; still pending, an earlier leg's decided write must
+        # not wake it. Another run's offer says nothing about this park.
+        latest = (
+            await db.execute(
+                select(m.ApprovalRequest)
+                .where(
+                    m.ApprovalRequest.task_id == run.task_id,
+                    m.ApprovalRequest.action_type.in_(
+                        ("tool_send", "memory_write", DIRECT_ACCESS_ACTION)
+                    ),
+                )
+                .order_by(m.ApprovalRequest.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if (
+            latest is not None
+            and latest.action_type == DIRECT_ACCESS_ACTION
+            and latest.payload.get("run_id") == str(run.id)
+        ):
+            if latest.status == "pending":
+                return False
+            await RunRepository(db).transition(run, RunState.QUEUED)
+            return True
+    if not entries:
         return False
 
     from oc8.runtime.approval_resume import call_signature
@@ -216,6 +336,58 @@ async def agent_has_own_login_binding(db: AsyncSession, agent: m.Agent) -> bool:
     return bool(needs_login)
 
 
+async def _person_of_task_runs(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
+) -> str | None:
+    """Whose work a task is: the person its runs name, or -- for a task from
+    before its root run carried one -- the live member in
+    `payload["requested_by_member_id"]`. Several different people give
+    `SEVERAL_PEOPLE`, never a guess; nobody gives `None`."""
+    people: set[str] = set()
+    rows = await db.execute(
+        select(m.AgentRun.context)
+        .where(m.AgentRun.tenant_id == tenant_id, m.AgentRun.task_id == task_id)
+        .order_by(m.AgentRun.created_at.desc())
+        .limit(50)
+    )
+    for (ctx,) in rows:
+        person = person_behind(ctx)
+        if person is not None:
+            people.add(person)
+    task = await db.get(m.Task, task_id)
+    raw = (task.payload or {}).get("requested_by_member_id") if task is not None else None
+    if raw:
+        try:
+            member_id = uuid.UUID(str(raw))
+        except ValueError:
+            member_id = None
+        if member_id is not None:
+            subject = (
+                await db.execute(
+                    select(m.OrgMember.subject).where(
+                        m.OrgMember.id == member_id,
+                        m.OrgMember.tenant_id == tenant_id,
+                        m.OrgMember.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if subject:
+                people.add(subject)
+    if not people:
+        return None
+    return people.pop() if len(people) == 1 else SEVERAL_PEOPLE
+
+
+async def _acting_person(db: AsyncSession, run: m.AgentRun) -> ActingPerson:
+    """The person a wake-up should keep acting for. A failed lookup must never
+    stop a finished sub-run from waking its lead, so it only costs the person."""
+    try:
+        return await resolve_acting_person(db, run)
+    except Exception:
+        logger.exception("run %s: could not resolve the acting person", run.id)
+        return ActingPerson(None, NO_ACTING_PERSON)
+
+
 async def _maybe_wake_parent(
     db: AsyncSession,
     *,
@@ -231,6 +403,13 @@ async def _maybe_wake_parent(
     chat_session_id: str | None = None,
     chat_channel: str | None = None,
     chat_channel_external_id: str | None = None,
+    door: str | None = None,
+    followup: dict[str, Any] | None = None,
+    originating_operator: str | None = None,
+    acting: ActingPerson | None = None,
+    trigger_id: str | None = None,
+    for_person: str | None = None,
+    finished_run_id: uuid.UUID | None = None,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -268,6 +447,20 @@ async def _maybe_wake_parent(
         "parent_task_id": str(parent.id),
         "delegation_depth": delegation_depth,
     }
+    if finished_run_id is not None:
+        # The causal link back: wake-up -> the sub-run that finished -> its
+        # `parent_run_id`, the run that delegated. The only way a turn without
+        # a token reaches the role claim of the person's own web turn
+        # (`control_tools.person_token_role`); never the claim itself.
+        context["wake_of_run_id"] = str(finished_run_id)
+    # The lead's wake-up acts for the same person as the sub-run (connections
+    # design), whether or not the chain started in a chat -- and for nobody
+    # when the sub-run acted for nobody, or the trigger and chat keys carried
+    # alongside would resolve someone the chain deliberately withheld.
+    if acting is not None:
+        context.update(carried_person(acting))
+    if trigger_id:
+        context["trigger_id"] = trigger_id
     # Two reasons the sub-run's connection is withheld from the lead's wake-up,
     # and both end the same way: the lead resolves for itself.
     #
@@ -304,12 +497,32 @@ async def _maybe_wake_parent(
     # rather than being re-derived here, so a delegation chain several hops
     # deep keeps pointing at the SAME original conversation, on the SAME
     # channel, at every hop.
+    # Whose work this continues (Ruling 18): the finishing child's person, or
+    # else the lead's own run's. Marks the wake-up as that person's run on the
+    # Live timeline; grants nothing -- `originating_operator` is set only in
+    # the chat branch below, exactly as before.
+    person = person_behind(
+        {"originating_operator": originating_operator, FOR_PERSON: for_person}
+    ) or await _person_of_task_runs(db, tenant_id=tenant_id, task_id=parent.id)
+    if person is not None:
+        context[FOR_PERSON] = person
     wake_source = "chat" if chat_session_id else "delegation"
     if chat_session_id:
         context["chat_session_id"] = chat_session_id
         if chat_channel and chat_channel_external_id:
             context["chat_channel"] = chat_channel
             context["chat_channel_external_id"] = chat_channel_external_id
+        # The Copilot's follow-up restrictions key off these two; a wake-up that
+        # processes a delegated result must not shed them (it may be reading
+        # injected content), so they ride along like the channel does.
+        if door is not None:
+            context["door"] = door
+        if followup is not None:
+            context["followup"] = followup
+        # So the Copilot's oversight check (_resolve_agent_actor) still sees
+        # an operator posting in a colleague's session. Never operator_role.
+        if originating_operator is not None:
+            context["originating_operator"] = originating_operator
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -355,7 +568,11 @@ class _ConnectionChoice(NamedTuple):
 
 
 async def _resolve_mcp_connection(
-    db: AsyncSession, *, agent: m.Agent, run_context: dict[str, Any]
+    db: AsyncSession,
+    *,
+    agent: m.Agent,
+    run_context: dict[str, Any],
+    narrowing: dict[str, Any] | None = None,
 ) -> _ConnectionChoice:
     """Which McpConnection this agent's run uses, and why it can't have one.
 
@@ -398,12 +615,19 @@ async def _resolve_mcp_connection(
     """
     mcp_id = run_context.get("mcp_connection_id")
     if mcp_id:
-        conn = await db.get(m.McpConnection, uuid.UUID(str(mcp_id)))
+        # Follows a row consolidation retired or folded (a run queued or
+        # suspended before it keeps working).
+        conn = await connection_for_context(db, mcp_id)
         if conn is None:
             return _ConnectionChoice(None, f"unknown MCP connection: {mcp_id}")
         return _ConnectionChoice(conn, None)
 
-    raw_tools = (agent.narrowing or {}).get("tools") or {}
+    # `narrowing` is the run's pinned version (`resolve_version`), so the login
+    # a run acts through is the one its version names; the live-row fallback
+    # is for a caller with no run behind it.
+    if narrowing is None:
+        narrowing = agent.narrowing or {}
+    raw_tools = narrowing.get("tools") or {}
     tools: dict[str, Any] = raw_tools if isinstance(raw_tools, dict) else {}
     # Sorted so two runs of the same agent always decide identically. Keys are
     # connection NAMES (the frame keys tools by name, not id) -- the same shape
@@ -466,6 +690,15 @@ async def _resolve_mcp_connection(
     # `set_department_tools` already makes on this function's behalf ("an agent
     # cascaded to enabled without a connection_id is caught at runtime
     # resolution"). That promise has to hold for every enabled key.
+    # A login tool the agent chose a login for another way -- its access row
+    # (what a consolidated login pin became) or a login enabled for its
+    # department -- needs no pin: the login resolver picks it per call.
+    for key in sorted(needs_login):
+        if await login_chosen(
+            db, agent_id=agent.id, department_id=agent.department_id, tool_key=key
+        ):
+            needs_login.discard(key)
+
     for key in enabled:
         if key in needs_login and not tools[key].get("connection_id") and not _dept_default(key):
             return _ConnectionChoice(
@@ -516,6 +749,30 @@ async def _resolve_mcp_connection(
             )
         pinned_conns.append(conn)
     if pinned_conns:
+        # A pin must not silently drop the agent's OTHER enabled tools. Before
+        # this, an agent that pinned one login (say `odoo`) and also enabled a
+        # department-scoped connection (say `microsoft365`, configured once for
+        # the department through its capa form) got only the pinned login: the
+        # stamp below is "use exactly these", so the department connection never
+        # reached the gateway, and the operator's UI showed it enabled.
+        #
+        # Only keys the agent itself ENABLED, only keys that need no login
+        # (those were already forced to resolve to a pin or a department default
+        # above), and only connections of the agent's own department -- the
+        # same three filters the legacy lookup below applies, so nothing is
+        # reachable here that an unpinned agent would not already have reached.
+        pinned_names = {c.name for c in pinned_conns}
+        shared_keys = [k for k in enabled if k not in pinned_names and k not in needs_login]
+        if shared_keys and agent.department_id is not None:
+            # The tool's row (`tool_connection`). A shared row of an
+            # integration is left out here: it reaches the run through the
+            # policy and the login resolver (`integration_connections`, in
+            # both runtimes), exactly as for an unpinned agent.
+            for row in await tool_connections(
+                db, names=shared_keys, department_id=agent.department_id
+            ):
+                if row.department_id is not None:
+                    pinned_conns.append(row)
         return _ConnectionChoice(
             pinned_conns[0], None, pinned=True, connections=tuple(pinned_conns)
         )
@@ -525,18 +782,7 @@ async def _resolve_mcp_connection(
     # its tested connection without the caller knowing an internal MCP
     # connection id. An explicit run context above still wins for
     # advanced/manual use cases.
-    legacy = (
-        await db.execute(
-            select(m.McpConnection)
-            .where(
-                m.McpConnection.department_id == agent.department_id,
-                m.McpConnection.connected.is_(True),
-                m.McpConnection.credential_id.is_(None),
-            )
-            .order_by(m.McpConnection.created_at)
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+    legacy = await unconsolidated_connection(db, department_id=agent.department_id)
     return _ConnectionChoice(legacy, None)
 
 
@@ -556,11 +802,42 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
     with get_tracer().start_as_current_span("run.execute") as span:
         span.set_attribute("run_id", str(run_id))
         span.set_attribute("tenant_id", str(tenant_id))
-        async with tenant_session(tenant_id) as db:
+        # The guard is entered first, so it exits after the session has rolled
+        # back: "running" is committed on its own (`mark_agent_running`), and a
+        # run whose transaction never commits must not leave it behind.
+        async with RunningGuard(tenant_id) as running_guard, tenant_session(tenant_id) as db:
             repo = RunRepository(db)
             run = await repo.get(run_id)
             if run is None or run.state != RunState.QUEUED.value:
                 return
+
+            # Claim the run before ANY path below may end it. The agent's run
+            # slot first, then the run row -- the order every executor takes
+            # them (see the one-run-per-agent check further down for why the
+            # slot exists at all). Then the run is read again, under its own
+            # lock: two deliveries of ONE run (a republished stranded run whose
+            # first entry turned up after all, a reclaim racing the original)
+            # both read `queued` above, and the second waits on the slot for the
+            # first's commit. Unchecked, it went on to start the run a second
+            # time -- the busy check skips this run's own id -- or, on the early
+            # exits below (agent missing, hire gate, cancel drain, organisation
+            # inactive), recorded the same ending and activity event twice.
+            #
+            # The slot is an advisory lock, not the agent ROW: on the in-process
+            # runtime this transaction lasts the whole run, model calls
+            # included, and a row lock here made every write to the agent (a
+            # model switch, a pause, the Copilot's own sync) wait for the run to
+            # end (`oc8.runtime.agent_status`).
+            await take_run_slot(db, run.agent_id)
+            claimed = await db.get(m.AgentRun, run_id, with_for_update=True, populate_existing=True)
+            if claimed is None or claimed.state != RunState.QUEUED.value:
+                logger.info(
+                    "run %s is %s, taken by another delivery; leaving it",
+                    run_id,
+                    claimed.state if claimed is not None else "gone",
+                )
+                return
+            run = claimed
 
             span.set_attribute("agent_id", str(run.agent_id))
             agent = await db.get(m.Agent, run.agent_id)
@@ -578,6 +855,34 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 logger.warning("run %s marked FAILED: %s", run_id, error)
                 logger.info("run %s finished in state %s", run_id, RunState.FAILED.value)
                 record_run_outcome(RunState.FAILED.value)
+                return
+            # The status this run may overwrite from here on: every later write
+            # is a compare-and-set against it (`oc8.runtime.agent_status`).
+            remember_claimed_status(db, agent)
+
+            if agent.deleted_at is not None:
+                # An archived agent does no more work. Deleting it cancels its
+                # open runs (`oc8.agents.retire`), but a run can still be queued
+                # for it afterwards -- a delegation, a handoff, a channel, a
+                # trigger from before -- and every one of them passes through here.
+                await merge_context(
+                    db,
+                    run,
+                    {"cancellation_kind": AGENT_ARCHIVED, "output": AGENT_ARCHIVED_OUTPUT},
+                )
+                # Compare-and-set, as on the cancel drain below: an archived
+                # agent does not stay "running" once its last run is drained.
+                await settle_agent_status(db, agent, "idle")
+                await repo.transition(run, RunState.INTERRUPTED)
+                await record_activity(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent.id,
+                    status="error",
+                    message=f"{agent.name}: {AGENT_ARCHIVED_OUTPUT}",
+                )
+                logger.info("run %s interrupted before start (agent archived)", run_id)
+                record_run_outcome(RunState.INTERRUPTED.value)
                 return
 
             if agent.status == "pending_approval":
@@ -613,12 +918,34 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # AND cancels its queued run; draining that run here must NOT un-freeze
                 # the agent (it would also orphan pause_reason="budget", poisoning the
                 # scope's idempotency check). An operator-cancelled run of a normal
-                # (unpaused) agent still frees it, as before.
-                if agent.pause_reason is None:
-                    agent.status = "idle"
-                    await publish_agent_status(agent)
+                # (unpaused) agent still frees it, as before. Compare-and-set, and
+                # never over a pause: the agent row is not locked, so a hard-stop
+                # may have paused it since the claim read it.
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.INTERRUPTED)
                 logger.info("run %s interrupted before start (cancelled while queued)", run_id)
+                record_run_outcome(RunState.INTERRUPTED.value)
+                return
+
+            # The organisation may not run background work: a run that was
+            # already queued (or re-published without going through
+            # enqueue_run) stops here, before the runtime is ever invoked.
+            if not await tenant_may_run(tenant_id):
+                await merge_context(
+                    db,
+                    run,
+                    {"cancellation_kind": TENANT_INACTIVE_KIND, "output": TENANT_INACTIVE_OUTPUT},
+                )
+                await settle_agent_status(db, agent, "idle")
+                await repo.transition(run, RunState.INTERRUPTED)
+                await record_activity(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent.id,
+                    status="error",
+                    message=f"{agent.name}: {TENANT_INACTIVE_OUTPUT}",
+                )
+                logger.info("run %s interrupted before start (organisation not active)", run_id)
                 record_run_outcome(RunState.INTERRUPTED.value)
                 return
 
@@ -633,15 +960,16 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # agent's turn yet. Leaving the stream entry unacked redelivers it
             # after the idle window, which is a retry with backoff for free.
             #
-            # The agent ROW is locked first, and that lock is what makes this
-            # correct with more than one worker. Without it the check and the
-            # transition are two statements with a gap between them: two workers
-            # both find nothing running, both start, and the agent has two
-            # containers again -- the exact bug this guard exists to prevent,
-            # reintroduced by the fix for it. The lock is released by the commit
-            # that happens before the container runs, so it never spans the run
-            # itself; after the transition, RUNNING is its own guard.
-            await db.execute(select(m.Agent.id).where(m.Agent.id == run.agent_id).with_for_update())
+            # The agent's run slot is taken first, and that lock is what makes
+            # this correct with more than one worker. Without it the check and
+            # the transition are two statements with a gap between them: two
+            # workers both find nothing running, both start, and the agent has
+            # two containers again -- the exact bug this guard exists to
+            # prevent, reintroduced by the fix for it. An isolated run releases
+            # the slot with the commit before its container runs; after the
+            # transition, RUNNING is its own guard. An in-process run holds it
+            # to the end, so a second run of the agent waits rather than defers.
+            # (The slot is already taken: see "Claim the run" above.)
             busy = (
                 await db.execute(
                     select(m.AgentRun.id)
@@ -664,11 +992,28 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             await repo.transition(run, RunState.RUNNING)
             # Reflect the in-flight run on the agent so the office view stays live
-            # (the old inline endpoint did this; the durable path must too).
-            agent.status = "running"
-            await publish_agent_status(agent)
+            # (the old inline endpoint did this; the durable path must too) --
+            # committed on its own, so this transaction never holds the row, and
+            # only over the status the claim read (never over a pause or a stop
+            # that landed since). From here a failure that rolls this
+            # transaction back puts the status back (`RunningGuard`).
+            claimed_status = expected_status(db, agent)
+            if await mark_agent_running(tenant_id, db, agent) and claimed_status is not None:
+                running_guard.arm(agent.id, claimed_status)
 
-            choice = await _resolve_mcp_connection(db, agent=agent, run_context=run.context)
+            pinned = await resolve_version(db, run, agent)
+            # The chat's model choice (spec §2.3): resolve_version already fell
+            # back to the default if it is not a chat-enabled model; this writes
+            # the one audit line saying so.
+            from oc8.chat.model_choice import audit_model_override
+
+            await audit_model_override(db, run=run, agent=agent)
+            choice = await _resolve_mcp_connection(
+                db,
+                agent=agent,
+                run_context=run.context,
+                narrowing=pinned["narrowing"] or {},
+            )
             mcp_conn, mcp_error = choice.connection, choice.error
             if mcp_error is not None:
                 # Loud on purpose: acting through the wrong login is worse than
@@ -677,8 +1022,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # mcp_connection_id has always done.
                 error = mcp_error
                 await merge_context(db, run, {"error": error})
-                agent.status = "idle"
-                await publish_agent_status(agent)
+                await settle_agent_status(db, agent, "idle")
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -728,8 +1072,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             task_images_raw = run.context.get("task_images", [])
             clarifications = run.context.get("clarifications", [])
             if clarifications:
-                lines = "\n".join(f"- Q: {c['question']} A: {c['answer']}" for c in clarifications)
-                task_text = f"{task_text}\n\nClarifications:\n{lines}"
+                from oc8.runtime.run_inputs import format_clarification_answers
+
+                task_text = (
+                    f"{task_text}\n\nClarifications:\n"
+                    f"{format_clarification_answers(clarifications)}"
+                )
 
             # Resume after a value-gated tool approval: replace the task with a
             # focused instruction to perform exactly the approved calls (and skip
@@ -738,10 +1086,25 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             approvals = run.context.get("resolved_tool_approvals", [])
             pre_decided: dict[str, str] = {}
             if approvals:
-                from oc8.runtime.approval_resume import pre_decided_map, resume_instruction
+                from oc8.runtime.approval_resume import pre_decided_map
+
+                pre_decided = pre_decided_map(approvals)
+            # The resume text tells only the answer that woke this leg. Both
+            # lists accumulate over the run, so an unconsumed offer answer is
+            # the waker: the run carries on with the request (a held write's
+            # instruction would tell it to stop). Consumed here, so the next
+            # leg -- woken by a held write -- is not told it again.
+            resolved_access = run.context.get("resolved_direct_access")
+            if isinstance(resolved_access, dict):
+                from oc8.copilot.direct_access import direct_access_resume_text
+                from oc8.runtime.run_context import take_direct_access_answer
+
+                task_text = direct_access_resume_text(task_text, resolved_access)
+                await take_direct_access_answer(db, run)
+            elif approvals:
+                from oc8.runtime.approval_resume import resume_instruction
 
                 task_text = resume_instruction(approvals)
-                pre_decided = pre_decided_map(approvals)
 
             # Set by delegate_task (§7) when this run is a delegated sub-task, and by
             # the wake-up when a team lead is re-queued. Absent for an ordinary run.
@@ -749,14 +1112,43 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             parent_task_id = uuid.UUID(str(parent_raw)) if parent_raw else None
             delegation_depth = int(run.context.get("delegation_depth", 0))
             originating_operator = run.context.get("originating_operator")
+            # Where the answer's record links were issued (`link_scope`); read
+            # here, while `run` is live.
+            links_context = {"chat_session_id": run.context.get("chat_session_id")}
+
+            stopped_by_gate = False
+            stopped_by_owner_change = False
+            stopped_by_archive = False
 
             async def _cancel_check() -> bool:
+                nonlocal stopped_by_gate, stopped_by_owner_change, stopped_by_archive
                 # Per-step cancel probe (§7.2). Reads the run_cancellation table --
                 # a row this transaction does NOT lock -- so under READ COMMITTED it
                 # sees the cancel endpoint's committed insert at the next step
                 # boundary. Signalling off the locked agent_run row is the deadlock
                 # fix; see RunCancellation.
-                return await _cancellation_kind(db, run_id) is not None
+                #
+                # The organisation's activity gate is asked at the same step
+                # boundary; when it is what stopped the run, the kind written
+                # below is "tenant_inactive" rather than an operator interrupt.
+                if await _cancellation_kind(db, run_id) is not None:
+                    return True
+                # The agent was deleted while this run was going: retiring it
+                # wrote a cancel row, unless the run started at that very moment.
+                if await agent_archived(db, agent.id):
+                    stopped_by_archive = True
+                    return True
+                if not await tenant_may_run(tenant_id):
+                    stopped_by_gate = True
+                    return True
+                # Words the run already received, now under another person's
+                # account: stop rather than act on them (run_inputs).
+                from oc8.runtime.run_inputs import steering_went_stale
+
+                if await steering_went_stale(db, run):
+                    stopped_by_owner_change = True
+                    return True
+                return False
 
             async def _inbox_check() -> list[str]:
                 # Per-step operator-message probe (live steering). Same unlocked
@@ -787,8 +1179,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             run_error: str | None = None
             try:
+                # The pinned runtime_ref, so a runtime assignment not yet
+                # published cannot move a run already in flight (or resumed)
+                # onto a different runtime.
                 runtime_adapter = runtime or await resolve_runtime(
-                    db, tenant_id=tenant_id, agent=agent
+                    db, tenant_id=tenant_id, agent=agent, runtime_ref=pinned["runtime_ref"]
                 )
                 # One heartbeat for every runtime, wrapped here rather than
                 # inside each adapter: there are three of them, and a liveness
@@ -812,6 +1207,19 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         ),
                         task_images_raw=task_images_raw,
                     )
+                # One check for every runtime and every destination: the saved
+                # run output, the chat message, messenger doors and a parent's
+                # wake all read `result.output` after this line (spec §5).
+                # Scoped like the run's tool calls were: by its conversation,
+                # else its task chain (the result's task; the row gets it only
+                # further down). The context was read before the runtime ran:
+                # the isolated runtime's commit expires `run`.
+                result.output = await vet_answer_links(
+                    db,
+                    tenant_id=tenant_id,
+                    scope=await link_scope(db, context=links_context, task_id=result.task_id),
+                    text=result.output,
+                )
             except Exception as exc:  # persist failure, never crash the worker
                 run_error = repr(exc)
 
@@ -824,8 +1232,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             if run_error is not None:
                 await merge_context(db, run, {"error": run_error})
-                agent.status = "idle"
-                await publish_agent_status(agent)
+                await settle_agent_status(db, agent, "idle")
                 # Failure-reassignment (§7): a genuinely failed sub-task (an
                 # exception in run_agent -- the first-party runtime signals failure
                 # this way, never via status="failed") must still wake its team lead
@@ -849,12 +1256,21 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         chat_channel_external_id=(run.context or {}).get(
                             "chat_channel_external_id"
                         ),
+                        door=(run.context or {}).get("door"),
+                        followup=(run.context or {}).get("followup"),
+                        originating_operator=(run.context or {}).get("originating_operator"),
+                        acting=await _acting_person(db, run),
+                        trigger_id=(run.context or {}).get("trigger_id"),
+                        for_person=(run.context or {}).get(FOR_PERSON),
+                        finished_run_id=run.id,
                     )
                     if wake_id is not None:
                         pending_runs.append(wake_id)
                 except Exception:
                     logger.exception("run %s: failed to wake parent after sub-task failure", run_id)
                 await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                # As at every end: no input arrives until this commits.
+                await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -873,16 +1289,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # user's message and nothing after it, on every surface, for
                 # ever. The generic status branch below has always recorded
                 # one; this one now does too.
-                if run.source == "chat":
-                    from oc8.chat.service import record_assistant_reply
-
-                    await record_assistant_reply(db, run=run, output=_CHAT_RUN_FAILED)
-                    failed_sender = _chat_channel_sender_of(run)
-                    if failed_sender is not None:
-                        failed_channel, failed_external_id = failed_sender
-                        channel_replies.append(
-                            (run.tenant_id, failed_channel, failed_external_id, _CHAT_RUN_FAILED)
-                        )
+                await _answer_failed_chat_run(db, run, channel_replies)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -898,6 +1305,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     # the WAITING_FOR_INPUT transition; adding waiting_for_input to
                     # _STATUS_TO_STATE too would attempt a second transition on an
                     # already-transitioned run and fail the state guard.
+                    # A park ends this leg: the sandbox is gone, so what it
+                    # left in /workspace/output must be stored now, like on
+                    # every other way a leg ends.
+                    await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                     run.task_id = result.task_id
                     await merge_context(
                         db,
@@ -906,6 +1317,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             "output": result.output,
                             "toolCalls": result.tool_calls,
                             "steps": result.steps,
+                            "stepTimings": result.step_timings,
                             "pending_question": result.output,
                             "rendered_components": result.rendered_components,
                             "todos": result.todos,
@@ -917,7 +1329,37 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # here. (Unlike waiting_for_approval, the engine's
                         # ask_user path doesn't set agent.status itself either
                         # -- it's simply left as "running".)
-                        await request_clarification(db, run=run, question=result.output)
+                        from oc8.chat.questions import (
+                            QuestionError,
+                            format_for_messenger,
+                            questions_from_json,
+                        )
+
+                        try:
+                            parked_questions = (
+                                questions_from_json(result.pending_questions)
+                                if result.pending_questions
+                                else None
+                            )
+                        except QuestionError:
+                            # Validated when asked; a verdict that no longer
+                            # parses parks as the plain readable question.
+                            logger.warning("run %s: unreadable pending questions", run_id)
+                            parked_questions = None
+                        await request_clarification(
+                            db, run=run, question=result.output, questions=parked_questions
+                        )
+                        from oc8.copilot.followups import load_responsibility_for_run
+
+                        # Only the Copilot's own turns (source chat) wait on the
+                        # person; a delegated worker's question is not theirs.
+                        parked_resp = (
+                            await load_responsibility_for_run(db, run=run)
+                            if run.source == "chat"
+                            else None
+                        )
+                        if parked_resp is not None and parked_resp.state == "active":
+                            parked_resp.state = "waiting"
                         logger.info("run %s waiting for input", run_id)
                         record_run_outcome(RunState.WAITING_FOR_INPUT.value)
                         # A park is not an outcome, so `record_assistant_reply`
@@ -927,15 +1369,20 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # them, though, so without a word here their last
                         # message is answered by "Bin dran" and then silence,
                         # for ever.
-                        parked_sender = _chat_channel_sender_of(run)
+                        parked_sender = await _current_chat_sender(db, run)
                         if parked_sender is not None:
                             parked_channel, parked_external_id = parked_sender
+                            # A door without buttons: structured questions go
+                            # out numbered, and the reply ("1,3") answers them
+                            # (channels/dispatch.py).
                             channel_replies.append(
                                 (
                                     run.tenant_id,
                                     parked_channel,
                                     parked_external_id,
-                                    _CHAT_NEEDS_INPUT,
+                                    format_for_messenger(parked_questions)
+                                    if parked_questions
+                                    else _CHAT_NEEDS_INPUT,
                                 )
                             )
                     except RepeatedClarification as exc:
@@ -947,8 +1394,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # the audit trail exactly like one.
                         run_error = str(exc)
                         await merge_context(db, run, {"error": run_error})
-                        agent.status = "idle"
-                        await publish_agent_status(agent)
+                        await settle_agent_status(db, agent, "idle")
                         try:
                             wake_id = await _maybe_wake_parent(
                                 db,
@@ -966,6 +1412,15 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 chat_channel_external_id=(run.context or {}).get(
                                     "chat_channel_external_id"
                                 ),
+                                door=(run.context or {}).get("door"),
+                                followup=(run.context or {}).get("followup"),
+                                originating_operator=(run.context or {}).get(
+                                    "originating_operator"
+                                ),
+                                acting=await _acting_person(db, run),
+                                trigger_id=(run.context or {}).get("trigger_id"),
+                                for_person=(run.context or {}).get(FOR_PERSON),
+                                finished_run_id=run.id,
                             )
                             if wake_id is not None:
                                 pending_runs.append(wake_id)
@@ -974,6 +1429,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 "run %s: failed to wake parent after sub-task failure", run_id
                             )
                         await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                        # As at every end: no input arrives until this commits.
+                        await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                         await repo.transition(run, RunState.FAILED)
                         await record_activity(
                             db,
@@ -986,6 +1443,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         logger.warning("run %s marked FAILED: %s", run_id, run_error)
                         logger.info("run %s finished in state %s", run_id, RunState.FAILED.value)
                         record_run_outcome(RunState.FAILED.value)
+                        # Same gap the crash path had: without this the member's
+                        # answer stays the chat's last line for ever.
+                        await _answer_failed_chat_run(db, run, channel_replies)
                 else:
                     run.task_id = result.task_id
                     await merge_context(
@@ -995,6 +1455,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             "output": result.output,
                             "toolCalls": result.tool_calls,
                             "steps": result.steps,
+                            "stepTimings": result.step_timings,
                             "rendered_components": result.rendered_components,
                             "todos": result.todos,
                         },
@@ -1015,16 +1476,56 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     if new_state is RunState.INTERRUPTED:
                         # Carry the cancel kind onto the run so consumers see why it
                         # stopped, uniformly with the queued-skip path above.
-                        kind = await _cancellation_kind(db, run_id)
-                        await merge_context(
-                            db, run, {"cancellation_kind": kind or "operator_interrupted"}
+                        # An operator's run_cancellation row wins. Otherwise the
+                        # gate stopped it: seen by _cancel_check in-process, or
+                        # recorded on the run context by a container's /step.
+                        from oc8.runtime.run_inputs import (
+                            OWNERSHIP_CHANGED_KIND,
+                            OWNERSHIP_CHANGED_OUTPUT,
                         )
+
+                        kind = await _cancellation_kind(db, run_id)
+                        if kind is None:
+                            recorded = (run.context or {}).get("cancellation_kind")
+                            if stopped_by_archive or recorded == AGENT_ARCHIVED:
+                                kind = AGENT_ARCHIVED
+                            elif stopped_by_gate or recorded == TENANT_INACTIVE_KIND:
+                                kind = TENANT_INACTIVE_KIND
+                            elif stopped_by_owner_change or recorded == OWNERSHIP_CHANGED_KIND:
+                                kind = OWNERSHIP_CHANGED_KIND
+                            else:
+                                kind = "operator_interrupted"
+                        stop: dict[str, Any] = {"cancellation_kind": kind}
+                        if kind == AGENT_ARCHIVED:
+                            # The engine's interrupted result names the operator;
+                            # this run was stopped because its agent was deleted.
+                            stop["output"] = AGENT_ARCHIVED_OUTPUT
+                        if kind == OWNERSHIP_CHANGED_KIND:
+                            stop["output"] = OWNERSHIP_CHANGED_OUTPUT
+                            await record_activity(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                status="error",
+                                message=f"{agent.name}: {OWNERSHIP_CHANGED_OUTPUT}",
+                            )
+                        if kind == TENANT_INACTIVE_KIND:
+                            # The engine's interrupted result names the operator;
+                            # this run was not stopped by one.
+                            stop["output"] = TENANT_INACTIVE_OUTPUT
+                            await record_activity(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                status="error",
+                                message=f"{agent.name}: {TENANT_INACTIVE_OUTPUT}",
+                            )
+                        await merge_context(db, run, stop)
                     # done/failed/interrupted => the agent is free again; the engine
                     # already sets "waiting_for_approval" itself when it suspends for
                     # HITL, so don't clobber it.
                     if new_state in (RunState.DONE, RunState.FAILED, RunState.INTERRUPTED):
-                        agent.status = "idle"
-                        await publish_agent_status(agent)
+                        await settle_agent_status(db, agent, "idle")
                     # Wake the delegating lead only on a real task OUTCOME (done/failed).
                     # An interrupt is an operator action, not an outcome -- never wake,
                     # so an interrupted delegated sub-run does not re-spend its lead.
@@ -1045,10 +1546,37 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             chat_channel_external_id=(run.context or {}).get(
                                 "chat_channel_external_id"
                             ),
+                            door=(run.context or {}).get("door"),
+                            followup=(run.context or {}).get("followup"),
+                            originating_operator=(run.context or {}).get("originating_operator"),
+                            acting=await _acting_person(db, run),
+                            trigger_id=(run.context or {}).get("trigger_id"),
+                            for_person=(run.context or {}).get(FOR_PERSON),
+                            finished_run_id=run.id,
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
                     await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
+                    carry_over = False
+                    if new_state in TERMINAL:
+                        from oc8.chat.carry_over import run_still_open
+
+                        # No input is written to this run from here until the
+                        # end below commits (`add_run_input` asks again under
+                        # this lock, taken after the tenant's audit lock --
+                        # Ruling 60): each is either read, carried over, or
+                        # refused to its writer -- never silently lost.
+                        await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                        # Ruling 59: what the person wrote and a DONE run never
+                        # read becomes the chat's next turn -- unless somebody
+                        # else ended the run meanwhile. Not for a stopped run
+                        # (stop means stop) nor a failed one (its failure is
+                        # the answer; the inputs stay "not read").
+                        carry_over = (
+                            new_state is RunState.DONE
+                            and run.source == "chat"
+                            and await run_still_open(db, run_id=run.id)
+                        )
                     await repo.transition(run, new_state)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
                     record_run_outcome(new_state.value)
@@ -1058,20 +1586,41 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # is the one place that turns its outcome back into the
                         # durable transcript message the Chat UI actually reads.
                         from oc8.chat.service import record_assistant_reply
+                        from oc8.copilot.followups import (
+                            is_quiet_followup,
+                            load_responsibility_for_run,
+                        )
 
                         await record_assistant_reply(db, run=run, output=result.output)
-                        done_sender = _chat_channel_sender_of(run)
+                        done_sender = await _current_chat_sender(db, run)
+                        if done_sender is not None and is_quiet_followup(
+                            run, await load_responsibility_for_run(db, run=run)
+                        ):
+                            # A follow-up with nothing to report stays silent on
+                            # the messenger too (design §7a.3).
+                            done_sender = None
                         if done_sender is not None:
                             done_channel, done_external_id = done_sender
                             channel_replies.append(
                                 (run.tenant_id, done_channel, done_external_id, result.output)
                             )
+                    if carry_over:
+                        from oc8.chat.carry_over import stage_carried_over_turn
+
+                        # After the answer is recorded, in this transaction
+                        # (Ruling 61): the turn, its run and the inputs' stamp
+                        # commit together; the run is published below.
+                        carried_run = await stage_carried_over_turn(db, run=run)
+                        if carried_run is not None:
+                            pending_runs.append(carried_run)
+                    if run.source == "chat" and new_state is RunState.FAILED:
+                        await _tell_unread_inputs(db, run, channel_replies)
                     if new_state is RunState.WAITING_FOR_APPROVAL:
                         # Same reason as the waiting_for_input park above: the
                         # run is suspended, not finished, so nothing else tells
                         # the Telegram sender that their request is now sitting
                         # in somebody's approval queue.
-                        held_sender = _chat_channel_sender_of(run)
+                        held_sender = await _current_chat_sender(db, run)
                         if held_sender is not None:
                             held_channel, held_external_id = held_sender
                             channel_replies.append(

@@ -242,3 +242,26 @@ async def test_drive_delete_supports_shared_drive_items(monkeypatch: pytest.Monk
     result = await tools_drive.drive_delete({"fileId": "f1"})
     assert captured["params"]["supportsAllDrives"] == "true"
     assert result == {"deleted": "f1"}
+
+
+async def test_drive_list_and_search_request_the_web_view_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mcp_bridge import google_api
+    from mcp_bridge.tools import drive as tools_drive
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.params["fields"])
+        return httpx.Response(200, json={"files": []})
+
+    monkeypatch.setattr(
+        google_api, "get_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(google_api, "self_token", lambda: "tok")
+
+    await tools_drive.drive_list({"driveId": "d1"})
+    await tools_drive.drive_search({"driveId": "d1", "query": "x"})
+    assert len(seen) == 2
+    assert all("webViewLink" in fields for fields in seen)

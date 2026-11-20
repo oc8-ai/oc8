@@ -14,8 +14,9 @@ The one shape this module exists to make unwritable:
 
 `WHERE department_id IN ()` is not valid SQL, so skipping the filter when the set
 is empty is the natural way to write it -- and it fails OPEN, handing a seatless
-employee every approval in the tenant. An empty scope returns an empty list here,
-before any statement is built.
+employee every approval in the tenant. An empty scope gets a constant-false
+department term here, never an `IN` -- it sees its own member-owned cards
+(`is_member_owned`) and nothing else.
 """
 
 from __future__ import annotations
@@ -24,7 +25,21 @@ import datetime as dt
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, extract, func, select
+from sqlalchemy import (
+    ColumnElement,
+    Select,
+    Text,
+    and_,
+    cast,
+    extract,
+    false,
+    func,
+    not_,
+    or_,
+    select,
+)
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import aliased
 
 from oc8.models.ops import ApprovalRequest
 
@@ -37,6 +52,87 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 #: §5 fixes the default at 100 and the ceiling at 500.
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 500
+
+#: The approval an offer of direct access raises (copilot direct access §3).
+DIRECT_ACCESS_ACTION = "direct_access"
+
+
+def is_member_owned(approval: ApprovalRequest) -> bool:
+    """A card only one person answers: a direct-access offer, or the person's
+    stage of a direct write (copilot direct access §3; a department's own
+    policy adds a second card after it, `department_after_person`). Its title and purpose are
+    that person's, so it is nobody else's to see either -- whatever
+    `department_id` it carries."""
+    info = (approval.payload or {}).get("direct_access")
+    return approval.action_type == DIRECT_ACCESS_ACTION or (
+        isinstance(info, dict) and info.get("decider") == "member"
+    )
+
+
+def direct_access_owner(approval: ApprovalRequest) -> uuid.UUID | None:
+    """The member who alone decides this approval: the conversation's member
+    for a direct-access offer, and for the person's stage of a direct write.
+    None for every other approval -- and for an owned one whose member cannot
+    be read, which therefore nobody decides (`is_member_owned` still holds)."""
+    if not is_member_owned(approval):
+        return None
+    info = (approval.payload or {}).get("direct_access")
+    if not isinstance(info, dict):
+        return None
+    try:
+        return uuid.UUID(str(info.get("member_id")))
+    except ValueError:
+        return None
+
+
+def department_after_person(approval: ApprovalRequest) -> uuid.UUID | None:
+    """The department whose approvers decide a held direct write AFTER its
+    person approved it, or None. A department's own policy only adds a gate
+    (§1): the person's card comes first, then -- on their approval -- this
+    department's (`approvals.service.decide_approval`). None for every card
+    but the person's stage of such a write."""
+    info = (approval.payload or {}).get("direct_access")
+    if (
+        approval.action_type != "tool_send"
+        or not isinstance(info, dict)
+        or info.get("decider") != "member"
+        or not info.get("department_id")
+    ):
+        return None
+    try:
+        return uuid.UUID(str(info.get("department_id")))
+    except ValueError:
+        return None
+
+
+def _department_stages_pending() -> Select[tuple[uuid.UUID]]:
+    """The person's cards (ids) a still-pending department stage follows."""
+    stage = aliased(ApprovalRequest)
+    return select(
+        cast(stage.payload["direct_access"]["member_approval_id"].astext, PG_UUID(as_uuid=True))
+    ).where(
+        stage.action_type == "tool_send",
+        stage.status == "pending",
+        stage.payload["direct_access"]["decider"].astext == "department",
+        stage.payload["direct_access"]["member_approval_id"].astext.isnot(None),
+    )
+
+
+def _owned_clause() -> ColumnElement[bool]:
+    """`is_member_owned`, in SQL. `coalesce` because `->>` on a missing key is
+    NULL, and `NOT (x OR NULL)` is NULL -- which would hide every ordinary
+    approval from every queue."""
+    return or_(
+        ApprovalRequest.action_type == DIRECT_ACCESS_ACTION,
+        func.coalesce(ApprovalRequest.payload["direct_access"]["decider"].astext, "") == "member",
+    )
+
+
+def owned_by(member_id: uuid.UUID) -> ColumnElement[bool]:
+    return and_(
+        _owned_clause(),
+        ApprovalRequest.payload["direct_access"]["member_id"].astext == str(member_id),
+    )
 
 
 async def visible_approvals(
@@ -61,21 +157,30 @@ async def visible_approvals(
     scope = actor.scope
     stmt = select(ApprovalRequest).where(ApprovalRequest.status == status)
 
-    if scope.is_unrestricted:
+    # A member-owned card (`is_member_owned`) is its owner's alone, from any
+    # seat or none, and nobody else's -- not the department it is filed in,
+    # not the unrestricted. Every other approval follows the department term.
+    mine = owned_by(actor.member.id)
+    if department_id is not None:
+        if not scope.may_view(department_id):
+            return []
+        departmental: ColumnElement[bool] | None = ApprovalRequest.department_id == department_id
+        # The department picker narrows to one department; the person's own
+        # cards belong to none.
+        mine = and_(mine, ApprovalRequest.department_id == department_id)
+    elif scope.is_unrestricted:
         # No department predicate at all. This is the ONLY way `department_id IS
         # NULL` -- the tenant-scope budget incident -- is ever visible to anybody,
         # and `viewable` is empty for an unrestricted caller by design, so a
         # filter built from it would show a CEO nothing.
-        pass
+        departmental = None
     elif scope.viewable:
-        stmt = stmt.where(ApprovalRequest.department_id.in_(scope.viewable))
+        departmental = ApprovalRequest.department_id.in_(scope.viewable)
     else:
-        return []
-
-    if department_id is not None:
-        if not scope.may_view(department_id):
-            return []
-        stmt = stmt.where(ApprovalRequest.department_id == department_id)
+        # Seatless: nothing departmental -- `IN ()` is never built -- only own cards.
+        departmental = false()
+    others = not_(_owned_clause())
+    stmt = stmt.where(or_(mine, others if departmental is None else and_(others, departmental)))
 
     # `id` breaks the tie. `created_at` defaults to `now()`, which in Postgres is
     # TRANSACTION start time, so several approvals raised inside one request --
@@ -165,6 +270,116 @@ async def load_for_actor(
     ).scalar_one_or_none()
     if row is None:
         return None
+    if is_member_owned(row):
+        return row if direct_access_owner(row) == actor.member.id else None
     if not actor.scope.may_view(row.department_id):
         return None
     return row
+
+
+async def member_direct_access_cards(
+    db: AsyncSession, *, member_id: uuid.UUID, session_id: uuid.UUID | None = None
+) -> list[ApprovalRequest]:
+    """A member's own direct-access cards, oldest first: the ones the member
+    decides (`decider == "member"`, filed under their id) that are still pending,
+    back a live grant, or -- approved -- wait for the department that decides
+    after them (`awaiting_department`) or were answered by running a fitting
+    agent (`chosen_agent`) in a conversation of theirs that still exists --
+    that note belongs to its chat and goes with it. `session_id` narrows the
+    list to one conversation. Never another member's, from any seat, and
+    never the department's own card."""
+    from oc8.models.chat import ChatSession
+    from oc8.models.direct_access import DirectAccessGrant
+
+    card_session = ApprovalRequest.payload["direct_access"]["session_id"].astext
+    own_live_chat = (
+        select(ChatSession.id)
+        .where(
+            cast(ChatSession.id, Text) == card_session,
+            ChatSession.member_id == member_id,
+        )
+        .exists()
+    )
+
+    live_grants = select(DirectAccessGrant.approval_id).where(
+        DirectAccessGrant.member_id == member_id,
+        DirectAccessGrant.revoked_at.is_(None),
+    )
+    decided_by_member = (
+        func.coalesce(ApprovalRequest.payload["direct_access"]["decider"].astext, "") == "member"
+    )
+    stmt = (
+        select(ApprovalRequest)
+        .where(
+            owned_by(member_id),
+            decided_by_member,
+            or_(
+                ApprovalRequest.status == "pending",
+                ApprovalRequest.id.in_(live_grants),
+                and_(
+                    ApprovalRequest.status == "approved",
+                    ApprovalRequest.id.in_(_department_stages_pending()),
+                ),
+                # Answered by running a fitting agent: the card says it is on
+                # it after a reload, and offers nothing to click again.
+                and_(
+                    ApprovalRequest.status == "approved",
+                    ApprovalRequest.payload["direct_access"].has_key("chosen_agent"),
+                    own_live_chat,
+                ),
+            ),
+        )
+        .order_by(ApprovalRequest.created_at)
+    )
+    if session_id is not None:
+        stmt = stmt.where(card_session == str(session_id))
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def awaiting_department(db: AsyncSession, approval_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+    """Which of these person's cards the person approved and a department's
+    approvers still have to decide. Only the ids: nothing of the department's
+    card reaches the person."""
+    if not approval_ids:
+        return set()
+    stmt = select(ApprovalRequest.id).where(
+        ApprovalRequest.id.in_(approval_ids),
+        ApprovalRequest.status == "approved",
+        ApprovalRequest.id.in_(_department_stages_pending()),
+    )
+    return set((await db.execute(stmt)).scalars().all())
+
+
+async def load_direct_access_card(
+    db: AsyncSession, approval_id: uuid.UUID, *, member_id: uuid.UUID
+) -> ApprovalRequest | None:
+    """One direct-access card, or None for both "no such row" and "not this
+    member's". An explicit select, never `db.get` (identity-map answer)."""
+    row = (
+        await db.execute(
+            select(ApprovalRequest)
+            .where(ApprovalRequest.id == approval_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if row is None or direct_access_owner(row) != member_id:
+        return None
+    return row
+
+
+async def approved_awaiting_result(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
+) -> list[ApprovalRequest]:
+    """A task's approved approvals that have no result link yet.
+
+    No actor: the agent runtime reads its own task's approvals right after the
+    approved call ran, to note the record it produced (spec §5 item 5). No
+    human sees anything through this.
+    """
+    stmt = select(ApprovalRequest).where(
+        ApprovalRequest.tenant_id == tenant_id,
+        ApprovalRequest.task_id == task_id,
+        ApprovalRequest.status == "approved",
+        ApprovalRequest.result_url.is_(None),
+    )
+    return list((await db.execute(stmt)).scalars().all())

@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   AlertTriangle,
   ArrowRight,
   Check,
   ChevronRight,
+  ExternalLink,
   HelpCircle,
   KeyRound,
   Send,
@@ -23,19 +24,25 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { AgentAvatar } from "@/components/agent-avatar";
+import { AgentBuilderCard } from "@/components/conversation/agent-builder-card";
+import { DiscussWithCopilot } from "@/components/conversation/discuss-with-copilot";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   useAnswerClarification,
   useApprovals,
   useClarifications,
   useDecideApproval,
+  mayActOn,
   useStanding,
   type Approval,
   type Clarification,
-  type Seat,
 } from "@/lib/hooks";
+import { builderRefusalCode, builderRefusalText } from "@/lib/agent-builder-api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import type { ComponentProps } from "react";
+import { useWidgetLabel } from "@/components/dashboard/widget-labels";
+import { WidgetTitle } from "@/components/dashboard/widget-title";
 
 // --------------------------------------------------------------------- model
 // Kind, Row, DecidedRow, TENANT_WIDE, approvalRow, clarificationRow,
@@ -109,31 +116,25 @@ function relativeAge(iso: string): string {
   return `${Math.round(hrs / 24)}d`;
 }
 
-/** Whether the caller may act on a row, and the wire now says exactly.
- *
- * `decidesEverywhere` and not `unrestricted`. The two are different people and
- * the backend has always known it — `authz/scope.py` carries two flags and
- * documents at length why they must not become one — but `/me` sent only the
- * first, so this returned true for an `auditor`, who holds `approval:view_any`,
- * sees every department, and is 403'd by `require_departmental(approval:decide)`
- * on every click. The role's entire value is that its account cannot have caused
- * what it is auditing; offering it Approve was the screen contradicting that.
- *
- * Below that, authority is only the seats, so the seat role in that row's own
- * department is the whole answer: a `dept_viewer` reads the queue and may not
- * empty it, and hiding the buttons is the honest way to say so.
- */
-function mayActOn(seats: Seat[], decidesEverywhere: boolean, departmentId: string | null): boolean {
-  if (decidesEverywhere) return true;
-  if (!departmentId) return false;
-  return seats.some((s) => s.departmentId === departmentId && s.seatRole === "dept_approver");
-}
-
 type ViewOnlyBecause = "role" | "seat";
 
 // ---------------------------------------------------------------- the widget
 
-export function ApprovalsWidget({
+// Every widget draws its own one-line title; the frame only adds a header in
+// edit mode. The body keeps its own loading/empty/error branches.
+export function ApprovalsWidget(props: ComponentProps<typeof ApprovalsWidgetBody>) {
+  const title = useWidgetLabel("approvals");
+  return (
+    <div className="flex h-full flex-col">
+      <WidgetTitle title={title} />
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <ApprovalsWidgetBody {...props} />
+      </div>
+    </div>
+  );
+}
+
+function ApprovalsWidgetBody({
   initialSelectedId,
 }: {
   config: Record<string, unknown>;
@@ -248,10 +249,13 @@ export function ApprovalsWidget({
       ]);
       setSelectedId(null);
     } catch (e) {
+      const code = builderRefusalCode(e);
       toast.error(
-        e instanceof Error
-          ? e.message
-          : t("Could not record the decision", "Entscheidung konnte nicht erfasst werden"),
+        code
+          ? builderRefusalText(code, null, t)
+          : e instanceof Error
+            ? e.message
+            : t("Could not record the decision", "Entscheidung konnte nicht erfasst werden"),
       );
     }
   }
@@ -308,7 +312,7 @@ export function ApprovalsWidget({
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {loadError && (
-        <div className="flex items-start gap-2 border-b border-[color:var(--status-error)]/40 px-3 py-2 text-xs">
+        <div className="flex items-start gap-2 px-3 py-2 text-xs">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-error)]" />
           <div>
             <div>
@@ -324,7 +328,7 @@ export function ApprovalsWidget({
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 px-2 py-1.5">
         <Pill active={kindFilter === "all"} onClick={() => setKindFilter("all")}>
           {t("All", "Alles")}
         </Pill>
@@ -409,7 +413,9 @@ export function ApprovalsWidget({
       </div>
 
       <Dialog open={current !== null} onOpenChange={(open) => !open && setSelectedId(null)}>
-        <DialogContent className="max-w-2xl p-0">
+        {/* The dialog bounds its own height and lays its pane out as a column:
+            the pane's body scrolls, its decision bar stays below it. */}
+        <DialogContent className="flex max-h-[85dvh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
           <DialogHeader className="sr-only">
             <DialogTitle>
               {currentApproval?.title ?? currentClarification?.question ?? ""}
@@ -476,8 +482,11 @@ function Pill({
 // ------------------------------------------------------------------ the list
 // QueueRow, ApprovalPane, ArgumentValue, ClarificationPane are verbatim from
 // the old workspace.tsx (pre-rewrite lines 565-1019), with one change: each
-// pane's outer wrapper keeps `flex h-full flex-col` so it fills the Dialog
-// exactly as it filled the old inline Panel.
+// pane's outer wrapper is a `flex min-h-0 flex-1 flex-col` column that fills
+// the height-bounded Dialog: the body scrolls (`min-h-0 flex-1
+// overflow-y-auto`, padded at the bottom) and the decision bar is its own
+// row below it -- never `sticky` inside an unbounded box, where it floated
+// over the middle of the content.
 
 function QueueRow({
   row,
@@ -614,7 +623,27 @@ function formatReasonContext(
   }
 }
 
-function ApprovalPane({
+export function isHttpUrl(url: string | null | undefined): url is string {
+  return !!url && (url.startsWith("http://") || url.startsWith("https://"));
+}
+
+/** A link out to a record in a connected system. Only http(s) reaches here:
+ *  the server already refuses anything else, and this is the second guard
+ *  against a `javascript:` URI in an `href`. */
+export function RecordLink({ href, children }: { href: string; children: ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mr-3 mt-2 inline-flex items-center gap-1.5 text-xs text-primary underline-offset-2 hover:underline"
+    >
+      {children}
+    </a>
+  );
+}
+
+export function ApprovalPane({
   approval,
   mayAct,
   viewOnlyBecause,
@@ -653,8 +682,8 @@ function ApprovalPane({
   const reasonSentence = formatReasonContext(approval.reasonContext, t);
 
   return (
-    <div className="flex h-full max-h-[80vh] flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-8 pt-5">
         <section>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <AgentAvatar seed={approval.agentId} size={20} ariaHidden />
@@ -675,6 +704,9 @@ function ApprovalPane({
             )}
           </div>
           <h2 className="mt-2 font-serif text-2xl leading-tight">{approval.title}</h2>
+          <div className="mt-2">
+            <DiscussWithCopilot kind="approval" id={approval.id} label={approval.title} />
+          </div>
           {reasonSentence ? (
             <div className="mt-2 flex items-start gap-2 rounded-md border border-border bg-panel/60 px-3 py-2 text-sm leading-relaxed text-foreground/90">
               <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-primary" aria-hidden />
@@ -685,11 +717,50 @@ function ApprovalPane({
               <p className="mt-2 text-sm leading-relaxed text-foreground/90">{approval.detail}</p>
             )
           )}
+          {approval.directAccess && (
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t("Copilot on behalf of", "Copilot im Auftrag von")}{" "}
+              {approval.directAccess.memberName}
+              {approval.directAccess.account === "own"
+                ? ` · ${t("their own login", "eigenes Login")}`
+                : approval.directAccess.account === "organisation"
+                  ? ` · ${t("organisation account", "Organisationskonto")}`
+                  : ""}
+            </p>
+          )}
+          {isHttpUrl(approval.recordUrl) && (
+            <RecordLink href={approval.recordUrl}>
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {t("Open the record", "Datensatz öffnen")}
+            </RecordLink>
+          )}
+          {approval.relatedLinks
+            ?.filter((link) => isHttpUrl(link.url))
+            .map((link) => (
+              <RecordLink key={link.url} href={link.url}>
+                ↗ {link.label}
+              </RecordLink>
+            ))}
+          {isHttpUrl(approval.resultUrl) && (
+            <RecordLink href={approval.resultUrl}>
+              <ExternalLink className="h-3.5 w-3.5 shrink-0" aria-hidden />
+              {t("Created record", "Angelegter Datensatz")}
+            </RecordLink>
+          )}
         </section>
+        {approval.actionType === "copilot.agent_builder" && approval.proposalId && (
+          <section>
+            <AgentBuilderCard
+              proposalId={approval.proposalId}
+              readOnly
+              heading={t("What happens if you agree", "Was passiert, wenn du zustimmst")}
+            />
+          </section>
+        )}
 
         {(approval.toolName || options.length > 0) && (
           <section>
-            <div className="mb-2 text-[10px] uppercase tracking-widest text-muted-foreground">
+            <div className="mb-2 text-micro">
               {t("What happens if you agree", "Was passiert, wenn du zustimmst")}
             </div>
 
@@ -803,7 +874,7 @@ function ApprovalPane({
         )}
       </div>
 
-      <footer className="sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-border bg-panel px-6 py-3">
+      <footer className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border bg-panel px-6 py-3">
         {!mayAct ? (
           <p className="text-xs text-muted-foreground">
             {viewOnlyBecause === "role"
@@ -910,8 +981,8 @@ function ClarificationPane({
   const canSend = text.trim().length > 0;
 
   return (
-    <div className="flex h-full max-h-[80vh] flex-col">
-      <div className="flex-1 space-y-6 overflow-y-auto px-6 py-5">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-6 pb-8 pt-5">
         <section>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
             <AgentAvatar seed={clarification.agentId} size={20} ariaHidden />
@@ -951,7 +1022,7 @@ function ClarificationPane({
         )}
       </div>
 
-      <footer className="sticky bottom-0 flex items-center justify-end gap-2 border-t border-border bg-panel px-6 py-3">
+      <footer className="flex shrink-0 items-center justify-end gap-2 border-t border-border bg-panel px-6 py-3">
         {!mayAct ? (
           <p className="mr-auto text-xs text-muted-foreground">
             {viewOnlyBecause === "role"

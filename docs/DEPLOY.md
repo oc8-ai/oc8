@@ -146,6 +146,64 @@ The app runs without a model, but an actual agent run needs one. Either:
   `deploy.resources.reservations.devices` block to the `ollama` service per the
   Ollama docs.
 
+## Prebuilt agent runtime images
+
+The sandbox images for oc8's agent runtimes are published to GitHub Container
+Registry for `linux/amd64` and `linux/arm64`, so you can pull them instead of
+building them. They are built from this repository by
+[`.github/workflows/agent-images.yml`](../.github/workflows/agent-images.yml)
+and smoke-tested on both platforms before they are pushed.
+
+| Image | Runtime | Setting |
+| --- | --- | --- |
+| `ghcr.io/oc8-ai/agent-claude-code` | Claude Code | `OC8_CLAUDE_CODE_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/agent-codex` | Codex | `OC8_CODEX_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/agent-opencode` | OpenCode | `OC8_OPENCODE_AGENT_IMAGE` |
+| `ghcr.io/oc8-ai/agent-isolated` | Isolated shell | `OC8_AGENT_RUNTIME_IMAGE` |
+| `ghcr.io/oc8-ai/agent-runtime-base` | Shared base of the three CLI images | (build argument `BASE_IMAGE`) |
+
+### Tags
+
+| Tag | Built from |
+| --- | --- |
+| `X.Y.Z`, `X.Y` | release tag `vX.Y.Z` |
+| `latest` | `main` |
+| `dev` | `dev` |
+| `<commit sha>` | that commit on `main` or `dev` |
+
+Pin a release tag or a commit sha in production; `latest` and `dev` move.
+
+### Using them
+
+With Docker Compose, set the images in your `.env`:
+
+```bash
+OC8_CLAUDE_CODE_AGENT_IMAGE=ghcr.io/oc8-ai/agent-claude-code:latest
+OC8_CODEX_AGENT_IMAGE=ghcr.io/oc8-ai/agent-codex:latest
+OC8_OPENCODE_AGENT_IMAGE=ghcr.io/oc8-ai/agent-opencode:latest
+OC8_AGENT_RUNTIME_IMAGE=ghcr.io/oc8-ai/agent-isolated:latest
+```
+
+`OC8_AGENT_RUNTIME_IMAGE` defaults to the full backend image
+(`oc8-backend:latest`). `agent-isolated` is a slimmer alternative: it holds
+the `oc8` package and its dependencies only, with no capas or frontend, runs as
+uid 1000, and starts `/opt/venv/bin/python -m oc8.isolated_shell` like the
+backend image does.
+
+### Building them yourself
+
+```bash
+docker build -f capas/claude_code_runtime/Dockerfile.base -t oc8-agent-runtime-base:latest capas/claude_code_runtime
+docker build -t oc8-agent-claude-code:latest capas/claude_code_runtime
+docker build -t oc8-agent-codex:latest capas/codex_runtime
+docker build -t oc8-agent-opencode:latest capas/opencode_runtime
+docker build -f backend/Dockerfile.isolated -t oc8-agent-isolated:latest backend
+```
+
+Built locally, the images keep the `oc8-agent-*` names the settings default
+to. The CLI images build `FROM oc8-agent-runtime-base:latest` unless you pass
+`--build-arg BASE_IMAGE=<image>`.
+
 ## Kubernetes (Helm)
 
 For clusters, use the chart in `deploy/helm/oc8/` (same components as Compose).
@@ -224,6 +282,49 @@ it is replaced by an `evidence.reduced` entry naming its hash, so the proof of
 what happened survives while the ability to re-read the reasoning expires. Set
 it deliberately, not to save space you have.
 
+## Reaching systems on your own network
+
+Live credential checks ("Check connection") and website knowledge sources
+refuse private, loopback and link-local addresses by default, so a typed-in URL
+cannot be used to probe your internal network. If a connected system lives
+there (an ERP on a LAN host, an object store on the container host), allow it
+with `OC8_OUTBOUND_ALLOWED_PRIVATE` in `.env` (Helm: `oc8.outboundAllowedPrivate`):
+comma-separated CIDRs and/or exact hostnames, for example
+`10.20.0.0/16,host.docker.internal`. Cloud metadata addresses
+(`169.254.169.254`, `fd00:ec2::254`) stay refused whatever is listed.
+
+## Letting people connect their Microsoft or Google account
+
+On the Connections page each person can connect their own Microsoft or Google
+account, so agents act in their name ("in the user's context"). For that, the
+deployment needs an app registered with the provider:
+
+1. Register an app (Microsoft Entra ID: a multi-tenant app registration with a
+   client secret; Google: an OAuth client of type "Web application").
+2. Add the redirect URI `<OC8_OAUTH_REDIRECT_BASE_URL>/api/v1/oauth/microsoft/callback`
+   (Google: `.../oauth/google/callback`). `OC8_OAUTH_REDIRECT_BASE_URL` is the
+   address browsers reach this stack at, e.g. `https://oc8.example.com`.
+3. Put the client into `.env` and restart the stack:
+
+   ```
+   OC8_OAUTH_REDIRECT_BASE_URL=https://oc8.example.com
+   OC8_FRONTEND_BASE_URL=https://oc8.example.com
+   OC8_MICROSOFT_OAUTH_CLIENT_ID=...
+   OC8_MICROSOFT_OAUTH_CLIENT_SECRET=...
+   OC8_GOOGLE_OAUTH_CLIENT_ID=...
+   OC8_GOOGLE_OAUTH_CLIENT_SECRET=...
+   ```
+
+Without these, connecting works only for an organisation that stored its own
+OAuth app credentials; everybody else is told that no client is configured.
+`OC8_GOOGLE_FULL_SCOPES=true` asks Google for the full Gmail and Drive scopes;
+those are restricted and need Google's security assessment of your app first.
+
+A passphrase-protected backup export contains every connection's tokens and
+logins, including people's personal ones, so whoever may export and restore
+backups holds them too. Treat the passphrase and the archive like the
+connections themselves.
+
 ## Operating notes
 
 - **Logs:** `docker compose logs -f backend` (or `worker`, `scheduler`, …).
@@ -234,6 +335,9 @@ it deliberately, not to save space you have.
   under the dev override). Omit `-v` to keep data across restarts.
 - **Update to new code:** `git pull && docker compose up -d --build`. The
   `migrate` service applies any new revisions before the app restarts.
+  If you upgrade from a release whose MinIO ran as root, the bundled
+  `minio-perms` service hands the existing `oc8-miniodata` volume to the MinIO
+  user (uid 65532) on the next `up`, so no manual `chown` is needed.
 - **The four backend processes** are one image with different commands:
   `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
   restart them independently with `docker compose restart <service>`.

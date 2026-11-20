@@ -3,7 +3,8 @@ import { Plus, Search, Wrench, X } from "lucide-react";
 import { toast } from "sonner";
 import { CredentialPicker } from "@/components/credential-picker";
 import { useT } from "@/lib/i18n";
-import { useCreateMcpLogin, useMcpLogins, type McpConnection, type McpLoginDTO } from "@/lib/hooks";
+import { useSetAgentToolAccess } from "@/lib/connections";
+import type { McpConnection } from "@/lib/hooks";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 
 function preferredPreset(connection: McpConnection): GuardrailValue | null {
@@ -37,38 +38,29 @@ export function AddToolPicker({
   connections,
   onAdd,
   onClose,
-  // Only the agent-level "Tools" tab sets this: that's the one path that
+  // Only the agent-level "Tools" tab sets these: that's the one path that
   // persists the tool the instant "Add" is clicked (agents.$id.tsx's
-  // `addTool`), so a tool backed by an existing login (McpConnection with
-  // `credentialType` set) must resolve a connection_id here, inline, before
-  // that happens -- otherwise the save 422s with "needs a login: set
-  // connection_id" and, since nothing was written, the row never appears to
-  // offer the login picker it would normally show for an existing tool
-  // (live bug report: Odoo "Add tool" from the agent detail page). The Hire
-  // dialog (new-agent-dialog.tsx) does NOT set this -- it already resolves
-  // the login itself in its own review step after `onAdd` just marks the
-  // tool selected, and forcing it here too would be a redundant second
-  // credential prompt for the same tool.
+  // `addTool`), so a tool that takes a login (`credentialType` set) asks for
+  // it here, inline, and the pick becomes the agent's fixed access for the
+  // tool. The Hire dialog (new-agent-dialog.tsx) does NOT set them -- it
+  // asks for the login itself in its own review step after `onAdd` just
+  // marks the tool selected.
   departmentId,
+  agentId,
 }: {
   addableNames: string[];
   connections: McpConnection[];
   onAdd: (name: string, policy: GuardrailValue | null, connectionId?: string | null) => void;
   onClose: () => void;
   departmentId?: string | null;
+  agentId?: string;
 }) {
   const t = useT();
   const [search, setSearch] = useState("");
   const [useRecommendation, setUseRecommendation] = useState<Record<string, boolean>>({});
-  const [pickedConnectionId, setPickedConnectionId] = useState<Record<string, string>>({});
+  const [pickedCredentialId, setPickedCredentialId] = useState<Record<string, string>>({});
   const connectionByName = new Map(connections.map((c) => [c.name, c] as const));
-  const logins = useMcpLogins();
-  const createLogin = useCreateMcpLogin();
-  const loginsByKey: Record<string, McpLoginDTO[]> = {};
-  for (const login of logins.data ?? []) {
-    if (login.departmentId !== null && login.departmentId !== departmentId) continue;
-    (loginsByKey[login.name] ??= []).push(login);
-  }
+  const setAccess = useSetAgentToolAccess(agentId ?? "");
 
   const term = search.trim().toLowerCase();
   const filtered = term ? addableNames.filter((n) => n.toLowerCase().includes(term)) : addableNames;
@@ -79,48 +71,31 @@ export function AddToolPicker({
     return !!connection?.credentialType;
   }
 
-  async function pinCredential(name: string, credentialType: string, credentialId: string) {
-    if (!credentialId) {
-      setPickedConnectionId((s) => {
-        const next = { ...s };
-        delete next[name];
-        return next;
-      });
-      return;
-    }
-    const existing = (loginsByKey[name] ?? []).find((l) => l.credentialId === credentialId);
-    if (existing) {
-      setPickedConnectionId((s) => ({ ...s, [name]: existing.id }));
-      return;
-    }
-    try {
-      const login = await createLogin.mutateAsync({
-        name,
-        credentialType,
-        credentialId,
-        scopes: [],
-        departmentId: departmentId || undefined,
-      });
-      setPickedConnectionId((s) => ({ ...s, [name]: login.id }));
-    } catch (err) {
-      toast.error(
-        t("Could not link this credential", "Anmeldedaten konnten nicht verknüpft werden"),
-        {
-          description: err instanceof Error ? err.message : String(err),
-        },
-      );
-    }
+  function pickCredential(name: string, credentialId: string) {
+    setPickedCredentialId((s) => {
+      const next = { ...s };
+      if (credentialId) next[name] = credentialId;
+      else delete next[name];
+      return next;
+    });
   }
 
   function handleAdd(name: string) {
     const connection = connectionByName.get(name);
     const recommendation = connection ? preferredPreset(connection) : null;
     const wantsRecommendation = useRecommendation[name] ?? true;
-    onAdd(
-      name,
-      recommendation && wantsRecommendation ? recommendation : null,
-      needsLogin(name) ? pickedConnectionId[name] : undefined,
-    );
+    onAdd(name, recommendation && wantsRecommendation ? recommendation : null, undefined);
+    const credentialId = pickedCredentialId[name];
+    if (agentId && needsLogin(name) && credentialId) {
+      setAccess
+        .mutateAsync({ toolKey: name, body: { mode: "fixed", credentialId } })
+        .catch((err: unknown) =>
+          toast.error(
+            t("Could not link this credential", "Anmeldedaten konnten nicht verknüpft werden"),
+            { description: err instanceof Error ? err.message : String(err) },
+          ),
+        );
+    }
   }
 
   return (
@@ -162,9 +137,7 @@ export function AddToolPicker({
             const recommendation = connection ? preferredPreset(connection) : null;
             const checked = useRecommendation[name] ?? true;
             const requiresLogin = needsLogin(name);
-            const pickedCredentialId =
-              (loginsByKey[name] ?? []).find((l) => l.id === pickedConnectionId[name])
-                ?.credentialId ?? "";
+            const picked = pickedCredentialId[name] ?? "";
             return (
               <div key={name} className="px-5 py-3">
                 <div className="flex items-center gap-3">
@@ -193,7 +166,7 @@ export function AddToolPicker({
                   <button
                     type="button"
                     onClick={() => handleAdd(name)}
-                    disabled={requiresLogin && !pickedConnectionId[name]}
+                    disabled={requiresLogin && !picked}
                     className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Plus className="h-3.5 w-3.5" /> {t("Add", "Hinzufügen")}
@@ -209,10 +182,8 @@ export function AddToolPicker({
                     </p>
                     <CredentialPicker
                       credentialType={connection!.credentialType!}
-                      value={pickedCredentialId}
-                      onChange={(credentialId) =>
-                        pinCredential(name, connection!.credentialType!, credentialId)
-                      }
+                      value={picked}
+                      onChange={(credentialId) => pickCredential(name, credentialId)}
                     />
                   </div>
                 )}

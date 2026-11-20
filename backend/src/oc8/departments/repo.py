@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from oc8.models.core import Department
+from oc8.models.identity import OrgMember, OrgMemberDepartment
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -112,3 +113,30 @@ async def visible_department(
     if tenant_wide or row.id in scope.viewable:
         return row
     return None
+
+
+async def member_departments(db: AsyncSession, *, member: OrgMember) -> list[Department]:
+    """The departments one member BELONGS to -- a live seat, or every department
+    for `all_departments` -- ordered by name. Never the Assistant's own, never an
+    archived one, and never another department of the tenant: a member with no
+    seat gets nothing (fail closed).
+
+    `populate_existing`: a frame edited since this session loaded the row (it
+    keeps rows across commits) must be seen on the very next call."""
+    stmt = (
+        select(Department)
+        .execution_options(populate_existing=True)
+        .where(
+            Department.tenant_id == member.tenant_id,
+            Department.deleted_at.is_(None),
+            Department.is_assistant_department.is_(False),
+        )
+        .order_by(Department.name, Department.id)
+    )
+    if not member.all_departments:
+        seated = select(OrgMemberDepartment.department_id).where(
+            OrgMemberDepartment.member_id == member.id,
+            OrgMemberDepartment.revoked_at.is_(None),
+        )
+        stmt = stmt.where(Department.id.in_(seated))
+    return list((await db.execute(stmt)).scalars().all())

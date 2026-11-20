@@ -448,6 +448,11 @@ async def test_the_container_gets_the_gateways_and_nothing_else(
             db, agent=agent, task_text="nochmal", tenant_id=tenant, run_id=second_run
         )
 
+    from oc8.sandbox.reaper import TENANT_LABEL
+
+    # Every container the runtime starts, the session provisioner included.
+    assert driver.specs
+    assert all(s.labels[TENANT_LABEL] == str(tenant) for s in driver.specs)
     first, second = [
         s for s in driver.specs if any(mnt.container_path == "/workspace" for mnt in s.mounts)
     ]

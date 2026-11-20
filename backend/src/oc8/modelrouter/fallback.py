@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -25,12 +27,60 @@ from oc8.modelrouter.types import (
 from oc8.observability import get_tracer
 
 
+class ProviderBudgetExceeded(RuntimeError):
+    """The tenant used its monthly token quota for this provider."""
+
+    def __init__(self, provider: str, resets_at: dt.datetime) -> None:
+        self.provider = provider
+        self.resets_at = resets_at
+        super().__init__(f"{provider} monthly token quota used up until {resets_at:%Y-%m-%d}")
+
+
+async def _budget_blocks(
+    db: AsyncSession, *, tenant_id: uuid.UUID, provider: str
+) -> ProviderBudgetExceeded | None:
+    """The quota error for `provider`, or None while it still has budget.
+    Imported lazily: oc8.metering imports the model registry."""
+    from oc8.metering.provider_budget import check_provider_budget
+
+    check = await check_provider_budget(db, tenant_id=tenant_id, provider=provider)
+    return ProviderBudgetExceeded(check.provider, check.resets_at) if check.exhausted else None
+
+
 def is_retryable(exc: Exception) -> bool:
     """5xx, 429, or a transport-level failure (timeout/connection error)."""
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         return status == 429 or status >= 500
     return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError))
+
+
+def limit_reason(exc: Exception) -> str | None:
+    """What an operator should read when a turn hit a limit, else None.
+
+    Two failures are limits rather than faults: the tenant's monthly quota for
+    the provider is spent, or the provider itself throttles (429, after the
+    fallback chain is exhausted). Neither is fixed by reading a stack trace,
+    and the two need different answers -- one waits for a date, the other for
+    a moment -- so each gets a sentence of its own.
+    """
+    if isinstance(exc, ProviderBudgetExceeded):
+        return (
+            f"The monthly token quota for {exc.provider} is used up until {exc.resets_at:%Y-%m-%d}."
+        )
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        return "The model provider is rate-limiting requests; try again shortly."
+    return None
+
+
+def params_for_model(params: ModelParams, supports_reasoning: bool | None) -> ModelParams:
+    """`params` for one model of the chain. They were resolved for the
+    primary, so a fallback that cannot think must not inherit its level or
+    effort (spec 2026-11-11 §5). None (no model config) leaves them as they
+    are, the same as `resolve_params` does."""
+    if supports_reasoning is False and (params.reasoning is not None or params.effort is not None):
+        return replace(params, reasoning=None, effort=None)
+    return params
 
 
 async def complete_with_fallback(
@@ -60,6 +110,9 @@ async def complete_with_fallback(
         )
         span.set_attribute("model", no_config_model if primary is None else primary.model)
         if primary is None:
+            blocked = await _budget_blocks(db, tenant_id=tenant_id, provider=no_config_provider)
+            if blocked is not None:
+                raise blocked
             api_key = await resolve_model_key(
                 db, tenant_id=tenant_id, provider=no_config_provider
             )
@@ -88,6 +141,27 @@ async def complete_with_fallback(
                 chain.append(fb)
 
         for i, config in enumerate(chain):
+            is_last = i == len(chain) - 1
+            blocked = await _budget_blocks(db, tenant_id=tenant_id, provider=config.provider)
+            if blocked is not None:
+                if is_last:
+                    raise blocked
+                next_config = chain[i + 1]
+                await append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    actor_type="agent",
+                    actor_id=agent_id,
+                    category="model_router",
+                    action="fallback",
+                    resource={
+                        "from": f"{config.provider}:{config.model}",
+                        "to": f"{next_config.provider}:{next_config.model}",
+                        "reason": type(blocked).__name__,
+                    },
+                    decision="fallback",
+                )
+                continue
             api_key = await resolve_model_key(
                 db,
                 tenant_id=tenant_id,
@@ -110,7 +184,7 @@ async def complete_with_fallback(
                 model=config.model,
                 messages=messages,
                 tools=tools,
-                params=params,
+                params=params_for_model(params, bool(config.supports_reasoning)),
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 request_id=request_id,
@@ -118,7 +192,6 @@ async def complete_with_fallback(
                 base_url=base_url,
                 api_key=api_key,
             )
-            is_last = i == len(chain) - 1
             try:
                 return await router.complete(req)
             except Exception as exc:
@@ -181,13 +254,37 @@ async def stream_completion_with_fallback(
 
         # No ModelConfig means no chain to draw from -- exactly one attempt, the
         # same as complete_with_fallback.
-        attempts: list[tuple[str, str, dict[str, Any] | None, uuid.UUID | None]] = (
-            [(no_config_provider, no_config_model, None, None)]
+        attempts: list[tuple[str, str, dict[str, Any] | None, uuid.UUID | None, bool | None]] = (
+            [(no_config_provider, no_config_model, None, None, None)]
             if not chain
-            else [(c.provider, c.model, c.params or {}, c.credential_id) for c in chain]
+            else [
+                (c.provider, c.model, c.params or {}, c.credential_id, bool(c.supports_reasoning))
+                for c in chain
+            ]
         )
 
-        for i, (provider, model, cfg_params, credential_id) in enumerate(attempts):
+        for i, (provider, model, cfg_params, credential_id, thinks) in enumerate(attempts):
+            is_last = i == len(attempts) - 1
+            blocked = await _budget_blocks(db, tenant_id=tenant_id, provider=provider)
+            if blocked is not None:
+                if is_last:
+                    raise blocked
+                nxt = attempts[i + 1]
+                await append_event(
+                    db,
+                    tenant_id=tenant_id,
+                    actor_type="agent",
+                    actor_id=agent_id,
+                    category="model_router",
+                    action="fallback",
+                    resource={
+                        "from": f"{provider}:{model}",
+                        "to": f"{nxt[0]}:{nxt[1]}",
+                        "reason": type(blocked).__name__,
+                        "streaming": True,
+                    },
+                )
+                continue
             api_key = await resolve_model_key(
                 db, tenant_id=tenant_id, provider=provider, credential_id=credential_id
             )
@@ -199,7 +296,7 @@ async def stream_completion_with_fallback(
                 model=model,
                 messages=messages,
                 tools=tools,
-                params=params,
+                params=params_for_model(params, thinks),
                 tenant_id=tenant_id,
                 agent_id=agent_id,
                 request_id=request_id,
@@ -207,11 +304,18 @@ async def stream_completion_with_fallback(
                 base_url=base_url,
                 api_key=api_key,
             )
-            is_last = i == len(attempts) - 1
             emitted = False
             try:
                 async for chunk in router.stream(req):
-                    emitted = True
+                    # Only a chunk that carries something counts: an empty one
+                    # has put nothing on the wire, so it must not block fallback.
+                    if (
+                        chunk.text
+                        or chunk.reasoning
+                        or chunk.tool_calls
+                        or chunk.usage is not None
+                    ):
+                        emitted = True
                     yield chunk
                 return
             except Exception as exc:

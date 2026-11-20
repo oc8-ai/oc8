@@ -3,9 +3,10 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from tests.audit.helpers import append_now
 from tests.conftest import AppSessionFactory
 
-from oc8.audit.chain import GENESIS, append_event, recompute_hash, verify_chain
+from oc8.audit.chain import GENESIS, recompute_hash, verify_chain
 
 pytestmark = pytest.mark.asyncio
 
@@ -15,7 +16,7 @@ async def test_recompute_hash_reproduces_stored_hashes(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        first = await append_event(
+        first = await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",
@@ -23,7 +24,7 @@ async def test_recompute_hash_reproduces_stored_hashes(
             category="test",
             action="t.one",
         )
-        second = await append_event(
+        second = await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",
@@ -45,7 +46,7 @@ async def test_verify_chain_still_passes_after_refactor(
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
         for i in range(3):
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",

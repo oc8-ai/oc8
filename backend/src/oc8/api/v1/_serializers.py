@@ -3,24 +3,34 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.versioning import version_meta, version_payload
+from oc8.capas.i18n import translations_for
+from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
 from oc8.schemas.dto import (
     ActivityDTO,
     AgentDTO,
+    AgentVersionDTO,
+    AgentVersionSummaryDTO,
     ApprovalDTO,
     ApprovalOptionDTO,
+    BrowseEntryDTO,
+    BrowseListingDTO,
     ClarificationDTO,
     DataSourceDTO,
     DepartmentDTO,
+    DirectAccessAgentDTO,
+    DirectAccessChosenAgentDTO,
+    DirectAccessInfoDTO,
     IngestionJobDTO,
     IntegrationDTO,
     KbChunkDTO,
@@ -28,6 +38,9 @@ from oc8.schemas.dto import (
     KnowledgeDocumentDTO,
     MemberDTO,
     ModelDTO,
+    QuestionDTO,
+    QuestionOptionDTO,
+    RecordLinkDTO,
     SeatDTO,
     SimilarChunkDTO,
     SkillDTO,
@@ -106,6 +119,7 @@ def agent_to_dto(a: m.Agent) -> AgentDTO:
         department_id=str(a.department_id) if a.department_id else None,
         model_config_id=str(a.model_config_id) if a.model_config_id else None,
         is_lead=a.is_team_lead,
+        prompt_starters=[str(s) for s in (p.get("prompt_starters") or [])],
         deleted_at=a.deleted_at.isoformat() if a.deleted_at else None,
         role_translations=_i18n_str(i18n, "role"),
         last_action_translations=_i18n_str(i18n, "last_action"),
@@ -148,6 +162,9 @@ def task_to_dto(t: m.Task) -> TaskDTO:
         agent_id=str(t.assigned_agent_id) if t.assigned_agent_id else None,
         column=TASK_STATE_TO_COLUMN.get(t.state, "backlog"),
         meta=t.meta_label,
+        record_url=(
+            payload.get("record_url") if isinstance(payload.get("record_url"), str) else None
+        ),
         title_translations=_i18n_str(i18n, "title"),
         meta_translations=_i18n_str(i18n, "meta"),
     )
@@ -183,6 +200,10 @@ class ApprovalNames:
     agents: dict[uuid.UUID, str] = field(default_factory=dict)
     tasks: dict[uuid.UUID, str] = field(default_factory=dict)
     members: dict[uuid.UUID, str] = field(default_factory=dict)
+    #: task_id -> the id of the run holding that task, for the approvals the
+    #: queue must sort by how much work they block. One batched query like
+    #: every other field here, never one per row.
+    runs: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
 
 
 _NO_NAMES = ApprovalNames()
@@ -213,6 +234,22 @@ async def resolve_approval_names(
         found = (await db.execute(select(column, label).where(column.in_(ids)))).all()
         return {row[0]: row[1] or "" for row in found}
 
+    async def _runs(ids: set[uuid.UUID]) -> dict[uuid.UUID, uuid.UUID]:
+        """task_id -> run_id. Ordered so a task with more than one run (a
+        resumed run opens no new one, but a re-run of the same task does)
+        resolves to the most recent, which is the one a person looking at a
+        pending approval means."""
+        if not ids:
+            return {}
+        rows = (
+            await db.execute(
+                select(m.AgentRun.task_id, m.AgentRun.id)
+                .where(m.AgentRun.task_id.in_(ids))
+                .order_by(m.AgentRun.updated_at.asc())
+            )
+        ).all()
+        return {row[0]: row[1] for row in rows}
+
     return ApprovalNames(
         departments=await _names(m.Department.id, m.Department.name, department_ids),
         agents=await _names(m.Agent.id, m.Agent.name, agent_ids),
@@ -221,10 +258,68 @@ async def resolve_approval_names(
         # falling back to nothing rather than to the raw subject, because a
         # raw uuid printed under "entschieden von" is worse than a blank.
         members=await _names(m.OrgMember.id, m.OrgMember.display_name, member_ids),
+        runs=await _runs(task_ids),
+    )
+
+
+def _direct_access_dto(raw: Any) -> DirectAccessInfoDTO | None:
+    if not isinstance(raw, dict):
+        return None
+    account = raw.get("account")
+    department_stage = raw.get("decider") == "department"
+    return DirectAccessInfoDTO(
+        # A department's approvers decide the call, not the conversation: the
+        # session id stays in the payload (deleting the chat expires the
+        # card) but is the person's, so it never reaches them.
+        session_id="" if department_stage else str(raw.get("session_id") or ""),
+        tool_key=str(raw.get("tool_key") or ""),
+        label=str(raw.get("label") or raw.get("tool_key") or ""),
+        member_name=str(raw.get("member_name") or ""),
+        account=str(account) if account in ("own", "organisation") else None,
+        decider="department" if department_stage else "member",
+        # The person's own choice, never a department stage's: its approvers
+        # decide a held write, not which agent the person runs.
+        agents=[] if department_stage else _offered_agents(raw.get("agents")),
+        login_name="" if department_stage else str(raw.get("login_name") or ""),
+        request="" if department_stage else str(raw.get("request") or "")[:2000],
+        chosen_agent=None if department_stage else _chosen_agent(raw.get("chosen_agent")),
+    )
+
+
+def _offered_agents(raw: Any) -> list[DirectAccessAgentDTO]:
+    if not isinstance(raw, list):
+        return []
+    out: list[DirectAccessAgentDTO] = []
+    for entry in raw:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        try:
+            score = float(entry.get("score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        out.append(
+            DirectAccessAgentDTO(
+                id=str(entry["id"]),
+                name=str(entry.get("name") or ""),
+                department=str(entry.get("department") or ""),
+                score=score,
+            )
+        )
+    return out
+
+
+def _chosen_agent(raw: Any) -> DirectAccessChosenAgentDTO | None:
+    if not isinstance(raw, dict) or not raw.get("id") or not raw.get("run_id"):
+        return None
+    return DirectAccessChosenAgentDTO(
+        id=str(raw["id"]), name=str(raw.get("name") or ""), run_id=str(raw["run_id"])
     )
 
 
 def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) -> ApprovalDTO:
+    # Lazy import to avoid cycles: approvals -> records.links -> agent -> approvals
+    from oc8.records.links import safe_url
+
     payload: dict[str, Any] = a.payload or {}
     raw_options = payload.get("options") or []
     resolved = names or _NO_NAMES
@@ -260,6 +355,15 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         agent_name=resolved.agents.get(a.agent_id, ""),
         task_id=str(a.task_id) if a.task_id else None,
         task_title=resolved.tasks.get(a.task_id, "") if a.task_id else "",
+        # The raiser's own run first: a Copilot conversation runs every turn
+        # on one task, so the task's run is only a guess there.
+        run_id=(
+            str(payload["run_id"])
+            if isinstance(payload.get("run_id"), str)
+            else str(resolved.runs[a.task_id])
+            if a.task_id is not None and a.task_id in resolved.runs
+            else None
+        ),
         created_at=a.created_at.isoformat() if a.created_at else "",
         decided_by_name=resolved.members.get(a.decided_by, "") if a.decided_by else "",
         tool_name=str(tool_name) if isinstance(tool_name, str) else None,
@@ -267,7 +371,52 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         title_translations=_i18n_str(payload.get("i18n"), "title"),
         detail_translations=_i18n_str(payload.get("i18n"), "detail"),
         reason_context=a.reason_context,
+        # The column first; the payload key for rows raised before it existed
+        # (and any raiser that still only writes the payload).
+        record_url=a.record_url
+        or (payload.get("record_url") if isinstance(payload.get("record_url"), str) else None),
+        proposal_id=(
+            str(payload["proposal_id"])
+            if a.action_type == "copilot.agent_builder" and payload.get("proposal_id")
+            else None
+        ),
+        direct_access=_direct_access_dto(payload.get("direct_access")),
+        related_links=[
+            RecordLinkDTO(label=x["label"], url=safe)
+            for x in (a.related_links or [])
+            if isinstance(x, dict)
+            and isinstance(x.get("label"), str)
+            and (safe := safe_url(x.get("url")))
+        ],
+        result_url=safe_url(a.result_url),
     )
+
+
+def question_dtos(raw: Any) -> list[QuestionDTO]:
+    """The structured questions a run parked on (`run.context["pending_questions"]`),
+    as DTOs. Empty for a plain question -- and for a stored value that no longer
+    parses, which then still shows as its readable text."""
+    from oc8.chat.questions import QuestionError, questions_from_json
+
+    if not raw:
+        return []
+    try:
+        questions = questions_from_json(raw)
+    except QuestionError:
+        return []
+    return [
+        QuestionDTO(
+            id=q.id,
+            prompt=q.prompt,
+            kind=q.kind,
+            options=[
+                QuestionOptionDTO(key=o.key, label=o.label, detail=o.detail) for o in q.options
+            ],
+            allow_other=q.allow_other,
+            required=q.required,
+        )
+        for q in questions
+    ]
 
 
 def clarification_to_dto(row: ClarificationRow) -> ClarificationDTO:
@@ -281,6 +430,7 @@ def clarification_to_dto(row: ClarificationRow) -> ClarificationDTO:
         question=row.question,
         status=row.status,
         created_at=row.created_at.isoformat() if row.created_at else "",
+        questions=question_dtos(row.pending_questions),
     )
 
 
@@ -322,6 +472,7 @@ def member_to_dto(row: MemberRow) -> MemberDTO:
         seats=[seat_to_dto(s) for s in row.seats],
         role_id=None if row.role_id is None else str(row.role_id),
         role_name=row.role_name,
+        email=row.email,
     )
 
 
@@ -357,11 +508,18 @@ def _dict_or_none(value: Any) -> dict[str, Any] | None:
 def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
     health: dict[str, Any] = mc.health or {}
     cost: dict[str, Any] = mc.cost_meta or {}
+    params = mc.params or {}
+    raw_tiers = params.get("tiers")
+    auto_tiers: dict[str, str] | None = None
+    if isinstance(raw_tiers, dict) and raw_tiers:
+        auto_tiers = {str(k): str(v) for k, v in raw_tiers.items()}
+    examples = params.get("preference_examples")
     return ModelDTO(
         id=str(mc.id),
         # Normalize to the registry's canonical provider so the value matches the
         # provider dropdown options (POST already stores canonical; seeded rows may
         # carry a display alias like "Ollama"/"GPT" that must not mis-select the form).
+        # `auto` is a virtual router provider, not in the adapter registry.
         provider=canonical_provider(mc.provider) or mc.provider,
         name=mc.display_name or mc.model,
         status=health.get("status", "healthy"),
@@ -372,17 +530,26 @@ def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
         model=mc.model,
         locality=mc.locality,
         display_name=mc.display_name,
-        context_window=_int_or_none((mc.params or {}).get("context_window")),
-        max_tokens=_int_or_none((mc.params or {}).get("max_tokens")),
-        supports_vision=bool((mc.params or {}).get("supports_vision", False)),
-        effort=_str_or_none((mc.params or {}).get("effort")),
-        extra=_dict_or_none((mc.params or {}).get("extra")),
+        context_window=_int_or_none(params.get("context_window")),
+        max_tokens=_int_or_none(params.get("max_tokens")),
+        supports_vision=bool(params.get("supports_vision", False)),
+        effort=_str_or_none(params.get("effort")),
+        extra=_dict_or_none(params.get("extra")),
         # `mapped_column(default=False)` applies at INSERT, not at construction; a
         # row built and serialized before its first flush still reads None here.
         used_by_copilot=bool(mc.used_by_copilot),
+        # Same INSERT-time default caveat as above; the column defaults to on.
+        chat_enabled=mc.chat_enabled is not False,
+        # Same INSERT-time default caveat; the column defaults to off.
+        supports_reasoning=bool(mc.supports_reasoning),
         credential_id=str(mc.credential_id) if mc.credential_id else None,
         health_error=health.get("error"),
         health_checked_at=health.get("checkedAt"),
+        auto_tiers=auto_tiers,
+        auto_shadow_only=bool(params.get("shadow_only")),
+        auto_cascade_verify=bool(params.get("cascade_verify")),
+        auto_preference_router=bool(params.get("preference_router")),
+        auto_preference_examples=examples if isinstance(examples, list) else None,
     )
 
 
@@ -416,8 +583,52 @@ def skill_to_dto(s: m.Skill, version: m.SkillVersion | None) -> SkillDTO:
     )
 
 
-def datasource_to_dto(d: m.DataSource) -> DataSourceDTO:
+def agent_version_to_summary_dto(
+    v: m.AgentVersion, *, current_version_id: uuid.UUID | None
+) -> AgentVersionSummaryDTO:
+    """`is_current` is passed IN rather than read off the row.
+
+    A version does not know whether it is live -- `agent.current_version_id`
+    does -- and a serializer that re-read the agent to find out would issue one
+    query per row and would also have to be async, which every other function
+    in this module deliberately is not.
+    """
+    rolled_back_from = version_meta(v).get("rolled_back_from")
+    return AgentVersionSummaryDTO(
+        id=str(v.id),
+        version_no=v.version_no,
+        note=v.note,
+        published_by=str(v.published_by) if v.published_by is not None else None,
+        published_at=v.published_at.isoformat(),
+        is_current=current_version_id is not None and v.id == current_version_id,
+        rolled_back_from=(int(rolled_back_from) if isinstance(rolled_back_from, int) else None),
+    )
+
+
+def agent_version_to_dto(
+    v: m.AgentVersion, *, current_version_id: uuid.UUID | None
+) -> AgentVersionDTO:
+    """The summary plus the configuration snapshot and its hash.
+
+    `version_payload` strips the reserved `_meta` key: it is provenance, already
+    surfaced as `rolled_back_from`, and leaving it inside `payload` would make
+    every client's payload renderer show a field that is not configuration.
+    """
+    summary = agent_version_to_summary_dto(v, current_version_id=current_version_id)
+    return AgentVersionDTO(
+        **summary.model_dump(),
+        payload=version_payload(v),
+        payload_hash=v.payload_hash.hex(),
+    )
+
+
+def datasource_to_dto(
+    d: m.DataSource, last_job_stats: dict[str, Any] | None = None
+) -> DataSourceDTO:
     cfg: dict[str, Any] = d.config or {}
+    stats = last_job_stats or {}
+    skipped = stats.get("skipped_by_reason")
+    notes = stats.get("notes")
     return DataSourceDTO(
         id=str(d.id),
         kind=d.connector_type,
@@ -433,6 +644,8 @@ def datasource_to_dto(d: m.DataSource) -> DataSourceDTO:
         reconcile_note=d.reconcile_note,
         last_sync_status=d.last_sync_status,
         last_sync_error=d.last_sync_error,
+        last_sync_skipped=skipped if isinstance(skipped, dict) and skipped else None,
+        last_sync_notes=notes if isinstance(notes, list) and notes else None,
         deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
         config=cfg,
     )
@@ -516,4 +729,32 @@ def kb_to_dto(
         deleted_at=kb.deleted_at.isoformat() if kb.deleted_at else None,
         name_translations=_i18n_str(i18n, "name"),
         description_translations=_i18n_str(i18n, "description"),
+        index_type=kb.index_type or "internal",
+        index_config=dict(kb.index_config or {}),
+        credential_id=str(kb.credential_id) if kb.credential_id else None,
+    )
+
+
+def browse_listing_to_dto(
+    listing: BrowseListing, i18n: Mapping[str, Mapping[str, str]] | None = None
+) -> BrowseListingDTO:
+    """`i18n` is the connector's capa catalogs; only an `app` entry's name is
+    the connector's own text, so only that one is translated."""
+    return BrowseListingDTO(
+        entries=[
+            BrowseEntryDTO(
+                id=e.id,
+                name=e.name,
+                is_folder=e.is_folder,
+                size=e.size,
+                content_type=e.content_type,
+                kind=e.kind,
+                note=e.note,
+                name_translations=(
+                    translations_for(i18n, e.name) if i18n and e.kind == "app" else {}
+                ),
+            )
+            for e in listing.entries
+        ],
+        truncated=listing.truncated,
     )

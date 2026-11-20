@@ -2,9 +2,8 @@
 serializable data -- the MCP server layer (`__main__.py`, Task 13) wraps it
 into the SDK's own `types.TextContent`, not this module's job.
 
-Every path here is `/users/{id}/...`, never `/me/...`: this connection's token
-is app-only and Graph rejects `/me` outright under it. `_user.resolve_user`
-says where the id comes from and why.
+Every path is built by `_user.user_base`: `/users/{id}/...` for an app-only
+token, `/me/...` for a person's own. `_user.py` says why.
 """
 
 from __future__ import annotations
@@ -15,24 +14,24 @@ from typing import Any
 from mcp.types import Tool
 
 from .. import graph
-from .._user import USER_ID_PROPERTY, resolve_user
+from .._user import USER_ID_PROPERTY, user_base
 
 
 async def mail_search(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    result = await graph.get(f"/users/{user}/messages", params={"$search": f'"{args["query"]}"'})
+    base = user_base(args)
+    result = await graph.get(f"{base}/messages", params={"$search": f'"{args["query"]}"'})
     return result.get("value", [])
 
 
 async def mail_get(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    return await graph.get(f"/users/{user}/messages/{args['messageId']}")
+    base = user_base(args)
+    return await graph.get(f"{base}/messages/{args['messageId']}")
 
 
 async def mail_send(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     await graph.post(
-        f"/users/{user}/sendMail",
+        f"{base}/sendMail",
         {
             "message": {
                 "subject": args["subject"],
@@ -45,15 +44,15 @@ async def mail_send(args: dict[str, Any]) -> Any:
 
 
 async def mail_reply(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    await graph.post(f"/users/{user}/messages/{args['messageId']}/reply", {"comment": args["body"]})
+    base = user_base(args)
+    await graph.post(f"{base}/messages/{args['messageId']}/reply", {"comment": args["body"]})
     return {"status": "sent"}
 
 
 async def mail_create_draft(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     return await graph.post(
-        f"/users/{user}/messages",
+        f"{base}/messages",
         {
             "subject": args["subject"],
             "body": {"contentType": "Text", "content": args["body"]},
@@ -63,29 +62,29 @@ async def mail_create_draft(args: dict[str, Any]) -> Any:
 
 
 async def mail_move(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     return await graph.post(
-        f"/users/{user}/messages/{args['messageId']}/move",
+        f"{base}/messages/{args['messageId']}/move",
         {"destinationId": args["destinationFolderId"]},
     )
 
 
 async def mail_delete(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    await graph.delete(f"/users/{user}/messages/{args['messageId']}")
+    base = user_base(args)
+    await graph.delete(f"{base}/messages/{args['messageId']}")
     return {"status": "deleted"}
 
 
 async def mail_list_folders(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    result = await graph.get(f"/users/{user}/mailFolders")
+    base = user_base(args)
+    result = await graph.get(f"{base}/mailFolders")
     return result.get("value", [])
 
 
 async def mail_mark_read(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
+    base = user_base(args)
     return await graph.patch(
-        f"/users/{user}/messages/{args['messageId']}", {"isRead": args.get("isRead", True)}
+        f"{base}/messages/{args['messageId']}", {"isRead": args.get("isRead", True)}
     )
 
 

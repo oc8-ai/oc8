@@ -50,28 +50,28 @@ _TEMPLATES: list[DashboardTemplateDTO] = [
         id="focus-chat",
         name={"en": "Focus Chat", "de": "Fokus-Chat"},
         widgets=[
-            WidgetInstanceDTO(id="t1-chat", type="chat", x=0, y=0, w=8, h=8, config={}),
-            WidgetInstanceDTO(id="t1-approvals", type="approvals", x=8, y=0, w=4, h=8, config={}),
+            WidgetInstanceDTO(id="t1-chat", type="chat", x=0, y=0, w=8, h=16, config={}),
+            WidgetInstanceDTO(id="t1-approvals", type="approvals", x=8, y=0, w=4, h=16, config={}),
         ],
     ),
     DashboardTemplateDTO(
         id="overview",
         name={"en": "Overview", "de": "Überblick"},
         widgets=[
-            WidgetInstanceDTO(id="t2-approvals", type="approvals", x=0, y=0, w=6, h=5, config={}),
-            WidgetInstanceDTO(id="t2-reports", type="reports", x=6, y=0, w=6, h=5, config={}),
-            WidgetInstanceDTO(id="t2-budget", type="budget", x=0, y=5, w=6, h=3, config={}),
-            WidgetInstanceDTO(id="t2-activity", type="activity", x=6, y=5, w=6, h=3, config={}),
+            WidgetInstanceDTO(id="t2-approvals", type="approvals", x=0, y=0, w=6, h=10, config={}),
+            WidgetInstanceDTO(id="t2-reports", type="reports", x=6, y=0, w=6, h=10, config={}),
+            WidgetInstanceDTO(id="t2-budget", type="budget", x=0, y=10, w=6, h=6, config={}),
+            WidgetInstanceDTO(id="t2-activity", type="activity", x=6, y=10, w=6, h=6, config={}),
         ],
     ),
     DashboardTemplateDTO(
         id="mixed",
         name={"en": "Mixed", "de": "Gemischt"},
         widgets=[
-            WidgetInstanceDTO(id="t3-chat1", type="chat", x=0, y=0, w=6, h=5, config={}),
-            WidgetInstanceDTO(id="t3-chat2", type="chat", x=6, y=0, w=6, h=5, config={}),
-            WidgetInstanceDTO(id="t3-approvals", type="approvals", x=0, y=5, w=6, h=3, config={}),
-            WidgetInstanceDTO(id="t3-reports", type="reports", x=6, y=5, w=6, h=3, config={}),
+            WidgetInstanceDTO(id="t3-chat1", type="chat", x=0, y=0, w=6, h=10, config={}),
+            WidgetInstanceDTO(id="t3-chat2", type="chat", x=6, y=0, w=6, h=10, config={}),
+            WidgetInstanceDTO(id="t3-approvals", type="approvals", x=0, y=10, w=6, h=6, config={}),
+            WidgetInstanceDTO(id="t3-reports", type="reports", x=6, y=10, w=6, h=6, config={}),
         ],
     ),
     # The Copilot as the primary interface: chat dominates the grid rather
@@ -83,9 +83,9 @@ _TEMPLATES: list[DashboardTemplateDTO] = [
         id="command-center",
         name={"en": "Command Center", "de": "Kommandozentrale"},
         widgets=[
-            WidgetInstanceDTO(id="t4-chat", type="chat", x=0, y=0, w=8, h=8, config={}),
-            WidgetInstanceDTO(id="t4-tasks", type="tasks", x=8, y=0, w=4, h=4, config={}),
-            WidgetInstanceDTO(id="t4-approvals", type="approvals", x=8, y=4, w=4, h=4, config={}),
+            WidgetInstanceDTO(id="t4-chat", type="chat", x=0, y=0, w=8, h=16, config={}),
+            WidgetInstanceDTO(id="t4-tasks", type="tasks", x=8, y=0, w=4, h=8, config={}),
+            WidgetInstanceDTO(id="t4-approvals", type="approvals", x=8, y=8, w=4, h=8, config={}),
         ],
     ),
 ]

@@ -38,6 +38,20 @@ def main() -> None:
         help="limit to this tenant (repeatable); default is every known tenant",
     )
 
+    consolidate_p = sub.add_parser(
+        "consolidate-connections",
+        help=(
+            "fold per-department tool setups into shared logins (the worker "
+            "also runs this once at start; safe to run twice)"
+        ),
+    )
+    consolidate_p.add_argument(
+        "--tenant", default=None, metavar="UUID", help="only this tenant; default every tenant"
+    )
+    consolidate_p.add_argument(
+        "--dry-run", action="store_true", help="report what would change, change nothing"
+    )
+
     sub.add_parser(
         "evidence-sweep",
         help=(
@@ -175,57 +189,15 @@ def main() -> None:
         from oc8.runtime.worker import run_worker
 
         async def _run_both() -> None:
-            # Before consuming anything: a worker that was killed mid-run never
-            # ran its teardown, so its containers are still alive with a live
-            # run-scoped token. Only containers of FINISHED runs are removed, so
-            # this is safe with several workers on one host. Goes through the
-            # sandbox driver -- not oc8.sandbox.reaper directly -- because under
-            # OC8_SANDBOX_DRIVER=provisioner (the Community default) the worker
-            # has no docker.sock of its own; only runtime-provisioner does, and
-            # ProvisionerSandboxDriver.reap_orphans() is what reaches it over
-            # HTTP instead of raising DockerException every time.
-            from oc8.sandbox import get_sandbox_driver
+            # Before consuming: reap containers a killed worker left behind and
+            # republish queued runs whose publish was lost; then the same sweeps
+            # on the run worker's timer (oc8.runtime.housekeeping).
+            from oc8.runtime.housekeeping import run_worker_housekeeping, run_worker_startup
 
-            await get_sandbox_driver().reap_orphans()
-
-            # The sweeps below run on a timer rather than only at startup: a run
-            # abandoned in hour two of a worker's life would otherwise stay open
-            # until the next deploy. Only the run queue gets them -- an ingestion
-            # job has no containers, no agent to free and no evidence on disk.
-            from oc8.evidence.sweep import sweep_evidence
-            from oc8.knowledge.reconcile import sweep_knowledge_deletions
-            from oc8.runtime.reconcile import close_abandoned_runs
-            from oc8.runtime.workspace import sync_active_run_outputs
-
-            async def _housekeeping() -> None:
-                # BOTH sweeps on the timer, not one at startup and one on a
-                # clock. A container whose run finished after the worker booted
-                # used to survive until the next restart: two of them were found
-                # alive four hours later, each holding a (by then expired)
-                # run-scoped token and a gigabyte of memory on a laptop.
-                await close_abandoned_runs()
-                await get_sandbox_driver().reap_orphans()
-                # Third sweep, same timer: the evidence a finished run left on
-                # disk. Inert unless OC8_EVIDENCE_SWEEP_ENABLED is on. It lands
-                # here rather than on its own schedule because it must run
-                # AFTER the two above -- a run this tick just closed is not
-                # archived until the next one, which is exactly the grace the
-                # archive window already asks for.
-                await sweep_evidence()
-                # Fourth sweep, same timer: knowledge a sync observed as gone
-                # upstream. Inert unless OC8_KNOWLEDGE_RECONCILE_ENABLED is on.
-                # It needs no schedule of its own because it performs no network
-                # IO and calls no connector -- it only acts on facts a sync
-                # already wrote, so running it more often than syncs happen
-                # costs two indexed queries per tenant and changes nothing.
-                await sweep_knowledge_deletions()
-                # Fifth sweep, same timer: pick up files a still-RUNNING run has
-                # already written under /workspace/output/, so they show up in
-                # the Files UI before the run finishes, not only after.
-                await sync_active_run_outputs()
+            await run_worker_startup()
 
             await asyncio.gather(
-                run_worker(get_run_queue(), housekeeping=_housekeeping),
+                run_worker(get_run_queue(), housekeeping=run_worker_housekeeping),
                 run_worker(get_ingestion_queue(), handler=ingest_job, recovery=recover_ingestion),
             )
 
@@ -252,6 +224,26 @@ def main() -> None:
 
         targets = [_uuid.UUID(t) for t in args.tenant] if args.tenant else None
         print(f"adopted {asyncio.run(adopt_checkpoints(targets))} checkpoint(s)")
+    elif args.command == "consolidate-connections":
+        import json
+        import sys
+        import uuid as _uuid
+
+        from oc8.connections.consolidate import consolidate_all_tenants, consolidate_tenant
+        from oc8.db.session import tenant_session
+
+        async def _consolidate() -> int:
+            if args.tenant is None:
+                reports = await consolidate_all_tenants(dry_run=args.dry_run)
+            else:
+                tenant_id = _uuid.UUID(args.tenant)
+                async with tenant_session(tenant_id) as db:
+                    reports = [await consolidate_tenant(db, tenant_id, dry_run=args.dry_run)]
+            for report in reports:
+                print(json.dumps(report.as_dict(), sort_keys=True))
+            return 0
+
+        sys.exit(asyncio.run(_consolidate()))
     elif args.command == "evidence-sweep":
         from oc8.config import get_settings as _settings
         from oc8.evidence.sweep import sweep_evidence

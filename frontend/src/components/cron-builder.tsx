@@ -1,5 +1,8 @@
 import { useState } from "react";
 import { Save } from "lucide-react";
+import { TimezoneSelect } from "@/components/timezone-select";
+import { describeCron, describeSchedule } from "@/lib/describe-cron";
+import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 // Extracted from agents.$id.tsx's ScheduleEditor so the Hire dialog can offer
@@ -25,10 +28,6 @@ const DEFAULT_CRON: CronState = {
   weekdays: [1, 2, 3, 4, 5],
   dayOfMonth: 1,
 };
-
-function pad2(n: number) {
-  return n.toString().padStart(2, "0");
-}
 
 export function buildCron(s: CronState): string {
   switch (s.freq) {
@@ -85,34 +84,24 @@ export function parseCron(expr: string): CronState {
 
 const WEEKDAY_LABELS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
 
-function humanCron(s: CronState): string {
-  const time = `${pad2(s.hour)}:${pad2(s.minute)}`;
-  switch (s.freq) {
-    case "every-n-min":
-      return `Every ${s.everyNMin} min`;
-    case "hourly":
-      return `Every hour at :${pad2(s.minute)}`;
-    case "daily":
-      return `Every day at ${time}`;
-    case "weekly":
-      if (!s.weekdays.length) return `Weekly at ${time}`;
-      return `${s.weekdays.map((d) => WEEKDAY_LABELS[d]).join(", ")} at ${time}`;
-    case "monthly":
-      return `Day ${s.dayOfMonth} of each month at ${time}`;
-  }
-}
-
 export function CronBuilder({
   initial,
   onChange,
   onSave,
   saveLabel,
+  timezone,
+  onTimezoneChange,
 }: {
   initial: string;
   onChange: (cron: string) => void;
   onSave: () => void;
   saveLabel: string;
+  /** The zone the schedule is read in; with `onTimezoneChange` it can be
+   *  picked, and the description names it. */
+  timezone?: string;
+  onTimezoneChange?: (zone: string) => void;
 }) {
+  const t = useT();
   const [state, setState] = useState<CronState>(() => parseCron(initial));
 
   function update(patch: Partial<CronState>) {
@@ -124,7 +113,8 @@ export function CronBuilder({
   }
 
   const cron = buildCron(state);
-  const human = humanCron(state);
+  const human =
+    timezone !== undefined ? describeSchedule(cron, timezone, t) : describeCron(cron, t);
 
   return (
     <div className="space-y-3 rounded-md border border-border bg-background/30 p-3">
@@ -228,6 +218,12 @@ export function CronBuilder({
           value={state.dayOfMonth}
           onChange={(v) => update({ dayOfMonth: v })}
         />
+      )}
+
+      {timezone !== undefined && onTimezoneChange && (
+        <div className="sm:max-w-xs">
+          <TimezoneSelect value={timezone} onChange={onTimezoneChange} />
+        </div>
       )}
 
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">

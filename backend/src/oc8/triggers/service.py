@@ -6,15 +6,21 @@ import random
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import cast
 
-from croniter import CroniterBadCronError, croniter
+from croniter import CroniterBadCronError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.connections.access import trigger_fingerprint
 from oc8.modelrouter.subscription_guard import assert_manual_only_compatible
 from oc8.models.core import Agent
 from oc8.models.triggers import Trigger
+from oc8.triggers.zones import (
+    UnknownTimezone,
+    next_fire_utc,
+    organisation_timezone,
+    valid_timezone,
+)
 
 #: 256 bits of CSPRNG entropy, URL-safe -- for a kind='webhook' row this
 #: token is the ENTIRE auth boundary (no signature, no header, per the
@@ -31,16 +37,35 @@ class InvalidTriggerConfig(ValueError):
 
 
 def compute_next_run(
-    cron_expression: str, *, after: datetime, jitter_seconds: int = 60
+    cron_expression: str,
+    *,
+    after: datetime,
+    timezone: str | None = None,
+    jitter_seconds: int = 60,
 ) -> datetime:
-    """Next fire time for `cron_expression` after `after`, plus a random
-    0..jitter_seconds offset to avoid a thundering herd across tenants
-    sharing common cron patterns (e.g. every hour on the hour)."""
+    """Next fire time for `cron_expression` after `after`, read in `timezone`
+    (an IANA name; None = UTC, what every trigger saved before triggers carried
+    a zone fires in), plus a random 0..jitter_seconds offset to avoid a
+    thundering herd across tenants sharing common cron patterns (e.g. every
+    hour on the hour). Returned in UTC. DST edges: `triggers.zones`."""
     try:
-        base = cast(datetime, croniter(cron_expression, after).get_next(datetime))
+        base = next_fire_utc(cron_expression, timezone=timezone, after=after)
+    except UnknownTimezone as exc:
+        raise InvalidTriggerConfig(str(exc)) from exc
     except (CroniterBadCronError, ValueError) as exc:
         raise InvalidTriggerConfig(f"invalid cron expression: {exc}") from exc
     return base + timedelta(seconds=random.randint(0, jitter_seconds))
+
+
+async def _cron_timezone(db: AsyncSession, tenant_id: uuid.UUID, timezone: str | None) -> str:
+    """The zone a new schedule is read in: the one given, else the
+    organisation's own."""
+    if timezone:
+        try:
+            return valid_timezone(timezone)
+        except UnknownTimezone as exc:
+            raise InvalidTriggerConfig(str(exc)) from exc
+    return await organisation_timezone(db, tenant_id)
 
 
 async def create_trigger(
@@ -51,17 +76,27 @@ async def create_trigger(
     kind: str,
     task_text: str,
     cron_expression: str | None = None,
+    timezone: str | None = None,
     event_source: str | None = None,
     event_type: str | None = None,
     declared_events: set[tuple[str, str]] | None = None,
     jitter_seconds: int = 60,
+    created_by_member_id: uuid.UUID | None = None,
+    acts_for_creator: bool = False,
 ) -> Trigger:
     next_run_at = None
+    zone: str | None = None
     if kind == "cron":
         if cron_expression is None:
             raise InvalidTriggerConfig("cron_expression is required for kind='cron'")
+        # Without a zone named, the organisation's: a person writes "7:00"
+        # meaning their own clock, not UTC.
+        zone = await _cron_timezone(db, tenant_id, timezone)
         next_run_at = compute_next_run(
-            cron_expression, after=datetime.now(tz=UTC), jitter_seconds=jitter_seconds
+            cron_expression,
+            after=datetime.now(tz=UTC),
+            timezone=zone,
+            jitter_seconds=jitter_seconds,
         )
     elif kind == "event":
         if event_source is None or event_type is None:
@@ -82,9 +117,12 @@ async def create_trigger(
     trigger = Trigger(
         tenant_id=tenant_id,
         agent_id=agent_id,
+        created_by_member_id=created_by_member_id,
+        acts_for_creator=acts_for_creator and created_by_member_id is not None,
         kind=kind,
         task_text=task_text,
         cron_expression=cron_expression,
+        timezone=zone,
         next_run_at=next_run_at,
         event_source=event_source,
         event_type=event_type,
@@ -92,6 +130,10 @@ async def create_trigger(
     )
     db.add(trigger)
     await db.flush()
+    if created_by_member_id is not None:
+        # Its creator saves it: their own account may serve it while the
+        # agent stays as they see it now (connections.access.schedule_confirmed).
+        trigger.access_fingerprint = await trigger_fingerprint(db, trigger)
     # The manual-trigger-only check for ChatGPT-subscription-backed models
     # (`oc8.modelrouter.subscription_guard`) lives HERE, not in the HTTP route,
     # because this function is the one funnel every trigger creation goes
@@ -116,7 +158,12 @@ async def create_trigger(
 
 
 async def get_trigger(db: AsyncSession, *, trigger_id: uuid.UUID) -> Trigger | None:
-    return await db.get(Trigger, trigger_id)
+    """None for a Copilot follow-up (chat_session_id set): those belong to one
+    member and are managed only through /copilot/followups."""
+    trigger = await db.get(Trigger, trigger_id)
+    if trigger is None or trigger.chat_session_id is not None:
+        return None
+    return trigger
 
 
 async def get_trigger_by_webhook_token(db: AsyncSession, *, token: str) -> Trigger | None:
@@ -132,7 +179,10 @@ async def get_trigger_by_webhook_token(db: AsyncSession, *, token: str) -> Trigg
 
 
 async def list_triggers_for_agent(db: AsyncSession, *, agent_id: uuid.UUID) -> list[Trigger]:
-    result = await db.execute(select(Trigger).where(Trigger.agent_id == agent_id))
+    # Copilot follow-ups are a member's own and never listed here (get_trigger).
+    result = await db.execute(
+        select(Trigger).where(Trigger.agent_id == agent_id, Trigger.chat_session_id.is_(None))
+    )
     return list(result.scalars().all())
 
 
@@ -143,17 +193,28 @@ async def update_trigger(
     task_text: str | None = None,
     enabled: bool | None = None,
     cron_expression: str | None = None,
+    timezone: str | None = None,
     jitter_seconds: int = 60,
 ) -> Trigger:
+    """`timezone` None keeps the zone the trigger has -- a row saved before
+    triggers carried one stays in UTC until someone names a zone."""
     if task_text is not None:
         trigger.task_text = task_text
     if enabled is not None:
         trigger.enabled = enabled
-    if cron_expression is not None and trigger.kind == "cron":
-        trigger.cron_expression = cron_expression
-        trigger.next_run_at = compute_next_run(
-            cron_expression, after=datetime.now(tz=UTC), jitter_seconds=jitter_seconds
+    if trigger.kind == "cron" and (cron_expression is not None or timezone):
+        expression = cron_expression if cron_expression is not None else trigger.cron_expression
+        zone = (
+            await _cron_timezone(db, trigger.tenant_id, timezone) if timezone else trigger.timezone
         )
+        assert expression is not None  # ck_trigger_kind_fields
+        # Computed before either column changes: a refused value leaves the row as it was.
+        next_run_at = compute_next_run(
+            expression, after=datetime.now(tz=UTC), timezone=zone, jitter_seconds=jitter_seconds
+        )
+        trigger.cron_expression = expression
+        trigger.timezone = zone
+        trigger.next_run_at = next_run_at
     await db.flush()
     return trigger
 

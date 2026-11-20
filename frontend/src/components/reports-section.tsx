@@ -5,7 +5,7 @@
 
 import { FileBarChart } from "lucide-react";
 import { Panel } from "@/components/app-shell";
-import { RUN_COMPONENT_REGISTRY } from "@/components/run-record-card";
+import { RunComponents } from "@/components/run-record-card";
 import { useReports } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
 
@@ -29,17 +29,7 @@ export function ReportsSection() {
               <span className="font-medium text-foreground">{report.agentName}</span>
               <span>{new Date(report.createdAt).toLocaleString()}</span>
             </div>
-            <div className="space-y-2">
-              {report.renderedComponents.map((c, i) => {
-                const Renderer = Object.prototype.hasOwnProperty.call(
-                  RUN_COMPONENT_REGISTRY,
-                  c.componentKey,
-                )
-                  ? RUN_COMPONENT_REGISTRY[c.componentKey]
-                  : undefined;
-                return Renderer ? <Renderer key={i} props={c.props} /> : null;
-              })}
-            </div>
+            <RunComponents components={report.renderedComponents} />
           </Panel>
         ))}
       </div>

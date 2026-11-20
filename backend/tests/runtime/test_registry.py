@@ -329,3 +329,39 @@ async def test_agent_capability_queries_use_the_edition_port(
             _AssignedSupervisionQueryPort(supervised.id),
         ):
             assert await agent_has_supervision(db, agent_id=supervised.id) is True
+
+
+async def test_the_tenant_assistant_runs_in_process_unless_pinned(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Assistant's model calls and tools run control-plane side anyway; a
+    sandbox would only add a pod per turn. With no runtime of its own it runs
+    in-process whatever `agent_isolation` says; an explicit choice still wins,
+    and every other agent keeps the tenant-wide fallback."""
+    tenant = uuid.uuid4()
+    monkeypatch.setattr(get_settings(), "agent_isolation", True, raising=False)
+    async with app_session(tenant) as db:
+        assistant = m.Agent(
+            tenant_id=tenant, department_id=uuid.uuid4(), name="Assistant", is_tenant_assistant=True
+        )
+        other = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Paula")
+        db.add_all([assistant, other])
+        await db.flush()
+
+        assert isinstance(
+            await resolve_runtime(db, tenant_id=tenant, agent=assistant), Oc8AgentRuntime
+        )
+        # A run passes its PINNED ref; None is "never set".
+        assert isinstance(
+            await resolve_runtime(db, tenant_id=tenant, agent=assistant, runtime_ref=None),
+            Oc8AgentRuntime,
+        )
+        assert isinstance(
+            await resolve_runtime(
+                db, tenant_id=tenant, agent=assistant, runtime_ref=BUILTIN_ISOLATED_RUNTIME_REF
+            ),
+            DockerIsolatedRuntime,
+        )
+        assert isinstance(
+            await resolve_runtime(db, tenant_id=tenant, agent=other), DockerIsolatedRuntime
+        )

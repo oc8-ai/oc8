@@ -5,5 +5,6 @@ must never import an edition implementation.
 """
 
 from oc8.edition.contracts import EditionExtension
+from oc8.edition.tools import EditionTool, EditionToolContext
 
-__all__ = ["EditionExtension"]
+__all__ = ["EditionExtension", "EditionTool", "EditionToolContext"]

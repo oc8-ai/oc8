@@ -106,3 +106,34 @@ async def test_one_tenants_proposals_are_not_listed_in_another(
         r = await http.get("/api/v1/copilot/proposals", headers=_headers(tenant_b))
         assert r.status_code == 200, r.text
         assert r.json() == []
+
+
+async def _draft_a_builder_proposal(app_session: AppSessionFactory, tenant: uuid.UUID) -> str:
+    from tests.copilot.builder_helpers import builder_office, propose_as_admin
+
+    async with app_session(tenant) as db:
+        office = await builder_office(db, tenant)
+        proposal = await propose_as_admin(db, office)
+        return str(proposal.id)
+
+
+async def test_a_builder_proposal_is_not_listed(app_session: AppSessionFactory) -> None:
+    """Ruling A10: a builder proposal is its owner's chat content, read only
+    through its own route -- never in the generic listing."""
+    tenant = uuid.uuid4()
+    proposal_id = await _draft_a_mission_change(app_session, tenant)
+    await _draft_a_builder_proposal(app_session, tenant)
+    async with _http() as http:
+        r = await http.get("/api/v1/copilot/proposals", headers=_headers(tenant))
+        assert r.status_code == 200, r.text
+        assert [p["id"] for p in r.json()] == [proposal_id]
+
+
+async def test_a_builder_proposal_cannot_be_reviewed_generically(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    builder_id = await _draft_a_builder_proposal(app_session, tenant)
+    async with _http() as http:
+        r = await http.get(f"/api/v1/copilot/proposals/{builder_id}", headers=_headers(tenant))
+        assert r.status_code == 404, r.text

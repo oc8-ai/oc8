@@ -6,14 +6,17 @@ Core ships the LAYOUT only -- a title, an optional subtitle, a handful of
 label/value pairs, an optional link. What goes INSIDE one is whatever the
 agent already has from an ordinary, already-authorized MCP tool call earlier
 in the same run: this module never fetches anything and names no vendor,
-matching the rule the rest of oc8.agent.control_tools already holds. Whether
-an agent may use a given layout AT ALL is a separate question, answered by
-oc8.models.components.ComponentGrant, not by this catalogue.
+matching the rule the rest of oc8.agent.control_tools already holds. Every
+layout here is available to every agent: components are presentation only, so
+there is no per-agent grant (the legacy component_grant table is no longer
+consulted).
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class RecordCardField(BaseModel):
@@ -52,6 +55,35 @@ class DataTableProps(BaseModel):
     rows: list[dict[str, str]] = Field(default_factory=list, max_length=500)
     caption: str | None = Field(default=None, max_length=500)
 
+    # Models often send a column as just its heading and cells as raw numbers;
+    # accept both rather than burning a retry on a display-only shape.
+    @field_validator("columns", mode="before")
+    @classmethod
+    def _plain_columns(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [{"key": c, "label": c} if isinstance(c, str) else c for c in value]
+
+    @field_validator("rows", mode="before")
+    @classmethod
+    def _scalar_cells(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        return [
+            {k: _cell_text(v) for k, v in row.items()} if isinstance(row, dict) else row
+            for row in value
+        ]
+
+
+def _cell_text(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int | float):
+        return str(value)
+    return value
+
 
 class ChartSeries(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -70,9 +102,9 @@ class ChartProps(BaseModel):
 
 
 #: The whole catalogue. A component_key not in here does not exist -- the
-#: first of the three governance checks (exists / granted / valid props).
-#: Every entry here is implicitly available to a granted agent; nothing is
-#: staged here that isn't meant to be used yet.
+#: first of the two checks render_component makes (exists / valid props).
+#: Every entry here is available to every agent; nothing is staged here that
+#: isn't meant to be used yet.
 COMPONENT_CATALOG: dict[str, type[BaseModel]] = {
     "record_card": RecordCardProps,
     "data_table": DataTableProps,

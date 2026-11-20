@@ -13,6 +13,8 @@ from typing import Any
 import httpx
 
 from oc8.modelrouter.http_errors import raise_for_status_with_body
+from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
+from oc8.modelrouter.reasoning import reasoning_field, reasoning_tokens_from, split_think_tags
 from oc8.modelrouter.types import (
     CompletionRequest,
     CompletionResult,
@@ -144,7 +146,53 @@ def to_openai_messages(messages: list[NeutralMessage]) -> list[dict[str, Any]]:
             out.append(
                 {"role": "tool", "tool_call_id": msg.tool_call_id or "", "content": msg.content}
             )
-    return out
+    return _merge_consecutive_turns(out)
+
+
+def _as_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, list):
+        return list(content)
+    return [{"type": "text", "text": content}] if content else []
+
+
+def _join_content(first: Any, second: Any) -> Any:
+    if not first:
+        return second
+    if not second:
+        return first
+    if isinstance(first, str) and isinstance(second, str):
+        return f"{first}\n\n{second}"
+    return _as_blocks(first) + _as_blocks(second)
+
+
+def _merge_consecutive_turns(out: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Strict chat templates (vLLM/Mistral style) require user and assistant turns
+    # to alternate: two user turns in a row are rejected with 400 "conversation
+    # roles must alternate", and so are two assistant turns. oc8 sends several
+    # user turns in a row as a matter of course (clarify stage, compaction), so
+    # fold each run of same-role turns into one. An assistant turn is only folded
+    # into the next one when it carries no tool calls of its own -- its calls must
+    # stay directly in front of their results. Tool results are never folded:
+    # each one answers its own call id.
+    merged: list[dict[str, Any]] = []
+    for msg in out:
+        prev = merged[-1] if merged else None
+        same_role = prev is not None and prev["role"] == msg["role"]
+        if prev is not None and same_role and msg["role"] == "user":
+            prev["content"] = _join_content(prev["content"], msg["content"])
+            continue
+        if (
+            prev is not None
+            and same_role
+            and msg["role"] == "assistant"
+            and not prev.get("tool_calls")
+        ):
+            prev["content"] = _join_content(prev["content"], msg["content"]) or None
+            if msg.get("tool_calls"):
+                prev["tool_calls"] = msg["tool_calls"]
+            continue
+        merged.append(msg)
+    return merged
 
 
 #: Keys this adapter always sets itself. An operator-supplied `extra` key
@@ -159,6 +207,10 @@ def build_payload(req: CompletionRequest) -> dict[str, Any]:
         "temperature": req.params.temperature,
         "max_tokens": req.params.max_tokens,
     }
+    # Only a level is mapped. A free-form `effort` alone was never sent here
+    # and still is not (spec §6: no level keeps today's behaviour).
+    if req.params.reasoning is not None:
+        payload["reasoning_effort"] = EFFORT_FOR_LEVEL[req.params.reasoning]
     if req.tools:
         payload["tools"] = [
             {
@@ -175,8 +227,13 @@ def build_payload(req: CompletionRequest) -> dict[str, Any]:
     # adapter relies on -- see ModelParams.extra.
     if req.params.extra:
         for key, value in req.params.extra.items():
-            if key not in _RESERVED_PAYLOAD_KEYS:
-                payload[key] = value
+            if key in _RESERVED_PAYLOAD_KEYS:
+                continue
+            # A level sets `reasoning_effort` itself; without one the operator's
+            # own key passes through exactly as before.
+            if key == "reasoning_effort" and "reasoning_effort" in payload:
+                continue
+            payload[key] = value
     return payload
 
 
@@ -192,18 +249,33 @@ def parse_response(data: dict[str, Any], *, provider: str, model: str) -> Comple
         except (ValueError, TypeError):
             args = {}
         tool_calls.append(ToolCall(id=c.get("id", ""), name=fn.get("name", ""), arguments=args))
-    usage_raw = data.get("usage", {})
+    usage_raw = data.get("usage") or {}
     usage = Usage(
         tokens_in=int(usage_raw.get("prompt_tokens", 0)),
         tokens_out=int(usage_raw.get("completion_tokens", 0)),
+        reasoning_tokens=reasoning_tokens_from(usage_raw, "completion_tokens_details"),
     )
+    # A model may write its reasoning into the answer as <think>...</think>
+    # instead of (or as well as) a separate field; either way it is not the
+    # answer.
+    text, inline_reasoning = split_think_tags(message.get("content") or "")
+    reasoning = "\n\n".join(r for r in (reasoning_field(message), inline_reasoning) if r)
+    if tool_calls:
+        stop_reason = "tool_use"
+    elif choice.get("finish_reason") == "length":
+        # Kept distinct from "stop": a call cut off by max_tokens is what the
+        # runtimes' length retry looks for.
+        stop_reason = "length"
+    else:
+        stop_reason = "stop"
     return CompletionResult(
-        text=message.get("content") or "",
+        text=text,
         tool_calls=tool_calls,
         usage=usage,
-        stop_reason="tool_use" if tool_calls else "stop",
+        stop_reason=stop_reason,
         provider=provider,
         model=model,
+        reasoning=reasoning or None,
     )
 
 

@@ -29,7 +29,7 @@ that tools have names.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -49,12 +49,19 @@ class Route:
     tool: str
 
 
-def build_routes(offered: dict[str, list[str]]) -> dict[str, Route]:
+def build_routes(
+    offered: dict[str, list[str]], *, reserved: Collection[str] = frozenset()
+) -> dict[str, Route]:
     """Advertised name -> route, given each connection's own tool names.
 
     `offered` maps connection name to the tools that connection exposes. Order
     is irrelevant: the result depends only on which names collide, so two runs
     over the same connections always advertise the same names.
+
+    `reserved` names are always qualified, even when only one connection has
+    them: the core's own tools. A bare core name then can only ever mean the
+    core tool, so no runtime has to guess which of two same-named tools a call
+    meant, and no connection tool is decided as the core one.
     """
     owners: dict[str, list[str]] = defaultdict(list)
     for connection, tools in offered.items():
@@ -63,7 +70,7 @@ def build_routes(offered: dict[str, list[str]]) -> dict[str, Route]:
 
     routes: dict[str, Route] = {}
     for tool, connections in owners.items():
-        if len(connections) == 1:
+        if len(connections) == 1 and tool not in reserved:
             routes[tool] = Route(connections[0], tool)
             continue
         for connection in connections:
@@ -110,11 +117,13 @@ class RoutedToolset:
         tools_by_connection: Mapping[str, list[NeutralTool]],
         *,
         auth_by_connection: Mapping[str, Any] | None = None,
+        reserved: Collection[str] = frozenset(),
     ) -> None:
         self._sessions = dict(sessions)
         self.auth_by_connection: dict[str, Any] = dict(auth_by_connection or {})
         self._routes = build_routes(
-            {name: [t.name for t in tools] for name, tools in tools_by_connection.items()}
+            {name: [t.name for t in tools] for name, tools in tools_by_connection.items()},
+            reserved=reserved,
         )
         advertised_of = {(r.connection, r.tool): name for name, r in self._routes.items()}
         advertised: list[NeutralTool] = []

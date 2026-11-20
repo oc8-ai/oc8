@@ -15,7 +15,7 @@ from typing import Any
 
 from oc8.modelrouter.adapters.openai_compatible import OpenAICompatibleAdapter
 
-# The OPaaS AI OpenAI-compatible base URL. A per-config base_url still wins.
+# The oc8 AI (powered by opaas) OpenAI-compatible base URL. A per-config base_url still wins.
 DEFAULT_BASE_URL = "https://ai.opaas.online/v1"
 
 
@@ -29,4 +29,7 @@ def register(contrib: Any) -> None:
         # Available once a tenant has stored its key (BYOK).
         available=lambda _settings, key: bool(key),
         aliases=("opaas", "odoo-gpt"),
+        # oc8 AI's models reason and take `reasoning_effort` through the
+        # OpenAI-compatible adapter, so the chat's effort control applies.
+        supports_reasoning=True,
     )

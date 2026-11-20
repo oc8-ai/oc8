@@ -6,7 +6,7 @@ grants: a Head of Sales who can enrol himself in Engineering is the department
 boundary in a different coat, and it would arrive through the very screen this
 slice exists to give him.
 
-These four routes use `require_permission`, not `require_departmental`. That is
+These routes use `require_permission`, not `require_departmental`. That is
 the point -- no seat grants authority over seats, so there is nothing
 departmental to resolve, and a gate that admitted "somebody with a seat
 somewhere" would be exactly the hole above.
@@ -29,11 +29,13 @@ from oc8.api.v1._serializers import member_to_dto
 from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.auth.password import PasswordHashingError, hash_password
-from oc8.authz.permissions import MANAGE, MEMBER, VIEW, perm
+from oc8.authz.permissions import MANAGE, MEMBER, MEMBER_ROLE, VIEW, perm
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
 from oc8.config import get_settings
+from oc8.connections.revoke import purge_member_connections
+from oc8.copilot.profile import offboard_member
 from oc8.mail.send import SmtpConfig, deliver, resolve_smtp_config
-from oc8.schemas.dto import MemberDTO
+from oc8.schemas.dto import MemberDTO, MemberPasswordResetDTO
 from oc8.schemas.paging import Page
 from oc8.schemas.requests import (
     CreateMemberRequest,
@@ -41,12 +43,15 @@ from oc8.schemas.requests import (
     RenameMemberSubjectRequest,
     SetMemberPasswordRequest,
 )
+from oc8.workspace.inviter import InviteRefused, get_member_inviter
 from oc8.workspace.members import (
     MemberRow,
     UnknownSeatRole,
+    delete_member,
     get_member,
     grant_seat,
     list_members,
+    looks_like_email,
     revoke_seat,
     role_names_for,
     seats_for,
@@ -63,6 +68,58 @@ router = APIRouter()
 #: days. 7 days balances that against the same window a stale, forgotten
 #: link stays a live credential for.
 INVITE_TOKEN_TTL = dt.timedelta(days=7)
+#: Duplicated from `auth.PASSWORD_RESET_TOKEN_TTL` rather than imported:
+#: `auth.py` already imports `_member_dto` from this module.
+PASSWORD_RESET_TOKEN_TTL = dt.timedelta(hours=1)
+
+
+async def _spend_unused_tokens(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    member_id: uuid.UUID,
+    purpose: str | None = None,
+) -> None:
+    """Mark unused verification tokens spent. `purpose=None` spends every one."""
+    stmt = (
+        update(m.AccountVerificationToken)
+        .where(
+            m.AccountVerificationToken.tenant_id == tenant_id,
+            m.AccountVerificationToken.member_id == member_id,
+            m.AccountVerificationToken.used_at.is_(None),
+        )
+        .values(used_at=dt.datetime.now(tz=dt.UTC))
+    )
+    if purpose is not None:
+        stmt = stmt.where(m.AccountVerificationToken.purpose == purpose)
+    await db.execute(stmt)
+
+
+async def _mint_access_token(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    member: m.OrgMember,
+    purpose: str,
+    ttl: dt.timedelta,
+) -> str:
+    """Spend unused tokens of this purpose, mint a new one, return the link.
+
+    The plaintext is mailed (or handed back once) and never stored -- same
+    discipline as every other verification token in this table.
+    """
+    await _spend_unused_tokens(db, tenant_id=tenant_id, member_id=member.id, purpose=purpose)
+    token = secrets.token_urlsafe(32)
+    db.add(
+        m.AccountVerificationToken(
+            tenant_id=tenant_id,
+            member_id=member.id,
+            purpose=purpose,
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            expires_at=dt.datetime.now(tz=dt.UTC) + ttl,
+        )
+    )
+    return f"{get_settings().frontend_base_url.rstrip('/')}/reset-password?token={token}"
 
 
 async def _acting_member_id(db: AsyncSession, principal: Principal) -> uuid.UUID | None:
@@ -98,6 +155,7 @@ async def _member_dto(db: AsyncSession, member: m.OrgMember) -> MemberDTO:
             seats=tuple(await seats_for(db, member.id)),
             role_id=member.role_id,
             role_name="" if member.role_id is None else names.get(member.role_id, ""),
+            email=member.email,
         )
     )
 
@@ -122,10 +180,9 @@ async def list_members_route(
 
     Widened to the Design System Consistency plan's uniform search/filter/
     group/pagination contract (spec §1.1) -- `Page[MemberDTO]` instead of a
-    bare list, matching Tasks 3-8's other list-query routes. No
-    `includeArchived`: `OrgMember` has no `SoftDeleteMixin` and archive was
-    never requested for Members (per the plan's Global Constraint, Members'
-    detail view and CRUD stay out of scope -- only this list door widens).
+    bare list, matching Tasks 3-8's other list-query routes. Soft-deleted
+    members (`deleted_at` set by `DELETE /members/{id}`) are omitted: the
+    list is who can still sign in, not the audit of who ever could.
     """
     rows, total = await list_members(
         db,
@@ -136,6 +193,18 @@ async def list_members_route(
         offset=offset,
     )
     return Page(items=[member_to_dto(r) for r in rows], total_count=total)
+
+
+def _refuse_local_password_with_external_inviter() -> None:
+    """With a member inviter registered, people sign in through the
+    deployment's identity service only: a local password, or a sign-in
+    identity changed here, would be a way in that skips it and whatever it
+    enforces."""
+    if get_member_inviter() is not None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Passwords are managed by this deployment's sign-in service.",
+        )
 
 
 @router.post(
@@ -181,13 +250,67 @@ async def create_member(
     passwords are meaningless (the dev-login/dev-tenants flow is how everybody
     signs in there) and `GET /auth/config` reports that same flag as `mode`.
     """
+    inviter = get_member_inviter()
+    subject = body.subject
+    if inviter is not None and body.password is not None:
+        _refuse_local_password_with_external_inviter()
+    # A person who is already a member is updated, never invited again: the
+    # member page saves a new display name through this same door with the
+    # member's sign-in subject, which an inviter would take for an address.
+    already_member = (
+        await db.scalar(
+            select(m.OrgMember.id).where(
+                m.OrgMember.tenant_id == principal.tenant_id,
+                m.OrgMember.subject == body.subject,
+            )
+        )
+        is not None
+    )
+    invited = inviter is not None and not already_member
+    if inviter is not None and not already_member:
+        # The deployment invites people itself (e.g. through its identity
+        # service); `subject` is then the email, and the inviter answers with
+        # the subject that person will sign in as.
+        try:
+            result = await inviter.invite(
+                tenant_id=principal.tenant_id,
+                email=body.subject,
+                role=body.role or MEMBER_ROLE,
+                display_name=body.display_name,
+                invited_by=principal,
+            )
+        except InviteRefused as exc:
+            raise HTTPException(
+                exc.status_code, {"code": exc.code, "message": exc.message, **exc.extra}
+            ) from exc
+        subject = result.subject
     member, created = await upsert_member(
         db,
         tenant_id=principal.tenant_id,
-        subject=body.subject,
+        subject=subject,
         display_name=body.display_name,
         all_departments=body.all_departments,
+        # With an inviter `body.subject` is the address it was asked to invite;
+        # locally the subject is the address.
+        email=body.subject if invited or looks_like_email(subject) else None,
     )
+    if invited:
+        # Same audit trail as a local invitation: who invited whom, as what.
+        await append_event(
+            db,
+            tenant_id=principal.tenant_id,
+            actor_type="operator",
+            actor_id=await _acting_member_id(db, principal),
+            category="member",
+            action="member.invited",
+            resource={
+                "member_id": str(member.id),
+                "subject": member.subject,
+                "role": body.role or MEMBER_ROLE,
+            },
+            reason="invited through the deployment's member inviter (POST /members)",
+            principal=principal,
+        )
     invite_link: str | None = None
     invite_smtp: SmtpConfig | None = None
     invite_recipient: str | None = None
@@ -209,39 +332,18 @@ async def create_member(
             reason="password set through POST /members",
             principal=principal,
         )
-    elif not get_settings().is_dev and member.password_hash is None:
+    elif inviter is None and not get_settings().is_dev and member.password_hash is None:
         # A re-invite (this same branch, reached again for a subject whose
         # first link leaked, went to the wrong inbox, or simply expired
         # unused) must not leave that earlier link live for the rest of its
-        # 7-day `INVITE_TOKEN_TTL` -- mirrors `forgot_password`'s exact
-        # UPDATE-then-mint pattern in `auth.py` (spend every prior unused row
-        # for this member/purpose before writing the new one), just with
-        # `invite` in place of `password_reset`.
-        await db.execute(
-            update(m.AccountVerificationToken)
-            .where(
-                m.AccountVerificationToken.tenant_id == principal.tenant_id,
-                m.AccountVerificationToken.member_id == member.id,
-                m.AccountVerificationToken.purpose == "invite",
-                m.AccountVerificationToken.used_at.is_(None),
-            )
-            .values(used_at=dt.datetime.now(tz=dt.UTC))
-        )
-        invite_token = secrets.token_urlsafe(32)
-        db.add(
-            m.AccountVerificationToken(
-                tenant_id=principal.tenant_id,
-                member_id=member.id,
-                purpose="invite",
-                # The plaintext is mailed (or handed back once, in the
-                # response) and never stored -- same discipline as every
-                # other verification token in this table.
-                token_hash=hashlib.sha256(invite_token.encode()).hexdigest(),
-                expires_at=dt.datetime.now(tz=dt.UTC) + INVITE_TOKEN_TTL,
-            )
-        )
-        invite_link = (
-            f"{get_settings().frontend_base_url.rstrip('/')}/reset-password?token={invite_token}"
+        # 7-day `INVITE_TOKEN_TTL` -- `_mint_access_token` spends every prior
+        # unused `invite` row before writing the new one.
+        invite_link = await _mint_access_token(
+            db,
+            tenant_id=principal.tenant_id,
+            member=member,
+            purpose="invite",
+            ttl=INVITE_TOKEN_TTL,
         )
         # Resolved here, inside the still-open, still tenant-bound transaction
         # -- RLS binds `app.tenant_id` transaction-locally, and it dies at
@@ -331,6 +433,7 @@ async def set_member_password(
     deployment. Never returns the hash or echoes the plaintext: a 204 says
     only that it happened, the way a "password changed" screen should.
     """
+    _refuse_local_password_with_external_inviter()
     member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
@@ -375,6 +478,7 @@ async def rename_member_subject(
     the target subject -- `(tenant_id, subject)` is unique, and the row that
     lost the race would otherwise look like it simply vanished.
     """
+    _refuse_local_password_with_external_inviter()
     member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
@@ -398,6 +502,9 @@ async def rename_member_subject(
         old_subject = member.subject
         member.subject = new_subject
         member.subject_uuid = subject_uuid_for(new_subject)
+        # Local sign-in only (refused above with an external inviter), where the
+        # subject IS the address.
+        member.email = new_subject if looks_like_email(new_subject) else None
         await append_event(
             db,
             tenant_id=principal.tenant_id,
@@ -536,3 +643,139 @@ async def revoke_seat_route(
     dto = await _member_dto(db, member)
     await db.commit()
     return dto
+
+
+@router.post(
+    "/members/{member_id}/password-reset",
+    response_model=MemberPasswordResetDTO,
+    dependencies=[Depends(require_permission(perm(MEMBER, MANAGE)))],
+)
+async def mint_member_password_reset(
+    member_id: uuid.UUID,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> MemberPasswordResetDTO:
+    """Mint a fresh set-password link for an existing member, and try to email it.
+
+    The user-detail screen's counterpart to the invite `POST /members` mints
+    on create: an administrator looking at somebody who already exists had
+    no door to mint a new link or re-trigger the mail. Passwordless members
+    get a 7-day `invite` (they still have a password to SET); members who
+    already have a password get a 1-hour `password_reset`. Either way the
+    previous unused token of that purpose is spent first, and the link is
+    always returned so a missing mail server is not a dead end.
+    """
+    _refuse_local_password_with_external_inviter()
+    member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+
+    if member.password_hash is None:
+        purpose = "invite"
+        ttl = INVITE_TOKEN_TTL
+        action = "member.invited"
+        reason = "invite link re-minted through POST /members/{id}/password-reset"
+        mail_subject = "You've been invited"
+        mail_body_prefix = (
+            "An administrator created an account for you.\nClick this link to set your password:"
+        )
+        mail_expiry = f"This link expires in {INVITE_TOKEN_TTL.days} days."
+    else:
+        purpose = "password_reset"
+        ttl = PASSWORD_RESET_TOKEN_TTL
+        action = "member.password_reset_requested"
+        reason = "reset link minted by an administrator"
+        mail_subject = "Reset your password"
+        mail_body_prefix = "An administrator sent you a link to set a new password:"
+        mail_expiry = "This link expires in 1 hour."
+
+    reset_link = await _mint_access_token(
+        db,
+        tenant_id=principal.tenant_id,
+        member=member,
+        purpose=purpose,
+        ttl=ttl,
+    )
+    smtp = await resolve_smtp_config(db, tenant_id=principal.tenant_id)
+    recipient = member.subject
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=await _acting_member_id(db, principal),
+        category="member",
+        action=action,
+        resource={"member_id": str(member.id), "subject": member.subject},
+        reason=reason,
+        principal=principal,
+    )
+    await db.commit()
+
+    reset_sent = False
+    if smtp is not None:
+        reset_sent = await deliver(
+            smtp,
+            to=recipient,
+            subject=mail_subject,
+            body=f"{mail_body_prefix}\n{reset_link}\n\n{mail_expiry}",
+        )
+    return MemberPasswordResetDTO(reset_link=reset_link, reset_sent=reset_sent)
+
+
+@router.delete(
+    "/members/{member_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission(perm(MEMBER, MANAGE)))],
+)
+async def delete_member_route(
+    member_id: uuid.UUID,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> None:
+    """Soft-delete a person so they disappear from the users list and cannot sign in.
+
+    Refuses the caller's own row: deleting yourself is the lockout
+    `PUT /members/{id}/role` already refuses, by a different verb. Unused
+    invite and reset links are spent in the same transaction so a leftover
+    mailed token cannot resurrect access after the row is gone.
+    """
+    member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+    if member.subject == principal.subject:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You cannot delete yourself — that would lock the only door back.",
+        )
+
+    gone = await delete_member(db, tenant_id=principal.tenant_id, member_id=member.id)
+    if gone is None:  # pragma: no cover - get_member already 404'd
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+    inviter = get_member_inviter()
+    if inviter is not None:
+        # Before the commit: if the deployment cannot lock the person out,
+        # the row stays and the administrator sees why.
+        try:
+            await inviter.remove(tenant_id=principal.tenant_id, subject=member.subject)
+        except InviteRefused as exc:
+            raise HTTPException(
+                exc.status_code, {"code": exc.code, "message": exc.message}
+            ) from exc
+
+    await offboard_member(db, tenant_id=principal.tenant_id, member_id=member.id)
+    # Soft delete fires no FK cascade: remove what this person connected for
+    # themselves (provider revoke best-effort, tokens and secrets deleted).
+    await purge_member_connections(db, tenant_id=principal.tenant_id, member_id=member.id)
+    await _spend_unused_tokens(db, tenant_id=principal.tenant_id, member_id=member.id)
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=await _acting_member_id(db, principal),
+        category="member",
+        action="member.deleted",
+        resource={"member_id": str(member.id), "subject": member.subject},
+        reason="offboarded by an administrator",
+        principal=principal,
+    )
+    await db.commit()

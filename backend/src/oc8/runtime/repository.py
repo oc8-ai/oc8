@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.models import RunStateTransition
+from oc8.models.core import Agent
 from oc8.models.run import AgentRun
+from oc8.notifications.events import on_run_failed
 from oc8.runtime.states import TERMINAL, RunState, assert_transition
 
 logger = logging.getLogger(__name__)
@@ -78,6 +80,24 @@ async def _close_task_of(session: AsyncSession, *, run: AgentRun, dst: RunState)
     await session.flush()
 
 
+def _delete_state_after_commit(
+    session: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    from sqlalchemy import event
+
+    from oc8.runtime.run_state import delete_run_state_soon
+
+    def _after_commit(_session: object) -> None:
+        try:
+            delete_run_state_soon(tenant_id, run_id)
+        except RuntimeError:
+            # No running event loop (a synchronous commit): nothing to
+            # schedule on. The state stays until the tenant is removed.
+            logger.warning("run %s: could not schedule deleting its state", run_id)
+
+    event.listen(session.sync_session, "after_commit", _after_commit, once=True)
+
+
 class RunRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._s = session
@@ -93,6 +113,20 @@ class RunRepository:
         coalesce_key: str | None = None,
         task_id: uuid.UUID | None = None,
     ) -> AgentRun:
+        """Insert a queued run. The one funnel every run row is created
+        through -- intake, a delegated sub-run, a lead's wake-up -- so it is
+        also where the run is pinned to the agent version current right now.
+
+        Pinning here rather than at each call site means a new creation path
+        cannot forget it: an unpinned run falls back to the agent's CURRENT
+        version on every read, so a publish landing mid-run would reach it.
+        A publish after this point gives the run the version it replaced,
+        never a mixture, because a version is immutable. `None` (an agent
+        with no version yet, or an id this tenant cannot see) leaves the run
+        unpinned, and `resolve_version` falls back as before."""
+        agent_version_id = (
+            await self._s.execute(select(Agent.current_version_id).where(Agent.id == agent_id))
+        ).scalar_one_or_none()
         run = AgentRun(
             tenant_id=tenant_id,
             agent_id=agent_id,
@@ -102,6 +136,7 @@ class RunRepository:
             idempotency_key=idempotency_key,
             coalesce_key=coalesce_key,
             task_id=task_id,
+            agent_version_id=agent_version_id,
         )
         self._s.add(run)
         await self._s.flush()
@@ -180,6 +215,15 @@ class RunRepository:
             # And the task it was working, for the same reason and in the same
             # place. See _close_task_of.
             await _close_task_of(self._s, run=run, dst=dst)
+            # Its saved state (a CLI home, a workspace) goes too, but only once
+            # the terminal state is COMMITTED: a rolled-back transition leaves
+            # a run that may still resume. Best-effort; see delete_run_state.
+            _delete_state_after_commit(self._s, tenant_id=run.tenant_id, run_id=run.id)
+        if dst is RunState.FAILED:
+            # Past the already-terminal return above, so once per run that
+            # FAILS, whichever of the executor's sites or closers got here,
+            # and in the same transaction as the ending itself.
+            await on_run_failed(self._s, run)
         from oc8.realtime.bus import get_event_bus
 
         await get_event_bus().publish_event(
@@ -190,6 +234,9 @@ class RunRepository:
                 "agent_id": str(run.agent_id),
                 "state": run.state,
                 "phase": run.phase,
+                # A chat's run ends in that chat: the client toasts only
+                # background runs.
+                "source": run.source,
             },
             source=f"oc8/run/{run.id}",
         )

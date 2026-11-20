@@ -44,6 +44,16 @@ class Guardrail:
 
 
 @dataclass(frozen=True)
+class Step:
+    id: str
+    title: str
+    requires_kind: str  # "read_of" | "tool_called" | "confirmation" | "manual"
+    requires_value: str  # kind, tool name, "" for confirmation, "" for manual
+    required: bool
+    gates: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SkillDefinition:
     schema_version: int
     slug: str
@@ -58,6 +68,82 @@ class SkillDefinition:
     #: see capas.manifest.SkillTemplateSpec.reference_root, which this is
     #: derived from at materialise time (capas/materialise.py).
     reference_root: str | None = None
+    steps: tuple[Step, ...] = ()
+    #: True only while this skill is active. The run does not turn code mode
+    #: on for every skill, and a task that must compact stays on the tool loop.
+    code_mode: bool = False
+
+
+def _parse_requires(requires: Any) -> tuple[str, str] | None:
+    if not isinstance(requires, Mapping):
+        return None
+
+    allowed_keys = frozenset({"read_of", "tool_called", "confirmation", "manual"})
+    variants: list[tuple[str, str]] = []
+
+    for key, value in requires.items():
+        if key not in allowed_keys:
+            return None
+        if key == "read_of":
+            if not isinstance(value, str) or not value:
+                return None
+            variants.append(("read_of", value))
+        elif key == "tool_called":
+            if not isinstance(value, str) or not value:
+                return None
+            variants.append(("tool_called", value))
+        elif key == "confirmation":
+            if value is not True:
+                return None
+            variants.append(("confirmation", ""))
+        elif key == "manual":
+            if value is not True:
+                return None
+            variants.append(("manual", ""))
+
+    if len(variants) != 1:
+        return None
+    return variants[0]
+
+
+def _step(raw: Any) -> Step | None:
+    if not isinstance(raw, Mapping):
+        logger.warning("dropping malformed skill step: %r", raw)
+        return None
+
+    step_id = raw.get("id")
+    title = raw.get("title")
+    if not isinstance(step_id, str) or not step_id:
+        logger.warning("dropping malformed skill step: %r", raw)
+        return None
+    if not isinstance(title, str) or not title:
+        logger.warning("dropping malformed skill step: %r", raw)
+        return None
+
+    requires_parsed = _parse_requires(raw.get("requires"))
+    if requires_parsed is None:
+        logger.warning("dropping malformed skill step: %r", raw)
+        return None
+    requires_kind, requires_value = requires_parsed
+
+    required_raw = raw.get("required", True)
+    required = required_raw if isinstance(required_raw, bool) else True
+
+    gates: list[str] = []
+    gates_raw = raw.get("gates", ())
+    if isinstance(gates_raw, Sequence) and not isinstance(gates_raw, str):
+        for gate in gates_raw:
+            if isinstance(gate, str) and gate:
+                gates.append(gate)
+
+    return Step(
+        id=step_id,
+        title=title,
+        requires_kind=requires_kind,
+        requires_value=requires_value,
+        required=required,
+        gates=tuple(gates),
+    )
 
 
 def _requirement(raw: Any) -> SkillRequirement | None:
@@ -150,6 +236,16 @@ def parse_definition(data: Mapping[str, Any]) -> SkillDefinition:
         else None
     )
 
+    steps: tuple[Step, ...] = ()
+    steps_raw = data.get("steps")
+    if isinstance(steps_raw, Sequence) and not isinstance(steps_raw, str):
+        parsed_steps: list[Step] = []
+        for step_raw in steps_raw:
+            parsed = _step(step_raw)
+            if parsed is not None:
+                parsed_steps.append(parsed)
+        steps = tuple(parsed_steps)
+
     return SkillDefinition(
         schema_version=_schema_version(data.get("oc8_skill", 1)),
         slug=str(data.get("id", "")),
@@ -160,4 +256,6 @@ def parse_definition(data: Mapping[str, Any]) -> SkillDefinition:
         guardrails=tuple(structured),
         prose_guardrails=tuple(prose),
         reference_root=reference_root,
+        steps=steps,
+        code_mode=data.get("code_mode") is True,
     )

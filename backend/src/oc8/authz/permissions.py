@@ -133,6 +133,29 @@ BACKUP: Final = "backup"
 #: `audit:view` already works.
 STATISTICS: Final = "statistics"
 
+#: An immutable, numbered snapshot of an agent's behavioural configuration --
+#: what actually runs, as opposed to the `agent` row an operator edits (agent
+#: versioning design §2.1). Its own resource rather than folded into AGENT,
+#: because the two authorities are genuinely different: `agent:manage` is
+#: permission to change a DRAFT, and putting that draft into production is the
+#: governed act a compliance check and an eval gate hang off. A deployment that
+#: wants four-eyes on what its agents do needs to be able to grant one without
+#: the other, and one permission cannot express that.
+#:
+#: No `:manage`. A version is immutable, so there is nothing to manage; the two
+#: verbs are `view` and `publish`, and both are listed explicitly in
+#: `ALL_PERMISSIONS`'s singleton set rather than swept in by the
+#: `(VIEW, MANAGE)` product above -- which would have minted a meaningless
+#: `agent_version:manage` that then had to be classified and given prose.
+AGENT_VERSION: Final = "agent_version"
+
+#: A person's own accounts at other services (connections design): their
+#: Microsoft or Google sign-in, their own Odoo/HubSpot/Jira login. Its own
+#: resource because the right is about the caller's OWN rows only -- the
+#: organisation's accesses and other people's connections stay behind
+#: `integration:manage`.
+CONNECTION: Final = "connection"
+
 
 def perm(resource: str, action: str) -> str:
     return f"{resource}:{action}"
@@ -156,6 +179,17 @@ APPROVAL_DECIDE: Final = perm(APPROVAL, "decide")
 #: log is about.
 AUDIT_VERIFY: Final = perm(AUDIT, "verify")
 
+#: Turn the working copy into the numbered version that runs, and roll back to
+#: an earlier one -- which is the same act (agent versioning design §2.7: a
+#: rollback copies an old payload onto the row and re-enters the publish path,
+#: rather than repointing `current_version_id`), so there is no separate
+#: `agent_version:rollback`.
+#:
+#: Deliberately not folded into `agent:manage`. An editor changing a draft
+#: changes nothing about production until this permission is exercised, and
+#: that gap is the only place a compliance gate or an eval gate can stand.
+AGENT_VERSION_PUBLISH: Final = perm(AGENT_VERSION, "publish")
+
 #: Reading, and answering, a parked question. `clarification:view` is swept into
 #: `_VIEW_EVERYTHING` by ending in `:view`; `clarification:answer` is not a view
 #: and is granted explicitly, to the same holders as `approval:decide` -- both are
@@ -173,6 +207,11 @@ CLARIFICATION_ANSWER: Final = perm(CLARIFICATION, "answer")
 #: including the otherwise-empty `MEMBER_ROLE`: opening the Copilot to
 #: everyone is the whole point of this permission existing.
 COPILOT_USE: Final = perm(COPILOT, "use")
+
+#: Create, list and remove the caller's OWN connections -- never anybody
+#: else's. Granted to every built-in human role, like `copilot:use`: connecting
+#: one's own mailbox is what every employee does, not an administrator's act.
+CONNECTION_OWN: Final = perm(CONNECTION, "own")
 
 #: A readable copy of the whole tenant (transcripts, knowledge, and with a
 #: passphrase every credential) and the ability to replace it wholesale from
@@ -244,6 +283,7 @@ ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
         CLARIFICATION_VIEW,
         CLARIFICATION_ANSWER,
         COPILOT_USE,
+        CONNECTION_OWN,
         AUDIT_VERIFY,
         TOOL_READ,
         TOOL_WRITE,
@@ -252,6 +292,8 @@ ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
         perm(SECRET, MANAGE),
         perm(AUDIT, VIEW),
         perm(STATISTICS, VIEW),
+        perm(AGENT_VERSION, VIEW),
+        AGENT_VERSION_PUBLISH,
         BACKUP_EXPORT,
         BACKUP_RESTORE,
     }
@@ -307,6 +349,8 @@ DELEGATABLE_PERMISSIONS: Final[frozenset[str]] = frozenset(
         perm(CONTRACT, VIEW),
         perm(CHANNEL, VIEW),
         perm(PLUGIN, VIEW),
+        # The caller's own rows only; safe tenant-wide by construction.
+        CONNECTION_OWN,
         # A read of aggregate numbers, same sensitivity class as `audit:view`
         # above (also delegatable, also tenant-wide-only): a tenant-defined
         # role holding it sees run counts and durations, never a transcript,
@@ -326,6 +370,13 @@ DELEGATABLE_PERMISSIONS: Final[frozenset[str]] = frozenset(
         # string tenant-wide still only ever sees what `scope.viewable` admits.
         perm(AGENT, VIEW),
         perm(DEPARTMENT, VIEW),
+        # Safe for the same reason `agent:view` is, and for one more: the route
+        # that reads it resolves a department through `visible_agent` before it
+        # answers, so a tenant-defined role holding this string tenant-wide
+        # still only ever sees versions of agents `scope.viewable` admits. It is
+        # a READ of configuration that is already visible on the agent's own
+        # detail page -- the history of it, not a new surface.
+        perm(AGENT_VERSION, VIEW),
     }
 )
 
@@ -457,6 +508,13 @@ NEVER_DELEGATABLE: Final[dict[str, str]] = {
             APPROVAL,
         )
     },
+    AGENT_VERSION_PUBLISH: (
+        "publishing is what makes an edit take effect in production, and it is "
+        "the hook a compliance check and an eval gate attach to; a tenant-"
+        "defined role that could publish could route around both. EXIT: when "
+        "the route carries a departmental term a seat can narrow, the same "
+        "graduation every :manage is waiting on"
+    ),
     # ---- the agent's vocabulary, which is not a human right at all
     TOOL_READ: (
         "tool rights are the AGENT's term in the tool decision; a person never "
@@ -552,6 +610,7 @@ _OPERATOR: Final[frozenset[str]] = _VIEW_EVERYTHING | {
     APPROVAL_DECIDE,
     CLARIFICATION_ANSWER,
     COPILOT_USE,
+    CONNECTION_OWN,
 }
 
 #: Everything an operator has, plus authority over the department's own shape:
@@ -568,6 +627,12 @@ _DEPT_MANAGER: Final[frozenset[str]] = _OPERATOR | {
     perm(FLOW, MANAGE),
     perm(CONTRACT, MANAGE),
     perm(BUDGET, MANAGE),
+    # The role that configures a department's agents must be able to make the
+    # configuration take effect. Withholding this would leave a Head of Sales
+    # able to edit a draft and unable to ship it, with nobody in the department
+    # who can -- and the person they would have to ask is the org admin, which
+    # is the bottleneck the department roles exist to remove.
+    AGENT_VERSION_PUBLISH,
 }
 
 #: Read-only, and the only role that reaches the audit trail. Deliberately holds
@@ -582,6 +647,7 @@ _AUDITOR: Final[frozenset[str]] = _VIEW_EVERYTHING | {
     AUDIT_VERIFY,
     APPROVAL_VIEW_ANY,
     COPILOT_USE,
+    CONNECTION_OWN,
 }
 
 #: An agent token is refused by the operator API as a whole
@@ -606,7 +672,7 @@ BUILTIN_ROLE_PERMISSIONS: Final[dict[str, frozenset[str]]] = {
     # see COPILOT_USE's own docstring. This is the one thing that keeps
     # `member` from being the empty set: a bare member still holds nothing
     # that lets them see or change the OFFICE, but they can talk to it.
-    MEMBER_ROLE: frozenset({COPILOT_USE}),
+    MEMBER_ROLE: frozenset({COPILOT_USE, CONNECTION_OWN}),
 }
 
 

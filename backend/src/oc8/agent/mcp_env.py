@@ -36,6 +36,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8 import models as m
 from oc8.oauth.tokens import get_access_token, mint_delegated_token
 from oc8.secrets.service import resolve_secret
 
@@ -72,6 +73,7 @@ async def resolve_mcp_env(
     tenant_id: uuid.UUID,
     cfg: dict[str, Any],
     connection_name: str = "",
+    allow_personal: bool = False,
 ) -> dict[str, str]:
     """Plain `env` plus every `secret_env` entry resolved to a real value.
 
@@ -100,6 +102,12 @@ async def resolve_mcp_env(
             connection_id = _require_oauth_connection_id(
                 cfg, env_name=str(env_name), connection_name=connection_name
             )
+            if not allow_personal:
+                # Outside the degrade-one-identity guard below: a refusal is a
+                # configuration error, not a failed mint.
+                await _refuse_personal_connection(
+                    db, tenant_id=tenant_id, connection_id=connection_id
+                )
             try:
                 env[str(env_name)] = await mint_delegated_token(
                     db,
@@ -126,10 +134,24 @@ async def resolve_mcp_env(
                 cfg=cfg,
                 env_name=str(env_name),
                 connection_name=connection_name,
+                allow_personal=allow_personal,
             )
         else:
             env[str(env_name)] = await resolve_secret(db, tenant_id=tenant_id, ref=ref)
     return env
+
+
+async def _refuse_personal_connection(
+    db: AsyncSession, *, tenant_id: uuid.UUID, connection_id: uuid.UUID
+) -> None:
+    """A plugin's MCP configuration is the organisation's: it may be fed by an
+    organisation connection only, never by somebody's own account."""
+    conn = await db.get(m.OAuthConnection, connection_id)
+    if conn is not None and conn.tenant_id == tenant_id and conn.owner_member_id is not None:
+        raise RuntimeError(
+            f"oauth_connection_id {connection_id} is a personal connection; "
+            "an MCP connection can only use an organisation connection"
+        )
 
 
 def _require_oauth_connection_id(
@@ -158,8 +180,11 @@ async def _mint_oauth_token(
     cfg: dict[str, Any],
     env_name: str,
     connection_name: str,
+    allow_personal: bool = False,
 ) -> str:
     connection_id = _require_oauth_connection_id(
         cfg, env_name=env_name, connection_name=connection_name
     )
+    if not allow_personal:
+        await _refuse_personal_connection(db, tenant_id=tenant_id, connection_id=connection_id)
     return await get_access_token(db, tenant_id=tenant_id, connection_id=connection_id)

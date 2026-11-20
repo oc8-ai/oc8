@@ -89,3 +89,28 @@ def test_the_credential_type_is_discovered() -> None:
     assert fields["api_key"]["kind"] == "password"
     assert fields["base_url"]["kind"] == "url"
     assert fields["base_url"]["default"] == "https://ai.opaas.online/v1"
+
+
+def test_display_names_say_oc8_ai_powered_by_opaas() -> None:
+    import pathlib
+    import tomllib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    plugin = tomllib.loads((root / "plugin.toml").read_text())
+    credential = tomllib.loads((root / "credential_types" / "opaas_ai_api_key.toml").read_text())
+    assert plugin["plugin"]["summary"].startswith("oc8 AI – powered by opaas")
+    assert credential["display_name"] == "oc8 AI – powered by opaas"
+
+
+def test_oc8_ai_models_can_think() -> None:
+    """oc8 AI's models reason (they report reasoning tokens and accept
+    `reasoning_effort` through the OpenAI-compatible adapter), so a new model
+    config of this provider starts with "Can think" on and the chat shows the
+    effort control."""
+    from oc8.modelrouter.registry import entry_supports_reasoning
+
+    found = find_plugin("opaas_ai_provider")
+    assert found is not None
+    assert loader.load_plugin(found) is True
+    entry = contributions.providers_for("opaas_ai_provider")["opaas_ai"]
+    assert entry_supports_reasoning(entry, "opaas-echo") is True

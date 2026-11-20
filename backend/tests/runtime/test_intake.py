@@ -18,6 +18,7 @@ from oc8.runtime.intake import enqueue_run
 from oc8.runtime.queue import RunMessage, RunQueue
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.states import RunState
+from oc8.tenants.activity import TenantInactive, set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -481,3 +482,38 @@ async def test_different_sources_persist(
         row = await db.get(m.AgentRun, run_id)
         assert row is not None
         assert row.source == "cron"
+
+
+async def test_enqueue_run_refuses_an_inactive_organisation(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = _isolated_queue(redis_url, monkeypatch)
+    tenant = uuid.uuid4()
+    agent = uuid.uuid4()
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    try:
+        with pytest.raises(TenantInactive) as raised:
+            async with app_session(tenant) as db:
+                await enqueue_run(
+                    db,
+                    tenant_id=tenant,
+                    agent_id=agent,
+                    context={"task": "hello"},
+                    source="manual",
+                )
+        assert raised.value.tenant_id == tenant
+        assert await _drain(queue) == []
+    finally:
+        await queue.close()
+
+    async with app_session(tenant) as db:
+        runs = (
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent)))
+            .scalars()
+            .all()
+        )
+        assert runs == []

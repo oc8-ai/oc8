@@ -49,3 +49,31 @@ describe("app-shell nav: TP3 restructuring", () => {
     expect(context).toContain('"/workspace"');
   });
 });
+
+describe("app-shell nav: Copilot entry", () => {
+  const src = readFileSync(join(process.cwd(), "src/components/app-shell.tsx"), "utf-8");
+  it("adds the Copilot entry and hides the dock on /copilot", () => {
+    expect(src).toContain('to: "/copilot"');
+    const dockAt = src.indexOf("<CopilotDock");
+    expect(src.slice(Math.max(0, dockAt - 80), dockAt)).toContain('"/workspace"');
+    expect(src).toContain('"/copilot"');
+    expect(src.slice(Math.max(0, dockAt - 80), dockAt)).toContain('"/copilot"');
+  });
+});
+
+describe("app-shell: top-bar page titles", () => {
+  const t = (en: string, de: string) => `${en}|${de}`;
+
+  it("names the Connections page in the top bar", async () => {
+    const { corePageTitle } = await import("@/components/app-shell");
+    expect(corePageTitle("/connections", t)).toBe("Connections|Verbindungen");
+    expect(corePageTitle("/connections?tab=members", t)).toBe("Connections|Verbindungen");
+  });
+
+  it("still names the other core pages and leaves unknown paths to the edition", async () => {
+    const { corePageTitle } = await import("@/components/app-shell");
+    expect(corePageTitle("/members", t)).toBe("Users|Benutzer");
+    expect(corePageTitle("/settings", t)).toBe("Settings|Einstellungen");
+    expect(corePageTitle("/somewhere-else", t)).toBeUndefined();
+  });
+});

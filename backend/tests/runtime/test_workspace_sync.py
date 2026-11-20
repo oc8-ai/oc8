@@ -1,9 +1,8 @@
-"""sync_run_output/sync_active_run_outputs: turning a run's
+"""sync_run_output, the host walk: turning a run's
 `/workspace/output/` into durable `FileAttachment` rows. Covers the dedup
 rule (same filename+size is assumed unchanged and skipped), the
 newest-wins rule (a changed size gets a new row), that a rejected file
-(oversized/unsupported type) is logged and skipped rather than raised, and
-that the periodic sweep only touches RUNNING runs."""
+(oversized/unsupported type) is logged and skipped rather than raised."""
 
 from __future__ import annotations
 

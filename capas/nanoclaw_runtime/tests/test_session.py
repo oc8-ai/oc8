@@ -461,7 +461,7 @@ async def test_provisioning_an_existing_session_does_not_run_the_provisioner_aga
 
     driver = CountingDriver()
     returned = await provision_session(
-        str(tmp_path), agent_id=agent, run_id=run, image="x", driver=driver
+        str(tmp_path), tenant_id=uuid.uuid4(), agent_id=agent, run_id=run, image="x", driver=driver
     )
 
     assert returned == session
@@ -494,7 +494,12 @@ async def test_provisioning_creates_the_claude_home_dir_for_the_sdks_own_resume_
             return None
 
     await provision_session(
-        str(tmp_path), agent_id=agent, run_id=run, image="x", driver=NoopDriver()
+        str(tmp_path),
+        tenant_id=uuid.uuid4(),
+        agent_id=agent,
+        run_id=run,
+        image="x",
+        driver=NoopDriver(),
     )
 
     claude_home = claude_home_dir(str(tmp_path), agent, run)
@@ -560,3 +565,33 @@ def test_a_chown_failure_is_logged_not_raised(
     assert target in caplog.text
     assert "1000:1000" in caplog.text
     get_settings.cache_clear()
+
+
+async def test_the_provisioner_container_carries_the_organisation_label(tmp_path: Path) -> None:
+    from oc8.sandbox.reaper import RUN_LABEL, TENANT_LABEL
+    from runtime.session import provision_session
+
+    agent, run, tenant = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    specs: list[object] = []
+
+    class SpyDriver:
+        async def provision(self, spec: object) -> object:
+            specs.append(spec)
+            return object()
+
+        async def wait(self, handle: object, timeout_s: float = 0) -> int:
+            return 0
+
+        async def logs(self, handle: object) -> str:
+            return ""
+
+        async def teardown(self, handle: object) -> None:
+            return None
+
+    await provision_session(
+        str(tmp_path), tenant_id=tenant, agent_id=agent, run_id=run, image="x", driver=SpyDriver()
+    )
+
+    labels = specs[0].labels  # type: ignore[attr-defined]
+    assert labels[TENANT_LABEL] == str(tenant)
+    assert labels[RUN_LABEL] == str(run)

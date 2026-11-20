@@ -22,6 +22,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.harness.procedures import checklist
 from oc8.modelrouter import NeutralTool
 from oc8.skills.schema import SkillDefinition, SkillDefinitionError, parse_definition
 
@@ -163,9 +164,13 @@ def catalog_block(skills: Sequence[LoadedSkill], *, prefix: str = "") -> str:
     )
 
 
-def instruction_block(skill: LoadedSkill) -> str:
+def instruction_block(
+    skill: LoadedSkill, satisfied: frozenset[str] | None = None
+) -> str:
     parts = [f"[Skill: {skill.name}]", skill.definition.instruction]
     if skill.definition.prose_guardrails:
         rules = "\n".join(f"- {g}" for g in skill.definition.prose_guardrails)
         parts.append(f"Rules you must follow:\n{rules}")
+    if skill.definition.steps:
+        parts.append(checklist(skill.definition.steps, satisfied or frozenset()))
     return "\n\n".join(parts)

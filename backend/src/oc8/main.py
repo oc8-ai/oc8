@@ -7,13 +7,24 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from oc8 import __version__
 from oc8.config import Settings, get_settings
+from oc8.copilot.agent_templates import collect_edition_templates
+from oc8.credentials.service import IncompleteCredential
 from oc8.db.engine import dispose_engine
 from oc8.edition import EditionExtension
-from oc8.edition.runtime import COMMUNITY_RUNTIME_COMPOSITION, EditionRuntimeComposition
+from oc8.edition.runtime import (
+    COMMUNITY_RUNTIME_COMPOSITION,
+    EditionRuntimeComposition,
+    RuntimeComposition,
+)
+from oc8.i18n.catalog import collect_edition_catalog_dirs
+from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +96,27 @@ def create_app(
     runtime_composition: EditionRuntimeComposition = COMMUNITY_RUNTIME_COMPOSITION,
 ) -> FastAPI:
     settings = settings or get_settings()
+    # Edition tools ride on the runtime composition so the request scope below
+    # activates them with the composition's per-tenant entitlements. Building
+    # it validates the names: a tool shadowing a control tool stops startup
+    # here. The worker must be given the same composition by the entry point.
+    edition_tools = [tool for ext in edition_extensions for tool in ext.tools()]
+    if edition_tools:
+        if not isinstance(runtime_composition, RuntimeComposition):
+            raise TypeError(
+                "edition extensions contribute tools, but the runtime composition "
+                f"{type(runtime_composition).__name__} cannot carry them"
+            )
+        runtime_composition = runtime_composition.with_tools(edition_tools)
     app = FastAPI(
         title="oc8 control plane",
         version=__version__,
         lifespan=lifespan,
     )
+    # Agent ideas editions contribute (GET /copilot/agent-ideas reads them).
+    app.state.agent_templates = collect_edition_templates(edition_extensions)
+    # UI catalogs editions ship (GET /i18n/core merges them under core's).
+    app.state.i18n_catalog_dirs = collect_edition_catalog_dirs(edition_extensions)
 
     app.add_middleware(
         CORSMiddleware,
@@ -112,6 +139,34 @@ def create_app(
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
         FastAPIInstrumentor.instrument_app(app)
+
+    @app.exception_handler(TenantInactive)
+    async def tenant_inactive(request: Request, exc: TenantInactive) -> JSONResponse:
+        """`enqueue_run` refuses an organisation that may not run; every API
+        route that starts a run answers the same way without its own check."""
+        return JSONResponse(status_code=403, content={"detail": "tenant_inactive"})
+
+    @app.exception_handler(IncompleteCredential)
+    async def credential_incomplete(request: Request, exc: IncompleteCredential) -> JSONResponse:
+        """A login saved without a required field: the same 422 from every
+        route that creates or edits one, naming the missing field keys."""
+        return JSONResponse(
+            status_code=422,
+            content={"detail": {"code": "credential_incomplete", "missing": exc.missing}},
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_failed(request: Request, exc: RequestValidationError) -> Response:
+        """FastAPI's own 422, unless a deeply nested body cannot even be echoed
+        back: then the same errors without their `input`, never a 500."""
+        try:
+            return await request_validation_exception_handler(request, exc)
+        except RecursionError:
+            errors = [
+                {k: v for k, v in error.items() if k not in ("input", "ctx")}
+                for error in exc.errors()
+            ]
+            return JSONResponse(status_code=422, content={"detail": errors})
 
     @app.get("/health", tags=["meta"])
     async def health() -> dict[str, str]:

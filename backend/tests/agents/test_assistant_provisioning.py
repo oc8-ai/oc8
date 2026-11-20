@@ -178,3 +178,125 @@ async def test_an_existing_assistant_keeps_its_model_when_nothing_is_configured(
 
         again = await get_or_create_assistant(db, tenant_id=tenant)
         assert again.model_config_id == cfg_id
+
+
+async def test_existing_assistant_gets_the_current_mission(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import _LEGACY_MISSIONS, _MISSION
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        # A pre-provenance Assistant: legacy text, no stored sha.
+        agent.mission = _LEGACY_MISSIONS[0]
+        agent.definition = {}
+        await db.flush()
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == _MISSION
+        assert "responsibility_open" in _MISSION and "schedule_followup" in _MISSION
+
+
+async def test_copilot_mission_suggests_a_dashboard_for_recurring_overviews() -> None:
+    """The Copilot offers a dashboard on its own when someone wants the same
+    figures again and again -- in one sentence outside Agent mode, as a
+    proposal inside it."""
+    from oc8.agent.assistant import _MISSION
+
+    assert "Dashboard" in _MISSION
+    assert "wiederkehrende Übersicht" in _MISSION
+    assert "dieselben Zahlen erneut" in _MISSION
+    assert "über Zeit im Blick behalten" in _MISSION
+    assert "in einem Satz an und baust nichts ungefragt" in _MISSION
+    assert "propose_board" in _MISSION and "propose_agent" in _MISSION
+
+
+async def test_copilot_mission_offers_a_dashboard_before_a_schedule() -> None:
+    """Asked for a recurring overview outside Agent mode, the Copilot offered a
+    trigger for an existing agent instead of a dashboard."""
+    from oc8.agent.assistant import _MISSION
+
+    assert "ZUERST ein Dashboard" in _MISSION
+    assert "nicht einfach einen Zeitplan" in _MISSION
+    assert "nur vor, wenn die Person das Dashboard ablehnt" in _MISSION
+    assert "/agent" in _MISSION and "enter_agent_mode" in _MISSION
+
+
+async def test_an_assistant_on_the_first_dashboard_mission_gets_the_sharper_paragraph(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import _LEGACY_MISSION_D70CC8C, _LEGACY_MISSIONS, _MISSION
+
+    assert _LEGACY_MISSION_D70CC8C in _LEGACY_MISSIONS
+    assert "propose_board" in _LEGACY_MISSION_D70CC8C and "ZUERST" not in _LEGACY_MISSION_D70CC8C
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        agent.mission = _LEGACY_MISSION_D70CC8C
+        agent.definition = {}
+        await db.flush()
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == _MISSION
+
+
+async def test_an_assistant_on_the_previous_mission_gets_the_dashboard_paragraph(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import _LEGACY_MISSION_5CA1257, _MISSION
+
+    previous = _LEGACY_MISSION_5CA1257
+    assert "propose_board" not in previous and _MISSION.startswith(previous)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        agent.mission = previous
+        agent.definition = {}
+        await db.flush()
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == _MISSION
+
+
+async def test_a_manual_mission_edit_survives_later_calls(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        agent.mission = "Custom admin mission"
+        await db.flush()
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == "Custom admin mission"
+
+
+async def test_an_unedited_mission_follows_a_new_shipped_text(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent import assistant as mod
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        version_before = agent.current_version_id
+        monkeypatch.setattr(mod, "_MISSION", "A newer shipped mission")
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert again.mission == "A newer shipped mission"
+        assert again.current_version_id != version_before
+        # Now an admin edit is kept even though the shipped text moves again.
+        again.mission = "Admin text"
+        await db.flush()
+        monkeypatch.setattr(mod, "_MISSION", "An even newer mission")
+        kept = await get_or_create_assistant(db, tenant_id=tenant)
+        assert kept.mission == "Admin text"
+
+
+async def test_the_mission_sha_does_not_make_the_draft_dirty(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agents.versioning import draft_status
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)
+        assert "builtin_mission_sha" in (agent.definition or {})
+        again = await get_or_create_assistant(db, tenant_id=tenant)
+        assert not (await draft_status(db, again)).dirty

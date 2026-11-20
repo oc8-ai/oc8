@@ -1,0 +1,10 @@
+kind = "preset"
+connection = "primary"
+key = "assist_with_approval"
+label = "Assist with approval"
+summary = "Reads freely; every change — grades, enrolments, accounts, courses, messages and forum posts — waits for a person to approve it."
+recommended = true
+read = true
+modify = true
+approval_actions = ["modify"]
+approval_eur = ""

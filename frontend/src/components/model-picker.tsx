@@ -3,6 +3,12 @@ import { toast } from "sonner";
 import { useT } from "@/lib/i18n";
 import { useCreateModel, type ModelDTO, type ModelProviderDTO } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
+import {
+  AutoRouterBadge,
+  AUTO_PROVIDER,
+  isAutoProvider,
+  modelAssignmentLabel,
+} from "@/routes/models";
 
 export function ModelPicker({
   models,
@@ -50,14 +56,19 @@ export function ModelPicker({
               onChange={() => onSelect(m.id)}
             />
             <div>
-              <div className="font-medium">{m.name}</div>
+              <div className="flex items-center gap-2 font-medium">
+                {m.name}
+                {isAutoProvider(m.provider) && <AutoRouterBadge />}
+              </div>
               <div className="text-xs text-muted-foreground">
-                {m.provider} · {m.latency} · cost {m.costTier}
+                {isAutoProvider(m.provider)
+                  ? "Auto · complexity router"
+                  : `${m.provider} · ${m.latency} · cost ${m.costTier}`}
               </div>
             </div>
           </div>
           <span className="hidden max-w-[240px] text-right text-xs text-muted-foreground sm:inline">
-            {m.note}
+            {isAutoProvider(m.provider) ? modelAssignmentLabel(m) : m.note}
             {m.usedByCopilot && (
               <span className="ml-2 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
                 Copilot
@@ -126,11 +137,13 @@ function ConnectModelInline({
           onChange={(e) => setProvider(e.target.value)}
           className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm"
         >
-          {providers.map((p) => (
-            <option key={p.canonical} value={p.canonical}>
-              {p.canonical} ({p.locality})
-            </option>
-          ))}
+          {providers
+            .filter((p) => p.canonical !== AUTO_PROVIDER)
+            .map((p) => (
+              <option key={p.canonical} value={p.canonical}>
+                {p.canonical} ({p.locality})
+              </option>
+            ))}
         </select>
       </label>
       <label className="block">

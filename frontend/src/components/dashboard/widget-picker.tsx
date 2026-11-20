@@ -3,15 +3,26 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { WIDGET_REGISTRY } from "@/components/dashboard/widget-registry";
+import { useBoards } from "@/lib/boards-api";
 import type { WidgetType } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
 
-export function WidgetPicker({ onAdd }: { onAdd: (type: WidgetType) => void }) {
+export function WidgetPicker({
+  onAdd,
+}: {
+  onAdd: (type: WidgetType, config?: Record<string, unknown>) => void;
+}) {
   const t = useT();
   const de = t("en", "de") === "de";
+  const { data: boards } = useBoards();
+  const types = (Object.keys(WIDGET_REGISTRY) as WidgetType[]).filter(
+    (type) => WIDGET_REGISTRY[type].pickable !== false,
+  );
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -24,11 +35,25 @@ export function WidgetPicker({ onAdd }: { onAdd: (type: WidgetType) => void }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        {(Object.keys(WIDGET_REGISTRY) as WidgetType[]).map((type) => (
+        {types.map((type) => (
           <DropdownMenuItem key={type} onClick={() => onAdd(type)}>
             {WIDGET_REGISTRY[type].label(de)}
           </DropdownMenuItem>
         ))}
+        {boards?.length ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>{t("Dashboards", "Dashboards")}</DropdownMenuLabel>
+            {boards.map((board) => (
+              <DropdownMenuItem
+                key={board.id}
+                onClick={() => onAdd("data_board", { boardId: board.id })}
+              >
+                <span className="min-w-0 truncate">{board.title}</span>
+              </DropdownMenuItem>
+            ))}
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   );

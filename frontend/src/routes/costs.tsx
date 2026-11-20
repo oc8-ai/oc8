@@ -46,6 +46,7 @@ import {
   type UsageDTO,
 } from "@/lib/hooks";
 import { useReconciliation, useRefreshReconciliation } from "@/lib/reconciliation-hooks";
+import { downloadUsageExport } from "@/lib/usage-export";
 
 export const Route = createFileRoute("/costs")({
   component: CostsPage,
@@ -182,6 +183,21 @@ function CostsPage() {
     { id: "limits", label: t("Limits", "Limits"), icon: ShieldAlert },
   ];
 
+  // Real GET /usage/export download -- the success toast fires only once the
+  // fetch has actually resolved and the browser has been handed a file, not
+  // optimistically on click (that was this button's original defect: it
+  // reported success and downloaded nothing).
+  const onExport = async () => {
+    try {
+      await downloadUsageExport({}, "csv");
+      toast.success(t("Report exported", "Bericht exportiert"), {
+        description: t("CSV downloaded to your device.", "CSV auf dein Gerät geladen."),
+      });
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : t("Export failed", "Export fehlgeschlagen"));
+    }
+  };
+
   return (
     <div className="space-y-6">
       <Panel className="p-5">
@@ -222,11 +238,7 @@ function CostsPage() {
             </div>
             <button
               type="button"
-              onClick={() =>
-                toast.success(t("Report exported", "Bericht exportiert"), {
-                  description: t("CSV downloaded to your device.", "CSV auf Ihr Gerät geladen."),
-                })
-              }
+              onClick={onExport}
               className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-3 py-2 text-xs text-muted-foreground hover:text-foreground"
             >
               <Download className="h-3.5 w-3.5" />
@@ -918,7 +930,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
               <p className="mt-1 text-[11px] italic text-muted-foreground">
                 {t(
                   "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures.",
-                  "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte finden Sie unter Übersicht/Pro Agent/Pro Abteilung.",
+                  "Der Verbrauch unten ist eine Schätzung anhand des editierbaren Preismodells (siehe Modelle), nicht die vom System erfassten Ausgaben — gemessene Werte findest du unter Übersicht/Pro Agent/Pro Abteilung.",
                 )}
               </p>
               <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
@@ -1101,7 +1113,7 @@ function LimitsTab({ currency }: { currency: Currency }) {
                   <td colSpan={8} className="px-5 py-10 text-center text-sm text-muted-foreground">
                     {t(
                       "No limits set yet. Add one to protect your budget.",
-                      "Noch keine Limits gesetzt. Fügen Sie eines hinzu, um Ihr Budget zu schützen.",
+                      "Noch keine Limits gesetzt. Füge eines hinzu, um dein Budget zu schützen.",
                     )}
                   </td>
                 </tr>

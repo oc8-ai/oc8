@@ -50,6 +50,8 @@ from oc8.tenants.provision import (
     get_singleton_organization,
     list_tenants,
 )
+from oc8.triggers.zones import organisation_timezone
+from oc8.workspace.inviter import get_member_inviter
 from oc8.workspace.members import list_members, seats_for
 
 router = APIRouter()
@@ -240,6 +242,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
     """
     org = await db.get(m.Organization, principal.tenant_id)
     onboarding_status = org.onboarding_status if org is not None else None
+    org_zone = await organisation_timezone(db, principal.tenant_id)
     try:
         member, scope = await scope_for_principal(db, principal, upsert=True)
     except PermissionError:
@@ -253,7 +256,9 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
             role=principal.role,
             kind=principal.kind,
             scopes=list(principal.scopes),
+            email=principal.email,
             onboarding_status=onboarding_status,
+            organisation_timezone=org_zone,
         )
 
     # `include_archived=False`: this answers WHERE THIS PERSON STANDS, and
@@ -270,6 +275,7 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
         kind=principal.kind,
         scopes=list(principal.scopes),
         display_name=member.display_name if member is not None else "",
+        email=principal.email or (member.email if member is not None else None),
         member_id=str(member.id) if member is not None else None,
         # The scope's own answer, not `role == "org_admin"`: an auditor holds
         # `approval:view_any` and an `all_departments` row-CEO holds no role at
@@ -282,6 +288,8 @@ async def me(principal: CurrentPrincipal, db: DbSession) -> MeDTO:
         decides_all_departments=scope.decides_everywhere,
         seats=[seat_to_dto(s) for s in seats],
         onboarding_status=onboarding_status,
+        member_onboarding_status=member.onboarding_status if member is not None else None,
+        organisation_timezone=org_zone,
     )
 
 
@@ -625,6 +633,7 @@ async def change_own_email(
         old_subject = member.subject
         member.subject = new_email
         member.subject_uuid = subject_uuid_for(new_email)
+        member.email = new_email
         await append_event(
             db,
             tenant_id=principal.tenant_id,
@@ -743,6 +752,10 @@ async def change_own_email(
     return EmailChangeResponse(verification_required=True, sent_to=new_email)
 
 
+def _member_invites() -> str:
+    return "external" if get_member_inviter() is not None else "local"
+
+
 @router.get(
     "/auth/config",
     response_model=AuthConfig,
@@ -771,6 +784,8 @@ async def auth_config() -> AuthConfig:
             client_id="",
             demo=s.is_demo,
             sso_logout_url=sso_logout_url,
+            member_invites=_member_invites(),
+            account_management_url=s.account_management_url or None,
         )
     return AuthConfig(
         mode="community",
@@ -780,6 +795,8 @@ async def auth_config() -> AuthConfig:
         initialized=await _instance_has_an_administrator(),
         demo=s.is_demo,
         sso_logout_url=sso_logout_url,
+        member_invites=_member_invites(),
+        account_management_url=s.account_management_url or None,
     )
 
 
@@ -1001,6 +1018,7 @@ async def password_setup(body: PasswordSetupRequest) -> PasswordSessionResponse:
             tenant_id=org.id,
             subject=body.email,  # Email as subject for local auth
             subject_uuid=uuid.uuid5(uuid.NAMESPACE_URL, f"oc8:local:{body.email}"),
+            email=body.email,
             display_name=body.display_name or body.email,
             password_hash=password_hash,
             all_departments=True,  # Initial admin sees all departments
@@ -1410,6 +1428,7 @@ async def confirm_email_change(body: ConfirmEmailChangeRequest) -> MemberDTO:
         old_subject = member.subject
         member.subject = row.new_email
         member.subject_uuid = subject_uuid_for(row.new_email)
+        member.email = row.new_email
         await append_event(
             db,
             tenant_id=org.id,

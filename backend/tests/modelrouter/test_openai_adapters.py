@@ -228,6 +228,90 @@ async def test_system_messages_are_merged_and_hoisted_to_the_front() -> None:
     assert sent[4]["content"], "tool-to-user bridge must still be inserted after hoisting"
 
 
+def test_consecutive_user_turns_are_merged_into_one() -> None:
+    """oc8 routinely sends several user turns in a row -- the clarify stage sends
+    task, run context and ledger as separate turns, and compaction sends checkpoint,
+    ledger and skill blocks the same way.
+
+    Live, 2026-11-14 (opaas_ai:odoo-gpt): `user, user` returns 400 "conversation
+    roles must alternate user and assistant roles", and the same text as ONE user
+    turn returns 200. Every copilot run on that model failed on its first call.
+    """
+    sent = to_openai_messages(
+        [
+            NeutralMessage(role="system", content="s"),
+            NeutralMessage(role="user", content="Task:\nfind it"),
+            NeutralMessage(role="user", content="run context"),
+            NeutralMessage(role="user", content="ledger"),
+        ]
+    )
+    assert [m["role"] for m in sent] == ["system", "user"]
+    assert sent[1]["content"] == "Task:\nfind it\n\nrun context\n\nledger"
+
+
+def test_merging_keeps_image_blocks_of_either_user_turn() -> None:
+    """A user turn carrying an image is a block list. Merging it with a plain-text
+    turn must keep every block, the image included, in order."""
+    sent = to_openai_messages(
+        [
+            NeutralMessage(
+                role="user",
+                content=[
+                    TextPart(text="look"),
+                    ImagePart(data=b"\x89PNG...", content_type="image/png"),
+                ],
+            ),
+            NeutralMessage(role="user", content="and tell me"),
+        ]
+    )
+    assert len(sent) == 1
+    blocks = sent[0]["content"]
+    assert [b["type"] for b in blocks] == ["text", "image_url", "text"]
+    assert blocks[0]["text"] == "look"
+    assert blocks[2]["text"] == "and tell me"
+
+
+def test_consecutive_assistant_text_turns_are_merged() -> None:
+    """Same live rule for the other role: `assistant, assistant` returns 400.
+    A text-only assistant turn followed by another assistant turn becomes one turn;
+    the later turn's tool calls are kept, so its tool results still match."""
+    sent = to_openai_messages(
+        [
+            NeutralMessage(role="user", content="do it"),
+            NeutralMessage(role="assistant", content="let me look"),
+            NeutralMessage(
+                role="assistant",
+                content="searching",
+                tool_calls=[ToolCall(id="call_1", name="search_records", arguments={})],
+            ),
+            NeutralMessage(role="tool", content="found 3", tool_call_id="call_1"),
+        ]
+    )
+    assert [m["role"] for m in sent] == ["user", "assistant", "tool"]
+    assert sent[1]["content"] == "let me look\n\nsearching"
+    assert [c["id"] for c in sent[1]["tool_calls"]] == ["call_1"]
+
+
+def test_tool_results_of_one_call_batch_are_not_merged() -> None:
+    """Several tool results in a row are legal (one per parallel call) and each
+    must keep its own tool_call_id."""
+    sent = to_openai_messages(
+        [
+            NeutralMessage(role="user", content="do it"),
+            NeutralMessage(
+                role="assistant",
+                tool_calls=[
+                    ToolCall(id="a", name="search_records", arguments={}),
+                    ToolCall(id="b", name="search_records", arguments={}),
+                ],
+            ),
+            NeutralMessage(role="tool", content="1", tool_call_id="a"),
+            NeutralMessage(role="tool", content="2", tool_call_id="b"),
+        ]
+    )
+    assert [m["role"] for m in sent] == ["user", "assistant", "tool", "tool"]
+
+
 async def test_a_nameless_tool_call_never_reaches_the_provider() -> None:
     """A function with no name poisons a transcript permanently.
 
@@ -314,7 +398,10 @@ async def test_an_assistant_turn_left_with_nothing_is_dropped_entirely() -> None
             NeutralMessage(role="user", content="still there?"),
         ]
     )
-    assert [m["role"] for m in sent] == ["user", "user"]
+    # No empty assistant turn survives; the two user turns it separated are then
+    # folded into one, since strict templates reject `user, user` as well.
+    assert [m["role"] for m in sent] == ["user"]
+    assert sent[0]["content"] == "do it\n\nstill there?"
 
 
 def _long(role: str, n: int, tag: str = "") -> NeutralMessage:

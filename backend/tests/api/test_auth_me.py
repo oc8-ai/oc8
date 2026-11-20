@@ -59,3 +59,18 @@ async def test_me_returns_onboarding_status_pending_for_fresh_acme(
     status, body = await _me(_token("org_admin"))
     assert status == 200, body
     assert body["onboardingStatus"] in ("pending", "completed", "skipped")
+
+
+async def test_me_names_the_organisations_timezone(app_session: AppSessionFactory) -> None:
+    """The schedule editor defaults a new trigger to it."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        org = await db.get(m.Organization, tenant)
+        if org is None:
+            org = m.Organization(id=tenant, slug=f"test-{uuid.uuid4().hex}", name="Test")
+            db.add(org)
+            await db.flush()
+        expected = org.timezone
+    status, body = await _me(_token("org_admin"))
+    assert status == 200, body
+    assert body["organisationTimezone"] == expected

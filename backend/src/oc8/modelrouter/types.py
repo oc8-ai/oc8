@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal, Protocol
 
 Role = Literal["system", "user", "assistant", "tool"]
+
+#: How hard a model should think (spec 2026-11-11 §2). Provider-neutral: each
+#: adapter maps it to its own API; see oc8.modelrouter.levels.
+ReasoningLevel = Literal["fast", "balanced", "thorough"]
 
 
 @dataclass
@@ -37,6 +41,12 @@ class NeutralMessage:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_call_id: str | None = None  # set on role="tool" results
     name: str | None = None  # tool name on role="tool"
+    #: Provider blocks an assistant turn must carry back verbatim on the next
+    #: call (`CompletionResult.replay_blocks`), e.g. Anthropic's signed
+    #: `thinking` blocks ahead of a `tool_use`. Opaque to everything except the
+    #: adapter that produced them; every other adapter ignores the field, so
+    #: reasoning is never fed back to a provider that does not require it.
+    replay_blocks: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -44,12 +54,16 @@ class NeutralTool:
     name: str
     description: str
     parameters: dict[str, Any]  # JSON Schema (draft 2020-12)
+    annotations: dict[str, Any] | None = None
 
 
 @dataclass
 class Usage:
     tokens_in: int = 0
     tokens_out: int = 0
+    #: The part of `tokens_out` the model spent on reasoning, where the
+    #: provider reports it separately. None means "not reported", never zero.
+    reasoning_tokens: int | None = None
 
 
 @dataclass
@@ -60,6 +74,19 @@ class CompletionResult:
     stop_reason: str
     provider: str
     model: str
+    #: What the model thought before answering, as plain text, for display
+    #: only -- `reasoning_content`/`reasoning`, inline `<think>` tags or
+    #: Anthropic `thinking` blocks, whichever the provider uses. None when the
+    #: model reported none. Never sent back to a provider; see `replay_blocks`.
+    reasoning: str | None = None
+    #: Opaque provider blocks the NEXT call must repeat on this assistant turn
+    #: (see `NeutralMessage.replay_blocks`). Empty for every provider that has
+    #: no such continuity rule.
+    replay_blocks: list[dict[str, Any]] = field(default_factory=list)
+    #: The provider refused the reasoning level, so this answer came from one
+    #: retry without it (`ModelRouter._retry_without_reasoning`). Recorded on
+    #: the run step, where an admin sees it.
+    reasoning_dropped: bool = False
 
 
 @dataclass
@@ -91,6 +118,11 @@ class CompletionChunk:
     tool_calls: list[ToolCallDelta] = field(default_factory=list)
     usage: Usage | None = None
     stop_reason: str | None = None
+    #: A fragment of the model's reasoning, streamed separately from `text`.
+    reasoning: str = ""
+    #: Whole replay blocks (`CompletionResult.replay_blocks`), emitted by an
+    #: adapter once a block is complete -- never as fragments.
+    replay_blocks: list[dict[str, Any]] = field(default_factory=list)
     #: Stamped by ModelRouter.stream() with whatever resolve() actually
     #: decided (not every adapter sets these itself) so a caller
     #: reconstructing a CompletionResult from a stream -- oc8.modelrouter.
@@ -99,6 +131,8 @@ class CompletionChunk:
     #: that state through separately.
     provider: str | None = None
     model: str | None = None
+    #: Set on one chunk ahead of a retry without the reasoning level.
+    reasoning_dropped: bool = False
 
 
 @dataclass
@@ -111,6 +145,12 @@ class ModelParams:
     #: that set and changes it without oc8's involvement. None omits the
     #: field entirely rather than sending a guessed default.
     effort: str | None = None
+    #: How hard the model should think, provider-neutral (spec 2026-11-11).
+    #: Built-in adapters map it to their own API; a capa adapter reads it
+    #: itself. Wins over `effort` in every built-in adapter; None leaves each
+    #: adapter on its `effort` behaviour. `resolve_params` never sets either
+    #: one for a model that cannot think.
+    reasoning: ReasoningLevel | None = None
     #: Free-form top-level request fields an operator wants forwarded verbatim
     #: (e.g. OpenRouter's `provider`/`top_p`) that oc8 has no named field for.
     #: Merged into the outbound payload strictly AFTER every named field, so a
@@ -118,6 +158,14 @@ class ModelParams:
     #: is dropped rather than clobbering it -- see each adapter's payload
     #: builder. None/empty omits the merge entirely.
     extra: dict[str, Any] | None = None
+
+
+def with_prompt_cache_key(params: ModelParams, cache_key: str | None) -> ModelParams:
+    if not cache_key:
+        return params
+    extra = dict(params.extra or {})
+    extra["prompt_cache_key"] = cache_key
+    return replace(params, extra=extra)
 
 
 @dataclass

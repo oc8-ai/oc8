@@ -17,6 +17,7 @@ from oc8.config import get_settings
 from oc8.db.session import tenant_session
 from oc8.knowledge.ingest import run_source_sync
 from oc8.runtime.queue import RunMessage, RunQueue
+from oc8.tenants.activity import TENANT_INACTIVE_REASON, tenant_may_run
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,12 @@ async def ingest_job(message: RunMessage) -> None:
         if job is None or job.status != "queued":
             # already handled, or a redelivery of a finished job -- no-op
             return
+        if not await tenant_may_run(tenant_id):
+            # The organisation may not run background work: drop the job
+            # rather than leave it queued for a later redelivery.
+            job.status = "failed"
+            job.stats = {**(job.stats or {}), "error": TENANT_INACTIVE_REASON}
+            return  # tenant_session commits the failed job
         ds = await db.get(m.DataSource, job.data_source_id)
         if ds is None or ds.deleted_at is not None:
             # A job queued before the source was deleted, or a redelivered

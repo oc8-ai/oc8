@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -10,13 +10,16 @@ const {
   createSessionMock,
   messagesMock,
   sendMessageMock,
-  renameSessionMock,
-  deleteSessionMock,
   proposalsMock,
   applyProposalMock,
   rejectProposalMock,
-  runActivityMock,
   liveStatusMock,
+  agentsMock,
+  departmentsMock,
+  mayMock,
+  budgetStatusMock,
+  knowledgeBasesMock,
+  chatModesMock,
 } = vi.hoisted(() => ({
   canMock: vi.fn(() => true),
   assistantMock: vi.fn(),
@@ -25,18 +28,21 @@ const {
   createSessionMock: vi.fn(),
   messagesMock: vi.fn(),
   sendMessageMock: vi.fn(),
-  renameSessionMock: vi.fn(),
-  deleteSessionMock: vi.fn(),
   proposalsMock: vi.fn(),
   applyProposalMock: vi.fn(),
   rejectProposalMock: vi.fn(),
-  runActivityMock: vi.fn(),
   liveStatusMock: vi.fn(),
+  agentsMock: vi.fn(),
+  departmentsMock: vi.fn(),
+  mayMock: vi.fn(() => true),
+  budgetStatusMock: vi.fn(),
+  knowledgeBasesMock: vi.fn(),
+  chatModesMock: vi.fn(),
 }));
 
 vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/governance-hooks")>();
-  return { ...actual, useCan: () => canMock };
+  return { ...actual, useCan: () => canMock, useMay: () => mayMock };
 });
 
 vi.mock("@/lib/hooks", async (importOriginal) => {
@@ -48,29 +54,110 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useCopilotProposals: (options?: unknown) => proposalsMock(options),
     useApplyCopilotProposal: () => ({ mutate: applyProposalMock, isPending: false }),
     useRejectCopilotProposal: () => ({ mutate: rejectProposalMock, isPending: false }),
+    useAgents: (params?: unknown) => agentsMock(params),
+    useDepartments: (params?: unknown) => departmentsMock(params),
+    useBudgetStatus: (departmentId: string | null, options?: unknown) =>
+      budgetStatusMock(departmentId, options),
+    useKnowledgeBases: (params?: unknown) => knowledgeBasesMock(params),
   };
 });
 
+vi.mock("@/lib/chat-commands", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/chat-commands")>();
+  return { ...actual, useChatModes: () => chatModesMock() };
+});
+
 vi.mock("@/lib/hooks-chat", () => ({
-  // Forwarding the real args (instead of ignoring them) lets a test give
-  // different tabs -- now genuinely distinct CopilotChatTab instances, each
-  // with its own sessionId -- different mocked data via mockImplementation;
-  // every existing test still works unchanged since they configure these
-  // with mockReturnValue, which answers the same value regardless of args.
+  // Forwarding the real args lets a test answer per agent or session via
+  // mockImplementation.
   useChatSessions: (agentId?: string) => sessionsMock(agentId),
   useCreateChatSession: () => ({ mutate: createSessionMock, isPending: false }),
   useChatMessages: (sessionId: string | null) => messagesMock(sessionId),
   useSendChatMessage: () => ({ mutate: sendMessageMock, isPending: false }),
-  useRenameChatSession: () => ({ mutate: renameSessionMock, isPending: false }),
-  useDeleteChatSession: () => ({ mutate: deleteSessionMock, isPending: false }),
-  useCopilotRunActivity: (sessionId: string | null, runId: string | null) =>
-    runActivityMock(sessionId, runId),
+  useRenameChatSession: () => ({ mutate: vi.fn(), isPending: false }),
+  useDeleteChatSession: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock("@/lib/live/provider", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/live/provider")>();
   return { ...actual, useLiveConnectionStatus: () => liveStatusMock() };
 });
+
+// The header's "Open Copilot" link needs a router; the dock tests mount no router.
+vi.mock("@tanstack/react-router", () => ({
+  Link: ({ children, to }: { children: React.ReactNode; to: string }) => (
+    <a href={to}>{children}</a>
+  ),
+}));
+vi.mock("@/lib/hooks-copilot", () => ({
+  useCopilotProfile: () => ({
+    data: {
+      displayName: "Copilot",
+      avatar: { shape: "round", color: "indigo" },
+      pausedAt: null,
+      status: "ready",
+      activeCount: 0,
+      agentId: "a",
+    },
+  }),
+  usePauseCopilot: () => ({ mutate: vi.fn(), isPending: false }),
+  useResumeCopilot: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+// The one chat is tested on its own (conversation-*.test.tsx); here it is a
+// stand-in that exposes what the dock hands it.
+vi.mock("@/components/conversation", () => ({
+  Conversation: (p: {
+    agentId: string;
+    sessionId: string | null;
+    onSessionChange: (id: string) => void;
+    variant: string;
+    draft?: string;
+    onDraftChange?: (text: string) => void;
+    placeholder?: string;
+    emptyState?: React.ReactNode;
+    composerAbove?: React.ReactNode;
+    agentItems?: Array<{ id: string; label: string; hint?: string; blocked?: string }>;
+    onAddressAgent?: (agentId: string) => void;
+    autoFocus?: boolean;
+  }) => (
+    <div
+      data-testid="conversation"
+      data-autofocus={p.autoFocus ? "true" : "false"}
+      data-agent={p.agentId}
+      data-session={p.sessionId ?? ""}
+      data-variant={p.variant}
+    >
+      {p.sessionId === null && p.emptyState}
+      {p.composerAbove}
+      {p.draft?.includes("@") && (
+        <ul role="listbox" aria-label="Agents">
+          {(p.agentItems ?? []).map((item) => (
+            <li
+              key={item.id}
+              role="option"
+              aria-selected={false}
+              aria-disabled={item.blocked ? "true" : undefined}
+              onClick={() => !item.blocked && p.onAddressAgent?.(item.id)}
+            >
+              <span>{item.label}</span>
+              {item.hint && <span>{item.hint}</span>}
+              {item.blocked && <span>{item.blocked}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      <input
+        placeholder={p.placeholder}
+        value={p.draft ?? ""}
+        onChange={(e) => p.onDraftChange?.(e.target.value)}
+      />
+      <button type="button" onClick={() => p.onSessionChange(`created-${p.agentId}`)}>
+        mock create session
+      </button>
+    </div>
+  ),
+}));
 
 import { CopilotDock } from "@/components/copilot-dock";
 
@@ -110,16 +197,50 @@ describe("CopilotDock", () => {
     messagesMock.mockReset();
     messagesMock.mockReturnValue({ data: undefined });
     sendMessageMock.mockReset();
-    renameSessionMock.mockReset();
-    deleteSessionMock.mockReset();
     proposalsMock.mockReset();
     proposalsMock.mockReturnValue({ data: [] });
     applyProposalMock.mockReset();
     rejectProposalMock.mockReset();
-    runActivityMock.mockReset();
-    runActivityMock.mockReturnValue({ data: null });
     liveStatusMock.mockReset();
     liveStatusMock.mockReturnValue("connected");
+    agentsMock.mockReset();
+    agentsMock.mockReturnValue({
+      data: {
+        items: [{ id: "sina", name: "Sina", role: "Support Agent", departmentId: "dept-1" }],
+        totalCount: 1,
+      },
+    });
+    departmentsMock.mockReset();
+    departmentsMock.mockReturnValue({
+      data: { items: [{ id: "dept-1", name: "Support" }], totalCount: 1 },
+    });
+    mayMock.mockReset();
+    mayMock.mockImplementation(() => true);
+    budgetStatusMock.mockReset();
+    budgetStatusMock.mockReturnValue({
+      data: {
+        scope: "tenant",
+        departmentId: null,
+        softLimitTokens: null,
+        hardLimitTokens: 100000,
+        currentTokens: 4200,
+        softExceeded: false,
+        hardExceeded: false,
+      },
+    });
+    knowledgeBasesMock.mockReset();
+    knowledgeBasesMock.mockReturnValue({ data: { items: [], totalCount: 0 } });
+    chatModesMock.mockReset();
+    chatModesMock.mockReturnValue({
+      data: [
+        {
+          key: "plan",
+          summary: "Work out the steps and show them. Changes nothing.",
+          allowsTools: true,
+          allowsWrites: false,
+        },
+      ],
+    });
   });
 
   it("renders nothing for a caller without copilot:use, and never even calls the chat-pipeline hooks", () => {
@@ -142,173 +263,50 @@ describe("CopilotDock", () => {
     expect(createSessionMock).not.toHaveBeenCalled();
   });
 
+  it("focuses the composer when the dock opens", () => {
+    renderDock();
+    openDock();
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-autofocus", "true");
+  });
+
   it("defaults to the Assistant's most recent existing session instead of starting a new one", () => {
     sessionsMock.mockReturnValue({
       data: [{ id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null }],
     });
-    messagesMock.mockReturnValue({
+    renderDock();
+    openDock();
+    const conversation = screen.getByTestId("conversation");
+    expect(conversation).toHaveAttribute("data-session", "s1");
+    expect(conversation).toHaveAttribute("data-agent", "assistant-1");
+    expect(conversation).toHaveAttribute("data-variant", "compact");
+  });
+
+  it("opens the most recent chat in a blank tab persisted before the member had one (E2E E)", () => {
+    localStorage.setItem(
+      "oc8-copilot-tabs-member-1",
+      JSON.stringify([{ uiId: "blank-1", sessionId: null }]),
+    );
+    sessionsMock.mockReturnValue({
       data: [
         {
-          id: "m1",
-          sessionId: "s1",
-          role: "user",
-          content: "Hallo",
-          runId: null,
-          renderedComponents: [],
+          id: "s1",
+          agentId: "assistant-1",
+          title: "Old",
           createdAt: "t",
+          lastMessageAt: "2026-11-01",
         },
         {
-          id: "m2",
-          sessionId: "s1",
-          role: "assistant",
-          content: "Hi, wie kann ich helfen?",
-          runId: "r1",
-          renderedComponents: [],
+          id: "s2",
+          agentId: "assistant-1",
+          title: "Testchat",
           createdAt: "t",
+          lastMessageAt: "2026-11-08",
         },
       ],
     });
     renderDock();
     openDock();
-    expect(screen.getByText("Hallo")).toBeInTheDocument();
-    expect(screen.getByText("Hi, wie kann ich helfen?")).toBeInTheDocument();
-  });
-
-  it("with no existing session, sending a first message creates one and then sends the message", () => {
-    createSessionMock.mockImplementation(
-      (agentId: string, opts?: { onSuccess?: (s: unknown) => void }) => {
-        opts?.onSuccess?.({
-          id: "new-session",
-          agentId,
-          title: "",
-          createdAt: "t",
-          lastMessageAt: null,
-        });
-      },
-    );
-    renderDock();
-    openDock();
-
-    const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
-    fireEvent.change(textarea, { target: { value: "What needs approval?" } });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-
-    expect(createSessionMock).toHaveBeenCalledWith("assistant-1", expect.anything());
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      { message: "What needs approval?" },
-      expect.anything(),
-    );
-  });
-
-  it("sends directly, without creating a session, once one already exists", () => {
-    sessionsMock.mockReturnValue({
-      data: [{ id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null }],
-    });
-    messagesMock.mockReturnValue({ data: [] });
-    renderDock();
-    openDock();
-
-    fireEvent.change(screen.getByPlaceholderText(/configure or ask oc8/i), {
-      target: { value: "Cost this month?" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-
-    expect(createSessionMock).not.toHaveBeenCalled();
-    expect(sendMessageMock).toHaveBeenCalledWith(
-      { message: "Cost this month?" },
-      expect.anything(),
-    );
-  });
-
-  it("on a failed send, shows an unavailable notice and restores the typed text instead of losing it", () => {
-    sessionsMock.mockReturnValue({
-      data: [{ id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null }],
-    });
-    messagesMock.mockReturnValue({ data: [] });
-    sendMessageMock.mockImplementation(
-      (_body: { message: string }, opts?: { onError?: () => void }) => opts?.onError?.(),
-    );
-    renderDock();
-    openDock();
-
-    const textarea = screen.getByPlaceholderText(/configure or ask oc8/i) as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "Cost this month?" } });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-
-    expect(screen.getByText(/unavailable right now/i)).toBeInTheDocument();
-    expect(textarea.value).toBe("Cost this month?");
-  });
-
-  it("on a failed session creation, shows an unavailable notice and restores the typed text", () => {
-    createSessionMock.mockImplementation((_agentId: string, opts?: { onError?: () => void }) =>
-      opts?.onError?.(),
-    );
-    renderDock();
-    openDock();
-
-    const textarea = screen.getByPlaceholderText(/configure or ask oc8/i) as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "What needs approval?" } });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-
-    expect(screen.getByText(/unavailable right now/i)).toBeInTheDocument();
-    expect(textarea.value).toBe("What needs approval?");
-    expect(sendMessageMock).not.toHaveBeenCalled();
-  });
-
-  it("shows a thinking indicator and disables sending while the last turn is the caller's own", () => {
-    sessionsMock.mockReturnValue({
-      data: [{ id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null }],
-    });
-    messagesMock.mockReturnValue({
-      data: [
-        {
-          id: "m1",
-          sessionId: "s1",
-          role: "user",
-          content: "Was wartet auf Freigabe?",
-          runId: null,
-          renderedComponents: [],
-          createdAt: "t",
-        },
-      ],
-    });
-    renderDock();
-    openDock();
-
-    fireEvent.change(screen.getByPlaceholderText(/configure or ask oc8/i), {
-      target: { value: "Another question" },
-    });
-    const sendButton = screen.getByRole("button", { name: /^send$/i });
-    expect(sendButton).toBeDisabled();
-    fireEvent.click(sendButton);
-    expect(sendMessageMock).not.toHaveBeenCalled();
-  });
-
-  it("renders a rendered component attached to an assistant reply", () => {
-    sessionsMock.mockReturnValue({
-      data: [{ id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null }],
-    });
-    messagesMock.mockReturnValue({
-      data: [
-        {
-          id: "m2",
-          sessionId: "s1",
-          role: "assistant",
-          content: "Hier ist dein Bericht.",
-          runId: "r1",
-          renderedComponents: [
-            {
-              componentKey: "record_card",
-              props: { title: "Wochenbericht", fields: [{ label: "Stunden", value: "38.5" }] },
-            },
-          ],
-          createdAt: "t",
-        },
-      ],
-    });
-    renderDock();
-    openDock();
-    expect(screen.getByText("Wochenbericht")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s2");
   });
 
   // --- propose_change proposals are reviewable in the dock ---------------
@@ -452,38 +450,13 @@ describe("CopilotDock", () => {
     sessionsMock.mockReturnValue({
       data: [{ id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null }],
     });
-    messagesMock.mockReturnValue({
-      data: [
-        {
-          id: "m1",
-          sessionId: "s1",
-          role: "user",
-          content: "Hallo",
-          runId: null,
-          renderedComponents: [],
-          createdAt: "t",
-        },
-        {
-          id: "m2",
-          sessionId: "s1",
-          role: "assistant",
-          content: "Hi, wie kann ich helfen?",
-          runId: "r1",
-          renderedComponents: [],
-          createdAt: "t",
-        },
-      ],
-    });
     renderDock();
     openDock();
-    expect(screen.getByText("Hallo")).toBeInTheDocument();
-    // Close (toggle button becomes the "close" affordance while open).
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s1");
     fireEvent.click(screen.getByRole("button", { name: /oc8 copilot/i }));
-    expect(screen.queryByText("Hallo")).not.toBeInTheDocument();
-    // Reopen -- transcript is still there because it lives on the server,
-    // not in local component state.
+    expect(screen.queryByTestId("conversation")).not.toBeInTheDocument();
     openDock();
-    expect(screen.getByText("Hallo")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s1");
   });
 
   it("shows the session picker once more than one session exists, and switches on selection", () => {
@@ -514,7 +487,7 @@ describe("CopilotDock", () => {
     fireEvent.pointerDown(screen.getByText("Erste Frage", { selector: "span.truncate" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByText("Zweite Frage"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Zweite Frage/ }));
     // The picker's trigger now shows the newly-selected session's title.
     expect(screen.getByText("Zweite Frage", { selector: "span.truncate" })).toBeInTheDocument();
     expect(
@@ -523,9 +496,6 @@ describe("CopilotDock", () => {
   });
 
   it("a new chat button resets to the lazy-creation state even when other sessions exist", () => {
-    // One existing session, auto-selected on mount -- the exact case where,
-    // without this button, there was previously no way back to a blank,
-    // not-yet-created session at all.
     sessionsMock.mockReturnValue({
       data: [
         {
@@ -537,84 +507,29 @@ describe("CopilotDock", () => {
         },
       ],
     });
-    createSessionMock.mockImplementation(
-      (agentId: string, opts?: { onSuccess?: (s: unknown) => void }) => {
-        opts?.onSuccess?.({
-          id: "new-session",
-          agentId,
-          title: "",
-          createdAt: "t",
-          lastMessageAt: null,
-        });
-      },
-    );
     renderDock();
     openDock();
-
-    fireEvent.click(screen.getByRole("button", { name: /new chat/i }));
-
-    // Same shape as "with no existing session, sending a first message
-    // creates one and then sends the message" -- proving the button put the
-    // dock back into that same lazy-creation state, rather than the reset
-    // being silently clobbered by the bootstrap effect that auto-selects
-    // the existing session.
-    const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
-    fireEvent.change(textarea, { target: { value: "Fresh question" } });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-
-    expect(createSessionMock).toHaveBeenCalledWith("assistant-1", expect.anything());
-    expect(sendMessageMock).toHaveBeenCalledWith({ message: "Fresh question" }, expect.anything());
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s1");
+    fireEvent.click(screen.getByRole("button", { name: /^new chat$/i }));
+    // Back to a blank chat that creates its session on the first send, not
+    // clobbered by the bootstrap effect that auto-selects the existing one.
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "");
+    expect(screen.getByText(/i know your agents, departments and guardrails/i)).toBeInTheDocument();
   });
 
   it("a new chat button still works right after a tenant's very first session is created lazily", () => {
-    // No sessions at all until the first message creates one -- the bootstrap
-    // effect never runs (sessions.length is 0 the whole time), so it's
-    // send()'s own onSuccess, not the effect, that has to arm the ref.
-    // sessionsMock is stateful here to mimic the query-invalidation refetch
-    // that lands the new session in `sessions` shortly after creation.
-    let sessions: Array<{
-      id: string;
-      agentId: string;
-      title: string;
-      createdAt: string;
-      lastMessageAt: string | null;
-    }> = [];
-    sessionsMock.mockImplementation(() => ({ data: sessions }));
-    createSessionMock.mockImplementation(
-      (agentId: string, opts?: { onSuccess?: (s: unknown) => void }) => {
-        const created = {
-          id: "new-session",
-          agentId,
-          title: "",
-          createdAt: "t",
-          lastMessageAt: null,
-        };
-        sessions = [created];
-        opts?.onSuccess?.(created);
-      },
-    );
     renderDock();
     openDock();
-
-    fireEvent.change(screen.getByPlaceholderText(/configure or ask oc8/i), {
-      target: { value: "First message" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-    expect(createSessionMock).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole("button", { name: /new chat/i }));
-    fireEvent.change(screen.getByPlaceholderText(/configure or ask oc8/i), {
-      target: { value: "Second message" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-
-    // Without arming the ref in send()'s onSuccess, the bootstrap effect
-    // would silently re-select the just-created session on this click,
-    // making this a plain send instead of a new lazy creation.
-    expect(createSessionMock).toHaveBeenCalledTimes(2);
+    // The conversation creates its session on the first send and reports it.
+    fireEvent.click(screen.getByRole("button", { name: "mock create session" }));
+    expect(screen.getByTestId("conversation")).toHaveAttribute(
+      "data-session",
+      "created-assistant-1",
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^new chat$/i }));
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "");
+    expect(document.querySelectorAll("[data-copilot-tab]")).toHaveLength(1);
   });
-
-  // --- Task 16: a persisted tab bar, replacing the single-session dock -----
 
   it("opens a new blank tab without disturbing the currently active tab's session", () => {
     sessionsMock.mockReturnValue({
@@ -628,50 +543,17 @@ describe("CopilotDock", () => {
         },
       ],
     });
-    // The two tabs will have distinct sessionId props (s1 vs null) -- key
-    // the mock off that (like the real hook would key its query off it)
-    // instead of a single mockReturnValue, or both tabs would show the same
-    // transcript regardless of which session they're actually on.
-    messagesMock.mockImplementation((sessionId: string | null) =>
-      sessionId === "s1"
-        ? {
-            data: [
-              {
-                id: "m1",
-                sessionId: "s1",
-                role: "user",
-                content: "Hallo",
-                runId: null,
-                renderedComponents: [],
-                createdAt: "t",
-              },
-              {
-                id: "m2",
-                sessionId: "s1",
-                role: "assistant",
-                content: "Hi, wie kann ich helfen?",
-                runId: "r1",
-                renderedComponents: [],
-                createdAt: "t",
-              },
-            ],
-          }
-        : { data: undefined },
-    );
     renderDock();
     openDock();
-    expect(screen.getByText("Hallo")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s1");
 
     fireEvent.click(screen.getByRole("button", { name: /^new tab$/i }));
+    // Only the active tab's conversation is mounted, and the new one is blank.
+    expect(screen.getAllByTestId("conversation")).toHaveLength(1);
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "");
 
-    // The new tab is blank and active -- the first tab's transcript is not
-    // rendered while it isn't the active one.
-    expect(screen.queryByText("Hallo")).not.toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/configure or ask oc8/i)).toBeInTheDocument();
-
-    // Switching back to the first tab shows its session is untouched.
     fireEvent.click(screen.getByRole("button", { name: /erste frage tab/i }));
-    expect(screen.getByText("Hallo")).toBeInTheDocument();
+    expect(screen.getByTestId("conversation")).toHaveAttribute("data-session", "s1");
   });
 
   it("switching tabs preserves each tab's own composer draft text", () => {
@@ -687,9 +569,9 @@ describe("CopilotDock", () => {
     });
 
     // Both tabs are still session-less, so both pills fall back to the same
-    // "untitled" label -- index into DOM order (tab creation order) rather
+    // "New chat" label -- index into DOM order (tab creation order) rather
     // than by name to tell them apart.
-    const tabButtons = screen.getAllByRole("button", { name: /untitled chat tab/i });
+    const tabButtons = screen.getAllByRole("button", { name: /^new chat tab$/i });
     expect(tabButtons).toHaveLength(2);
 
     fireEvent.click(tabButtons[0]);
@@ -699,7 +581,7 @@ describe("CopilotDock", () => {
     expect(screen.getByPlaceholderText(/configure or ask oc8/i)).toHaveValue("Draft in tab two");
   });
 
-  it("selecting a session via ChatSessionPicker focuses its existing tab instead of duplicating it", () => {
+  it("selecting a session via SessionPicker focuses its existing tab instead of duplicating it", () => {
     sessionsMock.mockReturnValue({
       data: [
         {
@@ -732,7 +614,7 @@ describe("CopilotDock", () => {
     fireEvent.pointerDown(screen.getByText("Erste Frage", { selector: "span.truncate" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByText("Zweite Frage"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Zweite Frage/ }));
     expect(screen.getByText("Zweite Frage", { selector: "span.truncate" })).toBeInTheDocument();
     expect(document.querySelectorAll("[data-copilot-tab]")).toHaveLength(2);
 
@@ -741,7 +623,7 @@ describe("CopilotDock", () => {
     fireEvent.pointerDown(screen.getByText("Zweite Frage", { selector: "span.truncate" }), {
       button: 0,
     });
-    fireEvent.click(screen.getByText("Erste Frage", { selector: "button" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: /Erste Frage/ }));
 
     expect(screen.getByText("Erste Frage", { selector: "span.truncate" })).toBeInTheDocument();
     expect(document.querySelectorAll("[data-copilot-tab]")).toHaveLength(2);
@@ -753,14 +635,14 @@ describe("CopilotDock", () => {
     // Tab 1 (bootstrapped, blank). Open two more.
     fireEvent.click(screen.getByRole("button", { name: /^new tab$/i }));
     fireEvent.click(screen.getByRole("button", { name: /^new tab$/i }));
-    let tabButtons = screen.getAllByRole("button", { name: /untitled chat tab/i });
+    let tabButtons = screen.getAllByRole("button", { name: /^new chat tab$/i });
     expect(tabButtons).toHaveLength(3);
 
     // Tab 3 is active; close it via its own "close" button.
-    const closeButtons = screen.getAllByRole("button", { name: /^close untitled chat$/i });
+    const closeButtons = screen.getAllByRole("button", { name: /^close new chat$/i });
     fireEvent.click(closeButtons[closeButtons.length - 1]);
 
-    tabButtons = screen.getAllByRole("button", { name: /untitled chat tab/i });
+    tabButtons = screen.getAllByRole("button", { name: /^new chat tab$/i });
     expect(tabButtons).toHaveLength(2);
     // The previous tab (tab 2) is now the active one -- its composer is the
     // one rendered.
@@ -782,7 +664,7 @@ describe("CopilotDock", () => {
     const { unmount } = renderDock();
     openDock();
     fireEvent.click(screen.getByRole("button", { name: /^new tab$/i }));
-    expect(screen.getAllByRole("button", { name: /frage tab|untitled chat tab/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /frage tab|^new chat tab$/i })).toHaveLength(2);
 
     unmount();
 
@@ -790,7 +672,7 @@ describe("CopilotDock", () => {
 
     renderDock();
     openDock();
-    expect(screen.getAllByRole("button", { name: /frage tab|untitled chat tab/i })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: /frage tab|^new chat tab$/i })).toHaveLength(2);
   });
 
   it("does not clobber a real member's persisted tabs while useAuth is still resolving", () => {
@@ -846,53 +728,6 @@ describe("CopilotDock", () => {
     expect(screen.getByPlaceholderText(/configure or ask oc8/i)).toBeInTheDocument();
   });
 
-  it("keeps tracking a run's activity after the message poll clears the persisted user turn's runId", () => {
-    sessionsMock.mockReturnValue({
-      data: [{ id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null }],
-    });
-    messagesMock.mockReturnValue({ data: [] });
-    sendMessageMock.mockImplementation(
-      (text: string, opts?: { onSuccess?: (message: unknown) => void }) =>
-        opts?.onSuccess?.({
-          id: "m1",
-          sessionId: "s1",
-          role: "user",
-          content: text,
-          runId: "run-1",
-          renderedComponents: [],
-          createdAt: "t",
-        }),
-    );
-    renderDock();
-    openDock();
-
-    const textarea = screen.getByPlaceholderText(/configure or ask oc8/i) as HTMLTextAreaElement;
-    fireEvent.change(textarea, { target: { value: "Cost this month?" } });
-    fireEvent.click(screen.getByRole("button", { name: /^send$/i }));
-
-    expect(runActivityMock).toHaveBeenLastCalledWith("s1", "run-1");
-
-    // Simulate the 2s poll replacing the cache with the persisted row -- the
-    // backend never sets run_id on the user's own ChatMessage (only on the
-    // assistant's terminal reply), so this is what a real poll looks like.
-    messagesMock.mockReturnValue({
-      data: [
-        {
-          id: "m1",
-          sessionId: "s1",
-          role: "user",
-          content: "Cost this month?",
-          runId: null,
-          renderedComponents: [],
-          createdAt: "t",
-        },
-      ],
-    });
-    fireEvent.change(textarea, { target: { value: "x" } });
-
-    expect(runActivityMock).toHaveBeenLastCalledWith("s1", "run-1");
-  });
-
   it("shows a reconnecting notice while the WS connection is down", () => {
     liveStatusMock.mockReturnValue("disconnected");
     renderDock();
@@ -905,5 +740,62 @@ describe("CopilotDock", () => {
     renderDock();
     openDock();
     expect(screen.queryByText(/reconnecting/i)).not.toBeInTheDocument();
+  });
+
+  // --- Task 15: @ agent switching, / commands and /budget in the dock ------
+
+  describe("the dock composer's sigils", () => {
+    it('typing "@" lists agents with their role and department', () => {
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+      expect(screen.getByRole("listbox", { name: /agents/i })).toBeInTheDocument();
+      expect(screen.getByText("Sina")).toBeInTheDocument();
+      expect(screen.getByText("Support Agent · Support")).toBeInTheDocument();
+    });
+
+    it("picking an agent switches who the conversation goes to and says so", () => {
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+      fireEvent.click(screen.getByRole("option", { name: /Sina/i }));
+
+      expect(screen.getByText(/goes to Sina — not the copilot/i)).toBeInTheDocument();
+      expect(createSessionMock).not.toHaveBeenCalled();
+    });
+
+    it("a caller without run:start sees the agent but cannot pick it", () => {
+      mayMock.mockImplementation(() => false);
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+
+      const option = screen.getByRole("option", { name: /Sina/i });
+      expect(option).toHaveAttribute("aria-disabled", "true");
+      expect(screen.getByText(/you may not start runs for another agent/i)).toBeInTheDocument();
+
+      fireEvent.click(option);
+      expect(screen.queryByText(/goes to Sina/i)).not.toBeInTheDocument();
+    });
+
+    it("after a switch the tab talks to the NEW agent in a fresh conversation", () => {
+      sessionsMock.mockReturnValue({
+        data: [
+          { id: "s1", agentId: "assistant-1", title: "", createdAt: "t", lastMessageAt: null },
+        ],
+      });
+      renderDock();
+      openDock();
+      const textarea = screen.getByPlaceholderText(/configure or ask oc8/i);
+      fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } });
+      fireEvent.click(screen.getByRole("option", { name: /Sina/i }));
+
+      const conversation = screen.getByTestId("conversation");
+      expect(conversation).toHaveAttribute("data-agent", "sina");
+      expect(conversation).toHaveAttribute("data-session", "");
+    });
   });
 });

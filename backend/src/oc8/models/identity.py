@@ -59,6 +59,12 @@ class OrgMember(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     display_name: Mapped[str] = mapped_column(
         Text, nullable=False, default="", server_default=text("''")
     )
+    #: The address this person signs in with, for display only. Copied from the
+    #: token's `email` claim whenever it is present and differs; for local
+    #: password sign-in it is the subject itself. NEVER an identity: nothing
+    #: looks a person up by it, because an IdP lets people change it and two
+    #: subjects can report the same address.
+    email: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
     #: "Sees and decides in every department, including ones created after this
     #: row was written." A boolean rather than a set holding every department id:
     #: a set has to be remembered every time a department is created, and the one
@@ -104,6 +110,14 @@ class OrgMember(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     #: was never mandatory, or has never held org_admin.
     totp_grace_started_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
+    #: The person's own first-run welcome, shown by an edition that has one:
+    #: 'pending' for a member created after migration 0106, 'completed' or
+    #: 'skipped' once they finished or dismissed it. Separate from
+    #: `organization.onboarding_status`, which is the organisation's setup.
+    onboarding_status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default=text("'pending'")
+    )
+
     __table_args__ = (
         # Both partial: a soft-deleted member must not block re-enrolling the
         # same person, and `deleted_at IS NULL` is what makes the row that
@@ -127,6 +141,10 @@ class OrgMember(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
             "subject_uuid",
             unique=True,
             postgresql_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            "onboarding_status IN ('pending','completed','skipped')",
+            name="ck_org_member_onboarding_status",
         ),
     )
 

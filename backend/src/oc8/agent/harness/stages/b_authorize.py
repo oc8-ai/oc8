@@ -1,0 +1,385 @@
+"""B0 -- the policy enforcement point for one tool call (spec §5 B0).
+
+Moved out of engine.py unchanged. Deliberately pure: checks needing the DB
+(does a delegation target exist, is it in this department) live in the
+control-tool dispatcher.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from oc8 import models as m
+from oc8.agent.control_tools import (
+    BOARD_WRITE,
+    BUILDER_TOOL_NAMES,
+    CONTROL_TOOL_NAMES,
+    COPILOT_TOOL_NAMES,
+    DEPTH_LIMIT_REASON,
+    MAX_DELEGATION_DEPTH,
+)
+from oc8.agent.harness.stages.b_direct_access import (
+    NO_DIRECT_ACCESS,
+    OFFER_DIRECT_ACCESS_TOOL,
+    DirectAccessView,
+    direct_access_decision,
+)
+from oc8.agent.tool_semantics import extract_attributes, extract_value
+from oc8.authz.pdp import (
+    NOT_THIS_CONNECTION,
+    Decision,
+    Effect,
+    ToolPolicy,
+    authorize_tool_call,
+    required_right,
+)
+from oc8.chat.modes import MODE_WITHHELD, ChatMode, mode_refusal
+from oc8.edition.tools import NO_EDITION_OFFER, EditionOffer
+from oc8.memory.policy import authorize_memory_write
+from oc8.memory.router import MAX_MEMORY_CONTENT_LENGTH
+from oc8.modelrouter import ToolCall
+
+
+def authorize(
+    agent: m.Agent,
+    tc: ToolCall,
+    *,
+    frame: dict[str, Any],
+    delegation_depth: int = 0,
+    tool_policies: Mapping[str, ToolPolicy],
+    connection_key: str | None,
+    tool_scopes: Mapping[str, Any] | None,
+    skill_thresholds: Sequence[float | None] = (),
+    skill_tool_names: frozenset[str] = frozenset(),
+    value_spec: dict[str, Any] | None = None,
+    guardrail_attribute_specs: Sequence[dict[str, Any]] = (),
+    narrowing: dict[str, Any] | None = None,
+    is_team_lead: bool | None = None,
+    chat_mode: ChatMode | None = None,
+    edition_offer: EditionOffer = NO_EDITION_OFFER,
+    routed: bool = False,
+    direct_access: DirectAccessView = NO_DIRECT_ACCESS,
+) -> Decision:
+    """PEP for a tool call. Every connection tool is decided against the
+    department frame (§5.3): which entry governs it is the connection key, and
+    which right it needs comes from the connection's `scopes` (unclassified ==
+    write, fail-closed). memory_write is gated by the §10 tier policy instead;
+    delegate_task (§7) is ALLOW/DENY only -- a delegation carries no monetary
+    value. Checks needing the DB (does the target exist, is it in this
+    department) live in _delegate, since this function is deliberately pure.
+
+    The frame is bypassed only for tool names that are actually assigned
+    skill-invocation tools (`skill_tool_names`) -- never by a `skill_`
+    name-prefix match, since MCP tool names flow in unsanitized from a remote
+    server and a connection could name a plain tool `skill_anything` to dodge
+    the frame check entirely. A stray `skill_`-prefixed tool that isn't one of
+    this agent's assigned skills falls through to the normal frame check
+    below, exactly like any other tool of that connection.
+
+    `narrowing` and `is_team_lead` are the run's PINNED values
+    (`resolve_version`). Every runtime passes them; the fallback to the live
+    `agent` row exists only for a direct call with no run behind it.
+
+    `chat_mode` is the slash command the operator sent this turn with
+    (`oc8.chat.modes`). Checked FIRST, above the skill/ask_user/propose_change
+    early ALLOWs, because a mode that "changes nothing" has to cover
+    delegate_task and memory_write too -- not just the connection's own tools.
+    It can only ever DENY: there is no branch where a mode turns a refusal into
+    an allow, which is what makes "a mode is a narrowing" true rather than
+    aspirational.
+
+    `edition_offer` is what the runtime offered of the edition tools on this
+    run (`oc8.edition.tools.edition_offer`). An unrouted call it claims is an
+    edition call: ALLOW only if it was offered, otherwise DENY as an unknown
+    tool -- a registered name is not a grant. Every runtime passes its offer;
+    the default claims every registered name and allows none.
+
+    `routed` says the model named this tool through a connection
+    (`<connection>.<tool>`), so `tc.name` is the CONNECTION's tool name. It may
+    match a core tool's name, and must not inherit that core tool's early
+    ALLOW: the call runs on the connection's server, so the frame decides it.
+    Nor is a routed call ever an edition call.
+
+    `direct_access` is the Copilot's per-call view of its grants
+    (`b_direct_access`). For the tenant Assistant every connection tool is
+    decided against it alone -- its own department grants it no system --
+    and the default refuses every one."""
+    if narrowing is None:
+        narrowing = agent.narrowing or {}
+    if is_team_lead is None:
+        is_team_lead = agent.is_team_lead
+    # FIRST, above every early ALLOW below: a mode narrows the whole turn, not
+    # just the connection tools. Denying here also means the existing
+    # append_event at all three call sites records it -- "denied because /plan"
+    # is in the audit trail without a fourth writer.
+    core_call = is_core_call(tc.name, routed=routed)
+    # A routed name is the connection's own tool: never an edition call.
+    edition_call = not routed and edition_offer.claims(tc.name)
+    skill_call = tc.name in skill_tool_names and not routed and not edition_call
+    refused = mode_refusal(
+        chat_mode,
+        tc.name,
+        # Loading a skill only hands the model a procedure: a read. Without
+        # this, a skill no connection scope names failed closed to "modify",
+        # and /plan withheld every skill.
+        tool_scopes={"read": [tc.name]} if skill_call else tool_scopes,
+        connection_tool=not edition_call,
+        core=core_call,
+    )
+    if refused is not None:
+        # Tagged, so the control-tool dispatcher can tell "this turn's mode
+        # withholds it" (stop, for every core tool) from the routine frame DENY
+        # a reading core tool runs under (see below).
+        return Decision(Effect.DENY, refused, reason_code=MODE_WITHHELD)
+    if edition_call:
+        # An edition tool belongs to no connection, like propose_change: the
+        # frame has nothing to decide it against. Its gates are the offer
+        # (entitlement, door, mode -- computed by the runtime), the mode check
+        # above, and the entitlement checked again at dispatch.
+        if edition_offer.offered(tc.name) is None:
+            return Decision(Effect.DENY, f"unknown tool {tc.name!r}")
+        return Decision(Effect.ALLOW)
+    if skill_call:
+        return Decision(Effect.ALLOW)
+    if not core_call and agent.is_tenant_assistant:
+        # The Copilot acts through a connection only on a grant in this
+        # conversation, for the person present (copilot direct access §6).
+        # Its own EUR threshold still applies: a department policy only adds
+        # gates.
+        agent_threshold = (agent.presentation or {}).get("approval_value_eur")
+        return direct_access_decision(
+            direct_access,
+            connection_key=connection_key,
+            tool=tc.name,
+            scopes=tool_scopes,
+            value=extract_value(tc.arguments, value_spec),
+            attributes=extract_attributes(
+                tc.arguments, _applicable_attributes(tc, guardrail_attribute_specs)
+            ),
+            extra_thresholds=(
+                float(agent_threshold) if agent_threshold is not None else None,
+                *skill_thresholds,
+            ),
+            narrowing=narrowing,
+        )
+    if not core_call:
+        # A connection's tool, even if it shares a core tool's name: none of the
+        # name-based branches below may decide it.
+        return _frame_decision(
+            agent,
+            tc,
+            tool_policies=tool_policies,
+            connection_key=connection_key,
+            tool_scopes=tool_scopes,
+            skill_thresholds=skill_thresholds,
+            value_spec=value_spec,
+            guardrail_attribute_specs=guardrail_attribute_specs,
+        )
+    if tc.name == "ask_user":
+        return Decision(Effect.ALLOW)
+    if tc.name in ("write_output_file", "request_decision"):
+        # Like ask_user: neither belongs to a connection, so the frame has
+        # nothing to decide them against. Falling through used to DENY them
+        # with "no grant for <connection>" -- which nothing enforced, so the
+        # file was written anyway, and the B risk gate behind an ALLOW was
+        # silently skipped. The dispatcher now stops every denied writing
+        # control tool, so these need a real verdict.
+        return Decision(Effect.ALLOW)
+    if tc.name == "read_resource":
+        # Same read right as a read tool on the connection the call names.
+        # The body is fetched afterwards; this only decides whether it may be.
+        key = str(tc.arguments.get("connection", "")).strip() or connection_key
+        if not str(tc.arguments.get("uri", "")).strip():
+            return Decision(Effect.DENY, "read_resource requires a uri")
+        if not key:
+            return Decision(Effect.DENY, "read_resource requires a connection")
+        if agent.is_tenant_assistant:
+            # The Copilot's own frame grants no system: it may read a
+            # connection's resources only through this conversation's grant,
+            # exactly like one of that connection's read tools.
+            agent_threshold = (agent.presentation or {}).get("approval_value_eur")
+            return direct_access_decision(
+                direct_access,
+                connection_key=key,
+                tool=tc.name,
+                scopes={"read": [tc.name]},
+                value=None,
+                attributes={},
+                extra_thresholds=(float(agent_threshold) if agent_threshold is not None else None,),
+                narrowing=narrowing,
+            )
+        return authorize_tool_call(
+            policies=tool_policies,
+            connection_key=key,
+            right="read",
+            tool=tc.name,
+            value=None,
+            attributes={},
+            extra_thresholds=(),
+        )
+    if tc.name == "propose_change":
+        # Like ask_user: it belongs to no connection, so the department frame
+        # has nothing to decide it against -- the Assistant's chat run has no
+        # tool connection bound at all, and falling through would DENY. That
+        # DENY is not enforced (execute_control_tool dispatches control tools
+        # before the deny branch and this one never reads `decision`), it is
+        # only WRITTEN, so every successful call would be audited as a denial.
+        # Deliberate consequence: `is_tenant_assistant`, checked in the
+        # dispatch, is then the only gate on this tool -- which is what it
+        # should be for a tool that can only ever produce a draft a human has
+        # to approve before anything changes.
+        return Decision(Effect.ALLOW)
+    if tc.name == "read_context":
+        # Belongs to no connection either: it reads what the member pinned,
+        # re-authorised for them and checked against the model inside the
+        # tool (control_tools._execute_read_context). Falling through would
+        # audit every read as a denial.
+        return Decision(Effect.ALLOW)
+    if tc.name == "suggest_replies":
+        # Belongs to no connection, like propose_change: it only stores chips
+        # on the answer, so the frame has nothing to decide it against and
+        # falling through would audit every call as a denial.
+        return Decision(Effect.ALLOW)
+    if tc.name == "decide_approval":
+        # Like propose_change and ask_user: it belongs to no connection, so
+        # the department frame has nothing to decide it against. Real
+        # authorisation for a decision happens where it must, inside
+        # `decide_approval` (approvals/service.py) via `_may_apply_the_effect`
+        # and `_resolve_agent_actor`'s scope -- this ALLOW only keeps a
+        # successful call from being audited as a denial for a tool that was
+        # never going to be enforced by this frame in the first place.
+        return Decision(Effect.ALLOW)
+    if tc.name == "run_shell":
+        # Like propose_change and decide_approval, immediately above: it
+        # belongs to no connection, so the department frame has nothing to
+        # decide it against, and execute_control_tool never reads this
+        # decision for run_shell either (see RUN_SHELL's dispatch in
+        # control_tools.py, which only checks for a local_result) -- without
+        # this special case, a run with no MCP connection bound (only the
+        # builtin isolated shell offers run_shell at all -- see
+        # internal_agent.py's offer_run_shell) would have every successful
+        # call audited as a denial.
+        return Decision(Effect.ALLOW)
+    if tc.name == "run_program":
+        # Same as run_shell: only the isolated shell offers it (shell gate +
+        # code_mode), there is no MCP connection, and execute_control_tool
+        # only formats local_result. Without this ALLOW every successful call
+        # would audit and return status=denied (which the SDK treats as
+        # ToolDenied).
+        return Decision(Effect.ALLOW)
+    if tc.name == OFFER_DIRECT_ACCESS_TOOL:
+        # Belongs to no connection; its own approval is the gate (§6). Only the
+        # Copilot, only with the conversation's member present.
+        if agent.is_tenant_assistant and direct_access.present_member:
+            return Decision(Effect.ALLOW)
+        return Decision(
+            Effect.DENY,
+            "direct access is offered only by the Copilot, to the person in this conversation",
+        )
+    if tc.name == BOARD_WRITE.name and core_call:
+        # Belongs to no connection: the dispatch is the gate (the board's
+        # producing agent only; internal data, so no connection approvals, spec 6.4).
+        return Decision(Effect.ALLOW)
+    if tc.name in COPILOT_TOOL_NAMES:
+        # Belongs to no connection, like propose_change: the dispatch
+        # (oc8.copilot.tools) is the gate -- Copilot only, and scoped to the
+        # member behind the task. Without this ALLOW every call would be
+        # audited as a denial by the frame check below.
+        return Decision(Effect.ALLOW)
+    if tc.name in BUILDER_TOOL_NAMES and core_call:
+        # Belongs to no connection, like propose_change: the dispatch
+        # (oc8.copilot.builder_tools) is the gate -- Copilot only, web door,
+        # the session's own member. The mode check above already denied
+        # propose_agent outside Agent mode's exemption. A routed
+        # call of that name is a connection's tool and goes to the frame below.
+        return Decision(Effect.ALLOW)
+    if tc.name == "delegate_task":
+        if not is_team_lead:
+            return Decision(Effect.DENY, "only a team lead can delegate tasks")
+        if not str(tc.arguments.get("task_text", "")).strip():
+            return Decision(Effect.DENY, "task_text must not be empty")
+        raw_target = str(tc.arguments.get("agent_id", ""))
+        try:
+            target_id = uuid.UUID(raw_target)
+        except ValueError:
+            return Decision(Effect.DENY, f"invalid agent_id: {raw_target!r}")
+        if target_id == agent.id:
+            return Decision(Effect.DENY, "an agent cannot delegate to itself")
+        if delegation_depth + 1 > MAX_DELEGATION_DEPTH:
+            return Decision(Effect.DENY, DEPTH_LIMIT_REASON)
+        return Decision(Effect.ALLOW)
+    if tc.name == "memory_write":
+        content = str(tc.arguments.get("content", ""))
+        tier = str(tc.arguments.get("tier", ""))
+        if not content.strip():
+            return Decision(Effect.DENY, "content must not be empty")
+        if len(content) > MAX_MEMORY_CONTENT_LENGTH:
+            return Decision(Effect.DENY, f"content exceeds {MAX_MEMORY_CONTENT_LENGTH} characters")
+        return authorize_memory_write(
+            frame, narrowing, tier, personal_only=agent.is_tenant_assistant
+        )
+    # A core tool with no branch above: the frame can only judge the run's
+    # bound connection, which this tool does not belong to. A DENY here is
+    # tagged so the dispatcher can tell it from every real refusal.
+    verdict = _frame_decision(
+        agent,
+        tc,
+        tool_policies=tool_policies,
+        connection_key=connection_key,
+        tool_scopes=tool_scopes,
+        skill_thresholds=skill_thresholds,
+        value_spec=value_spec,
+        guardrail_attribute_specs=guardrail_attribute_specs,
+    )
+    if verdict.effect is Effect.DENY:
+        return Decision(Effect.DENY, verdict.reason, reason_code=NOT_THIS_CONNECTION)
+    return verdict
+
+
+def is_core_call(name: str, *, routed: bool) -> bool:
+    """Whether a call is the CORE tool of that name, and may be decided as one.
+
+    Not when the route rewrote the name (the model named a connection's tool),
+    and never for a name that is no core tool at all -- a qualified
+    `<connection>.ask_user` included. Routes always qualify a connection tool
+    named like a core one (`build_routes`' `reserved`), so a bare core name
+    only ever reaches the core tool. The B risk gate asks the same question,
+    so it tiers the tool the PEP decided on.
+    """
+    return name in CONTROL_TOOL_NAMES and not routed
+
+
+def _applicable_attributes(tc: ToolCall, specs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The guardrail attribute specs that apply to this tool."""
+    return [spec for spec in specs if not spec.get("tools") or tc.name in spec["tools"]]
+
+
+def _frame_decision(
+    agent: m.Agent,
+    tc: ToolCall,
+    *,
+    tool_policies: Mapping[str, ToolPolicy],
+    connection_key: str | None,
+    tool_scopes: Mapping[str, Any] | None,
+    skill_thresholds: Sequence[float | None],
+    value_spec: dict[str, Any] | None,
+    guardrail_attribute_specs: Sequence[dict[str, Any]],
+) -> Decision:
+    """The department frame's verdict on a connection tool (§5.3)."""
+    agent_threshold = (agent.presentation or {}).get("approval_value_eur")
+    return authorize_tool_call(
+        policies=tool_policies,
+        connection_key=connection_key,
+        right=required_right(tc.name, tool_scopes),
+        tool=tc.name,
+        value=extract_value(tc.arguments, value_spec),
+        attributes=extract_attributes(
+            tc.arguments, _applicable_attributes(tc, guardrail_attribute_specs)
+        ),
+        extra_thresholds=(
+            float(agent_threshold) if agent_threshold is not None else None,
+            *skill_thresholds,
+        ),
+    )

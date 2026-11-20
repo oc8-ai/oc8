@@ -24,7 +24,7 @@ from typing import Any
 from mcp.types import Tool
 
 from .. import graph
-from .._user import USER_ID_PROPERTY, resolve_user
+from .._user import USER_ID_PROPERTY, user_base
 
 #: Appended to the three user-scoped descriptions below. The channel listing
 #: tool is NOT user-scoped -- it addresses a team id and never went through
@@ -41,20 +41,20 @@ async def teams_list_channels(args: dict[str, Any]) -> Any:
 
 
 async def teams_list_chats(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    result = await graph.get(f"/users/{user}/chats")
+    base = user_base(args)
+    result = await graph.get(f"{base}/chats")
     return result.get("value", [])
 
 
 async def contacts_search(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    result = await graph.get(f"/users/{user}/contacts", params={"$search": f'"{args["query"]}"'})
+    base = user_base(args)
+    result = await graph.get(f"{base}/contacts", params={"$search": f'"{args["query"]}"'})
     return result.get("value", [])
 
 
 async def contacts_get(args: dict[str, Any]) -> Any:
-    user = resolve_user(args)
-    return await graph.get(f"/users/{user}/contacts/{args['contactId']}")
+    base = user_base(args)
+    return await graph.get(f"{base}/contacts/{args['contactId']}")
 
 
 TOOLS: list[Tool] = [

@@ -12,25 +12,18 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
-from oc8.config import get_settings
 from oc8.runtime.approval_resume import resolve_tool_approval
 from oc8.runtime.isolated import DockerIsolatedRuntime
 from oc8.runtime.states import RunState
-from oc8.sandbox.types import SandboxHandle
+from oc8.sandbox.types import ExecResult, SandboxHandle
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(autouse=True)
-def _use_tmp_session_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    """DockerIsolatedRuntime.execute now creates a per-run `/workspace` host
-    directory under runtime_session_root (see isolated.py); the real default
-    is a deployed container's `/var/lib/oc8`, not writable here."""
-    monkeypatch.setenv("OC8_RUNTIME_SESSION_ROOT", str(tmp_path))
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
+def _storage(minio_url: str) -> None:
+    """Every leg loads and saves its /workspace in object storage."""
 
 
 class _FakeDriver:
@@ -53,6 +46,17 @@ class _FakeDriver:
 
     async def logs(self, handle: SandboxHandle) -> str:
         return ""
+
+    async def exec(self, handle: SandboxHandle, command: list[str], **kw: Any) -> ExecResult:
+        # The output sync's listing: no files in /workspace/output.
+        return ExecResult(exit_code=0, output="")
+
+    async def get_archive(
+        self, handle: SandboxHandle, path: str, *, max_bytes: int | None = None
+    ) -> bytes:
+        from oc8.runtime.run_state import pack_files
+
+        return pack_files({})
 
     async def teardown(self, handle: SandboxHandle) -> None:
         return None
@@ -437,6 +441,50 @@ async def test_a_clarification_verdict_parks_the_run_and_task(
         assert task is not None and task.state == "waiting_for_input"
 
 
+async def test_a_structured_clarification_verdict_carries_its_questions(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The questions ride out of the container in their own verdict field, and
+    reach the executor on the RunResult -- never inside the readable output."""
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _agent_and_run(app_session, tenant)
+    questions = [
+        {
+            "id": "r",
+            "prompt": "Region?",
+            "kind": "single",
+            "options": [{"key": "eu", "label": "EU", "detail": ""}],
+            "allow_other": False,
+            "required": True,
+        }
+    ]
+
+    async def asks() -> None:
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            run.context = {
+                **run.context,
+                "isolated_result": {
+                    "status": "waiting_for_input",
+                    "output": "Region?\n- EU",
+                    "questions": questions,
+                },
+            }
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(asks))
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        result = await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="Plane den Launch", tenant_id=tenant, run_id=run_id
+        )
+
+    assert result.status == "waiting_for_input"
+    assert result.output == "Region?\n- EU"
+    assert result.pending_questions == questions
+
+
 async def test_a_delegated_sub_run_reaches_the_executor_for_publishing(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -503,6 +551,46 @@ async def test_a_rendered_component_reaches_the_run_result(
 
     assert result.status == "done"
     assert result.rendered_components == [rendered]
+
+
+async def test_step_timings_reach_the_run_result(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/step and /tool under isolation write stepTimings onto run.context.
+    Regression test for a bug where RunResult's step_timings defaulted to []
+    here, so the executor's merge_context() silently overwrote the already-
+    durable list at the run's terminal commit -- same wipe class as
+    rendered_components / todos above."""
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _agent_and_run(app_session, tenant)
+    timing = {
+        "step": 1,
+        "model_wait_ms": 40,
+        "ttft_ms": 12,
+        "tool_wait_ms": 5,
+        "step_wall_ms": 45,
+    }
+
+    async def times() -> None:
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            run.context = {
+                **run.context,
+                "stepTimings": [timing],
+                "isolated_result": {"status": "done", "output": "timed out cleanly"},
+            }
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(times))
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        result = await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="Finish the step", tenant_id=tenant, run_id=run_id
+        )
+
+    assert result.status == "done"
+    assert result.step_timings == [timing]
 
 
 async def test_a_container_that_never_exits_is_torn_down_and_the_run_fails(
@@ -628,3 +716,56 @@ async def test_container_wait_timeout_scales_with_the_agents_own_max_steps_overr
 
     assert result.status == "done"
     assert driver.waited_with == 500 * 60
+
+
+async def test_a_run_the_provider_will_not_serve_fails_with_the_reason(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The quota is used up mid-run: /step answers 429, the shell dies on it and
+    the container exits 1. The run must end failed with the reason /step gave,
+    not with an empty output and a container exit code in the log."""
+    import datetime as dt
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+    from oc8.modelrouter.fallback import ProviderBudgetExceeded
+    from tests.api.test_internal_agent import _agent_token
+
+    tenant = uuid.uuid4()
+    agent_id, run_id = await _agent_and_run(app_session, tenant)
+
+    async def _quota_used_up(*args: object, **kw: object) -> Any:
+        raise ProviderBudgetExceeded("openai_compatible", dt.datetime(2026, 11, 1, tzinfo=dt.UTC))
+        yield  # pragma: no cover -- makes this an async generator
+
+    monkeypatch.setattr("oc8.api.v1.internal_agent.stream_completion_with_fallback", _quota_used_up)
+
+    class _ShellDiesOnStep(_FakeDriver):
+        async def wait(self, handle: SandboxHandle, timeout_s: float) -> int:
+            app = create_app()
+            async with LifespanManager(app):
+                async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                    r = await c.post(
+                        f"/api/v1/internal/agent/{run_id}/step",
+                        headers={
+                            "Authorization": f"Bearer {_agent_token(tenant, agent_id, run_id)}"
+                        },
+                    )
+            assert r.status_code == 429, r.text
+            return 1
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _ShellDiesOnStep())
+
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        result = await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="verkauf etwas", tenant_id=tenant, run_id=run_id
+        )
+
+    assert result.status == "failed"
+    assert result.output == (
+        "The monthly token quota for openai_compatible is used up until 2026-11-01."
+    )

@@ -67,7 +67,7 @@ describe("Reset-password route", () => {
     stubFetch({ status: 204, ok: true, json: async () => ({}) });
     const fetchMock = vi.mocked(fetch);
 
-    await renderAt("/reset-password?token=abc123");
+    await renderAt("/reset-password?token=Gx3kP0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
     await screen.findByRole("button", { name: "Set new password" });
 
     fireEvent.change(screen.getByLabelText("New password"), {
@@ -86,7 +86,7 @@ describe("Reset-password route", () => {
     expect(String(url)).toContain("/auth/password/reset");
     expect(init?.method).toBe("POST");
     expect(JSON.parse(init?.body as string)).toEqual({
-      token: "abc123",
+      token: "Gx3kP0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k",
       newPassword: "a-strong-password",
     });
     // No Authorization header: this endpoint is `unguarded` on the backend --
@@ -109,7 +109,7 @@ describe("Reset-password route", () => {
   it("shows a generic invalid-or-expired message on failure, never the backend's specific reason", async () => {
     stubFetch({ status: 400, ok: false, json: async () => ({ detail: "token already used" }) });
 
-    await renderAt("/reset-password?token=stale-token");
+    await renderAt("/reset-password?token=Stale0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
     await screen.findByRole("button", { name: "Set new password" });
 
     fireEvent.change(screen.getByLabelText("New password"), {
@@ -124,5 +124,28 @@ describe("Reset-password route", () => {
     // would let a caller distinguish reasons the endpoint deliberately hides.
     expect(toastError).not.toHaveBeenCalledWith(expect.stringContaining("already used"));
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("takes the token out of the address bar and still submits it", async () => {
+    stubFetch({ status: 200, ok: true, json: async () => ({}) });
+    const fetchMock = vi.mocked(fetch);
+    await renderAt("/reset-password?token=Gx3kP0tq_fM2-aN8vR5yZ1cW7eH4jL9uB6dS0oQiT2k");
+    const input = await screen.findByLabelText("New password");
+    expect(window.location.search).toBe("");
+    fireEvent.change(input, { target: { value: "correct horse battery" } });
+    fireEvent.click(screen.getByRole("button", { name: "Set new password" }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([u]) => String(u).includes("/auth/password/reset"))).toBe(
+        true,
+      ),
+    );
+  });
+
+  it("keeps submit disabled for a malformed token", async () => {
+    stubFetch({ status: 200, ok: true, json: async () => ({}) });
+    await renderAt("/reset-password?token=short");
+    const input = await screen.findByLabelText("New password");
+    fireEvent.change(input, { target: { value: "correct horse battery" } });
+    expect(screen.getByRole("button", { name: "Set new password" })).toBeDisabled();
   });
 });

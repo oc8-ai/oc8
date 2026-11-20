@@ -97,6 +97,10 @@ app.kubernetes.io/component: {{ .component }}
 {{- define "oc8.backendEnv" -}}
 - name: OC8_ENV
   value: {{ .Values.oc8.env | quote }}
+{{- if .Values.oc8.outboundAllowedPrivate }}
+- name: OC8_OUTBOUND_ALLOWED_PRIVATE
+  value: {{ .Values.oc8.outboundAllowedPrivate | quote }}
+{{- end }}
 - name: OC8_DATABASE_URL
   value: {{ printf "postgresql+asyncpg://oc8_app:oc8@%s:5432/oc8" (include "oc8.postgresHost" .) | quote }}
 - name: OC8_MIGRATION_URL
@@ -160,6 +164,14 @@ app.kubernetes.io/component: {{ .component }}
 {{- if $ollamaUrl }}
 - name: OC8_OLLAMA_BASE_URL
   value: {{ $ollamaUrl | quote }}
+{{- end }}
+{{- if .Values.oc8.defaultEmbeddingModel }}
+- name: OC8_DEFAULT_EMBEDDING_MODEL
+  value: {{ .Values.oc8.defaultEmbeddingModel | quote }}
+{{- end }}
+{{- if .Values.oc8.accountManagementUrl }}
+- name: OC8_ACCOUNT_MANAGEMENT_URL
+  value: {{ .Values.oc8.accountManagementUrl | quote }}
 {{- end }}
 {{- end }}
 

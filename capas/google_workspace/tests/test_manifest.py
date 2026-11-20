@@ -131,6 +131,17 @@ def test_outward_tools_lives_in_config_not_scopes() -> None:
     assert "outward_tools" not in conn.scopes
 
 
+def test_create_tools_exempt_calendar_inserts_from_read_before_write() -> None:
+    """Provisional start-keyed creates must not require a prior read of the event."""
+    manifest = _manifest()
+    assert manifest.tool_pack is not None
+    conn = manifest.tool_pack.connections[0]
+    assert conn.config.get("create_tools") == [
+        "calendar_create_event",
+        "calendar_create_meet_link",
+    ]
+
+
 def test_the_bridge_launch_command_matches_the_package_on_disk() -> None:
     """`tool_pack.toml` and `setup/mcp.toml` both launch the SAME bridge, and
     the module they name has to be the package that actually exists -- a stale
@@ -161,9 +172,12 @@ def test_every_event_writing_outward_tool_is_scoped_by_the_focus_spec() -> None:
     entities = focus.get("tool_entities") or {}
     outward = set(conn.config.get("outward_tools", []))
     event_writers = {t for t in outward if t.startswith("calendar_") and "invite" not in t}
-    assert set(entities) == event_writers, (
+    assert event_writers <= set(entities), (
         f"outward calendar tools without a focus_spec entity: {event_writers - set(entities)}"
     )
+    # The other entries are the READ tools record links resolve a message by
+    # (`record_url.models`); none of them may be outward.
+    assert not (set(entities) - event_writers) & outward
     # `eventId` first, so an UPDATE keys on the real event; `start` is the
     # fallback for a CREATE, which has no id until the event exists.
     assert focus.get("id_fields") == ["eventId", "start"]

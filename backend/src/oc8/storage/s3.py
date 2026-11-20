@@ -71,6 +71,33 @@ def _object_exists_sync(key: str) -> bool:
     return True
 
 
+#: S3's own cap on keys per `delete_objects` request.
+_DELETE_BATCH = 1000
+
+
+def _delete_prefix_sync(prefix: str) -> int:
+    client = _client()
+    bucket = _bucket()
+    deleted = 0
+    paginator = client.get_paginator("list_objects_v2")
+    # Every listed page is at most 1 000 keys, so each page is one batch.
+    # Deleting while paging is safe: the continuation token is a key, not an offset.
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        keys = [{"Key": obj["Key"]} for obj in page.get("Contents", [])]
+        for start in range(0, len(keys), _DELETE_BATCH):
+            batch = keys[start : start + _DELETE_BATCH]
+            resp = client.delete_objects(Bucket=bucket, Delete={"Objects": batch, "Quiet": True})
+            errors = resp.get("Errors") or []
+            if errors:
+                first = errors[0]
+                raise RuntimeError(
+                    f"could not delete {len(errors)} object(s) under {prefix!r}, "
+                    f"first {first.get('Key')!r}: {first.get('Code')} {first.get('Message')}"
+                )
+            deleted += len(batch)
+    return deleted
+
+
 async def put_object(key: str, body: bytes, content_type: str) -> None:
     await asyncio.to_thread(_put_object_sync, key, body, content_type)
 
@@ -85,3 +112,15 @@ async def delete_object(key: str) -> None:
 
 async def object_exists(key: str) -> bool:
     return await asyncio.to_thread(_object_exists_sync, key)
+
+
+async def delete_prefix(prefix: str) -> int:
+    """Delete every object whose key starts with `prefix`; return how many.
+
+    The prefix must end in "/" (e.g. f"{tenant_id}/"), so that one id cannot
+    match another that merely starts with the same characters; an empty
+    prefix, the whole bucket, is refused for the same reason.
+    """
+    if not prefix.endswith("/"):
+        raise ValueError(f"refusing to delete prefix {prefix!r}: it must end with '/'")
+    return await asyncio.to_thread(_delete_prefix_sync, prefix)

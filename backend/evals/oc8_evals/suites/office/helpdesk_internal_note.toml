@@ -1,0 +1,20 @@
+id = "helpdesk_internal_note"
+systems = ["odoo"]
+origin = "manual"
+scenario = "helpdesk_internal_note"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Add an internal note "Checked the logs" on the helpdesk ticket "{prefix}Login fails intermittently".
+Do not email the customer and do not close the ticket.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

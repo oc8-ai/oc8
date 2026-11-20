@@ -134,7 +134,12 @@ export interface MemberSeat {
  *  so both can read from the same `GET /members` response. */
 export interface RoleAssignee {
   id: string;
+  /** The identity provider's stable id (the token's `sub`). With an external
+   *  OIDC provider often a uuid: show it as a user id, never as an email. */
   subject: string;
+  /** The sign-in address the identity provider last reported; `null` when it
+   *  never has, and then the screens fall back to `subject`. */
+  email?: string | null;
   displayName: string;
   /** What they hold TODAY. `null` is the token floor and is not "no
    *  permissions": the picker has to be able to say "Anna — Abteilungsleitung"
@@ -265,12 +270,15 @@ export function useCreateMember() {
       displayName?: string;
       allDepartments?: boolean;
       password?: string;
+      /** Only with an external inviter (`memberInvites: "external"`). */
+      role?: string;
     }) =>
       api.post<CreatedMember>("/members", {
         subject: body.subject,
         displayName: body.displayName ?? "",
         ...(body.allDepartments === undefined ? {} : { allDepartments: body.allDepartments }),
         ...(body.password ? { password: body.password } : {}),
+        ...(body.role ? { role: body.role } : {}),
       }),
     onSuccess: invalidate,
   });
@@ -285,6 +293,36 @@ export function useSetMemberPassword() {
   return useMutation({
     mutationFn: ({ memberId, password }: { memberId: string; password: string }) =>
       api.put<void>(`/members/${memberId}/password`, { password }),
+  });
+}
+
+/** What `POST /members/{id}/password-reset` returns: the link is always
+ *  present so a missing mail server is not a dead end; `resetSent` is
+ *  whether `deliver` actually handed it to the relay. */
+export interface MemberPasswordReset {
+  resetLink: string;
+  resetSent: boolean;
+}
+
+/** Mint a fresh set-password link for an existing member and try to email
+ *  it. The user-detail counterpart to the invite `POST /members` mints on
+ *  create -- an administrator looking at somebody who already exists had
+ *  no other door. */
+export function useMintMemberPasswordReset() {
+  return useMutation({
+    mutationFn: (memberId: string) =>
+      api.post<MemberPasswordReset>(`/members/${memberId}/password-reset`),
+  });
+}
+
+/** Soft-delete a person so they disappear from the users list. Refused
+ *  with a 409 if the caller is looking at themselves -- same lockout
+ *  `PUT /members/{id}/role` already refuses, by a different verb. */
+export function useDeleteMember() {
+  const invalidate = useAuthorityInvalidator();
+  return useMutation({
+    mutationFn: (memberId: string) => api.delete<void>(`/members/${memberId}`),
+    onSuccess: invalidate,
   });
 }
 

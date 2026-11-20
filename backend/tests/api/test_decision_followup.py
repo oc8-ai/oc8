@@ -21,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.main import create_app
+from oc8.tenants.activity import set_tenant_activity_gate
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -171,3 +172,26 @@ async def test_an_unknown_option_is_refused(
         assert await _runs(db, agent_id) == []
         still = await db.get(m.ApprovalRequest, approval_id)
         assert still is not None and still.status == "pending"
+
+
+def _gate_saying_no_for(tenant: uuid.UUID):  # type: ignore[no-untyped-def]
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    return gate
+
+
+async def test_a_decision_for_an_inactive_organisation_starts_no_run(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        approval_id, agent_id = await _pending(db, tenant)
+        await db.commit()
+    set_tenant_activity_gate(_gate_saying_no_for(tenant))
+
+    r = await _decide(tenant, approval_id, {"decision": "approve", "option": "full"})
+    assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+        assert await _runs(db, agent_id) == []

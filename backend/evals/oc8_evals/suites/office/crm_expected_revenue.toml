@@ -1,0 +1,20 @@
+id = "crm_expected_revenue"
+systems = ["odoo"]
+origin = "manual"
+scenario = "crm_expected_revenue"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Set expected revenue to 1500 on the lead "{prefix}Acme — expected revenue update" only.
+Do not change any other lead.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

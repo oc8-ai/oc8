@@ -66,6 +66,10 @@ class EvidenceProducingRuntime(Protocol):
 class Oc8AgentRuntime:
     """First-party reference runtime — the §8.3 loop, unmodified."""
 
+    #: Declares whether a message written to a running run can reach it
+    #: (spec §3.2): the step loop reads run inputs between steps.
+    accepts_inputs: bool = True
+
     async def execute(
         self,
         db: AsyncSession,
@@ -106,6 +110,10 @@ class EchoRuntimeStub:
     """Minimal, non-production runtime used only to prove the negotiation
     and dispatch machinery against real installed-plugin data. Not a usable
     runtime — never call the model router, never persist anything real."""
+
+    #: Declares whether a message written to a running run can reach it
+    #: (spec §3.2): this stub has no step boundary to deliver one at.
+    accepts_inputs: bool = False
 
     async def execute(
         self,

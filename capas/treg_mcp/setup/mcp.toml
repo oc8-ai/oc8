@@ -1,0 +1,11 @@
+# `connection_key`/`name` must stay IDENTICAL to tool_pack.toml's own
+# connection: both describe finishing setup on the same connection.
+# `command`/`args` stay unset -- treg is an http-transport connection, and
+# nothing reads `config["command"]` for a non-stdio transport
+# (agent/mcp_client.py's `open_tool_session`).
+connection_key = "primary"
+name = "treg"
+department_field = "department"
+
+[secret_env_fields]
+X-Treg-Token = "token"

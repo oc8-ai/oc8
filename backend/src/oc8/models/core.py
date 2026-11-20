@@ -12,10 +12,14 @@ from sqlalchemy import (
     DateTime,
     Index,
     Integer,
+    LargeBinary,
     Text,
     UniqueConstraint,
     Uuid,
+    false,
+    func,
     text,
+    true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
@@ -52,6 +56,12 @@ class Organization(Base, PkMixin, TimestampMixin):
     totp_step_up_enabled: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    #: IANA zone name (e.g. "Europe/Berlin"). Resolved with a safe UTC
+    #: fallback by oc8.agent.harness.prompts.resolve_timezone -- an invalid
+    #: or unrecognized value here never breaks a run, it just falls back.
+    timezone: Mapped[str] = mapped_column(
+        Text, nullable=False, default="UTC", server_default=text("'UTC'")
+    )
 
     __table_args__ = (
         CheckConstraint("tier IN ('standard','enterprise','onprem')", name="ck_org_tier"),
@@ -83,6 +93,13 @@ class Department(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # Display-only fields backing the office view (icon, okr, kpi, accent, ...).
     presentation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
     prompt_caching_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Bumped by the database for every update (migration 0096, same trigger
+    # migration 0054 already wired up for agent/plugin/integration); Copilot
+    # uses it as an optimistic concurrency token for department.update/
+    # delete/restore.
+    config_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     # The department the tenant's oc8 Assistant lives in -- auto-provisioned by
     # `agent.assistant.get_or_create_assistant`, never configured by anyone.
     # Mirrors `Agent.is_tenant_assistant`, and for the same reason: the two
@@ -243,6 +260,16 @@ class ModelConfig(Base, PkMixin, TenantMixin, TimestampMixin):
     #: enforcing it here would need a partial unique index scoped to
     #: `tenant_id` that most of this schema's other flags don't use either.
     used_by_copilot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: Whether operators may pick this model for a chat (the chat model picker).
+    chat_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=true()
+    )
+    #: Whether this model can think, so a reasoning level and an effort are
+    #: sent to it at all (spec 2026-11-11 §4-5; migration 0116). Prefilled on
+    #: create from the provider's declaration (`ProviderEntry.supports_reasoning`).
+    supports_reasoning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
 
     __table_args__ = (CheckConstraint("locality IN ('cloud','local')", name="ck_model_locality"),)
 
@@ -294,6 +321,12 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     trust_level: Mapped[str] = mapped_column(Text, nullable=False, default="first_party")
     # Display helpers backing the office/agent screens.
     presentation: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    # The `AgentVersion` that IS this agent's published behavioural config right
+    # now -- mirrors `Skill.current_version_id`. Null until the first publish;
+    # `create_agent` publishes v1 in the same transaction, so in practice only
+    # a pre-migration row (backfilled to v1 by 0099) or a row from a partially
+    # failed create can be null in production.
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
 
     __table_args__ = (
         CheckConstraint(
@@ -319,3 +352,27 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
             postgresql_where=text("is_tenant_assistant AND deleted_at IS NULL"),
         ),
     )
+
+
+class AgentVersion(Base, PkMixin, TenantMixin, TimestampMixin):
+    """An immutable snapshot of an agent's behavioural configuration.
+
+    The `agent` row is the working copy; a version is what actually runs.
+    Runs pin `agent_run.agent_version_id`, so publishing never changes what
+    an in-flight run is doing -- the same rule `SkillAssignment` already
+    applies to skill versions.
+    """
+
+    __tablename__ = "agent_version"
+
+    agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
+    version_no: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    payload_hash: Mapped[bytes] = mapped_column(LargeBinary)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    published_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    __table_args__ = (UniqueConstraint("agent_id", "version_no", name="uq_agent_version_no"),)

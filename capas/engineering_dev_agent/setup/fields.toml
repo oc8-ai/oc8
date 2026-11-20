@@ -1,0 +1,27 @@
+title = "Set up the Senior Developer Agent"
+description = "Choose the repository and the label this agent watches. Repeat 'hire' with a different repo to cover more than one."
+submit_label = "Save"
+
+[[fields]]
+key = "repo"
+label = "Repository"
+kind = "text"
+required = true
+placeholder = "acme/widgets"
+help = "The owner/repo this agent works, exactly as github_mcp's tools expect it."
+
+[[fields]]
+key = "label"
+label = "Issue label"
+kind = "text"
+required = true
+default = "agent-ready"
+help = "Only issues carrying this label are picked up."
+
+[[fields]]
+key = "base_branch"
+label = "Base branch"
+kind = "text"
+required = false
+placeholder = "main"
+help = "Branch pull requests target. Leave blank to use the repository's default branch."

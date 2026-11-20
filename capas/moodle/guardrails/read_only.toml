@@ -1,0 +1,10 @@
+kind = "preset"
+connection = "primary"
+key = "read_only"
+label = "Read only"
+summary = "Can look at courses, participants, grades, submissions and forums, but changes nothing and contacts nobody."
+recommended = false
+read = true
+modify = false
+approval_actions = []
+approval_eur = ""

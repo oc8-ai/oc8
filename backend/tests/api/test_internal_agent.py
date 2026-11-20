@@ -266,6 +266,7 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
 
     from oc8 import models as m
     from oc8.agent.control_tools import offered_tools
+    from oc8.agent.harness.caps import ModelCaps
     from oc8.agent.preamble import build_run_preamble
     from oc8.main import create_app
     from oc8.modelrouter.types import CompletionResult, Usage
@@ -305,7 +306,7 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
         assert agent is not None
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="Erstelle ein Angebot fuer Kunde X",
-            frame={}, model_locality="eu",
+            frame={}, model_locality="eu", caps=ModelCaps(), max_steps=40,
         )
         offered_in_process = sorted(
             t.name for t in offered_tools(
@@ -315,15 +316,31 @@ async def test_step_offers_the_same_tools_as_the_in_process_engine(
                 # back to the builtin isolated shell -- also with no local
                 # filesystem -- and must offer the same tool for parity.
                 offer_write_output_file=True,
+                # Deliberately NOT offer_run_shell=True here: engine.py's
+                # loop()._offered() never passes it either. Only the
+                # isolated runtime's isolated_shell.py can pre-execute a
+                # command locally and hand back a local_result -- the
+                # in-process engine has no equivalent, so real production
+                # in-process runs correctly never offer run_shell. That
+                # asymmetry is asserted explicitly below instead of being
+                # papered over by a synthetic match.
             )
         )
 
-    assert offered_isolated == offered_in_process
+    # run_shell is the one intentional asymmetry between the two runtimes
+    # (see the comment above) -- assert it directly rather than forcing the
+    # two lists to artificially match.
+    assert "run_shell" in offered_isolated
+    assert "run_shell" not in offered_in_process
+    assert [n for n in offered_isolated if n != "run_shell"] == offered_in_process
     assert "memory_write" in offered_isolated
     assert "ask_user" in offered_isolated
     assert "delegate_task" in offered_isolated, "a team lead must be able to delegate"
     assert any(n.startswith("skill_") for n in offered_isolated), "skills must be invocable"
     assert "write_output_file" in offered_isolated
+    # Components are on by default: no ComponentGrant row was seeded.
+    assert "render_component" in offered_isolated
+    assert "render_component" in offered_in_process
 
 
 @pytest.mark.asyncio
@@ -423,6 +440,7 @@ async def test_step_seeds_the_roster_so_delegation_can_name_a_real_agent(
 async def _post_tool(
     tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID,
     name: str, arguments: dict[str, Any],
+    local_result: dict[str, Any] | None = None,
 ) -> tuple[int, dict[str, Any]]:
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
@@ -430,12 +448,15 @@ async def _post_tool(
     from oc8.main import create_app
 
     token = _agent_token(tenant, agent_id, run_id)
+    body: dict[str, Any] = {"id": "c1", "name": name, "arguments": arguments}
+    if local_result is not None:
+        body["local_result"] = local_result
     app = create_app()
     async with LifespanManager(app):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
             r = await c.post(
                 f"/api/v1/internal/agent/{run_id}/tool",
-                json={"id": "c1", "name": name, "arguments": arguments},
+                json=body,
                 headers={"Authorization": f"Bearer {token}"},
             )
             return r.status_code, (r.json() if r.content else {})
@@ -520,14 +541,51 @@ async def test_ask_user_suspends_the_run_for_a_clarification(app_session: object
     )
     assert code == 200, body
     assert body["status"] == "waiting_for_input"
-    assert body["output"] == "Welches Konto soll ich nehmen?"
+    # The model's copy carries the harness's "[step N/max ...]" stamp ...
+    assert body["output"].endswith("Welches Konto soll ich nehmen?")
 
     async with app_session(tenant) as db:  # type: ignore[operator]
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         # The verdict the runtime reads after the container exits.
         assert run.context["isolated_result"]["status"] == "waiting_for_input"
+        # ... the verdict a person reads as the question does not.
         assert run.context["isolated_result"]["output"] == "Welches Konto soll ich nehmen?"
+
+
+@pytest.mark.asyncio
+async def test_a_structured_ask_suspends_with_its_questions_beside_the_text(
+    app_session: object,
+) -> None:
+    from oc8 import models as m
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    ask = {
+        "questions": [
+            {
+                "id": "r",
+                "prompt": "Region?",
+                "kind": "single",
+                "options": [{"key": "eu", "label": "EU"}],
+            }
+        ]
+    }
+    code, body = await _post_tool(tenant, agent_id, run_id, "ask_user", ask)
+    assert code == 200, body
+    assert body["status"] == "waiting_for_input"
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        verdict = run.context["isolated_result"]
+        # Unstamped: this text becomes the Clarification a person reads.
+        assert verdict["output"] == "Region?\n- EU"
+        assert "[step" not in verdict["output"]
+        assert verdict["questions"][0]["id"] == "r"
 
 
 @pytest.mark.asyncio
@@ -540,7 +598,8 @@ async def test_an_empty_question_does_not_suspend_the_run(app_session: object) -
     code, body = await _post_tool(tenant, agent_id, run_id, "ask_user", {"question": "  "})
     assert code == 200, body
     assert body["status"] == "ok"
-    assert body["output"].startswith("ERROR:")
+    # Stamped for the model ("[step N/max ...] ERROR from oc8 (ask_user): ...").
+    assert "ERROR" in body["output"] and "non-empty question" in body["output"]
 
 
 @pytest.mark.asyncio
@@ -789,12 +848,139 @@ async def test_a_repeated_write_does_not_reach_the_tool_server_twice(
     assert calls.count("search_records") == 2, "reads must not be replayed from cache"
 
 
+@pytest.mark.asyncio
+async def test_blast_radius_refuses_a_second_distinct_write(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The isolated runtime claims successful writes before dispatching another."""
+    from oc8 import models as m
+
+    calls: list[dict[str, Any]] = []
+
+    class _CountingSession:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append(arguments)
+            return "updated"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _CountingSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Operations",
+            frame={
+                "tools": {"records": {"enabled": True, "read": True, "modify": True}},
+                "limits": {"records_per_run": 1},
+            },
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Alex",
+            status="running",
+            narrowing={},
+            definition={},
+            presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="records",
+            transport="stdio",
+            server_url="stdio://records",
+            connected=True,
+            config={
+                "command": "x",
+                "args": [],
+                "read_before_write": False,
+                "focus_spec": {
+                    "entity_field": "kind",
+                    "id_fields": ["record_id"],
+                    "labels": {"case": "Case"},
+                },
+            },
+            scopes={"read": [], "modify": ["update_record"]},
+        )
+        task = m.Task(
+            tenant_id=tenant,
+            department_id=dept.id,
+            assigned_agent_id=agent.id,
+            title="Update cases",
+            state="in_progress",
+        )
+        db.add_all([conn, task])
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            task_id=task.id,
+            state="running",
+            context={"task": "x", "mcp_connection_id": str(conn.id)},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    first_code, first = await _post_tool(
+        tenant,
+        agent_id,
+        run_id,
+        "update_record",
+        {"kind": "case", "record_id": 1},
+    )
+    second_code, second = await _post_tool(
+        tenant,
+        agent_id,
+        run_id,
+        "update_record",
+        {"kind": "case", "record_id": 2},
+    )
+
+    assert first_code == 200 and second_code == 200, (first, second)
+    assert len(calls) == 1
+    assert "limit of 1" in second["output"]
+    assert "ERROR from oc8" in second["output"]
+
+
 # ------------------------------------------------- tool-call timing (KPIs)
 
 
-async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) -> tuple[Any, Any]:
+async def _mcp_backed_run(
+    db: Any,
+    tenant: uuid.UUID,
+    *,
+    modify: bool = True,
+    parallel_tool_calls: bool = False,
+    destructive_tools: list[str] | None = None,
+    approval_templates: dict[str, str] | None = None,
+    focus_spec: dict[str, Any] | None = None,
+    env: dict[str, str] | None = None,
+    create_tools: list[str] | None = None,
+) -> tuple[Any, Any]:
     """An agent + RUNNING run with an `odoo` MCP connection bound, the fixture
-    the two timing tests below share. Returns (agent_id, run_id)."""
+    the two timing tests below (and the parallel-reads tier tests further
+    down) share. Returns (agent_id, run_id).
+
+    `parallel_tool_calls=True` binds a `ModelConfig` whose params declare the
+    cap, the same mechanism `tests/agent/test_engine_parallel_reads.py` uses
+    for the in-process engine's equivalent fixture -- so `/step`'s
+    `resolve_caps(model_config.params)` reads it back as True."""
     from oc8 import models as m
 
     dept = m.Department(
@@ -804,6 +990,17 @@ async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) ->
     )
     db.add(dept)
     await db.flush()
+    model_config_id = None
+    if parallel_tool_calls:
+        model_config = m.ModelConfig(
+            tenant_id=tenant,
+            provider="fake",
+            model="fake",
+            params={"parallel_tool_calls": True},
+        )
+        db.add(model_config)
+        await db.flush()
+        model_config_id = model_config.id
     agent = m.Agent(
         tenant_id=tenant,
         department_id=dept.id,
@@ -812,9 +1009,21 @@ async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) ->
         narrowing={},
         definition={},
         presentation={},
+        model_config_id=model_config_id,
     )
     db.add(agent)
     await db.flush()
+    conn_config: dict[str, Any] = {"command": "x", "args": []}
+    if destructive_tools:
+        conn_config["destructive_tools"] = destructive_tools
+    if approval_templates:
+        conn_config["approval_templates"] = approval_templates
+    if focus_spec:
+        conn_config["focus_spec"] = focus_spec
+    if env:
+        conn_config["env"] = env
+    if create_tools:
+        conn_config["create_tools"] = create_tools
     conn = m.McpConnection(
         tenant_id=tenant,
         department_id=dept.id,
@@ -822,7 +1031,7 @@ async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) ->
         transport="stdio",
         server_url="stdio://odoo",
         connected=True,
-        config={"command": "x", "args": []},
+        config=conn_config,
         scopes={"read": ["search_records"], "write": ["create_record"]},
     )
     task = m.Task(
@@ -844,6 +1053,117 @@ async def _mcp_backed_run(db: Any, tenant: uuid.UUID, *, modify: bool = True) ->
     db.add(run)
     await db.flush()
     return agent.id, run.id
+
+
+@pytest.mark.asyncio
+async def test_successful_isolated_read_records_ledger_access(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import models as m
+
+    class _SuccessfulSession:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *args: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            return '{"id": 42, "name": "Acme"}'
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _SuccessfulSession)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(
+            db,
+            tenant,
+            focus_spec={
+                "entity_field": "model",
+                "id_fields": ["id"],
+                "labels": {"crm.lead": "Lead"},
+            },
+        )
+
+    code, result = await _post_tool(
+        tenant, agent_id, run_id, "search_records", {"model": "crm.lead", "id": 42}
+    )
+    assert code == 200, result
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        entity = run.context["harness"]["ledger"]["entities"]["odoo/crm.lead/42"]
+        assert entity["last_read_step"] == 0
+
+
+@pytest.mark.parametrize(
+    ("verdict", "expected_status", "expected_calls"),
+    [
+        ("approve", "ok", 1),
+        ("reject", "denied", 0),
+    ],
+)
+@pytest.mark.asyncio
+async def test_resolved_b5_ask_does_not_park_again_on_internal_tool(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    verdict: str,
+    expected_status: str,
+    expected_calls: int,
+) -> None:
+    from oc8 import models as m
+    from oc8.agent.harness.calls import call_sig
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _RecordingSession(_EmptySchemaSession):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append((name, arguments))
+            return "deleted"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _RecordingSession)
+
+    tenant = uuid.uuid4()
+    resolved_call = ToolCall(id="resolved", name="create_record", arguments={"id": 7})
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(
+            db,
+            tenant,
+            destructive_tools=["create_record"],
+            approval_templates={"create_record": "Allow deleting record {id}?"},
+        )
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_sig(resolved_call),
+                    "tool": "create_record",
+                    "arguments": {"id": 7},
+                    "decision": verdict,
+                }
+            ],
+        }
+
+    code, body = await _post_tool(
+        tenant,
+        agent_id,
+        run_id,
+        "create_record",
+        {"id": 7, "justification": "Duplicate record"},
+    )
+
+    assert code == 200, body
+    assert body["status"] == expected_status
+    assert body["status"] != "waiting_for_approval"
+    assert len(calls) == expected_calls
+    if verdict == "reject":
+        assert "ERROR" in body["output"]
+        assert "operator rejected this action" in body["output"]
 
 
 @pytest.mark.asyncio
@@ -959,6 +1279,98 @@ async def test_a_denied_call_records_no_timing(
     assert "durationMs" not in entry
 
 
+@pytest.mark.asyncio
+async def test_a_frame_denial_is_recorded_and_told_to_the_model_plainly(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The frame withholds the right: the run says which tool and where an
+    admin allows it, and the model's tool result is one sentence it can pass
+    on instead of the PDP's internal reason."""
+    from oc8 import models as m
+
+    class _NeverSession:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            raise AssertionError("a denied call must never reach the tool server")
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _NeverSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, modify=False)
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"model": "sale.order", "values": {}}
+    )
+    assert code == 200, body
+    assert body["status"] == "denied", body
+    assert "department does not allow the tool 'create_record'" in body["output"]
+    assert "department's guardrails" in body["output"]
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        agent = await db.get(m.Agent, agent_id)
+        assert run is not None and agent is not None
+        denied = run.context["tool_denied"]
+        record = run.context["toolCalls"][-1]
+    # The call record keeps the PDP's own reason; only the model gets the sentence.
+    assert record["reason"] == "'odoo' does not grant 'modify'"
+    assert denied["connection"] == "odoo"
+    assert denied["tool"] == "create_record"
+    assert denied["reason"] == "right_not_granted"
+    assert denied["scope"] == "department"
+    assert denied["departmentId"] == str(agent.department_id)
+
+
+@pytest.mark.asyncio
+async def test_the_tenant_assistant_reaches_no_connection_through_the_isolated_runtime(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Copilot direct access is wired into the in-process engine only. The
+    isolated runtime's /tool decides the Copilot's connection calls against
+    no grants (NO_DIRECT_ACCESS): refused, never through its own department."""
+    from oc8 import models as m
+
+    class _NeverSession:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            raise AssertionError("the Copilot's call must never reach the tool server")
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _NeverSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.is_tenant_assistant = True
+        await db.flush()
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "search_records", {"model": "x"})
+    assert code == 200, body
+    assert body["status"] == "denied", body
+
+
 # ------------------------------------------------- real remote MCP transport
 
 #: A real FastMCP server bound to a real port, reused verbatim from
@@ -1029,7 +1441,10 @@ def echo_http_server(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_step_and_tool_reach_a_real_remote_mcp_server_over_http(
-    app_session: object, monkeypatch: pytest.MonkeyPatch, echo_http_server: str
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    echo_http_server: str,
+    allow_loopback_outbound: None,
 ) -> None:
     """This endpoint's two `McpSession(command, args, env=env)` call sites --
     preamble tool-schema discovery (`/step`) and tool-call execution
@@ -1239,7 +1654,7 @@ async def test_restricted_content_reaches_the_model_call_on_every_step(
     from oc8.runtime.states import RunState
 
     class _FakeEmbedRouter:
-        async def embed(self, text: str, model: str | None = None) -> list[float]:
+        async def embed(self, text: str, model: str | None = None, **_: object) -> list[float]:
             seed = sum(ord(ch) for ch in text) or 1
             return [float((seed + i) % 23) for i in range(EMBED_DIM)]
 
@@ -1410,7 +1825,6 @@ async def test_step_persists_and_reoffers_copilot_permissions_across_calls(
 async def test_the_internal_endpoint_publishes_a_rendered_component(
     app_session: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from oc8 import models as m
 
     published: list[tuple[str, dict[str, Any]]] = []
 
@@ -1425,14 +1839,6 @@ async def test_the_internal_endpoint_publishes_a_rendered_component(
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)
         agent_id, run_id = agent.id, run.id
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent_id,
-            )
-        )
         await db.commit()
 
     code, body = await _post_tool(
@@ -1529,14 +1935,6 @@ async def test_the_internal_endpoint_makes_a_tool_call_live(
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)
         agent_id, run_id = agent.id, run.id
-        db.add(
-            m.ComponentGrant(
-                tenant_id=tenant,
-                component_key="record_card",
-                grantee_type="agent",
-                grantee_id=agent_id,
-            )
-        )
         await db.commit()
 
     code, body = await _post_tool(
@@ -1693,6 +2091,62 @@ async def test_step_retries_an_empty_length_truncation_with_a_bigger_budget(
 
 
 @pytest.mark.asyncio
+async def test_step_compacts_and_retries_when_the_length_retry_overflows(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    request_ids: list[uuid.UUID] = []
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        request_ids.append(kw["request_id"])  # type: ignore[arg-type]
+        if len(request_ids) == 1:
+            return CompletionResult(
+                text="", tool_calls=[], usage=Usage(tokens_in=6832, tokens_out=1536),
+                stop_reason="length", provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        if len(request_ids) == 2:
+            raise RuntimeError("max_tokens must be at least 1, got -7075")
+        if len(request_ids) == 3:
+            return CompletionResult(
+                text="Task remains; retry the completion.", tool_calls=[],
+                usage=Usage(tokens_in=5000, tokens_out=30), stop_reason="stop",
+                provider="openrouter", model="z-ai/glm-5.3-flash",
+            )
+        return CompletionResult(
+            text="Ticket resolved after compaction.", tool_calls=[],
+            usage=Usage(tokens_in=5100, tokens_out=20), stop_reason="stop",
+            provider="openrouter", model="z-ai/glm-5.3-flash",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {_agent_token(tenant, agent_id, run_id)}"},
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["text"] == "Ticket resolved after compaction."
+    assert len(request_ids) == 4
+    assert len(set(request_ids)) == 4
+
+
+@pytest.mark.asyncio
 async def test_step_reports_status_override_failed_when_still_truncated_after_retry(
     app_session: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1731,8 +2185,19 @@ async def test_step_reports_status_override_failed_when_still_truncated_after_re
             )
             assert r.status_code == 200, r.text
             assert r.json()["status_override"] == "failed"
+            # The reason names the retry's budget and what to change.
+            assert "OC8_DEFAULT_MAX_TOKENS" in r.json()["text"]
+            assert "max_tokens" in r.json()["text"]
     # Exactly one retry, never an unbounded loop.
     assert calls["n"] == 2
+    from oc8 import models as m
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        stored = await db.get(m.AgentRun, run_id)
+        assert stored is not None
+        step = stored.context["stepTimings"][-1]
+        assert step["tokens_out"] == 2 * 1536
+        assert step["max_tokens"] > 0
 
 
 @pytest.mark.asyncio
@@ -1806,6 +2271,7 @@ async def test_step_nudges_instead_of_finishing_when_todos_are_still_open(
                     "arguments": {
                         "todos": [{"content": "Resolve ticket B", "status": "completed"}]
                     },
+                    "tier": "modify",
                 }
             ]
     # Both completions happened INSIDE this one /step call -- the shell
@@ -1825,7 +2291,7 @@ async def test_step_round_cap_stops_nudging_and_lets_the_run_end(
     """The isolated runtime's round cap must match engine.py's
     TODO_CONTINUATION_MAX_ROUNDS exactly and, once spent, let the run end
     anyway rather than nudging forever."""
-    from oc8.agent.engine import TODO_CONTINUATION_MAX_ROUNDS
+    from oc8.agent.harness.stages.d_todo import TODO_CONTINUATION_MAX_ROUNDS
     from oc8.modelrouter.types import CompletionResult, Usage
 
     calls = {"n": 0}
@@ -1871,3 +2337,1546 @@ async def test_step_round_cap_stops_nudging_and_lets_the_run_end(
     # A run that gave up must not read like one that finished cleanly.
     assert "Do the thing" in body["text"]
     assert "still open" in body["text"]
+
+
+@pytest.mark.asyncio
+async def test_run_shell_records_the_locally_computed_result(app_session: object) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "run_shell", {"command": "echo hi"},
+        local_result={"stdout": "hi\n", "stderr": "", "exit_code": 0, "timed_out": False},
+    )
+    assert code == 200, body
+    assert body["status"] == "ok"
+    assert "hi" in body["output"]
+
+
+@pytest.mark.asyncio
+async def test_run_shell_without_a_local_result_is_an_error(app_session: object) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "run_shell", {"command": "echo hi"})
+    assert code == 200, body
+    assert body["output"].startswith("ERROR")
+
+
+@pytest.mark.asyncio
+async def test_step_withholds_run_shell_from_a_real_runtime_plugin(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors test_step_withholds_write_output_file_from_a_real_runtime_plugin:
+    a real runtime plugin has its own local shell inside its container --
+    offering run_shell too would be a redundant, differently-shaped door to
+    the same capability."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        lead, _mate, run = await _seed_lead_with_mate_and_skill(db, tenant)
+        lead.runtime_ref = str(uuid.uuid4())
+        lead_id, run_id = lead.id, run.id
+
+    seen: dict[str, Any] = {}
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        seen["tools"] = kw["tools"]
+        return CompletionResult(
+            text="fertig", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    token = _agent_token(tenant, lead_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+
+    offered = {t.name for t in seen["tools"]}
+    assert "run_shell" not in offered
+
+
+async def _step_with_scripted_turns(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    turns: list[list[ToolCall]],
+    *,
+    context: dict[str, Any] | None = None,
+    definition: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], int, dict[str, Any]]:
+    """POST /step once over scripted model turns. Returns the body, how many
+    completions ran, and the run's context afterwards."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8 import models as m
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        lead, _mate, run = await _seed_lead_with_mate_and_skill(db, tenant)
+        if context:
+            run.context = {**run.context, **context}
+        if definition is not None:
+            lead.definition = definition
+        lead_id, run_id = lead.id, run.id
+
+    script = list(turns)
+    completions = {"n": 0}
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        completions["n"] += 1
+        calls = script.pop(0) if script else []
+        return CompletionResult(
+            text="" if calls else "Here is the plan.", tool_calls=calls,
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use" if calls else "stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    token = _agent_token(tenant, lead_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        ctx = dict(row.context)
+    return r.json(), completions["n"], ctx
+
+
+_LS = ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})
+
+
+@pytest.mark.asyncio
+async def test_step_lets_the_shell_run_an_offered_local_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body, _n, _ctx = await _step_with_scripted_turns(app_session, monkeypatch, [[_LS]])
+    assert body["local_allowed"] == ["run_shell"]
+    assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
+
+
+@pytest.mark.asyncio
+async def test_step_never_hands_the_shell_a_local_call_the_mode_withholds(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An older shell runs every run_shell it is handed, before /tools can say
+    no. So under /plan /step answers the call itself -- the refusal goes into
+    the transcript as the call's result, and the model is asked again."""
+    body, completions, ctx = await _step_with_scripted_turns(
+        app_session, monkeypatch, [[_LS]], context={"chat_mode": "plan"}
+    )
+    assert body["tool_calls"] == []
+    assert body["local_allowed"] == []
+    assert completions == 2, "the model must hear the refusal and get another turn"
+    answers = [
+        e for e in ctx["transcript"] if e.get("role") == "tool" and e.get("tool_call_id") == "c1"
+    ]
+    assert len(answers) == 1
+    assert "/plan" in answers[0]["content"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("autonomy", "pre_decided", "expected"),
+    [
+        ("default", None, ["run_shell"]),
+        ("conservative", None, []),
+        ("conservative", "approve", ["run_shell"]),
+        ("conservative", "reject", []),
+    ],
+)
+async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    autonomy: str,
+    pre_decided: str | None,
+    expected: list[str],
+) -> None:
+    """Under conservative autonomy the B gate asks before a write -- and the
+    shell would run the command before /tools could ask. So it stays out of
+    local_allowed until an operator has approved this exact call; the shell
+    then posts it unexecuted, and /tools raises the approval first."""
+    from oc8.runtime.approval_resume import call_signature
+
+    context: dict[str, Any] = {}
+    if pre_decided is not None:
+        context["resolved_tool_approvals"] = [
+            {
+                "sig": call_signature("run_shell", {"command": "ls"}),
+                "tool": "run_shell",
+                "arguments": {"command": "ls"},
+                "decision": pre_decided,
+            }
+        ]
+    body, _n, _ctx = await _step_with_scripted_turns(
+        app_session,
+        monkeypatch,
+        [[_LS]],
+        context=context,
+        definition={"autonomy": autonomy},
+    )
+    assert body["local_allowed"] == expected
+    assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
+
+
+# --------------------------------------------------- parallel reads under caps
+
+
+class _EmptySchemaSession:
+    """Stand-in for the MCP session `/step` opens on a run's first step to
+    fetch tool schemas -- the tests below don't care what schemas come back,
+    only what the (fully scripted) model turn's tool_calls get tagged."""
+
+    tools: list[Any] = []
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> Any:
+        return self
+
+    async def __aexit__(self, *a: Any) -> None:
+        return None
+
+
+async def _post_step(tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID) -> dict[str, Any]:
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    token = _agent_token(tenant, agent_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/step",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 200, r.text
+            return dict(r.json())
+
+
+@pytest.mark.asyncio
+async def test_step_result_annotates_read_tier_calls_when_parallel_caps_allow(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the agent's resolved ModelCaps.parallel_tool_calls is True and the
+    model's turn returns a leading run of read-tier ALLOW calls, /step's
+    response marks them tier="read" and sets parallel_tool_calls=True."""
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _EmptySchemaSession)
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"}),
+                ToolCall(id="c2", name="search_records", arguments={"model": "crm.opportunity"}),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["read", "read"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_marks_write_calls_modify_tier(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write-tier tool call is annotated tier="modify" regardless of caps."""
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _EmptySchemaSession)
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="c1",
+                    name="create_record",
+                    arguments={"model": "sale.order", "values": {"partner_id": 7}},
+                ),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["modify"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_leaves_tier_modify_when_caps_disallow_parallel(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tier annotation is gated by the agent's own resolved caps -- an
+    agent whose model isn't declared to support parallel tool calls gets
+    tier="modify" even for a plain read, and parallel_tool_calls=False."""
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _EmptySchemaSession)
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"})],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        # parallel_tool_calls defaults to False -- no ModelConfig bound.
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is False
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["modify"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_never_marks_control_tools_read_tier(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A control tool call (e.g. todo_write) is always tier="modify" even if
+    it would otherwise classify as read via required_right -- control tools
+    are excluded from the batch by name, not by scope. Everything after it in
+    the same turn stops being batchable too, same as a write would."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _EmptySchemaSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant, name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        model_config = m.ModelConfig(
+            tenant_id=tenant, provider="fake", model="fake",
+            params={"parallel_tool_calls": True},
+        )
+        db.add(model_config)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={}, presentation={}, model_config_id=model_config.id,
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True, config={"command": "x", "args": []},
+            # todo_write is deliberately granted "read" here to prove the
+            # control-tool exclusion runs on the NAME, not on this scope.
+            scopes={"read": ["search_records", "todo_write"], "write": []},
+        )
+        db.add(conn)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, state="running",
+            context={"task": "x", "mcp_connection_id": str(conn.id)},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"}),
+                ToolCall(
+                    id="c2", name="todo_write",
+                    arguments={"todos": [{"content": "look things up", "status": "completed"}]},
+                ),
+                ToolCall(id="c3", name="search_records", arguments={"model": "crm.lead"}),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["read", "modify", "modify"]
+
+
+@pytest.mark.asyncio
+async def test_step_result_excludes_outward_calls_from_read_tier(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A call the connection declares outward (spec B8) breaks the leading
+    run even though `required_right` would call it "read" too -- batching an
+    outward call would let two concurrent /tool POSTs both read "not yet
+    delivered" from `check_outward` before either commits, defeating the
+    one-message-per-recipient guarantee."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _EmptySchemaSession)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant, name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        model_config = m.ModelConfig(
+            tenant_id=tenant, provider="fake", model="fake",
+            params={"parallel_tool_calls": True},
+        )
+        db.add(model_config)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={}, presentation={}, model_config_id=model_config.id,
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True,
+            config={"command": "x", "args": [], "outward_tools": ["send_reply"]},
+            scopes={"read": ["search_records", "send_reply"], "write": []},
+        )
+        db.add(conn)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, state="running",
+            context={"task": "x", "mcp_connection_id": str(conn.id)},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="",
+            tool_calls=[
+                ToolCall(id="c1", name="search_records", arguments={"model": "crm.lead"}),
+                ToolCall(id="c2", name="send_reply", arguments={"message": "hi"}),
+                ToolCall(id="c3", name="search_records", arguments={"model": "crm.lead"}),
+            ],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use",
+            provider="fake",
+            model="fake",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert body["parallel_tool_calls"] is True
+    assert [tc["tier"] for tc in body["tool_calls"]] == ["read", "modify", "modify"]
+
+
+@pytest.mark.asyncio
+async def test_a_copilot_dot_card_reaches_the_run_s_rendered_components(
+    app_session: object,
+) -> None:
+    """Any control outcome carrying a card is stored on the run -- not just
+    render_component -- so record_assistant_reply can attach a responsibility
+    card to the chat message."""
+    from oc8 import models as m
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.runtime.states import RunState
+    from tests.copilot.helpers import copilot_seat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        cop = await get_or_create_assistant(db, tenant_id=tenant)
+        seat = await copilot_seat(db, tenant, "lisa@example.com")
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=cop.id,
+            task_id=seat.task_id,
+            source="chat",
+            state=RunState.RUNNING.value,
+            context={"chat_session_id": str(seat.session_id), "door": "web"},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = cop.id, run.id
+        await db.commit()
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "responsibility_open", {"title": "Offsite", "goal": "On track"}
+    )
+    assert code == 200, body
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        fresh = await db.get(m.AgentRun, run_id)
+        assert fresh is not None
+        cards = fresh.context["rendered_components"]
+        assert [c["component_key"] for c in cards] == ["responsibility_card"]
+        assert cards[0]["props"]["title"] == "Offsite"
+
+
+async def _inactive_run(app_session: Any) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+    return tenant, agent_id, run_id
+
+
+@pytest.mark.asyncio
+async def test_the_first_step_clears_the_start_phase(
+    app_session: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shell asking for a step means the workspace is up: the run's start
+    phase ("Starting the workspace ...") ends here, live."""
+    from oc8 import models as m
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class _Bus:
+        async def publish_event(
+            self, tenant_id: uuid.UUID, type_: str, data: dict[str, Any], *, source: str
+        ) -> None:
+            events.append((type_, data))
+
+    monkeypatch.setattr("oc8.runtime.start_phase.get_event_bus", lambda: _Bus())
+    # The cheapest /step: an organisation that may not run ends it before any
+    # model call -- after the phase is cleared.
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.phase = "starting"
+
+    await _post_step(tenant, agent_id, run_id)
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.phase is None
+    assert [(t, d["phase"]) for t, d in events if t == "run.status"] == [("run.status", None)]
+
+
+@pytest.mark.asyncio
+async def test_tool_refuses_an_organisation_that_may_not_run(app_session: Any) -> None:
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "todo_write", {"todos": [{"content": "x", "status": "pending"}]}
+    )
+    assert code == 403, body
+    assert body == {"detail": "tenant_inactive"}
+
+
+@pytest.mark.asyncio
+async def test_step_stops_an_organisation_that_may_not_run(app_session: Any) -> None:
+    """The /step cancel probe (shared with the MCP gateway, `run_stop`) ends the
+    run as interrupted and records the kind the executor resolves it with."""
+    from oc8 import models as m
+    from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT
+
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    body = await _post_step(tenant, agent_id, run_id)
+    assert body["done"] is True
+    assert body["status_override"] == "interrupted"
+    assert body["text"] == TENANT_INACTIVE_OUTPUT
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["cancellation_kind"] == TENANT_INACTIVE_KIND
+
+
+@pytest.mark.asyncio
+async def test_tools_refuses_an_organisation_that_may_not_run(app_session: Any) -> None:
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.main import create_app
+
+    tenant, agent_id, run_id = await _inactive_run(app_session)
+    token = _agent_token(tenant, agent_id, run_id)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(
+                f"/api/v1/internal/agent/{run_id}/tools",
+                json={
+                    "calls": [
+                        {
+                            "id": "c1",
+                            "name": "todo_write",
+                            "arguments": {"todos": [{"content": "x", "status": "pending"}]},
+                        }
+                    ]
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    assert r.status_code == 403, r.text
+    assert r.json() == {"detail": "tenant_inactive"}
+
+
+@pytest.mark.asyncio
+async def test_restricted_knowledge_fetched_through_the_tool_endpoint_marks_the_run(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The isolated runtime's /step reads `contains_restricted` off the run, and
+    every completion it sends carries it. A lookup that returned restricted text
+    has to set it, or the next step goes out as unrestricted -- past the
+    router's ClassificationViolation and onto any cloud fallback."""
+    from oc8 import models as m
+
+    async def restricted_hit(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "Gehaltstabelle", True
+
+    monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", restricted_hit)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "search_knowledge", {"query": "Gehalt"}
+    )
+    assert code == 200, body
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        assert row.context.get("contains_restricted") is True
+
+
+@pytest.mark.parametrize(
+    ("grant", "reaches_server"),
+    [(True, True), (False, False)],
+    ids=["frame grants odoo", "frame withholds odoo"],
+)
+@pytest.mark.asyncio
+async def test_a_routed_core_name_is_the_connections_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, grant: bool, reaches_server: bool
+) -> None:
+    """`odoo.ask_user` is the CONNECTION's ask_user. The route rewrote it to the
+    bare name, which then took the core tool's early ALLOW and ran the core
+    implementation: the run parked, whatever the frame said about odoo."""
+    from oc8 import models as m
+
+    calls: list[str] = []
+
+    class _Session:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append(name)
+            return "asked in odoo"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _Session)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}}
+            if grant
+            else {"tools": {}},
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={}, presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True, config={"command": "x", "args": []},
+            scopes={"read": ["search_records"], "write": ["ask_user"]},
+        )
+        task = m.Task(
+            tenant_id=tenant, department_id=dept.id, assigned_agent_id=agent.id,
+            title="Angebot", state="in_progress",
+        )
+        db.add_all([conn, task])
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, task_id=task.id, state="running",
+            context={
+                "task": "x",
+                "mcp_connection_id": str(conn.id),
+                "tool_routes": {"odoo.ask_user": ["odoo", "ask_user"]},
+            },
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "odoo.ask_user", {"question": "Which order?"}
+    )
+
+    assert code == 200, body
+    assert body["status"] != "waiting_for_input", "the core ask_user must not park the run"
+    assert calls == (["ask_user"] if reaches_server else [])
+    if not reaches_server:
+        assert body["status"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_a_routed_core_name_is_tiered_as_the_connections_write(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The B gate has to tier the tool that RUNS. `odoo.todo_write` is a write
+    on odoo; tiered by its bare name it was the core to-do list, a read, and a
+    conservative agent ran it without asking."""
+    from oc8 import models as m
+
+    calls: list[str] = []
+
+    class _Session:
+        tools: list[Any] = []
+
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> Any:
+            return self
+
+        async def __aexit__(self, *a: Any) -> None:
+            return None
+
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append(name)
+            return "written in odoo"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _Session)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Vertrieb",
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora", status="running",
+            narrowing={}, definition={"autonomy": "conservative"}, presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        conn = m.McpConnection(
+            tenant_id=tenant, department_id=dept.id, name="odoo", transport="stdio",
+            server_url="stdio://odoo", connected=True, config={"command": "x", "args": []},
+            scopes={"read": ["search_records"], "modify": ["todo_write"]},
+        )
+        task = m.Task(
+            tenant_id=tenant, department_id=dept.id, assigned_agent_id=agent.id,
+            title="Angebot", state="in_progress",
+        )
+        db.add_all([conn, task])
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, task_id=task.id, state="running",
+            context={
+                "task": "x",
+                "mcp_connection_id": str(conn.id),
+                "tool_routes": {"odoo.todo_write": ["odoo", "todo_write"]},
+            },
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    code, body = await _post_tool(tenant, agent_id, run_id, "odoo.todo_write", {"id": 7})
+
+    assert code == 200, body
+    assert body["status"] == "waiting_for_approval", body
+    assert calls == []
+
+
+@pytest.mark.parametrize(("chat_mode", "prefetched"), [(None, 2), ("ask", 0)])
+@pytest.mark.asyncio
+async def test_ask_prefetches_no_read_from_the_tool_server(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_mode: str | None,
+    prefetched: int,
+) -> None:
+    """/ask touches no system. The leading-read prefetch calls the tool server
+    BEFORE /tools decides on each call, so it has to ask the mode itself -- a
+    later DENY only throws the answer away after the system was queried."""
+    from oc8 import models as m
+    from oc8.api.v1 import internal_agent as ia
+
+    reached: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        reached.append(tool)
+        return "rows"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        _agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        if chat_mode is not None:
+            run.context = {**run.context, "chat_mode": chat_mode}
+            await db.flush()
+        agent, dept, conn, pinned = await ia._load(db, run)
+        result = await ia._precompute_leading_reads(
+            run=run,
+            agent=agent,
+            dept=dept,
+            conn=conn,
+            pinned=pinned,
+            db=db,
+            calls=[
+                ia.ToolBody(id="r1", name="search_records", arguments={"model": "a"}),
+                ia.ToolBody(id="r2", name="search_records", arguments={"model": "b"}),
+            ],
+        )
+
+    assert len(reached) == prefetched
+    assert len(result) == prefetched
+
+
+@pytest.mark.parametrize(("chat_mode", "reaches_server"), [(None, True), ("plan", False)])
+@pytest.mark.asyncio
+async def test_an_answered_elicitation_is_authorized_again_before_the_call_runs(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_mode: str | None,
+    reaches_server: bool,
+) -> None:
+    """The operator's answer re-runs a held connection call on the next /step.
+    That call runs NOW, so it is decided now -- by the frame and the run's mode
+    as they are at this moment -- not on the strength of an earlier verdict."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    reached: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        reached.append(tool)
+        return "created"
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            **({"chat_mode": chat_mode} if chat_mode else {}),
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "arguments": {"model": "sale.order"},
+                "question": "Which customer?",
+            },
+            "clarifications": [{"question": "Which customer?", "answer": "ACME"}],
+        }
+        await db.flush()
+
+    await _post_step(tenant, agent_id, run_id)
+
+    assert reached == (["create_record"] if reaches_server else [])
+    if not reaches_server:
+        async with app_session(tenant) as db:  # type: ignore[operator]
+            row = await db.get(m.AgentRun, run_id)
+            assert row is not None
+            assert "pending_elicitation" not in row.context
+            assert any(
+                "/plan" in str(e.get("content", "")) for e in row.context["transcript"]
+            ), "the model must hear why the held call did not run"
+
+
+@pytest.mark.asyncio
+async def test_an_answered_elicitation_is_decided_on_the_arguments_that_run(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer is merged into the held call's arguments. It is that merged
+    call that runs, so it is the one the PEP decides: an answer that lifts the
+    order over the approval threshold must not run on the earlier verdict."""
+    from sqlalchemy import select
+
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    reached: list[dict[str, Any]] = []
+
+    async def fake_call(*args: Any, tool: str, arguments: dict[str, Any], **kw: Any) -> str:
+        reached.append(arguments)
+        return "created"
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {
+            "tools": {
+                "odoo": {"enabled": True, "read": True, "modify": True, "approval_eur": 3000}
+            }
+        }
+        conn = (
+            await db.execute(
+                select(m.McpConnection).where(m.McpConnection.department_id == dept.id)
+            )
+        ).scalar_one()
+        conn.config = {**conn.config, "value_spec": {"direct_fields": ["amount_total"]}}
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "arguments": {"model": "sale.order"},
+                "question": "How much?",
+            },
+            "clarifications": [{"question": "How much?", "answer": '{"amount_total": 9000}'}],
+        }
+        await db.flush()
+
+    await _post_step(tenant, agent_id, run_id)
+
+    assert reached == [], "the merged call is over the threshold and was not approved"
+
+
+@pytest.mark.asyncio
+async def test_local_allowed_uses_the_gate_the_call_will_meet(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/tools tiers run_shell with the bound connection's config, so a
+    connection that marks it destructive makes the B gate ask even under
+    default autonomy. /step must reach the same verdict before the shell runs
+    the command -- not a looser one computed without that config."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="", tool_calls=[ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="tool_use", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant, destructive_tools=["run_shell"])
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {**run.context, "tool_schemas": [
+            {"name": "search_records", "description": "", "parameters": {}}
+        ]}
+        await db.flush()
+
+    body = await _post_step(tenant, agent_id, run_id)
+
+    assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
+    assert body["local_allowed"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_renamed_call_is_never_prefetched_under_its_advertised_name(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prefetch decides and calls by the name it was handed. A routed name
+    is rewritten before it runs, so a prefetch under the advertised name would
+    decide one call and send another: such a call breaks the batch."""
+    from oc8 import models as m
+    from oc8.api.v1 import internal_agent as ia
+
+    reached: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        reached.append(tool)
+        return "rows"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        _agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "tool_routes": {"odoo.search_records": ["odoo", "search_records"]},
+        }
+        await db.flush()
+        agent, dept, conn, pinned = await ia._load(db, run)
+        assert conn is not None
+        conn.scopes = {"read": ["odoo.search_records", "search_records"], "write": []}
+        result = await ia._precompute_leading_reads(
+            run=run,
+            agent=agent,
+            dept=dept,
+            conn=conn,
+            pinned=pinned,
+            db=db,
+            calls=[
+                ia.ToolBody(id="r1", name="odoo.search_records", arguments={"model": "a"}),
+                ia.ToolBody(id="r2", name="odoo.search_records", arguments={"model": "b"}),
+            ],
+        )
+
+    assert reached == []
+    assert result == {}
+
+
+# ------------------------------------------- held elicitation: decided as it runs
+
+
+async def _with_guarded_skill(db: Any, tenant: uuid.UUID, agent: Any, run: Any, gt: float) -> None:
+    """Assign and activate a skill whose guardrail holds amount_total > gt."""
+    from oc8 import models as m
+
+    skill = m.Skill(tenant_id=tenant, name="Guarded", description="", author="oc8 core")
+    db.add(skill)
+    await db.flush()
+    version = m.SkillVersion(
+        tenant_id=tenant, skill_id=skill.id, semver="1.0.0", artifact_hash=b"\x00" * 32,
+        definition={
+            "oc8_skill": 1, "id": "sk-guarded", "version": "1.0.0",
+            "instruction": "Be careful.",
+            "requires": {"tools": [], "kbs": []},
+            "guardrails": [
+                {"type": "value_threshold", "action": "send_action", "metric": "amount_total",
+                 "gt": gt, "then": "require_approval"}
+            ],
+        },
+    )
+    db.add(version)
+    await db.flush()
+    skill.current_version_id = version.id
+    db.add(m.SkillAssignment(
+        tenant_id=tenant, agent_id=agent.id, skill_version_id=version.id, enabled=True
+    ))
+    run.context = {**run.context, "active_skill_ids": [str(version.id)]}
+    await db.flush()
+
+
+async def _resume_held_call(
+    app_session: object,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    answer: str,
+    held_arguments: dict[str, Any] | None = None,
+    autonomy: str = "default",
+    approved_original: bool = False,
+    skill_gt: float | None = None,
+    annotations: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], list[Any]]:
+    """A run parked on an elicitation for odoo's create_record, answered, then
+    one /step. Returns what reached the server, the /step body, the run's
+    context after it, and the approval requests raised."""
+    from sqlalchemy import select
+
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+    from oc8.runtime.approval_resume import call_signature
+
+    reached: list[dict[str, Any]] = []
+
+    async def fake_call(*args: Any, tool: str, arguments: dict[str, Any], **kw: Any) -> str:
+        reached.append(arguments)
+        return "created"
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    held = held_arguments if held_arguments is not None else {"model": "sale.order"}
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        agent.definition = {"autonomy": autonomy}
+        conn = (
+            await db.execute(
+                select(m.McpConnection).where(m.McpConnection.department_id == agent.department_id)
+            )
+        ).scalar_one()
+        conn.scopes = {"read": ["search_records"], "write": ["create_record"]}
+        context: dict[str, Any] = {
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "advertised": "create_record",
+                "arguments": held,
+                "question": "Which?",
+            },
+            "clarifications": [{"question": "Which?", "answer": answer}],
+        }
+        if annotations is not None:
+            context["tool_schemas"] = [
+                {"name": "create_record", "description": "", "parameters": {},
+                 "annotations": annotations}
+            ]
+        if approved_original:
+            context["resolved_tool_approvals"] = [
+                {"sig": call_signature("create_record", held), "tool": "create_record",
+                 "arguments": held, "decision": "approve"}
+            ]
+        run.context = {**run.context, **context}
+        await db.flush()
+        if skill_gt is not None:
+            await _with_guarded_skill(db, tenant, agent, run, skill_gt)
+
+    body = await _post_step(tenant, agent_id, run_id)
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        held_for = select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant)
+        approvals = (await db.execute(held_for)).scalars().all()
+        return reached, body, dict(row.context), list(approvals)
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_answer_over_a_skill_threshold_is_parked_for_approval(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An active skill's guardrail measures amount_total. The answer lifts it
+    over the skill's threshold, so the merged call waits for a human."""
+    reached, body, _ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer='{"amount_total": 5000}', skill_gt=1000
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    assert [a.payload["arguments"] for a in approvals] == [
+        {"model": "sale.order", "amount_total": 5000}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_is_tiered_with_the_annotations_tools_saw(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/tools tiers create_record by its advertised annotations: destructive,
+    so the gate asks under default autonomy. The re-run must do the same."""
+    reached, body, _ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer="ACME", annotations={"destructiveHint": True}
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    assert len(approvals) == 1
+
+
+@pytest.mark.asyncio
+async def test_an_approval_of_the_original_call_does_not_cover_the_answered_one(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Conservative autonomy: the operator approved the call before it asked
+    its question. The answer changed the arguments, so the merged call gets
+    its own approval -- it parks rather than looping on "call it again"."""
+    reached, body, ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer="ACME", autonomy="conservative", approved_original=True
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    merged = {"model": "sale.order", "elicitation_answer": "ACME"}
+    assert [a.payload["arguments"] for a in approvals] == [merged]
+    assert ctx["pending_elicitation"]["arguments"] == merged
+
+
+@pytest.mark.asyncio
+async def test_an_approval_stands_when_the_answer_leaves_the_call_unchanged(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reached, _body, ctx, approvals = await _resume_held_call(
+        app_session,
+        monkeypatch,
+        answer='{"model": "sale.order"}',
+        autonomy="conservative",
+        approved_original=True,
+    )
+    assert reached == [{"model": "sale.order"}]
+    assert approvals == []
+    assert "pending_elicitation" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_tools_measures_an_active_skills_metric(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skill's guardrail names the argument it measures (`metric`); /tools
+    has to read it, as the in-process engine does, or the threshold never bites."""
+    from oc8 import models as m
+
+    calls: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        calls.append(tool)
+        return "created"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert agent is not None and run is not None
+        await _with_guarded_skill(db, tenant, agent, run, 1000)
+
+    code, body = await _post_tool(
+        tenant, agent_id, run_id, "create_record", {"model": "sale.order", "amount_total": 5000}
+    )
+    assert code == 200, body
+    assert body["status"] == "waiting_for_approval", body
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_keeps_the_guardrail_it_was_made_under(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The skill that was active when the call asked its question holds the
+    re-run too, whatever is active now: its guardrail is stored with the call."""
+    from oc8 import models as m
+
+    reached: list[dict[str, Any]] = []
+
+    async def fake_call(*args: Any, tool: str, arguments: dict[str, Any], **kw: Any) -> str:
+        reached.append(arguments)
+        return "created"
+
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "advertised": "create_record",
+                "arguments": {"model": "sale.order"},
+                "question": "How much?",
+                "skill_guards": [{"gt": 1000, "metric": "amount_total"}],
+                "skill_tool_names": ["skill_guarded"],
+            },
+            "clarifications": [{"question": "How much?", "answer": '{"amount_total": 5000}'}],
+        }
+        await db.flush()
+
+    body = await _post_step(tenant, agent_id, run_id)
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+
+
+@pytest.mark.asyncio
+async def test_a_parked_held_call_runs_exactly_once_after_its_approval(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end: the answered call parks, the operator approves the merged
+    call (as approval_resume records it), and the next legs run it once."""
+    from sqlalchemy import select
+
+    from oc8 import models as m
+    from oc8.runtime.approval_resume import resolve_tool_approval
+
+    reached, body, _ctx, approvals = await _resume_held_call(
+        app_session, monkeypatch, answer="ACME", autonomy="conservative"
+    )
+    assert reached == []
+    assert body.get("status_override") == "waiting_for_approval"
+    assert len(approvals) == 1
+    tenant = approvals[0].tenant_id
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        approval = await db.get(m.ApprovalRequest, approvals[0].id)
+        assert approval is not None
+        run = (
+            await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant))
+        ).scalar_one()
+        run.state = "waiting_for_approval"
+        await db.flush()
+        await resolve_tool_approval(db, approval=approval, decision="approve")
+        run = await db.get(m.AgentRun, run.id)
+        assert run is not None
+        run.state = "running"
+        agent_id, run_id = run.agent_id, run.id
+
+    await _post_step(tenant, agent_id, run_id)
+    await _post_step(tenant, agent_id, run_id)
+    merged = {"model": "sale.order", "elicitation_answer": "ACME"}
+    assert reached == [merged]
+
+    # The approval holds for the whole run: only replay-safety stops the model
+    # repeating the merged call from writing a second time.
+    code, repeated = await _post_tool(tenant, agent_id, run_id, "create_record", merged)
+    assert code == 200, repeated
+    assert reached == [merged], "replayed, not executed again"
+    assert "replay" in repeated["output"]
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        held_rows = [c for c in row.context.get("toolCalls", []) if c.get("arguments") == merged]
+        assert held_rows and held_rows[0]["state"] == "done", "the re-run is on the timeline"
+        audited = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action == "tool.call:create_record",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert any((e.resource or {}).get("arguments") == merged for e in audited)
+
+
+@pytest.mark.asyncio
+async def test_a_held_call_that_asks_again_suspends_for_the_operator(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-run asks a second question: /step ends waiting for input, as the
+    engine does -- the model is not asked to carry on around it."""
+    from oc8.agent.elicitation import ElicitationNeeded
+
+    completions = {"n": 0}
+
+    async def asks(*args: Any, **kw: Any) -> str:
+        raise ElicitationNeeded("And which warehouse?")
+
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        completions["n"] += 1
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", asks)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "search_records",
+                "arguments": {"model": "sale.order"},
+                "question": "Which customer?",
+            },
+            "clarifications": [{"question": "Which customer?", "answer": "ACME"}],
+        }
+        await db.flush()
+
+    body = await _post_step(tenant, agent_id, run_id)
+    assert body.get("status_override") == "waiting_for_input"
+    assert completions["n"] == 0
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        assert row.context["pending_elicitation"]["question"] == "And which warehouse?"
+
+
+@pytest.mark.asyncio
+async def test_step_persists_and_reoffers_board_write_across_calls(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """produces_board is decided by the first step's preamble and must survive
+    through run.context into every later step of the isolated runtime."""
+    import copy
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8 import models as m
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+    from tests.boards.test_mission import SPEC
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent, _task, run = await _plain_agent_run(db, tenant)
+        db.add(
+            m.DataBoard(
+                tenant_id=tenant,
+                department_id=agent.department_id,
+                agent_id=agent.id,
+                title="Revenue",
+                spec=copy.deepcopy(SPEC),
+            )
+        )
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    seen: list[list[str]] = []
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        seen.append([t.name for t in kw["tools"]])
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            headers = {"Authorization": f"Bearer {_agent_token(tenant, agent_id, run_id)}"}
+            for _ in range(2):
+                r = await c.post(f"/api/v1/internal/agent/{run_id}/step", headers=headers)
+                assert r.status_code == 200, r.text
+
+    assert len(seen) == 2
+    assert "board_write" in seen[0]
+    assert "board_write" in seen[1]
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None and row.context["produces_board"] is True

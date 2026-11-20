@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Protocol
+from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
 
 from fastapi import APIRouter
+
+if TYPE_CHECKING:
+    from oc8.copilot.agent_templates import AgentTemplate
+    from oc8.edition.tools import EditionTool
 
 
 class EditionExtension(Protocol):
     """A trusted edition contribution mounted by the Community app factory.
 
-    This is deliberately limited to routers until an implemented edition needs
-    another composition surface.  It is not the Marketplace plugin contract.
+    Routers, service routers and edition tools -- each surface added only once
+    an implemented edition needs it.  It is not the Marketplace plugin contract.
     """
 
     def routers(self) -> Sequence[APIRouter]:
@@ -31,5 +36,31 @@ class EditionExtension(Protocol):
         SupervisionExtension) that only contribute operator routers don't
         need to implement it. `Protocol` subclasses inherit this concrete
         body through ordinary nominal inheritance.
+        """
+        return ()
+
+    def agent_templates(self) -> Sequence[AgentTemplate]:
+        """Agent ideas this edition adds to the Copilot's empty chat (Copilot
+        Agent Builder §3.6). Appended after core's; a key core already uses is
+        ignored. Defaults to none, like tools()."""
+        return ()
+
+    def tools(self) -> Sequence[EditionTool]:
+        """Edition tools for the agent and chat tool assembly (oc8 Chat §6.2).
+
+        Offered only to tenants whose entitlements hold each tool's
+        capability; `create_app` refuses one whose name shadows a core control
+        tool. Defaults to none, like service_routers().
+        """
+        return ()
+
+    def i18n_catalog_dirs(self) -> Sequence[Path]:
+        """Directories of `<locale>.po` catalogs for the UI strings this
+        edition adds (docs/contributing/translations.md, "Edition catalogs").
+
+        Merged into core's catalog per locale, served by `/i18n/core`; core
+        wins on any msgid it carries. `create_app` refuses a directory that
+        is missing or holds a file that does not parse. Defaults to none,
+        like tools().
         """
         return ()

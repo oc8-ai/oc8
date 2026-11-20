@@ -48,6 +48,10 @@ ALLOWED: dict[str, str] = {
     "api/v1/catalog.py": "a different permission (catalog:view), id-only reads",
     "api/v1/skills_write.py": "loads the agent it is about to assign a skill to",
     "metering/budget.py": "raises and reads its own tenant-scope incident; no human here",
+    "connections/consolidate.py": (
+        "the one-time fold of a tenant's tool setups (worker start, CLI): rewrites "
+        "every agent's and department's pins; no human caller, nothing shown"
+    ),
     "api/v1/contracts.py": "department-name resolution for the contract screen",
     "api/v1/handoffs.py": "department-name resolution for both sides of a handoff",
     "api/v1/members.py": "checks a department exists before a seat is written into it",
@@ -59,9 +63,78 @@ ALLOWED: dict[str, str] = {
         "function is already gated the same way copilot/capabilities.py is above"
     ),
     "api/v1/run.py": "loads the agent that owns the run being started or controlled",
+    "api/v1/run_inputs.py": (
+        "loads the agent of a run the caller was already admitted to steer "
+        "(may_steer_run), only to resolve its pinned runtime"
+    ),
+    "chat/live.py": (
+        "names the agents behind delegated tasks on a timeline the caller was "
+        "already admitted to (reach + watch rules); name only, never content"
+    ),
+    "runtime/run_inputs.py": (
+        "reads the agent of a run the caller was already admitted to steer "
+        "(may_steer_run / run_accepts_inputs), for the secret gate and its "
+        "pinned runtime; no departmental browse"
+    ),
+    "chat/carry_over.py": (
+        "reads the finished run's own agent, after its owner's reach was "
+        "re-checked, to stage the follow-up turn; no departmental browse"
+    ),
+    "runtime/clarification.py": (
+        "the answer path reading the run's own agent for the secret gate "
+        "(is_tenant_assistant); no departmental browse"
+    ),
+    "api/v1/boards.py": (
+        "names the producing agent of a board the caller was already admitted to by "
+        "agent:view in the board's department (boards.repo); name and deleted_at only. "
+        "For someone who may share the board (may_delete_board), names the departments "
+        "it is shared with and the tenant's live departments to share it with: id and "
+        "name only, never their agents or data"
+    ),
+    "boards/repo.py": (
+        "the board read door: in the share predicate, correlates on whether the board's "
+        "department and a shared department are live (deleted_at); loads no row"
+    ),
+    "boards/sharing.py": (
+        "behind the caller's may_delete_board gate, reads ids only: whether a share's "
+        "target department is live (target check), whether the board's own department "
+        "is live (board_audience), and which live departments' seats a department "
+        "share reaches (the seat join in board_audience); never agents or data"
+    ),
+    "notifications/events.py": (
+        "addresses a notification, with no human viewer to scope it to: reads the "
+        "created board's producing agent (name, for the body) and the failed run's own "
+        "agent (name, department_id, is_tenant_assistant); joins Department only to "
+        "require a live department for the seat holders it notifies; never data"
+    ),
     "api/v1/knowledge.py": "resolves the grantee (agent or department) of a KB share",
-    "api/v1/components.py": "resolves the grantee (agent or department) of a component grant",
     "agent/control_tools.py": "the agent runtime reading its own department; no human here",
+    "copilot/agent_match.py": (
+        "lists the tenant's agents to match a Copilot request, then keeps only those "
+        "the person may START (run_reach + agent_runnable_in, the run route's own "
+        "predicate, built off-request with scope_for_member) -- a reach no wider than "
+        "their agent view; reads each kept agent's department for its frame and name"
+    ),
+    "copilot/direct_access.py": (
+        "the person's decision on their own direct-access card loads the Copilot that "
+        "made the offer and the agent they chose from the card's own list, then starts "
+        "it only if member_may_run_agent says they may START it (the run route's predicate)"
+    ),
+    "copilot/builder.py": (
+        "apply re-reads the department a proposal names after may_view/may_create_agent "
+        "or the approval funnel decided reach, and reloads the agent it just created in "
+        "the same transaction to raise its hire request; a board-only proposal reads its "
+        "board's producing agent live for that agent's department (target_department), "
+        "after propose checked the agent through visible_agent"
+    ),
+    "api/v1/copilot_builder.py": (
+        "the builder card reads the department and created agent a proposal names "
+        "only after the owner or submitted+may_view gate passed, tenant-checked"
+    ),
+    "copilot/models.py": (
+        "no load: the open-builder partial unique index's predicate names the "
+        "'agent_builder' proposal kind, which the raw-SQL check reads as the agent table"
+    ),
     "kpis/aggregate.py": (
         "id-only reads (Agent.id/Agent.department_id, never content): the KPI endpoints "
         "prove visibility with require_departmental + visible_agent/visible_department "
@@ -76,6 +149,13 @@ ALLOWED: dict[str, str] = {
         "select(id_col), and the walk below only inspects a call's literal arguments, not "
         "what a name was assigned from; the exception is meant to be a decision, not a "
         "side effect of how the query happened to be spelled"
+    ),
+    "api/v1/feed.py": (
+        "GET /usage/export outer-joins Agent/Department only to NAME the agent and "
+        "department on each token-usage row -- behind budget:view via require_permission, "
+        "which admits a tenant-wide hold only (no seat reaches it), and over exactly the "
+        "rows GET /usage in the same file already aggregates tenant-wide for that "
+        "permission; not a departmental browse"
     ),
     # --- Everything below is the disclosed remainder of the sweep's first
     # real run against Agent/Department: agent-runtime-internal reads, system
@@ -93,6 +173,10 @@ ALLOWED: dict[str, str] = {
     "api/mcp_gateway.py": "agent-token-authenticated path, scoped to the token's own run",
     "api/v1/capas.py": "a different permission (plugin install), department-existence check only",
     "api/v1/internal_agent.py": "agent-token-authenticated path, scoped to the token's own run",
+    "api/v1/mcp.py": (
+        "gated by integration:manage (tenant-wide, NEVER_DELEGATABLE), department-existence "
+        "check only when moving a connection into a department"
+    ),
     "capas/export.py": (
         "gated by plugin:manage -- the SAME tenant-wide permission api/v1/capas.py above "
         "already uses for capa install/enable, not a narrower departmental seat. An "
@@ -119,7 +203,12 @@ ALLOWED: dict[str, str] = {
         "not a read of the Department table"
     ),
     "runtime/executor.py": "the agent runtime loading its OWN agent row to run or reap it",
+    "runtime/agent_status.py": "the executor re-reading its OWN agent row's status as a run ends",
     "runtime/reconcile.py": "background reconciliation loading its own stale agent rows",
+    "runtime/repository.py": (
+        "RunRepository.create reads only the target agent's current_version_id to pin "
+        "the run it creates; every caller has already authorized starting that agent"
+    ),
     "runtime/run_context.py": (
         "sweep false-positive: raw SQL against the agent_run table, whose name merely "
         "contains 'agent' as a substring"
@@ -162,9 +251,18 @@ GUARDED_TABLES = frozenset({"agent", "department"})
 _LOADERS = frozenset({"select", "aliased"})
 
 
-def _loads(source: str, *, filename: str = "<test>") -> list[tuple[int, str]]:
+def _loads(
+    source: str,
+    *,
+    filename: str = "<test>",
+    guarded: frozenset[str] = GUARDED,
+    guarded_tables: frozenset[str] = GUARDED_TABLES,
+) -> list[tuple[int, str]]:
     """Every load of a guarded model, however it is spelled. See the approvals
-    sweep's docstring for the shapes this exists to catch; unchanged here."""
+    sweep's docstring for the shapes this exists to catch; unchanged here.
+
+    `guarded` / `guarded_tables` default to this sweep's sets; the boards sweep
+    (`tests/boards/test_reads_go_through_the_scoped_repository.py`) passes its own."""
     found: list[tuple[int, str]] = []
     for node in ast.walk(ast.parse(source, filename=filename)):
         if not isinstance(node, ast.Call):
@@ -180,19 +278,19 @@ def _loads(source: str, *, filename: str = "<test>") -> list[tuple[int, str]]:
         elif (isinstance(func, ast.Name) and func.id == "text") or (
             isinstance(func, ast.Attribute) and func.attr == "text"
         ):
-            for table in _guarded_tables_in(node.args):
+            for table in _guarded_tables_in(node.args, guarded_tables):
                 found.append((node.lineno, table))
             continue
         else:
             continue
         for arg in args:
-            model = _guarded_model(arg)
+            model = _guarded_model(arg, guarded)
             if model is not None:
                 found.append((node.lineno, model))
     return found
 
 
-def _guarded_tables_in(args: list[ast.expr]) -> list[str]:
+def _guarded_tables_in(args: list[ast.expr], guarded_tables: frozenset[str]) -> list[str]:
     out: list[str] = []
     for arg in args:
         for sub in ast.walk(arg):
@@ -200,16 +298,16 @@ def _guarded_tables_in(args: list[ast.expr]) -> list[str]:
                 continue
             lowered = sub.value.lower()
             out.extend(
-                table for table in sorted(GUARDED_TABLES) if table in lowered and table not in out
+                table for table in sorted(guarded_tables) if table in lowered and table not in out
             )
     return out
 
 
-def _guarded_model(expr: ast.expr) -> str | None:
+def _guarded_model(expr: ast.expr, guarded: frozenset[str]) -> str | None:
     for sub in ast.walk(expr):
-        if isinstance(sub, ast.Name) and sub.id in GUARDED:
+        if isinstance(sub, ast.Name) and sub.id in guarded:
             return sub.id
-        if isinstance(sub, ast.Attribute) and sub.attr in GUARDED:
+        if isinstance(sub, ast.Attribute) and sub.attr in guarded:
             return sub.attr
     return None
 

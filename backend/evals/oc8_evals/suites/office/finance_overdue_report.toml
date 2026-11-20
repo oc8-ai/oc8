@@ -1,0 +1,21 @@
+id = "finance_overdue_report"
+systems = ["odoo"]
+origin = "manual"
+scenario = "finance_overdue_report"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Three customer invoices are overdue. Write one CSV file named overdue.csv
+(content type text/csv) with a header row "ref" and one row per overdue
+invoice ref. Do not post or send any invoice.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

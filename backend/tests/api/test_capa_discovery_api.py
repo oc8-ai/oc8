@@ -132,7 +132,7 @@ async def test_updating_an_enabled_plugin_is_disabled_pending_consent_but_stays_
 
             updated = await c.post(
                 "/api/v1/capas/install-from-disk",
-                json={"pluginId": "acme_bundle"},
+                json={"pluginId": "acme_bundle", "enable": False},
                 headers=_h(tenant),
             )
             assert updated.status_code == 201, updated.text

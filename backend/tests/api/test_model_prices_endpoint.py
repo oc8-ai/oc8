@@ -129,3 +129,47 @@ async def test_write_forbidden_for_non_admin() -> None:
                 headers=headers,
             )
             assert r.status_code == 403, r.text
+
+
+async def test_read_only_prices_refuse_tenant_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # On a shared deployment the price list belongs to every tenant at once,
+    # so the operator turns tenant writes off and keeps the reads.
+    from oc8 import config
+
+    monkeypatch.setattr(config.get_settings(), "model_prices_read_only", True, raising=False)
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            policy = await client.get("/api/v1/model-prices/policy", headers=headers)
+            created = await client.post(
+                "/api/v1/model-prices",
+                json={
+                    "provider": "anthropic",
+                    "modelPattern": "readonlytest",
+                    "priceInUsdPer1M": 1.0,
+                    "priceOutUsdPer1M": 2.0,
+                },
+                headers=headers,
+            )
+            listed = await client.get("/api/v1/model-prices", headers=headers)
+            removed = await client.delete(f"/api/v1/model-prices/{uuid.uuid4()}", headers=headers)
+
+    assert policy.status_code == 200 and policy.json() == {"readOnly": True}
+    assert created.status_code == 403
+    assert listed.status_code == 200
+    assert all(p["modelPattern"] != "readonlytest" for p in listed.json())
+    assert removed.status_code == 403
+
+
+async def test_prices_are_writable_by_default() -> None:
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            policy = await client.get(
+                "/api/v1/model-prices/policy",
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+    assert policy.json() == {"readOnly": False}

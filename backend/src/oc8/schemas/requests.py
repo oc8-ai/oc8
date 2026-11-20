@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
+import json
 import uuid
-from typing import Any, Literal
+from collections import Counter
+from typing import Annotated, Any, Literal
 
-from pydantic import AwareDatetime, ConfigDict, EmailStr, Field, field_validator
+import jsonschema
+from pydantic import (
+    AwareDatetime,
+    ConfigDict,
+    EmailStr,
+    Field,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
+from oc8.chat.context.manifest import MAX_MESSAGE_REFS, MAX_PINNED_REFS
+from oc8.modelrouter.types import ReasoningLevel
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import WidgetInstanceDTO
 
@@ -31,13 +44,79 @@ class CreateChatSessionRequest(CamelModel):
     agent_id: uuid.UUID
 
 
+class ChatContextRefRequest(CamelModel):
+    """One thing attached to a message with `#` or the + menu (§5.1).
+
+    Any kind the context registry knows; resolved and authorised server-side
+    against the sending member (`chat.context`), and an unknown kind or an id
+    the member may not see is dropped. The label is NOT taken from the client
+    -- it is read off the row, so a client cannot make a turn's transcript
+    claim it consulted something else (and an extra field is refused).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1, max_length=40)
+    #: A source file's id is `<source uuid>:<connector file id>`.
+    id: str = Field(min_length=1, max_length=400)
+
+
 class SendChatMessageRequest(CamelModel):
     message: str = Field(min_length=1, max_length=20_000)
     attachment_ids: list[uuid.UUID] = []
+    #: `#` is for pointing at sources, and a turn that names more than this
+    #: is a search, not a reference.
+    context_refs: list[ChatContextRefRequest] = Field(
+        default_factory=list, max_length=MAX_MESSAGE_REFS
+    )
+
+
+class PinRefsRequest(CamelModel):
+    """Replace a chat's pinned context. Labels come from the rows, not the client."""
+
+    refs: list[ChatContextRefRequest] = Field(max_length=MAX_PINNED_REFS)
+
+
+class ChatProjectRequest(CamelModel):
+    name: str = Field(min_length=1, max_length=120)
+    instructions: str = Field(default="", max_length=8000)
+    pinned_refs: list[ChatContextRefRequest] = Field(
+        default_factory=list, max_length=MAX_PINNED_REFS
+    )
+
+
+class SetProjectRequest(CamelModel):
+    #: None takes the chat out of its project.
+    project_id: uuid.UUID | None
+
+
+class SetPinnedRequest(CamelModel):
+    pinned: bool
 
 
 class RenameChatSessionRequest(CamelModel):
     title: str = Field(min_length=1, max_length=200)
+
+
+class MessageFeedbackRequest(CamelModel):
+    rating: Literal["up", "down"]
+    note: str = Field(default="", max_length=500)
+
+
+class SetChatModelRequest(CamelModel):
+    #: None selects "Auto" (the agent's own model).
+    model_config_id: uuid.UUID | None = None
+
+
+class SetChatModeRequest(CamelModel):
+    #: A sticky mode's key, or None to leave the mode.
+    mode: str | None = Field(default=None, max_length=32)
+
+
+class SetChatEffortRequest(CamelModel):
+    #: A reasoning level, or None for the agent's or model's default. Anything
+    #: else is a 422 (spec 2026-11-11 §9).
+    effort: ReasoningLevel | None = None
 
 
 class CreateAgentRequest(CamelModel):
@@ -105,6 +184,27 @@ class AgentRenameRequest(CamelModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class PublishAgentVersionRequest(CamelModel):
+    """Body of `POST /agents/{id}/versions`.
+
+    `expected_current_version_no` is REQUIRED, and null only for an agent that
+    has never been published. Optional would mean a client could omit it and
+    lose the optimistic check silently, which is worse than not having one: the
+    UI would still look like two editors could not overwrite each other.
+
+    There is no `rollback` counterpart. A rollback names its target in the path
+    and generates its own note, so it has no body at all -- an optional body on
+    a POST is a shape FastAPI expresses awkwardly, for a note nobody was going
+    to type.
+    """
+
+    note: str | None = Field(default=None, max_length=500)
+    #: What the client believed was current when it rendered the publish bar.
+    #: A mismatch is a 409 (spec §2.7): two editors share one draft, and this
+    #: is the check that makes the second one find out.
+    expected_current_version_no: int | None
+
+
 class ModelConfigWrite(CamelModel):
     provider: str
     model: str
@@ -137,10 +237,30 @@ class ModelConfigWrite(CamelModel):
     #: model's existing raw params untouched on update; {} clears them.
     extra: dict[str, Any] | None = None
     used_by_copilot: bool | None = None
+    #: Whether members may pick this model in a chat. None leaves it unchanged.
+    chat_enabled: bool | None = None
+    #: Whether this model can think, so a reasoning level is sent to it at all.
+    #: On create, None takes the provider's declaration (`ProviderEntry.
+    #: supports_reasoning`); on update, None leaves it unchanged.
+    supports_reasoning: bool | None = None
     #: A specific Credential to bind to this ModelConfig (id as string). None
     #: leaves the tenant-wide "first credential of this provider's type"
     #: convention as the fallback (resolve_model_key/resolve_model_base_url).
     credential_id: str | None = None
+    #: Auto-router only (`provider="auto"`): map tier name → concrete
+    #: ModelConfig id. Keys: fast | balanced | strong.
+    auto_tiers: dict[str, str] | None = None
+    #: Auto-router: log the complexity choice but always enforce balanced
+    #: (or latched) until operators trust the policy.
+    auto_shadow_only: bool | None = None
+    #: Auto-router phase-2: after a cheap final answer, escalate once if the
+    #: text looks uncertain / too short.
+    auto_cascade_verify: bool | None = None
+    #: Auto-router phase-3: blend heuristic with preference_examples overlap.
+    auto_preference_router: bool | None = None
+    #: Labeled snippets for the preference router:
+    #: ``[{"text": "...", "needs_strong": true}, ...]``.
+    auto_preference_examples: list[dict[str, Any]] | None = None
 
 
 class ModelDiscoverRequest(CamelModel):
@@ -166,7 +286,15 @@ class AssignSkillRequest(CamelModel):
 class CreateKnowledgeBaseRequest(CamelModel):
     name: str
     description: str = ""
-    embedding_model: str = "nomic-embed-text"
+    #: None means the deployment default (OC8_DEFAULT_EMBEDDING_MODEL).
+    embedding_model: str | None = None
+    #: ``internal`` (default) or a capa vector-index ``type_id``.
+    index_type: str = "internal"
+    #: Non-secret mapping (collection, table, field keys). Never secrets.
+    index_config: dict[str, Any] = {}
+    #: Required when ``index_type`` is not ``internal``.
+    credential_id: uuid.UUID | None = None
+    classification: str = "internal"
 
 
 class UpdateKnowledgeBaseRequest(CamelModel):
@@ -174,12 +302,10 @@ class UpdateKnowledgeBaseRequest(CamelModel):
     plan, Task 5). All fields optional and applied only when present, same
     tri-state-adjacent shape as `UpdateSourceRequest`.
 
-    `embedding_model` is here too, but the route only honours it while the
-    base has never ingested a chunk: switching models after real content
-    exists would leave old and new chunks embedded by different models in
-    the same base, and a vector search can't meaningfully compare across
-    them. Once chunks exist, changing models means deleting and recreating
-    the base."""
+    Changing `embedding_model` on a base that already holds content clears
+    its vectors and re-embeds them with the new model (an internal base
+    only; an external index's vectors live outside oc8 and refuse the
+    change), so old and new models' vectors never sit side by side."""
 
     name: str | None = None
     description: str | None = None
@@ -194,12 +320,6 @@ class IngestDocumentRequest(CamelModel):
 
 class CreateGrantRequest(CamelModel):
     kb_id: uuid.UUID
-    grantee_type: Literal["department", "agent"]
-    grantee_id: uuid.UUID
-
-
-class CreateComponentGrantRequest(CamelModel):
-    component_key: str
     grantee_type: Literal["department", "agent"]
     grantee_id: uuid.UUID
 
@@ -267,6 +387,9 @@ class ApprovalDecisionRequest(CamelModel):
     #: `reason` stays free text and travels either way, so an operator can pick
     #: an option, write an instruction, or do both.
     option: str | None = None
+    #: On a direct-access offer: run this one of the card's agents instead of
+    #: the direct grant. Only `decision="approve"` reads it.
+    agent_id: uuid.UUID | None = None
 
 
 class CreateMcpLoginRequest(CamelModel):
@@ -293,6 +416,10 @@ class CreateMcpLoginRequest(CamelModel):
     credential_id: uuid.UUID | None = None
     scopes: list[str] | dict[str, Any] = []
     department_id: uuid.UUID | None = None
+    #: The agent this login is chosen for (the new-agent dialog): it becomes
+    #: the agent's fixed access for the tool `name`, never a further
+    #: connection row.
+    agent_id: uuid.UUID | None = None
 
 
 class CreateMcpConnectionRequest(CamelModel):
@@ -326,6 +453,137 @@ class UpdateMcpConnectionRequest(CamelModel):
     secret_env: dict[str, str] | None = None
 
 
+class HttpTestCallRequest(CamelModel):
+    """One real call of one declared tool of an HTTP API connection."""
+
+    tool: str = Field(min_length=1, max_length=64)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+_HTTP_TOOL_NAME = r"^[A-Za-z0-9_-]{1,64}$"
+#: Bounds on one tool's parameter schema, checked before it is walked by the
+#: JSON Schema meta-validator (which recurses) or forwarded to a model.
+#: Measured as compact UTF-8 JSON bytes, the way the frontend measures it
+#: (`lib/http-tools.ts`, PARAM_SCHEMA_MAX_BYTES), so both refuse the same schema.
+PARAM_SCHEMA_MAX_BYTES = 64_000
+#: The most one edit of an HTTP API's tools may hold, all tools together
+#: (compact UTF-8 JSON): it is validated whole and written to every
+#: department's connection and to the capa's manifest.
+HTTP_TOOLS_MAX_BYTES = 2_000_000
+_PARAM_SCHEMA_MAX_DEPTH = 32
+
+
+def _schema_shape_problem(value: Any) -> str | None:
+    """Why a parameter schema is too deep or refers outside itself, or None.
+
+    Walked iteratively, so a hostile nesting cannot exhaust the stack here.
+    Only a local `$ref` ("#/...") is allowed: a remote one would be handed to
+    model providers as part of the tool's input schema."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if depth > _PARAM_SCHEMA_MAX_DEPTH:
+            return f"param_schema is nested deeper than {_PARAM_SCHEMA_MAX_DEPTH} levels"
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if ref is not None and not (isinstance(ref, str) and ref.startswith("#")):
+                return "param_schema may only use a local $ref (starting with '#')"
+            stack.extend((child, depth + 1) for child in node.values())
+        elif isinstance(node, list):
+            stack.extend((child, depth + 1) for child in node)
+    return None
+
+
+class HttpToolSpec(CamelModel):
+    """One endpoint of an HTTP API connection, as the tools editor saves it."""
+
+    name: str = Field(pattern=_HTTP_TOOL_NAME)
+    description: str = Field(default="", max_length=4000)
+    method: Literal["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]
+    url_template: str = Field(min_length=1, max_length=2000)
+    param_schema: dict[str, Any] = Field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+    param_locations: dict[str, Literal["path", "query", "header", "body"]] = Field(
+        default_factory=dict
+    )
+    body_param: str | None = Field(default=None, max_length=200)
+    #: A label the editor groups endpoints by (e.g. an API's tag).
+    group: str = Field(default="", max_length=120)
+
+    @field_validator("url_template")
+    @classmethod
+    def _a_path_below_the_base_url(cls, value: str) -> str:
+        if not value.startswith("/") or value.startswith("//") or "://" in value:
+            raise ValueError("url_template must be a path below the base URL, starting with '/'")
+        return value
+
+    @field_validator("param_schema")
+    @classmethod
+    def _an_object_json_schema(cls, value: dict[str, Any]) -> dict[str, Any]:
+        problem = _schema_shape_problem(value)
+        if problem:
+            raise ValueError(problem)
+        size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > PARAM_SCHEMA_MAX_BYTES:
+            raise ValueError(f"param_schema is larger than {PARAM_SCHEMA_MAX_BYTES} bytes")
+        try:
+            jsonschema.validators.validator_for(value).check_schema(value)
+        except jsonschema.SchemaError as exc:
+            raise ValueError(f"param_schema is not a valid JSON Schema: {exc.message}") from exc
+        except RecursionError as exc:
+            raise ValueError("param_schema is nested too deeply") from exc
+        if value.get("type", "object") != "object":
+            raise ValueError("param_schema must describe an object (type: object)")
+        return value
+
+
+class HttpToolScopesSpec(CamelModel):
+    read: list[str] = Field(default_factory=list)
+    modify: list[str] = Field(default_factory=list)
+
+
+class ImportMetadataSpec(CamelModel):
+    """Where a connection's tools were imported from, for re-reading later."""
+
+    source_url: str | None = Field(default=None, max_length=2000)
+    fingerprint: str = Field(max_length=128)
+    imported_at: str = Field(max_length=64)
+    title: str = Field(default="", max_length=300)
+    version: str = Field(default="", max_length=100)
+
+
+class UpdateHttpToolsRequest(CamelModel):
+    """Replace an HTTP API connection's tools and their read/modify
+    classification. A tool in neither list stays `modify` (fail-closed).
+    `openapi` omitted keeps the stored import metadata; null removes it."""
+
+    http_tools: list[HttpToolSpec] = Field(max_length=2000)
+    scopes: HttpToolScopesSpec
+    openapi: ImportMetadataSpec | None = None
+
+    @model_validator(mode="after")
+    def _consistent(self) -> UpdateHttpToolsRequest:
+        counts = Counter(t.name for t in self.http_tools)
+        dupes = sorted(name for name, n in counts.items() if n > 1)
+        if dupes:
+            raise ValueError(f"tool names must be unique: {', '.join(dupes)}")
+        unknown = sorted((set(self.scopes.read) | set(self.scopes.modify)) - set(counts))
+        if unknown:
+            raise ValueError(f"scopes name unknown tools: {', '.join(unknown)}")
+        both = sorted(set(self.scopes.read) & set(self.scopes.modify))
+        if both:
+            raise ValueError(f"a tool is either read or modify, not both: {', '.join(both)}")
+        tools = [t.model_dump(mode="json") for t in self.http_tools]
+        size = len(json.dumps(tools, separators=(",", ":"), ensure_ascii=False).encode())
+        if size > HTTP_TOOLS_MAX_BYTES:
+            raise ValueError(
+                f"the tools are larger than {HTTP_TOOLS_MAX_BYTES} bytes together; "
+                "split the API or leave out endpoints"
+            )
+        return self
+
+
 class RunAgentRequest(CamelModel):
     task: str
     mcp_connection_id: uuid.UUID | None = None
@@ -342,14 +600,20 @@ class CreateTriggerRequest(CamelModel):
     kind: Literal["cron", "event", "webhook"]
     task_text: str
     cron_expression: str | None = None
+    #: IANA zone the cron expression is read in; the organisation's when omitted.
+    timezone: str | None = Field(default=None, max_length=64)
     event_source: str | None = None
     event_type: str | None = None
+    acts_for_creator: bool = False
 
 
 class UpdateTriggerRequest(CamelModel):
     task_text: str | None = None
     enabled: bool | None = None
     cron_expression: str | None = None
+    #: A new zone for the schedule; omitted keeps the one it has.
+    timezone: str | None = Field(default=None, max_length=64)
+    acts_for_creator: bool | None = None
 
 
 class CreateSecretRequest(CamelModel):
@@ -386,10 +650,39 @@ class UpdatePolicyRequest(CamelModel):
     judge_rubric: dict[str, Any] | None = None
 
 
-class StartOAuthRequest(CamelModel):
-    """Optional scope override; defaults to the provider's declared scopes."""
+class CompleteOAuthRequest(CamelModel):
+    pending: str
 
+
+class StartOAuthRequest(CamelModel):
+    """`owner`: whose account the result is -- the caller's own ("me") or the
+    organisation's (needs integration:manage). `scopes` overrides the tool
+    scope set and is accepted for an organisation connection only."""
+
+    scope_set: Literal["tools"] = "tools"
+    owner: Literal["me", "organisation"] = "me"
     scopes: list[str] | None = None
+
+
+class CreateConnectionCredentialRequest(CamelModel):
+    """Connect Odoo/HubSpot/Jira with a form (connections design)."""
+
+    integration: str
+    owner: Literal["me", "organisation"] = "me"
+    name: str | None = None
+    field_values: dict[str, Any]
+
+
+class SetCredentialDepartmentsRequest(CamelModel):
+    """Enable an organisation login for these departments, or for all."""
+
+    department_ids: list[uuid.UUID] = Field(default_factory=list, max_length=1000)
+    all_departments: bool = False
+
+
+class CheckConnectionCredentialRequest(CamelModel):
+    integration: str
+    field_values: dict[str, Any]
 
 
 class DevicePollRequest(CamelModel):
@@ -446,6 +739,10 @@ class CreateMemberRequest(CamelModel):
 
     subject: str = Field(min_length=1)
     display_name: str = ""
+    #: Built-in role for an invitation through an external inviter (see
+    #: oc8.workspace.inviter). Ignored for local invitations, whose role is set
+    #: afterwards with PUT /members/{id}/role.
+    role: str | None = None
     #: TRI-STATE, and that is the fix for a silent 200: `None` means "leave it as
     #: it is", `true` grants, `false` REVOKES.
     #:
@@ -620,6 +917,35 @@ class AnswerClarificationRequest(CamelModel):
     answer: str = Field(min_length=1)
 
 
+class ChatAnswerRequest(CamelModel):
+    """The member's answer to a question the chat's run parked on (spec §4.1).
+
+    `answers` is `{question id: [option keys] | free text}` for structured
+    questions; `text` is a written answer (a plain question, or a messenger-style
+    reply like `1,3`). One of the two -- checked in the route, since which one
+    fits depends on what was asked.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: At most `MAX_QUESTIONS` entries, each id and option key at most 64 chars,
+    #: at most `MAX_OPTIONS` keys per answer, a written answer at most 2000
+    #: chars. Ids and keys the question did not offer are refused in
+    #: `validate_answers`; these caps bound the request before it gets there.
+    answers: (
+        dict[
+            Annotated[str, StringConstraints(min_length=1, max_length=64)],
+            Annotated[
+                list[Annotated[str, StringConstraints(min_length=1, max_length=64)]],
+                Field(max_length=8),
+            ]
+            | Annotated[str, StringConstraints(max_length=2000)],
+        ]
+        | None
+    ) = Field(default=None, max_length=6)
+    text: str | None = Field(default=None, max_length=2000)
+
+
 class CreateTaskRequest(CamelModel):
     """A member putting new work directly on a department's team lead, from
     the My Work task board rather than a chat session.
@@ -740,3 +1066,41 @@ class CreateDashboardPresetRequest(CamelModel):
         if not value:
             raise ValueError("must not be blank")
         return value
+
+
+class UpdateCopilotProfileRequest(CamelModel):
+    display_name: str | None = None
+    avatar: dict[str, Any] | None = None
+
+
+class UpdateResponsibilityRequest(CamelModel):
+    state: Literal["active", "paused", "done", "cancelled"]
+    reason: str = ""
+
+
+class RunInputRequest(CamelModel):
+    """Mirrors `ck_run_input_text` (migration 0112) and MAX_INPUT_CHARS."""
+
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class SetAgentToolAccessRequest(CamelModel):
+    mode: Literal["user", "fixed"]
+    oauth_connection_id: uuid.UUID | None = None
+    credential_id: uuid.UUID | None = None
+    #: Required when the target is the caller's own account.
+    confirm_share: bool = False
+
+
+class VerifyRecordLinksRequest(CamelModel):
+    message_id: uuid.UUID
+    #: One chat answer's worth of links; the URL cap matches what `enrich` issues.
+    urls: list[Annotated[str, StringConstraints(max_length=2000)]] = Field(max_length=100)
+
+
+class BoardShareRequest(CamelModel):
+    """`POST /boards/{id}/shares`: exactly one of the two (checked by the service,
+    which answers 422 for neither, both, or a target that is not live)."""
+
+    member_id: uuid.UUID | None = None
+    department_id: uuid.UUID | None = None

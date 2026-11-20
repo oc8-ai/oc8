@@ -12,6 +12,13 @@ transport = "stdio"
 server_url = ""
 credential_type = "gitea_login"
 
+# env var name -> the credential_type's own field key (gitea_login.toml), so
+# the bridge is started from the chosen login itself (the setup only chooses
+# the login; nothing is copied onto the connection).
+[connections.credential_env_fields]
+GITEA_URL = "url"
+GITEA_TOKEN = "token"
+
 # Right classification. Reading a repository is harmless; opening an issue and
 # commenting on one change something a colleague will act on, so they are writes
 # and a department can withhold them on their own.
@@ -74,3 +81,21 @@ GITEA_URL = "http://host.docker.internal:3000"
 
 [connections.config.secret_env]
 GITEA_TOKEN = "gitea/token"
+
+# NEUTRAL SEAM (record_url): where an issue or pull request lives on this
+# Gitea host. A result's own `html_url` wins when present.
+[connections.record_url]
+template = "{base_url}/{owner}/{repo}/issues/{id}"
+base_url_path = ["env", "GITEA_URL"]
+native_url_fields = ["html_url"]
+
+[connections.record_url.models]
+issue = "issues"
+pull = "pulls"
+
+[connections.record_url.templates]
+pull = "{base_url}/{owner}/{repo}/pulls/{id}"
+
+[connections.record_url.placeholders]
+owner = ["arg:owner", "item:repository.owner"]
+repo = ["arg:repo", "item:repository.name"]

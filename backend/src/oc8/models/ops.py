@@ -98,6 +98,30 @@ class ApprovalRequest(Base, PkMixin, TenantMixin, TimestampMixin):
     #: (e.g. `request_decision`, budget incidents, blast-radius stops) --
     #: those keep `detail`/`amount_text` as their only "why".
     reason_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    #: Deep link to the record this approval is about, resolved ONCE at raise
+    #: time from the tool pack's own `record_url` template (§6 of the AI
+    #: workplace design; `oc8.approvals.record_url`). Stored rather than
+    #: computed on read for two reasons: the template lives on a plugin
+    #: manifest that may be edited or uninstalled later, and every channel
+    #: (inbox, dashboard widget, Telegram, WhatsApp, Teams) is a view over
+    #: this row -- one write, five renderers.
+    #:
+    #: NULL for every approval whose connection declares no template, for
+    #: every approval not raised from a tool call at all (budget incidents,
+    #: hire requests, `request_decision`), and for every row written before
+    #: this column existed. The absence must never block an approval.
+    record_url: Mapped[str | None] = mapped_column(Text)
+    #: Existing records a held CREATE references (e.g. the customer a new
+    #: quotation is for), as `[{"label", "url"}]` resolved once at raise time,
+    #: for the same reason `record_url` is stored: the manifest may change
+    #: later and every channel renders the same row. Empty for any approval
+    #: that references nothing, so it never blocks one.
+    related_links: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default="[]"
+    )
+    #: The record the approved call produced, set once the call has run.
+    #: NULL until then, and for tools that return no record link.
+    result_url: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (
         CheckConstraint(
@@ -269,6 +293,20 @@ class Budget(Base, PkMixin, TenantMixin, TimestampMixin):
             postgresql_where=text("department_id IS NULL"),
         ),
     )
+
+
+class ProviderBudget(Base, PkMixin, TenantMixin, TimestampMixin):
+    """Monthly token limit for one model provider (its canonical name),
+    counted from token_usage_record over the calendar month in UTC, the same
+    window as Budget. NULL means no limit."""
+
+    __tablename__ = "provider_budget"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "provider", name="uq_provider_budget_tenant_provider"),
+    )
+
+    provider: Mapped[str] = mapped_column(Text, nullable=False)
+    monthly_token_limit: Mapped[int | None] = mapped_column(BigInteger)
 
 
 class ActivityEvent(Base, PkMixin, TenantMixin):

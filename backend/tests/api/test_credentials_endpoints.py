@@ -9,10 +9,12 @@ from asgi_lifespan import LifespanManager
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.capas.manifest import CredentialTypeSpec, SetupFieldSpec
 from oc8.credentials import registry
 from oc8.main import create_app
+from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
 
@@ -152,7 +154,9 @@ async def test_members_cannot_manage_credentials() -> None:
 
 
 @pytest.mark.usefixtures("_register_field_gating_credential_type")
-async def test_test_credential_422s_when_a_required_field_is_unset() -> None:
+async def test_test_credential_422s_when_a_required_field_is_unset(
+    app_session: AppSessionFactory,
+) -> None:
     tenant = uuid.uuid4()
     app = create_app()
     async with LifespanManager(app):
@@ -166,8 +170,24 @@ async def test_test_credential_422s_when_a_required_field_is_unset() -> None:
                 },
                 headers=_headers(tenant),
             )
-            assert r.status_code == 201, r.text
-            cred_id = r.json()["id"]
+            # Saving it without the required field is refused, by name ...
+            assert r.status_code == 422, r.text
+            assert r.json()["detail"] == {
+                "code": "credential_incomplete",
+                "missing": ["required_field"],
+            }
+            # ... so only an older row can still lack it.
+            async with app_session(tenant) as db:
+                row = m.Credential(
+                    tenant_id=tenant,
+                    name="Gated",
+                    credential_type="test_field_gating",
+                    field_values={},
+                    secret_refs={},
+                )
+                db.add(row)
+                await db.flush()
+                cred_id = str(row.id)
 
             r = await c.post(f"/api/v1/credentials/{cred_id}/test", headers=_headers(tenant))
             assert r.status_code == 422, r.text

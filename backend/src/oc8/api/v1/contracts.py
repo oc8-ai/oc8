@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 
 from oc8 import models as m
@@ -35,6 +35,7 @@ class EmitRequest(CamelModel):
 class BindingDTO(CamelModel):
     id: str
     event_type: str
+    handoff_type_id: str = ""
     source_department_id: str
     target_department_id: str
 
@@ -62,6 +63,7 @@ async def create_binding(
     return BindingDTO(
         id=str(binding.id),
         event_type=binding.event_type,
+        handoff_type_id=str(binding.handoff_type_id),
         source_department_id=str(binding.source_department_id),
         target_department_id=str(binding.target_department_id),
     )
@@ -78,11 +80,30 @@ async def list_bindings(db: DbSession, principal: CurrentPrincipal) -> list[Bind
         BindingDTO(
             id=str(b.id),
             event_type=b.event_type,
+            handoff_type_id=str(b.handoff_type_id),
             source_department_id=str(b.source_department_id),
             target_department_id=str(b.target_department_id),
         )
         for b in rows
     ]
+
+
+@router.delete(
+    "/contract-bindings/{binding_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_permission(perm(CONTRACT, MANAGE)))],
+)
+async def delete_binding(
+    binding_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+) -> Response:
+    """Remove a binding: the event no longer creates handoffs for its target.
+    Handoffs it already created do not point back at it and stay as they are."""
+    binding = await db.get(m.ContractBinding, binding_id)
+    if binding is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "contract binding not found")
+    await db.delete(binding)
+    await db.flush()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- Department-frame contracts: emits + intakes (§14a.2) ------------------
@@ -196,7 +217,7 @@ async def emit(
     department_id: uuid.UUID, body: EmitRequest, db: DbSession, principal: CurrentPrincipal
 ) -> dict[str, list[str]]:
     dept = await db.get(m.Department, department_id)
-    if dept is None:
+    if dept is None or dept.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
     actor = uuid.UUID(principal.subject) if _is_uuid(principal.subject) else uuid.uuid4()
     try:

@@ -42,6 +42,9 @@ export interface Governance {
    * administrator's own diagnostic screen would otherwise tell him he holds all
    * 52 while every gate refuses him. */
   callerPermissions: string[];
+  /** The capabilities the caller's organisation holds, or null when the
+   * deployment does not resolve entitlements per organisation (unknown). */
+  callerCapabilities?: string[] | null;
   callerRoleIsKnown: boolean;
   /** `token` when nobody has assigned them anything — which is every caller on
    * every tenant that has configured nothing — `assigned` when a row decides.
@@ -95,6 +98,14 @@ export function useGovernance() {
     // which is what actually makes a change land.
     staleTime: 30 * 1000,
   });
+}
+
+/** The capabilities the caller's organisation may use, or null when unknown
+ *  (not yet loaded, failed, or not resolved per organisation). Null means
+ *  "change nothing". */
+export function useCallerCapabilities(): string[] | null {
+  const { data } = useGovernance();
+  return data?.callerCapabilities ?? null;
 }
 
 /** "May the caller's ROLE do this, tenant-wide?"

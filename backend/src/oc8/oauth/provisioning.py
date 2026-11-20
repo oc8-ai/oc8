@@ -104,6 +104,7 @@ async def _provision_microsoft(
                 m.OAuthConnection.tenant_id == tenant_id,
                 m.OAuthConnection.provider == "microsoft",
                 m.OAuthConnection.account_label == client_id,
+                m.OAuthConnection.owner_member_id.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -129,7 +130,7 @@ async def _provision_microsoft(
             # re-mint, so a display name here would silently break every
             # refresh after the first.
             account_label=client_id,
-            scopes=list(get_provider("microsoft").default_scopes),
+            scopes=[get_provider("microsoft").app_scope or "https://graph.microsoft.com/.default"],
             access_secret_ref=access_ref(
                 uuid.uuid4()
             ),  # placeholder id; replaced below once conn.id exists
@@ -288,6 +289,7 @@ async def _provision_google(
                 m.OAuthConnection.tenant_id == tenant_id,
                 m.OAuthConnection.provider == "google",
                 m.OAuthConnection.account_label == client_email,
+                m.OAuthConnection.owner_member_id.is_(None),
             )
         )
     ).scalar_one_or_none()

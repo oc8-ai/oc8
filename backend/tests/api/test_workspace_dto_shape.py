@@ -296,7 +296,7 @@ async def test_governance_explains_a_refusal_without_minting_anybody(
         )
         assert seated.status_code == 200, seated.text
         assert [s["departmentName"] for s in seated.json()["seats"]] == ["Vertrieb"]
-        assert seated.json()["callerPermissions"] == ["copilot:use"], (
+        assert seated.json()["callerPermissions"] == ["connection:own", "copilot:use"], (
             "a seat is authority somewhere, not tenant-wide; callerPermissions is "
             "what the ROLE grants and must not quietly gain the seat's four"
         )

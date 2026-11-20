@@ -71,7 +71,9 @@ class SourceAuthContext:
             raise ConnectorError(f"invalid credential id: {credential_id!r}") from None
         try:
             return await resolve_credential_field(
-                self._db, tenant_id=self._tenant_id, credential_id=parsed, field_key=field_key
+                self._db, tenant_id=self._tenant_id, credential_id=parsed,
+                field_key=field_key,
+                owner="organisation",
             )
         except CredentialNotFound:
             raise ConnectorError(f"no stored credential with id {credential_id!r}") from None

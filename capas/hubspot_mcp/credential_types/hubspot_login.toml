@@ -6,3 +6,18 @@ key = "private_app_access_token"
 label = "Private app access token"
 kind = "password"
 help = "Created under HubSpot's Private Apps settings. Grant only the CRM scopes agents actually need."
+
+[[fields]]
+key = "portal_id"
+label = "Portal ID (Hub ID)"
+kind = "text"
+required = false
+help = "The number in your HubSpot URL after /contacts/. Without it agents still work, but their answers carry no HubSpot links."
+
+[[fields]]
+key = "ui_url"
+label = "HubSpot address"
+kind = "url"
+required = false
+placeholder = "https://app.hubspot.com"
+help = "Use https://app-eu1.hubspot.com if your account is hosted in the EU."

@@ -1,0 +1,20 @@
+id = "steer_running_agent"
+systems = ["odoo"]
+origin = "manual"
+scenario = "steer_running_agent"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Find the helpdesk ticket "{prefix}Login fails intermittently", read it, then add an internal note "Checked the logs" to it.
+Do not email the customer and do not close the ticket.
+"""
+
+[frame_tools.odoo]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

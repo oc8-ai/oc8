@@ -120,3 +120,14 @@ async def test_routed_toolset_qualifies_a_collision() -> None:
     assert await routed.call("gitea.create_issue", {}) == "gitea:create_issue"
     assert odoo.called == []
     assert gitea.called == [("create_issue", {})]
+
+
+def test_a_connection_tool_named_like_a_core_tool_is_always_qualified() -> None:
+    """A bare core name must always mean the core tool. A connection's own
+    `ask_user` is offered as `<connection>.ask_user` even when it is the only
+    one, so the model can name either, and nothing has to guess which it meant."""
+    routes = build_routes({"odoo": ["ask_user", "search"]}, reserved=frozenset({"ask_user"}))
+    assert "ask_user" not in routes
+    assert routes[qualified("odoo", "ask_user")] == Route("odoo", "ask_user")
+    assert routes["search"] == Route("odoo", "search")
+    assert resolve("ask_user", routes) is None

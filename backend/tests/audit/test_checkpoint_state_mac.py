@@ -8,9 +8,9 @@ import sqlalchemy as sa
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.dialects.postgresql import JSONB
+from tests.audit.helpers import append_now
 from tests.conftest import AppSessionFactory
 
-from oc8.audit.chain import append_event
 from oc8.audit.integrity import get_checkpoint, verify_full, verify_incremental
 from oc8.auth import get_identity_provider
 from oc8.config import get_settings
@@ -53,7 +53,7 @@ async def test_a_keyed_run_records_a_state_mac_and_the_version_reached(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -84,7 +84,7 @@ async def test_a_wholesale_downgrade_of_the_chain_is_detected(
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(3):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -146,7 +146,7 @@ async def test_a_keyed_append_after_a_downgrade_cannot_launder_it(
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(3):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -163,7 +163,7 @@ async def test_a_keyed_append_after_a_downgrade_cannot_launder_it(
         # The app appends normally: head is v0, target is v1, so the
         # monotonicity rule permits it and the chain is no longer all-zero.
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -202,7 +202,7 @@ async def test_erasing_the_marker_is_not_a_way_out(
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(3):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -249,7 +249,7 @@ async def test_moving_the_resumption_point_with_the_chain_is_detected(
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(3):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -274,7 +274,7 @@ async def test_moving_the_resumption_point_with_the_chain_is_detected(
         engine.dispose()
 
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -298,7 +298,7 @@ async def test_a_tampered_state_mac_is_detected(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -332,7 +332,7 @@ async def test_an_unkeyed_deployment_is_unaffected(
     """Flag off: no state_mac, no new failure mode, behaviour unchanged."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        await append_event(
+        await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",
@@ -362,7 +362,7 @@ async def test_a_verifier_that_could_not_run_is_unverifiable_not_ok(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -400,7 +400,7 @@ async def test_missing_rows_still_outrank_a_missing_key(
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(3):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -452,7 +452,7 @@ async def test_a_keyed_tenant_recovers_from_a_truncation_when_the_rows_come_back
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(4):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -519,7 +519,7 @@ async def test_verify_endpoint_reports_unverifiable_rather_than_500(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -579,7 +579,7 @@ async def test_a_lost_key_never_silences_a_standing_break(
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
             for i in range(2):
-                await append_event(
+                await append_now(
                     s,
                     tenant_id=tenant,
                     actor_type="system",
@@ -635,7 +635,7 @@ async def test_a_backfilled_checkpoint_over_a_keyed_chain_does_not_crash(
     try:
         tenant = uuid.uuid4()
         async with app_session(tenant) as s:
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -684,7 +684,7 @@ async def test_a_clean_rewalk_over_extra_rows_still_reports_them(
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
         for i in range(3):
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",
@@ -815,7 +815,7 @@ async def test_a_row_inserted_below_the_high_water_mark_is_detected(
     """
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        await append_event(
+        await append_now(
             s,
             tenant_id=tenant,
             actor_type="system",
@@ -836,7 +836,7 @@ async def test_a_row_inserted_below_the_high_water_mark_is_detected(
 
     async with app_session(tenant) as s:
         for i in (1, 2):
-            await append_event(
+            await append_now(
                 s,
                 tenant_id=tenant,
                 actor_type="system",

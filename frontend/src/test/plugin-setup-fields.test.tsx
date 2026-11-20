@@ -47,7 +47,11 @@ describe("PluginSetupFields", () => {
   it("reports typed field values back through onChange", () => {
     const onChange = vi.fn();
     renderWithClient(<PluginSetupFields setup={setup} values={{}} onChange={onChange} />);
-    fireEvent.change(screen.getByLabelText("Server URL"), {
+    const url = screen.getByLabelText(/^server url/i);
+    // Required, marked, and with a placeholder that cannot pass for a value.
+    expect(url).toBeRequired();
+    expect(url).toHaveAttribute("placeholder", "https://your-company.example.com");
+    fireEvent.change(url, {
       target: { value: "https://example.com" },
     });
     expect(onChange).toHaveBeenCalledWith({ url: "https://example.com" });

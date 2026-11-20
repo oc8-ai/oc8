@@ -6,6 +6,7 @@ import uuid
 
 import pytest
 import redis.asyncio as redis
+from redis import exceptions as redis_exceptions
 
 from oc8.runtime import reconcile
 from oc8.runtime.queue import RunMessage, RunQueue
@@ -408,5 +409,81 @@ async def test_a_lost_lease_is_reported_with_both_of_its_causes(
         said = "\n".join(r.getMessage() for r in caplog.records)
         assert "no longer pending" in said
         assert "trimmed" in said, "the cause that is not another worker"
+    finally:
+        await q.close()
+
+
+class _FlakyQueue(RunQueue):
+    """A queue whose next claim_stale / dequeue / ack fails to reach Redis once."""
+
+    def __init__(self, url: str, *, fail: set[str]) -> None:
+        super().__init__(url, key=f"test:{uuid.uuid4()}")
+        self.fail = set(fail)
+
+    def _blip(self, name: str) -> None:
+        if name in self.fail:
+            self.fail.discard(name)
+            raise redis_exceptions.TimeoutError("Timeout connecting to server")
+
+    async def claim_stale(self, *, min_idle_ms: int, count: int = 10) -> list[RunMessage]:
+        self._blip("claim_stale")
+        return await super().claim_stale(min_idle_ms=min_idle_ms, count=count)
+
+    async def dequeue(self, *, timeout: float = 5.0) -> RunMessage | None:  # noqa: ASYNC109
+        self._blip("dequeue")
+        return await super().dequeue(timeout=timeout)
+
+    async def ack(self, entry_id: str) -> None:
+        self._blip("ack")
+        await super().ack(entry_id)
+
+
+async def test_an_unreachable_queue_while_reclaiming_does_not_stop_the_worker(
+    redis_url: str,
+) -> None:
+    """A Redis connect timeout in the reclaim sweep is a blip: the worker goes on
+    to take fresh work instead of exiting (and taking its runs with it)."""
+    q = _FlakyQueue(redis_url, fail={"claim_stale"})
+    seen: list[RunMessage] = []
+
+    async def handler(msg: RunMessage) -> None:
+        seen.append(msg)
+
+    try:
+        await q.enqueue(run_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+        await run_worker(q, once=True, handler=handler)
+    finally:
+        await q.close()
+
+    assert len(seen) == 1
+
+
+async def test_an_unreachable_queue_while_dequeuing_does_not_stop_the_worker(
+    redis_url: str,
+) -> None:
+    q = _FlakyQueue(redis_url, fail={"dequeue"})
+    seen: list[RunMessage] = []
+
+    async def handler(msg: RunMessage) -> None:
+        seen.append(msg)
+
+    try:
+        await q.enqueue(run_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+        await run_worker(q, once=True, handler=handler)  # the blip: must not raise
+        await run_worker(q, once=True, handler=handler)  # the next turn takes it
+    finally:
+        await q.close()
+
+    assert len(seen) == 1
+
+
+async def test_a_lost_ack_leaves_the_entry_pending_instead_of_raising(redis_url: str) -> None:
+    q = _FlakyQueue(redis_url, fail={"ack"})
+
+    try:
+        await q.enqueue(run_id=uuid.uuid4(), tenant_id=uuid.uuid4())
+        await run_worker(q, once=True, handler=_noop)
+        # Not acked, so it is reclaimed later -- recover_reclaimed reads the row.
+        assert len(await q.claim_stale(min_idle_ms=0)) == 1
     finally:
         await q.close()

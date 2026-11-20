@@ -1,0 +1,26 @@
+# Operator setup form, interpreted generically by the core. The token lives
+# in the shared credentials store as a named, reusable credential -- same
+# shape as github_mcp's `github_pat`, so a tenant can hold several treg
+# tokens (e.g. one per team) and pick which one each department's
+# connection uses.
+title = "Set up Treg"
+description = "Connect a Treg account so agents can reach every provider your organisation has registered there, over one connection."
+submit_label = "Save & test"
+
+[[fields]]
+key = "department"
+label = "Department"
+kind = "department"
+required = false
+help = "Agents in this department will use this connection automatically."
+
+# Required: nothing on this form is prefilled from an existing connection,
+# so leaving it blank on a resubmit would silently wipe the token from an
+# already-working connection instead of leaving it unchanged
+# (secret_env_fields only replaces what THIS submission actually provides).
+[[fields]]
+key = "token"
+label = "API token"
+kind = "credential"
+credential_type = "treg_token"
+help = "Resolved from the shared credentials store only while the connection is used."

@@ -6,6 +6,22 @@ a *capa's* fields and labels instead, see that capa's own `i18n/` folder
 and [Developer → Packaging](../developer/packaging-and-distribution.md);
 this page is specifically about `<repo root>/i18n/`.
 
+## Recommended: translate on Weblate
+
+For translators, the easiest path is oc8's Weblate instance at
+https://translate.oc8.ai. Sign up (registration is open), open the oc8
+project and its Core UI component, pick or add a language and translate in
+the browser. Weblate
+sends your work back as a pull request that a maintainer reviews and merges.
+You don't need a development environment.
+
+The step-by-step partner flow, the review workflow and AI first drafts are in
+[Translating on translate.oc8.ai](https://docs.oc8.ai/contributing/weblate).
+Strings marked "Needs editing"
+are not shipped until a reviewer confirms them. The rest of this
+page describes the underlying files and the pull request path, which stays
+available for developers.
+
 ## How it works
 
 One gettext `.po` catalog per language, at `<repo root>/i18n/<locale>.po`
@@ -34,14 +50,18 @@ such literal and is *entirely* sourced from its `.po` file.
 
 ## Adding a new language
 
+Developers can also add a language by hand (translators should prefer
+Weblate, see above).
+
 1. From `frontend/`, run:
 
    ```sh
    npm run i18n:export -- <locale>
    ```
 
-   `<locale>` is a short code like `fr`, `es`, or `pt-BR` — it becomes the
-   filename. This scans every `t("English", …)` call in the frontend and
+   `<locale>` is a short code like `fr`, `es`, or `pt_BR` — it becomes the
+   filename. Use the underscore form (`pt_BR`) so the file matches what
+   Weblate creates. This scans every `t("English", …)` call in the frontend and
    writes `i18n/<locale>.po` with one empty `msgstr` per string.
 
 2. Open `i18n/<locale>.po`. Fill in the header:
@@ -69,6 +89,18 @@ such literal and is *entirely* sourced from its `.po` file.
    file needs to change — that's the whole point of the catalog being
    data, not code.
 
+## The template
+
+`i18n/oc8.pot` lists every English string with empty translations. It is what
+Weblate offers for new languages. Regenerate it after you add or change a
+`t("English", …)` string:
+
+```sh
+npm run i18n:template
+```
+
+CI fails a change to `frontend/src` if the committed template is out of date.
+
 ## Updating an existing language
 
 Run the same command again:
@@ -81,6 +113,30 @@ It merges rather than overwrites: translations already in the file are
 kept, new English strings the UI has picked up since you last ran it
 appear with an empty `msgstr`, and strings no longer used anywhere are
 dropped. Fill in the new blanks and open a PR.
+
+## Edition catalogs
+
+An edition (Enterprise, say) translates the UI strings it adds with the same
+mechanism, not a parallel one. Its `EditionExtension.i18n_catalog_dirs()`
+returns the directories that hold its own `<locale>.po` files, and
+`GET /api/v1/i18n/core` merges them into the same per-locale catalog. Core
+always wins: a `msgid` that core's catalog for that locale carries,
+translated or not, is never taken from an edition, so an edition can add
+text but never change core's. Fuzzy and empty entries are skipped as they
+are for core, and the language's `X-Native-Name`/`X-Flag` come from core's
+file when it sets them, otherwise from the edition's. `create_app` refuses
+to start when a returned directory is missing or one of its files does not
+parse, and the error names the extension. An edition exports its strings with
+core's script, pointed at its own source tree:
+
+```sh
+node <core>/frontend/scripts/i18n-export-template.mjs --template \
+  --src <edition>/frontend/src --out <edition catalog dir> --name <edition>
+```
+
+`--name` sets the template's file name (`<edition>.pot`) and the
+`Project-Id-Version`. The same options work with a `<locale>` instead of
+`--template`. Without them the script behaves as described above.
 
 ## A rough edge worth knowing about
 

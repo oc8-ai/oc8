@@ -55,8 +55,28 @@ const GATE_PUBLIC_ROUTES = new Set([
 // still declared in exactly one place.
 const SHELL_PUBLIC_ROUTES = new Set([...GATE_PUBLIC_ROUTES, "/welcome"]);
 
-import { EditionCompositionProvider } from "../edition/composition";
+import {
+  EditionAppGate,
+  EditionCompositionProvider,
+  composeFrontendEdition,
+  editionBarePaths,
+} from "../edition/composition";
+import { ChatSlotProviders } from "../edition/slots";
 import { editionExtensions } from "@oc8/edition-entry";
+
+// An edition's onboarding screens are full-page like `/welcome`: no app shell.
+// They still need a session (unlike GATE_PUBLIC_ROUTES), and they follow the
+// stored theme, so they are not part of SHELL_PUBLIC_ROUTES.
+//
+// Worked out on first use, not while this module loads: an edition's routes
+// import this module and its entry imports those routes, so when the entry
+// loads first (the server reads its hooks) this module runs before
+// `editionExtensions` exists.
+let editionBareRoutes: ReadonlySet<string> | undefined;
+function isEditionBareRoute(pathname: string): boolean {
+  editionBareRoutes ??= new Set(editionBarePaths(composeFrontendEdition(editionExtensions)));
+  return editionBareRoutes.has(pathname);
+}
 
 function AuthGate({ children }: { children: ReactNode }) {
   const t = useT();
@@ -251,7 +271,8 @@ function RootComponent() {
   // Single source of truth for "which UI wrapper does this route get". Computed
   // synchronously from the pathname so `/login` is never wrapped in `AppShell`,
   // regardless of auth state, session staleness or hydration timing.
-  const gatedContent = publicRoute ? <Outlet /> : <AppShell />;
+  const bareRoute = publicRoute || isEditionBareRoute(pathname);
+  const gatedContent = bareRoute ? <Outlet /> : <AppShell />;
 
   // `AppShell` owns the theme toggle and persists it to localStorage("bf-theme")
   // (plus the `dark` class on <html>). The Toaster below lives ABOVE `AppShell`,
@@ -282,30 +303,39 @@ function RootComponent() {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <LiveUpdatesProvider>
+      {/* Around the live updates and the edition's gate: both speak the reader's language. */}
+      <LanguageProvider>
         <EditionCompositionProvider extensions={editionExtensions}>
-          <LanguageProvider>
-            <AuthGate>{gatedContent}</AuthGate>
-            {/*
-              The ONE <Toaster/> in the app, deliberately a sibling of `gatedContent`
-              rather than inside it. `sonner` seeds a freshly mounted <Toaster/> from
-              empty state and never replays toasts raised before it mounted, so the
-              two per-layout Toasters this replaces (one in `PublicAuthLayout`, one in
-              `AppShell`) silently swallowed every toast fired immediately before a
-              route change -- notably the login-success and 2FA grace-period toasts in
-              `routes/login.tsx`, which fire and then navigate /login -> / in the same
-              breath. `RootComponent` is the one wrapper that survives that swap.
-              The `dark` wrapper is what gives the toast's design-system tokens
-              (bg-background, text-foreground, border-border) their dark values: on
-              `/login` the surrounding `dark` class is scoped to `PublicAuthLayout`'s
-              own subtree, which no longer contains this Toaster.
-            */}
-            <div className={toasterTheme === "dark" ? "dark" : undefined}>
-              <Toaster theme={toasterTheme} position="bottom-right" richColors closeButton />
-            </div>
-          </LanguageProvider>
+          {/* An edition's gate runs outside AuthGate, so it decides whether
+              anything of the app renders before AuthGate can redirect. Live
+              updates and the toaster sit inside it: a gate that has not let
+              the app through gets no authenticated socket and no toasts. */}
+          <EditionAppGate>
+            <LiveUpdatesProvider>
+              <AuthGate>
+                <ChatSlotProviders>{gatedContent}</ChatSlotProviders>
+              </AuthGate>
+              {/*
+                The ONE <Toaster/> in the app, deliberately a sibling of `gatedContent`
+                rather than inside it. `sonner` seeds a freshly mounted <Toaster/> from
+                empty state and never replays toasts raised before it mounted, so the
+                two per-layout Toasters this replaces (one in `PublicAuthLayout`, one in
+                `AppShell`) silently swallowed every toast fired immediately before a
+                route change -- notably the login-success and 2FA grace-period toasts in
+                `routes/login.tsx`, which fire and then navigate /login -> / in the same
+                breath. `RootComponent` is the one wrapper that survives that swap.
+                The `dark` wrapper is what gives the toast's design-system tokens
+                (bg-background, text-foreground, border-border) their dark values: on
+                `/login` the surrounding `dark` class is scoped to `PublicAuthLayout`'s
+                own subtree, which no longer contains this Toaster.
+              */}
+              <div className={toasterTheme === "dark" ? "dark" : undefined}>
+                <Toaster theme={toasterTheme} position="bottom-right" richColors closeButton />
+              </div>
+            </LiveUpdatesProvider>
+          </EditionAppGate>
         </EditionCompositionProvider>
-      </LiveUpdatesProvider>
+      </LanguageProvider>
     </QueryClientProvider>
   );
 }

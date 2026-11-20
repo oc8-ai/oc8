@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.runtime.intake import enqueue_run
+from oc8.tenants.activity import TenantInactive
 
 logger = logging.getLogger(__name__)
 
@@ -102,15 +103,29 @@ async def route_to_team_lead(
     # whole briefing text. Observed live before it was passed. It has to travel
     # with the run at creation, not be patched on afterwards: a worker can pick
     # the run up in between and open the duplicate before the update lands.
-    await enqueue_run(
-        db,
-        tenant_id=tenant_id,
-        agent_id=lead.id,
-        context={"task": brief(handoff, type_name)},
-        source="handoff",
-        idempotency_key=f"handoff:{handoff.id}",
-        task_id=task.id,
-    )
+    try:
+        await enqueue_run(
+            db,
+            tenant_id=tenant_id,
+            agent_id=lead.id,
+            context={"task": brief(handoff, type_name)},
+            source="handoff",
+            idempotency_key=f"handoff:{handoff.id}",
+            task_id=task.id,
+        )
+    except TenantInactive:
+        # Refused before anything was committed: the task stays on the lead's
+        # desk with the caller's transaction, but no run starts on it, so it
+        # waits in the backlog rather than reading as work in progress.
+        task.state = "backlog"
+        await db.flush()
+        logger.info(
+            "handoff %s routed to task %s, but no run started: organisation %s is not active",
+            handoff.id,
+            task.id,
+            tenant_id,
+        )
+        return task.id
     # `enqueue_run` COMMITS, and `set_config('app.tenant_id', …, is_local => true)`
     # ends with that commit. Anything the caller reads afterwards -- the DTO it
     # returns, the task it just created -- would run unbound and see nothing.

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.events.types import InboundEvent
 from oc8.runtime.queue import RunQueue
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.states import RunState
+from oc8.tenants.activity import set_tenant_activity_gate
 from oc8.triggers.handler import handle_inbound_event
 from oc8.triggers.service import create_trigger
 from tests.conftest import AppSessionFactory
@@ -31,6 +34,15 @@ async def _new_tenant_with_org(app_session: AppSessionFactory) -> uuid.UUID:
         )
         await db.flush()
     return tenant
+
+
+async def _agent(db: AsyncSession, tenant: uuid.UUID) -> uuid.UUID:
+    """A live agent for a trigger to fire into: a trigger whose agent is
+    archived or gone is disabled instead of fired."""
+    agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Responder")
+    db.add(agent)
+    await db.flush()
+    return agent.id
 
 
 def _unique_event_type(label: str) -> str:
@@ -55,7 +67,7 @@ async def test_handle_inbound_event_fires_matching_event_trigger(
         trigger = await create_trigger(
             db,
             tenant_id=tenant,
-            agent_id=uuid.uuid4(),
+            agent_id=await _agent(db, tenant),
             kind="event",
             task_text="respond to issue",
             event_source="github",
@@ -96,7 +108,7 @@ async def test_handle_inbound_event_fires_all_matching_triggers_for_one_tenant(
             trigger = await create_trigger(
                 db,
                 tenant_id=tenant,
-                agent_id=uuid.uuid4(),
+                agent_id=await _agent(db, tenant),
                 kind="event",
                 task_text=label,
                 event_source="github",
@@ -162,9 +174,9 @@ async def test_fired_run_records_source(
     test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
     event_type = _unique_event_type("source")
-    agent_id = uuid.uuid4()
 
     async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
         await create_trigger(
             db,
             tenant_id=tenant,
@@ -239,12 +251,12 @@ async def test_same_delivery_id_fires_once(
     test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
     event_type = _unique_event_type("dedup-once")
-    agent_id = uuid.uuid4()
     event = InboundEvent(
         source="github", type=event_type, payload={}, delivery_id=str(uuid.uuid4())
     )
 
     async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
         await create_trigger(
             db,
             tenant_id=tenant,
@@ -289,12 +301,12 @@ async def test_delivery_id_dedup_is_per_trigger(
     test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
     event_type = _unique_event_type("dedup-per-trigger")
-    agent_ids = [uuid.uuid4(), uuid.uuid4()]
     event = InboundEvent(
         source="github", type=event_type, payload={}, delivery_id=str(uuid.uuid4())
     )
 
     async with app_session(tenant) as db:
+        agent_ids = [await _agent(db, tenant), await _agent(db, tenant)]
         for label, agent_id in zip(("a", "b"), agent_ids, strict=True):
             await create_trigger(
                 db,
@@ -311,11 +323,7 @@ async def test_delivery_id_dedup_is_per_trigger(
 
         async with app_session(tenant) as db:
             rows = (
-                (
-                    await db.execute(
-                        select(m.AgentRun).where(m.AgentRun.agent_id.in_(agent_ids))
-                    )
-                )
+                (await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id.in_(agent_ids))))
                 .scalars()
                 .all()
             )
@@ -348,10 +356,10 @@ async def test_no_delivery_id_fires_every_time(
     test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
     monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
     event_type = _unique_event_type("no-delivery-id")
-    agent_id = uuid.uuid4()
     event = InboundEvent(source="github", type=event_type, payload={}, delivery_id=None)
 
     async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
         await create_trigger(
             db,
             tenant_id=tenant,
@@ -385,3 +393,132 @@ async def test_no_delivery_id_fires_every_time(
             .all()
         )
         assert len(rows) == 2
+
+
+async def test_event_fan_out_skips_an_inactive_organisation(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant_a = await _new_tenant_with_org(app_session)
+    tenant_b = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    event_type = _unique_event_type("inactive")
+
+    trigger_ids: dict[uuid.UUID, uuid.UUID] = {}
+    for tenant in (tenant_a, tenant_b):
+        async with app_session(tenant) as db:
+            trigger = await create_trigger(
+                db,
+                tenant_id=tenant,
+                agent_id=await _agent(db, tenant),
+                kind="event",
+                task_text="respond to issue",
+                event_source="github",
+                event_type=event_type,
+            )
+            trigger_ids[tenant] = trigger.id
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant_a
+
+    set_tenant_activity_gate(gate)
+    try:
+        await handle_inbound_event(InboundEvent(source="github", type=event_type, payload={}))
+    finally:
+        await test_queue.close()
+
+    async with app_session(tenant_a) as db:
+        refreshed_a = await db.get(m.Trigger, trigger_ids[tenant_a])
+        assert refreshed_a is not None
+        assert refreshed_a.last_run_at is None
+    async with app_session(tenant_b) as db:
+        refreshed_b = await db.get(m.Trigger, trigger_ids[tenant_b])
+        assert refreshed_b is not None
+        assert refreshed_b.last_run_at is not None
+
+
+async def test_an_event_fire_refused_by_the_intake_is_logged_at_info(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The gate can change between the fan-out's tenant list and the intake."""
+    import logging
+
+    tenant = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    event_type = _unique_event_type("refused")
+    async with app_session(tenant) as db:
+        trigger = await create_trigger(
+            db,
+            tenant_id=tenant,
+            agent_id=await _agent(db, tenant),
+            kind="event",
+            task_text="respond to issue",
+            event_source="github",
+            event_type=event_type,
+        )
+        trigger_id = trigger.id
+
+    async def everyone() -> list[uuid.UUID]:
+        return [tenant]
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    monkeypatch.setattr("oc8.triggers.handler.list_runnable_tenant_ids", everyone)
+    set_tenant_activity_gate(gate)
+    try:
+        with caplog.at_level(logging.INFO, logger="oc8.triggers.handler"):
+            await handle_inbound_event(InboundEvent(source="github", type=event_type, payload={}))
+    finally:
+        await test_queue.close()
+
+    refused = [r for r in caplog.records if str(trigger_id) in r.getMessage()]
+    assert refused, "the refused fire is logged"
+    assert all(r.levelno == logging.INFO and r.exc_info is None for r in refused)
+
+
+async def test_an_event_trigger_of_an_archived_agent_is_disabled_not_fired(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = await _new_tenant_with_org(app_session)
+    test_queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: test_queue)
+    event_type = _unique_event_type("archived")
+
+    async with app_session(tenant) as db:
+        agent_id = await _agent(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.deleted_at = datetime.now(tz=UTC)
+        trigger = await create_trigger(
+            db,
+            tenant_id=tenant,
+            agent_id=agent_id,
+            kind="event",
+            task_text="respond to issue",
+            event_source="github",
+            event_type=event_type,
+        )
+        trigger_id = trigger.id
+
+    try:
+        await handle_inbound_event(InboundEvent(source="github", type=event_type, payload={}))
+        assert await test_queue.dequeue(timeout=1.0) is None
+    finally:
+        await test_queue.close()
+
+    async with app_session(tenant) as db:
+        runs = (
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert runs == []
+        refreshed = await db.get(m.Trigger, trigger_id)
+        assert refreshed is not None
+        assert refreshed.enabled is False
+        assert refreshed.last_skip_reason == "agent_archived"

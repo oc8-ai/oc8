@@ -1,0 +1,19 @@
+id = "google_draft_reply"
+systems = ["google_workspace"]
+origin = "manual"
+scenario = "google_draft_reply"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+A customer asked by email where invoice 42 is. Find the message and prepare a reply saying the invoice was sent on 15 September and attach nothing. Create it as a DRAFT only — do not send anything.
+"""
+
+[frame_tools.google_workspace]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 30
+max_tokens = 300000

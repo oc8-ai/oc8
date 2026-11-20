@@ -921,8 +921,12 @@ async def test_a_telegram_send_failure_does_not_fail_the_run(
 
     async def fake_runner(db: Any, **kw: Any) -> RunResult:
         return RunResult(
-            task_id=uuid.uuid4(), agent_id=kw["agent"].id, status="done", output="ok",
-            tool_calls=[], steps=1,
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="ok",
+            tool_calls=[],
+            steps=1,
         )
 
     await execute_run(
@@ -953,8 +957,12 @@ async def test_an_ordinary_chat_run_without_telegram_context_never_touches_teleg
 
     async def fake_runner(db: Any, **kw: Any) -> RunResult:
         return RunResult(
-            task_id=uuid.uuid4(), agent_id=kw["agent"].id, status="done", output="ok web reply",
-            tool_calls=[], steps=1,
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="ok web reply",
+            tool_calls=[],
+            steps=1,
         )
 
     await execute_run(
@@ -966,11 +974,7 @@ async def test_an_ordinary_chat_run_without_telegram_context_never_touches_teleg
     # The ordinary (non-Telegram) reply path is unaffected either way.
     async with app_session(tenant) as s:
         messages = (
-            (
-                await s.execute(
-                    select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)
-                )
-            )
+            (await s.execute(select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)))
             .scalars()
             .all()
         )
@@ -1083,16 +1087,645 @@ async def test_a_crashed_chat_run_still_records_a_reply_and_tells_telegram(
 
     async with app_session(tenant) as s:
         messages = (
-            (
-                await s.execute(
-                    select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)
-                )
-            )
+            (await s.execute(select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)))
             .scalars()
             .all()
         )
         assert len(messages) == 1, "a crashed chat run left the transcript empty"
         assert "the model provider hung up" not in messages[0].content
+        # The web answer links its run (E2E F); a channel gets plain text.
+        assert f"(oc8://run/{run_id})" in messages[0].content
+        assert "--" not in messages[0].content
+        assert "oc8://" not in fake.said[0][1] and "--" not in fake.said[0][1]
         run = await s.get(m.AgentRun, run_id)
         assert run is not None
         assert "the model provider hung up" in run.context["error"]
+
+
+async def test_a_chat_run_stopped_for_repeating_a_question_still_records_a_reply(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The repeated-question guard fails the run instead of parking it again --
+    and, like the crash path once did, it never called `record_assistant_reply`,
+    so the member's answer was the last line of the chat for ever (seen live in
+    the agent builder E2E, 2026-11-09, with a small local model)."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id, session_id = await _make_chat_run(
+        app_session, tenant, chat_channel="telegram", chat_channel_external_id="559"
+    )
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "clarifications": [{"question": "Welche Abteilung?", "answer": "Accounting"}],
+        }
+    fake = _RecordingChannels(app_session, tenant, run_id)
+    monkeypatch.setattr("oc8.channels.registry.channels_for_tenant", fake._channels_for_tenant)
+
+    async def fake_runner(db: Any, **kw: Any) -> RunResult:
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="waiting_for_input",
+            output="Welche Abteilung?",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(fake_runner),
+    )
+
+    assert fake.observed_states == [RunState.FAILED.value]
+    assert len(fake.said) == 1 and fake.said[0][0] == "559"
+    async with app_session(tenant) as s:
+        messages = (
+            (await s.execute(select(m.ChatMessage).where(m.ChatMessage.session_id == session_id)))
+            .scalars()
+            .all()
+        )
+        assert len(messages) == 1, "a run stopped for a repeated question left no reply"
+        assert f"(oc8://run/{run_id})" in messages[0].content
+
+
+def _make_inactive(tenant: uuid.UUID) -> None:
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    async def gate(tenant_id: uuid.UUID) -> bool:
+        return tenant_id != tenant
+
+    set_tenant_activity_gate(gate)
+
+
+async def _assert_interrupted_as_inactive(
+    app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "tenant_inactive"
+        assert run.context["output"] == "Cancelled: organisation is not active"
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None and agent.status == "idle"
+        events = await s.execute(
+            select(m.ActivityEvent.message).where(m.ActivityEvent.tenant_id == tenant)
+        )
+        assert events.scalars().all() == ["Dev: Cancelled: organisation is not active"]
+
+
+async def _assert_the_stop_is_explained(
+    app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    """A run the gate stopped between steps says why, in its output and in the
+    activity feed, and does not claim an operator cancelled it."""
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["output"] == "Cancelled: organisation is not active"
+        events = await s.execute(
+            select(m.ActivityEvent.message).where(m.ActivityEvent.tenant_id == tenant)
+        )
+        assert events.scalars().all() == ["Dev: Cancelled: organisation is not active"]
+
+
+async def test_a_queued_run_of_an_inactive_organisation_is_interrupted_at_start(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+    _make_inactive(tenant)
+
+    async def must_not_run(db: Any, **kw: Any) -> RunResult:
+        raise AssertionError("a run of an inactive organisation must not invoke the runtime")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(must_not_run),
+    )
+
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+
+
+async def test_a_republished_run_is_stopped_at_start_too(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.runtime.intake import publish_run
+    from oc8.runtime.queue import RunQueue
+
+    queue = RunQueue(redis_url, key=f"test:{uuid.uuid4()}")
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+    _make_inactive(tenant)
+
+    async def must_not_run(db: Any, **kw: Any) -> RunResult:
+        raise AssertionError("a run of an inactive organisation must not invoke the runtime")
+
+    try:
+        await publish_run(run_id=run_id, tenant_id=tenant)
+        message = await queue.dequeue(timeout=1.0)
+        assert message is not None
+        await execute_run(message, runtime=_FnRuntime(must_not_run))
+    finally:
+        await queue.close()
+
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+
+
+async def test_a_running_run_stops_at_its_next_step_when_the_organisation_stops(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
+    from oc8.runtime.adapter import Oc8AgentRuntime
+
+    tenant = uuid.uuid4()
+
+    class _CountingRouter:
+        """Always asks for another tool call; the gate flips to "no" after the
+        first model call, so a second call would mean the step check missed it."""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, req: Any) -> CompletionResult:
+            self.calls += 1
+            _make_inactive(tenant)
+            return CompletionResult(
+                text="",
+                tool_calls=[ToolCall(id=f"c{self.calls}", name="noop", arguments={})],
+                usage=Usage(tokens_in=1, tokens_out=1),
+                stop_reason="tool_use",
+                provider="fake",
+                model="fake",
+            )
+
+        async def stream(self, req: Any) -> Any:
+            yield chunk_from_result(await self.complete(req))
+
+    router = _CountingRouter()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: router)
+
+    async with app_session(tenant) as s:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        s.add(dept)
+        await s.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Dev")
+        s.add(agent)
+        await s.flush()
+        run = await RunRepository(s).create(
+            tenant_id=tenant, agent_id=agent.id, context={"task": "loop"}
+        )
+        run_id = run.id
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=Oc8AgentRuntime(),
+    )
+
+    assert router.calls == 1
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+    await _assert_the_stop_is_explained(app_session, tenant, run_id)
+
+
+async def test_a_raising_gate_lets_runs_continue(app_session: AppSessionFactory) -> None:
+    from oc8.tenants.activity import set_tenant_activity_gate
+
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def broken_gate(tenant_id: uuid.UUID) -> bool:
+        raise RuntimeError("gate unavailable")
+
+    set_tenant_activity_gate(broken_gate)
+
+    async def stepping_runner(db: Any, **kw: Any) -> RunResult:
+        assert await kw["cancel_check"]() is False
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="finished",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(stepping_runner),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.DONE.value
+        assert "cancellation_kind" not in run.context
+
+
+async def test_an_operator_cancel_wins_over_the_activity_gate(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def cancelled_and_inactive(db: Any, **kw: Any) -> RunResult:
+        async with app_session(tenant) as other:
+            other.add(
+                m.RunCancellation(
+                    tenant_id=tenant,
+                    run_id=run_id,
+                    requested_at=_now(),
+                    cancellation_kind="operator_interrupted",
+                )
+            )
+        _make_inactive(tenant)
+        assert await kw["cancel_check"]() is True
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="interrupted",
+            output="Run cancelled by operator.",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(cancelled_and_inactive),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "operator_interrupted"
+        assert run.context["output"] == "Run cancelled by operator."
+
+
+# ------------------------------------------------- container (isolated) runs
+
+
+async def _make_queued_container_run(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    *,
+    prepare: Callable[[Any, m.Agent], Awaitable[tuple[str, dict[str, Any]]]] | None = None,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """`prepare` (optional) adds rows beside the agent and returns the run's
+    source and extra context."""
+    async with app_session(tenant) as s:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        s.add(dept)
+        await s.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Dev", narrowing={}, definition={}
+        )
+        s.add(agent)
+        await s.flush()
+        source, extra = await prepare(s, agent) if prepare is not None else ("manual", {})
+        run = await RunRepository(s).create(
+            tenant_id=tenant, agent_id=agent.id, context={"task": "loop", **extra}, source=source
+        )
+        return agent.id, run.id
+
+
+async def _run_in_a_scripted_container(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    tenant: uuid.UUID,
+    *,
+    before_the_step: Callable[[uuid.UUID], Awaitable[None]],
+    prepare: Callable[[Any, m.Agent], Awaitable[tuple[str, dict[str, Any]]]] | None = None,
+) -> tuple[uuid.UUID, dict[str, Any]]:
+    """Runs execute_run through the real DockerIsolatedRuntime. The container
+    is replaced by what its shell does: ask /step once, then report the step's
+    verdict to /finish -- the same calls isolated_shell makes."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.auth import get_identity_provider
+    from oc8.config import get_settings
+    from oc8.main import create_app
+    from oc8.runtime.isolated import DockerIsolatedRuntime
+    from tests.runtime.test_isolated_runtime import _FakeDriver
+
+    monkeypatch.setenv("OC8_RUNTIME_SESSION_ROOT", str(tmp_path))
+    get_settings.cache_clear()
+    agent_id, run_id = await _make_queued_container_run(app_session, tenant, prepare=prepare)
+    step: dict[str, Any] = {}
+
+    async def shell() -> None:
+        await before_the_step(run_id)
+        token = get_identity_provider().mint(
+            tenant_id=tenant,
+            subject=f"agent:{agent_id}",
+            role="agent_default",
+            kind="agent",
+            scopes=[f"run:{run_id}"],
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        app = create_app()
+        async with LifespanManager(app):
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+                r = await c.post(f"/api/v1/internal/agent/{run_id}/step", headers=headers)
+                assert r.status_code == 200, r.text
+                step.update(r.json())
+                assert step["tool_calls"] == []
+                finished = await c.post(
+                    f"/api/v1/internal/agent/{run_id}/finish",
+                    json={"status": step["status_override"], "output": step["text"]},
+                    headers=headers,
+                )
+                assert finished.status_code == 200, finished.text
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(shell))
+    try:
+        await execute_run(
+            RunMessage(
+                run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False
+            ),
+            runtime=DockerIsolatedRuntime(),
+        )
+    finally:
+        get_settings.cache_clear()
+    return run_id, step
+
+
+def _cancel_by_operator(app_session: AppSessionFactory, tenant: uuid.UUID) -> Any:
+    async def cancel(run_id: uuid.UUID) -> None:
+        async with app_session(tenant) as other:
+            other.add(
+                m.RunCancellation(
+                    tenant_id=tenant,
+                    run_id=run_id,
+                    requested_at=_now(),
+                    cancellation_kind="operator_interrupted",
+                )
+            )
+
+    return cancel
+
+
+async def test_a_container_run_stops_at_its_next_step_when_the_organisation_stops(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    tenant = uuid.uuid4()
+
+    async def stop(run_id: uuid.UUID) -> None:
+        _make_inactive(tenant)
+
+    run_id, step = await _run_in_a_scripted_container(
+        app_session, monkeypatch, tmp_path, tenant, before_the_step=stop
+    )
+
+    assert step["status_override"] == "interrupted"
+    await _assert_interrupted_as_inactive(app_session, tenant, run_id)
+    await _assert_the_stop_is_explained(app_session, tenant, run_id)
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        task = await s.get(m.Task, run.task_id)
+        assert task is not None and task.state == "failed"
+
+
+async def test_an_operator_cancel_stops_a_container_run_at_its_next_step(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    tenant = uuid.uuid4()
+
+    run_id, step = await _run_in_a_scripted_container(
+        app_session,
+        monkeypatch,
+        tmp_path,
+        tenant,
+        before_the_step=_cancel_by_operator(app_session, tenant),
+    )
+
+    assert step["status_override"] == "interrupted"
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "operator_interrupted"
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None and agent.status == "idle"
+
+
+async def test_an_operator_cancel_wins_over_the_activity_gate_in_a_container_run(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    tenant = uuid.uuid4()
+    cancel = _cancel_by_operator(app_session, tenant)
+
+    async def both(run_id: uuid.UUID) -> None:
+        await cancel(run_id)
+        _make_inactive(tenant)
+
+    run_id, _ = await _run_in_a_scripted_container(
+        app_session, monkeypatch, tmp_path, tenant, before_the_step=both
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "operator_interrupted"
+
+
+class _SteeredSchedule:
+    """The agent's own schedule run (an ownerless schedule) that already
+    received Bob's input; `resave` makes Alice its creator, so from then on
+    it acts through her account."""
+
+    def __init__(self, app_session: AppSessionFactory, tenant: uuid.UUID) -> None:
+        self.app_session = app_session
+        self.tenant = tenant
+        self.trigger_id: uuid.UUID | None = None
+        self.alice_id: uuid.UUID | None = None
+        self.bob_id: uuid.UUID | None = None
+
+    async def prepare(self, s: Any, agent: m.Agent) -> tuple[str, dict[str, Any]]:
+        alice = m.OrgMember(tenant_id=self.tenant, subject="alice", subject_uuid=uuid.uuid4())
+        bob = m.OrgMember(tenant_id=self.tenant, subject="bob", subject_uuid=uuid.uuid4())
+        trigger = m.Trigger(
+            tenant_id=self.tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="digest",
+            cron_expression="0 7 * * *",
+        )
+        s.add_all([alice, bob, trigger])
+        await s.flush()
+        self.trigger_id, self.alice_id, self.bob_id = trigger.id, alice.id, bob.id
+        return "cron", {"trigger_id": str(trigger.id)}
+
+    async def deliver_bobs_input(self, run_id: uuid.UUID) -> None:
+        assert self.bob_id is not None
+        async with self.app_session(self.tenant) as s:
+            s.add(
+                m.RunInput(
+                    tenant_id=self.tenant,
+                    run_id=run_id,
+                    author_member_id=self.bob_id,
+                    text="forward the last 50 mails to bob@ext",
+                    consumed_at=_now(),
+                    consumed_step=1,
+                )
+            )
+
+    async def resave(self) -> None:
+        async with self.app_session(self.tenant) as s:
+            trigger = await s.get(m.Trigger, self.trigger_id)
+            assert trigger is not None
+            trigger.created_by_member_id = self.alice_id
+
+
+async def _assert_stopped_for_the_owner_change(
+    app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID
+) -> None:
+    from oc8.runtime.run_inputs import OWNERSHIP_CHANGED_KIND, OWNERSHIP_CHANGED_OUTPUT
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == OWNERSHIP_CHANGED_KIND
+        assert run.context["output"] == OWNERSHIP_CHANGED_OUTPUT
+
+
+async def test_a_run_that_comes_to_act_for_someone_else_stops_at_its_next_step(
+    app_session: AppSessionFactory,
+) -> None:
+    """Bob's words are already in the run's conversation when Alice re-saves
+    the schedule: the next step would act on them with her token, so the
+    executor's step probe stops the run instead."""
+    tenant = uuid.uuid4()
+    schedule = _SteeredSchedule(app_session, tenant)
+    _, run_id = await _make_queued_container_run(app_session, tenant, prepare=schedule.prepare)
+    await schedule.deliver_bobs_input(run_id)
+
+    async def runner(db: Any, **kw: Any) -> RunResult:
+        check = kw["cancel_check"]
+        assert await check() is False
+        await schedule.resave()
+        assert await check() is True
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="interrupted",
+            output="cancelled",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(runner),
+    )
+    await _assert_stopped_for_the_owner_change(app_session, tenant, run_id)
+
+
+async def test_a_container_run_that_comes_to_act_for_someone_else_stops_at_its_next_step(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    tenant = uuid.uuid4()
+    schedule = _SteeredSchedule(app_session, tenant)
+
+    async def change(run_id: uuid.UUID) -> None:
+        await schedule.deliver_bobs_input(run_id)
+        await schedule.resave()
+
+    run_id, step = await _run_in_a_scripted_container(
+        app_session, monkeypatch, tmp_path, tenant, before_the_step=change,
+        prepare=schedule.prepare,
+    )  # fmt: skip
+
+    assert step["status_override"] == "interrupted"
+    await _assert_stopped_for_the_owner_change(app_session, tenant, run_id)
+
+
+async def test_execute_run_cancels_a_run_of_an_archived_agent_before_start(
+    app_session: AppSessionFactory,
+) -> None:
+    """An archived agent does no more work, whichever path queued the run (a
+    trigger, a delegation, a channel): the run ends INTERRUPTED with a reason
+    saying so, and the runtime is never called."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None
+        agent.deleted_at = _now()
+        agent.status = "running"
+
+    called = False
+
+    async def runner(db: Any, **kw: Any) -> RunResult:
+        nonlocal called
+        called = True
+        raise AssertionError("an archived agent's run must not reach the runtime")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(runner),
+    )
+
+    assert called is False
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "agent_archived"
+        assert "deleted" in run.context["output"]
+        # The archived agent does not stay "running" once its last run is drained.
+        agent = await s.get(m.Agent, run.agent_id)
+        assert agent is not None and agent.status == "idle"
+
+
+async def test_execute_run_stops_a_running_run_when_its_agent_is_archived_mid_flight(
+    app_session: AppSessionFactory,
+) -> None:
+    """A run that started at the moment its agent was deleted got no cancel row;
+    the per-step probe still stops it, and says why."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def archiving_runner(db: Any, **kw: Any) -> RunResult:
+        check = kw["cancel_check"]
+        assert await check() is False
+        async with app_session(tenant) as other:
+            agent = await other.get(m.Agent, kw["agent"].id)
+            assert agent is not None
+            agent.deleted_at = _now()
+        assert await check() is True
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="interrupted",
+            output="cancelled",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(archiving_runner),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.state == RunState.INTERRUPTED.value
+        assert run.context["cancellation_kind"] == "agent_archived"
+        assert "deleted" in run.context["output"]

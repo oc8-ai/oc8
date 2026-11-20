@@ -16,10 +16,18 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.api.deps import DbSession, require_permission
 from oc8.authz.permissions import MANAGE, MODEL, VIEW, perm
+from oc8.config import get_settings
 from oc8.schemas.dto import ModelPriceDTO
 from oc8.schemas.requests import ModelPriceWrite
 
 router = APIRouter()
+
+
+def _require_writable() -> None:
+    if get_settings().model_prices_read_only:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "model prices are managed by the platform operator"
+        )
 
 
 def _to_dto(row: m.ModelPrice) -> ModelPriceDTO:
@@ -54,6 +62,15 @@ async def list_current_prices(db: DbSession) -> list[ModelPriceDTO]:
 
 
 @router.get(
+    "/model-prices/policy",
+    dependencies=[Depends(require_permission(perm(MODEL, VIEW)))],
+)
+async def price_policy() -> dict[str, bool]:
+    """Whether this tenant may edit prices, so the UI can hide the controls."""
+    return {"readOnly": get_settings().model_prices_read_only}
+
+
+@router.get(
     "/model-prices/history",
     response_model=list[ModelPriceDTO],
     dependencies=[Depends(require_permission(perm(MODEL, VIEW)))],
@@ -83,7 +100,7 @@ async def price_history(
     "/model-prices",
     response_model=ModelPriceDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission(perm(MODEL, MANAGE)))],
+    dependencies=[Depends(require_permission(perm(MODEL, MANAGE))), Depends(_require_writable)],
 )
 async def create_price_version(body: ModelPriceWrite, db: DbSession) -> ModelPriceDTO:
     # `created_by` is purely informational (spec: never required for
@@ -104,7 +121,7 @@ async def create_price_version(body: ModelPriceWrite, db: DbSession) -> ModelPri
 @router.delete(
     "/model-prices/{price_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission(perm(MODEL, MANAGE)))],
+    dependencies=[Depends(require_permission(perm(MODEL, MANAGE))), Depends(_require_writable)],
 )
 async def deactivate_price(price_id: uuid.UUID, db: DbSession) -> None:
     row = await db.get(m.ModelPrice, price_id)

@@ -17,4 +17,12 @@ describe("LayoutPreview", () => {
     const { container } = render(<LayoutPreview widgets={[]} />);
     expect(container.querySelectorAll(":scope > div > div")).toHaveLength(0);
   });
+
+  it("sizes the sketch in 40 px rows, so doubled stored rows keep the old proportions", () => {
+    const widgets: WidgetInstance[] = [
+      { id: "w1", type: "chat", x: 0, y: 0, w: 12, h: 24, config: {} },
+    ];
+    const { container } = render(<LayoutPreview widgets={widgets} />);
+    expect((container.firstElementChild as HTMLElement).style.aspectRatio).toBe("12 / 12");
+  });
 });

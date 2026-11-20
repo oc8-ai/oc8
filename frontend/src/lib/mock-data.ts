@@ -16,6 +16,9 @@ export interface Agent {
   avatarColor: string;
   departmentId?: string;
   isLead?: boolean;
+  /** Opening questions this agent's composer offers on an empty conversation
+   *  (§5.3). Empty for an agent whose template ships none. */
+  promptStarters?: string[];
   /**
    * Team lead ("Teamleiter") supervising this agent. Reference to another
    * agent id, or `"human"` for human oversight. If omitted the department
@@ -672,6 +675,16 @@ export const models: Model[] = [
     assignedTo: ["hera"],
     note: "On-premise, no data leaves the VPC.",
   },
+  {
+    id: "m-auto",
+    provider: "auto",
+    name: "Auto",
+    status: "healthy",
+    costTier: "$$",
+    latency: "—",
+    assignedTo: [],
+    note: "Complexity router — picks among tier models.",
+  },
 ];
 
 export function agentById(id: string) {
@@ -885,6 +898,7 @@ export interface Task {
   agentId: string | null;
   column: TaskColumn;
   meta?: string;
+  recordUrl?: string | null;
   titleTranslations?: Record<string, string>;
   metaTranslations?: Record<string, string>;
 }
@@ -1172,6 +1186,12 @@ export interface DataSource {
   lastSyncStatus?: "ok" | "failed";
   /** Set only while `lastSyncStatus === "failed"`. */
   lastSyncError?: string | null;
+  /** What the last finished sync left out, by reason (`unsupported_type`,
+   * `too_large`, `url_document`, ...); null when it skipped nothing. */
+  lastSyncSkipped?: Record<string, number> | null;
+  /** Codes the last finished sync noted for the admin (`api_key_recommended`,
+   * `scope_emptied`, ...); unknown codes are not shown. */
+  lastSyncNotes?: string[] | null;
   /** Set once the source is deleted (`DELETE /knowledge/sources/{id}`) -- this
    * is IRREVERSIBLE (it reduces the source's `KbChunk`s in the same
    * transaction, §12.5.1), so unlike Skill/Agent/Department there is no
@@ -1251,6 +1271,11 @@ export interface KnowledgeBase {
   deletedAt?: string | null;
   nameTranslations?: Record<string, string>;
   descriptionTranslations?: Record<string, string>;
+  /** ``internal`` (default) or a capa vector-index type id. */
+  indexType?: string;
+  /** Non-secret mapping for an external index. Never secrets. */
+  indexConfig?: Record<string, unknown>;
+  credentialId?: string | null;
 }
 
 export interface KnowledgeDocument {

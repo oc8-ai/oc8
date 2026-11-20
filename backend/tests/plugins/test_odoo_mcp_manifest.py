@@ -122,6 +122,21 @@ def test_internal_only_cannot_reach_the_customer() -> None:
     assert {"create_record", "update_record"} <= set(p.only)
 
 
+def test_connection_config_declares_capability_seam_keys() -> None:
+    """Neutral seam keys under `[connections.config]` drive destructive,
+    irreversible, lookup and approval gating without Odoo-specific core code."""
+    cfg = _connection().config
+    assert cfg.get("destructive_tools") == ["delete_record"]
+    assert cfg.get("irreversible_tools") == []
+    assert cfg.get("read_before_write") is True
+    assert cfg.get("entity_lookup_tools") == ["search_records"]
+    assert cfg.get("approval_templates") == {
+        "post_message": "Allow {connection} to post a message on {record}?",
+        "delete_record": "Allow {connection} to delete {record}?",
+    }
+    assert "preview" not in cfg
+
+
 def test_no_deletions_differs_from_assist_by_never_rather_than_ask() -> None:
     """The two are only worth shipping separately if they actually differ.
 
@@ -136,3 +151,18 @@ def test_no_deletions_differs_from_assist_by_never_rather_than_ask() -> None:
     assert not assist.only, "assist withholds nothing; a human sees every send"
     assert "delete_record" not in never.only
     assert "post_message" in never.only, "only deletion is withheld, not customer contact"
+
+
+def test_feeds_knowledge_bases_through_a_deferred_permission() -> None:
+    """The knowledge connector rides on this capa. `knowledge:write` is
+    deferred, so the update that adds it does not disable existing installs;
+    a tenant grants it when it first creates an Odoo knowledge source."""
+    found = find_plugin("odoo_mcp", [str(_PLUGINS_DIR)])
+    assert found is not None and found.valid, found and found.error
+    assert found.manifest is not None
+    manifest = parse_manifest(found.manifest)
+    assert manifest.version == "1.11.0"
+    assert manifest.permissions == ["mcp:connect", "secrets:use", "knowledge:write"]
+    assert manifest.deferred_permissions == ["knowledge:write"]
+    assert found.manifest["entry_points"]["connectors"] == "connector.connector:register"
+    assert "Documents" in manifest.summary and "Knowledge" in manifest.summary
