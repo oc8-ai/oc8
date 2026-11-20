@@ -5078,6 +5078,9 @@ msgstr "Ouvrir les approbations"
 msgid "Open guardrails →"
 msgstr "Ouvrir les garde-fous →"
 
+msgid "Open in a larger editor"
+msgstr ""
+
 #, fuzzy
 msgid "Open my work"
 msgstr "Ouvrir mon travail"
