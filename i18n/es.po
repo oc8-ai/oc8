@@ -545,6 +545,10 @@ msgid "All systems operational"
 msgstr "Todos los sistemas funcionan con normalidad"
 
 #, fuzzy
+msgid "All time"
+msgstr "Todos los departamentos"
+
+#, fuzzy
 msgid "Allow"
 msgstr "Permitir"
 
@@ -1641,6 +1645,10 @@ msgid "Connections"
 msgstr "Conexiones"
 
 #, fuzzy
+msgid "Content"
+msgstr "contexto"
+
+#, fuzzy
 msgid "context"
 msgstr "contexto"
 
@@ -1862,6 +1870,10 @@ msgstr "No se pudo eliminar."
 #, fuzzy
 msgid "Could not disable."
 msgstr "No se pudo desactivar."
+
+#, fuzzy
+msgid "Could not duplicate the skill."
+msgstr "No se pudo crear la habilidad."
 
 #, fuzzy
 msgid "Could not fetch model list"
@@ -2792,6 +2804,12 @@ msgstr "Redactar con Copilot"
 #, fuzzy
 msgid "Drift guard — pause on off-role actions"
 msgstr "Guardián de deriva: pausa las acciones fuera de rol"
+
+msgid "Duplicate"
+msgstr ""
+
+msgid "Duplicate this skill to change it"
+msgstr ""
 
 #, fuzzy
 msgid "Duration"
@@ -3776,6 +3794,10 @@ msgstr "Bases de conocimiento"
 #, fuzzy
 msgid "Knowledge Bases"
 msgstr "Bases de conocimiento"
+
+#, fuzzy
+msgid "Knowledge bases (one per line)"
+msgstr "Base de conocimiento eliminada"
 
 #, fuzzy
 msgid "Knowledge library"
@@ -4811,6 +4833,10 @@ msgid "No tools yet — add one directly for this agent, or grant it to the whol
 msgstr "Aún no hay herramientas: añade una directamente para este agente o concédela primero a todo el departamento."
 
 #, fuzzy
+msgid "No usage metered this month."
+msgstr "Aún no se ha medido ningún uso de este inquilino."
+
+#, fuzzy
 msgid "No usage metered yet for this tenant."
 msgstr "Aún no se ha medido ningún uso de este inquilino."
 
@@ -5005,6 +5031,9 @@ msgstr "calculado por oc8"
 #, fuzzy
 msgid "oc8 object"
 msgstr "objeto de oc8"
+
+msgid "of which from cache"
+msgstr ""
 
 #, fuzzy
 msgid "Office"
@@ -6548,6 +6577,10 @@ msgid "Skill created"
 msgstr "Habilidad creada"
 
 #, fuzzy
+msgid "Skill duplicated"
+msgstr "Habilidad actualizada"
+
+#, fuzzy
 msgid "Skill library"
 msgstr "Biblioteca de habilidades"
 
@@ -7558,6 +7591,10 @@ msgid "This model may only answer chats, not run on a schedule or an event."
 msgstr "Este modelo solo puede responder en chats, no ejecutarse por programación o evento."
 
 #, fuzzy
+msgid "this month"
+msgstr "usado este mes"
+
+#, fuzzy
 msgid "This month"
 msgstr "usado este mes"
 
@@ -8380,6 +8417,9 @@ msgstr "Sí, aprobar"
 #, fuzzy
 msgid "you"
 msgstr "tú"
+
+msgid "You are editing the original text. Translations are not updated."
+msgstr ""
 
 #, fuzzy
 msgid "You are not allowed to connect this account for the organisation."
