@@ -14,12 +14,13 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import Field
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1.auth import PasswordSessionResponse
 from oc8.auth import Principal, get_identity_provider
-from oc8.auth.second_factors import audit
+from oc8.auth.second_factors import audit, lock_member
 from oc8.auth.totp import (
     generate_backup_codes,
     generate_secret,
@@ -176,6 +177,24 @@ async def _refuse_unless_totp_allowed(db: DbSession, principal: Principal) -> No
         )
 
 
+async def refuse_enrol_token_once_enrolled(
+    db: AsyncSession, principal: Principal, member_id: uuid.UUID | None
+) -> None:
+    """An enrolment token proves the password only. Login mints one because
+    the member had no allowed method to answer a challenge with; once they
+    have one, the token must not add another factor -- that takes a full
+    session, i.e. the method they already hold. Every enrol route checks
+    this, and checks it again under the member lock where it writes."""
+    if "totp:enroll" not in principal.scopes or member_id is None:
+        return
+    member = await db.get(m.OrgMember, member_id)
+    if member is not None and await member_methods(db, member):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You already have a second factor. Sign in with it to add another.",
+        )
+
+
 def mint_full_session(principal: Principal, member_id: uuid.UUID) -> PasswordSessionResponse:
     """Exchange a passed challenge for the real session. Every second-factor
     verify route ends here, so they mint exactly the same token."""
@@ -208,6 +227,7 @@ async def totp_enroll(principal: CurrentPrincipal, db: DbSession) -> TotpEnrollR
     plaintext from here on to render the QR code and to submit back at
     /confirm; the server never remembers it until confirm creates the row."""
     await _refuse_unless_totp_allowed(db, principal)
+    await refuse_enrol_token_once_enrolled(db, principal, await _member_id_or_none(db, principal))
     secret = generate_secret()
     return TotpEnrollResponse(
         secret=secret,
@@ -232,6 +252,8 @@ async def totp_confirm(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid code.")
 
     member_id = await _member_id_for(db, principal)
+    await lock_member(db, member_id)
+    await refuse_enrol_token_once_enrolled(db, principal, member_id)
 
     # `totp_credential.member_id` is UNIQUE, so a second /confirm for an
     # already-enrolled member would otherwise reach the DB constraint as the

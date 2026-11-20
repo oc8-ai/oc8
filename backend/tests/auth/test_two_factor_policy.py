@@ -253,11 +253,51 @@ async def test_optional_ignores_an_enrolment_of_a_removed_method(
     assert _shape(outcome) == "full"
 
 
-async def test_passkey_in_the_policy_is_never_a_method_anybody_holds(
+async def test_a_passkey_only_policy_offers_a_passkey_to_enrol(
     app_session: AppSessionFactory,
 ) -> None:
     policy = {"requirement": "everyone", "methods": ["passkey"], "grace_days": 0}
     tenant, member_id = await _seed(app_session, policy=policy, admin=False, state="enrolled")
+    async with app_session(tenant) as db:
+        outcome = await second_factor_gate(db, member_id=member_id)
+    assert _shape(outcome) == "enrol"
+    assert outcome.methods == ("passkey",)
+
+
+async def test_passkeys_are_never_offered_without_a_usable_public_url(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import config
+
+    monkeypatch.setattr(config.get_settings(), "frontend_base_url", "http://oc8.example.com")
+    policy = {"requirement": "everyone", "methods": ["totp", "passkey"], "grace_days": 0}
+    tenant, member_id = await _seed(app_session, policy=policy, admin=False, state="grace_over")
+    async with app_session(tenant) as db:
+        outcome = await second_factor_gate(db, member_id=member_id)
+    assert _shape(outcome) == "enrol"
+    assert outcome.methods == ("totp",)
+
+
+async def test_a_held_passkey_does_not_count_without_a_usable_public_url(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8 import config
+
+    policy = {"requirement": "everyone", "methods": ["totp", "passkey"], "grace_days": 0}
+    tenant, member_id = await _seed(app_session, policy=policy, admin=False, state="grace_over")
+    async with app_session(tenant) as db:
+        db.add(
+            m.SecondFactor(
+                tenant_id=tenant,
+                member_id=member_id,
+                method="passkey",
+                label="Laptop",
+                data={"credential_id": "abc", "public_key": "def", "sign_count": 0},
+            )
+        )
+    async with app_session(tenant) as db:
+        assert _shape(await second_factor_gate(db, member_id=member_id)) == "code"
+    monkeypatch.setattr(config.get_settings(), "frontend_base_url", "")
     async with app_session(tenant) as db:
         outcome = await second_factor_gate(db, member_id=member_id)
     assert _shape(outcome) == "enrol"

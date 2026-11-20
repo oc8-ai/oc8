@@ -11,6 +11,7 @@ from oc8 import models as m
 from oc8.agents.hire import require_hire_approval, set_require_hire_approval
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.audit import append_event
+from oc8.auth.passkey import passkey_available
 from oc8.auth.totp_gate import member_id_for_principal
 from oc8.auth.two_factor_policy import (
     MAX_GRACE_DAYS,
@@ -49,6 +50,9 @@ class TwoFactorSettingsUpdate(CamelModel):
 class TwoFactorSettings(TwoFactorSettingsUpdate):
     #: Whether outgoing mail is configured; `email` cannot be allowed without it.
     email_available: bool
+    #: Whether the public URL can carry a passkey (HTTPS, or localhost);
+    #: `passkey` cannot be allowed without it.
+    passkey_available: bool
 
 
 class OrganizationSettings(BaseModel):
@@ -244,6 +248,7 @@ async def _two_factor_dto(
         methods=list(policy.methods),
         grace_days=policy.grace_days,
         email_available=mail,
+        passkey_available=passkey_available(),
     )
 
 
@@ -270,7 +275,8 @@ async def put_two_factor_settings(
     """Save the organisation's two-factor policy.
 
     Refused when it would leave nothing to sign in with: no method while 2FA
-    is on, email without a mail server to send the code, or a policy that
+    is on, email without a mail server to send the code, passkeys without a
+    public URL a browser will create one for, or a policy that
     requires the saving admin to use a method they do not hold. The last one
     is what keeps a save from locking every admin out: whoever tightens the
     policy has already proven they can satisfy it.
@@ -296,6 +302,11 @@ async def put_two_factor_settings(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
             "A code by email needs outgoing mail. Configure a mail server first.",
+        )
+    if "passkey" in new.methods and not passkey_available():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "Passkeys need the public URL to use HTTPS (or localhost). Set it up first.",
         )
     member_id = await member_id_for_principal(db, principal)
     member = await db.get(m.OrgMember, member_id) if member_id is not None else None

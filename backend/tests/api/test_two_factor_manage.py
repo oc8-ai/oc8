@@ -202,7 +202,8 @@ async def test_methods_lists_what_the_caller_holds(
     assert all(x["allowed"] and x["removable"] for x in body["methods"])
     assert body["required"] is False
     assert body["allowedMethods"] == ["totp", "email", "passkey"]
-    assert body["enrollableMethods"] == ["totp", "email"]
+    assert body["enrollableMethods"] == ["totp", "email", "passkey"]
+    assert body["passkeys"] == []
     assert body["backupCodesLeft"] == 10
 
 

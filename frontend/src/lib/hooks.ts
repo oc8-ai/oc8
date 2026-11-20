@@ -937,6 +937,8 @@ export interface TwoFactorPolicyDTO {
 export interface TwoFactorSettingsDTO extends TwoFactorPolicyDTO {
   /** Whether outgoing mail is configured; email cannot be allowed without it. */
   emailAvailable: boolean;
+  /** Whether the public URL can carry a passkey (HTTPS, or localhost). */
+  passkeyAvailable: boolean;
 }
 
 export function useTwoFactorSettings() {

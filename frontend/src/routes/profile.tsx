@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, Copy, Link2, Trash2 } from "lucide-react";
+import { Check, Copy, Link2, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
@@ -11,10 +11,10 @@ import {
   UserIdLine,
 } from "@/components/sign-in-identity";
 import { BackupCodesReveal } from "@/components/totp-backup-codes";
-import { EmailEnroll } from "@/components/second-factor";
+import { EmailEnroll, PasskeyEnroll } from "@/components/second-factor";
 import { TotpEnroll } from "@/components/totp-enroll";
 import { useT } from "@/lib/i18n";
-import { removeSecondFactor, type TwoFactorMethod } from "@/lib/totp";
+import { removePasskey, removeSecondFactor, renamePasskey, type TwoFactorMethod } from "@/lib/totp";
 import { methodLabel } from "@/lib/two-factor";
 import { API_URL, api, getToken, hasCommunitySession, logoutCommunity, logoutDev } from "@/lib/api";
 import {
@@ -436,24 +436,77 @@ export function ProfilePage() {
   );
 }
 
+interface PasskeyDTO {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  removable: boolean;
+}
+
 interface SecondFactorsDTO {
   methods: { method: string; label: string; allowed: boolean; removable: boolean }[];
+  passkeys: PasskeyDTO[];
   allowedMethods: string[];
   enrollableMethods: string[];
   required: boolean;
   backupCodesLeft: number;
 }
 
-/** The caller's own second factors: add one the policy allows, remove one
- *  (password-checked; the server refuses the last one the policy requires),
- *  and regenerate backup codes. */
+/** Asks for the current password before a removal. */
+function RemovePrompt({
+  busy,
+  onRemove,
+  onCancel,
+}: {
+  busy: boolean;
+  onRemove: (password: string) => void;
+  onCancel: () => void;
+}) {
+  const t = useT();
+  const [password, setPassword] = useState("");
+  return (
+    <div className="mt-2 space-y-2">
+      <input
+        type="password"
+        placeholder={t("Current password", "Aktuelles Passwort")}
+        value={password}
+        onChange={(e) => setPassword(e.target.value)}
+        className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
+      />
+      <div className="flex gap-2">
+        <button
+          type="button"
+          disabled={busy || !password}
+          onClick={() => onRemove(password)}
+          className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+        >
+          {t("Remove", "Entfernen")}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="h-8 rounded-md border border-border px-3 text-xs text-muted-foreground transition hover:text-foreground"
+        >
+          {t("Cancel", "Abbrechen")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** The caller's own second factors: add one the policy allows (a passkey
+ *  as often as they like), remove one (password-checked; the server refuses
+ *  the last one the policy requires), rename a passkey, and regenerate
+ *  backup codes. */
 export function TwoFactorPanel() {
   const t = useT();
   const [data, setData] = useState<SecondFactorsDTO | null>(null);
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState<{ method: TwoFactorMethod; token: string } | null>(null);
+  // A method name, or `passkey:<id>` for one passkey.
   const [removing, setRemoving] = useState<string | null>(null);
-  const [password, setPassword] = useState("");
+  const [renaming, setRenaming] = useState<{ id: string; label: string } | null>(null);
   const [regeneratedCodes, setRegeneratedCodes] = useState<string[] | null>(null);
 
   const load = () =>
@@ -468,8 +521,11 @@ export function TwoFactorPanel() {
 
   const methods = data?.methods ?? [];
   const enrolled = new Set(methods.map((m) => m.method));
+  const passkeys = data?.passkeys ?? [];
+  // A member can hold several passkeys, but one of each other method.
   const addable = (data?.enrollableMethods ?? []).filter(
-    (m): m is TwoFactorMethod => (m === "totp" || m === "email") && !enrolled.has(m),
+    (m): m is TwoFactorMethod =>
+      m === "passkey" || ((m === "totp" || m === "email") && !enrolled.has(m)),
   );
 
   async function startAdding(method: TwoFactorMethod) {
@@ -485,16 +541,47 @@ export function TwoFactorPanel() {
     }
   }
 
-  async function remove(method: string) {
+  async function remove(method: string, password: string) {
     setBusy(true);
     try {
       await removeSecondFactor(await getToken(), method, password);
       toast.success(t(`${methodLabel(method, t)} removed`, `${methodLabel(method, t)} entfernt`));
       setRemoving(null);
-      setPassword("");
       await load();
     } catch (err) {
       toast.error(t("Could not remove the method.", "Methode konnte nicht entfernt werden."), {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeOnePasskey(passkey: PasskeyDTO, password: string) {
+    setBusy(true);
+    try {
+      await removePasskey(await getToken(), passkey.id, password);
+      toast.success(t(`${passkey.label} removed`, `${passkey.label} entfernt`));
+      setRemoving(null);
+      await load();
+    } catch (err) {
+      toast.error(t("Could not remove the passkey.", "Passkey konnte nicht entfernt werden."), {
+        description: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rename() {
+    if (!renaming) return;
+    setBusy(true);
+    try {
+      await renamePasskey(await getToken(), renaming.id, renaming.label.trim());
+      setRenaming(null);
+      await load();
+    } catch (err) {
+      toast.error(t("Could not rename the passkey.", "Passkey konnte nicht umbenannt werden."), {
         description: err instanceof Error ? err.message : String(err),
       });
     } finally {
@@ -524,11 +611,18 @@ export function TwoFactorPanel() {
     void load();
   };
 
+  const requiredHint = t(
+    "Your organisation requires a second factor. Add another method first.",
+    "Deine Organisation verlangt einen zweiten Faktor. Füge zuerst eine andere Methode hinzu.",
+  );
+
   let body;
   if (adding) {
     body =
       adding.method === "totp" ? (
         <TotpEnroll token={adding.token} onDone={done} />
+      ) : adding.method === "passkey" ? (
+        <PasskeyEnroll token={adding.token} onDone={done} />
       ) : (
         <EmailEnroll token={adding.token} onDone={done} />
       );
@@ -577,54 +671,106 @@ export function TwoFactorPanel() {
                         </span>
                       )}
                     </span>
-                    <button
-                      type="button"
-                      disabled={busy || !m.removable}
-                      aria-label={t(`Remove ${name}`, `${name} entfernen`)}
-                      title={
-                        m.removable
-                          ? undefined
-                          : t(
-                              "Your organisation requires a second factor. Add another method first.",
-                              "Deine Organisation verlangt einen zweiten Faktor. Füge zuerst eine andere Methode hinzu.",
-                            )
-                      }
-                      onClick={() => {
-                        setRemoving(m.method);
-                        setPassword("");
-                      }}
-                      className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:text-destructive disabled:opacity-40"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {m.method !== "passkey" && (
+                      <button
+                        type="button"
+                        disabled={busy || !m.removable}
+                        aria-label={t(`Remove ${name}`, `${name} entfernen`)}
+                        title={m.removable ? undefined : requiredHint}
+                        onClick={() => setRemoving(m.method)}
+                        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:text-destructive disabled:opacity-40"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
                   {removing === m.method && (
-                    <div className="mt-2 space-y-2">
-                      <input
-                        type="password"
-                        placeholder={t("Current password", "Aktuelles Passwort")}
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                        className="h-8 w-full rounded-md border border-border bg-background/60 px-2 text-sm"
-                      />
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          disabled={busy || !password}
-                          onClick={() => remove(m.method)}
-                          className="h-8 rounded-md border border-destructive/40 px-3 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
-                        >
-                          {t("Remove", "Entfernen")}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setRemoving(null)}
-                          className="h-8 rounded-md border border-border px-3 text-xs text-muted-foreground transition hover:text-foreground"
-                        >
-                          {t("Cancel", "Abbrechen")}
-                        </button>
-                      </div>
-                    </div>
+                    <RemovePrompt
+                      busy={busy}
+                      onRemove={(password) => remove(m.method, password)}
+                      onCancel={() => setRemoving(null)}
+                    />
+                  )}
+                  {m.method === "passkey" && passkeys.length > 0 && (
+                    <ul className="mt-1.5 space-y-1 border-l border-border pl-2.5">
+                      {passkeys.map((p) => (
+                        <li key={p.id}>
+                          <div className="flex items-center justify-between gap-2">
+                            {renaming?.id === p.id ? (
+                              <span className="flex min-w-0 flex-1 gap-1.5">
+                                <input
+                                  aria-label={t(
+                                    `New name for ${p.label}`,
+                                    `Neuer Name für ${p.label}`,
+                                  )}
+                                  value={renaming.label}
+                                  maxLength={64}
+                                  onChange={(e) => setRenaming({ id: p.id, label: e.target.value })}
+                                  className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background/60 px-2 text-xs"
+                                />
+                                <button
+                                  type="button"
+                                  disabled={busy || renaming.label.trim() === ""}
+                                  onClick={rename}
+                                  className="h-7 rounded-md border border-border px-2 text-xs font-medium text-foreground transition hover:bg-accent disabled:opacity-50"
+                                >
+                                  {t("Save", "Speichern")}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRenaming(null)}
+                                  className="h-7 rounded-md px-2 text-xs text-muted-foreground transition hover:text-foreground"
+                                >
+                                  {t("Cancel", "Abbrechen")}
+                                </button>
+                              </span>
+                            ) : (
+                              <span className="min-w-0 truncate">
+                                <span className="text-foreground">{p.label}</span>
+                                <span className="ml-1.5 text-muted-foreground">
+                                  {p.lastUsedAt
+                                    ? t(
+                                        `last used ${new Date(p.lastUsedAt).toLocaleDateString()}`,
+                                        `zuletzt verwendet am ${new Date(p.lastUsedAt).toLocaleDateString()}`,
+                                      )
+                                    : t("not used yet", "noch nicht verwendet")}
+                                </span>
+                              </span>
+                            )}
+                            {renaming?.id !== p.id && (
+                              <span className="flex shrink-0 gap-0.5">
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  aria-label={t(`Rename ${p.label}`, `${p.label} umbenennen`)}
+                                  onClick={() => setRenaming({ id: p.id, label: p.label })}
+                                  className="grid h-6 w-6 place-items-center rounded-md text-muted-foreground transition hover:text-foreground disabled:opacity-40"
+                                >
+                                  <Pencil className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busy || !p.removable}
+                                  aria-label={t(`Remove ${p.label}`, `${p.label} entfernen`)}
+                                  title={p.removable ? undefined : requiredHint}
+                                  onClick={() => setRemoving(`passkey:${p.id}`)}
+                                  className="grid h-6 w-6 place-items-center rounded-md text-muted-foreground transition hover:text-destructive disabled:opacity-40"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </span>
+                            )}
+                          </div>
+                          {removing === `passkey:${p.id}` && (
+                            <RemovePrompt
+                              busy={busy}
+                              onRemove={(password) => removeOnePasskey(p, password)}
+                              onCancel={() => setRemoving(null)}
+                            />
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   )}
                 </li>
               );

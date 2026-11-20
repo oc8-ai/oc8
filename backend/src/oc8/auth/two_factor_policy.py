@@ -13,23 +13,21 @@ each field falls back to its default on its own.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.auth.passkey import passkey_available
 from oc8.mail.send import active_smtp_credential
 
 Requirement = Literal["off", "optional", "admins", "everyone"]
 
 REQUIREMENTS: tuple[Requirement, ...] = ("off", "optional", "admins", "everyone")
 #: Every method a policy may name, in the order the gate reports them.
-#: `passkey` is accepted in a policy now, but nobody can hold one yet.
 METHODS: tuple[str, ...] = ("totp", "email", "passkey")
-#: Methods a member can enrol in today.
-ENROLLABLE_METHODS: tuple[str, ...] = ("totp", "email")
 MAX_GRACE_DAYS = 30
 SETTINGS_KEY = "two_factor"
 ORG_ADMIN_ROLE = "org_admin"
@@ -83,8 +81,19 @@ def policy_for(organization: m.Organization | None) -> TwoFactorPolicy:
     )
 
 
+def usable(policy: TwoFactorPolicy) -> TwoFactorPolicy:
+    """The policy as login can apply it: passkeys need a public URL a browser
+    will create one for (`auth.passkey.relying_party`), and without it they
+    are treated exactly like a method the policy does not allow."""
+    if "passkey" in policy.methods and not passkey_available():
+        return replace(policy, methods=tuple(x for x in policy.methods if x != "passkey"))
+    return policy
+
+
 async def load_policy(db: AsyncSession, tenant_id: uuid.UUID) -> TwoFactorPolicy:
-    return policy_for(await db.get(m.Organization, tenant_id))
+    """The organisation's policy as login applies it (see `usable`). The
+    settings screen reads the stored one with `policy_for`."""
+    return usable(policy_for(await db.get(m.Organization, tenant_id)))
 
 
 def current_address(member: m.OrgMember) -> str | None:
@@ -109,13 +118,10 @@ async def enrolled_methods(db: AsyncSession, member_id: uuid.UUID) -> list[str]:
     ).scalar_one_or_none()
     if totp_enrolled_at is not None:
         found.add("totp")
-    # Only methods a member can enrol today: passkey rows cannot exist yet,
-    # and until passkey assertion ships one must never answer a challenge.
     member = await db.get(m.OrgMember, member_id)
     rows = await db.execute(
         select(m.SecondFactor.method, m.SecondFactor.data).where(
-            m.SecondFactor.member_id == member_id,
-            m.SecondFactor.method.in_(ENROLLABLE_METHODS),
+            m.SecondFactor.member_id == member_id
         )
     )
     for method, data in rows:
@@ -143,9 +149,10 @@ async def enrollable_methods(
     db: AsyncSession, tenant_id: uuid.UUID, policy: TwoFactorPolicy
 ) -> list[str]:
     """Allowed methods a member can enrol in right now. Email needs a mail
-    server to send the code through."""
-    mail = await active_smtp_credential(db, tenant_id=tenant_id) is not None
-    return [x for x in policy.methods if x in ENROLLABLE_METHODS and (x != "email" or mail)]
+    server to send the code through, a passkey a usable public URL."""
+    methods = usable(policy).methods
+    mail = "email" in methods and await active_smtp_credential(db, tenant_id=tenant_id) is not None
+    return [x for x in methods if x != "email" or mail]
 
 
 async def is_org_admin(db: AsyncSession, member: m.OrgMember) -> bool:

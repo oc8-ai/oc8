@@ -57,6 +57,8 @@ EXCLUDED_TABLES: frozenset[str] = frozenset(
         # mailed two-factor codes: single-use and ten minutes long, like
         # account_verification_token above
         "email_otp_challenge",
+        # passkey challenges: single-use and five minutes long, likewise
+        "passkey_challenge",
     }
 )
 

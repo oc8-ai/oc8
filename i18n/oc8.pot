@@ -236,6 +236,9 @@ msgstr ""
 msgid "Add a model configuration"
 msgstr ""
 
+msgid "Add a passkey"
+msgstr ""
+
 msgid "Add access"
 msgstr ""
 
@@ -1136,9 +1139,6 @@ msgstr ""
 msgid "Collapse sidebar"
 msgstr ""
 
-msgid "Coming soon."
-msgstr ""
-
 msgid "commands"
 msgstr ""
 
@@ -1194,6 +1194,9 @@ msgid "Confirm Password"
 msgstr ""
 
 msgid "Confirm rollback"
+msgstr ""
+
+msgid "Confirm your sign-in"
 msgstr ""
 
 msgid "Confirming…"
@@ -1502,7 +1505,13 @@ msgstr ""
 msgid "Could not remove the method."
 msgstr ""
 
+msgid "Could not remove the passkey."
+msgstr ""
+
 msgid "Could not remove this login"
+msgstr ""
+
+msgid "Could not rename the passkey."
 msgstr ""
 
 msgid "Could not reset two-factor authentication."
@@ -1734,6 +1743,9 @@ msgid "Create limit"
 msgstr ""
 
 msgid "Create new"
+msgstr ""
+
+msgid "Create passkey"
 msgstr ""
 
 msgid "Create project"
@@ -2202,6 +2214,9 @@ msgid "e.g. Review contracts on time"
 msgstr ""
 
 msgid "e.g. Sales sign-off"
+msgstr ""
+
+msgid "e.g. Work laptop"
 msgstr ""
 
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
@@ -3320,6 +3335,9 @@ msgstr ""
 msgid "name + rights"
 msgstr ""
 
+msgid "Name this passkey"
+msgstr ""
+
 msgid "Name updated"
 msgstr ""
 
@@ -3333,6 +3351,9 @@ msgid "Needs a mail server. Set one up under Mail server first."
 msgstr ""
 
 msgid "Needs an organisation connection"
+msgstr ""
+
+msgid "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing)."
 msgstr ""
 
 msgid "Needs reconnecting"
@@ -3792,6 +3813,9 @@ msgid "Not shared yet"
 msgstr ""
 
 msgid "Not tested"
+msgstr ""
+
+msgid "not used yet"
 msgstr ""
 
 msgid "Note"
@@ -5543,6 +5567,12 @@ msgstr ""
 msgid "The parameter schema must be a JSON Schema object with \"type\": \"object\"."
 msgstr ""
 
+msgid "The passkey could not be used."
+msgstr ""
+
+msgid "The passkey prompt was cancelled or timed out."
+msgstr ""
+
 msgid "The permission model could not be loaded."
 msgstr ""
 
@@ -5717,6 +5747,12 @@ msgstr ""
 msgid "This block couldn't be loaded"
 msgstr ""
 
+msgid "This browser cannot use a passkey for this site."
+msgstr ""
+
+msgid "This browser cannot use passkeys. Try another browser or method."
+msgstr ""
+
 msgid "This browser does not support push notifications."
 msgstr ""
 
@@ -5829,6 +5865,9 @@ msgid "this month"
 msgstr ""
 
 msgid "This month"
+msgstr ""
+
+msgid "This passkey is already registered."
 msgstr ""
 
 msgid "This proposal has expired."
@@ -6143,6 +6182,9 @@ msgstr ""
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr ""
 
+msgid "Use passkey"
+msgstr ""
+
 msgid "Use sign-in default"
 msgstr ""
 
@@ -6159,6 +6201,15 @@ msgid "Use this model for the Copilot"
 msgstr ""
 
 msgid "Use your authenticator app, or a backup code."
+msgstr ""
+
+msgid "Use your device's screen lock or a security key to confirm it is you. Give it a name so you can tell your passkeys apart."
+msgstr ""
+
+msgid "Use your passkey instead"
+msgstr ""
+
+msgid "Use your passkey or security key: your browser asks you to confirm it is you."
 msgstr ""
 
 msgid "Used by"
@@ -6306,6 +6357,9 @@ msgid "Waiting for the department's approval."
 msgstr ""
 
 msgid "Waiting for the next step"
+msgstr ""
+
+msgid "Waiting for the passkey…"
 msgstr ""
 
 msgid "Waiting for you"

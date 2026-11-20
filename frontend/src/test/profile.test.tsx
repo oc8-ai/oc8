@@ -1,12 +1,24 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // vi.hoisted: `vi.mock` factories below are hoisted above ordinary `const`s
 // by vitest, so a plain top-level `const apiGetMock = vi.fn()` referenced
 // inside the factory throws "Cannot access before initialization" -- see
 // the identical pattern in `hooks.test.tsx`/`credential-hooks.test.tsx`.
-const { removeSecondFactorMock } = vi.hoisted(() => ({ removeSecondFactorMock: vi.fn() }));
+const {
+  removeSecondFactorMock,
+  passkeyRegistrationOptionsMock,
+  verifyPasskeyRegistrationMock,
+  renamePasskeyMock,
+  removePasskeyMock,
+} = vi.hoisted(() => ({
+  removeSecondFactorMock: vi.fn(),
+  passkeyRegistrationOptionsMock: vi.fn(),
+  verifyPasskeyRegistrationMock: vi.fn(),
+  renamePasskeyMock: vi.fn(),
+  removePasskeyMock: vi.fn(),
+}));
 
 const {
   apiGetMock,
@@ -52,6 +64,10 @@ vi.mock("@/lib/totp", () => ({
   enrollEmailCode: vi.fn(async () => ({ sentTo: "ada@example.com" })),
   confirmEmailCode: vi.fn(async () => ({ backupCodes: [] })),
   removeSecondFactor: removeSecondFactorMock,
+  passkeyRegistrationOptions: passkeyRegistrationOptionsMock,
+  verifyPasskeyRegistration: verifyPasskeyRegistrationMock,
+  renamePasskey: renamePasskeyMock,
+  removePasskey: removePasskeyMock,
 }));
 // ApprovalChannelsPanel's own hooks -- mocked the same way the panel above
 // mocks TOTP/push, so this file's real target (the TOTP card) doesn't have
@@ -103,6 +119,7 @@ describe("Profile page — two-factor card", () => {
     methods: [],
     allowedMethods: ["totp", "email", "passkey"],
     enrollableMethods: ["totp", "email"],
+    passkeys: [],
     required: false,
     backupCodesLeft: 0,
   };
@@ -113,8 +130,32 @@ describe("Profile page — two-factor card", () => {
     ],
     allowedMethods: ["totp", "email", "passkey"],
     enrollableMethods: ["totp", "email"],
+    passkeys: [],
     required: true,
     backupCodesLeft: 8,
+  };
+  const PASSKEYS = {
+    methods: [{ method: "passkey", label: "", allowed: true, removable: true }],
+    passkeys: [
+      {
+        id: "pk-1",
+        label: "Laptop",
+        createdAt: "2026-11-20T10:00:00Z",
+        lastUsedAt: null,
+        removable: true,
+      },
+      {
+        id: "pk-2",
+        label: "Security key",
+        createdAt: "2026-11-20T11:00:00Z",
+        lastUsedAt: "2026-11-20T12:00:00Z",
+        removable: true,
+      },
+    ],
+    allowedMethods: ["totp", "email", "passkey"],
+    enrollableMethods: ["totp", "email", "passkey"],
+    required: true,
+    backupCodesLeft: 10,
   };
 
   function twoFactor(body: unknown) {
@@ -127,6 +168,10 @@ describe("Profile page — two-factor card", () => {
     apiGetMock.mockReset();
     apiPostMock.mockReset();
     removeSecondFactorMock.mockReset();
+    passkeyRegistrationOptionsMock.mockReset();
+    verifyPasskeyRegistrationMock.mockReset();
+    renamePasskeyMock.mockReset();
+    removePasskeyMock.mockReset();
     toastErrorMock.mockReset();
     toastSuccessMock.mockReset();
   });
@@ -201,7 +246,119 @@ describe("Profile page — two-factor card", () => {
 
     expect(await screen.findByRole("button", { name: /remove authenticator app/i })).toBeDisabled();
   });
+
+  it("lists each passkey by its name", async () => {
+    twoFactor(PASSKEYS);
+    renderPage();
+
+    expect(await screen.findByText("Laptop")).toBeInTheDocument();
+    expect(screen.getByText("Security key")).toBeInTheDocument();
+    // Passkeys are removed one by one, not as a whole method.
+    expect(screen.queryByRole("button", { name: /^remove passkey or security key$/i })).toBeNull();
+  });
+
+  it("adds a passkey with a name", async () => {
+    twoFactor({ ...PASSKEYS, passkeys: [], methods: [] });
+    passkeyRegistrationOptionsMock.mockResolvedValue({
+      options: {
+        rp: { id: "localhost", name: "oc8" },
+        user: { id: "AQID", name: "ada@example.com", displayName: "Ada" },
+        challenge: "AAEC",
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        excludeCredentials: [],
+      },
+    });
+    verifyPasskeyRegistrationMock.mockResolvedValue({ id: "pk-3", backupCodes: [] });
+    const create = vi.fn().mockResolvedValue(fakeAttestation());
+    Object.defineProperty(navigator, "credentials", {
+      value: { create, get: vi.fn() },
+      configurable: true,
+    });
+    Object.defineProperty(window, "PublicKeyCredential", {
+      value: function PublicKeyCredential() {},
+      configurable: true,
+    });
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /add passkey/i }));
+    fireEvent.change(await screen.findByLabelText(/name this passkey/i), {
+      target: { value: "Work laptop" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^create passkey$/i }));
+
+    await waitFor(() =>
+      expect(verifyPasskeyRegistrationMock).toHaveBeenCalledWith(
+        "fake-token",
+        expect.objectContaining({ id: "cred-1", type: "public-key" }),
+        "Work laptop",
+      ),
+    );
+    expect(create).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+  });
+
+  it("renames a passkey", async () => {
+    twoFactor(PASSKEYS);
+    renamePasskeyMock.mockResolvedValue(undefined);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /rename laptop/i }));
+    const input = screen.getByLabelText(/new name for laptop/i);
+    fireEvent.change(input, { target: { value: "Home laptop" } });
+    fireEvent.click(within(input.closest("li")!).getByRole("button", { name: /^save$/i }));
+
+    await waitFor(() =>
+      expect(renamePasskeyMock).toHaveBeenCalledWith("fake-token", "pk-1", "Home laptop"),
+    );
+  });
+
+  it("removes one passkey after asking for the password", async () => {
+    twoFactor(PASSKEYS);
+    removePasskeyMock.mockResolvedValue(undefined);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /remove security key/i }));
+    fireEvent.change(screen.getByPlaceholderText(/current password/i), {
+      target: { value: "hunter22" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+    await waitFor(() =>
+      expect(removePasskeyMock).toHaveBeenCalledWith("fake-token", "pk-2", "hunter22"),
+    );
+    expect(removeSecondFactorMock).not.toHaveBeenCalled();
+  });
+
+  it("does not offer removing the last passkey the policy requires", async () => {
+    twoFactor({
+      ...PASSKEYS,
+      passkeys: [{ ...PASSKEYS.passkeys[0], removable: false }],
+    });
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: /remove laptop/i })).toBeDisabled();
+  });
 });
+
+function buffer(bytes: number[]): ArrayBuffer {
+  return new Uint8Array(bytes).buffer;
+}
+
+/** What `navigator.credentials.create()` resolves to, as far as the page reads it. */
+function fakeAttestation() {
+  return {
+    id: "cred-1",
+    rawId: buffer([1, 2, 3]),
+    type: "public-key",
+    authenticatorAttachment: "platform",
+    response: {
+      clientDataJSON: buffer([4, 5]),
+      attestationObject: buffer([6, 7]),
+      getTransports: () => ["internal"],
+    },
+    getClientExtensionResults: () => ({}),
+  };
+}
 
 describe("Profile page — Account panel", () => {
   const currentUser = { displayName: "Ada Lovelace", subject: "ada@example.com", role: "member" };

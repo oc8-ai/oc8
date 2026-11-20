@@ -519,7 +519,15 @@ export function TwoFactorPolicyPanel() {
   useEffect(() => {
     if (data) {
       setRequirement(data.requirement);
-      setMethods(data.methods);
+      // A method this server cannot offer (no mail server, no HTTPS) is never
+      // used at sign-in and the server refuses to save it, so the form leaves
+      // it out; otherwise the default policy could not be saved here.
+      setMethods(
+        data.methods.filter(
+          (m) =>
+            (m !== "email" || data.emailAvailable) && (m !== "passkey" || data.passkeyAvailable),
+        ),
+      );
       setGraceDays(String(data.graceDays));
     }
   }, [data]);
@@ -658,26 +666,30 @@ export function TwoFactorPolicyPanel() {
             </legend>
             <div className="mt-1.5 space-y-1.5">
               {POLICY_METHODS.map((m) => {
-                // Passkeys ship later; a stored value is kept as it is.
-                const comingSoon = m === "passkey";
-                // Email can be turned off without a mail server, never on.
+                // Email can be turned off without a mail server, never on;
+                // a passkey likewise without a public URL that can carry one.
                 const noMail = m === "email" && !data.emailAvailable && !methods.includes(m);
+                const noPasskey = m === "passkey" && !data.passkeyAvailable && !methods.includes(m);
+                const unavailable = noMail || noPasskey;
                 return (
                   <div key={m} className="text-sm">
                     <label className="flex items-center gap-2">
                       <input
                         type="checkbox"
                         checked={methods.includes(m)}
-                        disabled={!canManage || comingSoon || noMail}
+                        disabled={!canManage || unavailable}
                         onChange={(e) => toggle(m, e.target.checked)}
                       />
-                      <span className={cn((comingSoon || noMail) && "text-muted-foreground")}>
+                      <span className={cn(unavailable && "text-muted-foreground")}>
                         {methodLabel(m, t)}
                       </span>
                     </label>
-                    {comingSoon && (
+                    {m === "passkey" && !data.passkeyAvailable && (
                       <p className="ml-6 text-[11px] text-muted-foreground">
-                        {t("Coming soon.", "Kommt bald.")}
+                        {t(
+                          "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing).",
+                          "Benötigt HTTPS: Die öffentliche URL dieser Installation muss mit https:// beginnen (localhost geht zum Testen).",
+                        )}
                       </p>
                     )}
                     {m === "email" && !data.emailAvailable && (

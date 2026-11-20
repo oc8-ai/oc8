@@ -19,7 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.audit import append_event
+from oc8.auth.passkey import spend_challenges
 from oc8.auth.principal import Principal
+from oc8.auth.totp import generate_backup_codes, hash_backup_code
 from oc8.auth.two_factor_policy import (
     enrolled_methods,
     is_org_admin,
@@ -137,11 +139,54 @@ async def _drop_totp_secret(db: AsyncSession, tenant_id: uuid.UUID, cred: m.Totp
             await delete_secret(db, tenant_id=tenant_id, ref=cred.secret_ref)
 
 
+async def issue_backup_codes_if_none(
+    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
+) -> list[str]:
+    """Backup codes for a member enrolling a method other than TOTP, when
+    they hold none yet; empty otherwise. Shown once by the caller.
+
+    Without a TOTP secret the `totp_credential` row only carries the codes.
+    """
+    cred = (
+        await db.execute(
+            select(m.TotpCredential)
+            .where(m.TotpCredential.member_id == member_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if cred is not None and cred.backup_codes:
+        return []
+    codes = generate_backup_codes()
+    hashed: list[dict[str, str | None]] = [
+        {"hash": hash_backup_code(c), "used_at": None} for c in codes
+    ]
+    if cred is None:
+        db.add(
+            m.TotpCredential(
+                tenant_id=tenant_id,
+                member_id=member_id,
+                secret_ref="",
+                enrolled_at=None,
+                backup_codes=hashed,
+            )
+        )
+    else:
+        cred.backup_codes = hashed
+    await db.flush()
+    return codes
+
+
 async def remove_method(
-    db: AsyncSession, *, tenant_id: uuid.UUID, member: m.OrgMember, method: str
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    member: m.OrgMember,
+    method: str,
+    factor_id: uuid.UUID | None = None,
 ) -> None:
-    """Remove one method. Once none is left the backup codes go too: they
-    are a second factor of their own and must not outlive every method.
+    """Remove one method, or with `factor_id` one passkey of several. Once
+    none is left the backup codes go too: they are a second factor of their
+    own and must not outlive every method.
 
     An org_admin left with nothing gets a running grace clock, so a later
     `admins` policy asks them to enrol again rather than exempting them.
@@ -159,11 +204,12 @@ async def remove_method(
             cred.secret_ref = ""
             cred.enrolled_at = None
     else:
-        await db.execute(
-            delete(m.SecondFactor).where(
-                m.SecondFactor.member_id == member.id, m.SecondFactor.method == method
-            )
+        stmt = delete(m.SecondFactor).where(
+            m.SecondFactor.member_id == member.id, m.SecondFactor.method == method
         )
+        if factor_id is not None:
+            stmt = stmt.where(m.SecondFactor.id == factor_id)
+        await db.execute(stmt)
     await db.flush()
     if not await enrolled_methods(db, member.id):
         if cred is not None:
@@ -175,7 +221,8 @@ async def remove_method(
 
 async def remove_all(db: AsyncSession, *, tenant_id: uuid.UUID, member: m.OrgMember) -> None:
     """An administrator's reset: every method, every backup code, every
-    outstanding mailed code, and the grace clock restarted."""
+    outstanding mailed code or passkey challenge, and the grace clock
+    restarted."""
     cred = (
         await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member.id))
     ).scalar_one_or_none()
@@ -189,5 +236,6 @@ async def remove_all(db: AsyncSession, *, tenant_id: uuid.UUID, member: m.OrgMem
         .where(m.EmailOtpChallenge.member_id == member.id, m.EmailOtpChallenge.used_at.is_(None))
         .values(used_at=now)
     )
+    await spend_challenges(db, member.id)
     member.totp_grace_started_at = now
     await db.flush()

@@ -232,7 +232,7 @@ class TotpCredential(Base, PkMixin, TenantMixin, TimestampMixin):
 
 class SecondFactor(Base, PkMixin, TenantMixin, TimestampMixin):
     """A second factor a member enrolled, other than TOTP (two-factor methods
-    and policy design). `email` now; passkeys will add one row each.
+    and policy design): one `email` row at most, and one row per passkey.
 
     TOTP keeps its own `totp_credential` row, and that row also holds the
     member's backup codes whatever their method: a member whose only method is
@@ -244,7 +244,8 @@ class SecondFactor(Base, PkMixin, TenantMixin, TimestampMixin):
     member_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     method: Mapped[str] = mapped_column(Text, nullable=False)
     label: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default=text("''"))
-    #: Method data: for a passkey its credential id, public key and sign count.
+    #: Method data: for email the confirmed address; for a passkey its
+    #: credential id and public key (base64url), sign count and transports.
     data: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
@@ -258,6 +259,14 @@ class SecondFactor(Base, PkMixin, TenantMixin, TimestampMixin):
             "member_id",
             unique=True,
             postgresql_where=text("method = 'email'"),
+        ),
+        # A credential belongs to one member: never registered twice.
+        Index(
+            "uq_second_factor_passkey_credential",
+            "tenant_id",
+            text("(data->>'credential_id')"),
+            unique=True,
+            postgresql_where=text("method = 'passkey'"),
         ),
     )
 
@@ -285,6 +294,27 @@ class EmailOtpChallenge(Base, PkMixin, TenantMixin, TimestampMixin):
 
     __table_args__ = (
         CheckConstraint("purpose IN ('enrol','login')", name="ck_email_otp_challenge_purpose"),
+    )
+
+
+class PasskeyChallenge(Base, PkMixin, TenantMixin, TimestampMixin):
+    """The random challenge a passkey must sign, base64url-encoded.
+
+    Bound to one member and one `purpose`, so a registration challenge never
+    answers a sign-in. Valid for five minutes and spent on the first answer,
+    right or wrong; asking for a new one spends the older ones.
+    """
+
+    __tablename__ = "passkey_challenge"
+
+    member_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
+    purpose: Mapped[str] = mapped_column(Text, nullable=False)
+    challenge: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        CheckConstraint("purpose IN ('register','login')", name="ck_passkey_challenge_purpose"),
     )
 
 
