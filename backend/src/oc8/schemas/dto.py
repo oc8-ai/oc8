@@ -568,6 +568,9 @@ class SkillDTO(CamelModel):
     guardrails: list[str]
     instructions: str
     used_by_agents: int
+    #: Live assignments (any scope) across every version -- what a content edit
+    #: can move. `used_by_agents` is a seeded display figure, not this.
+    assignment_count: int = 0
     installs: int | None = None
     price: str | float | None = None
     updated_at: str
@@ -962,6 +965,10 @@ class PrincipalUsageDTO(CamelModel):
     saved_tokens_in: int
     saved_tokens_out: int
     saved_cost_micros: int
+    #: The parts of `tokens_in` read from / written to the provider's prompt
+    #: cache; `provider_cost_micros` already bills them at the cache rates.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 class TokenUsageExportRowDTO(CamelModel):

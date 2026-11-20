@@ -94,6 +94,7 @@ _STEP_LIMIT_OUTPUTS = ("Reached step limit.",)
 _MODEL_OUTPUTS = (
     "Auto model router misconfigured:",
     "The model used its whole answer budget",
+    "The model declined this request",
     "The monthly token quota for",
     "The model provider is rate-limiting",
 )

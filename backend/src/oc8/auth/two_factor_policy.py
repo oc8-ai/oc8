@@ -1,0 +1,177 @@
+"""An organisation's two-factor policy, and which methods a member holds.
+
+Stored in `organization.settings["two_factor"]` (two-factor methods and
+policy design). An organisation that never saved one gets `DEFAULT_POLICY`,
+which is exactly how login behaved before the policy existed: org admins must
+enrol after seven days, anybody who enrolled is asked.
+
+`policy_for` never raises. The JSON is written by one route that validates it,
+but a hand-edited or half-migrated value must not turn every login into a 500;
+each field falls back to its default on its own.
+"""
+
+from __future__ import annotations
+
+import uuid
+from dataclasses import dataclass, replace
+from typing import Any, Literal, cast
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from oc8 import models as m
+from oc8.auth.passkey import passkey_available
+from oc8.mail.send import active_smtp_credential
+
+Requirement = Literal["off", "optional", "admins", "everyone"]
+
+REQUIREMENTS: tuple[Requirement, ...] = ("off", "optional", "admins", "everyone")
+#: Every method a policy may name, in the order the gate reports them.
+METHODS: tuple[str, ...] = ("totp", "email", "passkey")
+MAX_GRACE_DAYS = 30
+SETTINGS_KEY = "two_factor"
+ORG_ADMIN_ROLE = "org_admin"
+
+
+@dataclass(frozen=True)
+class TwoFactorPolicy:
+    requirement: Requirement
+    methods: tuple[str, ...]
+    grace_days: int
+
+    def as_settings(self) -> dict[str, Any]:
+        return {
+            "requirement": self.requirement,
+            "methods": list(self.methods),
+            "grace_days": self.grace_days,
+        }
+
+
+DEFAULT_POLICY = TwoFactorPolicy(requirement="admins", methods=METHODS, grace_days=7)
+
+
+def normalise_methods(raw: object) -> tuple[str, ...] | None:
+    """Known methods in canonical order, or None if `raw` is not a list."""
+    if not isinstance(raw, list):
+        return None
+    wanted = {x for x in raw if isinstance(x, str)}
+    return tuple(x for x in METHODS if x in wanted)
+
+
+def policy_for(organization: m.Organization | None) -> TwoFactorPolicy:
+    stored = (organization.settings or {}).get(SETTINGS_KEY) if organization is not None else None
+    if not isinstance(stored, dict):
+        return DEFAULT_POLICY
+    requirement = stored.get("requirement")
+    if requirement not in REQUIREMENTS:
+        requirement = DEFAULT_POLICY.requirement
+    methods = normalise_methods(stored.get("methods"))
+    if methods is None:
+        methods = DEFAULT_POLICY.methods
+    grace_days = stored.get("grace_days")
+    # `bool` is an `int` subclass; `true` is not a number of days.
+    if (
+        not isinstance(grace_days, int)
+        or isinstance(grace_days, bool)
+        or not 0 <= grace_days <= MAX_GRACE_DAYS
+    ):
+        grace_days = DEFAULT_POLICY.grace_days
+    return TwoFactorPolicy(
+        requirement=cast(Requirement, requirement), methods=methods, grace_days=grace_days
+    )
+
+
+def usable(policy: TwoFactorPolicy) -> TwoFactorPolicy:
+    """The policy as login can apply it: passkeys need a public URL a browser
+    will create one for (`auth.passkey.relying_party`), and without it they
+    are treated exactly like a method the policy does not allow."""
+    if "passkey" in policy.methods and not passkey_available():
+        return replace(policy, methods=tuple(x for x in policy.methods if x != "passkey"))
+    return policy
+
+
+async def load_policy(db: AsyncSession, tenant_id: uuid.UUID) -> TwoFactorPolicy:
+    """The organisation's policy as login applies it (see `usable`). The
+    settings screen reads the stored one with `policy_for`."""
+    return usable(policy_for(await db.get(m.Organization, tenant_id)))
+
+
+def current_address(member: m.OrgMember) -> str | None:
+    """The address the member signs in with, if it is one."""
+    address = (member.email or member.subject or "").strip().lower()
+    return address if "@" in address else None
+
+
+def confirmed_address(data: object) -> str | None:
+    """The address an email factor was confirmed for, normalised."""
+    raw = data.get("address") if isinstance(data, dict) else None
+    return raw.strip().lower() if isinstance(raw, str) and "@" in raw else None
+
+
+async def enrolled_methods(db: AsyncSession, member_id: uuid.UUID) -> list[str]:
+    """Every method the member has enrolled, allowed by the policy or not."""
+    found: set[str] = set()
+    totp_enrolled_at = (
+        await db.execute(
+            select(m.TotpCredential.enrolled_at).where(m.TotpCredential.member_id == member_id)
+        )
+    ).scalar_one_or_none()
+    if totp_enrolled_at is not None:
+        found.add("totp")
+    member = await db.get(m.OrgMember, member_id)
+    rows = await db.execute(
+        select(m.SecondFactor.method, m.SecondFactor.data).where(
+            m.SecondFactor.member_id == member_id
+        )
+    )
+    for method, data in rows:
+        # An email factor counts only for the address it was confirmed for:
+        # a code must never go to an address nobody proved they read.
+        if method == "email" and (
+            member is None or confirmed_address(data) != current_address(member)
+        ):
+            continue
+        found.add(method)
+    return [x for x in METHODS if x in found]
+
+
+async def member_methods(
+    db: AsyncSession, member: m.OrgMember, policy: TwoFactorPolicy | None = None
+) -> list[str]:
+    """The member's enrolled methods that the policy allows: what they may
+    answer a login challenge with."""
+    if policy is None:
+        policy = await load_policy(db, member.tenant_id)
+    return [x for x in await enrolled_methods(db, member.id) if x in policy.methods]
+
+
+async def enrollable_methods(
+    db: AsyncSession, tenant_id: uuid.UUID, policy: TwoFactorPolicy
+) -> list[str]:
+    """Allowed methods a member can enrol in right now. Email needs a mail
+    server to send the code through, a passkey a usable public URL."""
+    methods = usable(policy).methods
+    mail = "email" in methods and await active_smtp_credential(db, tenant_id=tenant_id) is not None
+    return [x for x in methods if x != "email" or mail]
+
+
+async def is_org_admin(db: AsyncSession, member: m.OrgMember) -> bool:
+    """Whether the member's assigned role is `org_admin`.
+
+    The assigned role and not the token's claim: `password_login` mints every
+    password session with the empty member role, so the row is the only
+    place admin-ness lives for the people this gate is about.
+    """
+    if member.role_id is None:
+        return False
+    name = (
+        await db.execute(select(m.Role.name).where(m.Role.id == member.role_id))
+    ).scalar_one_or_none()
+    return name == ORG_ADMIN_ROLE
+
+
+def requires_member(policy: TwoFactorPolicy, *, admin: bool) -> bool:
+    """Whether the policy names this member's group at all."""
+    if policy.requirement == "everyone":
+        return True
+    return policy.requirement == "admins" and admin

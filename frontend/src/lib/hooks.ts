@@ -927,6 +927,36 @@ export function useUpdateCopilotSettings() {
   });
 }
 
+/** The organisation's two-factor policy (`organization.settings.two_factor`). */
+export interface TwoFactorPolicyDTO {
+  requirement: "off" | "optional" | "admins" | "everyone";
+  methods: ("totp" | "email" | "passkey")[];
+  graceDays: number;
+}
+
+export interface TwoFactorSettingsDTO extends TwoFactorPolicyDTO {
+  /** Whether outgoing mail is configured; email cannot be allowed without it. */
+  emailAvailable: boolean;
+  /** Whether the public URL can carry a passkey (HTTPS, or localhost). */
+  passkeyAvailable: boolean;
+}
+
+export function useTwoFactorSettings() {
+  return useQuery({
+    queryKey: ["settings", "two-factor"],
+    queryFn: () => api.get<TwoFactorSettingsDTO>("/settings/organization/two-factor"),
+  });
+}
+
+export function useUpdateTwoFactorSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: TwoFactorPolicyDTO) =>
+      api.put<TwoFactorSettingsDTO>("/settings/organization/two-factor", body),
+    onSuccess: (saved) => qc.setQueryData(["settings", "two-factor"], saved),
+  });
+}
+
 export const useModels = () =>
   useQuery({ queryKey: keys.models, queryFn: () => api.get<ModelDTO[]>("/models") });
 
@@ -2217,12 +2247,21 @@ export interface UsageDTO {
   savedTokensIn: number;
   savedTokensOut: number;
   savedCostMicros: number;
+  /** The parts of tokensIn read from / written to the provider's prompt cache. */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
-export function useUsage(groupBy: "department" | "agent" = "department") {
+/** `month` is the current calendar month on the organisation's clock. */
+export type UsagePeriod = "month" | "all";
+
+export function useUsage(
+  groupBy: "department" | "agent" = "department",
+  period: UsagePeriod = "month",
+) {
   return useQuery({
-    queryKey: ["usage", groupBy],
-    queryFn: () => api.get<UsageDTO[]>(`/usage?group_by=${groupBy}`),
+    queryKey: ["usage", groupBy, period],
+    queryFn: () => api.get<UsageDTO[]>(`/usage?group_by=${groupBy}&period=${period}`),
   });
 }
 
@@ -2842,14 +2881,41 @@ export function useImportSkills() {
   });
 }
 
+/** What publishing a version did to the skill's existing assignments. */
+export interface SkillVersionPublished extends Skill {
+  assignmentsUpdated: number;
+  assignmentsSkipped: number;
+  /** Left on the old version because the caller may not change that agent. */
+  assignmentsNotAllowed: number;
+}
+
+export interface PublishSkillVersionBody {
+  skillId: string;
+  /** Omitted: the server picks the next patch version. */
+  semver?: string;
+  instructions: string;
+  tools?: string[];
+  knowledge?: string[];
+  guardrails?: string[];
+  /** Move live assignments to the new version (those that still satisfy it). */
+  updateAssignments?: boolean;
+}
+
 export function usePublishSkillVersion() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({
-      skillId,
-      ...body
-    }: { skillId: string; semver: string; instructions: string } & Partial<CreateSkillBody>) =>
-      api.post<Skill>(`/skills/${skillId}/versions`, body),
+    mutationFn: ({ skillId, ...body }: PublishSkillVersionBody) =>
+      api.post<SkillVersionPublished>(`/skills/${skillId}/versions`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.skills }),
+  });
+}
+
+/** A new local skill from the source's current version; no assignments copied. */
+export function useDuplicateSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name?: string }) =>
+      api.post<Skill>(`/skills/${id}/duplicate`, { name }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.skills }),
   });
 }

@@ -1,9 +1,9 @@
 """Newer Claude models (claude-sonnet-5, claude-opus-5, ...) reject
 `temperature` outright: 400 invalid_request_error, "temperature is deprecated
-for this model." Since there is no way to know in advance which model name
-will do this next, the adapter detects this one shape from the provider's own
-words and retries once without the field, rather than keeping a list of
-"deprecated on" models that would need updating with every release.
+for this model." The adapter leaves the field out for the versions known to
+do this (`anthropic_takes_temperature`); this retry is the safety net behind
+that rule, for a model it still sends the field to: it reads the refusal from
+the provider's own words and tries once more without the field.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ _DEPRECATED_BODY = {
 }
 
 
-def _req(model: str = "claude-sonnet-5") -> CompletionRequest:
+def _req(model: str = "claude-sonnet-4-6") -> CompletionRequest:
     return CompletionRequest(
         provider="anthropic",
         model=model,

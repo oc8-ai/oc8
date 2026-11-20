@@ -138,6 +138,7 @@ from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import (
     budget_exhausted_message,
     bumped_for_length_retry,
+    refusal_message,
     resolve_params,
 )
 from oc8.modelrouter.trim import overflow_tokens
@@ -1654,6 +1655,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             provider=res.provider,
             tokens_in=res.usage.tokens_in,
             tokens_out=res.usage.tokens_out,
+            cache_read_tokens=res.usage.cache_read_tokens,
+            cache_write_tokens=res.usage.cache_write_tokens,
             agent_id=agent.id,
             department_id=agent.department_id,
         )
@@ -1877,8 +1880,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         truncated_empty = (
             result.stop_reason == "length" and not result.tool_calls and not result.text.strip()
         )
+        # The model declined the request (HTTP 200, "refusal"): whatever it
+        # wrote before that is not an answer -- see engine.py's identical check.
+        refused = result.stop_reason == "refusal" and not result.tool_calls
         verdict = None
-        if not result.tool_calls and not truncated_empty:
+        if not result.tool_calls and not truncated_empty and not refused:
             # D1 through the shared Harness: the model tried to finish while
             # its own todo_write checklist still has open items.
             open_todos = [t for t in ctx.get("todos", []) if t.get("status") != "completed"]
@@ -1939,6 +1945,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     step_text = result.text
     if verdict is not None and verdict.exhausted_note is not None:
         step_text = f"{step_text}\n\n{verdict.exhausted_note}"
+    elif refused:
+        step_text = refusal_message()
     elif truncated_empty:
         # Otherwise this ends as status_override="failed" with an empty
         # text, the shell forwards that empty text to /finish verbatim, and
@@ -2032,7 +2040,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         ],
         # Truncated even after the retry above -- never let the shell read
         # this as "done" (see engine.py's identical check for why).
-        status_override="failed" if truncated_empty else None,
+        status_override="failed" if truncated_empty or refused else None,
         parallel_tool_calls=caps.parallel_tool_calls,
         sdk_py=str(ctx.get("oc8_tools_py") or ""),
         local_allowed=_local_allowed(
@@ -2677,6 +2685,8 @@ async def _dispatch_one_tool(
                 provider=clarify_result.provider,
                 tokens_in=clarify_result.usage.tokens_in,
                 tokens_out=clarify_result.usage.tokens_out,
+                cache_read_tokens=clarify_result.usage.cache_read_tokens,
+                cache_write_tokens=clarify_result.usage.cache_write_tokens,
                 agent_id=agent.id,
                 department_id=agent.department_id,
             )

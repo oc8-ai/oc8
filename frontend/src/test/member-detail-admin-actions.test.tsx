@@ -10,6 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mintResetMutate = vi.fn();
 const deleteMutate = vi.fn();
+const resetTwoFactorMutate = vi.fn();
 const navigate = vi.fn();
 const { toastSuccess, toastError } = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock("@/lib/roles-hooks", async (importOriginal) => {
     useRevokeSeat: () => ({ mutate: vi.fn(), isPending: false }),
     useMintMemberPasswordReset: () => ({ mutate: mintResetMutate, isPending: false }),
     useDeleteMember: () => ({ mutate: deleteMutate, isPending: false }),
+    useResetMemberTwoFactor: () => ({ mutate: resetTwoFactorMutate, isPending: false }),
   };
 });
 
@@ -189,5 +191,45 @@ describe("Member detail: delete user", () => {
     });
 
     expect(screen.queryByRole("button", { name: /delete user/i })).not.toBeInTheDocument();
+  });
+});
+
+describe("Member detail: reset two-factor", () => {
+  beforeEach(() => {
+    resetTwoFactorMutate.mockReset();
+    toastSuccess.mockReset();
+    toastError.mockReset();
+  });
+
+  it("asks for confirmation, then resets and reports it", async () => {
+    renderForm();
+
+    fireEvent.click(screen.getByRole("button", { name: /reset two-factor/i }));
+    expect(await screen.findByText(/reset their two-factor authentication\?/i)).toBeInTheDocument();
+    expect(resetTwoFactorMutate).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^reset$/i }));
+    await waitFor(() =>
+      expect(resetTwoFactorMutate).toHaveBeenCalledWith("m-1", expect.anything()),
+    );
+    const onSuccess = resetTwoFactorMutate.mock.calls[0][1].onSuccess as () => void;
+    act(() => onSuccess());
+    expect(toastSuccess).toHaveBeenCalledWith(expect.stringMatching(/two-factor/i));
+  });
+
+  it("shows the server's refusal", async () => {
+    renderForm();
+    fireEvent.click(screen.getByRole("button", { name: /reset two-factor/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /^reset$/i }));
+    await waitFor(() => expect(resetTwoFactorMutate).toHaveBeenCalled());
+    const onError = resetTwoFactorMutate.mock.calls[0][1].onError as (e: Error) => void;
+    act(() => onError(new Error("member not found")));
+    expect(toastError).toHaveBeenCalledWith("member not found");
+  });
+
+  it("does not offer a reset on yourself", () => {
+    renderForm({ id: "m-admin", subject: "admin@example.com", displayName: "Admin Person" });
+
+    expect(screen.queryByRole("button", { name: /reset two-factor/i })).not.toBeInTheDocument();
   });
 });

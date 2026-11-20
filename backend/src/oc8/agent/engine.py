@@ -179,6 +179,7 @@ from oc8.modelrouter.keys import resolve_model_base_url
 from oc8.modelrouter.sampling import (
     budget_exhausted_message,
     bumped_for_length_retry,
+    refusal_message,
     resolve_params,
 )
 from oc8.modelrouter.trim import overflow_tokens
@@ -1846,6 +1847,8 @@ async def run_agent(
                         provider=res.provider,
                         tokens_in=res.usage.tokens_in,
                         tokens_out=res.usage.tokens_out,
+                        cache_read_tokens=res.usage.cache_read_tokens,
+                        cache_write_tokens=res.usage.cache_write_tokens,
                         agent_id=agent.id,
                         department_id=agent.department_id,
                         skill_id=active_skills[-1].skill_id if active_skills else None,
@@ -2131,7 +2134,11 @@ async def run_agent(
 
                 if not result.tool_calls:
                     await _finish_step_timing(step_rec, 0)
-                    if result.stop_reason == "length" and not result.text.strip():
+                    # The model declined the request (HTTP 200, "refusal"):
+                    # whatever it wrote before that is not an answer, and
+                    # asking again would only be declined again.
+                    refused = result.stop_reason == "refusal"
+                    if refused or (result.stop_reason == "length" and not result.text.strip()):
                         # Truncated even after the retry above -- the model
                         # never produced an answer or a tool call, so this must
                         # never read as "done" (a genuine finish always has at
@@ -2143,7 +2150,9 @@ async def run_agent(
                             agent_id=agent.id,
                             status="warning",
                             message=(
-                                f"{agent.name}: the model used its whole answer budget "
+                                f"{agent.name}: the model declined the request"
+                                if refused
+                                else f"{agent.name}: the model used its whole answer budget "
                                 "without producing an answer"
                             ),
                         )
@@ -2163,7 +2172,9 @@ async def run_agent(
                             task.id,
                             agent.id,
                             "failed",
-                            budget_exhausted_message(
+                            refusal_message()
+                            if refused
+                            else budget_exhausted_message(
                                 int(step_rec.get("max_tokens") or resolved_params.max_tokens)
                             ),
                             tool_trace,

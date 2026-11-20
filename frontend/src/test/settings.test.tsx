@@ -1,7 +1,12 @@
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { CopilotSettingsPanel, MailServerSetting, OrganizationPanel } from "@/routes/settings";
+import {
+  CopilotSettingsPanel,
+  MailServerSetting,
+  OrganizationPanel,
+  TwoFactorPolicyPanel,
+} from "@/routes/settings";
 vi.mock("@/lib/governance-hooks", () => ({ useMay: () => () => true }));
 import type { CredentialDTO, OrganizationSettingsDTO } from "@/lib/hooks";
 
@@ -14,7 +19,11 @@ const {
   testCredentialMock,
   getCopilotMock,
   putCopilotMock,
+  getTwoFactorMock,
+  putTwoFactorMock,
 } = vi.hoisted(() => ({
+  getTwoFactorMock: vi.fn(),
+  putTwoFactorMock: vi.fn(),
   getCopilotMock: vi.fn(),
   putCopilotMock: vi.fn(),
   getOrgMock: vi.fn(),
@@ -28,6 +37,7 @@ vi.mock("@/lib/api", () => ({
     get: (path: string) => {
       if (path === "/settings/organization") return getOrgMock();
       if (path === "/settings/copilot") return getCopilotMock();
+      if (path === "/settings/organization/two-factor") return getTwoFactorMock();
       if (path.startsWith("/credentials?type=")) return getCredentialsMock();
       // <CredentialPicker>'s own useCredentialTypes() call -- unused by these
       // tests (none of them open its inline "Create new" form), but it must
@@ -43,6 +53,7 @@ vi.mock("@/lib/api", () => ({
     put: (path: string, body: unknown) => {
       if (path === "/settings/organization") return putOrgMock(body);
       if (path === "/settings/copilot") return putCopilotMock(body);
+      if (path === "/settings/organization/two-factor") return putTwoFactorMock(body);
       return Promise.reject(new Error(`unexpected PUT ${path}`));
     },
   },
@@ -255,5 +266,142 @@ describe("OrganizationPanel timezone", () => {
       }),
     );
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ["auth", "me"] }));
+  });
+});
+
+describe("TwoFactorPolicyPanel", () => {
+  const POLICY = {
+    requirement: "admins",
+    methods: ["totp", "email", "passkey"],
+    graceDays: 7,
+    emailAvailable: true,
+    passkeyAvailable: true,
+  };
+
+  function renderPanel() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <TwoFactorPolicyPanel />
+      </QueryClientProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    getTwoFactorMock.mockReset();
+    putTwoFactorMock.mockReset();
+  });
+
+  it("saves the requirement, methods and grace days", async () => {
+    getTwoFactorMock.mockResolvedValue(POLICY);
+    putTwoFactorMock.mockResolvedValue({ ...POLICY, requirement: "everyone", graceDays: 3 });
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("radio", { name: /everyone/i }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /code by email/i }));
+    fireEvent.change(screen.getByLabelText(/grace period \(days\)/i), { target: { value: "3" } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() =>
+      expect(putTwoFactorMock).toHaveBeenCalledWith({
+        requirement: "everyone",
+        methods: ["totp", "passkey"],
+        graceDays: 3,
+      }),
+    );
+  });
+
+  it("warns before lowering the requirement to optional", async () => {
+    getTwoFactorMock.mockResolvedValue(POLICY);
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("radio", { name: /optional/i }));
+
+    expect(screen.getByText(/no longer be asked/i)).toBeInTheDocument();
+  });
+
+  it("shows the server's refusal as text", async () => {
+    getTwoFactorMock.mockResolvedValue(POLICY);
+    putTwoFactorMock.mockRejectedValue(
+      new Error("This policy would require you to use a second factor you have not set up."),
+    );
+    renderPanel();
+
+    fireEvent.click(await screen.findByRole("radio", { name: /everyone/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    expect(
+      await screen.findByText(/would require you to use a second factor you have not set up/i),
+    ).toBeInTheDocument();
+  });
+
+  it("disables email with the reason when outgoing mail is missing", async () => {
+    getTwoFactorMock.mockResolvedValue({
+      ...POLICY,
+      methods: ["totp"],
+      emailAvailable: false,
+    });
+    renderPanel();
+
+    expect(await screen.findByRole("checkbox", { name: /code by email/i })).toBeDisabled();
+    expect(screen.getByText(/needs a mail server/i)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /passkey/i })).toBeEnabled();
+  });
+
+  it("enables passkeys when the public URL can carry them", async () => {
+    getTwoFactorMock.mockResolvedValue({ ...POLICY, methods: ["totp"] });
+    putTwoFactorMock.mockResolvedValue(POLICY);
+    renderPanel();
+
+    const passkey = await screen.findByRole("checkbox", { name: /passkey/i });
+    expect(passkey).toBeEnabled();
+    expect(passkey).not.toBeChecked();
+    expect(screen.queryByText(/coming soon/i)).toBeNull();
+    fireEvent.click(passkey);
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() =>
+      expect(putTwoFactorMock).toHaveBeenCalledWith({
+        requirement: "admins",
+        methods: ["totp", "passkey"],
+        graceDays: 7,
+      }),
+    );
+  });
+
+  it("disables passkeys with the reason when the public URL cannot carry them", async () => {
+    getTwoFactorMock.mockResolvedValue({ ...POLICY, methods: ["totp"], passkeyAvailable: false });
+    renderPanel();
+
+    expect(await screen.findByRole("checkbox", { name: /passkey/i })).toBeDisabled();
+    expect(screen.getByText(/needs https/i)).toBeInTheDocument();
+  });
+
+  it("leaves out the methods this server cannot offer, so saving the default policy works", async () => {
+    getTwoFactorMock.mockResolvedValue({
+      ...POLICY,
+      emailAvailable: false,
+      passkeyAvailable: false,
+    });
+    putTwoFactorMock.mockResolvedValue({ ...POLICY, requirement: "everyone", methods: ["totp"] });
+    renderPanel();
+
+    const passkey = await screen.findByRole("checkbox", { name: /passkey/i });
+    const email = screen.getByRole("checkbox", { name: /code by email/i });
+    expect(passkey).not.toBeChecked();
+    expect(passkey).toBeDisabled();
+    expect(email).not.toBeChecked();
+    expect(email).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("radio", { name: /everyone/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() =>
+      expect(putTwoFactorMock).toHaveBeenCalledWith({
+        requirement: "everyone",
+        methods: ["totp"],
+        graceDays: 7,
+      }),
+    );
   });
 });

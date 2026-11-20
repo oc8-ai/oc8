@@ -326,6 +326,15 @@ export function useDeleteMember() {
   });
 }
 
+/** Remove every second factor and backup code a member has, for someone who
+ *  lost their device, and restart their grace period. Refused with a 409 on
+ *  yourself: your own methods are removed, password-checked, on your profile. */
+export function useResetMemberTwoFactor() {
+  return useMutation({
+    mutationFn: (memberId: string) => api.post<void>(`/members/${memberId}/two-factor/reset`),
+  });
+}
+
 /** Rename a member's sign-in identity (their email, in local-password mode).
  *  Refused with a 409 if another live member already holds the target
  *  identity -- surfaced to the caller as a thrown error, same as every other

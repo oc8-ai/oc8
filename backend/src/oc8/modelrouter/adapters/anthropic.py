@@ -16,6 +16,7 @@ from oc8.modelrouter.levels import EFFORT_FOR_LEVEL
 from oc8.modelrouter.reasoning_support import (
     anthropic_has_effort,
     anthropic_hides_thinking,
+    anthropic_takes_temperature,
     anthropic_thinking_style,
 )
 from oc8.modelrouter.types import (
@@ -129,9 +130,27 @@ def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[di
 #: matching one of these is dropped rather than applied -- see _build_payload.
 #: `effort` is here although the adapter never sends it: Anthropic takes effort
 #: only inside `output_config`, and a stray top-level copy would 400.
+#: `cache_control` belongs to the OC8_ANTHROPIC_PROMPT_CACHING switch: a
+#: per-model override (a 1h TTL, say) would make the cost of a step depend on
+#: a raw parameter nobody sees on the costs page.
 _RESERVED_PAYLOAD_KEYS = frozenset(
-    {"model", "max_tokens", "messages", "temperature", "effort", "system", "tools", "stream"}
+    {
+        "model",
+        "max_tokens",
+        "messages",
+        "temperature",
+        "effort",
+        "system",
+        "tools",
+        "stream",
+        "cache_control",
+    }
 )
+
+#: Top-level, so Anthropic puts the breakpoint on the last cacheable block
+#: itself: the next step of the same run reads everything up to there at a
+#: tenth of the price instead of paying for the whole transcript again.
+_CACHE_CONTROL = {"type": "ephemeral"}
 
 #: `budget_tokens` per level for models that think on a budget (Claude 3.7 to
 #: 4.5). The API takes >= 1024 and < max_tokens; fast forces no thinking.
@@ -179,13 +198,17 @@ def _reasoning_fields(req: CompletionRequest) -> tuple[str | None, dict[str, Any
     return None, None
 
 
-def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) -> dict[str, Any]:
+def _build_payload(
+    req: CompletionRequest, *, include_temperature: bool = True, prompt_caching: bool = False
+) -> dict[str, Any]:
     system, messages = _to_anthropic_messages(req.messages)
     payload: dict[str, Any] = {
         "model": req.model,
         "max_tokens": req.params.max_tokens,
         "messages": messages,
     }
+    if prompt_caching:
+        payload["cache_control"] = dict(_CACHE_CONTROL)
     effort, thinking = _reasoning_fields(req)
     if effort is not None:
         payload["output_config"] = {"effort": effort}
@@ -213,30 +236,67 @@ def _build_payload(req: CompletionRequest, *, include_temperature: bool = True) 
             continue
         payload[key] = value
     # Sampling parameters are incompatible with thinking, whether the level or
-    # an operator's `extra` turned it on.
-    if include_temperature and "thinking" not in payload:
+    # an operator's `extra` turned it on, and Claude from Opus 4.7 on refuses
+    # them outright.
+    if include_temperature and "thinking" not in payload and anthropic_takes_temperature(req.model):
         payload["temperature"] = req.params.temperature
     return payload
 
 
+#: The one stop reason the runtimes act on by name: an answer cut off by the
+#: budget. Every other provider reports it as "length", and the retry with a
+#: bigger budget (engine.py, internal_agent.py) looks for exactly that; an
+#: always-thinking Claude can spend the whole budget before it writes a word.
+_STOP_REASONS = {"max_tokens": "length"}
+
+
+def _stop_reason(raw: object) -> str:
+    """Anthropic's `stop_reason` in the router's words. "refusal" and the
+    others pass through for the runtimes to read."""
+    return _STOP_REASONS.get(str(raw), str(raw))
+
+
 # Live, 2026-09: newer Claude models (claude-sonnet-5, claude-opus-5, ...)
-# reject `temperature` outright rather than merely ignoring it, and there is
-# no way to know in advance which model name will do this next -- a hardcoded
-# list of "deprecated on" models would need updating with every release and
-# would still miss one. So this is detected from the provider's own words and
-# handled by retrying once without the field, rather than by naming models.
-_TEMPERATURE_DEPRECATED = re.compile(r'"message"\s*:\s*"temperature is deprecated for this model')
+# reject `temperature` outright rather than merely ignoring it.
+# `anthropic_takes_temperature` leaves it out for the versions known to, but
+# a name it cannot read (a gateway alias) or a rule that has gone stale still
+# ends here: any 400 whose message names `temperature` is retried once
+# without the field, whatever the wording ("is deprecated for this model",
+# "may only be set to 1").
+_TEMPERATURE_DEPRECATED = re.compile(r'"message"\s*:\s*"[^"]*temperature', re.IGNORECASE)
 
 
 def _is_temperature_deprecated(exc: httpx.HTTPStatusError) -> bool:
     return exc.response.status_code == 400 and bool(_TEMPERATURE_DEPRECATED.search(str(exc)))
 
 
+def _input_usage(raw: dict[str, Any]) -> Usage:
+    """The prompt side of Anthropic's `usage`. With caching, `input_tokens`
+    counts only the uncached tail; the whole prompt is that plus what was
+    written to and read from the cache."""
+    uncached = int(raw.get("input_tokens", 0) or 0)
+    written = int(raw.get("cache_creation_input_tokens", 0) or 0)
+    read = int(raw.get("cache_read_input_tokens", 0) or 0)
+    return Usage(
+        tokens_in=uncached + written + read,
+        cache_read_tokens=read,
+        cache_write_tokens=written,
+    )
+
+
 class AnthropicAdapter:
     provider = "anthropic"
 
-    def __init__(self, api_key: str) -> None:
+    def __init__(self, api_key: str, *, prompt_caching: bool = True) -> None:
         self._api_key = api_key
+        self._prompt_caching = prompt_caching
+
+    def _payload(
+        self, req: CompletionRequest, *, include_temperature: bool = True
+    ) -> dict[str, Any]:
+        return _build_payload(
+            req, include_temperature=include_temperature, prompt_caching=self._prompt_caching
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -248,16 +308,14 @@ class AnthropicAdapter:
     async def complete(self, req: CompletionRequest) -> CompletionResult:
         async with httpx.AsyncClient(timeout=180.0) as client:
             try:
-                resp = await client.post(
-                    _API_URL, json=_build_payload(req), headers=self._headers()
-                )
+                resp = await client.post(_API_URL, json=self._payload(req), headers=self._headers())
                 raise_for_status_with_body(resp)
             except httpx.HTTPStatusError as exc:
                 if not _is_temperature_deprecated(exc):
                     raise
                 resp = await client.post(
                     _API_URL,
-                    json=_build_payload(req, include_temperature=False),
+                    json=self._payload(req, include_temperature=False),
                     headers=self._headers(),
                 )
                 raise_for_status_with_body(resp)
@@ -282,17 +340,15 @@ class AnthropicAdapter:
                         arguments=block.get("input", {}) or {},
                     )
                 )
-        usage_raw = data.get("usage", {})
-        usage = Usage(
-            tokens_in=int(usage_raw.get("input_tokens", 0)),
-            tokens_out=int(usage_raw.get("output_tokens", 0)),
-        )
+        usage_raw = data.get("usage") or {}
+        usage = _input_usage(usage_raw)
+        usage.tokens_out = int(usage_raw.get("output_tokens", 0) or 0)
         reasoning = "\n\n".join(thinking_parts).strip()
         return CompletionResult(
             text="".join(text_parts),
             tool_calls=tool_calls,
             usage=usage,
-            stop_reason=data.get("stop_reason", "stop"),
+            stop_reason=_stop_reason(data.get("stop_reason", "stop")),
             provider=self.provider,
             model=req.model,
             reasoning=reasoning or None,
@@ -310,7 +366,7 @@ class AnthropicAdapter:
         when it started, since Anthropic interleaves text and tool_use
         blocks by position rather than a separate tool-call channel.
         """
-        payload = {**_build_payload(req), "stream": True}
+        payload = {**self._payload(req), "stream": True}
         # The rejection arrives from `araise_for_status_with_body` before any
         # SSE line has been parsed, so retrying is safe as long as nothing has
         # reached the caller yet -- `emitted` guards that the same way the
@@ -324,7 +380,7 @@ class AnthropicAdapter:
         except httpx.HTTPStatusError as exc:
             if emitted or not _is_temperature_deprecated(exc):
                 raise
-        payload = {**_build_payload(req, include_temperature=False), "stream": True}
+        payload = {**self._payload(req, include_temperature=False), "stream": True}
         async for chunk in self._stream_once(payload):
             yield chunk
 
@@ -335,8 +391,9 @@ class AnthropicAdapter:
         # cumulative total, not something to add across chunks, so
         # message_delta's own usage chunk must still carry the input count
         # forward or it reads as "0 input tokens" once message_delta's
-        # smaller usage object overwrites message_start's.
-        tokens_in = 0
+        # smaller usage object overwrites message_start's. The same holds for
+        # the cache split, which also arrives only on message_start.
+        prompt = Usage()
         # Thinking blocks under construction, by content-block index: their
         # text and signature arrive as deltas, and only the finished block may
         # be replayed.
@@ -369,9 +426,11 @@ class AnthropicAdapter:
                         continue
                     if chunk.usage is not None:
                         if chunk.usage.tokens_in:
-                            tokens_in = chunk.usage.tokens_in
+                            prompt = chunk.usage
                         elif event_type == "message_delta":
-                            chunk.usage.tokens_in = tokens_in
+                            chunk.usage.tokens_in = prompt.tokens_in
+                            chunk.usage.cache_read_tokens = prompt.cache_read_tokens
+                            chunk.usage.cache_write_tokens = prompt.cache_write_tokens
                     yield chunk
 
 
@@ -404,7 +463,7 @@ def _chunk_from_event(event_type: str, data: dict[str, Any]) -> CompletionChunk 
         usage_raw = (data.get("message") or {}).get("usage") or {}
         if not usage_raw:
             return None
-        return CompletionChunk(usage=Usage(tokens_in=int(usage_raw.get("input_tokens", 0) or 0)))
+        return CompletionChunk(usage=_input_usage(usage_raw))
 
     if event_type == "content_block_start":
         block = data.get("content_block") or {}
@@ -443,7 +502,7 @@ def _chunk_from_event(event_type: str, data: dict[str, Any]) -> CompletionChunk 
         chunk = CompletionChunk()
         carries = False
         if delta.get("stop_reason"):
-            chunk.stop_reason = str(delta["stop_reason"])
+            chunk.stop_reason = _stop_reason(delta["stop_reason"])
             carries = True
         if usage_raw:
             # This event's usage is output-tokens-only and cumulative -- the

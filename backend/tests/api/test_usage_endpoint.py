@@ -182,7 +182,7 @@ async def test_usage_uses_the_price_in_effect_at_usage_time_not_today(
         await db.commit()
     async with _http() as http:
         h = _headers(tenant, "org_admin")
-        resp = await http.get("/api/v1/usage?group_by=department", headers=h)
+        resp = await http.get("/api/v1/usage?group_by=department&period=all", headers=h)
         row = next(r for r in resp.json() if r["group"] == str(dept_id))
         # Must use the OLD price (3.0/15.0), not today's 99.0/99.0.
         assert row["providerCostMicros"] == round(1000 * 3.0 + 500 * 15.0)
@@ -227,7 +227,7 @@ async def test_usage_prices_historical_records_against_the_backdated_seed_price(
         await db.commit()
     async with _http() as http:
         h = _headers(tenant, "org_admin")
-        resp = await http.get("/api/v1/usage?group_by=department", headers=h)
+        resp = await http.get("/api/v1/usage?group_by=department&period=all", headers=h)
         assert resp.status_code == 200, resp.text
         row = next(r for r in resp.json() if r["group"] == str(dept_id))
         # The real seeded claudesonnet45 price (3.0 in / 15.0 out per 1M),

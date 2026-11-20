@@ -14,11 +14,13 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import Field
 from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1.auth import PasswordSessionResponse
 from oc8.auth import Principal, get_identity_provider
+from oc8.auth.second_factors import audit, lock_member
 from oc8.auth.totp import (
     generate_backup_codes,
     generate_secret,
@@ -28,6 +30,7 @@ from oc8.auth.totp import (
     verify_code,
 )
 from oc8.auth.totp_gate import member_id_for_principal
+from oc8.auth.two_factor_policy import enrolled_methods, load_policy, member_methods
 from oc8.schemas.base import CamelModel
 from oc8.secrets.service import resolve_secret, store_secret
 
@@ -165,17 +168,66 @@ async def _member_id_for(db: DbSession, principal: Principal) -> uuid.UUID:
     return row
 
 
+async def _refuse_unless_totp_allowed(db: DbSession, principal: Principal) -> None:
+    """A method the policy does not allow cannot be enrolled."""
+    if "totp" not in (await load_policy(db, principal.tenant_id)).methods:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Your organisation does not allow an authenticator app as a second factor.",
+        )
+
+
+async def refuse_enrol_token_once_enrolled(
+    db: AsyncSession, principal: Principal, member_id: uuid.UUID | None
+) -> None:
+    """An enrolment token proves the password only. Login mints one because
+    the member had no allowed method to answer a challenge with; once they
+    have one, the token must not add another factor -- that takes a full
+    session, i.e. the method they already hold. Every enrol route checks
+    this, and checks it again under the member lock where it writes."""
+    if "totp:enroll" not in principal.scopes or member_id is None:
+        return
+    member = await db.get(m.OrgMember, member_id)
+    if member is not None and await member_methods(db, member):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You already have a second factor. Sign in with it to add another.",
+        )
+
+
+def mint_full_session(principal: Principal, member_id: uuid.UUID) -> PasswordSessionResponse:
+    """Exchange a passed challenge for the real session. Every second-factor
+    verify route ends here, so they mint exactly the same token."""
+    provider = get_identity_provider()
+    # role=principal.role, NOT re-resolved from anywhere else: the challenge
+    # token already carries whatever role `password_login` (Task 7) originally
+    # resolved -- MEMBER_ROLE per that function's own fail-closed doctrine,
+    # or "org_admin" from the bootstrap `/auth/setup` case. This endpoint's
+    # only job is converting the token's SCOPE from challenge-pending to a
+    # real session; it must not also upgrade the caller's role. Re-minting
+    # with the challenge token's own role claim preserves that --
+    # `org_member.role_id`'s override still applies on the NEXT request
+    # exactly as it always does, unaffected by anything here.
+    token = provider.mint(
+        tenant_id=principal.tenant_id, subject=principal.subject, role=principal.role
+    )
+    new_principal = provider.verify(token)
+    return PasswordSessionResponse(token=token, principal=new_principal, member_id=str(member_id))
+
+
 @router.post(
     "/auth/totp/enroll",
     response_model=TotpEnrollResponse,
     dependencies=[Depends(unguarded(_ENROLL_UNGUARDED_REASON))],
 )
-async def totp_enroll(principal: CurrentPrincipal) -> TotpEnrollResponse:
+async def totp_enroll(principal: CurrentPrincipal, db: DbSession) -> TotpEnrollResponse:
     """Generates a fresh secret and its otpauth:// provisioning URI. Persists
     NOTHING -- an abandoned enrollment (secret generated, never confirmed)
     must leave no half-configured state. The client holds the secret
     plaintext from here on to render the QR code and to submit back at
     /confirm; the server never remembers it until confirm creates the row."""
+    await _refuse_unless_totp_allowed(db, principal)
+    await refuse_enrol_token_once_enrolled(db, principal, await _member_id_or_none(db, principal))
     secret = generate_secret()
     return TotpEnrollResponse(
         secret=secret,
@@ -195,10 +247,13 @@ async def totp_confirm(
     (proof of control -- an arbitrary secret the client wasn't given would
     just fail the code check, see the spec's own reasoning), then creates
     the totp_credential row and returns 10 backup codes ONCE."""
+    await _refuse_unless_totp_allowed(db, principal)
     if not verify_code(body.secret, body.code):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "Invalid code.")
 
     member_id = await _member_id_for(db, principal)
+    await lock_member(db, member_id)
+    await refuse_enrol_token_once_enrolled(db, principal, member_id)
 
     # `totp_credential.member_id` is UNIQUE, so a second /confirm for an
     # already-enrolled member would otherwise reach the DB constraint as the
@@ -207,12 +262,12 @@ async def totp_confirm(
     # transaction, so a constraint violation here rolls both back cleanly;
     # this pre-check only turns that into a clean, expected answer instead
     # of relying on the constraint as the sole guard).
-    already_enrolled = (
-        await db.execute(
-            select(m.TotpCredential.id).where(m.TotpCredential.member_id == member_id)
-        )
+    # A row without `enrolled_at` only holds the backup codes of a member
+    # whose method is email; TOTP is added to it rather than refused.
+    existing = (
+        await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member_id))
     ).scalar_one_or_none()
-    if already_enrolled is not None:
+    if existing is not None and existing.enrolled_at is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "this member is already enrolled in TOTP")
 
     secret_ref = f"totp:{member_id}"
@@ -230,15 +285,22 @@ async def totp_confirm(
     codes = generate_backup_codes()
     hashed_codes = [{"hash": hash_backup_code(c), "used_at": None} for c in codes]
 
-    db.add(
-        m.TotpCredential(
-            tenant_id=principal.tenant_id,
-            member_id=member_id,
-            secret_ref=secret_ref,
-            enrolled_at=dt.datetime.now(tz=dt.UTC),
-            backup_codes=hashed_codes,
+    if existing is None:
+        db.add(
+            m.TotpCredential(
+                tenant_id=principal.tenant_id,
+                member_id=member_id,
+                secret_ref=secret_ref,
+                enrolled_at=dt.datetime.now(tz=dt.UTC),
+                backup_codes=hashed_codes,
+            )
         )
-    )
+    else:
+        # Fresh codes replace the email enrolment's: this response shows codes,
+        # and showing a set that does not work would be worse than a new one.
+        existing.secret_ref = secret_ref
+        existing.enrolled_at = dt.datetime.now(tz=dt.UTC)
+        existing.backup_codes = hashed_codes
     # Enforce the invariant models/identity.py's own docstring documents for
     # totp_grace_started_at ("NULL for anyone who has enrolled"): nothing
     # else clears it at enrollment time (Task 8's assign_role/password_setup
@@ -248,9 +310,16 @@ async def totp_confirm(
     # ever reading the clock -- but leaving the model's own stated invariant
     # unenforced by any code is a real gap in itself, not just belt-and-braces.
     await db.execute(
-        update(m.OrgMember)
-        .where(m.OrgMember.id == member_id)
-        .values(totp_grace_started_at=None)
+        update(m.OrgMember).where(m.OrgMember.id == member_id).values(totp_grace_started_at=None)
+    )
+    await audit(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_id=member_id,
+        action="two_factor.enrolled",
+        member_id=member_id,
+        method="totp",
+        principal=principal,
     )
     await db.commit()
     return TotpConfirmResponse(backup_codes=codes)
@@ -300,11 +369,19 @@ async def totp_verify(
             .with_for_update()
         )
     ).scalar_one_or_none()
-    if cred is None or cred.enrolled_at is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "No TOTP credential enrolled.")
+    # The policy decides what may answer: a TOTP code only while TOTP is
+    # allowed, a backup code only while the member holds some allowed method.
+    # A challenge token minted before the policy changed gains nothing.
+    member = await db.get(m.OrgMember, member_id)
+    methods = await member_methods(db, member) if member is not None else []
+    if cred is None or not methods:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "No second factor enrolled.")
 
-    secret = await resolve_secret(db, tenant_id=principal.tenant_id, ref=cred.secret_ref)
-    if not verify_code(secret, body.code):
+    totp_matched = False
+    if "totp" in methods and cred.enrolled_at is not None:
+        secret = await resolve_secret(db, tenant_id=principal.tenant_id, ref=cred.secret_ref)
+        totp_matched = verify_code(secret, body.code)
+    if not totp_matched:
         matched_index = None
         # A backup code is always exactly 10 chars (auth/totp.py's
         # _BACKUP_CODE_LENGTH); a wrong-length code can never match one, so
@@ -337,21 +414,7 @@ async def totp_verify(
 
     await db.commit()
 
-    provider = get_identity_provider()
-    # role=principal.role, NOT re-resolved from anywhere else: the challenge
-    # token already carries whatever role `password_login` (Task 7) originally
-    # resolved -- MEMBER_ROLE per that function's own fail-closed doctrine,
-    # or "org_admin" from the bootstrap `/auth/setup` case. This endpoint's
-    # only job is converting the token's SCOPE from challenge-pending to a
-    # real session; it must not also upgrade the caller's role. Re-minting
-    # with the challenge token's own role claim preserves that --
-    # `org_member.role_id`'s override still applies on the NEXT request
-    # exactly as it always does, unaffected by anything here.
-    token = provider.mint(
-        tenant_id=principal.tenant_id, subject=principal.subject, role=principal.role
-    )
-    new_principal = provider.verify(token)
-    return PasswordSessionResponse(token=token, principal=new_principal, member_id=str(member_id))
+    return mint_full_session(principal, member_id)
 
 
 class TotpStatusResponse(CamelModel):
@@ -398,10 +461,20 @@ async def totp_regenerate_backup_codes(
     cred = (
         await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member_id))
     ).scalar_one_or_none()
-    if cred is None or cred.enrolled_at is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No TOTP credential enrolled.")
+    # Backup codes belong to whichever method the member uses: an email-only
+    # member's row has no TOTP enrolment but holds their codes all the same.
+    if cred is None or not await enrolled_methods(db, member_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No second factor enrolled.")
 
     codes = generate_backup_codes()
     cred.backup_codes = [{"hash": hash_backup_code(c), "used_at": None} for c in codes]
+    await audit(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_id=member_id,
+        action="two_factor.backup_codes_regenerated",
+        member_id=member_id,
+        principal=principal,
+    )
     await db.commit()
     return TotpRegenerateBackupCodesResponse(backup_codes=codes)

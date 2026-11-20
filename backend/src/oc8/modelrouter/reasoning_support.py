@@ -89,6 +89,18 @@ def anthropic_hides_thinking(model: str) -> bool:
     return (major, minor) >= (4, 7)
 
 
+def anthropic_takes_temperature(model: str) -> bool:
+    """Whether `model` accepts `temperature`. From Claude Opus 4.7 on the API
+    answers 400 to it (docs, model migration: "Sampling parameters"); a name
+    without a readable version (Fable, Mythos, an alias) is taken for a
+    current model, as in `anthropic_thinking_style`."""
+    version = _claude_version(model)
+    if version is None:
+        return False
+    _, major, minor = version
+    return (major, minor) < (4, 7)
+
+
 def openai_thinks(model: str) -> bool:
     return bool(_OPENAI.match(_base(model)))
 

@@ -40,6 +40,8 @@ async def _oc8_calculated_cost_for_day(
                 m.TokenUsageRecord.model,
                 m.TokenUsageRecord.tokens_in,
                 m.TokenUsageRecord.tokens_out,
+                m.TokenUsageRecord.cache_read_tokens,
+                m.TokenUsageRecord.cache_write_tokens,
             ).where(
                 m.TokenUsageRecord.tenant_id == tenant_id,
                 m.TokenUsageRecord.provider == provider,
@@ -53,12 +55,18 @@ async def _oc8_calculated_cost_for_day(
         db, as_of=dt.datetime.combine(day, dt.time.max, tzinfo=dt.UTC)
     )
     total = 0
-    for model, tokens_in, tokens_out in rows:
+    for model, tokens_in, tokens_out, cache_read, cache_write in rows:
         price = price_as_of(
             price_rows, provider, model, dt.datetime.combine(day, dt.time.max, tzinfo=dt.UTC)
         )
         if price:
-            total += cost_micros_from_price(price, tokens_in, tokens_out)
+            total += cost_micros_from_price(
+                price,
+                tokens_in,
+                tokens_out,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+            )
     return total
 
 

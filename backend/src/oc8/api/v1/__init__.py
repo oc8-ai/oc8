@@ -60,12 +60,14 @@ from oc8.api.v1 import (
     tasks,
     totp,
     triggers,
+    two_factor,
     webhooks,
 )
 
 api_router = APIRouter()
 api_router.include_router(auth.router, tags=["auth"])
 api_router.include_router(totp.router, tags=["auth"])
+api_router.include_router(two_factor.router, tags=["auth"])
 api_router.include_router(i18n.router, tags=["i18n"])
 api_router.include_router(api_keys.router, tags=["settings"])
 api_router.include_router(departments.router, tags=["departments"])

@@ -84,6 +84,12 @@ export function localizeSkill(s: Skill, lang: Lang): Skill {
   if (lang === "en") return s;
   return {
     ...s,
+    source: {
+      name: s.name,
+      description: s.description,
+      instructions: s.instructions,
+      guardrails: s.guardrails,
+    },
     name: tr(s.name, s.nameTranslations, lang),
     description: tr(s.description, s.descriptionTranslations, lang),
     instructions: tr(s.instructions, s.instructionsTranslations, lang),

@@ -119,6 +119,10 @@ async def deny_agent_principals(request: Request) -> None:
 _TOTP_ENROLL_ALLOWED_PATHS = {
     "/api/v1/auth/totp/enroll",
     "/api/v1/auth/totp/confirm",
+    "/api/v1/auth/two-factor/email/enroll",
+    "/api/v1/auth/two-factor/email/confirm",
+    "/api/v1/auth/two-factor/passkey/register/options",
+    "/api/v1/auth/two-factor/passkey/register/verify",
 }
 
 #: Paths a `totp:challenge`-scoped token IS allowed to reach. Deliberately a
@@ -132,7 +136,16 @@ _TOTP_ENROLL_ALLOWED_PATHS = {
 #: silent takeover, but that is incidental, not the intended defense --
 #: this allowlist is.)
 _TOTP_CHALLENGE_ALLOWED_PATHS = {
+    # A TOTP code or a backup code, whatever the member's method.
     "/api/v1/auth/totp/verify",
+    # A code by email: ask for one, then answer it. `send` only ever mails the
+    # member's own sign-in address, so a password-only caller learns nothing.
+    "/api/v1/auth/two-factor/email/send",
+    "/api/v1/auth/two-factor/email/verify",
+    # A passkey: ask for a challenge, then answer it. The options name only
+    # the member's own credential ids, which the passkey alone can answer for.
+    "/api/v1/auth/two-factor/passkey/authenticate/options",
+    "/api/v1/auth/two-factor/passkey/authenticate/verify",
 }
 
 

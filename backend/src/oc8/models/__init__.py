@@ -33,9 +33,12 @@ from oc8.models.direct_access import DirectAccessGrant
 from oc8.models.flow import Flow, FlowRun, FlowVersion
 from oc8.models.identity import (
     DashboardPreset,
+    EmailOtpChallenge,
     MemberDashboardLayout,
     OrgMember,
     OrgMemberDepartment,
+    PasskeyChallenge,
+    SecondFactor,
     TotpCredential,
 )
 from oc8.models.knowledge import (
@@ -118,6 +121,7 @@ __all__ = [
     "DataSource",
     "Department",
     "DirectAccessGrant",
+    "EmailOtpChallenge",
     "FileAttachment",
     "Flow",
     "FlowRun",
@@ -143,6 +147,7 @@ __all__ = [
     "OrgMember",
     "OrgMemberDepartment",
     "Organization",
+    "PasskeyChallenge",
     "Permission",
     "ProviderBudget",
     "PushSubscription",
@@ -155,6 +160,7 @@ __all__ = [
     "RunInput",
     "RunMessage",
     "RunStateTransition",
+    "SecondFactor",
     "Secret",
     "Skill",
     "SkillAssignment",

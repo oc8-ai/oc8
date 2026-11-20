@@ -5,6 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -114,9 +115,16 @@ async def list_budgets(db: AsyncSession, *, tenant_id: uuid.UUID) -> list[Budget
     )
 
 
+def month_start(zone: str = "UTC", *, now: datetime | None = None) -> datetime:
+    """The start of the current calendar month on `zone`'s clock, in UTC.
+    Budgets count in UTC; the costs page counts on the organisation's clock."""
+    local = (now or datetime.now(tz=UTC)).astimezone(ZoneInfo(zone))
+    start = local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return start.astimezone(UTC)
+
+
 def _month_start() -> datetime:
-    now = datetime.now(tz=UTC)
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return month_start()
 
 
 def _next_month_start() -> datetime:
