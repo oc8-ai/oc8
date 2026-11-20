@@ -490,3 +490,26 @@ async def test_an_attachment_type_must_be_a_media_type(
         attachments=[{"name": "a.bin", "text": "x", "type": "application/vnd.oc8+json"}],
     )
     assert result["status"] == "sent"
+
+
+async def test_a_reply_to_on_another_domain_is_not_followed(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]], make_mail: Any
+) -> None:
+    greenmail.append(make_mail(headers={"Reply-To": "mallory@evil.example"}))
+    [hit] = await call(tools, "mail_search")
+    result = await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    assert "Reply-To" in result["note"]
+    [raw] = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    assert parsed(raw)["To"] == "Alice <alice@example.com>"
+
+
+async def test_a_reply_to_on_the_senders_domain_is_followed(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]], make_mail: Any
+) -> None:
+    greenmail.append(make_mail(headers={"Reply-To": "Bob <bob@example.com>"}))
+    [hit] = await call(tools, "mail_search")
+    result = await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    assert "note" not in result
+    assert greenmail.messages(user={"login": "alice", "password": "alice-pw-123"}) == []
+    [raw] = greenmail.messages(user={"login": "bob", "password": "bob-pw-123"})
+    assert parsed(raw)["To"] == "Bob <bob@example.com>"

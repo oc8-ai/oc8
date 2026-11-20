@@ -477,18 +477,69 @@ async def test_a_slow_poll_stops_at_its_time_budget_and_the_next_continues(
     cursor = await baseline(source, fields)
     for i in range(3):
         greenmail.append(make_mail(message_id=f"<slow{i}@x>"))
-    # No time left after the first mail: each poll gets one mail through.
+    # The budget is spent before the first mail: the poll hands the cursor
+    # back unmoved, marked, and the next poll then takes one mail anyway, so
+    # a slow login cannot stall the trigger for good.
     monkeypatch.setattr(source.mailbox, "POLL_BUDGET_SECONDS", 0.0)
 
+    empty = await source.poll(fields, INBOX, cursor)
+    assert empty.events == []
+    assert empty.next_cursor["last_uid"] == cursor["last_uid"]
+    assert empty.next_cursor.get("starved") is True
+
     seen: list[str] = []
-    for _ in range(3):
+    for _ in range(8):
         result = await source.poll(fields, INBOX, cursor)
-        [event] = result.events
-        seen.append(event.payload["message_id"])
-        assert result.next_cursor["last_uid"] == int(event.payload["id"].rsplit(":", 1)[1])
+        assert len(result.events) <= 1
+        for event in result.events:
+            seen.append(event.payload["message_id"])
+            assert result.next_cursor["last_uid"] == int(event.payload["id"].rsplit(":", 1)[1])
+            assert "starved" not in result.next_cursor
         cursor = result.next_cursor
     assert seen == ["<slow0@x>", "<slow1@x>", "<slow2@x>"]
-    assert (await source.poll(fields, INBOX, cursor)).events == []
+
+
+async def test_a_pop3_poll_out_of_time_also_continues_next_time(
+    source: ModuleType, greenmail: Any, make_mail: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fields = greenmail.fields(protocol="pop3")
+    cursor = await baseline(source, fields)
+    for i in range(2):
+        greenmail.append(make_mail(message_id=f"<p{i}@x>"))
+    monkeypatch.setattr(source.mailbox, "POLL_BUDGET_SECONDS", 0.0)
+    seen: list[str] = []
+    for _ in range(6):
+        result = await source.poll(fields, INBOX, cursor)
+        seen += [e.payload["message_id"] for e in result.events]
+        cursor = result.next_cursor
+    assert seen == ["<p0@x>", "<p1@x>"]
+
+
+async def test_the_header_only_fallback_logs_the_class_and_the_id_only(
+    source: ModuleType,
+    greenmail: Any,
+    make_mail: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    mailbox = source.mailbox
+
+    def broken(*args: Any, **kwargs: Any) -> str:
+        raise ValueError("secret detail from the mail")
+
+    monkeypatch.setattr(mailbox, "render_summary", broken)
+    fields = greenmail.fields()
+    cursor = await baseline(source, fields)
+    greenmail.append(make_mail(subject="Broken"))
+    with caplog.at_level(logging.WARNING):
+        [event] = (await source.poll(fields, INBOX, cursor)).events
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "ValueError" in message and event.payload["id"] in message
+    assert "secret detail" not in message and "Broken" not in message
 
 
 async def test_a_large_mail_is_read_in_bounded_pieces(

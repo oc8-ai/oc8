@@ -37,10 +37,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import codecs
 import email
 import email.policy
 import imaplib
 import ipaddress
+import logging
 import mimetypes
 import os
 import poplib
@@ -119,6 +121,8 @@ ENV_FIELDS: dict[str, str] = {
     "MAIL_FROM_ADDRESS": "from_address",
     "MAIL_FROM_NAME": "from_name",
 }
+
+logger = logging.getLogger(__name__)
 
 _POLICY = email.policy.default
 _HEADER_FIELDS = "(FROM TO CC SUBJECT DATE MESSAGE-ID)"
@@ -541,15 +545,43 @@ def truncate(text: str) -> tuple[str, bool]:
     )
 
 
-def _part_text(part: EmailMessage) -> str:
+#: The most bytes of one text part ever decoded: far more than the
+#: MAX_TEXT_CHARS shown, far less than a mail can carry.
+MAX_DECODE_BYTES = 4 * MAX_TEXT_CHARS
+#: Codecs Python counts as text encodings that still must not decode mail:
+#: the sender picks the charset, and these turn bytes into other text
+#: (escapes, IDNA) or cost more than their size suggests.
+_REFUSED_CODECS = {"punycode", "idna", "rot-13", "rot13", "base64", "hex", "zlib", "bz2", "uu"}
+
+
+def _codec(charset: str | None) -> str:
+    """The codec to decode a part with: its charset when that names a real
+    text encoding, else utf-8."""
     try:
-        content = part.get_content()
-        if isinstance(content, str):
-            return content
-    except (LookupError, ValueError, KeyError, AssertionError):
-        pass
+        info = codecs.lookup(charset or "utf-8")
+    except (LookupError, TypeError, ValueError):
+        return "utf-8"
+    name = info.name.lower()
+    if (
+        not getattr(info, "_is_text_encoding", False)
+        or name in _REFUSED_CODECS
+        or name.endswith("_escape")
+        or name.replace("-", "_").endswith("_escape")
+    ):
+        return "utf-8"
+    return info.name
+
+
+def _decode(data: bytes, charset: str | None) -> str:
+    """At most MAX_DECODE_BYTES of `data`, decoded with a safe codec."""
+    return data[:MAX_DECODE_BYTES].decode(_codec(charset), "replace")
+
+
+def _part_text(part: EmailMessage) -> str:
     payload = part.get_payload(decode=True)
-    return payload.decode("utf-8", "replace") if isinstance(payload, bytes) else ""
+    if not isinstance(payload, bytes):
+        return ""
+    return _decode(payload, part.get_content_charset())
 
 
 # The walks below take a parsed mail (`EmailMessage`) or its structure as the
@@ -788,6 +820,10 @@ def _disposition(value: Any) -> tuple[str | None, dict[str, str]]:
     return None, {}
 
 
+#: One half of a media type (RFC 6838 restricted-name).
+_TOKEN = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,126}")
+
+
 def _structure(item: Any, section: str = "", depth: int = 0) -> _Structure:
     """A `_Structure` from a parsed BODYSTRUCTURE list. Sections are IMAP part
     numbers ("1", "2.1"); a single-part mail's text is section TEXT."""
@@ -798,6 +834,8 @@ def _structure(item: Any, section: str = "", depth: int = 0) -> _Structure:
         while count < len(item) and isinstance(item[count], list):
             count += 1
         subtype = str(item[count] or "mixed").lower() if count < len(item) else "mixed"
+        if not _TOKEN.fullmatch(subtype):
+            subtype = "mixed"
         extension = item[count + 1 :]
         disposition, disposition_params = _disposition(extension[1] if len(extension) > 1 else None)
         children = []
@@ -819,6 +857,9 @@ def _structure(item: Any, section: str = "", depth: int = 0) -> _Structure:
     maintype = str(item[0] or "text").lower()
     subtype = str(item[1] or "plain").lower() if len(item) > 1 else "plain"
     content_type = f"{maintype}/{subtype}"
+    if not (_TOKEN.fullmatch(maintype) and _TOKEN.fullmatch(subtype)):
+        # The server's strings reach the agent; only a real media type does.
+        content_type = "application/octet-stream"
     try:
         size = int(item[6])
     except (IndexError, TypeError, ValueError):
@@ -887,6 +928,9 @@ class ImapId:
     uidvalidity: int
     uid: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "folder", canonical_folder(self.folder))
+
     def __str__(self) -> str:
         return f"{self.folder}:{self.uidvalidity}:{self.uid}"
 
@@ -894,7 +938,9 @@ class ImapId:
     def parse(cls, value: str) -> ImapId:
         """Only the canonical form: the folder (which may contain ":"), then
         UIDVALIDITY and UID as plain ASCII numbers without leading zeros. An
-        id is taken only when it reads back exactly as given."""
+        id is taken only when it reads back exactly as given, so one mail has
+        one id ("inbox:5:7" is refused; it is "INBOX:5:7"), which keeps core's
+        one-message-per-mail rule from being sidestepped by spelling."""
         text = str(value)
         if _IMAP_ID.fullmatch(text) and text == text.strip():
             folder, uidvalidity, uid = text.rsplit(":", 2)
@@ -904,6 +950,16 @@ class ImapId:
         raise MailError(
             f"{value!r} is not a valid mail id; take the id from mail_search or mail_get."
         )
+
+
+def canonical_folder(folder: str) -> str:
+    """INBOX is case-insensitive in IMAP (RFC 3501, 5.1): any spelling of it,
+    alone or as the first level of a folder path ("inbox/Sub", "Inbox.Sub"),
+    is written INBOX. Every other folder name is case-sensitive and kept."""
+    head, rest = folder[:5], folder[5:]
+    if head.upper() == "INBOX" and (not rest or rest[0] in "/."):
+        return "INBOX" + rest
+    return folder
 
 
 _IMAP_ID = re.compile(r"[^\x00-\x1f\x7f:]+(?::[^\x00-\x1f\x7f:]+)*:[1-9][0-9]*:[1-9][0-9]*")
@@ -1512,11 +1568,9 @@ def get_attachment(
         "size": len(data),
     }
     if part.get_content_maintype() == "text" or mime in _TEXT_TYPES:
-        charset = part.get_content_charset() or "utf-8"
-        try:
-            content = data.decode(charset, "replace")
-        except LookupError:
-            content = data.decode("utf-8", "replace")
+        # The whole attachment, which is capped by MAX_ATTACHMENT_BYTES, but
+        # only with a real text encoding.
+        content = data.decode(_codec(part.get_content_charset()), "replace")
         return {**result, "encoding": "text", "content": content}
     return {**result, "encoding": "base64", "content": base64.b64encode(data).decode()}
 
@@ -1881,7 +1935,7 @@ def reply(
                 out.append(formataddr((name, addr)) if name else addr)
         return out
 
-    to = others("Reply-To") or others("From")
+    to, note = _reply_target(original, others("Reply-To"), others("From"))
     cc: list[str] = []
     if reply_all:
         taken = {parseaddr(a)[1].lower() for a in to}
@@ -1907,7 +1961,37 @@ def reply(
         references=references,
     )
     _attach(msg, _attachment_data(attachments))
-    return _deliver(account, guard, msg, recipients)
+    result = _deliver(account, guard, msg, recipients)
+    if note:
+        result["note"] = note
+    return result
+
+
+def _domain(address: str) -> str:
+    return parseaddr(address)[1].rpartition("@")[2].lower()
+
+
+def _reply_target(
+    original: EmailMessage, reply_to: list[str], senders: list[str]
+) -> tuple[list[str], str]:
+    """Whom a reply goes to, and a note when that is not the Reply-To.
+
+    Reply-To is followed only when every address in it is on the sender's
+    own domain (From). Anyone can write any Reply-To, and an agent answering
+    on its own would otherwise send its answer, and what it knows, wherever
+    a stranger points it."""
+    if not reply_to:
+        return senders, ""
+    from_domains = {_domain(a) for _, a in getaddresses([_header(original, "From")]) if a}
+    if all(_domain(a) in from_domains for a in reply_to):
+        return reply_to, ""
+    if not senders:
+        return [], ""
+    return senders, (
+        f"The mail asks for replies to {_one_line(', '.join(reply_to), 300)} (Reply-To), which "
+        "is not on the sender's domain, so the reply went to the sender (From) instead. "
+        "Use mail_send to write to that address if it is right."
+    )
 
 
 def forward(
@@ -1986,9 +2070,23 @@ def poll(
     there. POP3: `{"seen": [uidl, ...]}`, the last 5,000. Mail is read with
     PEEK, never marked read."""
     deadline = time.monotonic() + POLL_BUDGET_SECONDS
+    # Whether this poll must take one mail even when its time is gone: the
+    # last one ran out of time before its first mail (see `_out_of_time`).
+    starved = isinstance(cursor, Mapping) and cursor.get("starved") is True
     if account.incoming_protocol == "pop3":
-        return _poll_pop3(account, cursor, limit, guard, deadline)
-    return _poll_imap(account, folder or "INBOX", cursor, limit, guard, deadline)
+        return _poll_pop3(account, cursor, limit, guard, deadline, starved)
+    folder = canonical_folder(folder or "INBOX")
+    return _poll_imap(account, folder, cursor, limit, guard, deadline, starved)
+
+
+def _out_of_time(deadline: float, done: int, starved: bool) -> bool:
+    """Whether to stop before the next mail. A poll whose time is gone
+    before its first mail (a slow login) hands the cursor back unmoved,
+    marked "starved"; the poll after it then takes one mail whatever the
+    time, so the trigger moves on by at least one mail every second poll."""
+    if time.monotonic() < deadline:
+        return False
+    return not (done == 0 and starved)
 
 
 def _cursor_int(cursor: Mapping[str, Any] | None, key: str) -> int | None:
@@ -2003,6 +2101,7 @@ def _poll_imap(
     limit: int,
     guard: Guard | None,
     deadline: float,
+    starved: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with imap_session(account, guard) as conn:
         uidvalidity = _select(conn, folder)
@@ -2021,15 +2120,22 @@ def _poll_imap(
         data = _ok(*conn.uid("SEARCH", f"UID {last_uid + 1}:*"), "The server refused the search.")
         uids = sorted(u for u in {int(x) for x in b" ".join(data or [b""]).split()} if u > last_uid)
         events: list[dict[str, Any]] = []
-        done = last_uid
+        done, count = last_uid, 0
         for uid in uids[:limit]:
-            if done != last_uid and time.monotonic() >= deadline:
+            if _out_of_time(deadline, count, starved):
                 break
             fetched = _imap_event_mail(conn, ImapId(folder, uidvalidity, uid))
             if fetched is not None and (event := _safe_event(fetched, account)) is not None:
                 events.append(event)
-            done = uid
-        return {"folder": folder, "uidvalidity": uidvalidity, "last_uid": done}, events
+            done, count = uid, count + 1
+        next_cursor: dict[str, Any] = {
+            "folder": folder,
+            "uidvalidity": uidvalidity,
+            "last_uid": done,
+        }
+        if uids and count == 0:
+            next_cursor["starved"] = True
+        return next_cursor, events
 
 
 def _highest_uid(conn: imaplib.IMAP4) -> int:
@@ -2084,10 +2190,11 @@ def _imap_structure(conn: imaplib.IMAP4, uid: int) -> _Structure | None:
 
 
 def _imap_text(conn: imaplib.IMAP4, uid: int, part: _Structure) -> str:
-    """The start of a text part, at most MAX_EVENT_FETCH_BYTES of it,
-    decoded."""
+    """The start of a text part, decoded: no more is fetched than can be
+    decoded (MAX_DECODE_BYTES, with room for base64)."""
+    window = min(MAX_EVENT_FETCH_BYTES, 2 * MAX_DECODE_BYTES)
     try:
-        data = _imap_raw(conn, uid, section=part.section, partial=MAX_EVENT_FETCH_BYTES)
+        data = _imap_raw(conn, uid, section=part.section, partial=window)
     except MailError:
         return ""
     if part.encoding == "base64":
@@ -2095,10 +2202,7 @@ def _imap_text(conn: imaplib.IMAP4, uid: int, part: _Structure) -> str:
         data = base64.b64decode(compact[: len(compact) - len(compact) % 4])
     elif part.encoding == "quoted-printable":
         data = quopri.decodestring(data)
-    try:
-        text = data.decode(part.get_content_charset() or "utf-8", "replace")
-    except LookupError:
-        text = data.decode("utf-8", "replace")
+    text = _decode(data, part.get_content_charset())
     if part.get_content_type() == "text/html":
         text = html_to_text(text)
     return text.strip()
@@ -2110,6 +2214,7 @@ def _poll_pop3(
     limit: int,
     guard: Guard | None,
     deadline: float,
+    starved: bool,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with pop3_session(account, guard) as conn:
         listing = _pop3_listing(conn)
@@ -2121,7 +2226,7 @@ def _poll_pop3(
         events: list[dict[str, Any]] = []
         done = 0
         for uidl in new:
-            if done and time.monotonic() >= deadline:
+            if _out_of_time(deadline, done, starved):
                 break
             number, size = by_uidl[uidl]
             complete = size <= MAX_EVENT_FETCH_BYTES
@@ -2132,6 +2237,8 @@ def _poll_pop3(
             done += 1
         if done < len(new):
             next_cursor, _ = pop3_new_uidls(uidls, cursor, limit=done)
+        if done == 0:
+            next_cursor["starved"] = True
         return next_cursor, events
 
 
@@ -2144,8 +2251,13 @@ def _safe_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
     one bad mail cannot hold up the mail after it."""
     try:
         return mail_event(fetched, account)
-    except Exception:
-        pass
+    except Exception as exc:
+        # The class name and our id only: the error text may quote the mail.
+        logger.warning(
+            "mail %s could not be read (%s); handing it on by its headers",
+            fetched.id,
+            type(exc).__name__,
+        )
     try:
         return _header_event(fetched, account)
     except Exception:
@@ -2224,16 +2336,21 @@ def render_summary(payload: Mapping[str, Any], text: str, notes: Sequence[str] =
 
 
 def _render(payload: Mapping[str, Any], text: str | None, notes: Sequence[str]) -> str:
-    """The mail id the tools take, the headers (each on one line), the
-    attachments with their ids, our notes, and last the mail's text under
-    "Text:", every line of it quoted with "> ". Nothing in the text can
-    pass for one of the lines above it."""
+    """The mail id the tools take, the headers, the attachments with their
+    ids, our notes, and last the mail's text under "Text:", every line of it
+    quoted with "> ". Every value above the text is flattened to one line
+    and capped, so nothing a mail or its server says can pass for one of
+    those lines."""
+
+    def flat(value: Any, limit: int = 500) -> str:
+        return _one_line(str(value if value is not None else ""), limit)
+
     lines = [
-        f"Mail id: {payload['id']} (pass it to mail_get, mail_reply, mail_forward, "
+        f"Mail id: {flat(payload['id'])} (pass it to mail_get, mail_reply, mail_forward, "
         "mail_move, mail_mark_read or mail_delete)",
     ]
     if payload["folder"]:
-        lines.append(f"Folder: {payload['folder']}")
+        lines.append(f"Folder: {flat(payload['folder'])}")
     for label, key in (
         ("From", "from"),
         ("To", "to"),
@@ -2243,7 +2360,7 @@ def _render(payload: Mapping[str, Any], text: str | None, notes: Sequence[str]) 
         ("Message-ID", "message_id"),
     ):
         if payload[key]:
-            lines.append(f"{label}: {payload[key]}")
+            lines.append(f"{label}: {flat(payload[key], 1_000)}")
     listed = payload["attachments"]
     if listed:
         lines += [
@@ -2252,8 +2369,11 @@ def _render(payload: Mapping[str, Any], text: str | None, notes: Sequence[str]) 
             "the attachment id):",
         ]
         for item in listed[:_SUMMARY_ATTACHMENTS]:
-            size = _size(item["size"])
-            lines.append(f"- attachment id {item['id']}: {item['name']} ({item['type']}, {size})")
+            size = _size(int(item["size"]))
+            lines.append(
+                f"- attachment id {flat(item['id'], 20)}: {flat(item['name'], 200)} "
+                f"({flat(item['type'], 255)}, {size})"
+            )
         if len(listed) > _SUMMARY_ATTACHMENTS:
             lines.append(f"- ... and {len(listed) - _SUMMARY_ATTACHMENTS} more")
     notes = list(notes)

@@ -187,6 +187,8 @@ def test_presets_default_to_approval_before_sending() -> None:
         ]
     )
     assert "no daily" in answer.summary
+    assert "anyone who writes" in answer.summary
+    assert "Approval before sending" in answer.summary
 
 
 def test_every_shown_string_has_a_german_translation() -> None:
