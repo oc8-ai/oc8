@@ -1241,6 +1241,9 @@ msgstr ""
 msgid "Connections"
 msgstr ""
 
+msgid "Content"
+msgstr ""
+
 msgid "context"
 msgstr ""
 
@@ -1407,6 +1410,9 @@ msgid "Could not delete."
 msgstr ""
 
 msgid "Could not disable."
+msgstr ""
+
+msgid "Could not duplicate the skill."
 msgstr ""
 
 msgid "Could not fetch model list"
@@ -2106,6 +2112,12 @@ msgid "Draft with copilot"
 msgstr ""
 
 msgid "Drift guard — pause on off-role actions"
+msgstr ""
+
+msgid "Duplicate"
+msgstr ""
+
+msgid "Duplicate this skill to change it"
 msgstr ""
 
 msgid "Duration"
@@ -2844,6 +2856,9 @@ msgid "Knowledge bases"
 msgstr ""
 
 msgid "Knowledge Bases"
+msgstr ""
+
+msgid "Knowledge bases (one per line)"
 msgstr ""
 
 msgid "Knowledge library"
@@ -4926,6 +4941,9 @@ msgid "Skill assigned"
 msgstr ""
 
 msgid "Skill created"
+msgstr ""
+
+msgid "Skill duplicated"
 msgstr ""
 
 msgid "Skill library"
