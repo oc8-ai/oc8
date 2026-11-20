@@ -577,3 +577,25 @@ async def test_a_large_mail_is_read_in_bounded_pieces(
     assert abs(item["size"] - 30_000) < 1_000
     assert not any("BODY.PEEK[]" in f and "<" not in f for f in fetches)
     assert any("BODYSTRUCTURE" in f for f in fetches)
+
+
+async def test_a_mail_whose_text_cannot_be_read_does_not_stop_the_poll(
+    source: ModuleType, greenmail: Any, make_mail: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The large-mail path reads structure and text from the server; any
+    failure there leaves the mail with its headers and the poll moves on."""
+    mailbox = source.mailbox
+    monkeypatch.setattr(mailbox, "MAX_EVENT_FETCH_BYTES", 4_000)
+
+    def broken(*args: Any, **kwargs: Any) -> str:
+        raise ValueError("cannot decode")
+
+    monkeypatch.setattr(mailbox, "_imap_text", broken)
+    fields = greenmail.fields()
+    cursor = await baseline(source, fields)
+    greenmail.append(make_mail(subject="Big", body="x" * 6_000, message_id="<big@x>"))
+    greenmail.append(make_mail(subject="Small", message_id="<small@x>"))
+    result = await source.poll(fields, INBOX, cursor)
+    assert [e.payload["subject"] for e in result.events] == ["Big", "Small"]
+    assert "only its headers" in result.events[0].summary
+    assert (await source.poll(fields, INBOX, result.next_cursor)).events == []

@@ -548,33 +548,38 @@ def truncate(text: str) -> tuple[str, bool]:
 #: The most bytes of one text part ever decoded: far more than the
 #: MAX_TEXT_CHARS shown, far less than a mail can carry.
 MAX_DECODE_BYTES = 4 * MAX_TEXT_CHARS
-#: Codecs Python counts as text encodings that still must not decode mail:
-#: the sender picks the charset, and these turn bytes into other text
-#: (escapes, IDNA) or cost more than their size suggests.
-_REFUSED_CODECS = {"punycode", "idna", "rot-13", "rot13", "base64", "hex", "zlib", "bz2", "uu"}
+#: The charsets mail text is decoded with, matched on the codec's own name
+#: (`codecs.lookup(charset).name`, so every alias counts). The sender picks
+#: the charset; anything else (escape codecs, punycode, idna, `undefined`,
+#: rare stateful encodings) is read as utf-8.
+_TEXT_CODECS = re.compile(
+    r"utf-(?:7|8|8-sig|16(?:-be|-le)?|32(?:-be|-le)?)|ascii|iso8859-\d{1,2}"
+    r"|cp125\d|cp(?:437|850|852|866|874|949)|koi8-[a-z]+|mac-[a-z0-9-]+"
+    r"|gb2312|gbk|gb18030|big5|shift_jis|euc_jp|iso2022_jp|euc_kr"
+)
+#: Common labels Python's codec registry does not know.
+_CHARSET_ALIASES = {"windows-874": "cp874"}
 
 
 def _codec(charset: str | None) -> str:
-    """The codec to decode a part with: its charset when that names a real
-    text encoding, else utf-8."""
+    """The codec to decode a part with: its charset when that is one of the
+    real text charsets in `_TEXT_CODECS`, else utf-8."""
+    label = (charset or "utf-8").strip().lower()
     try:
-        info = codecs.lookup(charset or "utf-8")
+        name = codecs.lookup(_CHARSET_ALIASES.get(label, label)).name
     except (LookupError, TypeError, ValueError):
         return "utf-8"
-    name = info.name.lower()
-    if (
-        not getattr(info, "_is_text_encoding", False)
-        or name in _REFUSED_CODECS
-        or name.endswith("_escape")
-        or name.replace("-", "_").endswith("_escape")
-    ):
-        return "utf-8"
-    return info.name
+    return name if _TEXT_CODECS.fullmatch(name) else "utf-8"
 
 
 def _decode(data: bytes, charset: str | None) -> str:
-    """At most MAX_DECODE_BYTES of `data`, decoded with a safe codec."""
-    return data[:MAX_DECODE_BYTES].decode(_codec(charset), "replace")
+    """At most MAX_DECODE_BYTES of `data`, decoded with a safe codec; when
+    even that fails, as utf-8."""
+    data = data[:MAX_DECODE_BYTES]
+    try:
+        return data.decode(_codec(charset), "replace")
+    except (UnicodeError, LookupError, ValueError):
+        return data.decode("utf-8", "replace")
 
 
 def _part_text(part: EmailMessage) -> str:
@@ -1570,7 +1575,10 @@ def get_attachment(
     if part.get_content_maintype() == "text" or mime in _TEXT_TYPES:
         # The whole attachment, which is capped by MAX_ATTACHMENT_BYTES, but
         # only with a real text encoding.
-        content = data.decode(_codec(part.get_content_charset()), "replace")
+        try:
+            content = data.decode(_codec(part.get_content_charset()), "replace")
+        except (UnicodeError, LookupError, ValueError):
+            content = data.decode("utf-8", "replace")
         return {**result, "encoding": "text", "content": content}
     return {**result, "encoding": "base64", "content": base64.b64encode(data).decode()}
 
@@ -2160,13 +2168,22 @@ def _imap_event_mail(conn: imaplib.IMAP4, mail_id: ImapId) -> Fetched | None:
     listed: list[dict[str, Any]] | None = None
     try:
         structure = _imap_structure(conn, uid)
-    except (ValueError, IndexError, TypeError, RecursionError):
-        structure = None
-    if structure is not None:
-        listed = _listing(structure, lambda part: part.decoded_size)
-        body = _find_body(structure)
-        if body is not None:
-            text = _imap_text(conn, uid, body)
+        if structure is not None:
+            listed = _listing(structure, lambda part: part.decoded_size)
+            body = _find_body(structure)
+            if body is not None:
+                text = _imap_text(conn, uid, body)
+    except (imaplib.IMAP4.abort, OSError):
+        raise  # the connection is gone: the whole poll fails and is retried
+    except Exception as exc:
+        # Whatever the structure or the text does to us, the mail goes on
+        # by its headers and the poll moves past it.
+        logger.warning(
+            "mail %s: structure or text could not be read (%s); using its headers",
+            mail_id,
+            type(exc).__name__,
+        )
+        text, listed = None, None
     return Fetched(
         str(mail_id), mail_id.folder, head, size, complete=False, text=text, listed=listed
     )

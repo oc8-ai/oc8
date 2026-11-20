@@ -591,3 +591,36 @@ def test_an_attachment_with_an_odd_charset_is_read_as_utf8(mailbox: ModuleType) 
     assert mailbox._decode(b"\\u0041", "unicode_escape") == "\\u0041"
     assert mailbox._decode(b"caf\xe9", "latin-1") == "café"
     assert mailbox._decode(b"abc", "no-such-charset") == "abc"
+
+
+@pytest.mark.parametrize("charset", ["undefined", "no-such-charset", "hz", "utf-8-but-not"])
+def test_a_charset_outside_the_allowlist_decodes_as_utf8(mailbox: ModuleType, charset: str) -> None:
+    raw = (
+        b"From: a@example.com\r\nTo: agent@example.com\r\nSubject: s\r\nMIME-Version: 1.0\r\n"
+        b"Content-Type: text/plain; charset=" + charset.encode() + b"\r\n"
+        b"Content-Transfer-Encoding: 8bit\r\n\r\ncaf\xc3\xa9\r\n"
+    )
+    assert mailbox.body_text(mailbox.parse(raw)) == "café"
+    assert mailbox._decode(b"caf\xc3\xa9", charset) == "café"
+
+
+@pytest.mark.parametrize(
+    ("charset", "expected"),
+    [
+        ("latin-1", "cp1252"),
+        ("windows-874", "cp874"),
+        ("ISO-8859-15", "iso8859-15"),
+        ("Shift_JIS", "shift_jis"),
+        ("koi8-r", "koi8-r"),
+        ("utf-16-le", "utf-16-le"),
+    ],
+)
+def test_real_text_charsets_are_kept(mailbox: ModuleType, charset: str, expected: str) -> None:
+    codec = mailbox._codec(charset)
+    assert codec == expected or (charset == "latin-1" and codec == "iso8859-1")
+
+
+def test_decode_fails_closed(mailbox: ModuleType, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Even a codec that passes the check but raises falls back to utf-8.
+    monkeypatch.setattr(mailbox, "_codec", lambda charset: "undefined")
+    assert mailbox._decode(b"caf\xc3\xa9", "x") == "café"
