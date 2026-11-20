@@ -30,6 +30,8 @@ from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.auth.email_otp import drop_email_factor
 from oc8.auth.password import PasswordHashingError, hash_password
+from oc8.auth.second_factors import audit as audit_two_factor
+from oc8.auth.second_factors import remove_all as remove_all_second_factors
 from oc8.authz.permissions import MANAGE, MEMBER, MEMBER_ROLE, VIEW, perm
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
 from oc8.config import get_settings
@@ -456,6 +458,45 @@ async def set_member_password(
         principal=principal,
     )
     await db.commit()
+
+
+@router.post(
+    "/members/{member_id}/two-factor/reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(require_permission(perm(MEMBER, MANAGE)))],
+)
+async def reset_member_two_factor(
+    member_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+) -> Response:
+    """Remove every second factor and backup code a member has, for somebody
+    who lost their device, and restart their grace period.
+
+    Never on oneself: an administrator who could reset their own second factor
+    with nothing but a session would make the factor worth nothing; they use
+    the password-checked removal on their own profile instead.
+    """
+    member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
+    if member is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+    actor_id = await _acting_member_id(db, principal)
+    if actor_id == member.id or member.subject == principal.subject:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You cannot reset your own two-factor authentication. Remove a method from "
+            "your profile instead.",
+        )
+    await remove_all_second_factors(db, tenant_id=principal.tenant_id, member=member)
+    await audit_two_factor(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_id=actor_id,
+        action="two_factor.reset",
+        member_id=member.id,
+        principal=principal,
+    )
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put(

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import datetime as dt
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import Field
 from sqlalchemy import select, update
 
@@ -33,9 +33,19 @@ from oc8.auth.email_otp import (
     issue_code,
     spend,
 )
+from oc8.auth.password import verify_password
+from oc8.auth.second_factors import audit, remove_method
 from oc8.auth.totp import generate_backup_codes, hash_backup_code
 from oc8.auth.totp_gate import member_id_for_principal
-from oc8.auth.two_factor_policy import load_policy, member_methods
+from oc8.auth.two_factor_policy import (
+    METHODS,
+    enrollable_methods,
+    enrolled_methods,
+    is_org_admin,
+    load_policy,
+    member_methods,
+    requires_member,
+)
 from oc8.db.session import tenant_session
 from oc8.mail.send import active_smtp_credential, deliver, resolve_smtp_config
 from oc8.schemas.base import CamelModel
@@ -46,6 +56,12 @@ _ENROL_REASON = (
     "self-service: acts only on the caller's own member row (member id from the "
     "token, never a path parameter); reachable by a full session or a "
     "totp:enroll-scoped token, which deny_totp_pending_principals confines here"
+)
+_MANAGE_REASON = (
+    "self-service: lists or removes the caller's OWN second factors (member id "
+    "from the token, the path names only a method); a full session only, since "
+    "neither pending token's allowlist in deny_totp_pending_principals names it, "
+    "and removal re-checks the current password"
 )
 _CHALLENGE_REASON = (
     "completes the caller's own login challenge (member id from the token, never "
@@ -118,10 +134,22 @@ async def _mail_code(
     return EmailCodeSentResponse(sent_to=address)
 
 
-async def _answer(db: DbSession, member: m.OrgMember, purpose: Purpose, code: str) -> CheckResult:
+async def _answer(
+    db: DbSession, principal: Principal, member: m.OrgMember, purpose: Purpose, code: str
+) -> CheckResult:
     """Check a code and commit the outcome either way: a wrong attempt must
     stay counted although the request then fails."""
     result = await check_code(db, member_id=member.id, purpose=purpose, code=code)
+    if result is CheckResult.LOCKED:
+        await audit(
+            db,
+            tenant_id=principal.tenant_id,
+            actor_id=member.id,
+            action="two_factor.locked",
+            member_id=member.id,
+            method="email",
+            principal=principal,
+        )
     await db.commit()
     return result
 
@@ -173,7 +201,7 @@ async def email_confirm(
     member = await _own_member(db, principal)
     address = _address(member)
     tenant_id, member_id = principal.tenant_id, member.id
-    if await _answer(db, member, "enrol", body.code) is not CheckResult.OK:
+    if await _answer(db, principal, member, "enrol", body.code) is not CheckResult.OK:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired code.")
 
     # `_answer` committed; a fresh, tenant-bound session for the enrolment.
@@ -226,6 +254,15 @@ async def email_confirm(
             .where(m.OrgMember.id == member_id)
             .values(totp_grace_started_at=None)
         )
+        await audit(
+            tx,
+            tenant_id=tenant_id,
+            actor_id=member_id,
+            action="two_factor.enrolled",
+            member_id=member_id,
+            method="email",
+            principal=principal,
+        )
     return EmailConfirmResponse(backup_codes=codes)
 
 
@@ -262,7 +299,7 @@ async def email_verify(
     if "email" not in await member_methods(db, member):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired code.")
     member_id = member.id
-    if await _answer(db, member, "login", body.code) is not CheckResult.OK:
+    if await _answer(db, principal, member, "login", body.code) is not CheckResult.OK:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired code.")
     async with tenant_session(principal.tenant_id) as tx:
         await tx.execute(
@@ -271,3 +308,113 @@ async def email_verify(
             .values(last_used_at=dt.datetime.now(tz=dt.UTC))
         )
     return mint_full_session(principal, member_id)
+
+
+class SecondFactorItem(CamelModel):
+    method: str
+    label: str
+    #: Whether the policy still allows it; a disallowed one is kept but unusable.
+    allowed: bool
+    #: False when it is the last allowed method and the policy requires one.
+    removable: bool
+
+
+class SecondFactorsResponse(CamelModel):
+    methods: list[SecondFactorItem]
+    #: The policy's methods, `passkey` included although nobody can enrol one yet.
+    allowed_methods: list[str]
+    #: Allowed methods the caller can enrol in right now.
+    enrollable_methods: list[str]
+    #: Whether the policy requires a second factor from the caller.
+    required: bool
+    backup_codes_left: int
+
+
+class RemoveSecondFactorRequest(CamelModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+
+
+async def _required(db: DbSession, member: m.OrgMember) -> bool:
+    policy = await load_policy(db, member.tenant_id)
+    if policy.requirement == "off":
+        return False
+    return requires_member(policy, admin=await is_org_admin(db, member))
+
+
+@router.get(
+    "/auth/two-factor/methods",
+    response_model=SecondFactorsResponse,
+    dependencies=[Depends(unguarded(_MANAGE_REASON))],
+)
+async def list_second_factors(principal: CurrentPrincipal, db: DbSession) -> SecondFactorsResponse:
+    member = await _own_member(db, principal)
+    policy = await load_policy(db, principal.tenant_id)
+    enrolled = await enrolled_methods(db, member.id)
+    allowed = [x for x in enrolled if x in policy.methods]
+    required = await _required(db, member)
+    rows = await db.execute(
+        select(m.SecondFactor.method, m.SecondFactor.label).where(
+            m.SecondFactor.member_id == member.id
+        )
+    )
+    labels = {method: label for method, label in rows}
+    cred = (
+        await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member.id))
+    ).scalar_one_or_none()
+    left = sum(1 for c in cred.backup_codes if c.get("used_at") is None) if cred is not None else 0
+    return SecondFactorsResponse(
+        methods=[
+            SecondFactorItem(
+                method=x,
+                label=labels.get(x, ""),
+                allowed=x in policy.methods,
+                removable=not (required and allowed == [x]),
+            )
+            for x in enrolled
+        ],
+        allowed_methods=list(policy.methods),
+        enrollable_methods=await enrollable_methods(db, principal.tenant_id, policy),
+        required=required,
+        backup_codes_left=left,
+    )
+
+
+@router.delete(
+    "/auth/two-factor/methods/{method}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[Depends(unguarded(_MANAGE_REASON))],
+)
+async def remove_second_factor(
+    method: str, body: RemoveSecondFactorRequest, principal: CurrentPrincipal, db: DbSession
+) -> Response:
+    """Remove one of the caller's own methods. Refused while it is the last
+    allowed one and the policy requires two-factor from the caller."""
+    member = await _own_member(db, principal)
+    if member.password_hash is None or not verify_password(
+        body.current_password, member.password_hash
+    ):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is incorrect")
+    enrolled = await enrolled_methods(db, member.id)
+    if method not in METHODS or method not in enrolled:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "You do not use this method.")
+    policy = await load_policy(db, principal.tenant_id)
+    allowed = [x for x in enrolled if x in policy.methods]
+    if allowed == [method] and await _required(db, member):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Your organisation requires a second factor. Add another method before "
+            "removing this one.",
+        )
+    await remove_method(db, tenant_id=principal.tenant_id, member=member, method=method)
+    await audit(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_id=member.id,
+        action="two_factor.removed",
+        member_id=member.id,
+        method=method,
+        principal=principal,
+    )
+    await db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

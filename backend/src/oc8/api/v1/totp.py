@@ -19,6 +19,7 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.api.v1.auth import PasswordSessionResponse
 from oc8.auth import Principal, get_identity_provider
+from oc8.auth.second_factors import audit
 from oc8.auth.totp import (
     generate_backup_codes,
     generate_secret,
@@ -28,7 +29,7 @@ from oc8.auth.totp import (
     verify_code,
 )
 from oc8.auth.totp_gate import member_id_for_principal
-from oc8.auth.two_factor_policy import load_policy, member_methods
+from oc8.auth.two_factor_policy import enrolled_methods, load_policy, member_methods
 from oc8.schemas.base import CamelModel
 from oc8.secrets.service import resolve_secret, store_secret
 
@@ -289,6 +290,15 @@ async def totp_confirm(
     await db.execute(
         update(m.OrgMember).where(m.OrgMember.id == member_id).values(totp_grace_started_at=None)
     )
+    await audit(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_id=member_id,
+        action="two_factor.enrolled",
+        member_id=member_id,
+        method="totp",
+        principal=principal,
+    )
     await db.commit()
     return TotpConfirmResponse(backup_codes=codes)
 
@@ -429,10 +439,20 @@ async def totp_regenerate_backup_codes(
     cred = (
         await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member_id))
     ).scalar_one_or_none()
-    if cred is None or cred.enrolled_at is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "No TOTP credential enrolled.")
+    # Backup codes belong to whichever method the member uses: an email-only
+    # member's row has no TOTP enrolment but holds their codes all the same.
+    if cred is None or not await enrolled_methods(db, member_id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No second factor enrolled.")
 
     codes = generate_backup_codes()
     cred.backup_codes = [{"hash": hash_backup_code(c), "used_at": None} for c in codes]
+    await audit(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_id=member_id,
+        action="two_factor.backup_codes_regenerated",
+        member_id=member_id,
+        principal=principal,
+    )
     await db.commit()
     return TotpRegenerateBackupCodesResponse(backup_codes=codes)
