@@ -350,8 +350,11 @@ async def test_another_integrity_error_is_not_reported_as_a_duplicate(
 ) -> None:
     from sqlalchemy.exc import IntegrityError
 
-    async def passes(*_args: Any, **_kwargs: Any) -> bool:
-        return True
+    from oc8.events.sources import PolledEventSpec, polled_event_spec
+
+    async def passes(db: Any, **kwargs: Any) -> PolledEventSpec | None:
+        # The polled event, without checking the target.
+        return await polled_event_spec(db, kwargs["event_source"], kwargs["event_type"])
 
     # As if the target login were deleted between the check and the insert:
     # the foreign key refuses it, which is no duplicate.

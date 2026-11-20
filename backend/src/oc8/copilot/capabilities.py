@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import HTTPException
 from pydantic import (
@@ -53,7 +53,7 @@ from oc8.capas.discovery import (
     resolve_tool_pack_connection,
 )
 from oc8.capas.lifecycle import disable_plugin, enable_plugin
-from oc8.capas.manifest import GuardrailAttribute, parse_manifest
+from oc8.capas.manifest import TRIGGER_CONFIG_VALUE_MAX, GuardrailAttribute, parse_manifest
 from oc8.capas.service import (
     PluginError,
     SetupValidationError,
@@ -79,7 +79,12 @@ from oc8.runtime.registry import (
     check_runtime_capabilities,
     resolve_runtime_plugin,
 )
-from oc8.triggers.service import InvalidTriggerConfig, create_trigger
+from oc8.triggers.service import (
+    InvalidTriggerConfig,
+    PolledTargetMissing,
+    create_trigger,
+    polled_event_target,
+)
 from oc8.triggers.zones import valid_timezone
 
 logger = logging.getLogger(__name__)
@@ -110,6 +115,16 @@ class TriggerCreate(_Operation):
     timezone: str | None = Field(default=None, max_length=64)
     eventSource: str | None = Field(default=None, max_length=128)
     eventType: str | None = Field(default=None, max_length=128)
+    #: A polled event's settings (`TriggerDecl.config`); the login it listens
+    #: on is never named here -- it is the agent's fixed login for the event
+    #: capa's tools (`triggers.service.polled_event_target`).
+    eventConfig: (
+        dict[
+            Annotated[str, Field(max_length=64)],
+            Annotated[str, Field(max_length=TRIGGER_CONFIG_VALUE_MAX)],
+        ]
+        | None
+    ) = Field(default=None, max_length=16)
 
     @field_validator("timezone")
     @classmethod
@@ -670,6 +685,16 @@ async def apply_operation(
     if isinstance(operation, TriggerCreate):
         events = await list_installed_automation_events(db)
         try:
+            target = None
+            if operation.kind == "event" and operation.eventSource and operation.eventType:
+                # A polled event listens on the agent's fixed login for its
+                # tools; the Copilot never names a login itself.
+                target = await polled_event_target(
+                    db,
+                    agent_id=operation.agentId,
+                    event_source=operation.eventSource,
+                    event_type=operation.eventType,
+                )
             await create_trigger(
                 db,
                 tenant_id=tenant_id,
@@ -682,6 +707,8 @@ async def apply_operation(
                 event_type=operation.eventType,
                 declared_events={(event.source, event.type) for event in events},
                 created_by_member_id=actor_member_id,
+                event_target_credential_id=target,
+                event_config=operation.eventConfig,
             )
         except SubscriptionModelNotManualOnly as exc:
             # A ChatGPT-subscription-backed agent may not be given an
@@ -692,6 +719,9 @@ async def apply_operation(
             # turns into a rejected proposal and a 409) rather than a new
             # error surface, and value-free like every other InvalidOperation.
             raise InvalidOperation("model_manual_only") from exc
+        except PolledTargetMissing as exc:
+            # The agent has no login of the event's tools to listen on.
+            raise InvalidOperation("trigger_needs_login") from exc
         except InvalidTriggerConfig as exc:
             # A bad cron expression or an undeclared event: this module's one
             # value-free rejection, not a raw ValueError escaping the proposal.

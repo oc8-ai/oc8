@@ -866,18 +866,45 @@ class PluginSetupSpec(BaseModel):
         return self
 
 
+#: The longest value a trigger setting (`Trigger.event_config`) may hold.
+TRIGGER_CONFIG_VALUE_MAX = 200
+
+
+class TriggerConfigField(BaseModel):
+    """One setting of a trigger on a polled event, shown in the trigger editor
+    and handed to the poller in `event_config` (always a string). A missing
+    value is filled from `default`, or, with `default_from`, from that key of
+    the setup of the connection its login belongs to (e.g. `default_user`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    label: str = Field(min_length=1, max_length=200)
+    kind: Literal["text"] = "text"
+    default: str = Field(default="", max_length=TRIGGER_CONFIG_VALUE_MAX)
+    default_from: str = Field(default="", max_length=64)
+
+
 class TriggerDecl(BaseModel):
     """An event a capa declares as a table: how it is shown in the trigger
     editor and whether core polls for it. `polled` events need a poller the
     capa registers through its `event_sources` entry point
     (`oc8.events.sources`); a plain string entry in `triggers` is an event
-    pushed to core and keeps its old meaning."""
+    pushed to core and keeps its old meaning. `config` declares the settings
+    a trigger on it takes; nothing else is accepted in its `event_config`."""
 
     model_config = ConfigDict(extra="forbid")
     type: str = Field(min_length=1)
     label: str = ""
     description: str = ""
     polled: bool = False
+    config: list[TriggerConfigField] = Field(default_factory=list, max_length=16)
+
+    @model_validator(mode="after")
+    def _unique_config_keys(self) -> TriggerDecl:
+        keys = [field.key for field in self.config]
+        if len(keys) != len(set(keys)):
+            raise ValueError(f"trigger {self.type!r} declares a setting twice")
+        return self
 
 
 class Manifest(BaseModel):

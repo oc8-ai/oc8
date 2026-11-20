@@ -3,6 +3,7 @@ and (future) event-trigger UI."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -12,13 +13,20 @@ from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import MANAGE, TRIGGER, VIEW, perm
 from oc8.authz.scope import scope_for_principal
+from oc8.automation.catalogue import list_installed_automation_events
+from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
 from oc8.connections.access import trigger_fingerprint
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
 )
-from oc8.schemas.dto import TriggerDTO
+from oc8.schemas.dto import (
+    TriggerDTO,
+    TriggerEventConfigFieldDTO,
+    TriggerEventDTO,
+    TriggerPollStatusDTO,
+)
 from oc8.schemas.requests import CreateTriggerRequest, UpdateTriggerRequest
 from oc8.triggers.service import (
     InvalidTriggerConfig,
@@ -26,6 +34,7 @@ from oc8.triggers.service import (
     delete_trigger,
     get_trigger,
     list_triggers_for_agent,
+    polled_event_target,
     update_trigger,
 )
 
@@ -67,13 +76,61 @@ async def _needs_confirmation(
     return out
 
 
+async def _poll_statuses(
+    db: DbSession, triggers: list[m.Trigger]
+) -> dict[uuid.UUID, m.EventSourceCursor]:
+    """The cursor rows of the polled triggers among `triggers`."""
+    ids = [t.id for t in triggers if t.event_target_credential_id is not None]
+    if not ids:
+        return {}
+    rows = (
+        (
+            await db.execute(
+                select(m.EventSourceCursor).where(m.EventSourceCursor.trigger_id.in_(ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {row.trigger_id: row for row in rows}
+
+
+def _iso(value: dt.datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def _poll_status(
+    t: m.Trigger, cursors: dict[uuid.UUID, m.EventSourceCursor]
+) -> TriggerPollStatusDTO | None:
+    if t.event_target_credential_id is None:
+        return None
+    row = cursors.get(t.id)
+    if row is None:
+        return TriggerPollStatusDTO()
+    return TriggerPollStatusDTO(
+        last_polled_at=_iso(row.last_polled_at),
+        last_ok_at=_iso(row.last_ok_at),
+        last_error=row.last_error,
+        last_error_at=_iso(row.last_error_at),
+    )
+
+
 async def _to_dto(db: DbSession, t: m.Trigger, caller: uuid.UUID | None) -> TriggerDTO:
     flagged = await _needs_confirmation(db, [t], caller)
-    return _dto_with(t, await _owner_names(db, [t]), needs_confirmation=flagged)
+    return _dto_with(
+        t,
+        await _owner_names(db, [t]),
+        needs_confirmation=flagged,
+        cursors=await _poll_statuses(db, [t]),
+    )
 
 
 def _dto_with(
-    t: m.Trigger, names: dict[uuid.UUID, str], *, needs_confirmation: set[uuid.UUID]
+    t: m.Trigger,
+    names: dict[uuid.UUID, str],
+    *,
+    needs_confirmation: set[uuid.UUID],
+    cursors: dict[uuid.UUID, m.EventSourceCursor],
 ) -> TriggerDTO:
     return TriggerDTO(
         id=str(t.id),
@@ -92,6 +149,12 @@ def _dto_with(
         created_by_name=names.get(t.created_by_member_id) if t.created_by_member_id else None,
         acts_for_creator=t.acts_for_creator,
         needs_confirmation=t.id in needs_confirmation,
+        event_target_credential_id=(
+            str(t.event_target_credential_id) if t.event_target_credential_id else None
+        ),
+        event_config=dict(t.event_config or {}),
+        poll_status=_poll_status(t, cursors),
+        last_skip_reason=t.last_skip_reason,
     )
 
 
@@ -114,7 +177,65 @@ def _changes_what_runs(trigger: m.Trigger, body: UpdateTriggerRequest) -> bool:
         )
         or (bool(body.timezone) and trigger.kind == "cron" and body.timezone != trigger.timezone)
         or body.enabled is True
+        or (body.event_config is not None and body.event_config != trigger.event_config)
+        or (
+            body.event_target_credential_id is not None
+            and body.event_target_credential_id != trigger.event_target_credential_id
+        )
     )
+
+
+def _translations(i18n: dict[str, dict[str, str]], text: str) -> dict[str, str]:
+    return translations_for(i18n, text) if text else {}
+
+
+@router.get(
+    "/trigger-events",
+    response_model=list[TriggerEventDTO],
+    dependencies=[Depends(require_permission(perm(TRIGGER, VIEW)))],
+)
+async def list_trigger_events(db: DbSession, principal: CurrentPrincipal) -> list[TriggerEventDTO]:
+    """The events a trigger may listen on, from core and this organisation's
+    enabled capas, with how the trigger editor shows them: a polled event's
+    settings and the tool key whose fixed login it listens on."""
+    from oc8.capas.discovery import find_plugin
+    from oc8.events.sources import polled_event_spec
+
+    out: list[TriggerEventDTO] = []
+    catalogs: dict[str, dict[str, dict[str, str]]] = {}
+    for event in await list_installed_automation_events(db):
+        if event.source not in catalogs:
+            found = find_plugin(event.source) if event.source != "core" else None
+            catalogs[event.source] = dict(found.i18n) if found is not None else {}
+        i18n = catalogs[event.source]
+        tool_key: str | None = None
+        if event.polled:
+            spec = await polled_event_spec(db, event.source, event.type)
+            tool_key = spec.tool_key if spec is not None else None
+        out.append(
+            TriggerEventDTO(
+                source=event.source,
+                type=event.type,
+                label=event.label,
+                label_translations=_translations(i18n, event.label),
+                description=event.description,
+                description_translations=_translations(i18n, event.description),
+                polled=event.polled,
+                tool_key=tool_key,
+                config=[
+                    TriggerEventConfigFieldDTO(
+                        key=field.key,
+                        label=field.label,
+                        label_translations=_translations(i18n, field.label),
+                        kind=field.kind,
+                        default=field.default,
+                        default_from=field.default_from,
+                    )
+                    for field in event.config
+                ],
+            )
+        )
+    return out
 
 
 @router.post(
@@ -130,7 +251,13 @@ async def create_agent_trigger(
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     caller = await _caller_member_id(db, principal)
+    target = body.event_target_credential_id
     try:
+        if body.kind == "event" and target is None and body.event_source and body.event_type:
+            # A polled event listens on the agent's fixed login for its tools.
+            target = await polled_event_target(
+                db, agent_id=agent_id, event_source=body.event_source, event_type=body.event_type
+            )
         trigger = await create_trigger(
             db,
             tenant_id=principal.tenant_id,
@@ -143,6 +270,8 @@ async def create_agent_trigger(
             event_type=body.event_type,
             created_by_member_id=caller,
             acts_for_creator=body.acts_for_creator,
+            event_target_credential_id=target,
+            event_config=body.event_config,
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
@@ -169,7 +298,8 @@ async def list_agent_triggers(
     rows = list(await list_triggers_for_agent(db, agent_id=agent_id))
     names = await _owner_names(db, rows)
     flagged = await _needs_confirmation(db, rows, await _caller_member_id(db, principal))
-    return [_dto_with(t, names, needs_confirmation=flagged) for t in rows]
+    cursors = await _poll_statuses(db, rows)
+    return [_dto_with(t, names, needs_confirmation=flagged, cursors=cursors) for t in rows]
 
 
 @router.patch(
@@ -219,6 +349,8 @@ async def update_agent_trigger(
             enabled=body.enabled,
             cron_expression=body.cron_expression,
             timezone=body.timezone,
+            event_config=body.event_config,
+            event_target_credential_id=body.event_target_credential_id,
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc

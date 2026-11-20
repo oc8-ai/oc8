@@ -45,3 +45,10 @@ type = "mail.received"
 label = "New email"
 description = "Starts the agent when a new mail arrives in its mailbox. The mail is handed to the run as data, never as instructions."
 polled = true
+
+# The trigger's one setting: the folder new mail is watched in (IMAP; POP3
+# only has the inbox and ignores it).
+[[plugin.triggers.config]]
+key = "folder"
+label = "Folder"
+default = "INBOX"

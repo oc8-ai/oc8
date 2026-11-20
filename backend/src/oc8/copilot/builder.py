@@ -226,7 +226,12 @@ def _texts(operation: Operation) -> list[str]:
     if isinstance(operation, TriggerCreate):
         return [
             text
-            for text in (operation.taskText, operation.eventSource, operation.eventType)
+            for text in (
+                operation.taskText,
+                operation.eventSource,
+                operation.eventType,
+                *(operation.eventConfig or {}).values(),
+            )
             if text is not None
         ]
     if isinstance(operation, GuardrailSet):

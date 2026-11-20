@@ -10,8 +10,22 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from oc8.capas.manifest import TriggerConfigField
+
+
+@dataclass(frozen=True, slots=True)
+class AutomationEventConfigField:
+    """A setting a trigger on the event takes (`capas.manifest.TriggerConfigField`)."""
+
+    key: str
+    label: str
+    kind: str = "text"
+    default: str = ""
+    default_from: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +37,8 @@ class AutomationEventDescriptor:
     #: Core polls an outside system for this event (`oc8.events.sources`);
     #: the trigger editor offers it as its own tab.
     polled: bool = False
+    #: The settings a trigger on this event takes, in the editor's order.
+    config: tuple[AutomationEventConfigField, ...] = ()
 
 
 class DuplicateAutomationEvent(ValueError):
@@ -71,12 +87,29 @@ def _descriptor_from_manifest(plugin_name: str, value: Any) -> AutomationEventDe
         return None
     if not isinstance(polled, bool):
         return None
+    raw_config = value.get("config", [])
+    if not isinstance(raw_config, list):
+        return None
+    try:
+        config = tuple(TriggerConfigField.model_validate(item) for item in raw_config)
+    except ValidationError:
+        return None
     return AutomationEventDescriptor(
         source=source,
         type=event_type,
         label=label or event_type,
         description=description,
         polled=polled,
+        config=tuple(
+            AutomationEventConfigField(
+                key=field.key,
+                label=field.label,
+                kind=field.kind,
+                default=field.default,
+                default_from=field.default_from,
+            )
+            for field in config
+        ),
     )
 
 

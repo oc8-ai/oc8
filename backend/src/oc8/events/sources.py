@@ -51,7 +51,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 from urllib.parse import quote, quote_plus
 
 from sqlalchemy import select
@@ -61,6 +61,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.db.session import tenant_session
 from oc8.tenants.activity import TenantInactive
+
+if TYPE_CHECKING:
+    from oc8.capas.manifest import TriggerConfigField
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +127,11 @@ class PolledEventSpec:
     #: what `AgentToolAccess.tool_key` and login resolution use.
     tool_key: str | None
     registered: RegisteredPoller | None
+    #: The settings a trigger on it takes (`TriggerDecl.config`).
+    config: tuple[TriggerConfigField, ...] = ()
+    #: Setup field key -> the env name the capa's connection keeps it under
+    #: (`[plugin.setup.mcp] env_fields`): where `default_from` reads.
+    setup_env: dict[str, str] = field(default_factory=dict)
 
 
 _POLLERS: dict[tuple[str, str], RegisteredPoller] = {}
@@ -194,13 +202,72 @@ async def polled_event_spec(
     if declared is None:
         return None
     integration = integration_from_manifest(manifest)
+    mcp = manifest.setup.mcp if manifest.setup is not None else None
     return PolledEventSpec(
         source=source,
         event_type=event_type,
         label=declared.label or event_type,
         tool_key=integration.tool_key if integration is not None else None,
         registered=get_poller(source, event_type),
+        config=tuple(declared.config),
+        setup_env=({key: env for env, key in mcp.env_fields.items()} if mcp is not None else {}),
     )
+
+
+async def connection_setup_value(
+    db: AsyncSession, spec: PolledEventSpec, *, agent_id: uuid.UUID, target: uuid.UUID, key: str
+) -> str:
+    """The value the setup of the connection `target` belongs to gave its field
+    `key` (a trigger setting's `default_from`), or "" when none did.
+
+    A setup keeps a plain field in its connection's env (`env_fields`). The
+    connection is the capa's own row for exactly that login when there is one,
+    else its row for the agent's department, else its row for every
+    department; a setup without a connection keeps its values on the
+    installation instead."""
+    from oc8.connections.tool_connection import not_retired
+
+    env_name = spec.setup_env.get(key)
+    if env_name is not None:
+        rows = (
+            (
+                await db.execute(
+                    select(m.McpConnection)
+                    .where(
+                        m.McpConnection.config["_plugin_name"].astext == spec.source,
+                        not_retired(),
+                    )
+                    .order_by(m.McpConnection.created_at, m.McpConnection.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        agent = await db.get(m.Agent, agent_id)
+        department = agent.department_id if agent is not None else None
+
+        def rank(row: m.McpConnection) -> int | None:
+            if row.credential_id is not None:
+                return 0 if row.credential_id == target else None
+            if row.department_id is not None:
+                return 1 if row.department_id == department else None
+            return 2
+
+        ranked = sorted(
+            ((r, row) for row in rows if (r := rank(row)) is not None), key=lambda item: item[0]
+        )
+        for _rank, row in ranked:
+            value = ((row.config or {}).get("env") or {}).get(env_name)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    installed = await db.scalar(
+        select(m.CapaInstallation.config)
+        .join(m.Capa, m.Capa.id == m.CapaInstallation.capa_id)
+        .where(m.Capa.name == spec.source, m.CapaInstallation.status == "enabled")
+        .limit(1)
+    )
+    value = (installed or {}).get(key) if isinstance(installed, dict) else None
+    return value.strip() if isinstance(value, str) else ""
 
 
 async def fixed_login(db: AsyncSession, agent_id: uuid.UUID, tool_key: str) -> uuid.UUID | None:

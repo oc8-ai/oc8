@@ -22,6 +22,8 @@ CREDENTIAL_TYPE = "test_login"
 SECRET = "pa55-hunter2-very-secret"
 EVENT_TYPE = "item.arrived"
 LABEL = "New item"
+#: The settings the test capa's polled event declares (`TriggerDecl.config`).
+CONFIG: list[dict[str, Any]] = [{"key": "folder", "label": "Folder", "default": "in"}]
 
 
 def use_kek(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -93,7 +95,13 @@ async def organisation(app_session: AppSessionFactory, tenant: uuid.UUID) -> Non
 
 
 async def install_capa(
-    app_session: AppSessionFactory, tenant: uuid.UUID, source: str, tool_key: str
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    source: str,
+    tool_key: str,
+    *,
+    config: list[dict[str, Any]] | None = None,
+    setup: dict[str, Any] | None = None,
 ) -> None:
     async with app_session(tenant) as db:
         capa = m.Capa(tenant_id=tenant, name=source, type="tool_pack")
@@ -105,7 +113,12 @@ async def install_capa(
             "type": "tool_pack",
             "triggers": [
                 "pushed.thing",
-                {"type": EVENT_TYPE, "label": LABEL, "polled": True},
+                {
+                    "type": EVENT_TYPE,
+                    "label": LABEL,
+                    "polled": True,
+                    "config": CONFIG if config is None else config,
+                },
             ],
             "tool_pack": {
                 "connections": [
@@ -113,6 +126,8 @@ async def install_capa(
                 ]
             },
         }
+        if setup is not None:
+            manifest["setup"] = setup
         version = m.CapaVersion(
             tenant_id=tenant, capa_id=capa.id, semver="1.0.0", manifest=manifest, artifact_hash=b"x"
         )
@@ -183,6 +198,8 @@ async def polled_setup(
     source: str | None = None,
     username: str = "anna",
     secret: str = SECRET,
+    config: list[dict[str, Any]] | None = None,
+    setup: dict[str, Any] | None = None,
 ) -> Polled:
     """A fresh organisation (or `tenant`) with the capa `source` installed, one
     login and one agent fixed to it."""
@@ -194,7 +211,7 @@ async def polled_setup(
     async with app_session(tenant) as db:
         installed = await db.scalar(select(m.Capa.id).where(m.Capa.name == source))
     if installed is None:
-        await install_capa(app_session, tenant, source, tool_key)
+        await install_capa(app_session, tenant, source, tool_key, config=config, setup=setup)
     credential_id = await login(app_session, tenant, username=username, secret=secret)
     agent_id = await agent(app_session, tenant, tool_key=tool_key, credential_id=credential_id)
     return Polled(tenant, agent_id, credential_id, source, tool_key)
