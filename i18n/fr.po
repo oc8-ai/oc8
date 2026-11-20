@@ -305,6 +305,10 @@ msgid "Add a model configuration"
 msgstr "Ajouter une configuration de modèle"
 
 #, fuzzy
+msgid "Add a passkey"
+msgstr "Ajouter un accès"
+
+#, fuzzy
 msgid "Add access"
 msgstr "Ajouter un accès"
 
@@ -1500,9 +1504,6 @@ msgstr "Collaboration"
 msgid "Collapse sidebar"
 msgstr "Réduire la barre latérale"
 
-msgid "Coming soon."
-msgstr ""
-
 #, fuzzy
 msgid "commands"
 msgstr "commandes"
@@ -1577,6 +1578,10 @@ msgstr "Confirmer le mot de passe"
 #, fuzzy
 msgid "Confirm rollback"
 msgstr "Confirmer la restauration"
+
+#, fuzzy
+msgid "Confirm your sign-in"
+msgstr "de sa connexion"
 
 #, fuzzy
 msgid "Confirming…"
@@ -1985,8 +1990,16 @@ msgid "Could not remove the method."
 msgstr "Impossible de supprimer le poste."
 
 #, fuzzy
+msgid "Could not remove the passkey."
+msgstr "Impossible de supprimer le poste."
+
+#, fuzzy
 msgid "Could not remove this login"
 msgstr "Impossible de supprimer la liaison"
+
+#, fuzzy
+msgid "Could not rename the passkey."
+msgstr "Impossible de créer la tâche"
 
 #, fuzzy
 msgid "Could not reset two-factor authentication."
@@ -2295,6 +2308,10 @@ msgstr "Créer la limite"
 #, fuzzy
 msgid "Create new"
 msgstr "Créer"
+
+#, fuzzy
+msgid "Create passkey"
+msgstr "Créer une tâche"
 
 #, fuzzy
 msgid "Create project"
@@ -2915,6 +2932,9 @@ msgstr "p. ex. Examiner les contrats dans les délais"
 #, fuzzy
 msgid "e.g. Sales sign-off"
 msgstr "p. ex. Validation commerciale"
+
+msgid "e.g. Work laptop"
+msgstr ""
 
 #, fuzzy
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
@@ -4395,6 +4415,9 @@ msgstr "Nom et description"
 msgid "name + rights"
 msgstr "nom + droits"
 
+msgid "Name this passkey"
+msgstr ""
+
 #, fuzzy
 msgid "Name updated"
 msgstr "Nom mis à jour"
@@ -4413,6 +4436,9 @@ msgstr ""
 #, fuzzy
 msgid "Needs an organisation connection"
 msgstr "Nécessite une connexion de l'organisation"
+
+msgid "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing)."
+msgstr ""
 
 #, fuzzy
 msgid "Needs reconnecting"
@@ -5022,6 +5048,10 @@ msgstr "Aucune consommation enregistrée pour l'instant."
 #, fuzzy
 msgid "Not tested"
 msgstr "Non testé"
+
+#, fuzzy
+msgid "not used yet"
+msgstr "Aucune consommation enregistrée pour l'instant."
 
 #, fuzzy
 msgid "Note"
@@ -7338,6 +7368,13 @@ msgid "The parameter schema must be a JSON Schema object with \"type\": \"object
 msgstr "Le schéma des paramètres doit être un objet JSON Schema avec \"type\": \"object\"."
 
 #, fuzzy
+msgid "The passkey could not be used."
+msgstr "L'appel n'a pas pu être effectué."
+
+msgid "The passkey prompt was cancelled or timed out."
+msgstr ""
+
+#, fuzzy
 msgid "The permission model could not be loaded."
 msgstr "Le modèle d'autorisations n'a pas pu être chargé."
 
@@ -7569,6 +7606,12 @@ msgstr "Cette action est irréversible."
 msgid "This block couldn't be loaded"
 msgstr "Cette exécution n'a pas pu être chargée."
 
+msgid "This browser cannot use a passkey for this site."
+msgstr ""
+
+msgid "This browser cannot use passkeys. Try another browser or method."
+msgstr ""
+
 #, fuzzy
 msgid "This browser does not support push notifications."
 msgstr "Ce navigateur ne prend pas en charge les notifications push."
@@ -7719,6 +7762,10 @@ msgstr "utilisé ce mois-ci"
 #, fuzzy
 msgid "This month"
 msgstr "utilisé ce mois-ci"
+
+#, fuzzy
+msgid "This passkey is already registered."
+msgstr "Cet agent est déjà créé."
 
 #, fuzzy
 msgid "This proposal has expired."
@@ -8134,6 +8181,9 @@ msgstr "Enregistrez vos codes de secours"
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr "Utilise uniquement des lettres, chiffres, _ et - dans le nom d'un outil (64 au maximum)."
 
+msgid "Use passkey"
+msgstr ""
+
 #, fuzzy
 msgid "Use sign-in default"
 msgstr "Utiliser la valeur par défaut de la connexion"
@@ -8156,6 +8206,15 @@ msgstr "Utiliser le modèle pour Copilot"
 #, fuzzy
 msgid "Use your authenticator app, or a backup code."
 msgstr "Utilisez l'application d'authentification ou un code de secours."
+
+msgid "Use your device's screen lock or a security key to confirm it is you. Give it a name so you can tell your passkeys apart."
+msgstr ""
+
+msgid "Use your passkey instead"
+msgstr ""
+
+msgid "Use your passkey or security key: your browser asks you to confirm it is you."
+msgstr ""
 
 #, fuzzy
 msgid "Used by"
@@ -8345,6 +8404,10 @@ msgstr "En attente d'approbation de recrutement"
 #, fuzzy
 msgid "Waiting for the next step"
 msgstr "En attente de l'étape suivante"
+
+#, fuzzy
+msgid "Waiting for the passkey…"
+msgstr "En attente de tâche"
 
 #, fuzzy
 msgid "Waiting for you"

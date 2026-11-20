@@ -245,6 +245,11 @@ msgstr "Toevoegen"
 msgid "Add a model configuration"
 msgstr "Modelconfiguratie toevoegen"
 
+#, fuzzy
+#| msgid "Add access"
+msgid "Add a passkey"
+msgstr "Toegang toevoegen"
+
 msgid "Add access"
 msgstr "Toegang toevoegen"
 
@@ -1171,9 +1176,6 @@ msgstr "Samenwerking"
 msgid "Collapse sidebar"
 msgstr "Zijbalk inklappen"
 
-msgid "Coming soon."
-msgstr ""
-
 #, fuzzy
 msgid "commands"
 msgstr "opdrachten"
@@ -1248,6 +1250,10 @@ msgstr "Bevestig wachtwoord"
 #, fuzzy
 msgid "Confirm rollback"
 msgstr "Rollback bevestigen"
+
+#, fuzzy
+msgid "Confirm your sign-in"
+msgstr "van hun inlog"
 
 #, fuzzy
 msgid "Confirming…"
@@ -1656,8 +1662,16 @@ msgid "Could not remove the method."
 msgstr "Seat verwijderen mislukt."
 
 #, fuzzy
+msgid "Could not remove the passkey."
+msgstr "Seat verwijderen mislukt."
+
+#, fuzzy
 msgid "Could not remove this login"
 msgstr "De koppeling kon niet worden verwijderd"
+
+#, fuzzy
+msgid "Could not rename the passkey."
+msgstr "Taak aanmaken mislukt"
 
 #, fuzzy
 msgid "Could not reset two-factor authentication."
@@ -1966,6 +1980,10 @@ msgstr "Limiet aanmaken"
 #, fuzzy
 msgid "Create new"
 msgstr "Nieuw aanmaken"
+
+#, fuzzy
+msgid "Create passkey"
+msgstr "Taak aanmaken"
 
 #, fuzzy
 msgid "Create project"
@@ -2586,6 +2604,9 @@ msgstr "bijv. Contracten op tijd beoordelen"
 #, fuzzy
 msgid "e.g. Sales sign-off"
 msgstr "bijv. Akkoord van sales"
+
+msgid "e.g. Work laptop"
+msgstr ""
 
 #, fuzzy
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
@@ -4068,6 +4089,9 @@ msgstr "Naam en beschrijving"
 msgid "name + rights"
 msgstr "naam + rechten"
 
+msgid "Name this passkey"
+msgstr ""
+
 #, fuzzy
 msgid "Name updated"
 msgstr "Naam bijgewerkt"
@@ -4086,6 +4110,9 @@ msgstr ""
 #, fuzzy
 msgid "Needs an organisation connection"
 msgstr "Heeft een verbinding van de organisatie nodig"
+
+msgid "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing)."
+msgstr ""
 
 #, fuzzy
 msgid "Needs reconnecting"
@@ -4695,6 +4722,10 @@ msgstr "Nog geen verbruik vastgelegd."
 #, fuzzy
 msgid "Not tested"
 msgstr "Niet getest"
+
+#, fuzzy
+msgid "not used yet"
+msgstr "Nog geen verbruik vastgelegd."
 
 #, fuzzy
 msgid "Note"
@@ -7012,6 +7043,13 @@ msgid "The parameter schema must be a JSON Schema object with \"type\": \"object
 msgstr "Het parameterschema moet een JSON-Schema-object zijn met \"type\": \"object\"."
 
 #, fuzzy
+msgid "The passkey could not be used."
+msgstr "De aanroep kon niet worden gedaan."
+
+msgid "The passkey prompt was cancelled or timed out."
+msgstr ""
+
+#, fuzzy
 msgid "The permission model could not be loaded."
 msgstr "Het rechtenmodel kon niet worden geladen."
 
@@ -7243,6 +7281,12 @@ msgstr "Dit kan niet ongedaan worden gemaakt."
 msgid "This block couldn't be loaded"
 msgstr "Deze run kon niet worden geladen."
 
+msgid "This browser cannot use a passkey for this site."
+msgstr ""
+
+msgid "This browser cannot use passkeys. Try another browser or method."
+msgstr ""
+
 #, fuzzy
 msgid "This browser does not support push notifications."
 msgstr "Deze browser ondersteunt geen pushmeldingen."
@@ -7393,6 +7437,10 @@ msgstr "deze maand gebruikt"
 #, fuzzy
 msgid "This month"
 msgstr "deze maand gebruikt"
+
+#, fuzzy
+msgid "This passkey is already registered."
+msgstr "Deze agent is al aangemaakt."
 
 #, fuzzy
 msgid "This proposal has expired."
@@ -7808,6 +7856,9 @@ msgstr "Bewaar je back-upcodes"
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr "Gebruik in een toolnaam alleen letters, cijfers, _ en - (maximaal 64)."
 
+msgid "Use passkey"
+msgstr ""
+
 #, fuzzy
 msgid "Use sign-in default"
 msgstr "Standaard van inlog gebruiken"
@@ -7830,6 +7881,15 @@ msgstr "Model voor Copilot gebruiken"
 #, fuzzy
 msgid "Use your authenticator app, or a backup code."
 msgstr "Gebruik de authenticator-app of een back-upcode."
+
+msgid "Use your device's screen lock or a security key to confirm it is you. Give it a name so you can tell your passkeys apart."
+msgstr ""
+
+msgid "Use your passkey instead"
+msgstr ""
+
+msgid "Use your passkey or security key: your browser asks you to confirm it is you."
+msgstr ""
 
 #, fuzzy
 msgid "Used by"
@@ -8020,6 +8080,10 @@ msgstr "Wacht op goedkeuring voor inhuren"
 #, fuzzy
 msgid "Waiting for the next step"
 msgstr "Wachten op de volgende stap"
+
+#, fuzzy
+msgid "Waiting for the passkey…"
+msgstr "Wacht op taak"
 
 #, fuzzy
 msgid "Waiting for you"

@@ -262,6 +262,11 @@ msgstr "Tilføj en modelkonfiguration"
 
 #, fuzzy
 #| msgid "Access"
+msgid "Add a passkey"
+msgstr "Adgang"
+
+#, fuzzy
+#| msgid "Access"
 msgid "Add access"
 msgstr "Adgang"
 
@@ -1290,9 +1295,6 @@ msgstr "Samarbejde"
 msgid "Collapse sidebar"
 msgstr ""
 
-msgid "Coming soon."
-msgstr ""
-
 #, fuzzy
 #| msgid "Recommended"
 msgid "commands"
@@ -1357,6 +1359,11 @@ msgstr "Bekræft adgangskode"
 #| msgid "Confirm"
 msgid "Confirm rollback"
 msgstr "Bekræft"
+
+#, fuzzy
+#| msgid "from their sign-in"
+msgid "Confirm your sign-in"
+msgstr "fra deres login"
 
 msgid "Confirming…"
 msgstr "Bekræfter…"
@@ -1723,9 +1730,19 @@ msgid "Could not remove the method."
 msgstr "Kunne ikke fjerne plads."
 
 #, fuzzy
+#| msgid "Could not remove seat."
+msgid "Could not remove the passkey."
+msgstr "Kunne ikke fjerne plads."
+
+#, fuzzy
 #| msgid "Could not remove source."
 msgid "Could not remove this login"
 msgstr "Kunne ikke fjerne kilde."
+
+#, fuzzy
+#| msgid "Could not create the task"
+msgid "Could not rename the passkey."
+msgstr "Kunne ikke oprette opgaven"
 
 #, fuzzy
 #| msgid "Two-factor authentication"
@@ -1989,6 +2006,11 @@ msgstr "Opret limit"
 
 msgid "Create new"
 msgstr "Opret ny"
+
+#, fuzzy
+#| msgid "Create task"
+msgid "Create passkey"
+msgstr "Opret opgave"
 
 #, fuzzy
 #| msgid "Create role"
@@ -2525,6 +2547,9 @@ msgstr "f.eks. Gennemgå kontrakter til tiden"
 
 msgid "e.g. Sales sign-off"
 msgstr "f.eks. Salgsgodkendelse"
+
+msgid "e.g. Work laptop"
+msgstr ""
 
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
 msgstr "Hver kode virker én gang. Gem dem et sikkert sted — De ser dem ikke igen."
@@ -3738,6 +3763,9 @@ msgstr "Navn & beskrivelse"
 msgid "name + rights"
 msgstr "navn + rettigheder"
 
+msgid "Name this passkey"
+msgstr ""
+
 msgid "Name updated"
 msgstr "Navn opdateret"
 
@@ -3754,6 +3782,9 @@ msgstr ""
 #| msgid "Test an MCP connection"
 msgid "Needs an organisation connection"
 msgstr "Test en MCP-forbindelse"
+
+msgid "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing)."
+msgstr ""
 
 #, fuzzy
 #| msgid "Test connection"
@@ -4291,6 +4322,11 @@ msgstr "Endnu intet forbrug registreret."
 #| msgid "Not restored:"
 msgid "Not tested"
 msgstr "Ikke gendannet:"
+
+#, fuzzy
+#| msgid "No usage recorded yet."
+msgid "not used yet"
+msgstr "Endnu intet forbrug registreret."
 
 msgid "Note"
 msgstr ""
@@ -6259,6 +6295,14 @@ msgstr ""
 msgid "The parameter schema must be a JSON Schema object with \"type\": \"object\"."
 msgstr ""
 
+#, fuzzy
+#| msgid "The role list could not be loaded."
+msgid "The passkey could not be used."
+msgstr "Rollelisten kunne ikke indlæses."
+
+msgid "The passkey prompt was cancelled or timed out."
+msgstr ""
+
 msgid "The permission model could not be loaded."
 msgstr "Tilladelsesmodellen kunne ikke indlæses."
 
@@ -6457,6 +6501,12 @@ msgstr "Dette kan ikke fortrydes."
 msgid "This block couldn't be loaded"
 msgstr "Opgavetavlen kunne ikke indlæses"
 
+msgid "This browser cannot use a passkey for this site."
+msgstr ""
+
+msgid "This browser cannot use passkeys. Try another browser or method."
+msgstr ""
+
 msgid "This browser does not support push notifications."
 msgstr "Denne browser understøtter ikke push-notifikationer."
 
@@ -6590,6 +6640,11 @@ msgstr "brugt denne måned"
 #| msgid "used this month"
 msgid "This month"
 msgstr "brugt denne måned"
+
+#, fuzzy
+#| msgid "This agent hasn't written any memories yet."
+msgid "This passkey is already registered."
+msgstr "Denne agent har endnu ikke skrevet nogen minder."
 
 #, fuzzy
 #| msgid "This link is invalid or has expired."
@@ -6939,6 +6994,9 @@ msgstr "Gem Deres backupkoder"
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr ""
 
+msgid "Use passkey"
+msgstr ""
+
 msgid "Use sign-in default"
 msgstr "Brug login-standard"
 
@@ -6956,6 +7014,15 @@ msgstr "Brug denne model til copiloten"
 
 msgid "Use your authenticator app, or a backup code."
 msgstr "Brug Deres authenticator-app eller en backupkode."
+
+msgid "Use your device's screen lock or a security key to confirm it is you. Give it a name so you can tell your passkeys apart."
+msgstr ""
+
+msgid "Use your passkey instead"
+msgstr ""
+
+msgid "Use your passkey or security key: your browser asks you to confirm it is you."
+msgstr ""
 
 msgid "Used by"
 msgstr "Brugt af"
@@ -7136,6 +7203,11 @@ msgstr ""
 #, fuzzy
 #| msgid "Waiting for task"
 msgid "Waiting for the next step"
+msgstr "Venter på opgave"
+
+#, fuzzy
+#| msgid "Waiting for task"
+msgid "Waiting for the passkey…"
 msgstr "Venter på opgave"
 
 #, fuzzy
