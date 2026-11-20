@@ -20,6 +20,8 @@ export interface Skill {
    * did not, so the assign button had nothing to send and faked success. */
   currentVersionId?: string | null;
   usedByAgents: number;
+  /** Live assignments (any scope) across every version of the skill. */
+  assignmentCount?: number;
   installs?: number;
   price?: "free" | number;
   updatedAt: string;
@@ -30,6 +32,9 @@ export interface Skill {
   descriptionTranslations?: Record<string, string>;
   instructionsTranslations?: Record<string, string>;
   guardrailsTranslations?: Record<string, string[]>;
+  /** The untranslated text of the current version, set by `localizeSkill` when it
+   * swaps in a translation. Editors start from this, never from the display text. */
+  source?: { name: string; description: string; instructions: string; guardrails: string[] };
 }
 
 export const skillCategories: { id: SkillCategory; label: string; labelDe: string }[] = [

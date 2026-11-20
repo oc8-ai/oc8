@@ -16,18 +16,23 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import json
+import re
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
-from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
+from oc8.api.deps import CurrentPrincipal, DbSession, authorize_agent_write, require_permission
 from oc8.api.v1._serializers import skill_to_dto
+from oc8.authz.pdp import missing_skill_requirements
 from oc8.authz.permissions import MANAGE, SKILL, VIEW, perm
+from oc8.authz.scope import HumanActor, scope_for_principal
 from oc8.db.base import uuid7
 from oc8.knowledge.connectors.base import ConnectorError
+from oc8.runtime.registry import check_runtime_capabilities, resolve_runtime_plugin
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SkillDTO
 from oc8.skills.importer import DEFAULT_BUDGET_TOKENS, discover
@@ -51,11 +56,30 @@ class CreateSkillRequest(CamelModel):
 
 
 class CreateVersionRequest(CamelModel):
-    semver: str
+    #: Omitted by the editor, which has no opinion on numbering: the server
+    #: takes the next patch after the current version.
+    semver: str | None = None
     instructions: str
     tools: list[str] = []
     knowledge: list[str] = []
     guardrails: list[str] = []
+    #: Move live assignments to the new version (those that still satisfy its
+    #: `requires`). Off by default: publishing must not silently change what a
+    #: running agent does.
+    update_assignments: bool = False
+
+
+class SkillVersionPublishedDTO(SkillDTO):
+    """`SkillDTO` plus what the publish did to existing assignments."""
+
+    assignments_updated: int = 0
+    assignments_skipped: int = 0
+    #: Left on the old version because the caller may not change that agent.
+    assignments_not_allowed: int = 0
+
+
+class DuplicateSkillRequest(CamelModel):
+    name: str | None = None
 
 
 class SkillAssignmentDTO(CamelModel):
@@ -122,6 +146,19 @@ def _validated(definition: dict[str, Any]) -> dict[str, Any]:
     except SkillDefinitionError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return definition
+
+
+_SEMVER_PREFIX = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
+
+
+def _next_patch(current: str | None) -> tuple[int, int, int]:
+    """The patch after `current`; a semver that is not three numbers restarts at
+    the initial one rather than refusing the edit."""
+    match = _SEMVER_PREFIX.match(current or "")
+    if match is None:
+        return (0, 1, 0)
+    major, minor, patch = (int(g) for g in match.groups())
+    return (major, minor, patch + 1)
 
 
 async def _load_skill(db: DbSession, skill_id: uuid.UUID, tenant_id: uuid.UUID) -> m.Skill:
@@ -199,29 +236,18 @@ async def create_skill(
 
 @router.post(
     "/skills/{skill_id}/versions",
-    response_model=SkillDTO,
+    response_model=SkillVersionPublishedDTO,
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(require_permission(perm(SKILL, MANAGE)))],
 )
 async def create_skill_version(
     skill_id: uuid.UUID,
     body: CreateVersionRequest,
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
-) -> SkillDTO:
+) -> SkillVersionPublishedDTO:
     skill = await _load_skill(db, skill_id, principal.tenant_id)
-
-    duplicate = (
-        await db.execute(
-            select(m.SkillVersion).where(
-                m.SkillVersion.skill_id == skill.id, m.SkillVersion.semver == body.semver
-            )
-        )
-    ).scalar_one_or_none()
-    if duplicate is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT, f"version {body.semver} already exists for this skill"
-        )
 
     # A skill's `reference_root` names where its bundled files live (a capa
     # path, or an `imported:<skill_version_id>` row set) -- it is not something
@@ -230,18 +256,33 @@ async def create_skill_version(
     # CURRENT version's value forward unchanged. The string still names the
     # SAME underlying files; nothing needs duplicating.
     current_version = (
-        await db.get(m.SkillVersion, skill.current_version_id)
-        if skill.current_version_id
-        else None
+        await db.get(m.SkillVersion, skill.current_version_id) if skill.current_version_id else None
     )
     reference_root = (
         current_version.definition.get("reference_root") if current_version is not None else None
     )
 
+    taken = set(
+        (await db.execute(select(m.SkillVersion.semver).where(m.SkillVersion.skill_id == skill.id)))
+        .scalars()
+        .all()
+    )
+    if body.semver is not None:
+        semver = body.semver
+        if semver in taken:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"version {semver} already exists for this skill"
+            )
+    else:
+        major, minor, patch = _next_patch(current_version.semver if current_version else None)
+        while f"{major}.{minor}.{patch}" in taken:
+            patch += 1
+        semver = f"{major}.{minor}.{patch}"
+
     definition = _validated(
         _definition(
             slug=_slugify(skill.name),
-            semver=body.semver,
+            semver=semver,
             instructions=body.instructions,
             tools=body.tools,
             knowledge=body.knowledge,
@@ -252,15 +293,253 @@ async def create_skill_version(
     version = m.SkillVersion(
         tenant_id=principal.tenant_id,
         skill_id=skill.id,
-        semver=body.semver,
+        semver=semver,
         definition=definition,
         artifact_hash=_artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
-    # Existing assignments deliberately stay pinned to the version they were
-    # made against -- publishing must not silently change what a running agent
-    # is doing. Re-assign to adopt the new version.
+    # Existing assignments stay pinned to the version they were made against
+    # unless the caller asks for them to follow -- publishing must not silently
+    # change what a running agent is doing.
+    skill.current_version_id = version.id
+    updated = skipped = not_allowed = 0
+    if body.update_assignments:
+        updated, skipped, not_allowed = await _move_assignments(
+            db, request, principal, skill.id, version
+        )
+    await db.flush()
+    await db.commit()
+    return SkillVersionPublishedDTO(
+        **skill_to_dto(skill, version).model_dump(),
+        assignments_updated=updated,
+        assignments_skipped=skipped,
+        assignments_not_allowed=not_allowed,
+    )
+
+
+async def _move_assignments(
+    db: DbSession,
+    request: Request,
+    principal: CurrentPrincipal,
+    skill_id: uuid.UUID,
+    version: m.SkillVersion,
+) -> tuple[int, int, int]:
+    """Re-pin every live assignment of any version of `skill_id` to `version`.
+
+    Pinning a version changes what an agent does, so each one is judged exactly
+    as `POST /agents/{id}/skills` judges it: the caller must be allowed to write
+    agents in that department (`authorize_agent_write`, first, before anything
+    reads the frame), then `requires` must fit the effective rights, then the
+    runtime must support skills. An agent-scoped assignment is judged against
+    that agent; a department or tenant-wide one against every department (and
+    its agents) it reaches. Returns (updated, skipped, not_allowed); anything
+    that fails stays on its old version.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(m.SkillAssignment)
+                .join(m.SkillVersion, m.SkillVersion.id == m.SkillAssignment.skill_version_id)
+                .where(
+                    m.SkillVersion.skill_id == skill_id,
+                    m.SkillAssignment.deleted_at.is_(None),
+                )
+                .order_by(m.SkillAssignment.enabled.desc(), m.SkillAssignment.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    actor: HumanActor | None = None
+    try:
+        member, scope = await scope_for_principal(db, principal, upsert=True)
+        if member is not None:
+            actor = HumanActor(principal=principal, member=member, scope=scope)
+    except PermissionError:
+        actor = None
+    allowed_cache: dict[uuid.UUID, bool] = {}
+
+    async def may_write(department_id: uuid.UUID) -> bool:
+        if department_id not in allowed_cache:
+            ok = False
+            if actor is not None:
+                try:
+                    await authorize_agent_write(
+                        request,
+                        db,
+                        actor,
+                        department_id,
+                        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+                    )
+                    ok = True
+                except HTTPException:
+                    ok = False
+            allowed_cache[department_id] = ok
+        return allowed_cache[department_id]
+
+    requires = version.definition.get("requires", {})
+    updated = skipped = not_allowed = 0
+    seen_scopes: set[tuple[uuid.UUID | None, uuid.UUID | None]] = set()
+    for assignment in rows:
+        scope_key = (assignment.agent_id, assignment.department_id)
+        outcome = await _judge(db, assignment, requires, may_write)
+        if outcome == "not_allowed":
+            not_allowed += 1
+            continue
+        if outcome == "unmet":
+            skipped += 1
+            continue
+        if scope_key in seen_scopes:
+            # Two old versions of one scope collapse into one: the unique index
+            # allows a single assignment per scope and skill version.
+            await db.delete(assignment)
+            continue
+        seen_scopes.add(scope_key)
+        if assignment.skill_version_id != version.id:
+            assignment.skill_version_id = version.id
+        updated += 1
+    return updated, skipped, not_allowed
+
+
+async def _judge(
+    db: DbSession,
+    assignment: m.SkillAssignment,
+    requires: dict[str, Any],
+    may_write: Callable[[uuid.UUID], Awaitable[bool]],
+) -> str:
+    """ "ok", "not_allowed" (caller may not change it) or "unmet" (requirement or
+    runtime check fails). Mirrors `assign_skill`, in the same order."""
+    agents: list[m.Agent] = []
+    departments: list[m.Department] = []
+    if assignment.agent_id is not None:
+        agent = await db.get(m.Agent, assignment.agent_id)
+        if agent is None:
+            return "unmet"
+        agents = [agent]
+        dept = await db.get(m.Department, agent.department_id)
+        departments = [dept] if dept is not None else []
+        if not await may_write(agent.department_id):
+            return "not_allowed"
+    else:
+        stmt = select(m.Department).where(m.Department.tenant_id == assignment.tenant_id)
+        if assignment.department_id is not None:
+            stmt = stmt.where(m.Department.id == assignment.department_id)
+        departments = list((await db.execute(stmt)).scalars().all())
+        for reached in departments:
+            if not await may_write(reached.id):
+                return "not_allowed"
+        agents = list(
+            (
+                await db.execute(
+                    select(m.Agent).where(m.Agent.department_id.in_([d.id for d in departments]))
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    narrowing_by_dept = {a.department_id: a.narrowing for a in agents} if agents else {}
+    for dept in departments:
+        narrowing = narrowing_by_dept.get(dept.id, {}) if assignment.agent_id else {}
+        grantees = [dept.id] + ([assignment.agent_id] if assignment.agent_id else [])
+        granted = await db.execute(
+            select(m.KnowledgeGrant.kb_id).where(m.KnowledgeGrant.grantee_id.in_(grantees))
+        )
+        granted_kb_ids = {str(k) for k in granted.scalars().all()}
+        if missing_skill_requirements(dept.frame, narrowing, requires, granted_kb_ids):
+            return "unmet"
+    for agent in agents:
+        resolved = await resolve_runtime_plugin(db, tenant_id=assignment.tenant_id, agent=agent)
+        if resolved is not None and check_runtime_capabilities(
+            has_supervision=False,
+            has_enabled_skills=True,
+            runtime_capabilities=list(resolved[1].capabilities),
+        ):
+            return "unmet"
+    return "ok"
+
+
+@router.post(
+    "/skills/{skill_id}/duplicate",
+    response_model=SkillDTO,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_permission(perm(SKILL, MANAGE)))],
+)
+async def duplicate_skill(
+    skill_id: uuid.UUID,
+    body: DuplicateSkillRequest,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> SkillDTO:
+    """A new local skill from the source's CURRENT version -- the way to change
+    a skill one may not edit (imported, store). No assignments are copied."""
+    source = await _load_skill(db, skill_id, principal.tenant_id)
+    if source.deleted_at is not None or source.current_version_id is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
+    source_version = await db.get(m.SkillVersion, source.current_version_id)
+    if source_version is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
+
+    base = (body.name or "").strip() or f"{source.name} (copy)"
+    names = set(
+        (await db.execute(select(m.Skill.name).where(m.Skill.tenant_id == principal.tenant_id)))
+        .scalars()
+        .all()
+    )
+    name, n = base, 1
+    while name in names:
+        n += 1
+        name = f"{base} {n}"
+
+    old = source_version.definition
+    pres: dict[str, Any] = old.get("presentation", {})
+    requires: dict[str, Any] = old.get("requires", {})
+    definition = _definition(
+        slug=_slugify(name),
+        semver=INITIAL_SEMVER,
+        instructions=old.get("instruction", ""),
+        tools=[],
+        knowledge=[],
+        guardrails=list(old.get("guardrails", [])),
+        reference_root=old.get("reference_root"),
+    )
+    # Copied verbatim, not rebuilt from the presentation lists: `requires` may
+    # carry rights objects the flat lists cannot express.
+    definition["requires"] = {k: list(v) for k, v in requires.items()} or definition["requires"]
+    # Store/pricing facts belong to the original, and a translated name would
+    # no longer match the copy's.
+    copied = {k: v for k, v in pres.items() if k not in {"installs", "price"}}
+    if isinstance(copied.get("i18n"), dict):
+        copied["i18n"] = {k: v for k, v in copied["i18n"].items() if k != "name"}
+    definition["presentation"] = {
+        **copied,
+        "updated_at": definition["presentation"]["updated_at"],
+        "used_by_agents": 0,
+    }
+    _validated(definition)
+
+    skill = m.Skill(
+        tenant_id=principal.tenant_id,
+        name=name,
+        category=source.category,
+        description=source.description,
+        author=principal.subject,
+        origin="local",
+        # A copy of third-party content stays third-party.
+        trust_level=source.trust_level,
+    )
+    db.add(skill)
+    await db.flush()
+    version = m.SkillVersion(
+        tenant_id=principal.tenant_id,
+        skill_id=skill.id,
+        semver=INITIAL_SEMVER,
+        definition=definition,
+        artifact_hash=_artifact_hash(definition),
+    )
+    db.add(version)
+    await db.flush()
     skill.current_version_id = version.id
     await db.flush()
     await db.commit()

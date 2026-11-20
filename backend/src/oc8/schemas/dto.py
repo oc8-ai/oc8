@@ -568,6 +568,9 @@ class SkillDTO(CamelModel):
     guardrails: list[str]
     instructions: str
     used_by_agents: int
+    #: Live assignments (any scope) across every version -- what a content edit
+    #: can move. `used_by_agents` is a seeded display figure, not this.
+    assignment_count: int = 0
     installs: int | None = None
     price: str | float | None = None
     updated_at: str

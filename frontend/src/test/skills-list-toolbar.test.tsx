@@ -19,6 +19,8 @@ vi.mock("@/lib/hooks", () => ({
   useAssignSkill: () => ({ mutate: vi.fn(), isPending: false }),
   useDepartments: () => ({ data: { items: [], totalCount: 0 } }),
   useUpdateSkill: () => ({ mutate: vi.fn(), isPending: false }),
+  usePublishSkillVersion: () => ({ mutate: vi.fn(), isPending: false }),
+  useDuplicateSkill: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 import { SkillsPage } from "@/routes/skills";
