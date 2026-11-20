@@ -139,7 +139,7 @@ import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { RunStartPhase } from "@/components/run-start-phase";
 import { isStartPhase, phaseLabel } from "@/lib/run-start-phase";
 import { TriggerOwner } from "@/components/connections/trigger-owner";
-import { PolledEventTriggerPanel, polledEventTabLabel } from "@/components/polled-event-trigger";
+import { PolledEventTriggerPanel, polledEventTabLabels } from "@/components/polled-event-trigger";
 import { ScheduleEditor } from "@/components/schedule-editor";
 import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
@@ -1979,6 +1979,7 @@ export function TriggerEditor({
         : "border-border bg-background/40 text-muted-foreground hover:text-foreground",
     );
   const openEvent = polledEvents.find((event) => eventTab(event.source, event.type) === tab);
+  const tabLabels = polledEventTabLabels(polledEvents, t, lang);
 
   return (
     <div className="space-y-3">
@@ -2001,7 +2002,7 @@ export function TriggerEditor({
           <Webhook className="mr-1 inline h-3 w-3" />
           {t("Webhook", "Webhook")}
         </button>
-        {polledEvents.map((event) => {
+        {polledEvents.map((event, i) => {
           const id = eventTab(event.source, event.type);
           return (
             <button
@@ -2012,7 +2013,7 @@ export function TriggerEditor({
               className={tabClass(tab === id)}
             >
               <Inbox className="mr-1 inline h-3 w-3" />
-              {polledEventTabLabel(event, t, lang)}
+              {tabLabels[i]}
             </button>
           );
         })}

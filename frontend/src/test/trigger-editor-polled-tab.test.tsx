@@ -47,6 +47,10 @@ const MAIL: TriggerEventDTO = {
   descriptionTranslations: {},
   polled: true,
   toolKey: "email",
+  editorLabel: "On new email",
+  editorLabelTranslations: {},
+  sourceLabel: "Email",
+  sourceLabelTranslations: {},
   config: [],
 };
 

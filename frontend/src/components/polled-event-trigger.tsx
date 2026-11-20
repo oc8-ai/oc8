@@ -24,11 +24,23 @@ import { cn } from "@/lib/utils";
 
 type Translate = (en: string, de?: string) => string;
 
-/** The tab's name: the event's own label, worded as "when" for the events
- *  core knows a better phrase for. */
-export function polledEventTabLabel(event: TriggerEventDTO, t: Translate, lang: Lang): string {
-  if (event.type === "mail.received") return t("On new email", "Bei neuer E-Mail");
-  return resolveTranslation(event.label, event.labelTranslations, lang);
+/** Each event's tab name: its `editorLabel` (else its label), translated by
+ *  its capa; two equal names get their capa's name in parentheses. */
+export function polledEventTabLabels(
+  events: TriggerEventDTO[],
+  _t: Translate,
+  lang: Lang,
+): string[] {
+  const names = events.map((event) =>
+    event.editorLabel
+      ? resolveTranslation(event.editorLabel, event.editorLabelTranslations, lang)
+      : resolveTranslation(event.label, event.labelTranslations, lang),
+  );
+  return names.map((name, i) =>
+    names.filter((other) => other === name).length > 1
+      ? `${name} (${resolveTranslation(events[i].sourceLabel, events[i].sourceLabelTranslations, lang)})`
+      : name,
+  );
 }
 
 function formatWhen(iso: string, lang: Lang): string {
@@ -277,9 +289,9 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
               "Postfach geändert: ausgeschaltet. Schalte ihn ein, um auf das aktuelle Postfach des Agenten zu hören.",
             )
           : status?.lastPolledAt
-            ? t(
-                `Last checked ${formatWhen(status.lastPolledAt, lang)}`,
-                `Zuletzt geprüft ${formatWhen(status.lastPolledAt, lang)}`,
+            ? t("Last checked {time}", "Zuletzt geprüft {time}").replace(
+                "{time}",
+                formatWhen(status.lastPolledAt, lang),
               )
             : t("Not checked yet", "Noch nicht geprüft")}
       </p>
@@ -288,14 +300,13 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
           role="alert"
           className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-foreground"
         >
-          {t(
-            `Error at ${formatWhen(status.lastErrorAt, lang)}: ${status.lastError}`,
-            `Fehler um ${formatWhen(status.lastErrorAt, lang)}: ${status.lastError}`,
-          )}{" "}
+          {t("Error at {time}: {error}", "Fehler um {time}: {error}")
+            .replace("{time}", formatWhen(status.lastErrorAt, lang))
+            .replace("{error}", status.lastError ?? "")}{" "}
           {status.lastOkAt
-            ? t(
-                `Last success ${formatWhen(status.lastOkAt, lang)}.`,
-                `Zuletzt erfolgreich ${formatWhen(status.lastOkAt, lang)}.`,
+            ? t("Last success {time}.", "Zuletzt erfolgreich {time}.").replace(
+                "{time}",
+                formatWhen(status.lastOkAt, lang),
               )
             : t("It has not worked yet.", "Es hat noch nicht funktioniert.")}
         </p>

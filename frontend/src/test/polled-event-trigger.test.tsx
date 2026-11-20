@@ -45,7 +45,7 @@ vi.mock("@tanstack/react-router", () => ({
   }) => <a href={`${to}?${new URLSearchParams(search).toString()}`}>{children}</a>,
 }));
 
-import { PolledEventTriggerPanel, polledEventTabLabel } from "@/components/polled-event-trigger";
+import { PolledEventTriggerPanel, polledEventTabLabels } from "@/components/polled-event-trigger";
 
 const EVENT: TriggerEventDTO = {
   source: "email",
@@ -56,6 +56,10 @@ const EVENT: TriggerEventDTO = {
   descriptionTranslations: {},
   polled: true,
   toolKey: "email",
+  editorLabel: "",
+  editorLabelTranslations: {},
+  sourceLabel: "Email",
+  sourceLabelTranslations: {},
   config: [
     {
       key: "folder",
@@ -123,13 +127,22 @@ beforeEach(() => {
 });
 
 describe("polled event trigger", () => {
-  it("names the tab after the event", () => {
+  it("names the tab after the event, and tells equal names apart", () => {
     const en = (s: string) => s;
-    const de = (_en: string, de?: string) => de ?? _en;
-    expect(polledEventTabLabel(EVENT, en, "en")).toBe("On new email");
-    expect(polledEventTabLabel(EVENT, de, "de")).toBe("Bei neuer E-Mail");
-    const other = { ...EVENT, type: "item.arrived", label: "New item", labelTranslations: {} };
-    expect(polledEventTabLabel(other, en, "en")).toBe("New item");
+    const named = {
+      ...EVENT,
+      editorLabel: "On new email",
+      editorLabelTranslations: { de: "Bei neuer E-Mail" },
+    };
+    expect(polledEventTabLabels([named], en, "en")).toEqual(["On new email"]);
+    expect(polledEventTabLabels([named], en, "de")).toEqual(["Bei neuer E-Mail"]);
+    // Without its own tab name: the event's label.
+    expect(polledEventTabLabels([EVENT], en, "de")).toEqual(["Neue E-Mail"]);
+    const other = { ...named, source: "microsoft365", sourceLabel: "Microsoft 365" };
+    expect(polledEventTabLabels([named, other], en, "en")).toEqual([
+      "On new email (Email)",
+      "On new email (Microsoft 365)",
+    ]);
   });
 
   it("asks for a mailbox first when the agent has none", () => {

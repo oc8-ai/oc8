@@ -2532,6 +2532,12 @@ export interface TriggerEventDTO {
   //: The tool whose fixed login a polled event listens on.
   toolKey: string | null;
   config: TriggerEventConfigField[];
+  //: The trigger editor's name for its tab ("On new email"); `label` when empty.
+  editorLabel: string;
+  editorLabelTranslations: Record<string, string>;
+  //: The capa's display name, to tell two equal tab names apart.
+  sourceLabel: string;
+  sourceLabelTranslations: Record<string, string>;
 }
 
 export function useTriggerEvents() {
