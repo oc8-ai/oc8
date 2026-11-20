@@ -8,6 +8,7 @@ import {
   RefreshCw,
   Save,
   Settings2,
+  ShieldCheck,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -20,6 +21,7 @@ import { TimezoneSelect } from "@/components/timezone-select";
 import { EditionSettingsSections } from "@/edition/slots";
 import { useMay } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
+import { methodLabel } from "@/lib/two-factor";
 import { cn } from "@/lib/utils";
 import {
   useCopilotSettings,
@@ -28,9 +30,12 @@ import {
   useModels,
   useOrganizationSettings,
   useTestCredential,
+  useTwoFactorSettings,
   useUpdateCopilotSettings,
   useUpdateOrganizationSettings,
+  useUpdateTwoFactorSettings,
   type CredentialDTO,
+  type TwoFactorPolicyDTO,
 } from "@/lib/hooks";
 
 export const Route = createFileRoute("/settings")({
@@ -46,6 +51,7 @@ function SettingsPage() {
         <PilotSetup onOpenWizard={() => setSetupOpen(true)} />
         <OrganizationPanel />
         <MailServerSetting />
+        <TwoFactorPolicyPanel />
         <CopilotSettingsPanel />
         <BackupPanel />
         <EditionSettingsSections />
@@ -486,6 +492,252 @@ export function CopilotSettingsPanel() {
           )}
           {t("Save", "Speichern")}
         </button>
+      )}
+    </Panel>
+  );
+}
+
+// ---------- Security (two-factor policy) ----------
+type Requirement = TwoFactorPolicyDTO["requirement"];
+type PolicyMethod = TwoFactorPolicyDTO["methods"][number];
+
+const REQUIREMENTS: Requirement[] = ["off", "optional", "admins", "everyone"];
+const POLICY_METHODS: PolicyMethod[] = ["totp", "email", "passkey"];
+const MAX_GRACE_DAYS = 30;
+
+export function TwoFactorPolicyPanel() {
+  const t = useT();
+  const may = useMay();
+  const { data } = useTwoFactorSettings();
+  const update = useUpdateTwoFactorSettings();
+  const canManage = may("settings:manage");
+  const [requirement, setRequirement] = useState<Requirement>("admins");
+  const [methods, setMethods] = useState<PolicyMethod[]>([]);
+  const [graceDays, setGraceDays] = useState("7");
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (data) {
+      setRequirement(data.requirement);
+      setMethods(data.methods);
+      setGraceDays(String(data.graceDays));
+    }
+  }, [data]);
+
+  const requirementText: Record<Requirement, { title: string; description: string }> = {
+    off: {
+      title: t("Off", "Aus"),
+      description: t(
+        "Nobody is asked for a second factor. Set-ups are kept.",
+        "Niemand wird nach einem zweiten Faktor gefragt. Einrichtungen bleiben erhalten.",
+      ),
+    },
+    optional: {
+      title: t("Optional", "Optional"),
+      description: t(
+        "Members who set up a second factor are asked for it at sign-in.",
+        "Wer einen zweiten Faktor eingerichtet hat, wird bei der Anmeldung danach gefragt.",
+      ),
+    },
+    admins: {
+      title: t("Administrators", "Administratoren"),
+      description: t(
+        "Administrators must set one up within the grace period.",
+        "Administratoren müssen ihn innerhalb der Übergangsfrist einrichten.",
+      ),
+    },
+    everyone: {
+      title: t("Everyone", "Alle"),
+      description: t(
+        "Every member must set one up within the grace period.",
+        "Jedes Mitglied muss ihn innerhalb der Übergangsfrist einrichten.",
+      ),
+    },
+  };
+
+  const grace = Number(graceDays);
+  const graceValid = Number.isInteger(grace) && grace >= 0 && grace <= MAX_GRACE_DAYS;
+  const lowering =
+    data !== undefined &&
+    REQUIREMENTS.indexOf(requirement) < REQUIREMENTS.indexOf(data.requirement) &&
+    (requirement === "off" || requirement === "optional");
+
+  const toggle = (method: PolicyMethod, on: boolean) => {
+    setRefusal(null);
+    setMethods((current) =>
+      POLICY_METHODS.filter((m) => (m === method ? on : current.includes(m))),
+    );
+  };
+
+  const save = async () => {
+    setRefusal(null);
+    try {
+      await update.mutateAsync({ requirement, methods, graceDays: grace });
+      toast.success(t("Two-factor policy updated", "Zwei-Faktor-Richtlinie aktualisiert"));
+    } catch (err) {
+      // A refusal (lock-out, no method, no mail server) explains itself.
+      setRefusal(
+        err instanceof Error
+          ? err.message
+          : t("Could not save the policy.", "Richtlinie konnte nicht gespeichert werden."),
+      );
+    }
+  };
+
+  return (
+    <Panel id="security" className="p-5">
+      <header className="flex items-start gap-3">
+        <div className="grid h-9 w-9 place-items-center rounded-md bg-primary/15 text-primary">
+          <ShieldCheck className="h-4 w-4" />
+        </div>
+        <div>
+          <h3 className="font-serif text-lg">{t("Security", "Sicherheit")}</h3>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            {t(
+              "Who must confirm their sign-in with a second factor, and how.",
+              "Wer die Anmeldung mit einem zweiten Faktor bestätigen muss, und wie.",
+            )}
+          </p>
+        </div>
+      </header>
+
+      {!data ? (
+        <Loader2 className="mt-5 h-4 w-4 animate-spin text-muted-foreground" />
+      ) : (
+        <div className="mt-4 space-y-4">
+          <fieldset>
+            <legend className="text-xs text-muted-foreground">
+              {t("Two-factor authentication", "Zwei-Faktor-Authentifizierung")}
+            </legend>
+            <div className="mt-1.5 space-y-1.5">
+              {REQUIREMENTS.map((r) => (
+                <label
+                  key={r}
+                  className="flex items-start gap-2 rounded-md border border-border bg-background/30 px-3 py-2 text-sm"
+                >
+                  <input
+                    type="radio"
+                    name="two-factor-requirement"
+                    value={r}
+                    checked={requirement === r}
+                    disabled={!canManage}
+                    onChange={() => {
+                      setRefusal(null);
+                      setRequirement(r);
+                    }}
+                    className="mt-1"
+                  />
+                  <span>
+                    <span className="block text-foreground">{requirementText[r].title}</span>
+                    <span className="block text-[11px] text-muted-foreground">
+                      {requirementText[r].description}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
+          {lowering && (
+            <p className="rounded-md border border-status-warning/30 bg-status-warning/10 px-3 py-2 text-xs text-foreground">
+              {requirement === "off"
+                ? t(
+                    "Nobody will be asked for a second factor at sign-in. Set-ups are kept, and switching back on asks for them again at once.",
+                    "Niemand wird bei der Anmeldung nach einem zweiten Faktor gefragt. Einrichtungen bleiben erhalten, und beim Wiedereinschalten wird sofort wieder danach gefragt.",
+                  )
+                : t(
+                    "Only members who set up a second factor will be asked for it; the others will no longer be asked to set one up.",
+                    "Nur wer einen zweiten Faktor eingerichtet hat, wird danach gefragt; die anderen werden nicht mehr zur Einrichtung aufgefordert.",
+                  )}
+            </p>
+          )}
+
+          <fieldset>
+            <legend className="text-xs text-muted-foreground">
+              {t("Allowed methods", "Erlaubte Methoden")}
+            </legend>
+            <div className="mt-1.5 space-y-1.5">
+              {POLICY_METHODS.map((m) => {
+                // Passkeys ship later; a stored value is kept as it is.
+                const comingSoon = m === "passkey";
+                // Email can be turned off without a mail server, never on.
+                const noMail = m === "email" && !data.emailAvailable && !methods.includes(m);
+                return (
+                  <div key={m} className="text-sm">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={methods.includes(m)}
+                        disabled={!canManage || comingSoon || noMail}
+                        onChange={(e) => toggle(m, e.target.checked)}
+                      />
+                      <span className={cn((comingSoon || noMail) && "text-muted-foreground")}>
+                        {methodLabel(m, t)}
+                      </span>
+                    </label>
+                    {comingSoon && (
+                      <p className="ml-6 text-[11px] text-muted-foreground">
+                        {t("Coming soon.", "Kommt bald.")}
+                      </p>
+                    )}
+                    {m === "email" && !data.emailAvailable && (
+                      <p className="ml-6 text-[11px] text-muted-foreground">
+                        {t(
+                          "Needs a mail server. Set one up under Mail server first.",
+                          "Benötigt einen Mailserver. Richte zuerst unter Mailserver einen ein.",
+                        )}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </fieldset>
+
+          <label className="block text-xs text-muted-foreground">
+            {t("Grace period (days)", "Übergangsfrist (Tage)")}
+            <input
+              type="number"
+              min={0}
+              max={MAX_GRACE_DAYS}
+              value={graceDays}
+              disabled={!canManage}
+              onChange={(e) => {
+                setRefusal(null);
+                setGraceDays(e.target.value);
+              }}
+              className="mt-1 block w-24 rounded-md border border-border bg-background/40 px-2 py-1 text-sm text-foreground"
+            />
+          </label>
+          <p className="-mt-2 text-[11px] text-muted-foreground">
+            {t(
+              "Between 0 and 30. How long a member may still sign in without a second factor once it is required of them.",
+              "Zwischen 0 und 30. Wie lange sich ein Mitglied noch ohne zweiten Faktor anmelden kann, sobald er verlangt wird.",
+            )}
+          </p>
+
+          {refusal && (
+            <p role="alert" className="text-xs text-[color:var(--status-error)]">
+              {refusal}
+            </p>
+          )}
+
+          {canManage && (
+            <button
+              type="button"
+              onClick={save}
+              disabled={!graceValid || update.isPending}
+              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-40"
+            >
+              {update.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Save className="h-3 w-3" />
+              )}
+              {t("Save", "Speichern")}
+            </button>
+          )}
+        </div>
       )}
     </Panel>
   );

@@ -5,7 +5,8 @@ import { useT } from "@/lib/i18n";
 import { setCommunityToken } from "@/lib/api";
 import { PublicAuthLayout } from "@/components/public-auth-layout";
 import { TotpChallenge } from "@/components/totp-challenge";
-import { TotpEnroll } from "@/components/totp-enroll";
+import { SecondFactorEnroll } from "@/components/second-factor";
+import { loginMethods } from "@/lib/two-factor";
 import type { OctopusMood } from "@/components/octopus-companion";
 
 export const Route = createFileRoute("/login")({
@@ -39,6 +40,9 @@ export function LoginPage() {
   // it is treated as logged in.
   const [totpChallengeToken, setTotpChallengeToken] = useState<string | null>(null);
   const [totpEnrollToken, setTotpEnrollToken] = useState<string | null>(null);
+  // The login response's `twoFactorMethods`: what the challenge may be
+  // answered with, or what the member may enrol in.
+  const [twoFactorMethods, setTwoFactorMethods] = useState<string[]>([]);
 
   const mood: OctopusMood = loading ? "thinking" : celebrating ? "celebrating" : "idle";
 
@@ -172,11 +176,13 @@ export function LoginPage() {
       // challenge/enrollment token, not a session. Stop before the tail below
       // so it is neither stored nor treated as a completed login.
       if (result.requiresTotpCode) {
+        setTwoFactorMethods(result.twoFactorMethods ?? []);
         setTotpChallengeToken(result.token);
         setLoading(false);
         return;
       }
       if (result.requiresTotpEnrollment) {
+        setTwoFactorMethods(result.twoFactorMethods ?? []);
         setTotpEnrollToken(result.token);
         setLoading(false);
         return;
@@ -223,6 +229,7 @@ export function LoginPage() {
       <PublicAuthLayout mood={mood}>
         <TotpChallenge
           token={totpChallengeToken}
+          methods={twoFactorMethods}
           onVerified={(sessionToken) => {
             setCommunityToken(sessionToken);
             celebrateAndNavigate("/");
@@ -235,8 +242,9 @@ export function LoginPage() {
   if (totpEnrollToken) {
     return (
       <PublicAuthLayout mood={mood}>
-        <TotpEnroll
+        <SecondFactorEnroll
           token={totpEnrollToken}
+          methods={loginMethods(twoFactorMethods)}
           onDone={() => {
             // Confirming enrollment does not mint a session (Task 11's own
             // design) -- send the operator back to the form. `mode` is

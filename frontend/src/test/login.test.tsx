@@ -14,7 +14,9 @@ const {
   confirmTotp,
   verifyTotp,
   renderTotpQrDataUrl,
+  sendEmailCode,
 } = vi.hoisted(() => ({
+  sendEmailCode: vi.fn(),
   navigate: vi.fn(),
   toastError: vi.fn(),
   toastWarning: vi.fn(),
@@ -60,6 +62,10 @@ vi.mock("@/lib/totp", () => ({
   confirmTotp,
   verifyTotp,
   renderTotpQrDataUrl,
+  sendEmailCode,
+  verifyEmailCode: vi.fn(),
+  enrollEmailCode: vi.fn(),
+  confirmEmailCode: vi.fn(),
 }));
 
 describe("Community login route", () => {
@@ -433,6 +439,36 @@ describe("Community login route", () => {
     expect(enrollTotp).toHaveBeenCalledWith("enroll-tok");
     expect(window.localStorage.getItem("oc8-community-token")).toBeNull();
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("offers the methods the login response names on the challenge", async () => {
+    stubConfigThenLogin({
+      requiresTotpCode: true,
+      token: "challenge-tok",
+      twoFactorMethods: ["totp", "email"],
+    });
+
+    render(<LoginPage />);
+    await submitLoginForm();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Code by email" }));
+    expect(screen.getByRole("button", { name: "Send code" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("oc8-community-token")).toBeNull();
+  });
+
+  it("lets a member choose which method to enrol in", async () => {
+    stubConfigThenLogin({
+      requiresTotpEnrollment: true,
+      token: "enroll-tok",
+      twoFactorMethods: ["totp", "email"],
+    });
+
+    render(<LoginPage />);
+    await submitLoginForm();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Code by email" }));
+    expect(await screen.findByRole("heading", { name: /codes by email/i })).toBeInTheDocument();
+    expect(enrollTotp).not.toHaveBeenCalled();
   });
 
   it("shows a grace-period nag when totpGraceExpiresAt is present, and still navigates", async () => {

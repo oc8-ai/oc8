@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // by vitest, so a plain top-level `const apiGetMock = vi.fn()` referenced
 // inside the factory throws "Cannot access before initialization" -- see
 // the identical pattern in `hooks.test.tsx`/`credential-hooks.test.tsx`.
+const { removeSecondFactorMock } = vi.hoisted(() => ({ removeSecondFactorMock: vi.fn() }));
+
 const {
   apiGetMock,
   apiPostMock,
@@ -47,6 +49,9 @@ vi.mock("@/lib/totp", () => ({
   enrollTotp: vi.fn(async () => ({ secret: "ABCDEFGH", provisioningUri: "otpauth://totp/x" })),
   confirmTotp: vi.fn(async () => ({ backupCodes: ["CODE1", "CODE2"] })),
   renderTotpQrDataUrl: vi.fn(async () => "data:image/png;base64,fake"),
+  enrollEmailCode: vi.fn(async () => ({ sentTo: "ada@example.com" })),
+  confirmEmailCode: vi.fn(async () => ({ backupCodes: [] })),
+  removeSecondFactor: removeSecondFactorMock,
 }));
 // ApprovalChannelsPanel's own hooks -- mocked the same way the panel above
 // mocks TOTP/push, so this file's real target (the TOTP card) doesn't have
@@ -93,17 +98,45 @@ function renderPage() {
   );
 }
 
-describe("Profile page — TOTP card", () => {
+describe("Profile page — two-factor card", () => {
+  const NOTHING = {
+    methods: [],
+    allowedMethods: ["totp", "email", "passkey"],
+    enrollableMethods: ["totp", "email"],
+    required: false,
+    backupCodesLeft: 0,
+  };
+  const BOTH = {
+    methods: [
+      { method: "totp", label: "", allowed: true, removable: true },
+      { method: "email", label: "ada@example.com", allowed: true, removable: true },
+    ],
+    allowedMethods: ["totp", "email", "passkey"],
+    enrollableMethods: ["totp", "email"],
+    required: true,
+    backupCodesLeft: 8,
+  };
+
+  function twoFactor(body: unknown) {
+    apiGetMock.mockImplementation((path: string) =>
+      path === "/auth/two-factor/methods" ? Promise.resolve(body) : Promise.resolve({}),
+    );
+  }
+
   beforeEach(() => {
     apiGetMock.mockReset();
     apiPostMock.mockReset();
+    removeSecondFactorMock.mockReset();
+    toastErrorMock.mockReset();
+    toastSuccessMock.mockReset();
   });
 
-  it("shows a Turn on button and starts enrollment when not enrolled", async () => {
-    apiGetMock.mockResolvedValue({ enrolled: false });
+  it("offers the enrollable methods and starts authenticator enrollment", async () => {
+    twoFactor(NOTHING);
     renderPage();
     await waitFor(() => expect(screen.getByText(/not enabled/i)).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /turn on/i }));
+    expect(screen.getByRole("button", { name: /add code by email/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /add authenticator app/i }));
     // TotpEnroll (Task 11) is now mounted -- assert on its own visible text
     // (e.g. a heading it renders), not implementation details.
     await waitFor(() =>
@@ -111,15 +144,62 @@ describe("Profile page — TOTP card", () => {
     );
   });
 
-  it("shows a regenerate button when already enrolled, and displays fresh codes", async () => {
-    apiGetMock.mockResolvedValue({ enrolled: true });
+  it("shows a regenerate button when enrolled, and displays fresh codes", async () => {
+    twoFactor(BOTH);
     apiPostMock.mockResolvedValue({ backupCodes: ["AAAA-1111", "BBBB-2222"] });
     renderPage();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /regenerate/i })).toBeInTheDocument(),
     );
+    expect(screen.getByText(/8 backup codes left/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /regenerate/i }));
     await waitFor(() => expect(screen.getByText("AAAA-1111")).toBeInTheDocument());
+  });
+
+  it("removes a method after asking for the password", async () => {
+    twoFactor(BOTH);
+    removeSecondFactorMock.mockResolvedValue(undefined);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /remove code by email/i }));
+    fireEvent.change(screen.getByPlaceholderText(/current password/i), {
+      target: { value: "hunter22" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+    await waitFor(() =>
+      expect(removeSecondFactorMock).toHaveBeenCalledWith("fake-token", "email", "hunter22"),
+    );
+    await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+  });
+
+  it("shows the refusal when the method cannot be removed", async () => {
+    twoFactor(BOTH);
+    removeSecondFactorMock.mockRejectedValue(new Error("current password is incorrect"));
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: /remove authenticator app/i }));
+    fireEvent.change(screen.getByPlaceholderText(/current password/i), {
+      target: { value: "wrong" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^remove$/i }));
+
+    await waitFor(() =>
+      expect(toastErrorMock).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ description: "current password is incorrect" }),
+      ),
+    );
+  });
+
+  it("does not offer removing the last method the policy requires", async () => {
+    twoFactor({
+      ...BOTH,
+      methods: [{ method: "totp", label: "", allowed: true, removable: false }],
+    });
+    renderPage();
+
+    expect(await screen.findByRole("button", { name: /remove authenticator app/i })).toBeDisabled();
   });
 });
 
@@ -137,10 +217,10 @@ describe("Profile page — Account panel", () => {
     toastErrorMock.mockReset();
     toastSuccessMock.mockReset();
     // Path-aware, since AccountPanel's `useAuth()` (`GET /me`) and the TOTP
-    // card's `GET /auth/totp/status` share this one mock.
+    // card's `GET /auth/two-factor/methods` share this one mock.
     apiGetMock.mockImplementation((path: string) => {
       if (path === "/me") return Promise.resolve(currentUser);
-      if (path === "/auth/totp/status") return Promise.resolve({ enrolled: false });
+      if (path === "/auth/two-factor/methods") return Promise.resolve({});
       return Promise.resolve({});
     });
     // jsdom's `window.location.reload` isn't configurable, so `vi.spyOn`

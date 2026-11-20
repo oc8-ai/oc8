@@ -927,6 +927,34 @@ export function useUpdateCopilotSettings() {
   });
 }
 
+/** The organisation's two-factor policy (`organization.settings.two_factor`). */
+export interface TwoFactorPolicyDTO {
+  requirement: "off" | "optional" | "admins" | "everyone";
+  methods: ("totp" | "email" | "passkey")[];
+  graceDays: number;
+}
+
+export interface TwoFactorSettingsDTO extends TwoFactorPolicyDTO {
+  /** Whether outgoing mail is configured; email cannot be allowed without it. */
+  emailAvailable: boolean;
+}
+
+export function useTwoFactorSettings() {
+  return useQuery({
+    queryKey: ["settings", "two-factor"],
+    queryFn: () => api.get<TwoFactorSettingsDTO>("/settings/organization/two-factor"),
+  });
+}
+
+export function useUpdateTwoFactorSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: TwoFactorPolicyDTO) =>
+      api.put<TwoFactorSettingsDTO>("/settings/organization/two-factor", body),
+    onSuccess: (saved) => qc.setQueryData(["settings", "two-factor"], saved),
+  });
+}
+
 export const useModels = () =>
   useQuery({ queryKey: keys.models, queryFn: () => api.get<ModelDTO[]>("/models") });
 
