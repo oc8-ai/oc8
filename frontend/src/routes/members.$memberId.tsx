@@ -6,6 +6,7 @@ import {
   KeyRound,
   Loader2,
   Mail,
+  RotateCcw,
   Save,
   ShieldCheck,
   Trash2,
@@ -42,6 +43,7 @@ import {
   useGrantSeat,
   useMintMemberPasswordReset,
   useRenameMemberSubject,
+  useResetMemberTwoFactor,
   useRevokeSeat,
   useRoles,
   useSetMemberPassword,
@@ -128,6 +130,7 @@ export function MemberDetailForm({ member }: { member: Member }) {
   const revokeSeat = useRevokeSeat();
   const mintReset = useMintMemberPasswordReset();
   const deleteMember = useDeleteMember();
+  const resetTwoFactor = useResetMemberTwoFactor();
   const navigate = useNavigate();
   const { data: me } = useAuth();
   const { confirm, ConfirmDialog } = useConfirm();
@@ -392,6 +395,37 @@ export function MemberDetailForm({ member }: { member: Member }) {
           err instanceof Error
             ? err.message
             : t("Could not delete this user.", "Benutzer konnte nicht gelöscht werden."),
+        ),
+    });
+  };
+
+  const resetMemberTwoFactor = async () => {
+    const ok = await confirm({
+      title: t(
+        "Reset their two-factor authentication?",
+        "Zwei-Faktor-Authentifizierung zurücksetzen?",
+      ),
+      description: t(
+        "This removes every second factor and backup code they have. If your organisation requires two-factor authentication from them, they set it up again at their next sign-in, within the grace period.",
+        "Das entfernt alle zweiten Faktoren und Backup-Codes dieser Person. Verlangt deine Organisation die Zwei-Faktor-Authentifizierung von ihr, richtet sie sie bei der nächsten Anmeldung innerhalb der Übergangsfrist neu ein.",
+      ),
+      confirmLabel: t("Reset", "Zurücksetzen"),
+      cancelLabel: t("Cancel", "Abbrechen"),
+    });
+    if (!ok) return;
+    resetTwoFactor.mutate(member.id, {
+      onSuccess: () =>
+        toast.success(
+          t("Two-factor authentication reset", "Zwei-Faktor-Authentifizierung zurückgesetzt"),
+        ),
+      onError: (err) =>
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : t(
+                "Could not reset two-factor authentication.",
+                "Zwei-Faktor-Authentifizierung konnte nicht zurückgesetzt werden.",
+              ),
         ),
     });
   };
@@ -700,6 +734,34 @@ export function MemberDetailForm({ member }: { member: Member }) {
           </div>
         )}
       </Panel>
+
+      {localAuth && !isSelf && (
+        <Panel className="p-6">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-muted-foreground" />
+            <h3 className="font-serif text-lg">
+              {t("Two-factor authentication", "Zwei-Faktor-Authentifizierung")}
+            </h3>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t(
+              "For someone who lost their phone or can no longer reach their email: removes their second factors so they can set one up again.",
+              "Für jemanden, der sein Telefon verloren hat oder seine E-Mail nicht mehr erreicht: entfernt die zweiten Faktoren, damit die Person sie neu einrichten kann.",
+            )}
+          </p>
+          <button
+            type="button"
+            onClick={resetMemberTwoFactor}
+            disabled={resetTwoFactor.isPending}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-xs font-medium transition hover:bg-accent disabled:opacity-50"
+          >
+            <RotateCcw className="size-3.5" />
+            {resetTwoFactor.isPending
+              ? t("Resetting…", "Wird zurückgesetzt…")
+              : t("Reset two-factor", "Zwei-Faktor zurücksetzen")}
+          </button>
+        </Panel>
+      )}
 
       {!isSelf && (
         <Panel className="p-6">

@@ -39,6 +39,8 @@ from typing import TYPE_CHECKING, Final
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
+from oc8.auth.two_factor_policy import enrolled_methods
+
 # `HUMAN` from the resolver, not a second literal: the string this module WRITES
 # has to be the string the resolver ACCEPTS, and two spellings of "human" that
 # drift apart would produce roles that save cleanly and grant nothing.
@@ -56,7 +58,7 @@ from oc8.authz.permissions import (
     role_kind,
 )
 from oc8.models.core import Role, RolePermission
-from oc8.models.identity import OrgMember, TotpCredential
+from oc8.models.identity import OrgMember
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -684,8 +686,8 @@ async def assign_role(
             )
     member.role_id = None if role is None else role.id
 
-    # Standalone 2FA design: org_admin is the one role that's ever mandatory
-    # for TOTP. Start the grace clock on a grant that results in org_admin
+    # Standalone 2FA design: org_admin is the role the default policy makes
+    # mandatory. Start the grace clock on a grant that results in org_admin
     # with no credential yet; never restart an already-running clock (a
     # re-save of the same assignment must not reset an admin's countdown to
     # full); clear it on a demotion away from org_admin for someone who
@@ -693,9 +695,7 @@ async def assign_role(
     # already None).
     becomes_org_admin = role is not None and role.name == "org_admin"
     if becomes_org_admin:
-        has_credential = (
-            await db.execute(select(TotpCredential.id).where(TotpCredential.member_id == member.id))
-        ).scalar_one_or_none() is not None
+        has_credential = bool(await enrolled_methods(db, member.id))
         if not has_credential and member.totp_grace_started_at is None:
             member.totp_grace_started_at = dt.datetime.now(tz=dt.UTC)
     elif member.totp_grace_started_at is not None:

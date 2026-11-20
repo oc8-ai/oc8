@@ -27,7 +27,8 @@ from oc8.api.v1.members import _member_dto
 from oc8.audit import append_event
 from oc8.auth import Principal, get_identity_provider
 from oc8.auth.password import PasswordHashingError, hash_password, verify_password
-from oc8.auth.totp_gate import totp_gate
+from oc8.auth.second_factors import sign_in_address_changed
+from oc8.auth.totp_gate import second_factor_gate
 from oc8.authz.permissions import MEMBER_ROLE
 from oc8.authz.scope import scope_for_principal, subject_uuid_for
 from oc8.config import get_settings
@@ -634,6 +635,8 @@ async def change_own_email(
         member.subject = new_email
         member.subject_uuid = subject_uuid_for(new_email)
         member.email = new_email
+        # A code by email was confirmed for the old address only.
+        await sign_in_address_changed(db, member, actor_id=member.id, principal=principal)
         await append_event(
             db,
             tenant_id=principal.tenant_id,
@@ -870,6 +873,11 @@ class PasswordSessionResponse(CamelModel):
     #: True when `token` above is a NARROW totp:enroll-scoped token -- the
     #: caller must POST /auth/totp/enroll then /confirm next.
     requires_totp_enrollment: bool = False
+    #: Beside `requires_totp_code`: the methods the member may answer the
+    #: challenge with (backup codes always work besides). Beside
+    #: `requires_totp_enrollment`: the methods they may enrol in. Empty on a
+    #: full session.
+    two_factor_methods: list[str] = Field(default_factory=list)
 
 
 class PasswordSessionInfo(CamelModel):
@@ -1035,7 +1043,7 @@ async def password_setup(body: PasswordSetupRequest) -> PasswordSessionResponse:
         # shared `totp_gate` anyway rather than recomputing the deadline
         # inline: one copy of the grace-window arithmetic, not two (see that
         # module's own docstring on why a second copy is how this drifts).
-        outcome = await totp_gate(db, member_id=member_id)
+        outcome = await second_factor_gate(db, member_id=member_id)
 
     # Mint a token for this new member
     provider = get_identity_provider()
@@ -1064,9 +1072,7 @@ async def password_setup(body: PasswordSetupRequest) -> PasswordSessionResponse:
 @router.post(
     "/auth/login",
     response_model=PasswordSessionResponse,
-    dependencies=[
-        Depends(unguarded("login is pre-auth; all checking is inside the endpoint"))
-    ],
+    dependencies=[Depends(unguarded("login is pre-auth; all checking is inside the endpoint"))],
 )
 async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
     """Authenticate a member via email + password.
@@ -1150,7 +1156,7 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
     # session, with this tenant's id, this token_role floor and
     # `kind="operator"` -- `totp_gate` never mints.
     async with tenant_session(org.id) as db:
-        outcome = await totp_gate(db, member_id=member_id)
+        outcome = await second_factor_gate(db, member_id=member_id)
 
     provider = get_identity_provider()
 
@@ -1169,6 +1175,7 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
             principal=principal,
             member_id=str(member_id),
             requires_totp_code=True,
+            two_factor_methods=list(outcome.methods),
         )
 
     if outcome.requires_totp_enrollment:
@@ -1187,6 +1194,7 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
             principal=principal,
             member_id=str(member_id),
             requires_totp_enrollment=True,
+            two_factor_methods=list(outcome.methods),
         )
 
     # Outcome 1: a full session, unchanged from before this feature existed.
@@ -1215,9 +1223,7 @@ async def password_login(body: PasswordLoginRequest) -> PasswordSessionResponse:
 @router.post(
     "/auth/logout",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[
-        Depends(unguarded("logout is always available and is a no-op"))
-    ],
+    dependencies=[Depends(unguarded("logout is always available and is a no-op"))],
 )
 async def password_logout() -> None:
     """Logout endpoint (no-op with stateless JWT).
@@ -1347,9 +1353,7 @@ async def _redeem_token(
     return row
 
 
-async def _member_for_token(
-    db: AsyncSession, row: m.AccountVerificationToken
-) -> m.OrgMember:
+async def _member_for_token(db: AsyncSession, row: m.AccountVerificationToken) -> m.OrgMember:
     """The live member a spent token belongs to, or the same generic refusal.
 
     A member deleted between minting and confirming is answered exactly like a
@@ -1429,6 +1433,8 @@ async def confirm_email_change(body: ConfirmEmailChangeRequest) -> MemberDTO:
         member.subject = row.new_email
         member.subject_uuid = subject_uuid_for(row.new_email)
         member.email = row.new_email
+        # A code by email was confirmed for the old address only.
+        await sign_in_address_changed(db, member, actor_id=member.id)
         await append_event(
             db,
             tenant_id=org.id,

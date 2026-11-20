@@ -46,16 +46,6 @@ class Organization(Base, PkMixin, TimestampMixin):
     #: admin out of their own wizard mid-flow (finishing step 2 alone would
     #: make agent count leave zero).
     onboarding_status: Mapped[str] = mapped_column(Text, nullable=False, default="pending")
-    #: Currently unused: this was a hook for an external identity provider's
-    #: own login to require an additional oc8-owned TOTP step-up on top of it
-    #: (standalone 2FA design). This edition ships only the built-in local
-    #: password login, which already gates its own TOTP directly in
-    #: `password_login` / `totp_gate` and never reads this flag. Left in
-    #: place, defaulted false, rather than migrated away, since nothing
-    #: currently depends on it either way.
-    totp_step_up_enabled: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
-    )
     #: IANA zone name (e.g. "Europe/Berlin"). Resolved with a safe UTC
     #: fallback by oc8.agent.harness.prompts.resolve_timezone -- an invalid
     #: or unrecognized value here never breaks a run, it just falls back.

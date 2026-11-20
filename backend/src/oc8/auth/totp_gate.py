@@ -19,14 +19,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.auth.principal import Principal
+from oc8.auth.two_factor_policy import (
+    DEFAULT_POLICY,
+    enrollable_methods,
+    enrolled_methods,
+    is_org_admin,
+    load_policy,
+    requires_member,
+)
 
-#: How long a newly-mandatory org_admin has to enroll before a login entry
-#: point stops handing out a full session (standalone 2FA design). Defined
-#: HERE, once, rather than in each caller: this is the number both entry
-#: points must agree on, and two copies of it is two deadlines. Not yet
-#: tenant-configurable -- the spec doesn't ask for that, and a named
-#: constant is easy for a later task to promote to a setting.
-TOTP_GRACE_DAYS = 7
+#: The grace period an organisation gets when its policy names none. The
+#: policy's own `grace_days` is what the gate reads; this stays the one name
+#: for the default so the two cannot drift.
+TOTP_GRACE_DAYS = DEFAULT_POLICY.grace_days
 
 
 @dataclass(frozen=True)
@@ -49,6 +54,10 @@ class TotpGateOutcome:
     #: Non-None only alongside `full_session_ok` for a member whose grace
     #: clock is running: the deadline, for the frontend's nag banner.
     totp_grace_expires_at: dt.datetime | None = None
+    #: With `requires_totp_code`: the allowed methods the member enrolled and
+    #: may answer with. With `requires_totp_enrollment`: the methods they may
+    #: enrol in. Empty on a full session.
+    methods: tuple[str, ...] = ()
 
 
 async def member_id_for_principal(db: AsyncSession, principal: Principal) -> uuid.UUID | None:
@@ -75,34 +84,54 @@ async def member_id_for_principal(db: AsyncSession, principal: Principal) -> uui
     ).scalar_one_or_none()
 
 
-async def totp_gate(db: AsyncSession, *, member_id: uuid.UUID) -> TotpGateOutcome:
-    """The three-outcome decision, in the order the design fixes.
+async def second_factor_gate(db: AsyncSession, *, member_id: uuid.UUID) -> TotpGateOutcome:
+    """The three-outcome decision, driven by the organisation's policy.
 
-    Enrollment is checked FIRST and unconditionally: an enrolled member owes
-    a code whatever their role and whatever their grace clock says, so the
-    clock is never even read for them. That ordering is load-bearing, not
-    incidental -- reading the clock first would let a stale
-    `totp_grace_started_at` on an already-enrolled member (the invariant
-    `POST /auth/totp/confirm` clears, and which nothing else does) demand a
-    fresh enrollment from somebody who has one.
+    `off` asks nobody, whatever they enrolled; enrolments are kept, so turning
+    the policy back on asks the same members again at once.
 
-    Only a member with a non-NULL `totp_grace_started_at` is mandatory at
-    all. That column is written by `assign_role`/`password_setup` the moment
-    someone becomes org_admin; an opt-in, non-admin member never has one and
-    always lands on `full_session_ok` here.
+    Otherwise enrolment is checked FIRST: a member holding an allowed method
+    owes a code whatever their role and whatever their grace clock says, so
+    a stale clock can never demand a fresh enrolment from somebody who has
+    one. A method the policy no longer allows does not count: that member is
+    treated as not enrolled.
+
+    Only then is the requirement read. `admins` is the default and today's
+    behaviour: an org_admin whose clock was started (by `assign_role` or
+    `password_setup`) must enrol before it runs out. An org_admin who has no
+    clock but enrolled a method the policy has since removed falls under it
+    too, and their clock starts now. An admin with neither stays exempt, as
+    the demo seed's admin always has been. `everyone` starts the clock at the
+    member's first login under it.
+
+    This writes the grace clock when it starts one; the caller's session
+    commits it.
     """
-    cred = (
-        await db.execute(select(m.TotpCredential).where(m.TotpCredential.member_id == member_id))
-    ).scalar_one_or_none()
-    if cred is not None and cred.enrolled_at is not None:
-        return TotpGateOutcome(full_session_ok=False, requires_totp_code=True)
-
-    member_row = await db.get(m.OrgMember, member_id)
-    grace_started = member_row.totp_grace_started_at if member_row is not None else None
-    if grace_started is None:
+    member = await db.get(m.OrgMember, member_id)
+    if member is None:
+        return TotpGateOutcome(full_session_ok=True)
+    policy = await load_policy(db, member.tenant_id)
+    if policy.requirement == "off":
         return TotpGateOutcome(full_session_ok=True)
 
-    grace_deadline = grace_started + dt.timedelta(days=TOTP_GRACE_DAYS)
-    if dt.datetime.now(tz=dt.UTC) >= grace_deadline:
-        return TotpGateOutcome(full_session_ok=False, requires_totp_enrollment=True)
+    enrolled = await enrolled_methods(db, member_id)
+    allowed = tuple(x for x in enrolled if x in policy.methods)
+    if allowed:
+        return TotpGateOutcome(full_session_ok=False, requires_totp_code=True, methods=allowed)
+    if not requires_member(policy, admin=await is_org_admin(db, member)):
+        return TotpGateOutcome(full_session_ok=True)
+    if policy.requirement == "admins" and member.totp_grace_started_at is None and not enrolled:
+        return TotpGateOutcome(full_session_ok=True)
+
+    now = dt.datetime.now(tz=dt.UTC)
+    if member.totp_grace_started_at is None:
+        member.totp_grace_started_at = now
+        await db.flush()
+    grace_deadline = member.totp_grace_started_at + dt.timedelta(days=policy.grace_days)
+    if now >= grace_deadline:
+        return TotpGateOutcome(
+            full_session_ok=False,
+            requires_totp_enrollment=True,
+            methods=tuple(await enrollable_methods(db, member.tenant_id, policy)),
+        )
     return TotpGateOutcome(full_session_ok=True, totp_grace_expires_at=grace_deadline)
