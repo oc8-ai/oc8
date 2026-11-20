@@ -403,6 +403,7 @@ describe("builderRefusalText", () => {
       "skill_requirements_missing",
       "runtime_lacks_skills",
       "trigger_invalid",
+      "trigger_needs_login",
       "model_manual_only",
       "system_outside_frame",
       "system_login_needed",

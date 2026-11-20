@@ -2489,6 +2489,57 @@ export interface TriggerDTO {
   //: trigger, so its runs no longer use their own accounts until they save
   //: it again.
   needsConfirmation: boolean;
+  //: A polled event's trigger: the organisation login it listens on (the
+  //: agent's fixed login for the event's tools) and its declared settings.
+  eventTargetCredentialId?: string | null;
+  eventConfig?: Record<string, string>;
+  //: How polling goes; null for every trigger that is not on a polled event.
+  pollStatus?: TriggerPollStatus | null;
+  //: Why the system switched it off, e.g. "event_target_changed".
+  lastSkipReason?: string | null;
+}
+
+export interface TriggerPollStatus {
+  lastPolledAt: string | null;
+  lastOkAt: string | null;
+  lastError: string | null;
+  lastErrorAt: string | null;
+}
+
+/** The skip reason of a polled trigger the agent's login changed under. */
+export const EVENT_TARGET_CHANGED = "event_target_changed";
+
+export interface TriggerEventConfigField {
+  key: string;
+  label: string;
+  labelTranslations: Record<string, string>;
+  kind: "text";
+  default: string;
+  //: Filled from this key of the login's connection setup when left empty.
+  defaultFrom: string;
+}
+
+/** An event a trigger may listen on (GET /trigger-events). */
+export interface TriggerEventDTO {
+  source: string;
+  type: string;
+  label: string;
+  labelTranslations: Record<string, string>;
+  description: string;
+  descriptionTranslations: Record<string, string>;
+  //: Core polls an outside system for it: the trigger editor gives it a tab.
+  polled: boolean;
+  //: The tool whose fixed login a polled event listens on.
+  toolKey: string | null;
+  config: TriggerEventConfigField[];
+}
+
+export function useTriggerEvents() {
+  return useQuery({
+    queryKey: ["trigger-events"],
+    queryFn: () => api.get<TriggerEventDTO[]>("/trigger-events"),
+    staleTime: 60_000,
+  });
 }
 
 export function useAgentTriggers(agentId: string) {
@@ -2508,6 +2559,9 @@ export function useCreateAgentTrigger() {
       kind = "cron",
       cronExpression,
       timezone,
+      eventSource,
+      eventType,
+      eventConfig,
     }: {
       agentId: string;
       taskText: string;
@@ -2515,17 +2569,25 @@ export function useCreateAgentTrigger() {
       //: server-side (agent tool login selection design's own "never
       //: client-supplied" rule applies here too: an unguessable value must
       //: not be something the caller could have picked).
-      kind?: "cron" | "webhook";
+      kind?: "cron" | "webhook" | "event";
       cronExpression?: string;
       //: The zone the cron is read in; the server uses the organisation's
       //: when it is left out.
       timezone?: string;
+      //: kind "event". A polled event listens on the agent's fixed login,
+      //: which the server fills in.
+      eventSource?: string;
+      eventType?: string;
+      eventConfig?: Record<string, string>;
     }) =>
       api.post<TriggerDTO>(`/agents/${agentId}/triggers`, {
         kind,
         taskText,
         cronExpression,
         timezone,
+        eventSource,
+        eventType,
+        eventConfig,
       }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });
@@ -2540,6 +2602,10 @@ export function useUpdateAgentTrigger() {
       cronExpression,
       timezone,
       actsForCreator,
+      taskText,
+      enabled,
+      eventConfig,
+      eventTargetCredentialId,
     }: {
       agentId: string;
       triggerId: string;
@@ -2548,11 +2614,21 @@ export function useUpdateAgentTrigger() {
       timezone?: string;
       //: Only the trigger's creator may switch this on (webhook/event).
       actsForCreator?: boolean;
+      taskText?: string;
+      enabled?: boolean;
+      //: A polled event's settings, and the agent's current fixed login to
+      //: listen on; a change to either starts from what is there now.
+      eventConfig?: Record<string, string>;
+      eventTargetCredentialId?: string;
     }) =>
       api.patch<TriggerDTO>(`/triggers/${triggerId}`, {
         cronExpression,
         timezone,
         actsForCreator,
+        taskText,
+        enabled,
+        eventConfig,
+        eventTargetCredentialId,
       }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),
   });

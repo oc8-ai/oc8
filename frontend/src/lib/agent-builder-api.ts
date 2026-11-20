@@ -254,6 +254,11 @@ function stepReasonText(reason: string, t: Translate): string | null {
         "The schedule or event is not valid.",
         "Der Zeitplan oder das Ereignis ist ungültig.",
       );
+    case "trigger_needs_login":
+      return t(
+        "The event listens on the agent's own login for its system, and the agent has none yet. Choose one in the agent's tool settings.",
+        "Das Ereignis hört auf das eigene Login des Agenten für sein System, und der Agent hat noch keins. Wähl eins in seinen Tool-Einstellungen.",
+      );
     case "model_manual_only":
       return t(
         "This model may only answer chats, not run on a schedule or an event.",

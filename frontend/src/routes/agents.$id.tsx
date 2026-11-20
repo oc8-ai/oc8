@@ -14,6 +14,7 @@ import {
   Crown,
   Download,
   FileText,
+  Inbox,
   Lock,
   MessageSquare,
   Play,
@@ -44,6 +45,7 @@ import {
   useAgentSkills,
   useAgentSupervisor,
   useAgentTriggers,
+  useTriggerEvents,
   useAgentWorkspaceFiles,
   type WorkspaceFileDTO,
   useAnswerRun,
@@ -137,6 +139,7 @@ import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { RunStartPhase } from "@/components/run-start-phase";
 import { isStartPhase, phaseLabel } from "@/lib/run-start-phase";
 import { TriggerOwner } from "@/components/connections/trigger-owner";
+import { PolledEventTriggerPanel, polledEventTabLabel } from "@/components/polled-event-trigger";
 import { ScheduleEditor } from "@/components/schedule-editor";
 import { RunStateBadge } from "@/components/run-state-badge";
 import { StatCard } from "@/components/stat-card";
@@ -1932,12 +1935,13 @@ function ConfigSectionHeader({ hint, title }: { hint: string; title: string }) {
 // ---------- Schedule / trigger ----------
 
 /** Which trigger TYPE this agent uses: a cron schedule (ScheduleEditor,
- * unchanged below) or a generic webhook (WebhookTriggerPanel). Defaults to
- * whichever the agent already has configured, cron otherwise -- an agent
- * genuinely has at most one of each kind today (single-mcp_conn dispatch's
- * own limit, runtime/executor.py), so "which tab is open" and "which
- * trigger exists" stay in lockstep. */
-function TriggerEditor({
+ * unchanged below), a generic webhook (WebhookTriggerPanel), or one tab per
+ * polled event an enabled capa declares (PolledEventTriggerPanel, e.g. "On
+ * new email"). Defaults to whichever the agent already has configured, cron
+ * otherwise -- an agent has at most one of each kind, and at most one trigger
+ * per polled event, so "which tab is open" and "which trigger exists" stay in
+ * lockstep. */
+export function TriggerEditor({
   initial,
   agentName,
   agentId,
@@ -1947,26 +1951,43 @@ function TriggerEditor({
   agentId: string;
 }) {
   const t = useT();
+  const { lang } = useLang();
   const { data: triggers } = useAgentTriggers(agentId);
+  const { data: events } = useTriggerEvents();
+  const polledEvents = (events ?? []).filter((event) => event.polled && event.toolKey);
   const webhookTrigger = triggers?.find((tr) => tr.kind === "webhook");
-  const [tab, setTab] = useState<"cron" | "webhook">(webhookTrigger ? "webhook" : "cron");
+  const eventTab = (source: string | null, type: string | null) => `event:${source}:${type}`;
+  const polledTrigger = triggers?.find(
+    (tr) =>
+      tr.kind === "event" &&
+      polledEvents.some((event) => event.source === tr.eventSource && event.type === tr.eventType),
+  );
+  const [tab, setTab] = useState<string>(webhookTrigger ? "webhook" : "cron");
 
   useEffect(() => {
     if (webhookTrigger) setTab("webhook");
   }, [webhookTrigger?.id]);
+  useEffect(() => {
+    if (polledTrigger) setTab(eventTab(polledTrigger.eventSource, polledTrigger.eventType));
+  }, [polledTrigger?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const tabClass = (active: boolean) =>
+    cn(
+      "rounded-full border px-2.5 py-1 text-[11px] transition",
+      active
+        ? "border-primary/60 bg-primary/15 text-primary"
+        : "border-border bg-background/40 text-muted-foreground hover:text-foreground",
+    );
+  const openEvent = polledEvents.find((event) => eventTab(event.source, event.type) === tab);
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-1.5">
+      <div className="flex flex-wrap gap-1.5">
         <button
           type="button"
           onClick={() => setTab("cron")}
-          className={cn(
-            "rounded-full border px-2.5 py-1 text-[11px] transition",
-            tab === "cron"
-              ? "border-primary/60 bg-primary/15 text-primary"
-              : "border-border bg-background/40 text-muted-foreground hover:text-foreground",
-          )}
+          aria-pressed={tab === "cron"}
+          className={tabClass(tab === "cron")}
         >
           <Clock className="mr-1 inline h-3 w-3" />
           {t("Schedule", "Zeitplan")}
@@ -1974,21 +1995,44 @@ function TriggerEditor({
         <button
           type="button"
           onClick={() => setTab("webhook")}
-          className={cn(
-            "rounded-full border px-2.5 py-1 text-[11px] transition",
-            tab === "webhook"
-              ? "border-primary/60 bg-primary/15 text-primary"
-              : "border-border bg-background/40 text-muted-foreground hover:text-foreground",
-          )}
+          aria-pressed={tab === "webhook"}
+          className={tabClass(tab === "webhook")}
         >
           <Webhook className="mr-1 inline h-3 w-3" />
           {t("Webhook", "Webhook")}
         </button>
+        {polledEvents.map((event) => {
+          const id = eventTab(event.source, event.type);
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setTab(id)}
+              aria-pressed={tab === id}
+              className={tabClass(tab === id)}
+            >
+              <Inbox className="mr-1 inline h-3 w-3" />
+              {polledEventTabLabel(event, t, lang)}
+            </button>
+          );
+        })}
       </div>
-      {tab === "cron" ? (
-        <ScheduleEditor initial={initial} agentName={agentName} agentId={agentId} />
-      ) : (
+      {openEvent ? (
+        <PolledEventTriggerPanel
+          agentId={agentId}
+          agentName={agentName}
+          event={openEvent}
+          trigger={triggers?.find(
+            (tr) =>
+              tr.kind === "event" &&
+              tr.eventSource === openEvent.source &&
+              tr.eventType === openEvent.type,
+          )}
+        />
+      ) : tab === "webhook" ? (
         <WebhookTriggerPanel agentId={agentId} agentName={agentName} trigger={webhookTrigger} />
+      ) : (
+        <ScheduleEditor initial={initial} agentName={agentName} agentId={agentId} />
       )}
     </div>
   );
