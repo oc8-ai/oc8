@@ -986,7 +986,8 @@ async def apply_builder_proposal(
                         # trigger on a polled event cannot listen on one: the
                         # agent is created without it, and the card tells the
                         # person to pick the login and add the trigger.
-                        notices.append(TRIGGER_NEEDS_LOGIN)
+                        if TRIGGER_NEEDS_LOGIN not in notices:
+                            notices.append(TRIGGER_NEEDS_LOGIN)
                     continue
                 created = await apply_operation(
                     db,
