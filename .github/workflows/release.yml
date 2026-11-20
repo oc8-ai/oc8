@@ -70,9 +70,18 @@ jobs:
       - name: Write the release notes
         if: steps.version.outputs.new == 'true'
         run: |
-          # The pull request merged into main with this commit, if any.
-          gh api "repos/$REPO/commits/$SHA/pulls" \
-            --jq '[.[] | select(.base.ref == "main")][0].body // ""' > notes.md
+          # Only the pull request whose merge into main produced this very
+          # commit, opened by a maintainer. An open or unmerged PR that merely
+          # contains the commit (a fork's, say) never writes the release text.
+          # Without such a PR the release carries the generated list only.
+          gh api "repos/$REPO/commits/$SHA/pulls" > pulls.json
+          jq -r --arg sha "$SHA" '
+            [ .[]
+              | select(.base.ref == "main"
+                  and .merged_at != null
+                  and .merge_commit_sha == $sha
+                  and (.author_association | IN("OWNER", "MEMBER", "COLLABORATOR")))
+            ][0].body // ""' pulls.json > notes.md
           if [ -s notes.md ]; then printf '\n\n' >> notes.md; fi
 
       - name: Create the tag and the release
