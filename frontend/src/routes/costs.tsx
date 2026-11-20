@@ -44,6 +44,7 @@ import {
   useUsage,
   type BudgetDTO,
   type UsageDTO,
+  type UsagePeriod,
 } from "@/lib/hooks";
 import { useReconciliation, useRefreshReconciliation } from "@/lib/reconciliation-hooks";
 import { downloadUsageExport } from "@/lib/usage-export";
@@ -135,6 +136,7 @@ function CostsPage() {
   const t = useT();
   const [tab, setTab] = useState<Tab>("overview");
   const [currency, setCurrency] = useState<Currency>("EUR");
+  const [period, setPeriod] = useState<UsagePeriod>("month");
   // Cost-breakdown aggregation over every agent/department, not a paginated
   // list view.
   const { data: agentsPage } = useAgents({ pageSize: 200 });
@@ -147,8 +149,8 @@ function CostsPage() {
   // metered — providerCostMicros is USD·1e6. No client-side pricing model is
   // involved in these figures (that model lives on in the Limits tab only, and
   // is labelled there as an estimate).
-  const { data: agentUsage } = useUsage("agent");
-  const { data: deptUsage } = useUsage("department");
+  const { data: agentUsage } = useUsage("agent", period);
+  const { data: deptUsage } = useUsage("department", period);
 
   const unassignedLabel = t("Unassigned", "Nicht zugewiesen");
 
@@ -165,8 +167,9 @@ function CostsPage() {
     const totalUSD = agentRows.reduce((s, r) => s + r.costUSD, 0);
     const inTok = agentRows.reduce((s, r) => s + r.tokensIn, 0);
     const outTok = agentRows.reduce((s, r) => s + r.tokensOut, 0);
-    return { totalUSD, inTok, outTok };
-  }, [agentRows]);
+    const cacheRead = (agentUsage ?? []).reduce((s, r) => s + (r.cacheReadTokens ?? 0), 0);
+    return { totalUSD, inTok, outTok, cacheRead };
+  }, [agentRows, agentUsage]);
 
   const recorded = useMemo(() => {
     const rows = deptUsage ?? [];
@@ -219,6 +222,7 @@ function CostsPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <PeriodSwitch period={period} onChange={setPeriod} />
             <div className="inline-flex rounded-md border border-border bg-background/40 p-0.5 text-xs">
               {(["EUR", "USD"] as Currency[]).map((c) => (
                 <button
@@ -251,10 +255,14 @@ function CostsPage() {
           <Metric
             label={t("Total spend", "Gesamtausgaben")}
             value={formatMoney(convert(totals.totalUSD, currency), currency)}
-            hint={t("recorded to date", "bisher erfasst")}
+            hint={
+              period === "month"
+                ? t("this month", "in diesem Monat")
+                : t("recorded to date", "bisher erfasst")
+            }
             highlight
           />
-          <Metric label={t("Input tokens", "Input-Token")} value={formatTokens(totals.inTok)} />
+          <InputTokensMetric tokensIn={totals.inTok} cacheReadTokens={totals.cacheRead} />
           <Metric label={t("Output tokens", "Output-Token")} value={formatTokens(totals.outTok)} />
           <Metric
             label={t("Total tokens", "Token gesamt")}
@@ -289,10 +297,15 @@ function CostsPage() {
             </>
           ) : (
             <span className="text-muted-foreground">
-              {t(
-                "No usage metered yet for this tenant.",
-                "Für diesen Tenant wurde noch kein Verbrauch gemessen.",
-              )}
+              {period === "month"
+                ? t(
+                    "No usage metered this month.",
+                    "In diesem Monat wurde kein Verbrauch gemessen.",
+                  )
+                : t(
+                    "No usage metered yet for this tenant.",
+                    "Für diesen Tenant wurde noch kein Verbrauch gemessen.",
+                  )}
             </span>
           )}
         </div>
@@ -330,6 +343,62 @@ function CostsPage() {
       )}
       {tab === "limits" && <LimitsTab currency={currency} />}
     </div>
+  );
+}
+
+export function PeriodSwitch({
+  period,
+  onChange,
+}: {
+  period: UsagePeriod;
+  onChange: (period: UsagePeriod) => void;
+}) {
+  const t = useT();
+  const options: { id: UsagePeriod; label: string }[] = [
+    { id: "month", label: t("This month", "Dieser Monat") },
+    { id: "all", label: t("All time", "Gesamt") },
+  ];
+  return (
+    <div className="inline-flex rounded-md border border-border bg-background/40 p-0.5 text-xs">
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          aria-pressed={period === o.id}
+          onClick={() => onChange(o.id)}
+          className={cn(
+            "rounded px-2.5 py-1 font-medium transition",
+            period === o.id
+              ? "bg-primary/20 text-primary"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Input tokens are the whole prompt; the cached part is billed at a tenth. */
+export function InputTokensMetric({
+  tokensIn,
+  cacheReadTokens,
+}: {
+  tokensIn: number;
+  cacheReadTokens: number;
+}) {
+  const t = useT();
+  return (
+    <Metric
+      label={t("Input tokens", "Input-Token")}
+      value={formatTokens(tokensIn)}
+      hint={
+        cacheReadTokens > 0
+          ? `${t("of which from cache", "davon aus dem Cache")}: ${formatTokens(cacheReadTokens)}`
+          : undefined
+      }
+    />
   );
 }
 

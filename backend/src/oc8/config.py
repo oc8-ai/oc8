@@ -309,6 +309,9 @@ class Settings(BaseSettings):
     # Model Router
     ollama_base_url: str = "http://localhost:11434"
     anthropic_api_key: str = ""
+    #: Ask Anthropic to cache each request's prompt prefix, so an agent step
+    #: rereads the transcript it already sent at a tenth of the input price.
+    anthropic_prompt_caching: bool = True
     openai_api_key: str = ""
     mistral_api_key: str = ""
     mistral_base_url: str = "https://api.mistral.ai/v1"

@@ -1847,6 +1847,8 @@ async def run_agent(
                         provider=res.provider,
                         tokens_in=res.usage.tokens_in,
                         tokens_out=res.usage.tokens_out,
+                        cache_read_tokens=res.usage.cache_read_tokens,
+                        cache_write_tokens=res.usage.cache_write_tokens,
                         agent_id=agent.id,
                         department_id=agent.department_id,
                         skill_id=active_skills[-1].skill_id if active_skills else None,

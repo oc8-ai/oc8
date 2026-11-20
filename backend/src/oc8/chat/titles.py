@@ -218,6 +218,8 @@ async def _model_title(db: AsyncSession, *, session: m.ChatSession, message: str
                 provider=result.provider,
                 tokens_in=result.usage.tokens_in,
                 tokens_out=result.usage.tokens_out,
+                cache_read_tokens=result.usage.cache_read_tokens,
+                cache_write_tokens=result.usage.cache_write_tokens,
                 agent_id=agent.id,
                 department_id=agent.department_id,
             )

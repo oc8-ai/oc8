@@ -416,6 +416,9 @@ msgstr ""
 msgid "All systems operational"
 msgstr ""
 
+msgid "All time"
+msgstr ""
+
 msgid "Allow"
 msgstr ""
 
@@ -3623,6 +3626,9 @@ msgstr ""
 msgid "No tools yet — add one directly for this agent, or grant it to the whole department first."
 msgstr ""
 
+msgid "No usage metered this month."
+msgstr ""
+
 msgid "No usage metered yet for this tenant."
 msgstr ""
 
@@ -3768,6 +3774,9 @@ msgid "oc8 calculated"
 msgstr ""
 
 msgid "oc8 object"
+msgstr ""
+
+msgid "of which from cache"
 msgstr ""
 
 msgid "Office"
@@ -5691,6 +5700,9 @@ msgid "This model can see images (vision)"
 msgstr ""
 
 msgid "This model may only answer chats, not run on a schedule or an event."
+msgstr ""
+
+msgid "this month"
 msgstr ""
 
 msgid "This month"

@@ -17,7 +17,7 @@ from sqlalchemy import Select, and_, func, or_, select
 
 from oc8 import models as m
 from oc8.agents.repo import resolve_run_reach, restrict_to_run_reach
-from oc8.api.deps import DbSession, require_departmental, require_permission
+from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._export_utils import csv_safe as _csv_safe
 from oc8.api.v1._export_utils import parse_date_bound as _parse_bound
 from oc8.api.v1._serializers import activity_to_dto, approval_to_dto, resolve_approval_names
@@ -27,8 +27,10 @@ from oc8.audit.integrity import (
 )
 from oc8.authz.permissions import BUDGET, RUN, VIEW, perm
 from oc8.authz.scope import APPROVAL_VIEW, HumanActor
+from oc8.metering.budget import month_start
 from oc8.metering.pricing import active_price_rows, cost_micros_from_price, price_as_of
 from oc8.schemas.dto import ActivityDTO, ApprovalDTO, PrincipalUsageDTO, TokenUsageExportRowDTO
+from oc8.triggers.zones import organisation_timezone
 
 router = APIRouter()
 
@@ -124,13 +126,26 @@ async def list_approvals(
     response_model=list[PrincipalUsageDTO],
     dependencies=[Depends(require_permission(perm(BUDGET, VIEW)))],
 )
-async def usage(db: DbSession, group_by: str = "department") -> list[PrincipalUsageDTO]:
+async def usage(
+    db: DbSession,
+    principal: CurrentPrincipal,
+    group_by: str = "department",
+    period: Literal["month", "all"] = "month",
+) -> list[PrincipalUsageDTO]:
+    """Token and cost totals per department or agent. `month` is the current
+    calendar month on the organisation's clock, `all` everything recorded."""
     col = (
         m.TokenUsageRecord.department_id
         if group_by == "department"
         else m.TokenUsageRecord.agent_id
     )
     day = func.date_trunc("day", m.TokenUsageRecord.ts)
+    # Explicit, not left to RLS alone: a session that is not tenant-bound (the
+    # schema owner, a misconfigured role) would otherwise sum every tenant.
+    filters = [m.TokenUsageRecord.tenant_id == principal.tenant_id]
+    if period == "month":
+        zone = await organisation_timezone(db, principal.tenant_id)
+        filters.append(m.TokenUsageRecord.ts >= month_start(zone))
     rows = (
         await db.execute(
             select(
@@ -142,7 +157,11 @@ async def usage(db: DbSession, group_by: str = "department") -> list[PrincipalUs
                 func.coalesce(func.sum(m.TokenUsageRecord.tokens_out), 0),
                 func.coalesce(func.sum(m.TokenUsageRecord.saved_tokens_in), 0),
                 func.coalesce(func.sum(m.TokenUsageRecord.saved_tokens_out), 0),
-            ).group_by(col, day, m.TokenUsageRecord.provider, m.TokenUsageRecord.model)
+                func.coalesce(func.sum(m.TokenUsageRecord.cache_read_tokens), 0),
+                func.coalesce(func.sum(m.TokenUsageRecord.cache_write_tokens), 0),
+            )
+            .where(*filters)
+            .group_by(col, day, m.TokenUsageRecord.provider, m.TokenUsageRecord.model)
         )
     ).all()
 
@@ -157,9 +176,22 @@ async def usage(db: DbSession, group_by: str = "department") -> list[PrincipalUs
             "saved_tokens_in": 0,
             "saved_tokens_out": 0,
             "saved_cost": 0,
+            "cache_read": 0,
+            "cache_write": 0,
         }
     )
-    for group, bucket_day, provider, model, tokens_in, tokens_out, saved_in, saved_out in rows:
+    for (
+        group,
+        bucket_day,
+        provider,
+        model,
+        tokens_in,
+        tokens_out,
+        saved_in,
+        saved_out,
+        cache_read,
+        cache_write,
+    ) in rows:
         key = str(group) if group else "unassigned"
         # `bucket_day` is the midnight start of this bucket's day, but a price
         # row's effective_from is a real wall-clock timestamp -- a price edited
@@ -170,7 +202,17 @@ async def usage(db: DbSession, group_by: str = "department") -> list[PrincipalUs
         # during that day applies to that day's report, matching the day-level
         # granularity this endpoint already chose.
         price = price_as_of(price_rows, provider, model, bucket_day + timedelta(days=1))
-        cost = cost_micros_from_price(price, int(tokens_in), int(tokens_out)) if price else 0
+        cost = (
+            cost_micros_from_price(
+                price,
+                int(tokens_in),
+                int(tokens_out),
+                cache_read_tokens=int(cache_read),
+                cache_write_tokens=int(cache_write),
+            )
+            if price
+            else 0
+        )
         saved_cost = cost_micros_from_price(price, int(saved_in), int(saved_out)) if price else 0
         totals[key]["tokens_in"] += int(tokens_in)
         totals[key]["tokens_out"] += int(tokens_out)
@@ -178,6 +220,8 @@ async def usage(db: DbSession, group_by: str = "department") -> list[PrincipalUs
         totals[key]["saved_tokens_in"] += int(saved_in)
         totals[key]["saved_tokens_out"] += int(saved_out)
         totals[key]["saved_cost"] += saved_cost
+        totals[key]["cache_read"] += int(cache_read)
+        totals[key]["cache_write"] += int(cache_write)
 
     return [
         PrincipalUsageDTO(
@@ -188,6 +232,8 @@ async def usage(db: DbSession, group_by: str = "department") -> list[PrincipalUs
             saved_tokens_in=v["saved_tokens_in"],
             saved_tokens_out=v["saved_tokens_out"],
             saved_cost_micros=v["saved_cost"],
+            cache_read_tokens=v["cache_read"],
+            cache_write_tokens=v["cache_write"],
         )
         for group, v in totals.items()
     ]
@@ -346,7 +392,15 @@ async def export_usage(
                 # (same historical-accuracy contract as GET /usage).
                 price = price_as_of(price_rows, rec.provider, rec.model, rec.ts)
                 cost_micros = (
-                    cost_micros_from_price(price, rec.tokens_in, rec.tokens_out) if price else None
+                    cost_micros_from_price(
+                        price,
+                        rec.tokens_in,
+                        rec.tokens_out,
+                        cache_read_tokens=rec.cache_read_tokens,
+                        cache_write_tokens=rec.cache_write_tokens,
+                    )
+                    if price
+                    else None
                 )
                 dto = TokenUsageExportRowDTO(
                     ts=rec.ts.isoformat(),

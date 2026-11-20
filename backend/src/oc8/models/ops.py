@@ -251,6 +251,14 @@ class TokenUsageRecord(Base, PkMixin, TenantMixin):
     provider: Mapped[str] = mapped_column(Text, nullable=False)
     tokens_in: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     tokens_out: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    #: The parts of `tokens_in` read from / written to the provider's prompt
+    #: cache (migration 0126); `tokens_in` is always the whole prompt.
+    cache_read_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
+    cache_write_tokens: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default=text("0")
+    )
     cache_hit: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     saved_tokens_in: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     saved_tokens_out: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)

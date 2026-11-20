@@ -962,6 +962,10 @@ class PrincipalUsageDTO(CamelModel):
     saved_tokens_in: int
     saved_tokens_out: int
     saved_cost_micros: int
+    #: The parts of `tokens_in` read from / written to the provider's prompt
+    #: cache; `provider_cost_micros` already bills them at the cache rates.
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
 
 class TokenUsageExportRowDTO(CamelModel):

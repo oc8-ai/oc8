@@ -2,7 +2,9 @@
 
 Prices are USD per 1M tokens. Because a cost value in micro-dollars needs
 1e6 micros = 1 USD, USD-per-1M-tokens equals micros-per-token, so
-cost_micros = round(tokens_in * price_in + tokens_out * price_out).
+cost_micros = round(tokens_in * price_in + tokens_out * price_out), except
+that the part of tokens_in read from or written to a provider's prompt cache
+is billed at the cache rates below instead of the full input price.
 
 Nothing here is called from the completion hot path anymore (see the
 2026-08-19 Cost Center design spec, Part A) -- this module is only ever
@@ -81,6 +83,27 @@ def price_as_of(
     return (best.price_in_usd_per_1m, best.price_out_usd_per_1m)
 
 
-def cost_micros_from_price(price: tuple[float, float], tokens_in: int, tokens_out: int) -> int:
+#: Anthropic's prompt-cache rates as multiples of the input price: a cache
+#: read costs a tenth, writing the prefix into the cache a quarter more.
+CACHE_READ_RATE = 0.1
+CACHE_WRITE_RATE = 1.25
+
+
+def cost_micros_from_price(
+    price: tuple[float, float],
+    tokens_in: int,
+    tokens_out: int,
+    *,
+    cache_read_tokens: int = 0,
+    cache_write_tokens: int = 0,
+) -> int:
+    """Cost of one call (or a sum of calls). `tokens_in` is the whole prompt;
+    the cached parts inside it are billed at the cache rates."""
     p_in, p_out = price
-    return round(tokens_in * p_in + tokens_out * p_out)
+    uncached = max(tokens_in - cache_read_tokens - cache_write_tokens, 0)
+    return round(
+        uncached * p_in
+        + cache_read_tokens * p_in * CACHE_READ_RATE
+        + cache_write_tokens * p_in * CACHE_WRITE_RATE
+        + tokens_out * p_out
+    )

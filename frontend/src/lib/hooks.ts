@@ -2217,12 +2217,21 @@ export interface UsageDTO {
   savedTokensIn: number;
   savedTokensOut: number;
   savedCostMicros: number;
+  /** The parts of tokensIn read from / written to the provider's prompt cache. */
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
-export function useUsage(groupBy: "department" | "agent" = "department") {
+/** `month` is the current calendar month on the organisation's clock. */
+export type UsagePeriod = "month" | "all";
+
+export function useUsage(
+  groupBy: "department" | "agent" = "department",
+  period: UsagePeriod = "month",
+) {
   return useQuery({
-    queryKey: ["usage", groupBy],
-    queryFn: () => api.get<UsageDTO[]>(`/usage?group_by=${groupBy}`),
+    queryKey: ["usage", groupBy, period],
+    queryFn: () => api.get<UsageDTO[]>(`/usage?group_by=${groupBy}&period=${period}`),
   });
 }
 
