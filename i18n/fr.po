@@ -32,6 +32,10 @@ msgid "(empty)"
 msgstr "(vide)"
 
 #, fuzzy
+msgid "(no longer allowed by your organisation)"
+msgstr "Gérez les rôles des utilisateurs de votre organisation."
+
+#, fuzzy
 msgid "(optional)"
 msgstr "(facultatif)"
 
@@ -301,6 +305,10 @@ msgid "Add a model configuration"
 msgstr "Ajouter une configuration de modèle"
 
 #, fuzzy
+msgid "Add a passkey"
+msgstr "Ajouter un accès"
+
+#, fuzzy
 msgid "Add access"
 msgstr "Ajouter un accès"
 
@@ -391,6 +399,13 @@ msgstr "Clé d'API d'administration"
 #, fuzzy
 msgid "Administrator"
 msgstr "Administrateur"
+
+#, fuzzy
+msgid "Administrators"
+msgstr "Administrateur"
+
+msgid "Administrators must set one up within the grace period."
+msgstr ""
 
 #, fuzzy
 msgid "Advanced: exact role override"
@@ -545,6 +560,10 @@ msgid "All systems operational"
 msgstr "Tous les systèmes sont opérationnels"
 
 #, fuzzy
+msgid "All time"
+msgstr "Tous les départements"
+
+#, fuzzy
 msgid "Allow"
 msgstr "Autoriser"
 
@@ -554,6 +573,10 @@ msgstr "autorisé"
 
 #, fuzzy
 msgid "Allowed"
+msgstr "Autorisé"
+
+#, fuzzy
+msgid "Allowed methods"
 msgstr "Autorisé"
 
 #, fuzzy
@@ -947,6 +970,10 @@ msgid "Auditor"
 msgstr "Auditeur"
 
 #, fuzzy
+msgid "Authenticator app"
+msgstr "Scannez avec l'application d'authentification"
+
+#, fuzzy
 msgid "Author"
 msgstr "Auteur"
 
@@ -1043,6 +1070,10 @@ msgid "Backup and restore"
 msgstr "Sauvegarde et restauration"
 
 #, fuzzy
+msgid "Backup code"
+msgstr "Sauvegarde téléchargée"
+
+#, fuzzy
 msgid "Backup downloaded"
 msgstr "Sauvegarde téléchargée"
 
@@ -1065,6 +1096,9 @@ msgstr "Informations de base de votre espace de travail."
 #, fuzzy
 msgid "Basics"
 msgstr "Bases"
+
+msgid "Between 0 and 30. How long a member may still sign in without a second factor once it is required of them."
+msgstr ""
 
 #, fuzzy
 msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
@@ -1459,6 +1493,10 @@ msgid "Code"
 msgstr "Code"
 
 #, fuzzy
+msgid "Code by email"
+msgstr "Modifier l'e-mail"
+
+#, fuzzy
 msgid "Collaboration"
 msgstr "Collaboration"
 
@@ -1540,6 +1578,10 @@ msgstr "Confirmer le mot de passe"
 #, fuzzy
 msgid "Confirm rollback"
 msgstr "Confirmer la restauration"
+
+#, fuzzy
+msgid "Confirm your sign-in"
+msgstr "de sa connexion"
 
 #, fuzzy
 msgid "Confirming…"
@@ -1639,6 +1681,10 @@ msgstr "La connexion fonctionne."
 #, fuzzy
 msgid "Connections"
 msgstr "Connexions"
+
+#, fuzzy
+msgid "Content"
+msgstr "contexte"
 
 #, fuzzy
 msgid "context"
@@ -1864,6 +1910,10 @@ msgid "Could not disable."
 msgstr "Impossible de désactiver."
 
 #, fuzzy
+msgid "Could not duplicate the skill."
+msgstr "Impossible de créer la compétence."
+
+#, fuzzy
 msgid "Could not fetch model list"
 msgstr "Impossible de récupérer la liste des modèles"
 
@@ -1936,8 +1986,24 @@ msgid "Could not remove the binding"
 msgstr "Impossible de supprimer la liaison"
 
 #, fuzzy
+msgid "Could not remove the method."
+msgstr "Impossible de supprimer le poste."
+
+#, fuzzy
+msgid "Could not remove the passkey."
+msgstr "Impossible de supprimer le poste."
+
+#, fuzzy
 msgid "Could not remove this login"
 msgstr "Impossible de supprimer la liaison"
+
+#, fuzzy
+msgid "Could not rename the passkey."
+msgstr "Impossible de créer la tâche"
+
+#, fuzzy
+msgid "Could not reset two-factor authentication."
+msgstr "Authentification à deux facteurs"
 
 #, fuzzy
 msgid "Could not resolve this connection, so it isn't safe to continue -- saving now could write guardrails under the wrong key."
@@ -1996,6 +2062,10 @@ msgid "Could not save the endpoints."
 msgstr "Impossible d'enregistrer les endpoints."
 
 #, fuzzy
+msgid "Could not save the policy."
+msgstr "Impossible d'enregistrer les endpoints."
+
+#, fuzzy
 msgid "Could not save the preset."
 msgstr "Impossible d'enregistrer le préréglage."
 
@@ -2021,6 +2091,10 @@ msgstr "Impossible d'enregistrer. Réessayez."
 
 #, fuzzy
 msgid "Could not send the answer"
+msgstr "Impossible d'envoyer la réponse"
+
+#, fuzzy
+msgid "Could not send the code."
 msgstr "Impossible d'envoyer la réponse"
 
 #, fuzzy
@@ -2234,6 +2308,10 @@ msgstr "Créer la limite"
 #, fuzzy
 msgid "Create new"
 msgstr "Créer"
+
+#, fuzzy
+msgid "Create passkey"
+msgstr "Créer une tâche"
 
 #, fuzzy
 msgid "Create project"
@@ -2793,6 +2871,12 @@ msgstr "Rédiger avec Copilot"
 msgid "Drift guard — pause on off-role actions"
 msgstr "Garde-fou de dérive : mettre en pause en cas d'actions hors rôle"
 
+msgid "Duplicate"
+msgstr ""
+
+msgid "Duplicate this skill to change it"
+msgstr ""
+
 #, fuzzy
 msgid "Duration"
 msgstr "Durée"
@@ -2848,6 +2932,9 @@ msgstr "p. ex. Examiner les contrats dans les délais"
 #, fuzzy
 msgid "e.g. Sales sign-off"
 msgstr "p. ex. Validation commerciale"
+
+msgid "e.g. Work laptop"
+msgstr ""
 
 #, fuzzy
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
@@ -2993,6 +3080,9 @@ msgstr "Saisir manuellement"
 msgid "Enter manually instead"
 msgstr "Saisir manuellement à la place"
 
+msgid "Enter one of the backup codes you saved when you set up two-factor authentication."
+msgstr ""
+
 #, fuzzy
 msgid "Enter room"
 msgstr "Entrer dans la salle"
@@ -3089,6 +3179,9 @@ msgstr "Toutes les heures"
 msgid "Every installable capability — connectors, tools, guardrails, templates."
 msgstr "Toutes les fonctionnalités installables : connecteurs, outils, garde-fous, modèles."
 
+msgid "Every member must set one up within the grace period."
+msgstr ""
+
 #, fuzzy
 msgid "Every minute"
 msgstr "Toutes les minutes"
@@ -3096,6 +3189,10 @@ msgstr "Toutes les minutes"
 #, fuzzy
 msgid "Every save is kept — nothing is pruned."
 msgstr "Chaque enregistrement est conservé : rien n'est purgé."
+
+#, fuzzy
+msgid "Everyone"
+msgstr "Toutes les minutes"
 
 #, fuzzy
 msgid "Everything"
@@ -3285,6 +3382,9 @@ msgstr "Pour des notes personnelles, ouvrez un agent et passez à l'onglet « M
 msgid "For scheduled runs the account of the person who created the schedule is used."
 msgstr "Pour les exécutions planifiées, le compte de la personne qui a créé la planification est utilisé."
 
+msgid "For someone who lost their phone or can no longer reach their email: removes their second factors so they can set one up again."
+msgstr ""
+
 #, fuzzy
 msgid "For task-specific instructions, assign a skill instead — this field is only the agent's base mission."
 msgstr "Pour des instructions propres à une tâche, attribuez plutôt une compétence : ce champ ne contient que la mission de base de l'agent."
@@ -3365,6 +3465,9 @@ msgstr "Générer"
 msgid "Generating…"
 msgstr "Génération…"
 
+msgid "Get codes by email"
+msgstr ""
+
 #, fuzzy
 msgid "Get notified even when this tab isn't open."
 msgstr "Soyez notifié même lorsque cet onglet n'est pas ouvert."
@@ -3404,6 +3507,9 @@ msgstr "Va à la réponse en cours"
 #, fuzzy
 msgid "Good answer"
 msgstr "Bonne réponse"
+
+msgid "Grace period (days)"
+msgstr ""
 
 #, fuzzy
 msgid "Granted company-wide access"
@@ -3778,6 +3884,10 @@ msgid "Knowledge Bases"
 msgstr "Bases de connaissances"
 
 #, fuzzy
+msgid "Knowledge bases (one per line)"
+msgstr "Base de connaissances supprimée"
+
+#, fuzzy
 msgid "Knowledge library"
 msgstr "Bibliothèque de connaissances"
 
@@ -4139,6 +4249,9 @@ msgstr "Relances actives max. par personne"
 msgid "MCP Connections"
 msgstr "Connexions MCP"
 
+msgid "Members who set up a second factor are asked for it at sign-in."
+msgstr ""
+
 #, fuzzy
 msgid "memories"
 msgstr "mémoires"
@@ -4166,6 +4279,9 @@ msgstr "Message"
 #, fuzzy
 msgid "metered by the platform"
 msgstr "plateforme avec comptage"
+
+msgid "Method"
+msgstr ""
 
 #, fuzzy
 msgid "Mine"
@@ -4299,6 +4415,9 @@ msgstr "Nom et description"
 msgid "name + rights"
 msgstr "nom + droits"
 
+msgid "Name this passkey"
+msgstr ""
+
 #, fuzzy
 msgid "Name updated"
 msgstr "Nom mis à jour"
@@ -4311,9 +4430,15 @@ msgstr "Nommez votre espace de travail"
 msgid "Narrowed"
 msgstr "Restreint"
 
+msgid "Needs a mail server. Set one up under Mail server first."
+msgstr ""
+
 #, fuzzy
 msgid "Needs an organisation connection"
 msgstr "Nécessite une connexion de l'organisation"
+
+msgid "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing)."
+msgstr ""
 
 #, fuzzy
 msgid "Needs reconnecting"
@@ -4811,6 +4936,10 @@ msgid "No tools yet — add one directly for this agent, or grant it to the whol
 msgstr "Aucun outil pour l'instant : ajoutez-en un directement à cet agent, ou accordez d'abord tout le département."
 
 #, fuzzy
+msgid "No usage metered this month."
+msgstr "Aucune consommation mesurée pour cette organisation pour l'instant."
+
+#, fuzzy
 msgid "No usage metered yet for this tenant."
 msgstr "Aucune consommation mesurée pour cette organisation pour l'instant."
 
@@ -4838,9 +4967,15 @@ msgstr "Personne ne s'est encore connecté à cette entreprise : utilisez l'acc
 msgid "Nobody holds this role yet."
 msgstr "Personne ne détient encore ce rôle."
 
+msgid "Nobody is asked for a second factor. Set-ups are kept."
+msgstr ""
+
 #, fuzzy
 msgid "Nobody left to assign. People appear here after they have signed in once."
 msgstr "Plus personne à attribuer. Les personnes apparaissent ici après leur première connexion."
+
+msgid "Nobody will be asked for a second factor at sign-in. Set-ups are kept, and switching back on asks for them again at once."
+msgstr ""
 
 #, fuzzy
 msgid "None (disable)"
@@ -4913,6 +5048,10 @@ msgstr "Aucune consommation enregistrée pour l'instant."
 #, fuzzy
 msgid "Not tested"
 msgstr "Non testé"
+
+#, fuzzy
+msgid "not used yet"
+msgstr "Aucune consommation enregistrée pour l'instant."
 
 #, fuzzy
 msgid "Note"
@@ -5006,6 +5145,13 @@ msgstr "calculé par oc8"
 msgid "oc8 object"
 msgstr "objet oc8"
 
+msgid "of which from cache"
+msgstr ""
+
+#, fuzzy
+msgid "Off"
+msgstr "Bureau"
+
 #, fuzzy
 msgid "Office"
 msgstr "Bureau"
@@ -5046,6 +5192,9 @@ msgstr "Seule une connexion de l'organisation compte ici. Une source de données
 msgid "Only for me"
 msgstr "Pour moi uniquement"
 
+msgid "Only members who set up a second factor will be asked for it; the others will no longer be asked to set one up."
+msgstr ""
+
 #, fuzzy
 msgid "Only on-prem models are offered: this deployment routes every embedding through the local Ollama instance, so a cloud model would fail the moment a document is ingested."
 msgstr "Seuls les modèles sur site sont proposés : le déploiement fait passer tous les embeddings par l'instance Ollama locale, un modèle cloud échouerait donc dès l'ingestion d'un document."
@@ -5078,6 +5227,9 @@ msgstr "Ouvrir les approbations"
 msgid "Open guardrails →"
 msgstr "Ouvrir les garde-fous →"
 
+msgid "Open in a larger editor"
+msgstr ""
+
 #, fuzzy
 msgid "Open my work"
 msgstr "Ouvrir mon travail"
@@ -5109,6 +5261,10 @@ msgstr "Ouvre une page web"
 #, fuzzy
 msgid "Operator"
 msgstr "Opérateur"
+
+#, fuzzy
+msgid "Optional"
+msgstr "(facultatif)"
 
 #, fuzzy
 msgid "optional, e.g. up to 100 units on its own, above that approval"
@@ -5196,6 +5352,9 @@ msgstr "Vue d'ensemble"
 #, fuzzy
 msgid "Page "
 msgstr "Page "
+
+msgid "Passkey or security key"
+msgstr ""
 
 #, fuzzy
 msgid "Passphrase"
@@ -5811,8 +5970,22 @@ msgid "Reports"
 msgstr "Rapports"
 
 #, fuzzy
+msgid "Required by your organisation"
+msgstr "Gérez les rôles des utilisateurs de votre organisation."
+
+#, fuzzy
 msgid "Required tools (MCP)"
 msgstr "Outils requis (MCP)"
+
+msgid "Reset"
+msgstr ""
+
+#, fuzzy
+msgid "Reset their two-factor authentication?"
+msgstr "Authentification à deux facteurs"
+
+msgid "Reset two-factor"
+msgstr ""
 
 #, fuzzy
 msgid "Resetting…"
@@ -6234,6 +6407,9 @@ msgstr "Rôle du poste"
 msgid "Seat updated"
 msgstr "Poste mis à jour"
 
+msgid "Security"
+msgstr ""
+
 #, fuzzy
 msgid "Sees and decides in every department, including ones created later."
 msgstr "Voit et décide dans tous les départements, y compris ceux créés ultérieurement."
@@ -6295,6 +6471,10 @@ msgid "Send answers"
 msgstr "Envoyer les réponses"
 
 #, fuzzy
+msgid "Send code"
+msgstr "Code invalide"
+
+#, fuzzy
 msgid "Send e-mail from Gmail"
 msgstr "Envoyer des e-mails depuis Gmail"
 
@@ -6353,6 +6533,10 @@ msgstr "Configurez ensemble un nouvel agent, pas à pas. Rien ne change tant que
 #, fuzzy
 msgid "Set up now →"
 msgstr "Configurer maintenant →"
+
+#, fuzzy
+msgid "Set up two-factor authentication"
+msgstr "Authentification à deux facteurs"
 
 #, fuzzy
 msgid "Set up your first administrator account to get started."
@@ -6543,6 +6727,10 @@ msgstr "Compétence attribuée"
 #, fuzzy
 msgid "Skill created"
 msgstr "Compétence créée"
+
+#, fuzzy
+msgid "Skill duplicated"
+msgstr "Compétence mise à jour"
 
 #, fuzzy
 msgid "Skill library"
@@ -7180,6 +7368,13 @@ msgid "The parameter schema must be a JSON Schema object with \"type\": \"object
 msgstr "Le schéma des paramètres doit être un objet JSON Schema avec \"type\": \"object\"."
 
 #, fuzzy
+msgid "The passkey could not be used."
+msgstr "L'appel n'a pas pu être effectué."
+
+msgid "The passkey prompt was cancelled or timed out."
+msgstr ""
+
+#, fuzzy
 msgid "The permission model could not be loaded."
 msgstr "Le modèle d'autorisations n'a pas pu être chargé."
 
@@ -7411,6 +7606,12 @@ msgstr "Cette action est irréversible."
 msgid "This block couldn't be loaded"
 msgstr "Cette exécution n'a pas pu être chargée."
 
+msgid "This browser cannot use a passkey for this site."
+msgstr ""
+
+msgid "This browser cannot use passkeys. Try another browser or method."
+msgstr ""
+
 #, fuzzy
 msgid "This browser does not support push notifications."
 msgstr "Ce navigateur ne prend pas en charge les notifications push."
@@ -7555,8 +7756,16 @@ msgid "This model may only answer chats, not run on a schedule or an event."
 msgstr "Ce modèle ne peut répondre qu'au chat, pas s'exécuter selon une planification ou un événement."
 
 #, fuzzy
+msgid "this month"
+msgstr "utilisé ce mois-ci"
+
+#, fuzzy
 msgid "This month"
 msgstr "utilisé ce mois-ci"
+
+#, fuzzy
+msgid "This passkey is already registered."
+msgstr "Cet agent est déjà créé."
 
 #, fuzzy
 msgid "This proposal has expired."
@@ -7573,6 +7782,9 @@ msgstr "Ce fournisseur a besoin d'une clé de complétion avant que ses agents p
 #, fuzzy
 msgid "This question needs an answer."
 msgstr "Cette question attend une réponse."
+
+msgid "This removes every second factor and backup code they have. If your organisation requires two-factor authentication from them, they set it up again at their next sign-in, within the grace period."
+msgstr ""
 
 #, fuzzy
 msgid "This replaces your current arrangement. You can switch back at any time."
@@ -7838,6 +8050,14 @@ msgid "Two-factor authentication enabled"
 msgstr "Authentification à deux facteurs activée"
 
 #, fuzzy
+msgid "Two-factor authentication reset"
+msgstr "Authentification à deux facteurs"
+
+#, fuzzy
+msgid "Two-factor policy updated"
+msgstr "Authentification à deux facteurs"
+
+#, fuzzy
 msgid "Type"
 msgstr "Type"
 
@@ -7954,8 +8174,15 @@ msgid "USD per 1M tokens — managed by your platform operator"
 msgstr "USD par million de jetons : géré par l'opérateur de la plateforme"
 
 #, fuzzy
+msgid "Use a backup code"
+msgstr "Enregistrez vos codes de secours"
+
+#, fuzzy
 msgid "Use only letters, digits, _ and - in a tool name (at most 64)."
 msgstr "Utilise uniquement des lettres, chiffres, _ et - dans le nom d'un outil (64 au maximum)."
+
+msgid "Use passkey"
+msgstr ""
 
 #, fuzzy
 msgid "Use sign-in default"
@@ -7964,6 +8191,9 @@ msgstr "Utiliser la valeur par défaut de la connexion"
 #, fuzzy
 msgid "Use the built-in default"
 msgstr "Utiliser la valeur par défaut intégrée"
+
+msgid "Use the code by email instead"
+msgstr ""
 
 #, fuzzy
 msgid "use the department's"
@@ -7976,6 +8206,15 @@ msgstr "Utiliser le modèle pour Copilot"
 #, fuzzy
 msgid "Use your authenticator app, or a backup code."
 msgstr "Utilisez l'application d'authentification ou un code de secours."
+
+msgid "Use your device's screen lock or a security key to confirm it is you. Give it a name so you can tell your passkeys apart."
+msgstr ""
+
+msgid "Use your passkey instead"
+msgstr ""
+
+msgid "Use your passkey or security key: your browser asks you to confirm it is you."
+msgstr ""
 
 #, fuzzy
 msgid "Used by"
@@ -8167,6 +8406,10 @@ msgid "Waiting for the next step"
 msgstr "En attente de l'étape suivante"
 
 #, fuzzy
+msgid "Waiting for the passkey…"
+msgstr "En attente de tâche"
+
+#, fuzzy
 msgid "Waiting for you"
 msgstr "Vous attend"
 
@@ -8185,6 +8428,12 @@ msgstr "Nous n'avons pas pu déterminer avec quel compte vous vous êtes connect
 #, fuzzy
 msgid "We recommend an API key instead of a password."
 msgstr "Nous recommandons une clé API plutôt qu'un mot de passe."
+
+msgid "We send a 6-digit code to your sign-in email."
+msgstr ""
+
+msgid "We send a 6-digit code to your sign-in email. Enter it to confirm the address."
+msgstr ""
 
 #, fuzzy
 msgid "webhook"
@@ -8302,6 +8551,9 @@ msgstr "Où en est la personne, et à quel niveau."
 msgid "Who may do what — and why you were refused."
 msgstr "Qui peut faire quoi, et pourquoi vous avez refusé."
 
+msgid "Who must confirm their sign-in with a second factor, and how."
+msgstr ""
+
 #, fuzzy
 msgid "Who watches the thinking of"
 msgstr "Qui surveille la réflexion de"
@@ -8377,6 +8629,9 @@ msgstr "Oui, approuver"
 #, fuzzy
 msgid "you"
 msgstr "vous"
+
+msgid "You are editing the original text. Translations are not updated."
+msgstr ""
 
 #, fuzzy
 msgid "You are not allowed to connect this account for the organisation."
@@ -8553,6 +8808,12 @@ msgstr "Votre nom"
 #, fuzzy
 msgid "Your office is open!"
 msgstr "Votre bureau est ouvert !"
+
+msgid "Your organisation asks for a second factor. Choose how you want to confirm it is you."
+msgstr ""
+
+msgid "Your organisation requires a second factor. Add another method first."
+msgstr ""
 
 #, fuzzy
 msgid "Your own answer replaces the ticked options."
