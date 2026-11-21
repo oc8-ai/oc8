@@ -7,7 +7,8 @@ fresh Graph token (`login_fields["access_token"]`, from `oc8.oauth.tokens`
 as for the tools): app-only for an app registration (client_credentials),
 whose app needs the `Mail.Read` (or `Mail.ReadWrite`) application
 permission; or the account's own for an account signed in for the
-organisation, which then reads that account's mailbox only. The poller reads
+organisation, which then always reads that account's own mailbox (the
+Mailbox setting is ignored for it). The poller reads
 the trigger's mailbox (`event_config["mailbox"]`, by default the setup's
 `default_user`) through the Graph delta query on one folder.
 
@@ -94,8 +95,6 @@ _ADDRESS = re.compile(
     r"[^@\s<>()\[\],;:\"/\\?#%]+@[^@\s<>()\[\],;:\"/\\?#%]+\.[^@\s<>()\[\],;:\"/\\?#%]+"
 )
 _CONTROL = re.compile(r"[\x00-\x1f\x7f\u2028\u2029]+")
-#: Mailboxes compare equal but for ASCII case only, as the tools do.
-_ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 _SYNC_STATE_CODES: Final = frozenset({"syncstatenotfound", "syncstateinvalid", "resyncrequired"})
 _CODE = re.compile(r"[A-Za-z0-9_.]{1,64}")
 #: Senders of delivery reports, whatever their content type says: Exchange
@@ -175,16 +174,14 @@ def _token(login: Mapping[str, str]) -> str:
     return token
 
 
-def _own_mailbox(login: Mapping[str, str], mailbox: str) -> str:
-    """The mailbox to read: a person's own sign-in (`authorization_code`)
-    reads that account only, as the tools do (`mcp_bridge/_user.py`)."""
-    if login.get("grant_type") != "authorization_code":
-        return mailbox
-    own = str(login.get("account_label") or "").strip()
-    if not own or mailbox.translate(_ASCII_LOWER) != own.translate(_ASCII_LOWER):
-        who = own or "its connected person"
-        raise MailboxError(f"This connection acts as {who} only: set that mailbox.")
-    return own
+def _watched_mailbox(login: Mapping[str, str], setting: Any) -> str:
+    """The mailbox to read. An account signed in for the organisation
+    (`authorization_code`) always reads its own, as the tools do
+    (`mcp_bridge/_user.py`): the Mailbox setting is for app registrations and
+    is ignored. An app-only login reads the setting."""
+    if login.get("grant_type") == "authorization_code":
+        return _mailbox(str(login.get("account_label") or "").strip())
+    return _mailbox(setting)
 
 
 def _graph_link(link: Any) -> str | None:
@@ -445,7 +442,7 @@ async def _round(
 async def poll(
     login_fields: dict[str, str], event_config: dict[str, Any], cursor: dict[str, Any] | None
 ) -> PollResult:
-    mailbox = _own_mailbox(login_fields, _mailbox(event_config.get("mailbox")))
+    mailbox = _watched_mailbox(login_fields, event_config.get("mailbox"))
     folder = _folder(event_config.get("folder"))
     token = _token(login_fields)
     deadline = time.monotonic() + POLL_BUDGET_SECONDS

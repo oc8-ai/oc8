@@ -598,18 +598,22 @@ async def test_a_login_without_a_token_is_refused(graph: FakeGraph) -> None:
     assert graph.requests == []
 
 
-async def test_a_persons_own_sign_in_reads_that_mailbox_only(graph: FakeGraph) -> None:
+async def test_a_signed_in_account_always_watches_its_own_mailbox(graph: FakeGraph) -> None:
+    """An account signed in for the organisation reads its own mailbox, as
+    the tools do; the Mailbox setting is for app registrations and ignored."""
     own = {
         "access_token": TOKEN,
         "grant_type": "authorization_code",
         "account_label": MAILBOX,
     }
-    await source.poll(own, {"mailbox": MAILBOX.upper(), "folder": "inbox"}, None)
-    assert graph.requests
-    graph.requests.clear()
-    with pytest.raises(source.MailboxError, match="acts as"):
-        await source.poll(own, {"mailbox": "other@contoso.com", "folder": "inbox"}, None)
-    assert graph.requests == []
+    for setting in ("other@contoso.com", ""):
+        graph.requests.clear()
+        cursor = (await source.poll(own, {"mailbox": setting, "folder": "inbox"}, None)).next_cursor
+        assert cursor["mailbox"] == MAILBOX
+        assert graph.requests
+        assert all(f"/users/{MAILBOX}/" in str(r.url) for r in graph.requests)
+    with pytest.raises(source.MailboxError):
+        await source.poll(dict(own, account_label="not an address"), CONFIG, None)
 
 
 async def test_a_graph_401_names_the_status_but_never_the_token(

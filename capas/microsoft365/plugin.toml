@@ -29,7 +29,7 @@ event_sources = "events.source:register"
 [[plugin.triggers]]
 type = "mail.received"
 label = "New email"
-description = "Starts the agent when a new mail arrives in a Microsoft 365 mailbox. The mail is handed to the run as data, never as instructions."
+description = "Starts the agent when a new mail arrives in a Microsoft 365 mailbox. The mail is handed to the run as data, never as instructions. An account signed in for the organisation always watches its own mailbox."
 polled = true
 # The trigger editor's tab.
 editor_label = "On new email"
@@ -41,7 +41,8 @@ editor_label = "On new email"
 # an Exchange admin can scope the app to a mail-enabled group with an
 # Application Access Policy (or RBAC for Applications); Graph then refuses
 # mailboxes outside it, for the tools and the trigger alike. An account signed
-# in for the organisation watches its own mailbox only.
+# in for the organisation always watches its own mailbox: the setting is
+# ignored for it.
 #
 # Known limits:
 # - Loop protection compares senders with this setting, so with a Graph
