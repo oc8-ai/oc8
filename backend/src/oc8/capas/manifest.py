@@ -866,6 +866,88 @@ class PluginSetupSpec(BaseModel):
         return self
 
 
+#: The longest value a trigger setting (`Trigger.event_config`) may hold.
+TRIGGER_CONFIG_VALUE_MAX = 200
+#: The setup field kinds a trigger setting's `default_from` may read: plain
+#: values, never a secret, a login or a department reference.
+PLAIN_SETUP_FIELD_KINDS: frozenset[str] = frozenset({"text", "url", "select"})
+
+
+class TriggerConfigField(BaseModel):
+    """One setting of a trigger on a polled event, shown in the trigger editor
+    and handed to the poller in `event_config` (always a string). A missing
+    value is filled from `default`, or, with `default_from`, from that key of
+    the setup of the connection its login belongs to (e.g. `default_user`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    label: str = Field(min_length=1, max_length=200)
+    kind: Literal["text"] = "text"
+    default: str = Field(default="", max_length=TRIGGER_CONFIG_VALUE_MAX)
+    default_from: str = Field(default="", max_length=64)
+    #: A plain setup field holding a list (comma, newline or space separated):
+    #: when the login's setup lists anything there, the setting only takes one
+    #: of those values (compared case-insensitively), on save and before
+    #: every poll (`oc8.events.sources.refused_setting`).
+    allowed_from: str = Field(default="", max_length=64)
+    #: The login acts as this setting's value: a login that delegates
+    #: (domain-wide delegation) is handed a token for it rather than its own.
+    #: Needs `allowed_from`; for such a login an empty list allows nobody.
+    acts_as: bool = False
+
+
+class TriggerDecl(BaseModel):
+    """An event a capa declares as a table: how it is shown in the trigger
+    editor and whether core polls for it. `polled` events need a poller the
+    capa registers through its `event_sources` entry point
+    (`oc8.events.sources`); a plain string entry in `triggers` is an event
+    pushed to core and keeps its old meaning. `config` declares the settings
+    a trigger on it takes; nothing else is accepted in its `event_config`."""
+
+    model_config = ConfigDict(extra="forbid")
+    type: str = Field(min_length=1)
+    label: str = ""
+    description: str = ""
+    polled: bool = False
+    config: list[TriggerConfigField] = Field(default_factory=list, max_length=16)
+    #: How the trigger editor names its tab (e.g. "On a new item"); `label`
+    #: when empty. Translated through the capa's own catalogs like `label`.
+    editor_label: str = Field(default="", max_length=200)
+
+    @model_validator(mode="after")
+    def _unique_config_keys(self) -> TriggerDecl:
+        keys = [field.key for field in self.config]
+        if len(keys) != len(set(keys)):
+            raise ValueError(f"trigger {self.type!r} declares a setting twice")
+        acted = [field for field in self.config if field.acts_as]
+        if len(acted) > 1:
+            raise ValueError(f"trigger {self.type!r}: at most one setting is acts_as")
+        if acted and not acted[0].allowed_from:
+            raise ValueError(
+                f"trigger {self.type!r} setting {acted[0].key!r}: acts_as needs allowed_from, "
+                "the setup's list of whom the login may act as"
+            )
+        return self
+
+
+def connection_env_fields(manifest: Manifest) -> dict[str, str]:
+    """Setup field key -> the env name its connection keeps the value under:
+    `[plugin.setup.mcp] env_fields`, and the OAuth setup's delegated
+    identities (`delegated_identities_field` -> `delegated_identities_env`)."""
+    setup = manifest.setup
+    if setup is None or setup.mcp is None:
+        return {}
+    kept = {key: env for env, key in setup.mcp.env_fields.items()}
+    provision = setup.oauth_provision
+    if (
+        provision is not None
+        and provision.delegated_identities_field
+        and provision.delegated_identities_env
+    ):
+        kept[provision.delegated_identities_field] = provision.delegated_identities_env
+    return kept
+
+
 class Manifest(BaseModel):
     model_config = ConfigDict(extra="forbid", protected_namespaces=())
 
@@ -942,7 +1024,7 @@ class Manifest(BaseModel):
     tools: list[str] = []
     mcp: list[dict[str, Any]] = []
     skills: list[str] = []
-    triggers: list[str] = []
+    triggers: list[str | TriggerDecl] = []
     policy: dict[str, Any] = {}
     io: dict[str, Any] = {}
     phases: list[dict[str, Any]] = []
@@ -951,6 +1033,39 @@ class Manifest(BaseModel):
     claude_hooks: ClaudeHooksSpec | None = None
     #: How this capa was assembled on disk — metadata for UI and debugging.
     source_format: SourceFormat = "oc8"
+
+    @model_validator(mode="after")
+    def _trigger_defaults_read_plain_setup_fields(self) -> Manifest:
+        """A trigger setting's `default_from` names a plain setup field the
+        connection keeps in its env (`env_fields`), never one that is or
+        carries a secret: its value is stored on the trigger and shown."""
+        setup = self.setup
+        fields = {f.key: f for f in setup.fields} if setup is not None else {}
+        kept = connection_env_fields(self)
+        mcp = setup.mcp if setup is not None else None
+        secret = set(mcp.secret_env_fields.values()) if mcp is not None else set()
+        for decl in self.triggers:
+            if not isinstance(decl, TriggerDecl):
+                continue
+            for item in decl.config:
+                for attr in ("default_from", "allowed_from"):
+                    key = getattr(item, attr)
+                    if not key:
+                        continue
+                    field = fields.get(key)
+                    if (
+                        field is None
+                        or field.kind not in PLAIN_SETUP_FIELD_KINDS
+                        or key not in kept
+                        or key in secret
+                    ):
+                        raise ValueError(
+                            f"trigger {decl.type!r} setting {item.key!r}: {attr} {key!r} must "
+                            f"name a plain ({', '.join(sorted(PLAIN_SETUP_FIELD_KINDS))}) setup "
+                            "field the connection keeps in its env (env_fields, or the OAuth "
+                            "setup's delegated identities) and not in secret_env_fields"
+                        )
+        return self
 
     @model_validator(mode="after")
     def _deferred_permissions_are_declared(self) -> Manifest:

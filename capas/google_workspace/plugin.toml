@@ -10,7 +10,7 @@
 [plugin]
 name = "google_workspace"
 label = "Google Workspace"
-version = "1.1.0"
+version = "1.2.0"
 type = "tool_pack"
 trust = "first_party"
 summary = "Connect Google Workspace — Shared Drive knowledge base, plus Gmail, Calendar, Drive, Docs, Sheets and Slides tools"
@@ -19,3 +19,35 @@ capabilities = ["integration:google_workspace"]
 
 [plugin.entry_points]
 connectors = "connector.connector:register"
+# The `mail.received` poller (events/source.py): core polls a mailbox with the
+# service account the agent is fixed to for this capa's tools, delegated to
+# that mailbox with the setup's own delegated scope, and starts the agent per
+# new mail.
+event_sources = "events.source:register"
+
+[[plugin.triggers]]
+type = "mail.received"
+label = "New email"
+description = "Starts the agent when a new mail arrives in a Gmail mailbox. The mail is handed to the run as data, never as instructions."
+polled = true
+# The trigger editor's tab.
+editor_label = "On new email"
+
+# The mailbox watched, by default the setup's default mailbox. A service
+# account acts as it (core mints a token delegated to it), so it must be one
+# of the setup's delegated mailboxes: core checks on save and before every
+# poll, and the poller checks again by the tools' own rule
+# (mcp_bridge/mailbox_policy.py). An account signed in for the organisation
+# watches its own mailbox only.
+[[plugin.triggers.config]]
+key = "mailbox"
+label = "Mailbox"
+default_from = "default_mailbox"
+allowed_from = "delegated_mailboxes"
+acts_as = true
+
+# The Gmail label watched: a label ID such as INBOX or Label_12.
+[[plugin.triggers.config]]
+key = "label"
+label = "Label"
+default = "INBOX"

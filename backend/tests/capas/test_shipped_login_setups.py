@@ -29,6 +29,22 @@ _CAPAS = Path(__file__).resolve().parents[3] / "capas"
 
 # pack -> (login field on the setup form, credential type, complete values)
 PACKS = {
+    "email": (
+        "mailbox",
+        "mail_account",
+        {
+            "incoming_protocol": "imap",
+            "incoming_host": "imap.acme.test",
+            "incoming_port": "993",
+            "incoming_security": "ssl",
+            "smtp_host": "smtp.acme.test",
+            "smtp_port": "465",
+            "smtp_security": "ssl",
+            "username": "agent@acme.test",
+            "password": "pw",
+            "from_address": "agent@acme.test",
+        },
+    ),
     "gitea_mcp": ("system", "gitea_login", {"url": "https://git.acme.test", "token": "t"}),
     "github_mcp": ("token", "github_pat", {"token": "t"}),
     "treg_mcp": ("token", "treg_token", {"token": "t"}),

@@ -11,7 +11,7 @@
 [plugin]
 name = "microsoft365"
 label = "Microsoft 365"
-version = "1.1.0"
+version = "1.2.0"
 type = "tool_pack"
 trust = "first_party"
 summary = "Connect Microsoft 365 — SharePoint/OneDrive knowledge base, plus Outlook, Calendar, Teams, Word, Excel and PowerPoint tools"
@@ -20,3 +20,47 @@ capabilities = ["integration:microsoft365"]
 
 [plugin.entry_points]
 connectors = "connector.connector:register"
+# The `mail.received` poller (events/source.py): core polls a mailbox with the
+# app registration the agent is fixed to for this capa's tools and starts the
+# agent per new mail. The app needs the Mail.Read application permission
+# (Mail.ReadWrite, which the mail tools need, covers it).
+event_sources = "events.source:register"
+
+[[plugin.triggers]]
+type = "mail.received"
+label = "New email"
+description = "Starts the agent when a new mail arrives in a Microsoft 365 mailbox. The mail is handed to the run as data, never as instructions. An account signed in for the organisation always watches its own mailbox."
+polled = true
+# The trigger editor's tab.
+editor_label = "On new email"
+
+# The mailbox watched: a UPN or Graph object ID, by default the setup's
+# default mailbox. No allowed_from: the setup keeps no list of mailboxes, and
+# an app registration with Mail.Read reads every mailbox of the tenant, as
+# its tools may (userId) -- the trigger widens nothing. To narrow that reach,
+# an Exchange admin can scope the app to a mail-enabled group with an
+# Application Access Policy (or RBAC for Applications); Graph then refuses
+# mailboxes outside it, for the tools and the trigger alike. An account signed
+# in for the organisation always watches its own mailbox: the setting is
+# ignored for it.
+#
+# Known limits:
+# - Loop protection compares senders with this setting, so with a Graph
+#   object ID instead of an address the mailbox's own mail is not recognised
+#   (resolving it needs User.Read.All, which the documented permissions do
+#   not include). Delivery reports, Auto-Submitted and Precedence still apply.
+# - Not verified against a live tenant: `$expand=attachments($select=...)` on
+#   one message (if refused, each mail becomes a headers-only event and
+#   nothing is lost), and re-reading a delta nextLink page after a poll
+#   stopped inside it (`seen` skips what was done, receivedDateTime tells new
+#   mail from changed).
+[[plugin.triggers.config]]
+key = "mailbox"
+label = "Mailbox"
+default_from = "default_user"
+
+# The folder watched: a well-known name (inbox) or a folder ID.
+[[plugin.triggers.config]]
+key = "folder"
+label = "Folder"
+default = "inbox"

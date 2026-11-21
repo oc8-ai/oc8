@@ -31,6 +31,8 @@ from typing import Any
 
 import httpx
 
+from .mailbox_policy import authorized_mailbox, mailbox_list, same_address
+
 API_GMAIL = "https://gmail.googleapis.com/gmail/v1"
 API_CALENDAR = "https://www.googleapis.com/calendar/v3"
 API_DRIVE = "https://www.googleapis.com/drive/v3"
@@ -44,8 +46,7 @@ def get_client() -> httpx.AsyncClient:
 
 
 def _delegated_mailboxes() -> list[str]:
-    raw = os.environ.get("GOOGLE_DELEGATED_MAILBOXES", "")
-    return [m.strip() for m in raw.split(",") if m.strip()]
+    return mailbox_list(os.environ.get("GOOGLE_DELEGATED_MAILBOXES", ""))
 
 
 #: Set by the core when GOOGLE_TOKEN is one person's own sign-in.
@@ -61,31 +62,16 @@ def _personal_account() -> str | None:
 
 def resolve_mailbox_address(mailbox: str | None) -> str:
     """The actual mailbox address a call should act as: `mailbox` if given,
-    else this connection's configured `GOOGLE_DEFAULT_MAILBOX`. Casefolds both
-    sides of the authorization check (email local-parts are case-insensitive
-    in practice, and Google treats them so) but returns the ORIGINAL casing,
-    never the casefolded form -- Gmail/Calendar URLs and attendee-matching both
-    want the real address, not a normalized one."""
-    own = _personal_account()
-    if own is not None:
-        # A person's own connection acts as that one account, never another.
-        if mailbox and mailbox.casefold() != own.casefold():
-            raise RuntimeError(f"this connection acts as {own} only; omit mailbox or pass {own}")
-        return own
-    target = mailbox or os.environ.get("GOOGLE_DEFAULT_MAILBOX", "")
-    if not target:
-        raise RuntimeError(
-            "no mailbox given and no default_mailbox configured for this connection -- "
-            "pass mailbox, or set a default mailbox in the plugin's setup form"
-        )
-    mailboxes = _delegated_mailboxes()
-    folded = {m.casefold(): m for m in mailboxes}
-    if target.casefold() not in folded:
-        raise RuntimeError(
-            f"mailbox {target!r} is not one of this connection's authorized delegated "
-            f"mailboxes ({', '.join(mailboxes) or 'none configured'})"
-        )
-    return target
+    else this connection's configured `GOOGLE_DEFAULT_MAILBOX`, checked by
+    the rule the `mail.received` poller shares (`mailbox_policy`). Raises
+    RuntimeError (`MailboxRefused`) for a mailbox the connection may not act
+    as."""
+    return authorized_mailbox(
+        mailbox,
+        default=os.environ.get("GOOGLE_DEFAULT_MAILBOX", ""),
+        delegated=_delegated_mailboxes(),
+        personal=_personal_account(),
+    )
 
 
 def resolve_mailbox_token(mailbox: str | None) -> str:
@@ -95,8 +81,7 @@ def resolve_mailbox_token(mailbox: str | None) -> str:
         return self_token()
     target = resolve_mailbox_address(mailbox)
     mailboxes = _delegated_mailboxes()
-    folded = {m.casefold(): i for i, m in enumerate(mailboxes)}
-    index = folded[target.casefold()]
+    index = next(i for i, m in enumerate(mailboxes) if same_address(m, target))
     token = os.environ.get(f"GOOGLE_DELEGATED_TOKEN_{index}", "")
     if not token:
         raise RuntimeError(f"no token available for mailbox {target!r}")

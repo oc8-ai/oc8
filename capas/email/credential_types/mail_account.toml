@@ -1,0 +1,94 @@
+# One mailbox: where mail comes in, where it goes out, the login and the sender.
+# There is no unencrypted option: ssl (implicit TLS) or starttls only, and the
+# server's certificate is always verified.
+name = "mail_account"
+display_name = "Mailbox"
+validate_entry_point = "credential:validate_mail_account"
+
+[[fields]]
+key = "incoming_protocol"
+label = "Incoming protocol"
+kind = "select"
+options = ["imap", "pop3"]
+default = "imap"
+help = "IMAP keeps folders and read flags on the server. POP3 only reads, searches and deletes the mail in the inbox."
+
+[[fields]]
+key = "incoming_host"
+label = "Incoming server"
+kind = "text"
+placeholder = "imap.example.com"
+
+[[fields]]
+key = "incoming_port"
+label = "Incoming port"
+kind = "text"
+default = "993"
+help = "Usually 993 for IMAP with ssl, 143 with starttls; 995 for POP3 with ssl, 110 with starttls."
+
+[[fields]]
+key = "incoming_security"
+label = "Incoming encryption"
+kind = "select"
+options = ["ssl", "starttls"]
+default = "ssl"
+
+[[fields]]
+key = "smtp_host"
+label = "Outgoing server (SMTP)"
+kind = "text"
+placeholder = "smtp.example.com"
+
+[[fields]]
+key = "smtp_port"
+label = "Outgoing port"
+kind = "text"
+default = "465"
+help = "Usually 465 with ssl, 587 with starttls."
+
+[[fields]]
+key = "smtp_security"
+label = "Outgoing encryption"
+kind = "select"
+options = ["ssl", "starttls"]
+default = "ssl"
+
+[[fields]]
+key = "username"
+label = "Username"
+kind = "text"
+help = "Usually the full email address."
+
+[[fields]]
+key = "password"
+label = "Password"
+kind = "password"
+help = "An app password works too."
+
+[[fields]]
+key = "smtp_username"
+label = "SMTP username"
+kind = "text"
+required = false
+help = "Only if sending needs a different login; leave empty to use the username above."
+
+[[fields]]
+key = "smtp_password"
+label = "SMTP password"
+kind = "password"
+required = false
+help = "Only if sending needs a different password; leave empty to use the password above."
+
+[[fields]]
+key = "from_address"
+label = "Sender address"
+kind = "text"
+placeholder = "agent@example.com"
+help = "The address mail is sent from. Mail from this address is never treated as new mail for the agent."
+
+[[fields]]
+key = "from_name"
+label = "Sender name"
+kind = "text"
+required = false
+placeholder = "Support team"

@@ -10,6 +10,7 @@ import { useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  builderNoticeText,
   builderRefusalCode,
   builderRefusalText,
   useAgentBuilder,
@@ -22,7 +23,7 @@ import {
 import { describeSchedule } from "@/lib/describe-cron";
 import { useMay } from "@/lib/governance-hooks";
 import { useRunAgent } from "@/lib/hooks";
-import { useT } from "@/lib/i18n";
+import { resolveTranslation, useLang, useT } from "@/lib/i18n";
 import type { Translate } from "@/lib/tool-labels";
 import { cn } from "@/lib/utils";
 
@@ -129,6 +130,7 @@ export function AgentBuilderCard({
   onPropose?: (text: string) => void;
 }) {
   const t = useT();
+  const { lang } = useLang();
   const may = useMay();
   const navigate = useNavigate();
   const { data: card, isLoading, isError } = useAgentBuilder(proposalId);
@@ -192,6 +194,22 @@ export function AgentBuilderCard({
               : t("On demand", "Auf Abruf"),
           },
         ]),
+    ...(isBoard
+      ? []
+      : card.triggers
+          .filter((tr) => tr.settings?.length)
+          .map((tr) => ({
+            label: t("Trigger settings", "Auslöser-Einstellungen"),
+            value: (
+              <ul>
+                {tr.settings!.map((s) => (
+                  <li key={s.key}>
+                    {`${resolveTranslation(s.label, s.labelTranslations, lang)}: ${s.value}`}
+                  </li>
+                ))}
+              </ul>
+            ),
+          }))),
     ...(!isBoard && card.systems.length
       ? [{ label: t("Connected systems", "Systeme"), value: card.systems.join(", ") }]
       : []),
@@ -264,6 +282,15 @@ export function AgentBuilderCard({
               : t("Rejected", "Abgelehnt")}
           </p>
         )}
+        {card.status === "applied" &&
+          (card.notices ?? []).map((code) => {
+            const text = builderNoticeText(code, t);
+            return text ? (
+              <p key={code} role="status" className="text-xs text-status-warning">
+                {text}
+              </p>
+            ) : null;
+          })}
         {card.status === "applied" && card.agent && (
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2">

@@ -298,6 +298,11 @@ async def delete_credential(
             )
             .values(credential_id=None)
         )
+    # A trigger polling this login stops; its target goes with the row
+    # (ON DELETE SET NULL) and nothing would poll it again.
+    from oc8.events.sources import LoginTarget, disable_triggers_on_login
+
+    await disable_triggers_on_login(db, tenant_id, LoginTarget("credential", credential_id))
     refs = [ref for ref in dict(cred.secret_refs or {}).values() if owns_ref(cred.id, ref)]
     await db.delete(cred)
     await db.flush()

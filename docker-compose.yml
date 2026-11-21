@@ -39,6 +39,10 @@ x-backend-env: &backend-env
   OC8_REDIS_URL: redis://redis:6379/0
   # Private targets that live checks / website sources may reach (see .env.example).
   OC8_OUTBOUND_ALLOWED_PRIVATE: ${OC8_OUTBOUND_ALLOWED_PRIVATE:-}
+  # The same for the Email capa's tools (they see only OC8_MCP_* variables).
+  OC8_MCP_EMAIL_ALLOWED_PRIVATE: ${OC8_MCP_EMAIL_ALLOWED_PRIVATE:-}
+  # Seconds between checks of polled event triggers ("On new email").
+  OC8_EVENT_POLL_SECONDS: ${OC8_EVENT_POLL_SECONDS:-60}
   # Bundled S3-compatible object storage (file attachments). Bundled-by-default,
   # switchable via env: point these at any S3-compatible endpoint (AWS S3, R2,
   # etc.) in production instead of the bundled `minio` service above.

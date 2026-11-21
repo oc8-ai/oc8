@@ -1,0 +1,8 @@
+# Must stay IDENTICAL to tool_pack.toml's own `connections.config` command/args:
+# both describe launching the same bridge. The login's fields reach the bridge
+# through tool_pack.toml's `credential_env_fields`, so nothing is mapped here.
+connection_key = "primary"
+name = "email"
+command = "python"
+args = ["-m", "mcp_bridge"]
+department_field = "department"

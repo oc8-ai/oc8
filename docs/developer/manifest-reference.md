@@ -87,6 +87,89 @@ reach outside the tenant and which ones are read vs. write vs. send — see
 [Architecture Overview](architecture-overview.md#how-a-capas-tools-get-called-during-a-real-run)
 for how core reads these at call time.
 
+## Triggers: `[[plugin.triggers]]`
+
+A capa declares the events an agent's trigger may listen on. The short form
+is a plain string list (`triggers = ["item.created"]`); the table form adds
+how the trigger editor shows the event and, for an event core polls, the
+settings a trigger on it takes. `microsoft365`'s real declaration:
+
+```toml
+[[plugin.triggers]]
+type = "mail.received"          # the event type; its source is the capa's name
+label = "New email"
+description = "Starts the agent when a new mail arrives ..."
+polled = true                   # core polls for it through this capa's poller
+editor_label = "On new email"   # the trigger editor's tab; `label` when empty
+
+[[plugin.triggers.config]]      # at most 16 settings
+key = "mailbox"
+label = "Mailbox"
+default_from = "default_user"   # the value the login's setup gave this field
+
+[[plugin.triggers.config]]
+key = "folder"
+label = "Folder"
+default = "inbox"
+```
+
+| Key | Meaning |
+|-----|---------|
+| `type` | The event type. Required. |
+| `label`, `description` | Shown in the editor; translated through the capa's `i18n/` catalogs. |
+| `polled` | `true`: core polls for the event with a poller this capa registers (below). A pushed event (`false`) arrives through `/events` as before. |
+| `editor_label` | The trigger editor's tab name (e.g. "On new email"). |
+| `config` | The settings a trigger takes; nothing else is accepted in its `event_config`. |
+
+Each `[[plugin.triggers.config]]` setting:
+
+| Key | Meaning |
+|-----|---------|
+| `key`, `label` | The setting's key in `event_config`, and its translated label. |
+| `kind` | `"text"`, the only kind so far. |
+| `default` | Used when the trigger names no value. |
+| `default_from` | A plain (non-secret) setup field the connection keeps in its env (`env_fields`, or the OAuth setup's delegated identities); its value for the trigger's login is the default. |
+| `allowed_from` | A plain setup field holding a list (commas, semicolons, spaces or newlines). When the login's own setup lists anything there, the setting only takes one of those values (ASCII case ignored) — checked on save and again before every poll. |
+| `acts_as` | The login acts as this setting's value: a delegating login (a Google service account) gets a token for it. Needs `allowed_from`; for a delegating login an empty list allows nobody. At most one per trigger. |
+
+A polled trigger listens on the organisation login the agent is fixed to for
+the capa's tools — a credential, or an OAuth connection of the capa's
+provider — and is switched off when that login goes or changes.
+
+### The `event_sources` entry point
+
+A capa with a polled event registers its poller in process:
+
+```toml
+[plugin.entry_points]
+event_sources = "events.source:register"
+```
+
+```python
+def register(contrib):
+    # credential_type only when the capa's tools sign in with a credential;
+    # left out, the trigger listens on an OAuth connection of the provider.
+    contrib.add_poller("mail.received", poll, credential_type="mail_account")
+
+async def poll(login_fields, event_config, cursor) -> PollResult: ...
+```
+
+The poller contract (`oc8.events.sources`):
+
+- **`cursor=None` means "take a baseline"**: return the current position as
+  `next_cursor` and no events — what is there already is not news.
+- **At most `MAX_EVENTS_PER_TICK` (20) events** per poll; the cursor stops
+  at the last one handed over and the next poll goes on from there.
+- **`delivery_id` is the server's own id** for the item (a mail's id in the
+  mailbox, never its `Message-ID`, which the sender chooses): core fires each
+  `(source, delivery_id, trigger)` once, so polling the same item twice is
+  harmless.
+- `login_fields` holds the credential's values, or for an OAuth login a fresh
+  `access_token` plus `account_label`, `grant_type`, `provider` and
+  `allowed_<key>` lists; never write any of it into an error.
+- The poll must not block the event loop and must finish within 60 seconds;
+  a raised exception is recorded on the trigger and retried with back-off.
+
 ## Why the bridge folder is `mcp_bridge/`, never `mcp/`
 
 The obvious first instinct is to name an MCP tool bridge's folder `mcp/` —

@@ -1,0 +1,10 @@
+kind = "preset"
+connection = "primary"
+key = "read_only"
+label = "Read only"
+summary = "Can list, search and read mail and its attachments, but sends, moves and deletes nothing."
+recommended = false
+read = true
+modify = false
+approval_actions = []
+approval_eur = ""

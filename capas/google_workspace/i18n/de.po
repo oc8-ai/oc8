@@ -100,3 +100,22 @@ msgstr ""
 "einmal ein Entwurf, keine Einladungsantwort und keine Termine, die auf "
 "fremden Kalendern landen. Löschen und Termine absagen ist ebenfalls nicht "
 "möglich."
+
+msgid "Label"
+msgstr "Label"
+
+msgid "Mailbox"
+msgstr "Postfach"
+
+msgid "New email"
+msgstr "Neue E-Mail"
+
+msgid "On new email"
+msgstr "Bei neuer E-Mail"
+
+msgid ""
+"Starts the agent when a new mail arrives in a Gmail mailbox. The mail is "
+"handed to the run as data, never as instructions."
+msgstr ""
+"Startet den Agenten, wenn eine neue E-Mail in einem Gmail-Postfach ankommt. "
+"Die E-Mail wird dem Lauf als Daten übergeben, nie als Anweisung."
