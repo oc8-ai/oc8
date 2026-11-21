@@ -491,14 +491,20 @@ async def polled_settings(
     as on create, without changing the trigger. Lets a caller tell a real
     change from the same settings written differently."""
     saved = _saved_target(trigger)
-    if (
-        trigger.kind != "event"
-        or trigger.event_source is None
-        or trigger.event_type is None
-        or saved is None
-    ):
+    if trigger.kind != "event" or trigger.event_source is None or trigger.event_type is None:
         raise InvalidTriggerConfig("only a polled event listens on a login")
+    if saved is None:
+        # Its login was deleted or revoked (ON DELETE SET NULL): a polled
+        # trigger takes the agent's new login, checked below; any other
+        # event trigger never names one.
+        from oc8.events.sources import polled_event_spec
+
+        if await polled_event_spec(db, trigger.event_source, trigger.event_type) is None:
+            raise InvalidTriggerConfig("only a polled event listens on a login")
+        if target is None:
+            raise InvalidTriggerConfig("a polled event needs the login it listens on")
     new_target = target if target is not None else saved
+    assert new_target is not None
     spec = await _check_polled_target(
         db,
         agent_id=trigger.agent_id,
@@ -525,13 +531,15 @@ async def _update_polled_settings(
     event_config: dict[str, Any] | None,
     target: LoginTarget | None,
 ) -> None:
-    from oc8.events.sources import reset_cursor
+    from oc8.events.sources import EVENT_TARGET_CHANGED, reset_cursor
 
     new_target, config = await polled_settings(
         db, trigger, event_config=event_config, target=target
     )
     if new_target == _saved_target(trigger) and config == trigger.event_config:
         return
+    if new_target != _saved_target(trigger) and trigger.last_skip_reason == EVENT_TARGET_CHANGED:
+        trigger.last_skip_reason = None  # it listens on the agent's login again
     new_target.put_on(trigger)
     trigger.event_config = config
     await reset_cursor(db, trigger)

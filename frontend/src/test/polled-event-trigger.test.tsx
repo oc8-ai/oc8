@@ -241,6 +241,33 @@ describe("polled event trigger", () => {
     );
   });
 
+  it("brings back a trigger whose login was removed on the agent's new login", () => {
+    m.access = [
+      {
+        ...MAILBOX,
+        kind: "oauth",
+        credentialId: null,
+        oauthConnectionId: "oauth-2",
+        targetLabel: "new-app",
+      },
+    ];
+    panel({
+      ...TRIGGER,
+      enabled: false,
+      eventTargetCredentialId: null,
+      eventTargetOauthConnectionId: null,
+      lastSkipReason: "event_target_changed",
+    });
+
+    expect(screen.getByText(/switched off/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: /listening/i }));
+
+    expect(m.update).toHaveBeenCalledWith(
+      { agentId: "a1", triggerId: "t1", enabled: true, eventTargetOauthConnectionId: "oauth-2" },
+      expect.anything(),
+    );
+  });
+
   it("shows the last poll and the error with its time", () => {
     panel({
       ...TRIGGER,

@@ -323,3 +323,146 @@ async def test_an_oauth_login_is_a_target_on_create_and_update(
         headers=_headers(polled.tenant),
     )
     assert stranger.status_code == 422
+
+
+async def _fix_access(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    agent_id: uuid.UUID,
+    *,
+    credential_id: uuid.UUID | None = None,
+    oauth_connection_id: uuid.UUID | None = None,
+) -> None:
+    async with app_session(tenant) as db:
+        access = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent_id)
+        )
+        assert access is not None
+        access.mode = "fixed"
+        access.credential_id = credential_id
+        access.oauth_connection_id = oauth_connection_id
+
+
+async def _recovers(
+    client: AsyncClient,
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    trigger_id: str,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """The orphaned trigger still shows as polled, and switching it on with the
+    agent's new login brings it back from a fresh baseline."""
+    async with app_session(tenant) as db:
+        cursor = await db.scalar(
+            select(m.EventSourceCursor).where(
+                m.EventSourceCursor.trigger_id == uuid.UUID(trigger_id)
+            )
+        )
+        assert cursor is not None
+        cursor.cursor = {"pos": 9}
+    resp = await client.patch(
+        f"/api/v1/triggers/{trigger_id}",
+        json={"enabled": True, **body},
+        headers=_headers(tenant),
+    )
+    assert resp.status_code == 200, resp.text
+    out: dict[str, Any] = resp.json()
+    assert out["enabled"] is True and out["lastSkipReason"] is None
+    assert out["pollStatus"] is not None
+    async with app_session(tenant) as db:
+        cursor = await db.scalar(
+            select(m.EventSourceCursor).where(
+                m.EventSourceCursor.trigger_id == uuid.UUID(trigger_id)
+            )
+        )
+        assert cursor is not None and cursor.cursor is None
+    return out
+
+
+async def test_a_trigger_whose_credential_was_deleted_comes_back_on_a_new_login(
+    client: AsyncClient, app_session: AppSessionFactory, polled: Polled
+) -> None:
+    from oc8.credentials.service import delete_credential
+
+    created = (await _create(client, polled)).json()
+    async with app_session(polled.tenant) as db:
+        await delete_credential(
+            db, tenant_id=polled.tenant, credential_id=polled.credential_id, force=True
+        )
+    listed = await client.get(
+        f"/api/v1/agents/{polled.agent_id}/triggers", headers=_headers(polled.tenant)
+    )
+    [orphan] = [t for t in listed.json() if t["id"] == created["id"]]
+    assert orphan["enabled"] is False and orphan["lastSkipReason"] == EVENT_TARGET_CHANGED
+    assert orphan["eventTargetCredentialId"] is None
+    assert orphan["pollStatus"] is not None and orphan["eventConfig"]
+
+    fresh = await login(app_session, polled.tenant, username="bert")
+    await _fix_access(app_session, polled.tenant, polled.agent_id, credential_id=fresh)
+    out = await _recovers(
+        client,
+        app_session,
+        polled.tenant,
+        created["id"],
+        {"eventTargetCredentialId": str(fresh)},
+    )
+    assert out["eventTargetCredentialId"] == str(fresh)
+
+
+async def test_a_trigger_whose_oauth_login_was_revoked_comes_back_on_a_new_login(
+    client: AsyncClient, app_session: AppSessionFactory
+) -> None:
+    from oc8.connections.revoke import revoke_oauth_connection
+    from tests.events.polled import oauth_login, oauth_polled_setup
+
+    polled = await oauth_polled_setup(app_session)
+    resp = await client.post(
+        f"/api/v1/agents/{polled.agent_id}/triggers",
+        json={
+            "kind": "event",
+            "taskText": "Sort the mail",
+            "eventSource": polled.source,
+            "eventType": polled.event_type,
+            "eventConfig": {"mailbox": "info@acme.test"},
+        },
+        headers=_headers(polled.tenant),
+    )
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    async with app_session(polled.tenant) as db:
+        conn = await db.get(m.OAuthConnection, polled.connection_id)
+        assert conn is not None
+        await revoke_oauth_connection(db, conn)
+
+    fresh = await oauth_login(app_session, polled.tenant, account_label="bot2@project.example")
+    async with app_session(polled.tenant) as db:
+        setup = await db.get(m.McpConnection, polled.setup_id)
+        assert setup is not None
+        setup.config = {**setup.config, "oauth_connection_id": str(fresh)}
+    await _fix_access(app_session, polled.tenant, polled.agent_id, oauth_connection_id=fresh)
+    out = await _recovers(
+        client,
+        app_session,
+        polled.tenant,
+        created["id"],
+        {"eventTargetOauthConnectionId": str(fresh)},
+    )
+    assert out["eventTargetOauthConnectionId"] == str(fresh)
+
+
+async def test_switching_an_orphan_on_without_a_login_is_refused(
+    client: AsyncClient, app_session: AppSessionFactory, polled: Polled
+) -> None:
+    from oc8.credentials.service import delete_credential
+
+    created = (await _create(client, polled)).json()
+    async with app_session(polled.tenant) as db:
+        await delete_credential(
+            db, tenant_id=polled.tenant, credential_id=polled.credential_id, force=True
+        )
+    resp = await client.patch(
+        f"/api/v1/triggers/{created['id']}",
+        json={"enabled": True},
+        headers=_headers(polled.tenant),
+    )
+    assert resp.status_code == 422 and "login" in resp.text

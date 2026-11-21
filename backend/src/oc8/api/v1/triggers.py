@@ -82,7 +82,7 @@ async def _poll_statuses(
     db: DbSession, triggers: list[m.Trigger]
 ) -> dict[uuid.UUID, m.EventSourceCursor]:
     """The cursor rows of the polled triggers among `triggers`."""
-    ids = [t.id for t in triggers if _polled(t)]
+    ids = [t.id for t in triggers if t.kind == "event"]
     if not ids:
         return {}
     rows = (
@@ -101,17 +101,22 @@ def _iso(value: dt.datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _polled(t: m.Trigger) -> bool:
-    """A trigger that listens on a login (a credential or an OAuth connection)."""
+def _polled(t: m.Trigger, cursors: dict[uuid.UUID, m.EventSourceCursor]) -> bool:
+    """A trigger that listens on a login (a credential or an OAuth
+    connection), or did until that login was deleted or revoked: it keeps its
+    cursor row, so it still shows its status and settings and can be switched
+    on again with the agent's new login."""
     return (
-        t.event_target_credential_id is not None or t.event_target_oauth_connection_id is not None
+        t.event_target_credential_id is not None
+        or t.event_target_oauth_connection_id is not None
+        or t.id in cursors
     )
 
 
 def _poll_status(
     t: m.Trigger, cursors: dict[uuid.UUID, m.EventSourceCursor]
 ) -> TriggerPollStatusDTO | None:
-    if not _polled(t):
+    if not _polled(t, cursors):
         return None
     row = cursors.get(t.id)
     if row is None:
