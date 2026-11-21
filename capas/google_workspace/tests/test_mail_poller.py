@@ -299,6 +299,8 @@ async def test_new_mail_fires_once_with_payload_and_summary(gmail: FakeGmail) ->
     ]
     summary = event.summary
     assert summary.startswith(f"Mail id: {mid} (pass it as messageId to gmail_get")
+    assert "as threadId" not in summary
+    assert f"Thread id: t{mid}" in summary
     assert f"Mailbox: {MAILBOX} (pass it as mailbox)" in summary
     assert "Label: INBOX" in summary
     assert "- invoice.pdf (application/pdf, 2 KB)" in summary

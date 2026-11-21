@@ -684,9 +684,10 @@ def _render(payload: Mapping[str, Any], text: str | None, notes: Sequence[str]) 
         return _one_line(str(value if value is not None else ""), limit)
 
     lines = [
-        f"Mail id: {flat(payload['id'], 200)} (pass it as messageId to gmail_get or "
-        "gmail_modify_labels, and as threadId to gmail_reply)",
+        f"Mail id: {flat(payload['id'], 200)} (pass it as messageId to gmail_get, "
+        "gmail_modify_labels or gmail_reply)",
         f"Mailbox: {flat(payload['mailbox'])} (pass it as mailbox)",
+        *([f"Thread id: {flat(payload['thread_id'], 200)}"] if payload.get("thread_id") else []),
         f"Label: {flat(payload['label'])}",
     ]
     for label, key in (

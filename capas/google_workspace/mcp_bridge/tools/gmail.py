@@ -147,12 +147,20 @@ async def gmail_reply(args: dict[str, Any]) -> Any:
     reply's own MIME to carry `In-Reply-To`/`References` set to the original
     message's `Message-ID`, or the reply lands in the thread server-side but
     renders unthreaded in most mail clients. Fetch the original's headers
-    first (a cheap metadata-only read), then build the reply's MIME with them."""
+    first (a cheap metadata-only read), then build the reply's MIME with them.
+
+    The message replied to is `messageId`; `threadId` is still taken in its
+    place for older callers, but is only ever the message's id. The reply goes
+    into the thread Gmail reports for that message -- a message id is not its
+    thread id once the thread has more than one message."""
+    message = str(args.get("messageId") or args.get("threadId") or "")
+    if not message:
+        raise RuntimeError("gmail_reply needs messageId, the id of the message replied to")
     token = google_api.resolve_mailbox_token(args.get("mailbox"))
     mailbox = args.get("mailbox") or "me"
     original = await google_api.get_json(
         google_api.API_GMAIL,
-        f"/users/{mailbox}/messages/{args['threadId']}",
+        f"/users/{mailbox}/messages/{message}",
         token=token,
         params={"format": "metadata", "metadataHeaders": ["Message-ID", "Subject"]},
     )
@@ -173,7 +181,7 @@ async def gmail_reply(args: dict[str, Any]) -> Any:
         google_api.API_GMAIL,
         f"/users/{mailbox}/messages/send",
         token=token,
-        json={"raw": raw, "threadId": args["threadId"]},
+        json={"raw": raw, "threadId": str(original.get("threadId") or message)},
     )
 
 
@@ -260,9 +268,13 @@ TOOLS: list[Tool] = [
         inputSchema={
             "type": "object",
             "properties": {
+                "messageId": {
+                    "type": "string",
+                    "description": "The id of the message replied to (as gmail_get takes it).",
+                },
                 "threadId": {
                     "type": "string",
-                    "description": "The original message's id (also its thread id for a top-level message).",
+                    "description": "Deprecated: the id of the message replied to, as messageId.",
                 },
                 "to": {"type": "array", "items": {"type": "string"}},
                 "cc": {"type": "array", "items": {"type": "string"}},
@@ -273,7 +285,7 @@ TOOLS: list[Tool] = [
                 "body": {"type": "string"},
                 **_mailbox_schema_props(),
             },
-            "required": ["threadId", "to", "body"],
+            "required": ["to", "body"],
         },
     ),
     Tool(
