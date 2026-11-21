@@ -1770,6 +1770,11 @@ msgstr "Guardrails konnten nicht gespeichert werden"
 msgid "Couldn't save instructions"
 msgstr "Anweisungen konnten nicht gespeichert werden"
 
+#, fuzzy
+#| msgid "Could not save the preset."
+msgid "Couldn't save the trigger"
+msgstr "Preset konnte nicht gespeichert werden."
+
 msgid "Couldn't send answer"
 msgstr "Antwort konnte nicht gesendet werden"
 
@@ -2472,6 +2477,9 @@ msgstr "Fehler"
 msgid "Error"
 msgstr "Fehler"
 
+msgid "Error at {time}: {error}"
+msgstr ""
+
 msgid "Est. cost / 1k req"
 msgstr "Ø / 1k Anfr."
 
@@ -2703,6 +2711,11 @@ msgstr "aus Extra-Parametern"
 msgid "From store"
 msgstr "Aus Store"
 
+#, fuzzy
+#| msgid "No MCP connections yet."
+msgid "From the connection's setup"
+msgstr "Noch keine MCP-Verbindungen."
+
 msgid "from the department"
 msgstr "aus der Abteilung"
 
@@ -2743,6 +2756,11 @@ msgid "Give a reason first — a rejection with none is a dead end for the agent
 msgstr "Bitte zuerst begründen — eine Ablehnung ohne Begründung ist eine Sackgasse für den Agenten, der damit weiterarbeiten muss"
 
 msgid "Give each endpoint a name first."
+msgstr "Gib zuerst jedem Endpunkt einen Namen."
+
+#, fuzzy
+#| msgid "Give each endpoint a name first."
+msgid "Give this agent a mailbox first"
 msgstr "Gib zuerst jedem Endpunkt einen Namen."
 
 msgid "Give this tool a name."
@@ -2988,6 +3006,14 @@ msgstr "Ungültiger Code"
 msgid "Invite"
 msgstr "Einladen"
 
+#, fuzzy
+#| msgid "No usage recorded yet."
+msgid "It has not worked yet."
+msgstr "Noch kein Verbrauch erfasst."
+
+msgid "It listens on the mailbox the agent uses for its tools. "
+msgstr ""
+
 msgid "its model configuration"
 msgstr "seine Modellkonfiguration"
 
@@ -3069,8 +3095,14 @@ msgstr "Letzte 30 Tage — nur zur Validierung"
 msgid "Last action"
 msgstr "Letzte Aktion"
 
+msgid "Last checked {time}"
+msgstr ""
+
 msgid "Last run"
 msgstr "Letzter Lauf"
+
+msgid "Last success {time}."
+msgstr ""
 
 msgid "Latency"
 msgstr "Latenz"
@@ -3140,6 +3172,9 @@ msgstr "Verknüpfe dein eigenes Telegram oder WhatsApp, damit Freigaben dort ank
 
 msgid "Linked in this tenant"
 msgstr "Verknüpft in diesem Mandanten"
+
+msgid "Listening"
+msgstr ""
 
 msgid "Live"
 msgstr "Live"
@@ -3278,6 +3313,12 @@ msgstr "Mailserver deaktiviert"
 
 msgid "Mail server updated"
 msgstr "Mailserver aktualisiert"
+
+msgid "Mailbox"
+msgstr ""
+
+msgid "Mailbox changed: switched off. Switch it on to listen on the agent's current mailbox."
+msgstr ""
 
 msgid "Make available"
 msgstr "Bereitstellen"
@@ -3926,6 +3967,11 @@ msgstr "Nicht vergebbar: "
 msgid "Not available."
 msgstr "Nicht verfügbar."
 
+#, fuzzy
+#| msgid "No usage recorded yet."
+msgid "Not checked yet"
+msgstr "Noch kein Verbrauch erfasst."
+
 msgid "Not connected"
 msgstr "Nicht verbunden"
 
@@ -4060,6 +4106,11 @@ msgstr "OK"
 msgid "Older"
 msgstr "Ältere"
 
+#, fuzzy
+#| msgid "Once"
+msgid "On"
+msgstr "Einmalig"
+
 msgid "On demand"
 msgstr "Auf Abruf"
 
@@ -4125,6 +4176,11 @@ msgstr "Agenten öffnen"
 
 msgid "Open the record"
 msgstr "Datensatz öffnen"
+
+#, fuzzy
+#| msgid "Save sampling settings"
+msgid "Open the tool settings"
+msgstr "Sampling-Einstellungen speichern"
 
 msgid "Opening a file"
 msgstr "Öffnet eine Datei"
@@ -4478,6 +4534,9 @@ msgstr "Webseite gelesen"
 msgid "Read its instructions"
 msgstr "Anweisungen gelesen"
 
+msgid "Read the new email and take care of it."
+msgstr ""
+
 msgid "Read the text before importing"
 msgstr "Text vor dem Import lesen"
 
@@ -4629,6 +4688,11 @@ msgstr "Sitz entfernen"
 
 msgid "Remove source?"
 msgstr "Quelle entfernen?"
+
+#, fuzzy
+#| msgid "Remove provider"
+msgid "Remove trigger"
+msgstr "Anbieter entfernen"
 
 msgid "Remove user"
 msgstr "Benutzer entfernen"
@@ -5482,6 +5546,9 @@ msgstr "Manipulationssicheres Protokoll jeder Entscheidung."
 msgid "Target"
 msgstr "Ziel"
 
+msgid "Task"
+msgstr ""
+
 msgid "Task (optional)"
 msgstr "Aufgabe (optional)"
 
@@ -5592,6 +5659,9 @@ msgstr "Der Agent ist gerade nicht erreichbar. Deine Nachricht wurde nicht gesen
 msgid "The agent that should fill the dashboard no longer exists or is out of reach."
 msgstr ""
 
+msgid "The agent was created without its email trigger: pick its mailbox in the agent's tool settings, then add the trigger on the agent's page."
+msgstr ""
+
 msgid "The agent was not created. Try again."
 msgstr "Der Agent wurde nicht angelegt. Versuch es noch einmal."
 
@@ -5698,11 +5768,17 @@ msgstr "An dem Tag, an dem jemand nur noch Angebote freigeben soll: eine eingeba
 msgid "The decision was not saved. Try again."
 msgstr "Die Entscheidung wurde nicht gespeichert. Versuch es noch einmal."
 
+msgid "The email is appended to this task as data from outside, never as instructions."
+msgstr ""
+
 msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
 msgstr "Das Embedding-Modell für Abfragen muss dieselbe Familie (und Dimension) haben wie die Remote-Collection — sonst liefert die Suche Müll."
 
 msgid "The endpoints are saved."
 msgstr "Die Endpunkte sind gespeichert."
+
+msgid "The event listens on the agent's own login for its system, and the agent has none yet. Choose one in the agent's tool settings."
+msgstr ""
 
 msgid "The folder could not be loaded. Try again."
 msgstr "Der Ordner konnte nicht geladen werden. Versuch es noch einmal."
@@ -6288,6 +6364,19 @@ msgstr "Gesamtausgaben"
 
 msgid "Total tokens"
 msgstr "Token gesamt"
+
+#, fuzzy
+#| msgid "Source removed"
+msgid "Trigger removed"
+msgstr "Quelle entfernt"
+
+#, fuzzy
+#| msgid "Preset saved"
+msgid "Trigger saved"
+msgstr "Preset gespeichert"
+
+msgid "Trigger settings"
+msgstr ""
 
 msgid "Try again"
 msgstr "Erneut versuchen"

@@ -2242,6 +2242,10 @@ msgid "Couldn't save instructions"
 msgstr "Impossible d'enregistrer les instructions"
 
 #, fuzzy
+msgid "Couldn't save the trigger"
+msgstr "Impossible d'enregistrer le préréglage."
+
+#, fuzzy
 msgid "Couldn't send answer"
 msgstr "Impossible d'envoyer la réponse"
 
@@ -3131,6 +3135,9 @@ msgstr "erreur"
 msgid "Error"
 msgstr "Erreur"
 
+msgid "Error at {time}: {error}"
+msgstr ""
+
 #, fuzzy
 msgid "Est. cost / 1k req"
 msgstr "Coût est. / 1 000 requêtes"
@@ -3430,6 +3437,10 @@ msgid "From store"
 msgstr "Depuis le catalogue"
 
 #, fuzzy
+msgid "From the connection's setup"
+msgstr "Aucune connexion MCP pour l'instant."
+
+#, fuzzy
 msgid "from the department"
 msgstr "du département"
 
@@ -3482,6 +3493,10 @@ msgstr "Indiquez d'abord un motif : un refus sans motif est une impasse pour l'
 
 #, fuzzy
 msgid "Give each endpoint a name first."
+msgstr "Donne d'abord un nom à chaque endpoint."
+
+#, fuzzy
+msgid "Give this agent a mailbox first"
 msgstr "Donne d'abord un nom à chaque endpoint."
 
 #, fuzzy
@@ -3808,6 +3823,13 @@ msgid "Invite"
 msgstr "Inviter"
 
 #, fuzzy
+msgid "It has not worked yet."
+msgstr "Aucune consommation enregistrée pour l'instant."
+
+msgid "It listens on the mailbox the agent uses for its tools. "
+msgstr ""
+
+#, fuzzy
 msgid "its model configuration"
 msgstr "sa configuration de modèle"
 
@@ -3907,9 +3929,15 @@ msgstr "30 derniers jours : validation uniquement"
 msgid "Last action"
 msgstr "Dernière action"
 
+msgid "Last checked {time}"
+msgstr ""
+
 #, fuzzy
 msgid "Last run"
 msgstr "Dernière exécution"
+
+msgid "Last success {time}."
+msgstr ""
 
 #, fuzzy
 msgid "Latency"
@@ -4001,6 +4029,9 @@ msgstr "Liez votre propre compte Telegram ou WhatsApp pour recevoir les approbat
 #, fuzzy
 msgid "Linked in this tenant"
 msgstr "Lié dans l'organisation"
+
+msgid "Listening"
+msgstr ""
 
 #, fuzzy
 msgid "Live"
@@ -4185,6 +4216,12 @@ msgstr "Serveur de messagerie désactivé"
 #, fuzzy
 msgid "Mail server updated"
 msgstr "Serveur de messagerie mis à jour"
+
+msgid "Mailbox"
+msgstr ""
+
+msgid "Mailbox changed: switched off. Switch it on to listen on the agent's current mailbox."
+msgstr ""
 
 #, fuzzy
 msgid "Make available"
@@ -4998,6 +5035,10 @@ msgid "Not available."
 msgstr "Non disponible."
 
 #, fuzzy
+msgid "Not checked yet"
+msgstr "Aucune consommation enregistrée pour l'instant."
+
+#, fuzzy
 msgid "Not connected"
 msgstr "Non connecté"
 
@@ -5165,6 +5206,10 @@ msgid "Older"
 msgstr "Plus ancien"
 
 #, fuzzy
+msgid "On"
+msgstr "Une fois"
+
+#, fuzzy
 msgid "On demand"
 msgstr "À la demande"
 
@@ -5249,6 +5294,10 @@ msgstr "Ouvrir l'agent"
 #, fuzzy
 msgid "Open the record"
 msgstr "Ouvrir l'enregistrement"
+
+#, fuzzy
+msgid "Open the tool settings"
+msgstr "Enregistrer les paramètres d'échantillonnage"
 
 #, fuzzy
 msgid "Opening a file"
@@ -5710,6 +5759,9 @@ msgstr "Lire la page web"
 msgid "Read its instructions"
 msgstr "A lu ses instructions"
 
+msgid "Read the new email and take care of it."
+msgstr ""
+
 #, fuzzy
 msgid "Read the text before importing"
 msgstr "Lire le texte avant d'importer"
@@ -5908,6 +5960,10 @@ msgstr "Retirer le poste"
 #, fuzzy
 msgid "Remove source?"
 msgstr "Retirer la source ?"
+
+#, fuzzy
+msgid "Remove trigger"
+msgstr "Retirer le fournisseur"
 
 #, fuzzy
 msgid "Remove user"
@@ -7008,6 +7064,9 @@ msgstr "Registre infalsifiable de chaque décision."
 msgid "Target"
 msgstr "Cible"
 
+msgid "Task"
+msgstr ""
+
 #, fuzzy
 msgid "Task (optional)"
 msgstr "Tâche (facultatif)"
@@ -7150,6 +7209,9 @@ msgstr "L'agent est actuellement injoignable. Votre message n'a pas été envoy�
 msgid "The agent that should fill the dashboard no longer exists or is out of reach."
 msgstr ""
 
+msgid "The agent was created without its email trigger: pick its mailbox in the agent's tool settings, then add the trigger on the agent's page."
+msgstr ""
+
 #, fuzzy
 msgid "The agent was not created. Try again."
 msgstr "L'agent n'a pas été créé. Réessayez."
@@ -7276,6 +7338,9 @@ msgstr "Le jour où quelqu'un ne doit que valider des offres : dupliquez un rô
 msgid "The decision was not saved. Try again."
 msgstr "La décision n'a pas été enregistrée. Réessayez."
 
+msgid "The email is appended to this task as data from outside, never as instructions."
+msgstr ""
+
 #, fuzzy
 msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
 msgstr "Le modèle d'embedding utilisé pour les requêtes doit être de la même famille (et de la même dimension) que celui qui a servi à construire la collection distante, sinon la recherche renvoie du bruit."
@@ -7283,6 +7348,9 @@ msgstr "Le modèle d'embedding utilisé pour les requêtes doit être de la mêm
 #, fuzzy
 msgid "The endpoints are saved."
 msgstr "Les endpoints sont enregistrés."
+
+msgid "The event listens on the agent's own login for its system, and the agent has none yet. Choose one in the agent's tool settings."
+msgstr ""
 
 #, fuzzy
 msgid "The folder could not be loaded. Try again."
@@ -8024,6 +8092,17 @@ msgstr "Dépenses totales"
 #, fuzzy
 msgid "Total tokens"
 msgstr "Total des jetons"
+
+#, fuzzy
+msgid "Trigger removed"
+msgstr "Source retirée"
+
+#, fuzzy
+msgid "Trigger saved"
+msgstr "Préréglage enregistré"
+
+msgid "Trigger settings"
+msgstr ""
 
 #, fuzzy
 msgid "Try again"

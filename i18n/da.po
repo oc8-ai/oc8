@@ -1952,6 +1952,11 @@ msgstr "Kunne ikke gemme guardrails"
 msgid "Couldn't save instructions"
 msgstr "Kunne ikke gemme instruktioner"
 
+#, fuzzy
+#| msgid "Could not save the preset."
+msgid "Couldn't save the trigger"
+msgstr "Kunne ikke gemme preset."
+
 msgid "Couldn't send answer"
 msgstr "Kunne ikke sende svar"
 
@@ -2712,6 +2717,9 @@ msgstr "fejl"
 msgid "Error"
 msgstr "Fejl"
 
+msgid "Error at {time}: {error}"
+msgstr ""
+
 msgid "Est. cost / 1k req"
 msgstr "Est. pris / 1k foresp."
 
@@ -2959,6 +2967,11 @@ msgstr "fra afdelingen"
 msgid "From store"
 msgstr "Fra store"
 
+#, fuzzy
+#| msgid "No MCP connections yet."
+msgid "From the connection's setup"
+msgstr "Endnu ingen MCP-forbindelser."
+
 msgid "from the department"
 msgstr "fra afdelingen"
 
@@ -3001,6 +3014,9 @@ msgid "Give a reason first — a rejection with none is a dead end for the agent
 msgstr "Giv først en begrundelse — en afvisning uden begrundelse er en blindgyde for agenten, der skal handle på den"
 
 msgid "Give each endpoint a name first."
+msgstr ""
+
+msgid "Give this agent a mailbox first"
 msgstr ""
 
 #, fuzzy
@@ -3269,6 +3285,14 @@ msgid "Invite"
 msgstr ""
 
 #, fuzzy
+#| msgid "No usage recorded yet."
+msgid "It has not worked yet."
+msgstr "Endnu intet forbrug registreret."
+
+msgid "It listens on the mailbox the agent uses for its tools. "
+msgstr ""
+
+#, fuzzy
 #| msgid "Add a model configuration"
 msgid "its model configuration"
 msgstr "Tilføj en modelkonfiguration"
@@ -3353,8 +3377,14 @@ msgstr "Sidste 30 dage — kun validering"
 msgid "Last action"
 msgstr "Sidste handling"
 
+msgid "Last checked {time}"
+msgstr ""
+
 msgid "Last run"
 msgstr "Sidste kørsel"
+
+msgid "Last success {time}."
+msgstr ""
 
 msgid "Latency"
 msgstr "Latens"
@@ -3430,6 +3460,9 @@ msgstr "Knyt din egen Telegram eller WhatsApp, så godkendelser når dig der. De
 
 msgid "Linked in this tenant"
 msgstr "Knyttet i denne tenant"
+
+msgid "Listening"
+msgstr ""
 
 msgid "Live"
 msgstr "Live"
@@ -3576,6 +3609,12 @@ msgstr "Mailserver deaktiveret"
 
 msgid "Mail server updated"
 msgstr "Mailserver opdateret"
+
+msgid "Mailbox"
+msgstr ""
+
+msgid "Mailbox changed: switched off. Switch it on to listen on the agent's current mailbox."
+msgstr ""
 
 #, fuzzy
 #| msgid "Available"
@@ -4273,6 +4312,11 @@ msgid "Not available."
 msgstr "Ikke tilgængelig: "
 
 #, fuzzy
+#| msgid "No usage recorded yet."
+msgid "Not checked yet"
+msgstr "Endnu intet forbrug registreret."
+
+#, fuzzy
 #| msgid "Connected"
 msgid "Not connected"
 msgstr "Forbundet"
@@ -4420,6 +4464,11 @@ msgstr "OK"
 msgid "Older"
 msgstr ""
 
+#, fuzzy
+#| msgid "Open"
+msgid "On"
+msgstr "Åbn"
+
 msgid "On demand"
 msgstr ""
 
@@ -4493,6 +4542,11 @@ msgstr "Opret agent"
 #| msgid "e.g. delete_record"
 msgid "Open the record"
 msgstr "f.eks. delete_record"
+
+#, fuzzy
+#| msgid "Save sampling settings"
+msgid "Open the tool settings"
+msgstr "Gem sampling-indstillinger"
 
 msgid "Opening a file"
 msgstr ""
@@ -4884,6 +4938,9 @@ msgstr ""
 msgid "Read its instructions"
 msgstr "Kunne ikke gemme instruktioner"
 
+msgid "Read the new email and take care of it."
+msgstr ""
+
 msgid "Read the text before importing"
 msgstr "Læs teksten før import"
 
@@ -5059,6 +5116,11 @@ msgstr "Fjern plads"
 
 msgid "Remove source?"
 msgstr "Fjern kilde?"
+
+#, fuzzy
+#| msgid "Remove provider"
+msgid "Remove trigger"
+msgstr "Fjern udbyder"
 
 #, fuzzy
 #| msgid "Remove seat"
@@ -5990,6 +6052,9 @@ msgstr "Manipulationssikker registrering af hver beslutning."
 msgid "Target"
 msgstr "Mål"
 
+msgid "Task"
+msgstr ""
+
 msgid "Task (optional)"
 msgstr "Opgave (valgfrit)"
 
@@ -6106,6 +6171,9 @@ msgstr ""
 msgid "The agent that should fill the dashboard no longer exists or is out of reach."
 msgstr ""
 
+msgid "The agent was created without its email trigger: pick its mailbox in the agent's tool settings, then add the trigger on the agent's page."
+msgstr ""
+
 #, fuzzy
 #| msgid "Could not create user. Try again."
 msgid "The agent was not created. Try again."
@@ -6214,10 +6282,16 @@ msgstr "Den dag nogen kun skal godkende tilbud: brug en indbygget rolle som skab
 msgid "The decision was not saved. Try again."
 msgstr ""
 
+msgid "The email is appended to this task as data from outside, never as instructions."
+msgstr ""
+
 msgid "The embedding model used for queries must be the same family (and dimension) that built the remote collection — otherwise search returns noise."
 msgstr ""
 
 msgid "The endpoints are saved."
+msgstr ""
+
+msgid "The event listens on the agent's own login for its system, and the agent has none yet. Choose one in the agent's tool settings."
 msgstr ""
 
 #, fuzzy
@@ -6858,6 +6932,19 @@ msgstr "Samlet forbrug"
 
 msgid "Total tokens"
 msgstr "Tokens i alt"
+
+#, fuzzy
+#| msgid "Source removed"
+msgid "Trigger removed"
+msgstr "Kilde fjernet"
+
+#, fuzzy
+#| msgid "Preset saved"
+msgid "Trigger saved"
+msgstr "Preset gemt"
+
+msgid "Trigger settings"
+msgstr ""
 
 msgid "Try again"
 msgstr "Prøv igen"
