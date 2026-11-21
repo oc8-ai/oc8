@@ -551,3 +551,18 @@ async def test_a_connection_of_another_organisation_is_never_a_target(
                 event_type=polled.event_type,
                 event_target_oauth_connection_id=foreign,
             )
+
+
+async def test_the_list_is_read_from_the_logins_own_setup_only(
+    app_session: AppSessionFactory,
+) -> None:
+    """`allowed_from` names whom this login may act as: only the setup that
+    made this login says so, never a department or organisation-wide row."""
+    polled = await oauth_polled_setup(app_session)
+    async with app_session(polled.tenant) as db:
+        own = await db.get(m.McpConnection, polled.setup_id)
+        assert own is not None
+        # Not this login's own row any more: a row for every department.
+        own.config = {k: v for k, v in own.config.items() if k != "oauth_connection_id"}
+    with pytest.raises(InvalidTriggerConfig, match="delegated_mailboxes"):
+        await _trigger(app_session, polled, {"mailbox": "info@acme.test"})

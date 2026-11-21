@@ -289,7 +289,13 @@ async def polled_event_spec(
 
 
 async def connection_setup_value(
-    db: AsyncSession, spec: PolledEventSpec, *, agent_id: uuid.UUID, target: LoginTarget, key: str
+    db: AsyncSession,
+    spec: PolledEventSpec,
+    *,
+    agent_id: uuid.UUID,
+    target: LoginTarget,
+    key: str,
+    own_only: bool = False,
 ) -> str:
     """The value the setup of the connection `target` belongs to gave its plain
     field `key` (a trigger setting's `default_from` or `allowed_from`), or ""
@@ -302,7 +308,8 @@ async def connection_setup_value(
     department, else its row for every department; a row made for another
     OAuth connection is never read for this one. A field that is not plain (a
     password, a login, a department) is never read, whatever the manifest says
-    (it refuses that already)."""
+    (it refuses that already). `own_only` reads the login's own row alone:
+    for an `allowed_from` list, which names whom that login may act as."""
     from oc8.capas.manifest import PLAIN_SETUP_FIELD_KINDS
     from oc8.connections.tool_connection import not_retired
 
@@ -339,7 +346,9 @@ async def connection_setup_value(
     ranked = sorted(
         ((r, row) for row in rows if (r := rank(row)) is not None), key=lambda item: item[0]
     )
-    for _rank, row in ranked:
+    for r, row in ranked:
+        if own_only and r != 0:
+            break
         value = ((row.config or {}).get("env") or {}).get(env_name)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -375,7 +384,7 @@ async def allowed_values(
         if item.allowed_from:
             out[item.key] = setup_list(
                 await connection_setup_value(
-                    db, spec, agent_id=agent_id, target=target, key=item.allowed_from
+                    db, spec, agent_id=agent_id, target=target, key=item.allowed_from, own_only=True
                 )
             )
     return out
