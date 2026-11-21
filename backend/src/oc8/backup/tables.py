@@ -59,6 +59,9 @@ EXCLUDED_TABLES: frozenset[str] = frozenset(
         "email_otp_challenge",
         # passkey challenges: single-use and five minutes long, likewise
         "passkey_challenge",
+        # where a polled trigger's poller left off: a restored trigger takes a
+        # fresh baseline instead of catching up, and the poll errors are stale
+        "event_source_cursor",
     }
 )
 

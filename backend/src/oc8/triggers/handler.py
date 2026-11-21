@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from oc8 import models as m
 from oc8.db.session import tenant_session
@@ -31,6 +31,11 @@ async def handle_inbound_event(event: InboundEvent) -> None:
                         m.Trigger.enabled.is_(True),
                         m.Trigger.event_source == event.source,
                         m.Trigger.event_type == event.type,
+                        # A polled trigger fires only from its own login's
+                        # poll (oc8.events.sources), never from a push.
+                        m.Trigger.event_target_credential_id.is_(None),
+                        m.Trigger.event_target_oauth_connection_id.is_(None),
+                        ~exists().where(m.EventSourceCursor.trigger_id == m.Trigger.id),
                     )
                 )
                 match_ids = list(result.scalars().all())

@@ -229,6 +229,31 @@ channel ID and has no mailbox.
 
 ---
 
+## The "On new email" trigger
+
+An agent fixed to this connection for its tools can be started by new mail:
+in the agent's trigger editor, the **On new email** tab watches one mailbox
+folder and starts a run for each new mail, with the mail handed over as data.
+oc8 checks every minute (`OC8_EVENT_POLL_SECONDS`) with the same app
+registration as the tools, so no extra setup is needed beyond the
+`Mail.Read` (or `Mail.ReadWrite`) application permission.
+
+- **Mailbox** defaults to the default mailbox above; **Folder** to `inbox`
+  (a well-known name or a folder ID).
+- **Reach.** An app-only `Mail.Read` permission covers every mailbox in the
+  tenant, so a trigger can watch any of them, just as the tools can name any
+  `userId`. To narrow that, an Exchange admin can scope the app registration
+  to a mail-enabled group with an **Application Access Policy**
+  (`New-ApplicationAccessPolicy`) or **RBAC for Applications**; Graph then
+  refuses every mailbox outside the group, for the tools and the trigger
+  alike.
+- **A signed-in account** (instead of an app registration) always watches
+  its own mailbox; the Mailbox setting is ignored for it.
+- If the connection is removed or replaced, the trigger switches itself off;
+  switch it on again once the agent has its new connection.
+
+---
+
 ## Checking it really works
 
 The form's own submission proves the credential and the consent. To satisfy

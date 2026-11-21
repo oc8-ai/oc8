@@ -312,6 +312,7 @@ FLAT_FIELDS: Final = frozenset(
         "timezone",
         "eventSource",
         "eventType",
+        "eventConfig",
         "taskText",
         "systems",
         "limits",
@@ -405,12 +406,20 @@ def flat_operations(
             **zone,
             taskText=task,
         )
-    if _given(fields.get("eventSource")) or _given(fields.get("eventType")):
+    names_event = _given(fields.get("eventSource")) or _given(fields.get("eventType"))
+    if _given(fields.get("eventConfig")) and not names_event:
+        # Settings for no event: refused, never silently dropped.
+        raise BuilderInvalid("event_config_without_event", len(ops))
+    if names_event:
+        settings = (
+            {"eventConfig": fields["eventConfig"]} if _given(fields.get("eventConfig")) else {}
+        )
         follow(
             "trigger.create",
             kind="event",
             eventSource=fields.get("eventSource"),
             eventType=fields.get("eventType"),
+            **settings,
             taskText=task,
         )
     systems = _listed(fields.get("systems"))

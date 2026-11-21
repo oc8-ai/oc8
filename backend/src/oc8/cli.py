@@ -210,9 +210,21 @@ def main() -> None:
             run_worker(get_ingestion_queue(), handler=ingest_job, recovery=recover_ingestion)
         )
     elif args.command == "scheduler":
+        from oc8.events.sources import run_event_poller
         from oc8.triggers.scheduler import run_scheduler
 
-        asyncio.run(run_scheduler())
+        async def _schedule() -> None:
+            # Polled event sources tick in their own task, so a slow outside
+            # system never delays a schedule.
+            stop = asyncio.Event()
+            poller = asyncio.create_task(run_event_poller(stop))
+            try:
+                await run_scheduler()
+            finally:
+                stop.set()
+                await poller
+
+        asyncio.run(_schedule())
     elif args.command == "audit-verify":
         from oc8.audit.integrity import run_integrity_job
 

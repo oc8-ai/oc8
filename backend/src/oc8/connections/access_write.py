@@ -3,8 +3,9 @@
 Every door that binds an agent to an account goes through `write_tool_access`:
 `PUT /agents/{id}/tool-access/{key}` and `POST /mcp/logins` after their own
 authorization checks, and the consolidation of old per-department setups as a
-system change. It writes the row, stamps the binding fingerprint and records
-the audit event. Flushes, never commits -- the caller owns the transaction.
+system change. It writes the row, stamps the binding fingerprint, switches off
+a polled trigger whose login the change takes away, and records the audit
+event. Flushes, never commits -- the caller owns the transaction.
 """
 
 from __future__ import annotations
@@ -69,6 +70,12 @@ async def write_tool_access(
         db, agent, tool_key, version_id=agent.current_version_id
     )
     await db.flush()
+    # A trigger polling the login this tool was fixed to stops when the agent's
+    # login for it changes, rather than listening on an account the agent's
+    # tools no longer reach.
+    from oc8.events.sources import disable_off_target_triggers
+
+    await disable_off_target_triggers(db, agent_id=agent.id, tool_key=tool_key)
     await append_event(
         db,
         tenant_id=agent.tenant_id,

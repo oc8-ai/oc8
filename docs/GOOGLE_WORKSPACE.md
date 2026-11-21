@@ -203,6 +203,28 @@ mailbox.
 
 ---
 
+## The "On new email" trigger
+
+An agent fixed to this connection for its tools can be started by new mail:
+in the agent's trigger editor, the **On new email** tab watches one Gmail
+label and starts a run for each new mail, with the mail handed over as data.
+oc8 checks every minute (`OC8_EVENT_POLL_SECONDS`), minting a token for the
+watched mailbox through the same domain-wide delegation as the tools.
+
+- **Mailbox** defaults to the default mailbox above; **Label** to `INBOX`
+  (a label ID such as `INBOX` or `Label_12`).
+- **Only authorized mailboxes.** The mailbox must be one of the delegated
+  mailboxes in this form (`delegated_mailboxes`). oc8 refuses any other when
+  the trigger is saved and checks again before every poll, so removing an
+  address from the list stops its trigger from reading it. With an empty list,
+  a service account cannot watch any mailbox.
+- **A signed-in account** (instead of a service account) watches only its own
+  mailbox.
+- If the connection is removed or replaced, the trigger switches itself off;
+  switch it on again once the agent has its new connection.
+
+---
+
 ## Checking it really works
 
 The form's own submission proves the credential, Shared Drive membership (if

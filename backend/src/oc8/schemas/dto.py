@@ -1423,6 +1423,16 @@ class BuilderChoiceDTO(CamelModel):
     label: str
 
 
+class BuilderTriggerSettingDTO(CamelModel):
+    """One setting a proposed event trigger names, with the event's label for
+    it when an enabled capa declares it (the key otherwise)."""
+
+    key: str
+    label: str
+    label_translations: dict[str, str] = {}
+    value: str
+
+
 class BuilderTriggerDTO(CamelModel):
     kind: str  # cron | event
     cron_expression: str | None = None
@@ -1431,6 +1441,8 @@ class BuilderTriggerDTO(CamelModel):
     event_source: str | None = None
     event_type: str | None = None
     task_text: str = ""
+    #: A polled event's settings (`eventConfig`), in the order proposed.
+    settings: list[BuilderTriggerSettingDTO] = []
 
 
 class BuilderLimitDTO(CamelModel):
@@ -1503,6 +1515,10 @@ class AgentBuilderDTO(CamelModel):
     #: and `mission` are empty and the department is the board's (or its
     #: producing agent's).
     kind: Literal["agent", "board"] = "agent"
+    #: Fixed codes for what was left out on apply and what the person does
+    #: next, e.g. "trigger_needs_login": a polled event's trigger skipped
+    #: because the new agent had no login to listen on yet.
+    notices: list[str] = []
     board: BuilderBoardDTO | None = None
 
 
@@ -1660,6 +1676,52 @@ class BudgetStatusDTO(CamelModel):
     hard_exceeded: bool
 
 
+class TriggerPollStatusDTO(CamelModel):
+    """How polling goes for a trigger on a polled event (its
+    `event_source_cursor` row). `last_error` names the exception and its
+    message with the login's secrets removed (`oc8.events.sources`)."""
+
+    last_polled_at: str | None = None
+    last_ok_at: str | None = None
+    last_error: str | None = None
+    last_error_at: str | None = None
+
+
+class TriggerEventConfigFieldDTO(CamelModel):
+    key: str
+    label: str
+    #: The capa's translations of `label`, by locale.
+    label_translations: dict[str, str] = {}
+    kind: str = "text"
+    default: str = ""
+    #: Filled from this key of the login's connection setup when left empty.
+    default_from: str = ""
+
+
+class TriggerEventDTO(CamelModel):
+    """An event a trigger may listen on (`oc8.automation.catalogue`)."""
+
+    source: str
+    type: str
+    label: str
+    label_translations: dict[str, str] = {}
+    description: str = ""
+    description_translations: dict[str, str] = {}
+    #: Core polls an outside system for it; the trigger editor gives it a tab.
+    polled: bool = False
+    #: For a polled event: the tool key whose fixed login the trigger listens
+    #: on (`AgentToolAccess.tool_key`); None otherwise.
+    tool_key: str | None = None
+    config: list[TriggerEventConfigFieldDTO] = []
+    #: The trigger editor's name for its tab; the editor falls back to `label`.
+    editor_label: str = ""
+    editor_label_translations: dict[str, str] = {}
+    #: The display name of the capa it comes from (its name when it has none),
+    #: to tell two events with the same tab name apart.
+    source_label: str = ""
+    source_label_translations: dict[str, str] = {}
+
+
 class TriggerDTO(CamelModel):
     id: str
     agent_id: str
@@ -1688,6 +1750,17 @@ class TriggerDTO(CamelModel):
     #: operator needs to come back and re-copy this into the external
     #: system's config, possibly more than once.
     webhook_url: str | None = None
+    #: A polled event's trigger: the organisation login it listens on (the
+    #: agent's fixed login for the event capa's tools) and its settings.
+    event_target_credential_id: str | None = None
+    #: The same when that login is an OAuth connection (never both).
+    event_target_oauth_connection_id: str | None = None
+    event_config: dict[str, Any] = {}
+    #: A polled event's trigger only; None for every other trigger.
+    poll_status: TriggerPollStatusDTO | None = None
+    #: Why the system last switched it off or skipped it, e.g.
+    #: "event_target_changed" when the agent's login for it changed.
+    last_skip_reason: str | None = None
 
 
 class AuthConfig(CamelModel):

@@ -84,6 +84,10 @@ _REFUSALS: dict[str, str] = {
     ),
     "unknown_field": "use only these fields: " + ", ".join(sorted(FLAT_FIELDS)),
     "mixed_shapes": "pass either the agent's fields or operations, not both",
+    "event_config_without_event": (
+        "eventConfig belongs to an event trigger: pass eventSource and eventType "
+        "with it, or leave it out"
+    ),
     "missing_agent": "give at least departmentId, name and mission",
     "department_create_not_allowed": (
         "this person may not create departments; pick the best-fitting existing "

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from oc8.channels.base import ChannelFactory
+    from oc8.events.sources import Poller, RegisteredPoller
     from oc8.knowledge.connectors.base import Connector
     from oc8.knowledge.vector_indexes.base import VectorIndex
     from oc8.modelrouter.registry import ProviderEntry
@@ -51,6 +52,8 @@ class PluginContributions:
         # point -> handler callable. Registration additionally requires the
         # point to be declared in the manifest's `handles`; see lifecycle.
         self.hooks: dict[str, Callable[..., object]] = {}
+        # event type -> the poller core calls for it (`oc8.events.sources`).
+        self.pollers: dict[str, RegisteredPoller] = {}
 
     def add_connector(self, connector: Connector) -> None:
         type_id = getattr(connector, "type_id", "")
@@ -133,6 +136,23 @@ class PluginContributions:
             raise ValueError("a hook handler must be callable")
         self.hooks[point] = fn
 
+    def add_poller(
+        self, event_type: str, poller: Poller, *, credential_type: str | None = None
+    ) -> None:
+        """A poller for an event this plugin declares polled in its manifest
+        (`[[plugin.triggers]]` with `polled = true`). Its source is the plugin's
+        name. `credential_type` is the credential type the poller reads, when
+        the plugin's tools sign in with a credential; a plugin whose tools sign
+        in through an OAuth connection leaves it out, and a trigger on the
+        event then listens on an OAuth connection of the plugin's provider."""
+        from oc8.events.sources import RegisteredPoller
+
+        if not event_type:
+            raise ValueError("a poller needs the event type it serves")
+        if not callable(poller):
+            raise ValueError("a poller must be callable")
+        self.pollers[event_type] = RegisteredPoller(poller, credential_type)
+
 
 _catalogue: dict[str, PluginContributions] = {}
 
@@ -180,6 +200,13 @@ def hooks_for(plugin_id: str) -> dict[str, Callable[..., object]]:
     manifest declared the point."""
     entry = _catalogue.get(plugin_id)
     return dict(entry.hooks) if entry is not None else {}
+
+
+def pollers_for(plugin_id: str) -> dict[str, RegisteredPoller]:
+    """Pollers contributed by ONE plugin, by event type. Whether a tenant may
+    use one is `oc8.events.sources.polled_event_spec`'s job."""
+    entry = _catalogue.get(plugin_id)
+    return dict(entry.pollers) if entry is not None else {}
 
 
 def forget(plugin_id: str) -> None:

@@ -72,6 +72,13 @@ REASONS: Final[dict[str, str]] = {
         "(minute hour day month weekday, e.g. 0 8 * * 1-5) and an event must be "
         "one the installed capas declare. Correct it or leave the trigger out"
     ),
+    "trigger_needs_login": (
+        "the event listens on the agent's own organisation login for the "
+        "event's system, and the agent has no login fixed for it. You cannot "
+        "set one: the person picks the login in the agent's tool settings (the "
+        "Tools & Access tab on the agent's page) and then adds the trigger on "
+        "the agent's page. Tell the person exactly that, or leave the trigger out"
+    ),
     "model_manual_only": (
         "the chosen model runs on a personal subscription and may only answer "
         "chats, never a schedule or an event. Pick another model or leave the "

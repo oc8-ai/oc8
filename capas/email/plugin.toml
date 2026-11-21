@@ -1,0 +1,56 @@
+# Email: the agent's own mailbox at any provider. Mail comes in over IMAP or
+# POP3 and goes out over SMTP, with a username and password (an app password
+# works too). Everything that knows about mail lives in this capa; core only
+# knows a polled event and a login.
+#
+# This file is the slim core. The tool pack is tool_pack.toml, the login type
+# credential_types/mail_account.toml, the setup form setup/*.toml and the
+# presets guardrails/<key>.toml.
+#
+# Mail servers on internal addresses. Core refuses loopback, private,
+# link-local (cloud metadata) and other non-public addresses by default. A
+# mail server on the company network needs the operator's allowlist twice:
+# OC8_OUTBOUND_ALLOWED_PRIVATE for the poller and the connection test (they
+# run in core), and OC8_MCP_EMAIL_ALLOWED_PRIVATE (same format) for the tools,
+# which run in the bridge and see only OC8_MCP_* variables. Having the bridge
+# follow OC8_OUTBOUND_ALLOWED_PRIVATE by itself is a follow-up.
+#
+# Known limits of 1.0.0, accepted for now:
+# * Attachments travel inline, as text or base64 in the tool call and result,
+#   not as run files: core's MCP client keeps only text from a tool. Handing
+#   them over as run files is a core follow-up.
+# * There is no daily send counter: the guardrail model has no per-day
+#   budget. What bounds sending is the preset (see answer_on_its_own) and
+#   core's outward rule, one message per mail in each task.
+# * Sent mail is not copied to a Sent folder; SMTP alone does not do that,
+#   and the provider may or may not.
+
+[plugin]
+name = "email"
+label = "Email"
+version = "1.0.0"
+type = "tool_pack"
+trust = "first_party"
+summary = "Give an agent its own mailbox over IMAP or POP3 and SMTP: read, search, send, reply and react to new mail"
+permissions = ["mcp:connect", "secrets:use"]
+capabilities = ["integration:email"]
+
+# The `mail.received` poller (events/source.py). Core polls the mailbox the
+# agent is fixed to for this capa's tools and starts the agent per new mail.
+[plugin.entry_points]
+event_sources = "events.source:register"
+
+[[plugin.triggers]]
+type = "mail.received"
+label = "New email"
+description = "Starts the agent when a new mail arrives in its mailbox. The mail is handed to the run as data, never as instructions."
+polled = true
+# The trigger editor's tab.
+editor_label = "On new email"
+
+# The trigger's one setting: the folder new mail is watched in (IMAP; POP3
+# only has the inbox and ignores it).
+[[plugin.triggers.config]]
+key = "folder"
+label = "Folder"
+default = "INBOX"

@@ -605,6 +605,13 @@ class CreateTriggerRequest(CamelModel):
     event_source: str | None = None
     event_type: str | None = None
     acts_for_creator: bool = False
+    #: A polled event only: the login it listens on, which must be the agent's
+    #: fixed login for the event capa's tools -- filled in from it when omitted.
+    event_target_credential_id: uuid.UUID | None = None
+    #: The same for a login that is an OAuth connection; at most one of the two.
+    event_target_oauth_connection_id: uuid.UUID | None = None
+    #: A polled event only: its declared settings (`TriggerDecl.config`).
+    event_config: dict[str, Any] | None = Field(default=None, max_length=16)
 
 
 class UpdateTriggerRequest(CamelModel):
@@ -614,6 +621,11 @@ class UpdateTriggerRequest(CamelModel):
     #: A new zone for the schedule; omitted keeps the one it has.
     timezone: str | None = Field(default=None, max_length=64)
     acts_for_creator: bool | None = None
+    #: A polled event only: new settings, or the agent's new fixed login.
+    #: Either change starts a fresh baseline.
+    event_config: dict[str, Any] | None = Field(default=None, max_length=16)
+    event_target_credential_id: uuid.UUID | None = None
+    event_target_oauth_connection_id: uuid.UUID | None = None
 
 
 class CreateSecretRequest(CamelModel):

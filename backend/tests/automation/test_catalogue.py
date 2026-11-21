@@ -5,6 +5,7 @@ from dataclasses import fields
 import pytest
 
 from oc8.automation.catalogue import (
+    AutomationEventConfigField,
     AutomationEventDescriptor,
     DuplicateAutomationEvent,
     list_automation_events,
@@ -18,6 +19,17 @@ def test_event_descriptors_are_value_safe_metadata_only() -> None:
         "type",
         "label",
         "description",
+        "polled",
+        "config",
+        "editor_label",
+    ]
+    # A setting declares how it is shown and filled, never a value.
+    assert [field.name for field in fields(AutomationEventConfigField)] == [
+        "key",
+        "label",
+        "kind",
+        "default",
+        "default_from",
     ]
 
 

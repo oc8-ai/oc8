@@ -767,7 +767,10 @@ PROPOSE_CHANGE = NeutralTool(
                     "trigger.create: agentId (uuid), kind ('cron' or "
                     "'event'), taskText (text), [cronExpression (local "
                     "time), timezone (IANA name; default the organisation's), "
-                    "eventSource, eventType]. "
+                    "eventSource, eventType, eventConfig (object of text "
+                    'settings the event declares, e.g. {"folder": '
+                    '"INBOX"}; a polled event listens on the agent\'s fixed '
+                    "login, never one you name)]. "
                     "plugin.enable: pluginId (uuid), [grantedPermissions "
                     "(list of strings)]. "
                     "integration.prepare: integrationId (uuid), "
@@ -826,6 +829,17 @@ BUILDER_OPTIONS = NeutralTool(
 _ID = {"type": "string"}
 _NEW_REF = {"type": "string", "enum": ["$new"]}
 _TEXT = {"type": "string", "maxLength": 10_000}
+#: A polled event's trigger settings (`TriggerDecl.config`), all text.
+_EVENT_CONFIG = {
+    "type": "object",
+    "maxProperties": 16,
+    "additionalProperties": {"type": "string", "maxLength": 200},
+    "description": (
+        "trigger.create with kind event: the settings the event declares, as "
+        'text, e.g. {"folder": "INBOX"}; leave out for its defaults. A polled '
+        "event listens on the agent's own fixed login for the event's system."
+    ),
+}
 #: The mission is the only job-specific part of an agent's prompt
 #: (harness/prompts.render_system_prompt), so the builder is told to write it out.
 _MISSION_FIELD = (
@@ -914,6 +928,7 @@ _BUILDER_OPERATION = {
         },
         "eventSource": {"type": "string", "description": "trigger.create with kind event."},
         "eventType": {"type": "string", "description": "trigger.create with kind event."},
+        "eventConfig": _EVENT_CONFIG,
         "connectionName": {
             "type": "string",
             "description": "agent.guardrail.set: a system builder_options lists.",
@@ -1009,6 +1024,7 @@ PROPOSE_AGENT = NeutralTool(
                 "type": "string",
                 "description": "...this event type. Pass taskText with it.",
             },
+            "eventConfig": _EVENT_CONFIG,
             "taskText": {
                 **_TEXT,
                 "description": _TASK_TEXT_FIELD,

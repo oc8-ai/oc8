@@ -87,6 +87,11 @@ class Settings(BaseSettings):
     # long Redis outage ends in a measured catch-up rather than a burst.
     stranded_run_batch_size: int = 50
 
+    # How often the event poller (oc8.events.sources) asks each polled source
+    # for news, in seconds. Values below 30 are read as 30: every poll logs in
+    # to someone else's server.
+    event_poll_seconds: int = 60
+
     # Answer budget (max_tokens) for each model call of an agent step when
     # neither the agent nor its model connection sets one
     # (oc8.modelrouter.sampling.resolve_params). A reasoning model spends part

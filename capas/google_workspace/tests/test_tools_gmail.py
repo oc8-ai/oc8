@@ -27,7 +27,8 @@ def _evict() -> None:
     for _stale in [
         n
         for n in sys.modules
-        if n in {"connector", "mcp_bridge"} or n.startswith(("connector.", "mcp_bridge."))
+        if n in {"connector", "mcp_bridge", "events"}
+        or n.startswith(("connector.", "mcp_bridge.", "events."))
     ]:
         del sys.modules[_stale]
 
@@ -175,7 +176,51 @@ async def test_gmail_reply_threads_with_in_reply_to_and_references(
     assert decoded["In-Reply-To"] == "<original@company.com>"
     assert decoded["References"] == "<original@company.com>"
     assert decoded["Subject"] == "Re: Original subject"
+    # No threadId in the original's answer: the id given is kept.
     assert captured["body"]["threadId"] == "t1"
+
+
+async def test_gmail_reply_sends_into_the_original_messages_own_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A message id is not its thread id (a reply inside a thread): the reply
+    goes into the thread Gmail reports for the original, never the id given."""
+    import json
+
+    from mcp_bridge import google_api
+    from mcp_bridge.tools import gmail as tools_gmail
+
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            seen["path"] = request.url.path
+            return httpx.Response(
+                200,
+                json={
+                    "id": "18c00msg",
+                    "threadId": "18bffthread",
+                    "payload": {"headers": [{"name": "Message-ID", "value": "<o@x.com>"}]},
+                },
+            )
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"id": "sent"})
+
+    monkeypatch.setattr(
+        google_api, "get_client", lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(google_api, "resolve_mailbox_token", lambda mailbox: "tok")
+
+    for args in ({"messageId": "18c00msg"}, {"threadId": "18c00msg"}):
+        await tools_gmail.gmail_reply(
+            {"mailbox": "a@company.com", "to": ["bob@customer.com"], "body": "Hi", **args}
+        )
+        assert seen["path"].endswith("/messages/18c00msg")
+        assert seen["body"]["threadId"] == "18bffthread"
+    with pytest.raises(RuntimeError, match="messageId"):
+        await tools_gmail.gmail_reply({"to": ["bob@customer.com"], "body": "Hi"})
+    [schema] = [t.input_schema for t in tools_gmail.TOOLS if t.name == "gmail_reply"]
+    assert "messageId" in schema["properties"] and "threadId" not in schema["required"]
 
 
 async def test_gmail_reply_threads_when_the_original_header_is_mixed_case(

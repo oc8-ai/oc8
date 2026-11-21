@@ -82,7 +82,7 @@ from oc8.models.run import (
 from oc8.models.run_input import RunInput
 from oc8.models.secrets import Secret, TenantDek
 from oc8.models.skills import ImportedSkillFile, Skill, SkillAssignment, SkillVersion
-from oc8.models.triggers import Trigger
+from oc8.models.triggers import EventSourceCursor, Trigger
 
 __all__ = [
     "AccountVerificationToken",
@@ -122,6 +122,7 @@ __all__ = [
     "Department",
     "DirectAccessGrant",
     "EmailOtpChallenge",
+    "EventSourceCursor",
     "FileAttachment",
     "Flow",
     "FlowRun",

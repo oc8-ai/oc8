@@ -27,6 +27,15 @@ export interface BuilderTriggerDTO {
   eventSource: string | null;
   eventType: string | null;
   taskText: string;
+  /** A polled event's settings (`eventConfig`), with the event's labels. */
+  settings?: BuilderTriggerSettingDTO[];
+}
+
+export interface BuilderTriggerSettingDTO {
+  key: string;
+  label: string;
+  labelTranslations: Record<string, string>;
+  value: string;
 }
 
 export interface BuilderLimitDTO {
@@ -83,6 +92,21 @@ export interface AgentBuilderDTO {
    *  `roleTitle` and `mission` are empty. */
   kind: "agent" | "board";
   board: BuilderBoardDTO | null;
+  /** Fixed codes for what was left out on apply, e.g. "trigger_needs_login". */
+  notices?: string[];
+}
+
+/** What a notice on an applied card asks of the person; null for an unknown code. */
+export function builderNoticeText(code: string, t: Translate): string | null {
+  switch (code) {
+    case "trigger_needs_login":
+      return t(
+        "The agent was created without its email trigger: pick its mailbox in the agent's tool settings, then add the trigger on the agent's page.",
+        "Der Agent wurde ohne seinen E-Mail-Auslöser angelegt: Wähl sein Postfach in den Tool-Einstellungen des Agenten und leg den Auslöser dann auf der Seite des Agenten an.",
+      );
+    default:
+      return null;
+  }
 }
 
 export interface LocalizedText {
@@ -253,6 +277,11 @@ function stepReasonText(reason: string, t: Translate): string | null {
       return t(
         "The schedule or event is not valid.",
         "Der Zeitplan oder das Ereignis ist ungültig.",
+      );
+    case "trigger_needs_login":
+      return t(
+        "The event listens on the agent's own login for its system, and the agent has none yet. Choose one in the agent's tool settings.",
+        "Das Ereignis hört auf das eigene Login des Agenten für sein System, und der Agent hat noch keins. Wähl eins in seinen Tool-Einstellungen.",
       );
     case "model_manual_only":
       return t(
