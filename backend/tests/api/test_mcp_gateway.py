@@ -528,6 +528,37 @@ async def test_an_allowed_call_is_forwarded(
     assert _FakeMcp.calls[0][0] == "search_records"
 
 
+async def test_a_forwarded_call_carries_its_runs_files(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gateway binds the run to the call, so a file the tool takes resolves
+    among the run's files and a file it returns is kept for the run."""
+    from oc8.agent.run_files import RunFiles, current_run_files
+
+    seen: list[RunFiles | None] = []
+
+    class _Recording(_FakeMcp):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            seen.append(current_run_files())
+            return await super().call(name, arguments)
+
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _Recording)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "search_records", "arguments": {"model": "crm.lead"}},
+    )
+    assert code == 200, body
+    [files] = seen
+    assert files is not None
+    assert (files.tenant_id, files.run_id, files.agent_id) == (tenant, run_id, agent_id)
+
+
 async def test_a_denied_call_is_a_readable_tool_error_not_a_transport_error(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

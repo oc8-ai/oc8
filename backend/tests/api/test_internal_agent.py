@@ -3231,6 +3231,45 @@ async def test_ask_prefetches_no_read_from_the_tool_server(
     assert len(result) == prefetched
 
 
+@pytest.mark.asyncio
+async def test_prefetched_reads_carry_their_runs_files(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reads started ahead of the sequential path are the run's calls too."""
+    from oc8 import models as m
+    from oc8.agent.run_files import RunFiles
+    from oc8.api.v1 import internal_agent as ia
+
+    seen: list[Any] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        seen.append(kw.get("files"))
+        return "rows"
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        _agent_id, run_id = await _mcp_backed_run(db, tenant, parallel_tool_calls=True)
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        agent, dept, conn, pinned = await ia._load(db, run)
+        await ia._precompute_leading_reads(
+            run=run,
+            agent=agent,
+            dept=dept,
+            conn=conn,
+            pinned=pinned,
+            db=db,
+            calls=[
+                ia.ToolBody(id="r1", name="search_records", arguments={"model": "a"}),
+                ia.ToolBody(id="r2", name="search_records", arguments={"model": "b"}),
+            ],
+        )
+
+    assert len(seen) == 2
+    assert all(isinstance(f, RunFiles) and f.run_id == run_id for f in seen)
+
+
 @pytest.mark.parametrize(("chat_mode", "reaches_server"), [(None, True), ("plan", False)])
 @pytest.mark.asyncio
 async def test_an_answered_elicitation_is_authorized_again_before_the_call_runs(
@@ -3485,10 +3524,12 @@ async def _resume_held_call(
     approved_original: bool = False,
     skill_gt: float | None = None,
     annotations: dict[str, Any] | None = None,
+    files_seen: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any], list[Any]]:
     """A run parked on an elicitation for odoo's create_record, answered, then
     one /step. Returns what reached the server, the /step body, the run's
-    context after it, and the approval requests raised."""
+    context after it, and the approval requests raised. `files_seen`, when
+    given, gets the run's id and the `files` each pool call carried."""
     from sqlalchemy import select
 
     from oc8 import models as m
@@ -3499,6 +3540,8 @@ async def _resume_held_call(
 
     async def fake_call(*args: Any, tool: str, arguments: dict[str, Any], **kw: Any) -> str:
         reached.append(arguments)
+        if files_seen is not None:
+            files_seen.setdefault("files", []).append(kw.get("files"))
         return "created"
 
     async def fake_complete(*args: object, **kw: object) -> CompletionResult:
@@ -3515,6 +3558,8 @@ async def _resume_held_call(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent_id, run_id = await _mcp_backed_run(db, tenant)
+        if files_seen is not None:
+            files_seen["run_id"] = run_id
         agent = await db.get(m.Agent, agent_id)
         run = await db.get(m.AgentRun, run_id)
         assert agent is not None and run is not None
@@ -3621,6 +3666,28 @@ async def test_an_approval_stands_when_the_answer_leaves_the_call_unchanged(
     assert reached == [{"model": "sale.order"}]
     assert approvals == []
     assert "pending_elicitation" not in ctx
+
+
+@pytest.mark.asyncio
+async def test_an_answered_held_call_carries_its_runs_files(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The re-run call is the run's like any other: a file it names resolves
+    among the run's files, a file it returns is kept for the run."""
+    from oc8.agent.run_files import RunFiles
+
+    seen: dict[str, Any] = {}
+    reached, _body, _ctx, _approvals = await _resume_held_call(
+        app_session,
+        monkeypatch,
+        answer='{"model": "sale.order"}',
+        autonomy="conservative",
+        approved_original=True,
+        files_seen=seen,
+    )
+    assert reached == [{"model": "sale.order"}]
+    [files] = seen["files"]
+    assert isinstance(files, RunFiles) and files.run_id == seen["run_id"]
 
 
 @pytest.mark.asyncio

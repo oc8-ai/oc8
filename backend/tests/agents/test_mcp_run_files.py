@@ -596,3 +596,18 @@ async def test_the_runs_own_chat_attachments_are_visible_by_id(
     assert await _resolves(files, str(elsewhere.id)) is None
     # Not by name: a chat attachment is no file of the run.
     assert await _resolves(files, "sent.pdf") is None
+
+
+async def test_the_agents_instruction_files_are_visible_and_no_other_agents(
+    app_session: Any, minio_url: str
+) -> None:
+    tenant, agent, run = await _setup(app_session)
+    async with app_session(tenant) as db:
+        other_agent, _ = await _agent_and_run(db, tenant)
+    policy = await _stored(app_session, tenant, "agent_instructions", agent.id, "policy.pdf")
+    foreign = await _stored(app_session, tenant, "agent_instructions", other_agent.id, "x.pdf")
+    files = _files(app_session, tenant, agent, run)
+    assert await _resolves(files, str(policy.id)) == str(policy.id)
+    assert await _resolves(files, "policy.pdf") == str(policy.id)
+    assert await _resolves(files, str(foreign.id)) is None
+    assert await _resolves(files, "x.pdf") is None
