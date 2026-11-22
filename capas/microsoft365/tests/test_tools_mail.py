@@ -45,7 +45,7 @@ _evict()
 pytestmark = pytest.mark.asyncio
 
 
-def test_declares_the_nine_mail_tools() -> None:
+def test_declares_the_eleven_mail_tools() -> None:
     names = {t.name for t in TOOLS}
     assert names == {
         "mail_search",
@@ -57,6 +57,8 @@ def test_declares_the_nine_mail_tools() -> None:
         "mail_delete",
         "mail_list_folders",
         "mail_mark_read",
+        "mail_list_attachments",
+        "mail_get_attachment",
     }
     assert set(CALL_HANDLERS) == names
 
@@ -138,12 +140,13 @@ async def test_mail_send_posts_the_expected_body(monkeypatch: pytest.MonkeyPatch
 
 
 async def test_no_mail_handler_still_builds_a_me_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    """All nine at once, so a tenth tool cannot quietly reintroduce `/me`."""
+    """All of them at once, so a new tool cannot quietly reintroduce `/me`."""
     seen: list[str] = []
 
     async def record(path: str, *a: object, **k: object) -> dict[str, Any]:
         seen.append(path)
-        return {"value": []}
+        # Answers mail_get_attachment as well as the listing tools.
+        return {"value": [], "@odata.type": "#microsoft.graph.fileAttachment"}
 
     for verb in ("get", "post", "patch", "delete"):
         monkeypatch.setattr(graph, verb, record)
@@ -156,6 +159,7 @@ async def test_no_mail_handler_still_builds_a_me_path(monkeypatch: pytest.Monkey
         "body": "b",
         "to": ["a@example.com"],
         "destinationFolderId": "folder1",
+        "attachmentId": "a1",
     }
     for name, handler in CALL_HANDLERS.items():
         await handler(dict(args))

@@ -9,7 +9,7 @@ modify = true
 approval_actions = []
 approval_eur = ""
 only = [
-    "mail_search", "mail_get", "mail_list_folders",
+    "mail_search", "mail_get", "mail_list_folders", "mail_list_attachments", "mail_get_attachment",
     "calendar_list_events", "calendar_get_event", "calendar_check_free_busy", "calendar_create_event",
     "calendar_update_event", "calendar_respond_to_invite",
     "files_list", "files_get_content", "files_search", "sites_list", "files_upload", "files_update_content",
