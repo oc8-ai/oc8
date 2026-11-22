@@ -145,7 +145,6 @@ async def test_gmail_get_attachment_returns_the_file(key: str, api: list[httpx.R
         {"messageId": "../m9", "attachmentId": ATTACHMENT_ID},
         {"messageId": "m9", "attachmentId": "a/../b"},
         {"messageId": "m9", "attachmentId": "a?alt=media"},
-        {"messageId": "m9", "attachmentId": "nope"},
         {"messageId": "m9", "partId": "9"},
         {"messageId": "m9"},
     ],
@@ -157,6 +156,55 @@ async def test_gmail_get_attachment_refuses_what_is_not_there(
 
     with pytest.raises(RuntimeError, match=r"Gmail id|no attachment|partId"):
         await gmail.gmail_get_attachment(args)
+    assert not any("/attachments/" in r.url.path for r in api)
+
+
+async def test_an_attachment_id_alone_is_fetched_as_given(api: list[httpx.Request]) -> None:
+    """Gmail hands out a new attachmentId on every read, so one from an
+    earlier gmail_get no longer matches the message read now: it is fetched
+    directly, once it is a well-formed id, and the part with its size names it."""
+    from mcp_bridge.tools import gmail
+
+    earlier = "ANGjdJ_" + "y" * 300
+    result = await gmail.gmail_get_attachment({"messageId": "m9", "attachmentId": earlier})
+    assert (result.name, result.mime_type, result.data) == (
+        "statement.pdf",
+        "application/pdf",
+        PDF,
+    )
+    assert api[-1].url.raw_path.decode() == f"/gmail/v1/users/me/messages/m9/attachments/{earlier}"
+
+
+INLINE = {
+    "partId": "2",
+    "mimeType": "text/calendar",
+    "filename": "invite.ics",
+    "body": {"data": _b64url(b"BEGIN:VCALENDAR"), "size": 15},
+}
+
+
+async def test_a_small_attachment_carried_inline_is_listed_and_returned(
+    api: list[httpx.Request], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gmail puts a small part's content in `body.data` and gives it no
+    attachmentId; it is an attachment all the same."""
+    import copy
+
+    from mcp_bridge.tools import gmail
+
+    message = copy.deepcopy(MESSAGE)
+    message["payload"]["parts"].append(INLINE)
+    monkeypatch.setitem(globals(), "MESSAGE", message)
+
+    listed = (await gmail.gmail_get({"messageId": "m9"}))["attachments"]
+    assert {"partId": "2", "attachmentId": "", "filename": "invite.ics",
+            "mimeType": "text/calendar", "size": 15} in listed
+    result = await gmail.gmail_get_attachment({"messageId": "m9", "partId": "2"})
+    assert (result.name, result.mime_type, result.data) == (
+        "invite.ics",
+        "text/calendar",
+        b"BEGIN:VCALENDAR",
+    )
     assert not any("/attachments/" in r.url.path for r in api)
 
 

@@ -135,7 +135,7 @@ async def gmail_get(args: dict[str, Any]) -> Any:
         "attachments": [
             {
                 "partId": part.get("partId", ""),
-                "attachmentId": part["body"]["attachmentId"],
+                "attachmentId": part["body"].get("attachmentId", ""),
                 "filename": part.get("filename", ""),
                 "mimeType": part.get("mimeType", ""),
                 "size": part["body"].get("size", 0),
@@ -146,9 +146,12 @@ async def gmail_get(args: dict[str, Any]) -> Any:
 
 
 def _attachment_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    """Every part that is an attachment: a file name and an attachment id."""
+    """Every part that is an attachment: one with a file name whose content
+    is behind an attachment id, or -- for a small one -- inline in
+    `body.data`."""
     out: list[dict[str, Any]] = []
-    if payload.get("filename") and (payload.get("body") or {}).get("attachmentId"):
+    body = payload.get("body") or {}
+    if payload.get("filename") and (body.get("attachmentId") or body.get("data")):
         out.append(payload)
     for part in payload.get("parts", []) or []:
         out.extend(_attachment_parts(part))
@@ -156,48 +159,71 @@ def _attachment_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def gmail_get_attachment(args: dict[str, Any]) -> Any:
-    """One attachment, as a file: core keeps it as a file of the run. The
-    message is read first, for the part's name and type and its current
-    attachment id: Gmail hands out a new attachmentId on every read, so the
-    part is found by its stable `partId`, or by an attachmentId that still
-    matches."""
+    """One attachment, as a file: core keeps it as a file of the run.
+
+    By `partId`, which stays the same across reads: the message is read for
+    the part's name, type and current attachment id (or its inline content).
+    By `attachmentId` alone: Gmail hands out a new one on every read, so one
+    from an earlier gmail_get matches nothing read now -- it is fetched as
+    given, once it is a well-formed id, and named by the part it matches, or
+    else the one part of its size."""
     message_id = _path_id(args.get("messageId"), "messageId")
     part_id = str(args.get("partId") or "")
     wanted = str(args.get("attachmentId") or "")
     if not part_id and not wanted:
         raise RuntimeError("Name the attachment by its partId from gmail_get.")
+    direct = _path_id(wanted, "attachmentId", _ATTACHMENT_ID) if not part_id else ""
     token = google_api.resolve_mailbox_token(args.get("mailbox"))
     mailbox = args.get("mailbox") or "me"
     message = await google_api.get_json(
         google_api.API_GMAIL, f"/users/{mailbox}/messages/{message_id}", token=token
     )
-    found = [
-        part
-        for part in _attachment_parts(message.get("payload", {}))
-        if (part_id and part.get("partId") == part_id)
-        or (not part_id and part["body"]["attachmentId"] == wanted)
-    ]
-    if not found:
-        raise RuntimeError(
-            "This message has no attachment with that partId; take it from gmail_get."
-        )
-    part = found[0]
-    attachment_id = _path_id(part["body"]["attachmentId"], "attachmentId", _ATTACHMENT_ID)
+    parts = _attachment_parts(message.get("payload", {}))
+    part: dict[str, Any] | None
+    if part_id:
+        part = next((p for p in parts if p.get("partId") == part_id), None)
+        if part is None:
+            raise RuntimeError(
+                "This message has no attachment with that partId; take it from gmail_get."
+            )
+        inline = str(part["body"].get("data") or "")
+        if inline and not part["body"].get("attachmentId"):
+            return _file(message, part, _decode_b64url(inline))
+        attachment_id = _path_id(part["body"]["attachmentId"], "attachmentId", _ATTACHMENT_ID)
+    else:
+        attachment_id = direct
+        part = None
     body = await google_api.get_json(
         google_api.API_GMAIL,
         f"/users/{mailbox}/messages/{message_id}/attachments/{attachment_id}",
         token=token,
     )
-    data = str(body.get("data") or "")
-    raw = base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+    raw = _decode_b64url(str(body.get("data") or ""))
+    if part is None:
+        part = next((p for p in parts if p["body"].get("attachmentId") == wanted), None)
+    if part is None:
+        sized = [p for p in parts if p["body"].get("size") == len(raw)]
+        part = sized[0] if len(sized) == 1 else {"body": {}}
+    return _file(message, part, raw)
+
+
+def _decode_b64url(data: str) -> bytes:
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+
+
+def _file(message: dict[str, Any], part: dict[str, Any], raw: bytes) -> FileContent:
     name = str(part.get("filename") or "attachment")
     mime = str(part.get("mimeType") or "application/octet-stream")
     return FileContent(
         name=name,
         mime_type=mime,
         data=raw,
-        details={"messageId": message.get("id", ""), "filename": name, "mimeType": mime,
-                 "size": len(raw)},
+        details={
+            "messageId": message.get("id", ""),
+            "filename": name,
+            "mimeType": mime,
+            "size": len(raw),
+        },
     )
 
 
