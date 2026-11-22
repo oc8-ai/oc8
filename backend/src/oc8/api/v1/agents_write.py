@@ -119,6 +119,25 @@ async def _load_agent(db: DbSession, agent_id: uuid.UUID) -> m.Agent:
     return agent
 
 
+def reject_malformed_policies(narrowing: Any) -> None:
+    """422 for a narrowing whose tool policy cannot be read back -- today, a
+    malformed usage limit (`ToolPolicy.from_json` refuses it). Stored, it
+    would break every run of the agent instead of this one request."""
+    raw_tools = narrowing.get("tools", {}) if isinstance(narrowing, dict) else {}
+    if not isinstance(raw_tools, dict):
+        return
+    for key, raw in raw_tools.items():
+        if not isinstance(raw, dict):
+            continue
+        try:
+            ToolPolicy.from_json(raw)
+        except ValueError as exc:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                {"error": "invalid_tool_policy", "tool": key, "detail": str(exc)},
+            ) from exc
+
+
 async def enforce_narrowing_logins(
     db: DbSession,
     *,
@@ -242,6 +261,7 @@ async def create_agent(
     )
 
     if body.narrowing:
+        reject_malformed_policies(body.narrowing)
         violations = narrowing_within_frame(dept.frame, body.narrowing)
         if violations:
             raise HTTPException(
@@ -389,6 +409,7 @@ async def set_narrowing(
     principal = actor.principal
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
+    reject_malformed_policies(body.narrowing)
     violations = narrowing_within_frame(frame, body.narrowing)
     if violations:
         raise HTTPException(

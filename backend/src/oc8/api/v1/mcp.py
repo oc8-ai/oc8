@@ -56,6 +56,7 @@ from oc8.schemas.dto import (
     McpConnectionDTO,
     ModelLabelDTO,
     ToolLabelDTO,
+    UsageLimitDTO,
 )
 from oc8.schemas.requests import (
     CreateMcpConnectionRequest,
@@ -152,6 +153,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
                 approval_actions=p.approval_actions,
                 approval_eur=p.approval_eur,
                 only=p.only,
+                limits=[UsageLimitDTO(**lim.to_json()) for lim in p.limits],
             )
             for p in manifest_conn.guardrail_presets
         ]
@@ -172,6 +174,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
                 approval_eur=g.approval_eur,
                 approval_actions=sorted(g.approval_actions),
                 only=list(g.only),
+                limits=[UsageLimitDTO(**lim.to_json()) for lim in g.limits],
                 adjustable=[
                     GuardrailAdjustableDTO(
                         field=a.field,

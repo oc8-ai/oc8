@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
+from oc8.agent.usage_limits import current_usage
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import (
     diff_payloads,
@@ -58,6 +59,7 @@ from oc8.schemas.dto import (
     AgentVersionSummaryDTO,
     FileAttachmentDTO,
     ToolPolicyDTO,
+    ToolUsageDTO,
 )
 from oc8.schemas.paging import Page
 
@@ -121,6 +123,37 @@ async def get_agent(
 
 
 _HISTORY_MAX_LIMIT = 100
+
+
+@router.get(
+    "/agents/{agent_id}/tool-usage",
+    response_model=list[ToolUsageDTO],
+)
+async def get_agent_tool_usage(
+    agent_id: uuid.UUID,
+    request: Request,
+    db: DbSession,
+    actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT, VIEW)))],
+) -> list[ToolUsageDTO]:
+    """How much of each usage limit ("at most 50 mails a day") this agent has
+    used in the current window, for the guardrail editor. A limit nothing has
+    counted against yet has no row: the browser shows it as 0 used."""
+    authority = await authority_for_principal(request, db, actor.principal)
+    tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
+    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    if agent is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    usage = await current_usage(db, tenant_id=agent.tenant_id, agent_id=agent.id)
+    return [
+        ToolUsageDTO(
+            tool_key=u.tool_key,
+            tools=u.tools_key.split("/"),
+            per=u.per,
+            used=u.used,
+            resets_at=u.resets_at,
+        )
+        for u in usage
+    ]
 
 
 @router.get(

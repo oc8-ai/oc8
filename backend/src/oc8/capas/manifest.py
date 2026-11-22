@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from oc8.authz.pdp import UsageLimit
 from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 
 logger = logging.getLogger(__name__)
@@ -204,6 +205,29 @@ class FlowTemplateSpec(BaseModel):
     spec: dict[str, Any] = {}
 
 
+def parse_usage_limits(value: Any) -> list[UsageLimit]:
+    """A guardrail's `limits = [{ tools = [...], max = 50, per = "day" }]`,
+    parsed into the shape the stored policy uses (`authz.pdp.UsageLimit`)."""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError("limits is a list of { tools, max, per }")
+    return [lim if isinstance(lim, UsageLimit) else UsageLimit.from_json(lim) for lim in value]
+
+
+def check_limits_within_only(key: str, limits: list[UsageLimit], only: Any) -> None:
+    """A limit may only count tools the guardrail puts within reach: counting a
+    tool `only` withholds promises a budget for something never callable."""
+    if not only:
+        return
+    for limit in limits:
+        outside = sorted(set(limit.tools) - set(only))
+        if outside:
+            raise ValueError(
+                f"guardrail '{key}' limits tool(s) its `only` does not reach: {', '.join(outside)}"
+            )
+
+
 class GuardrailPreset(BaseModel):
     """A named permission set a tool-pack plugin ships for one connection.
 
@@ -232,6 +256,19 @@ class GuardrailPreset(BaseModel):
     #: connection-level preset can say "work freely, but not that" without
     #: needing per-tool policies.
     only: list[str] = []
+    #: Usage limits ("at most 50 mails a day", `authz.pdp.UsageLimit`), written
+    #: into the stored policy with the rest of the preset and counted by core.
+    limits: list[UsageLimit] = []
+
+    @field_validator("limits", mode="before")
+    @classmethod
+    def _parse_limits(cls, v: Any) -> list[UsageLimit]:
+        return parse_usage_limits(v)
+
+    @model_validator(mode="after")
+    def _limits_count_reachable_tools(self) -> GuardrailPreset:
+        check_limits_within_only(self.key, self.limits, self.only)
+        return self
 
     @field_validator("approval_eur", mode="before")
     @classmethod
@@ -587,6 +624,20 @@ class ToolPackConnection(BaseModel):
         # indistinguishable from "the pack ships no labels". The design spec
         # itself demonstrated the failure mode -- its example named
         # `search_read`, which is not one of this pack's nine tools.
+        # Same for a limit: counting a tool the connection does not have would
+        # silently count nothing.
+        if isinstance(self.scopes, dict):
+            known_tools = {
+                name for names in self.scopes.values() if isinstance(names, list) for name in names
+            }
+            for preset in self.guardrail_presets:
+                for limit in preset.limits:
+                    unknown_tools = sorted(set(limit.tools) - known_tools)
+                    if unknown_tools:
+                        raise ValueError(
+                            f"guardrail preset '{preset.key}' on connection '{self.key}' "
+                            f"limits unknown tool(s): {', '.join(unknown_tools)}"
+                        )
         if self.tool_labels and isinstance(self.scopes, dict):
             known = {name for names in self.scopes.values() for name in names}
             unknown = sorted(set(self.tool_labels) - known)

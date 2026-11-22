@@ -957,7 +957,11 @@ async def apply_operation(
             raise InvalidOperation()
         dept = await db.get(m.Department, agent.department_id)
         frame = dept.frame if dept else {}
-        if pdp.narrowing_within_frame(frame, operation.narrowing):
+        try:
+            outside = pdp.narrowing_within_frame(frame, operation.narrowing)
+        except ValueError as exc:  # e.g. a malformed usage limit
+            raise InvalidOperation() from exc
+        if outside:
             raise InvalidOperation("system_outside_frame")
         raw_tools = (
             operation.narrowing.get("tools", {}) if isinstance(operation.narrowing, dict) else {}

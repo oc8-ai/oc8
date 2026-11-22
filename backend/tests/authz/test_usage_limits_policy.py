@@ -101,3 +101,8 @@ def test_has_usage_limit_reads_the_policy_of_the_calls_connection() -> None:
     assert has_usage_limit(policies, connection_key="email", tool="mail_send")
     assert not has_usage_limit(policies, connection_key="email", tool="mail_get")
     assert not has_usage_limit(policies, connection_key=None, tool="mail_send")
+
+
+def test_limits_that_are_not_a_list_are_refused() -> None:
+    with pytest.raises(ValueError):
+        ToolPolicy.from_json({"enabled": True, "limits": "fifty"})

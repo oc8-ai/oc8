@@ -38,7 +38,7 @@ from collections.abc import Sequence
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import ConfigDict, Field, field_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 
 from oc8 import models as m
@@ -50,7 +50,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, requ
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, task_to_dto
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
-from oc8.authz.pdp import ConditionDatatype, ConditionOperator, Effect
+from oc8.authz.pdp import ConditionDatatype, ConditionOperator, Effect, UsageLimit
 from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
@@ -124,6 +124,21 @@ class ConditionWriteDTO(CamelModel):
         return v
 
 
+class UsageLimitWriteDTO(CamelModel):
+    """Write-side shape for one entry of `ToolPolicyWriteDTO.limits`, checked
+    by the same parser the runtime reads it with (`authz.pdp.UsageLimit`)."""
+
+    model_config = ConfigDict(extra="forbid")
+    tools: list[str]
+    max: int
+    per: str = "day"
+
+    @model_validator(mode="after")
+    def _is_a_usage_limit(self) -> UsageLimitWriteDTO:
+        UsageLimit.from_json({"tools": self.tools, "max": self.max, "per": self.per})
+        return self
+
+
 class ToolPolicyWriteDTO(CamelModel):
     """Write-side shape for one entry of `PUT /departments/{id}/tools`,
     mirroring `authz.pdp.ToolPolicy` field-for-field so a department's tool
@@ -149,6 +164,8 @@ class ToolPolicyWriteDTO(CamelModel):
     #: alongside `approval_eur`/`approval_actions`, mirroring
     #: `authz.pdp.ToolPolicy.conditions` field-for-field.
     conditions: list[ConditionWriteDTO] = []
+    #: Usage limits -- see `UsageLimitWriteDTO`.
+    limits: list[UsageLimitWriteDTO] = []
     #: The McpConnection this department's agents use for this tool when they
     #: have no narrowing pin of their own -- `_resolve_mcp_connection`
     #: (runtime/executor.py) reads it back out of `frame["tools"][key]`

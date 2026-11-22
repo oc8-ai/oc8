@@ -172,6 +172,11 @@ class UsageLimit:
 
     @classmethod
     def from_json(cls, data: Mapping[str, Any]) -> UsageLimit:
+        if not isinstance(data, Mapping):
+            raise ValueError("a usage limit is an object with tools, max and per")
+        unknown = set(data) - {"tools", "max", "per"}
+        if unknown:
+            raise ValueError(f"a usage limit has no field(s) {sorted(unknown)}")
         raw_tools = data.get("tools")
         if not isinstance(raw_tools, (list, tuple)) or not raw_tools:
             raise ValueError("a usage limit names at least one tool")
@@ -245,6 +250,8 @@ class ToolPolicy:
         raw_actions = data.get("approval_actions")
         raw_conditions = data.get("conditions")
         raw_limits = data.get("limits")
+        if raw_limits is not None and not isinstance(raw_limits, list):
+            raise ValueError("limits is a list of { tools, max, per }")
         return cls(
             limits=tuple(UsageLimit.from_json(lim) for lim in raw_limits)
             if isinstance(raw_limits, list)

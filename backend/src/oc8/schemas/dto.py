@@ -769,6 +769,27 @@ class ConditionDTO(CamelModel):
     then: str
 
 
+class UsageLimitDTO(CamelModel):
+    """ "At most `max` successful calls of `tools` per UTC `per`" --
+    `authz.pdp.UsageLimit`, as stored in a policy's `limits` and declared by a
+    guardrail preset. Counted per agent and tool key by the core."""
+
+    tools: list[str]
+    max: int
+    per: str = "day"
+
+
+class ToolUsageDTO(CamelModel):
+    """How much of one usage limit an agent has used in the current window
+    (`GET /agents/{id}/tool-usage`)."""
+
+    tool_key: str
+    tools: list[str]
+    per: str
+    used: int
+    resets_at: datetime
+
+
 class ToolPolicyDTO(CamelModel):
     enabled: bool
     read: bool
@@ -787,6 +808,7 @@ class ToolPolicyDTO(CamelModel):
     #: `**ToolPolicy.to_json()` need this present or `conditions` never
     #: reaches the frontend at all.
     conditions: list[ConditionDTO] = []
+    limits: list[UsageLimitDTO] = []
 
 
 class AgentDetailDTO(AgentDTO):
@@ -1023,6 +1045,8 @@ class GuardrailPresetDTO(CamelModel):
     #: everything reachable" -- the unattended-deletion configuration, under a
     #: name promising a limit.
     only: list[str] = []
+    #: Usage limits applying the preset writes into the stored policy.
+    limits: list[UsageLimitDTO] = []
 
 
 class GuardrailAdjustableDTO(CamelModel):
@@ -1059,6 +1083,7 @@ class GuardrailDTO(CamelModel):
     #: of the connection's tools. See `GuardrailPresetDTO.only` for the full
     #: rationale (a euro threshold cannot gate a deletion).
     only: list[str] = []
+    limits: list[UsageLimitDTO] = []
     adjustable: list[GuardrailAdjustableDTO] = []
 
 

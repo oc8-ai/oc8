@@ -163,3 +163,22 @@ async def test_a_bad_limit_is_refused(app_session, acme_tenant, usage_limit) -> 
             proposal = await create_proposal(db, actor, [operation])
             await apply_proposal(db, proposal.id, actor)
         assert not (agent.narrowing or {}).get("tools", {}).get("email", {}).get("limits")
+
+
+async def test_a_narrowing_with_a_malformed_limit_is_refused(app_session, acme_tenant) -> None:  # type: ignore[no-untyped-def]
+    from oc8.copilot.proposals import ProposalRejected
+
+    async with app_session(acme_tenant) as db:
+        agent = await _mail_agent(db, acme_tenant, {})
+        actor = _actor(acme_tenant)
+        operation = {
+            "type": "agent.narrowing.set",
+            "agentId": str(agent.id),
+            "narrowing": {
+                "tools": {"email": {"enabled": True, "read": True, "limits": [{"max": 5}]}}
+            },
+        }
+        proposal = await create_proposal(db, actor, [operation])
+        with pytest.raises(ProposalRejected):
+            await apply_proposal(db, proposal.id, actor)
+        assert "limits" not in str(agent.narrowing)
