@@ -117,18 +117,25 @@ async def sync_shipped_skill(
     """
     customized = is_customized(skill)
     if description is not None:
-        meta_known = skill.shipped_description is not None
-        meta_changed = (skill.shipped_description, skill.shipped_category) != (
-            description,
-            category,
-        )
+        if skill.shipped_description is None:
+            # Unknown since migration 0131: the live values may be an admin's
+            # edit from before the shipped values were recorded. Keep a
+            # difference as a customisation; never take it for a shipped update.
+            if (skill.description, skill.category) != (description, category):
+                customized = True
+                if skill.customized_at is None:
+                    skill.customized_at = dt.datetime.now(tz=dt.UTC)
+        else:
+            if customized and (skill.shipped_description, skill.shipped_category) != (
+                description,
+                category,
+            ):
+                skill.shipped_update_at = dt.datetime.now(tz=dt.UTC)
+            if not customized:
+                skill.description = description
+                skill.category = category
         skill.shipped_description = description
         skill.shipped_category = category
-        if not customized:
-            skill.description = description
-            skill.category = category
-        elif meta_changed and meta_known:
-            skill.shipped_update_at = dt.datetime.now(tz=dt.UTC)
         await db.flush()
     shipped_id = skill.shipped_version_id or (None if customized else skill.current_version_id)
     shipped = await db.get(m.SkillVersion, shipped_id) if shipped_id is not None else None

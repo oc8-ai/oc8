@@ -642,3 +642,84 @@ async def test_saving_an_unchanged_description_does_not_customise_a_shipped_skil
     async with LifespanManager(app), _client(app) as c:
         got = await _patch(c, tenant, shipped.id, description=shipped.description)
         assert got["customized"] is False
+
+
+async def _as_migrated(session: AppSessionFactory, tenant: uuid.UUID, **live: Any) -> None:
+    """The state 0131 leaves a capa's skill in: shipped description and category
+    unknown, live values possibly an admin's edit from before the release."""
+    async with session(tenant) as db:
+        row = (
+            await db.execute(select(m.Skill).where(m.Skill.name == "Invoice check"))
+        ).scalar_one()
+        row.shipped_description = None
+        row.shipped_category = None
+        for key, value in live.items():
+            setattr(row, key, value)
+
+
+async def test_a_description_edited_before_the_release_survives_the_first_sync(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    await _as_migrated(app_session, tenant, description="Edited before 0131.")
+    await _ship(
+        app_session, tenant, _upgraded("1.0.1", SKILL_MANIFEST["skill_template"]["instruction"])
+    )
+    skill = await _skill(app_session, tenant)
+    assert skill.description == "Edited before 0131."
+    assert skill.customized_at is not None
+    assert skill.shipped_description == "Checks invoices against the PO."
+    assert skill.shipped_category == "finance"
+    # The admin's edit is no newer shipped version.
+    assert skill.shipped_update_at is None
+
+
+async def test_a_category_edited_before_the_release_survives_the_first_sync(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    await _as_migrated(app_session, tenant, category="operations")
+    await _ship(
+        app_session, tenant, _upgraded("1.0.1", SKILL_MANIFEST["skill_template"]["instruction"])
+    )
+    skill = await _skill(app_session, tenant)
+    assert skill.category == "operations"
+    assert skill.customized_at is not None
+
+
+async def test_an_unedited_migrated_skill_only_records_the_shipped_values(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    await _as_migrated(app_session, tenant)
+    await _ship(
+        app_session, tenant, _upgraded("1.0.1", SKILL_MANIFEST["skill_template"]["instruction"])
+    )
+    skill = await _skill(app_session, tenant)
+    assert skill.customized_at is None
+    assert skill.shipped_description == "Checks invoices against the PO."
+    assert skill.shipped_category == "finance"
+
+
+async def test_saving_a_description_with_surrounding_whitespace_does_not_customise(
+    app_session: AppSessionFactory,
+) -> None:
+    """The drawer trims what it sends; a shipped description ending in a newline
+    must not read as an edit."""
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    async with app_session(tenant) as db:
+        row = (
+            await db.execute(select(m.Skill).where(m.Skill.name == "Invoice check"))
+        ).scalar_one()
+        row.description = row.shipped_description = "Checks invoices against the PO.\n"
+        skill_id = row.id
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        got = await _patch(
+            c, tenant, skill_id, description="Checks invoices against the PO.", category="finance"
+        )
+        assert got["customized"] is False

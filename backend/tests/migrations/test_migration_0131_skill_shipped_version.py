@@ -70,3 +70,51 @@ def test_upgrade_adds_the_columns_backfills_store_skills_and_downgrade_removes_t
         conn.commit()
     assert rows[store] == (store_version, "Shipped text.", "finance")
     assert rows[local] == (None, None, None)
+
+
+def test_a_capa_skill_gets_no_shipped_description_so_an_earlier_edit_is_not_taken_as_shipped(
+    pg_url: str,
+) -> None:
+    """Before 0131 an admin could already change a store skill's description and
+    category. For a capa's skill the live values may be such an edit, so they are
+    left unknown (NULL): the next sync compares them with the capa's own. A
+    seeded or imported store skill has no capa to ask, so its live values are
+    the best record of what shipped."""
+    dsn = pg_url.replace("+psycopg", "")
+    cfg = _cfg()
+    tenant = uuid.uuid4()
+    capa_skill, seeded = uuid.uuid4(), uuid.uuid4()
+    command.downgrade(cfg, "0129")
+    try:
+        with psycopg.connect(dsn) as conn:
+            conn.execute(
+                "INSERT INTO capa (id, tenant_id, name, type, author, origin, trust_level, "
+                "core_compat) VALUES (%s, %s, 'acme.skills', 'skill', 'acme', 'store', "
+                "'first_party', '')",
+                (uuid.uuid4(), tenant),
+            )
+            for skill_id, author in ((capa_skill, "acme.skills"), (seeded, "oc8 store")):
+                conn.execute(
+                    "INSERT INTO skill (id, tenant_id, name, description, category, author, "
+                    "origin, trust_level, current_version_id) "
+                    "VALUES (%s, %s, %s, 'Edited by an admin.', 'ops', %s, 'store', "
+                    "'first_party', %s)",
+                    (skill_id, tenant, f"s-{skill_id.hex[:6]}", author, uuid.uuid4()),
+                )
+            conn.commit()
+    finally:
+        command.upgrade(cfg, "head")
+    with psycopg.connect(dsn) as conn:
+        rows = {
+            row[0]: row[1:]
+            for row in conn.execute(
+                "SELECT id, shipped_version_id IS NOT NULL, shipped_description, "
+                "shipped_category FROM skill WHERE id = ANY(%s)",
+                ([capa_skill, seeded],),
+            ).fetchall()
+        }
+        conn.execute("DELETE FROM skill WHERE id = ANY(%s)", ([capa_skill, seeded],))
+        conn.execute("DELETE FROM capa WHERE tenant_id = %s", (tenant,))
+        conn.commit()
+    assert rows[capa_skill] == (True, None, None)
+    assert rows[seeded] == (True, "Edited by an admin.", "ops")

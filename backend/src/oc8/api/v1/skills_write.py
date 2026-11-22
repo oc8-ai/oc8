@@ -620,8 +620,10 @@ async def update_skill(
     # On a shipped skill the description and category are shipped content as
     # well: changing either customises it, so a shipped update keeps the edit.
     # The name is not -- it is how the shipped skill is found again.
-    if (body.description is not None and body.description != skill.description) or (
-        body.category is not None and body.category != (skill.category or "")
+    # Compared trimmed: the drawer trims what it sends, and a stored value
+    # with a trailing newline must not read as an edit.
+    if (body.description is not None and body.description.strip() != skill.description.strip()) or (
+        body.category is not None and body.category.strip() != (skill.category or "").strip()
     ):
         mark_customized(skill, previous_version_id=skill.current_version_id)
     if body.name is not None:

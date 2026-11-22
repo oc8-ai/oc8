@@ -9,9 +9,14 @@ the edit. `skill.shipped_description` and `skill.shipped_category` keep the
 shipped description and category, which an admin may change as well and a reset
 restores.
 
-Every existing store skill is backfilled with its current version, description
-and category as the shipped ones: until now a store skill could only be changed
-by duplicating it.
+Every existing store skill is backfilled with its current version as the
+shipped one: until now its content could only be changed by duplicating it.
+Its description and category could be edited in place, though, so for a skill
+a capa shipped (its `author` names a capa of the tenant) the live values may be
+an admin's: they are left unknown (NULL), and the next sync compares them with
+the capa's own -- a difference is kept and marks the skill customised. A seeded
+or imported store skill has no capa to ask, so its live values are taken as
+shipped.
 
 `skill` already has row-level security and the app role's grants (0001); new
 columns inherit both.
@@ -42,6 +47,12 @@ def upgrade() -> None:
     op.execute(
         "UPDATE skill SET shipped_version_id = current_version_id, "
         "shipped_description = description, shipped_category = category "
+        "WHERE origin = 'store' AND shipped_version_id IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM capa "
+        "WHERE capa.tenant_id = skill.tenant_id AND capa.name = skill.author)"
+    )
+    op.execute(
+        "UPDATE skill SET shipped_version_id = current_version_id "
         "WHERE origin = 'store' AND shipped_version_id IS NULL"
     )
 
