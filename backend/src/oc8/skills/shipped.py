@@ -85,17 +85,31 @@ async def _free_semver(db: AsyncSession, skill: m.Skill, semver: str) -> str:
 
 
 async def sync_shipped_skill(
-    db: AsyncSession, skill: m.Skill, *, definition: dict[str, Any], semver: str
+    db: AsyncSession,
+    skill: m.Skill,
+    *,
+    definition: dict[str, Any],
+    semver: str,
+    description: str | None = None,
+    category: str | None = None,
 ) -> None:
     """Bring a shipped skill's shipped content up to `definition`.
 
-    Unchanged content does nothing. Changed content becomes a new version
+    Unchanged content adds no version. Changed content becomes a new version
     recorded as the shipped one; it also becomes current unless the skill is
     customised, in which case the edit stays live and `shipped_update_at` is
     set. Live assignments stay pinned either way, exactly as an admin's own
     publish leaves them unless asked to move them.
+
+    An uncustomised skill also follows the shipped description and category.
+    Never the name: the name is how the shipped skill is found again.
     """
     customized = is_customized(skill)
+    if not customized:
+        if description is not None and skill.description != description:
+            skill.description = description
+        if skill.category != category:
+            skill.category = category
     shipped_id = skill.shipped_version_id or (None if customized else skill.current_version_id)
     shipped = await db.get(m.SkillVersion, shipped_id) if shipped_id is not None else None
     if shipped is not None and _content_hash(shipped.definition) == _content_hash(definition):

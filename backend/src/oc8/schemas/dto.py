@@ -578,6 +578,9 @@ class SkillDTO(CamelModel):
     deleted_at: str | None = None
     #: Set once an admin changed a shipped (store) skill's content in place.
     customized_at: str | None = None
+    #: Changed away from its shipped content (`oc8.skills.shipped.is_customized`):
+    #: flagged, or no longer on the shipped version. What the badge and Reset use.
+    customized: bool = False
     #: A newer shipped version arrived for this customised skill and was kept
     #: aside; resetting the skill takes it.
     shipped_update_available: bool = False

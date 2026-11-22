@@ -439,3 +439,113 @@ async def test_the_first_edit_of_a_store_skill_without_a_record_keeps_the_shippe
         r = await c.post(f"/api/v1/skills/{skill_id}/reset", json={}, headers=_h(tenant))
         assert r.status_code == 200, r.text
         assert r.json()["currentVersionId"] == str(before)
+
+
+async def test_reset_of_another_tenants_skill_is_a_404(app_session: AppSessionFactory) -> None:
+    owner, other = uuid.uuid4(), uuid.uuid4()
+    await _ship(app_session, owner, SKILL_MANIFEST)
+    shipped = await _skill(app_session, owner)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await _edit(c, owner, shipped.id, "Ours.")
+        r = await c.post(f"/api/v1/skills/{shipped.id}/reset", json={}, headers=_h(other))
+        assert r.status_code == 404, r.text
+    skill = await _skill(app_session, owner)
+    assert skill.customized_at is not None
+
+
+async def test_the_dto_says_whether_a_skill_is_customised(app_session: AppSessionFactory) -> None:
+    """`customized` is computed like the update path decides: flagged, or simply
+    no longer on the shipped version."""
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    app = create_app()
+
+    async def listed(c: AsyncClient) -> Any:
+        rows = (await c.get("/api/v1/skills", headers=_h(tenant))).json()["items"]
+        return next(s for s in rows if s["id"] == str(shipped.id))
+
+    async with LifespanManager(app), _client(app) as c:
+        assert (await listed(c))["customized"] is False
+        await _edit(c, tenant, shipped.id, "Ours.")
+        assert (await listed(c))["customized"] is True
+        async with app_session(tenant) as db:
+            row = await db.get(m.Skill, shipped.id)
+            assert row is not None
+            row.customized_at = None
+        assert (await listed(c))["customized"] is True
+
+
+async def test_publishing_the_current_content_again_is_a_no_op(
+    app_session: AppSessionFactory,
+) -> None:
+    """Saving a shipped skill without changing its content must not mark it
+    customised -- or it would stop following shipped updates for nothing."""
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    spec = SKILL_MANIFEST["skill_template"]
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        r = await c.post(
+            f"/api/v1/skills/{shipped.id}/versions",
+            json={
+                "instructions": spec["instruction"],
+                "tools": spec["requires_tools"],
+                "knowledge": [],
+                "guardrails": spec["guardrails"],
+            },
+            headers=_h(tenant),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["currentVersionId"] == str(shipped.current_version_id)
+        assert r.json()["customized"] is False
+    skill = await _skill(app_session, tenant)
+    assert skill.customized_at is None
+    assert skill.current_version_id == shipped.current_version_id
+    async with app_session(tenant) as db:
+        count = (await db.execute(select(func.count()).select_from(m.SkillVersion))).scalar_one()
+        assert count == 1
+
+
+async def test_a_shipped_update_syncs_description_and_category_of_an_uncustomised_skill(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    upgraded = _upgraded("1.1.0", "Check the total and the VAT id.")
+    upgraded["skill_template"]["description"] = "Checks invoices and VAT ids."
+    upgraded["skill_template"]["category"] = "accounting"
+    await _ship(app_session, tenant, upgraded)
+    skill = await _skill(app_session, tenant)
+    assert skill.description == "Checks invoices and VAT ids."
+    assert skill.category == "accounting"
+    assert skill.name == "Invoice check"
+
+
+async def test_a_shipped_update_leaves_a_customised_skills_description_alone(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await _edit(c, tenant, shipped.id, "Ours.")
+    upgraded = _upgraded("1.1.0", "Check the total and the VAT id.")
+    upgraded["skill_template"]["description"] = "Checks invoices and VAT ids."
+    await _ship(app_session, tenant, upgraded)
+    skill = await _skill(app_session, tenant)
+    assert skill.description == "Checks invoices against the PO."
+
+
+async def test_skill_versions_are_hashed_in_one_place() -> None:
+    from oc8.api.v1 import skills_write
+    from oc8.capas import materialise
+    from oc8.skills import shipped
+
+    assert not hasattr(skills_write, "_artifact_hash")
+    assert not hasattr(materialise, "_hash")
+    assert vars(skills_write)["artifact_hash"] is shipped.artifact_hash
+    assert vars(materialise)["artifact_hash"] is shipped.artifact_hash

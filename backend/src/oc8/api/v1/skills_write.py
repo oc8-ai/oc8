@@ -14,8 +14,6 @@ display-only copies the catalogue DTO reads.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
-import json
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -37,7 +35,7 @@ from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SkillDTO
 from oc8.skills.importer import DEFAULT_BUDGET_TOKENS, discover
 from oc8.skills.schema import SkillDefinitionError, parse_definition
-from oc8.skills.shipped import mark_customized, needs_copy_on_write
+from oc8.skills.shipped import artifact_hash, mark_customized, needs_copy_on_write
 
 router = APIRouter()
 
@@ -126,12 +124,6 @@ def _definition(
     }
 
 
-def _artifact_hash(definition: dict[str, Any]) -> bytes:
-    return hashlib.sha256(
-        json.dumps(definition, sort_keys=True, separators=(",", ":")).encode()
-    ).digest()
-
-
 def _slugify(value: str) -> str:
     out = "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")
     while "--" in out:
@@ -160,6 +152,23 @@ def _next_patch(current: str | None) -> tuple[int, int, int]:
         return (0, 1, 0)
     major, minor, patch = (int(g) for g in match.groups())
     return (major, minor, patch + 1)
+
+
+def _same_content(definition: dict[str, Any], body: CreateVersionRequest) -> bool:
+    """Whether `body` would publish what `definition` already holds: the same
+    instruction, tools, knowledge and guardrails, read the way the catalogue
+    DTO reads them (the presentation lists, else `requires`)."""
+    pres: dict[str, Any] = definition.get("presentation") or {}
+    requires: dict[str, Any] = definition.get("requires") or {}
+    tools = pres.get("tools", requires.get("tools", []))
+    knowledge = pres.get("knowledge", requires.get("kbs", []))
+    guardrails = pres.get("guardrails", definition.get("guardrails", []))
+    return (
+        str(definition.get("instruction", "")).strip() == body.instructions.strip()
+        and list(tools) == list(body.tools)
+        and list(knowledge) == list(body.knowledge)
+        and list(guardrails) == list(body.guardrails)
+    )
 
 
 async def _pick_semver(
@@ -250,7 +259,7 @@ async def create_skill(
         skill_id=skill.id,
         semver=body.semver,
         definition=definition,
-        artifact_hash=_artifact_hash(definition),
+        artifact_hash=artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
@@ -270,6 +279,7 @@ async def create_skill_version(
     skill_id: uuid.UUID,
     body: CreateVersionRequest,
     request: Request,
+    response: Response,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> SkillVersionPublishedDTO:
@@ -287,6 +297,28 @@ async def create_skill_version(
     reference_root = (
         current_version.definition.get("reference_root") if current_version is not None else None
     )
+    if (
+        body.semver is None
+        and current_version is not None
+        and _same_content(current_version.definition, body)
+    ):
+        # Nothing to publish -- like a PATCH that changes nothing. Above all a
+        # shipped skill saved unchanged must not turn customised, or it would
+        # stop following shipped updates for nothing. Asked to, the live
+        # assignments still move to the current version: that is how the ones
+        # left behind by an earlier publish catch up.
+        response.status_code = status.HTTP_200_OK
+        moved = (0, 0, 0)
+        if body.update_assignments:
+            moved = await _move_assignments(db, request, principal, skill.id, current_version)
+            await db.flush()
+            await db.commit()
+        return SkillVersionPublishedDTO(
+            **skill_to_dto(skill, current_version).model_dump(),
+            assignments_updated=moved[0],
+            assignments_skipped=moved[1],
+            assignments_not_allowed=moved[2],
+        )
 
     semver = await _pick_semver(db, skill, current_version, body.semver)
 
@@ -306,7 +338,7 @@ async def create_skill_version(
         skill_id=skill.id,
         semver=semver,
         definition=definition,
-        artifact_hash=_artifact_hash(definition),
+        artifact_hash=artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
@@ -552,7 +584,7 @@ async def duplicate_skill(
         skill_id=skill.id,
         semver=INITIAL_SEMVER,
         definition=definition,
-        artifact_hash=_artifact_hash(definition),
+        artifact_hash=artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
@@ -607,7 +639,7 @@ async def update_skill(
                 skill_id=skill.id,
                 semver=semver,
                 definition=definition,
-                artifact_hash=_artifact_hash(definition),
+                artifact_hash=artifact_hash(definition),
             )
             db.add(edited)
             await db.flush()
@@ -976,7 +1008,7 @@ async def import_skills(
             skill_id=skill.id,
             semver="1.0.0",
             definition=definition,
-            artifact_hash=_artifact_hash(definition),
+            artifact_hash=artifact_hash(definition),
         )
         db.add(version)
         await db.flush()

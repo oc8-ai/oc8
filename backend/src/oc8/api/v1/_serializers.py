@@ -47,6 +47,7 @@ from oc8.schemas.dto import (
     TaskBoardRowDTO,
     TaskDTO,
 )
+from oc8.skills.shipped import is_customized
 from oc8.workspace import tasks as _workspace_tasks
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -577,6 +578,7 @@ def skill_to_dto(s: m.Skill, version: m.SkillVersion | None) -> SkillDTO:
         current_version_id=str(s.current_version_id) if s.current_version_id else None,
         deleted_at=s.deleted_at.isoformat() if s.deleted_at else None,
         customized_at=s.customized_at.isoformat() if s.customized_at else None,
+        customized=s.origin == "store" and is_customized(s),
         shipped_update_available=s.shipped_update_at is not None,
         name_translations=_i18n_str(i18n, "name"),
         description_translations=_i18n_str(i18n, "description"),
