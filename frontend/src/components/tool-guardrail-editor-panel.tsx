@@ -120,6 +120,7 @@ export function ToolGuardrailEditorPanel({
           value={value}
           onChange={onChange}
           toolCatalog={toolCatalog}
+          ceiling={ceiling?.limits}
         />
       ) : (
         <GuardrailUsageLimits value={value} onChange={onChange} toolCatalog={toolCatalog} />

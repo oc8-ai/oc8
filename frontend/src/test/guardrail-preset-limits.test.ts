@@ -27,10 +27,11 @@ describe("presets with usage limits", () => {
     expect(policyOf(capped).limits).toEqual(capped.limits);
   });
 
-  it("a fine-tuned max still reads as the preset, a removed limit does not", () => {
+  it("a changed max or a removed limit no longer reads as the preset", () => {
     const applied = policyOf(capped);
+    expect(matches(capped, applied, false)).toBe(true);
     expect(matches(capped, { ...applied, limits: [{ ...capped.limits[0], max: 20 }] }, false)).toBe(
-      true,
+      false,
     );
     expect(matches(capped, { ...applied, limits: [] }, false)).toBe(false);
   });

@@ -106,4 +106,66 @@ describe("GuardrailUsageLimits", () => {
     );
     expect(screen.getByRole("button", { name: /add limit|limit hinzufügen/i })).toBeInTheDocument();
   });
+
+  it("shows the department's max as the one in force when it is lower", () => {
+    render(
+      <GuardrailUsageLimits
+        value={base}
+        onChange={vi.fn()}
+        toolCatalog={catalog}
+        ceiling={[{ tools: ["mail_reply", "mail_send"], max: 20, per: "day" }]}
+        usage={[]}
+      />,
+    );
+    expect(screen.getByText(/set by department|von der abteilung festgelegt/i)).toBeInTheDocument();
+    expect(screen.getByText(/0 \/ 20/)).toBeInTheDocument();
+  });
+
+  it("shows a department limit the agent does not repeat as a read-only row with its usage", () => {
+    render(
+      <GuardrailUsageLimits
+        value={{ ...base, limits: [] }}
+        onChange={vi.fn()}
+        toolCatalog={catalog}
+        ceiling={[{ tools: ["mail_forward"], max: 5, per: "hour" }]}
+        usage={[
+          {
+            toolKey: "email",
+            tools: ["mail_forward"],
+            per: "hour",
+            used: 3,
+            resetsAt: "2026-11-22T13:00:00+00:00",
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText("mail_forward")).toBeInTheDocument();
+    expect(screen.getByText(/3 \/ 5/)).toBeInTheDocument();
+    expect(screen.getByText(/set by department|von der abteilung festgelegt/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /remove limit|limit entfernen/i })).toBeNull();
+    expect(screen.queryByRole("spinbutton")).toBeNull();
+  });
+
+  it("warns that changing which functions a limit counts restarts its count", () => {
+    const { rerender } = render(
+      <GuardrailUsageLimits value={base} onChange={vi.fn()} toolCatalog={catalog} usage={[]} />,
+    );
+    expect(screen.queryByText(/starts again at 0|beginnt wieder bei 0/i)).toBeNull();
+    rerender(
+      <GuardrailUsageLimits
+        value={{ ...base, limits: [{ tools: ["mail_send"], max: 50, per: "day" }] }}
+        onChange={vi.fn()}
+        toolCatalog={catalog}
+        usage={[]}
+      />,
+    );
+    expect(screen.getByText(/starts again at 0|beginnt wieder bei 0/i)).toBeInTheDocument();
+  });
+
+  it("says calls count once they reached the tool, not only successful ones", () => {
+    render(<GuardrailUsageLimits value={base} onChange={vi.fn()} toolCatalog={catalog} />);
+    expect(
+      screen.getByText(/even if it reported an error|auch wenn es einen fehler/i),
+    ).toBeInTheDocument();
+  });
 });

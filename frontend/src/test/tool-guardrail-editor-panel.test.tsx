@@ -305,4 +305,33 @@ describe("ToolGuardrailEditorPanel", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/used today|heute genutzt/i)).toBeNull();
   });
+
+  it("shows the department's limit as the one in force on the agent view", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const limitless = {
+      read: true,
+      modify: true,
+      approvalActions: [],
+      approvalEur: null,
+      only: [],
+      conditions: [],
+    };
+    render(
+      <QueryClientProvider client={qc}>
+        <ToolGuardrailEditorPanel
+          toolKey="odoo"
+          connection={odooConnection}
+          ceiling={{ ...limitless, limits: [{ tools: ["merge_pr"], max: 8, per: "day" }] }}
+          value={{ ...limitless, limits: [] }}
+          onChange={vi.fn()}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          saving={false}
+          agentId="agent-1"
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText(/7 \/ 8/)).toBeInTheDocument();
+    expect(screen.getAllByText(/set by department|von der abteilung festgelegt/i).length).toBe(1);
+  });
 });

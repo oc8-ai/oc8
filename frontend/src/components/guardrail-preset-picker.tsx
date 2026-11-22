@@ -139,11 +139,12 @@ export function limitKey(limit: UsageLimit): string {
   return `${[...limit.tools].sort().join("/")}:${limit.per}`;
 }
 
-/** Same limits by what they count; `max` may differ -- it is the number an
- * operator fine-tunes after picking a preset, like an adjustable threshold,
- * so changing it must not make the preset read as "custom". */
+/** Same limits: what they count AND how many. A changed `max` is a policy
+ * the preset does not describe, so it reads as "customised" like any other
+ * edit -- a preset named "max 50 a day" must never be shown selected for 80. */
 function sameLimits(a: UsageLimit[] | undefined, b: UsageLimit[] | undefined): boolean {
-  return sameSet((a ?? []).map(limitKey), (b ?? []).map(limitKey));
+  const sig = (lim: UsageLimit) => `${limitKey(lim)}=${lim.max}`;
+  return sameSet((a ?? []).map(sig), (b ?? []).map(sig));
 }
 
 export function matches(

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useT } from "@/lib/i18n";
 import {
   limitKey,
@@ -7,10 +8,19 @@ import {
 import type { ToolUsage } from "@/lib/hooks-agent-detail";
 
 // Usage limits ("at most 50 mails a day") on one tool's guardrail: which of
-// its functions are counted together, how many successful calls a UTC day or
-// hour allows, and -- at agent level, where the core counts them -- how many
-// the agent has used in the current window. The core enforces them; this only
-// edits `GuardrailValue.limits`, saved with the rest of the policy.
+// its functions are counted together, how many calls a UTC day or hour allows,
+// and -- at agent level, where the core counts them -- how many the agent has
+// used in the current window. The core enforces them; this only edits
+// `GuardrailValue.limits`, saved with the rest of the policy.
+//
+// A call counts once it reached the tool, even if the tool reported an error:
+// a send that timed out may still have gone out.
+//
+// At agent level the department's limits (`ceiling`) are in force too, and the
+// tighter max wins: an agent row whose department allows less shows the
+// department's number as the one in force, and a department limit the agent
+// does not repeat is shown read-only, so the editor never displays a number
+// nobody enforces.
 //
 // A limit never ends up without a tool: one is added on a real function of
 // the connection, and its last tool cannot be removed (remove the limit).
@@ -19,6 +29,7 @@ export function GuardrailUsageLimits({
   onChange,
   toolCatalog,
   usage,
+  ceiling,
 }: {
   value: GuardrailValue;
   onChange: (next: GuardrailValue) => void;
@@ -27,9 +38,14 @@ export function GuardrailUsageLimits({
   /** This tool's current windows (`GET /agents/{id}/tool-usage`); agent level
    * only. Undefined hides the usage line, an empty list shows 0 used. */
   usage?: ToolUsage[];
+  /** The department's limits on this tool; agent level only. */
+  ceiling?: UsageLimit[];
 }) {
   const t = useT();
   const limits = value.limits ?? [];
+  // What the counters are keyed by when the editor opened: a limit whose
+  // counted functions change gets a new counter, starting at 0.
+  const [openedWith] = useState(() => new Set(limits.map(limitKey)));
 
   function setLimits(next: UsageLimit[]) {
     onChange({ ...value, limits: next });
@@ -44,6 +60,11 @@ export function GuardrailUsageLimits({
     return usage?.find((u) => limitKey({ tools: u.tools, max: 0, per: u.per }) === key);
   }
 
+  function departmentsOf(limit: UsageLimit): UsageLimit | undefined {
+    const key = limitKey(limit);
+    return ceiling?.find((c) => limitKey(c) === key);
+  }
+
   function resetsLabel(limit: UsageLimit, row: ToolUsage | undefined): string {
     if (row) return `${new Date(row.resetsAt).toISOString().slice(11, 16)} UTC`;
     if (limit.per === "day") return "00:00 UTC";
@@ -52,6 +73,30 @@ export function GuardrailUsageLimits({
     return `${next.toISOString().slice(11, 16)} UTC`;
   }
 
+  function usageLine(limit: UsageLimit, inForce: number) {
+    if (usage === undefined) return null;
+    const row = usedOf(limit);
+    return (
+      <div className="mt-2 text-xs text-muted-foreground">
+        {limit.per === "day"
+          ? t("Used today", "Heute genutzt")
+          : t("Used this hour", "In dieser Stunde genutzt")}
+        {`: ${row?.used ?? 0} / ${inForce} · `}
+        {t("resets at", "neu ab")} {resetsLabel(limit, row)}
+      </div>
+    );
+  }
+
+  function setByDepartment(max: number) {
+    return (
+      <span className="rounded-full border border-border/70 px-2 py-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+        {t("Set by department", "Von der Abteilung festgelegt")}: {max}
+      </span>
+    );
+  }
+
+  const repeated = new Set(limits.map(limitKey));
+  const departmentOnly = (ceiling ?? []).filter((c) => !repeated.has(limitKey(c)));
   const firstFree = toolCatalog[0];
 
   return (
@@ -61,14 +106,16 @@ export function GuardrailUsageLimits({
       </div>
       <p className="mb-2 text-xs text-muted-foreground">
         {t(
-          "At most this many successful calls of the listed functions together, per UTC day or hour. The next call is refused until the count resets.",
-          "Höchstens so viele erfolgreiche Aufrufe der genannten Funktionen zusammen, pro UTC-Tag oder -Stunde. Der nächste Aufruf wird abgelehnt, bis der Zähler neu beginnt.",
+          "At most this many calls of the listed functions together, per UTC day or hour. A call counts once it reached the tool, even if it reported an error. The next call is refused until the count resets.",
+          "Höchstens so viele Aufrufe der genannten Funktionen zusammen, pro UTC-Tag oder -Stunde. Ein Aufruf zählt, sobald er das Tool erreicht hat, auch wenn es einen Fehler meldet. Der nächste Aufruf wird abgelehnt, bis der Zähler neu beginnt.",
         )}
       </p>
       <div className="space-y-2">
         {limits.map((limit, index) => {
-          const row = usedOf(limit);
           const addable = toolCatalog.filter((name) => !limit.tools.includes(name));
+          const department = departmentsOf(limit);
+          const inForce = department ? Math.min(department.max, limit.max) : limit.max;
+          const restarts = openedWith.size > 0 && !openedWith.has(limitKey(limit));
           return (
             <div
               key={`${limitKey(limit)}-${index}`}
@@ -109,11 +156,20 @@ export function GuardrailUsageLimits({
                   </select>
                 )}
               </div>
+              {restarts && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                  {t(
+                    "These functions are counted separately: today's count starts again at 0.",
+                    "Diese Funktionen werden getrennt gezählt: Der Zähler für heute beginnt wieder bei 0.",
+                  )}
+                </p>
+              )}
               <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
                 <span className="text-muted-foreground">{t("at most", "höchstens")}</span>
                 <input
                   type="number"
                   min={0}
+                  max={department?.max}
                   step={1}
                   aria-label={t("Maximum calls", "Höchstzahl Aufrufe")}
                   value={limit.max}
@@ -132,6 +188,7 @@ export function GuardrailUsageLimits({
                   <option value="day">{t("per day", "pro Tag")}</option>
                   <option value="hour">{t("per hour", "pro Stunde")}</option>
                 </select>
+                {department && department.max < limit.max && setByDepartment(department.max)}
                 <button
                   type="button"
                   onClick={() => setLimits(limits.filter((_, i) => i !== index))}
@@ -140,18 +197,35 @@ export function GuardrailUsageLimits({
                   {t("Remove limit", "Limit entfernen")}
                 </button>
               </div>
-              {usage !== undefined && (
-                <div className="mt-2 text-xs text-muted-foreground">
-                  {limit.per === "day"
-                    ? t("Used today", "Heute genutzt")
-                    : t("Used this hour", "In dieser Stunde genutzt")}
-                  {`: ${row?.used ?? 0} / ${limit.max} · `}
-                  {t("resets at", "neu ab")} {resetsLabel(limit, row)}
-                </div>
-              )}
+              {usageLine(limit, inForce)}
             </div>
           );
         })}
+        {departmentOnly.map((limit) => (
+          <div
+            key={`department-${limitKey(limit)}`}
+            className="rounded-md border border-dashed border-border/70 bg-background/20 p-3"
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              {limit.tools.map((tool) => (
+                <span
+                  key={tool}
+                  className="rounded-full border border-border/70 px-2 py-0.5 font-mono text-xs text-muted-foreground"
+                >
+                  {tool}
+                </span>
+              ))}
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <span>
+                {t("at most", "höchstens")} {limit.max}{" "}
+                {limit.per === "day" ? t("per day", "pro Tag") : t("per hour", "pro Stunde")}
+              </span>
+              {setByDepartment(limit.max)}
+            </div>
+            {usageLine(limit, limit.max)}
+          </div>
+        ))}
       </div>
       {firstFree !== undefined && (
         <button

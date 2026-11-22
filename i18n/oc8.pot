@@ -722,7 +722,7 @@ msgstr ""
 msgid "at most"
 msgstr ""
 
-msgid "At most this many successful calls of the listed functions together, per UTC day or hour. The next call is refused until the count resets."
+msgid "At most this many calls of the listed functions together, per UTC day or hour. A call counts once it reached the tool, even if it reported an error. The next call is refused until the count resets."
 msgstr ""
 
 msgid "Attach a file"
@@ -5003,6 +5003,9 @@ msgstr ""
 msgid "Set automatically from the selected model"
 msgstr ""
 
+msgid "Set by department"
+msgstr ""
+
 msgid "set it in settings"
 msgstr ""
 
@@ -5775,6 +5778,9 @@ msgid "These describe what an AGENT may do in your systems. They are never given
 msgstr ""
 
 msgid "These five roles ship with the product, so no request’s authorization depends on a database row existing. They cannot be changed here — a role of your own, above, is how you say something they do not."
+msgstr ""
+
+msgid "These functions are counted separately: today's count starts again at 0."
 msgstr ""
 
 msgid "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail."
