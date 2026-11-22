@@ -209,7 +209,8 @@ _ATTACHMENTS = {
 _POP3 = " On a POP3 mailbox this tool is not available."
 _LIMITS = (
     " At most 50 recipients. The mail is marked Auto-Submitted: auto-replied. On IMAP a "
-    "copy is kept in the Sent folder."
+    "copy is kept in the Sent folder, unless the login turns that off or the provider "
+    "keeps its own."
 )
 
 TOOLS: list[Tool] = [

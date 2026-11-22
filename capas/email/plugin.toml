@@ -21,7 +21,12 @@
 # `attachments[].file` (marked `x-oc8-file`), which core resolves to the file
 # before the call reaches the bridge. A sent mail is copied, marked read, to
 # the Sent folder on IMAP (the login's `sent_folder`, else the folder marked
-# \Sent, else a common name); a failed copy is a note, never a failed send.
+# \Sent, else a common name); a failed copy is a note, never a failed send,
+# and keeping it may take 10 seconds a step at most. The copy names the Bcc
+# recipients; the mail that goes out does not. `sent_folder = "-"` keeps no
+# copy, and none is kept when the SMTP host is smtp.gmail.com,
+# smtp.googlemail.com, smtp.office365.com or smtp-mail.outlook.com: those
+# providers file sent mail themselves.
 #
 # Known limits of 1.1.0, accepted for now:
 # * Daily send budgets come from core's guardrail usage limits: the

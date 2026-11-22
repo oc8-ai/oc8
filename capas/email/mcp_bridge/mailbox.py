@@ -1928,7 +1928,7 @@ def _deliver(
         "message_id": str(msg["Message-ID"]),
         "recipients": len(recipients.everyone),
     }
-    folder, note = _keep_sent(account, guard, msg)
+    folder, note = _keep_sent(account, guard, msg, recipients.bcc)
     if folder:
         result["sent_folder"] = folder
     if note:
@@ -1936,16 +1936,41 @@ def _deliver(
     return result
 
 
-def _keep_sent(account: Account, guard: Guard | None, msg: EmailMessage) -> tuple[str | None, str]:
+#: `sent_folder` set to this keeps no copy at all.
+NO_SENT_COPY = "-"
+#: SMTP hosts whose provider files every mail it sends in Sent itself
+#: (Gmail, Microsoft 365, Outlook.com): a copy of ours would be a second one.
+AUTO_SAVING_SMTP_HOSTS = frozenset(
+    {"smtp.gmail.com", "smtp.googlemail.com", "smtp.office365.com", "smtp-mail.outlook.com"}
+)
+#: Seconds any one step of keeping the copy may take once connected: the
+#: mail is already sent, and the agent should not wait long for a copy.
+SENT_COPY_TIMEOUT_SECONDS = 10.0
+
+
+def _keep_sent(
+    account: Account, guard: Guard | None, msg: EmailMessage, bcc: Sequence[str]
+) -> tuple[str | None, str]:
     """Put a sent mail in the Sent folder, marked read, as a mail program
     does: SMTP alone keeps no copy. `(folder, "")` when it was kept, `(None,
-    "")` when there is nowhere to keep it (POP3, no Sent folder), `(None,
-    note)` when keeping it failed. Never raises: the mail is already sent."""
-    if account.incoming_protocol != "imap":
+    "")` when there is nowhere to keep it (POP3, no Sent folder, the copy
+    turned off, a provider that keeps one itself), `(None, note)` when keeping
+    it failed. Never raises: the mail is already sent.
+
+    The copy names the Bcc recipients, as a mail program's does; the mail
+    that went out never carries them."""
+    if account.incoming_protocol != "imap" or account.sent_folder == NO_SENT_COPY:
         return None, ""
+    if account.smtp_host.strip().rstrip(".").lower() in AUTO_SAVING_SMTP_HOSTS:
+        return None, ""
+    copy = msg
+    if bcc:
+        copy = email.message_from_bytes(msg.as_bytes(), policy=email.policy.default)
+        copy["Bcc"] = ", ".join(bcc)
     folder: str | None = account.sent_folder or None
     try:
         with imap_session(account, guard) as conn:
+            conn.sock.settimeout(SENT_COPY_TIMEOUT_SECONDS)
             folder = folder or sent_folder_of(_folders(conn))
             if folder is None:
                 return None, ""
@@ -1953,7 +1978,7 @@ def _keep_sent(account: Account, guard: Guard | None, msg: EmailMessage) -> tupl
                 _folder_arg(folder),
                 "(\\Seen)",
                 imaplib.Time2Internaldate(time.time()),
-                msg.as_bytes(),
+                copy.as_bytes(),
             )
     except Exception as exc:
         logger.info("keeping a sent mail failed: %s", type(exc).__name__)

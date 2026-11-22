@@ -9,6 +9,7 @@ import email.policy
 import json
 import uuid
 from collections.abc import Callable, Iterator
+from email.message import EmailMessage
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -502,6 +503,112 @@ async def test_pop3_keeps_no_copy(
     result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
     assert result["status"] == "sent" and "sent_folder" not in result and "note" not in result
     assert greenmail.messages(folder="Sent") == []
+
+
+async def test_a_dash_turns_the_copy_off(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    mail_env(sent_folder="-")
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent" and "sent_folder" not in result and "note" not in result
+    assert greenmail.messages(folder="Sent") == []
+
+
+def _account(mailbox: ModuleType, **changes: Any) -> Any:
+    import dataclasses
+
+    base = mailbox.Account(
+        incoming_protocol="imap",
+        incoming_host="imap.example.com",
+        incoming_port=993,
+        incoming_security="ssl",
+        smtp_host="smtp.example.com",
+        smtp_port=465,
+        smtp_security="ssl",
+        username="agent",
+        password="pw",
+        smtp_username="agent",
+        smtp_password="pw",
+        from_address="agent@example.com",
+        from_name="",
+    )
+    return dataclasses.replace(base, **changes)
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["smtp.gmail.com", "smtp.googlemail.com", "SMTP.Office365.com", "smtp-mail.outlook.com."],
+)
+def test_a_provider_that_keeps_sent_mail_itself_gets_no_second_copy(
+    mailbox: ModuleType, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    def no_imap(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the provider keeps the copy itself")
+
+    monkeypatch.setattr(mailbox, "imap_session", no_imap)
+    msg = EmailMessage()
+    msg["Subject"] = "s"
+    assert mailbox._keep_sent(_account(mailbox, smtp_host=host), None, msg, []) == (None, "")
+
+
+class _SlowImap:
+    """An IMAP connection whose APPEND never answers."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+        self.sock = self
+
+    def settimeout(self, value: float) -> None:
+        self.timeouts.append(value)
+
+    def append(self, *args: Any) -> Any:
+        raise TimeoutError("timed out")
+
+
+def test_a_copy_the_server_does_not_take_in_time_is_only_a_note(
+    mailbox: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    conn = _SlowImap()
+
+    @contextmanager
+    def slow_session(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        yield conn
+
+    monkeypatch.setattr(mailbox, "imap_session", slow_session)
+    msg = EmailMessage()
+    msg["Subject"] = "s"
+    folder, note = mailbox._keep_sent(_account(mailbox, sent_folder="Sent"), None, msg, [])
+    assert folder is None and "was sent" in note and "Sent" in note
+    assert conn.timeouts and max(conn.timeouts) <= mailbox.SENT_COPY_TIMEOUT_SECONDS <= 15
+
+
+async def test_bcc_is_named_in_the_sent_copy_only(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    result = await call(
+        tools,
+        "mail_send",
+        to=["alice@example.com"],
+        bcc=["bob@example.com"],
+        subject="Quiet",
+        body="b",
+    )
+    assert result["sent_folder"] == "Sent"
+    [copy] = greenmail.messages(folder="Sent")
+    assert "bob@example.com" in str(parsed(copy)["Bcc"])
+    [delivered] = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    assert parsed(delivered)["Bcc"] is None
+    assert b"bob@example.com" not in delivered
 
 
 @pytest.mark.parametrize(

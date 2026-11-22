@@ -166,8 +166,8 @@ msgstr "Absendername"
 msgid "Sent folder"
 msgstr "Ordner für gesendete Mails"
 
-msgid "IMAP only: where a copy of each sent mail is kept, marked read. Leave empty to use the folder the server marks as Sent, or one named like it."
-msgstr "Nur IMAP: Hier wird eine Kopie jeder gesendeten Mail abgelegt, als gelesen markiert. Leer lassen, um den Ordner zu nutzen, den der Server als „Gesendet“ kennzeichnet, oder einen so benannten."
+msgid "IMAP only: where a copy of each sent mail is kept, marked read. Leave empty to use the folder the server marks as Sent, or one named like it. Enter - to keep no copy. Gmail and Microsoft 365 keep their own copy, so none is added there."
+msgstr "Nur IMAP: Hier wird eine Kopie jeder gesendeten Mail abgelegt, als gelesen markiert. Leer lassen, um den Ordner zu nutzen, den der Server als „Gesendet“ kennzeichnet, oder einen so benannten. Mit - wird keine Kopie abgelegt. Gmail und Microsoft 365 legen selbst eine Kopie ab, dort kommt keine hinzu."
 
 msgid "Set up Email"
 msgstr "E-Mail einrichten"
