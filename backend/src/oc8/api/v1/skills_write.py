@@ -37,6 +37,7 @@ from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SkillDTO
 from oc8.skills.importer import DEFAULT_BUDGET_TOKENS, discover
 from oc8.skills.schema import SkillDefinitionError, parse_definition
+from oc8.skills.shipped import mark_customized, needs_copy_on_write
 
 router = APIRouter()
 
@@ -161,6 +162,31 @@ def _next_patch(current: str | None) -> tuple[int, int, int]:
     return (major, minor, patch + 1)
 
 
+async def _pick_semver(
+    db: DbSession,
+    skill: m.Skill,
+    current_version: m.SkillVersion | None,
+    requested: str | None,
+) -> str:
+    """`requested` if it is free (409 otherwise), else the next free patch after
+    the current version."""
+    taken = set(
+        (await db.execute(select(m.SkillVersion.semver).where(m.SkillVersion.skill_id == skill.id)))
+        .scalars()
+        .all()
+    )
+    if requested is not None:
+        if requested in taken:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"version {requested} already exists for this skill"
+            )
+        return requested
+    major, minor, patch = _next_patch(current_version.semver if current_version else None)
+    while f"{major}.{minor}.{patch}" in taken:
+        patch += 1
+    return f"{major}.{minor}.{patch}"
+
+
 async def _load_skill(db: DbSession, skill_id: uuid.UUID, tenant_id: uuid.UUID) -> m.Skill:
     skill = await db.get(m.Skill, skill_id)
     # RLS already scopes this, but an explicit check keeps a cross-tenant id a
@@ -262,22 +288,7 @@ async def create_skill_version(
         current_version.definition.get("reference_root") if current_version is not None else None
     )
 
-    taken = set(
-        (await db.execute(select(m.SkillVersion.semver).where(m.SkillVersion.skill_id == skill.id)))
-        .scalars()
-        .all()
-    )
-    if body.semver is not None:
-        semver = body.semver
-        if semver in taken:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, f"version {semver} already exists for this skill"
-            )
-    else:
-        major, minor, patch = _next_patch(current_version.semver if current_version else None)
-        while f"{major}.{minor}.{patch}" in taken:
-            patch += 1
-        semver = f"{major}.{minor}.{patch}"
+    semver = await _pick_semver(db, skill, current_version, body.semver)
 
     definition = _validated(
         _definition(
@@ -302,6 +313,10 @@ async def create_skill_version(
     # Existing assignments stay pinned to the version they were made against
     # unless the caller asks for them to follow -- publishing must not silently
     # change what a running agent is doing.
+    # A shipped skill is edited in place: it keeps its origin and its shipped
+    # version (for a reset), and is marked customised so a shipped update
+    # leaves the edit alone.
+    mark_customized(skill, previous_version_id=skill.current_version_id)
     skill.current_version_id = version.id
     updated = skipped = not_allowed = 0
     if body.update_assignments:
@@ -472,8 +487,9 @@ async def duplicate_skill(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> SkillDTO:
-    """A new local skill from the source's CURRENT version -- the way to change
-    a skill one may not edit (imported, store). No assignments are copied."""
+    """A new local skill from the source's CURRENT version -- an independent
+    copy that never follows the source's shipped updates. No assignments are
+    copied."""
     source = await _load_skill(db, skill_id, principal.tenant_id)
     if source.deleted_at is not None or source.current_version_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
@@ -573,14 +589,87 @@ async def update_skill(
     version = (
         await db.get(m.SkillVersion, skill.current_version_id) if skill.current_version_id else None
     )
-    if body.instructions is not None and version is not None:
+    if (
+        body.instructions is not None
+        and version is not None
+        and body.instructions != version.definition.get("instruction")
+    ):
         # jsonb: replaced whole, or SQLAlchemy never notices the mutation.
         definition = dict(version.definition)
         definition["instruction"] = body.instructions
-        version.definition = definition
+        if needs_copy_on_write(skill):
+            # The shipped content is what a reset restores: never change that
+            # row, write the edit as the next version instead.
+            semver = await _pick_semver(db, skill, version, None)
+            definition["version"] = semver
+            edited = m.SkillVersion(
+                tenant_id=skill.tenant_id,
+                skill_id=skill.id,
+                semver=semver,
+                definition=definition,
+                artifact_hash=_artifact_hash(definition),
+            )
+            db.add(edited)
+            await db.flush()
+            mark_customized(skill, previous_version_id=version.id)
+            skill.current_version_id = edited.id
+            version = edited
+        else:
+            version.definition = definition
+            mark_customized(skill, previous_version_id=version.id)
     await db.flush()
     await db.commit()
     return skill_to_dto(skill, version)
+
+
+class ResetSkillRequest(CamelModel):
+    #: As on a content edit: move live assignments to the shipped version.
+    update_assignments: bool = False
+
+
+@router.post(
+    "/skills/{skill_id}/reset",
+    response_model=SkillVersionPublishedDTO,
+    dependencies=[Depends(require_permission(perm(SKILL, MANAGE)))],
+)
+async def reset_skill(
+    skill_id: uuid.UUID,
+    body: ResetSkillRequest,
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> SkillVersionPublishedDTO:
+    """Put a shipped skill back on its shipped content -- the newest one, when
+    a shipped update arrived while it was customised -- and clear the flags, so
+    later shipped updates apply again. The edited versions stay in history."""
+    skill = await _load_skill(db, skill_id, principal.tenant_id)
+    if skill.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
+    shipped = (
+        await db.get(m.SkillVersion, skill.shipped_version_id)
+        if skill.origin == "store" and skill.shipped_version_id is not None
+        else None
+    )
+    if shipped is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "this skill has no shipped version to reset to"
+        )
+    skill.current_version_id = shipped.id
+    skill.customized_at = None
+    skill.shipped_update_at = None
+    updated = skipped = not_allowed = 0
+    if body.update_assignments:
+        updated, skipped, not_allowed = await _move_assignments(
+            db, request, principal, skill.id, shipped
+        )
+    await db.flush()
+    await db.commit()
+    return SkillVersionPublishedDTO(
+        **skill_to_dto(skill, shipped).model_dump(),
+        assignments_updated=updated,
+        assignments_skipped=skipped,
+        assignments_not_allowed=not_allowed,
+    )
 
 
 @router.delete(
@@ -891,6 +980,7 @@ async def import_skills(
         )
         db.add(version)
         await db.flush()
+        skill.shipped_version_id = version.id
         for rel_path, content in candidate.bundled_files.items():
             db.add(
                 m.ImportedSkillFile(

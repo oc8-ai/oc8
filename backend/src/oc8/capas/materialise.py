@@ -12,7 +12,8 @@ happens.
 Three rules hold across all of them:
 
 * **Idempotent.** Re-enabling (after a permission change, say) must not create a
-  second copy.
+  second copy. An enable after an upgrade brings a shipped skill's content up
+  to date -- unless an admin customised it (`oc8.skills.shipped`).
 * **Per tenant.** Rows are written for the enabling tenant only.
 * **Non-destructive.** Disabling a plugin does NOT delete what it created.
   Toggling a plugin off must not silently destroy work built on top of it;
@@ -38,6 +39,7 @@ from oc8 import models as m
 from oc8.capas.manifest import Manifest, SkillTemplateSpec, ToolPackConnection
 from oc8.connections.tool_connection import without_reserved
 from oc8.skills.schema import SkillDefinitionError, parse_definition
+from oc8.skills.shipped import sync_shipped_skill
 
 logger = logging.getLogger(__name__)
 
@@ -76,14 +78,6 @@ async def _materialise_one_skill(
     manifest: Manifest,
     spec: SkillTemplateSpec,
 ) -> None:
-    existing = (
-        await db.execute(
-            select(m.Skill).where(m.Skill.tenant_id == tenant_id, m.Skill.name == spec.name)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        return
-
     definition: dict[str, Any] = {
         "schema_version": 1,
         "slug": _slugify(spec.name),
@@ -113,6 +107,19 @@ async def _materialise_one_skill(
         logger.warning("plugin %s ships an unusable skill, skipped: %s", manifest.name, exc)
         return
 
+    existing = (
+        await db.execute(
+            select(m.Skill).where(m.Skill.tenant_id == tenant_id, m.Skill.name == spec.name)
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        # Only this plugin's own skill follows its updates -- one an admin
+        # authored under the same name was never shipped. A customised one
+        # keeps the admin's edit (oc8.skills.shipped).
+        if existing.origin == "store" and existing.author == manifest.name:
+            await sync_shipped_skill(db, existing, definition=definition, semver=manifest.version)
+        return
+
     skill = m.Skill(
         tenant_id=tenant_id,
         name=spec.name,
@@ -134,6 +141,7 @@ async def _materialise_one_skill(
     db.add(version)
     await db.flush()
     skill.current_version_id = version.id
+    skill.shipped_version_id = version.id
     await db.flush()
 
 

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import CheckConstraint, LargeBinary, Text, UniqueConstraint, Uuid
+from sqlalchemy import CheckConstraint, DateTime, LargeBinary, Text, UniqueConstraint, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -24,6 +25,16 @@ class Skill(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     origin: Mapped[str] = mapped_column(Text, nullable=False, default="local")
     trust_level: Mapped[str] = mapped_column(Text, nullable=False, default="first_party")
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: The version holding the content as it was shipped (by a capa, or
+    #: imported from a store) -- what "reset to shipped version" restores, and
+    #: what a shipped update compares against. None for a local skill.
+    shipped_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: When an admin first changed a shipped skill's content in place. A
+    #: customised skill keeps its content when a newer version ships.
+    customized_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When a newer shipped version arrived for a customised skill and was kept
+    #: aside (in `shipped_version_id`) instead of replacing the edit.
+    shipped_update_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (
         CheckConstraint(

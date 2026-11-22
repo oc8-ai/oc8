@@ -576,6 +576,8 @@ def skill_to_dto(s: m.Skill, version: m.SkillVersion | None) -> SkillDTO:
         updated_at=pres.get("updated_at", ""),
         current_version_id=str(s.current_version_id) if s.current_version_id else None,
         deleted_at=s.deleted_at.isoformat() if s.deleted_at else None,
+        customized_at=s.customized_at.isoformat() if s.customized_at else None,
+        shipped_update_available=s.shipped_update_at is not None,
         name_translations=_i18n_str(i18n, "name"),
         description_translations=_i18n_str(i18n, "description"),
         instructions_translations=_i18n_str(i18n, "instructions"),

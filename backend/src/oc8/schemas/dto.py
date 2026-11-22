@@ -576,6 +576,11 @@ class SkillDTO(CamelModel):
     updated_at: str
     current_version_id: str | None = None
     deleted_at: str | None = None
+    #: Set once an admin changed a shipped (store) skill's content in place.
+    customized_at: str | None = None
+    #: A newer shipped version arrived for this customised skill and was kept
+    #: aside; resetting the skill takes it.
+    shipped_update_available: bool = False
     name_translations: dict[str, str] = {}
     description_translations: dict[str, str] = {}
     instructions_translations: dict[str, str] = {}
