@@ -112,7 +112,10 @@ whatever else the model should read (ids, sizes) in a `TextContent` next to
 it.
 
 **Taking a file.** Mark the parameter in the tool's input schema with
-`"x-oc8-file": true`, on a property or on an array's `items`, at any depth:
+`"x-oc8-file": true`, on a property, an array's `items` or an object's
+`additionalProperties`, at any depth, also behind `anyOf`/`oneOf`/`allOf` and
+local `$ref`s (`#/$defs/...`, `#/definitions/...`; a recursive schema is
+followed 12 levels deep):
 
 ```python
 "attachments": {

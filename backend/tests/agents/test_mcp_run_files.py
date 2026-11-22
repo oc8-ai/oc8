@@ -743,3 +743,86 @@ def test_a_files_type_is_a_media_type_or_octet_stream(mime: str, expected: str) 
     found = binary_of(_blob("attachment:///x.bin", mime), 0)
     assert found is not None
     assert found[1] == expected
+
+
+# --- where a schema takes a file ---------------------------------------------------
+
+_MARKED = {"type": "string", "x-oc8-file": True}
+
+
+@pytest.mark.parametrize(
+    ("schema", "arguments", "expected"),
+    [
+        (
+            {"type": "object", "properties": {"f": {"anyOf": [_MARKED, {"type": "null"}]}}},
+            {"f": "a"},
+            {"f": "<a>"},
+        ),
+        (
+            {"type": "object", "properties": {"f": {"oneOf": [{"type": "integer"}, _MARKED]}}},
+            {"f": "a"},
+            {"f": "<a>"},
+        ),
+        (
+            {"allOf": [{"type": "object", "properties": {"f": _MARKED}}]},
+            {"f": "a"},
+            {"f": "<a>"},
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "attachments": {"type": "array", "items": {"$ref": "#/$defs/Attachment"}}
+                },
+                "$defs": {
+                    "Attachment": {"type": "object", "properties": {"file": _MARKED}},
+                },
+            },
+            {"attachments": [{"file": "a"}, {"file": "b"}]},
+            {"attachments": [{"file": "<a>"}, {"file": "<b>"}]},
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"cover": {"$ref": "#/definitions/File"}},
+                "definitions": {"File": _MARKED},
+            },
+            {"cover": "a"},
+            {"cover": "<a>"},
+        ),
+        (
+            {"type": "object", "properties": {"named": {"additionalProperties": _MARKED}}},
+            {"named": {"x": "a", "y": "b"}},
+            {"named": {"x": "<a>", "y": "<b>"}},
+        ),
+    ],
+    ids=["anyOf", "oneOf", "allOf", "$defs", "definitions", "additionalProperties"],
+)
+async def test_a_marker_is_found_behind_combinators_refs_and_maps(
+    schema: dict[str, Any], arguments: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    from oc8.agent.run_files import file_paths, model_schema, resolve_file_arguments
+
+    class _Echo:
+        async def resolve_many(self, refs: list[str]) -> list[str]:
+            return [f"<{ref}>" for ref in refs]
+
+    paths = file_paths(schema)
+    assert paths
+    assert await resolve_file_arguments(arguments, paths, _Echo()) == expected  # type: ignore[arg-type]
+    assert FILE_MARKER not in json.dumps(model_schema(schema))
+
+
+def test_a_recursive_schema_ends() -> None:
+    from oc8.agent.run_files import file_paths
+
+    schema = {
+        "$ref": "#/$defs/Node",
+        "$defs": {
+            "Node": {
+                "type": "object",
+                "properties": {"file": _MARKED, "children": {"items": {"$ref": "#/$defs/Node"}}},
+            }
+        },
+    }
+    assert ("file",) in file_paths(schema)

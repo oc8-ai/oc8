@@ -293,43 +293,88 @@ def current_run_files() -> RunFiles | None:
 
 # --- schemas -------------------------------------------------------------------
 
-#: A path to a marked value: property names, with "*" for every array item.
-FilePath = tuple[str, ...]
+
+@dataclass(frozen=True)
+class AnyKey:
+    """A path step into every value of an object (`additionalProperties`)
+    except those its declared `properties` name."""
+
+    declared: frozenset[str] = frozenset()
+
+
+#: A path to a marked value: property names, "*" for every array item, an
+#: `AnyKey` for every other value of a map.
+FilePath = tuple["str | AnyKey", ...]
+
+#: A recursive schema (a `$ref` back to itself) is followed this deep, no
+#: further: a file nested deeper is not swapped, and the tool receives the
+#: model's text as given (and refuses it as no file).
+_MAX_SCHEMA_DEPTH = 12
+_COMBINATORS = ("anyOf", "oneOf", "allOf")
+
+
+def _ref(root: Mapping[str, Any], ref: Any) -> Mapping[str, Any] | None:
+    """A local `$ref` (`#/$defs/X`, `#/definitions/X`, any `#/...` pointer)
+    resolved against `root`; None for a remote or broken one."""
+    if not isinstance(ref, str) or not ref.startswith("#"):
+        return None
+    node: Any = root
+    for part in [p for p in ref[1:].split("/") if p]:
+        part = part.replace("~1", "/").replace("~0", "~")
+        if not isinstance(node, Mapping) or part not in node:
+            return None
+        node = node[part]
+    return node if isinstance(node, Mapping) else None
 
 
 def file_paths(schema: Mapping[str, Any]) -> list[FilePath]:
-    """Where `schema` takes a run file."""
+    """Where `schema` takes a run file: through `properties`, array `items`,
+    `additionalProperties`, `anyOf`/`oneOf`/`allOf` and local `$ref`s."""
     out: list[FilePath] = []
 
-    def walk(node: Any, path: FilePath) -> None:
-        if not isinstance(node, Mapping):
+    def walk(node: Any, path: FilePath, depth: int) -> None:
+        if not isinstance(node, Mapping) or depth > _MAX_SCHEMA_DEPTH:
             return
-        if node.get(FILE_MARKER) is True and path:
+        if node.get(FILE_MARKER) is True and path and path not in out:
             out.append(path)
             return
-        for name, sub in (node.get("properties") or {}).items():
-            walk(sub, (*path, str(name)))
+        target = _ref(schema, node.get("$ref"))
+        if target is not None:
+            walk(target, path, depth + 1)
+        for key in _COMBINATORS:
+            for sub in node.get(key) or []:
+                walk(sub, path, depth + 1)
+        properties = node.get("properties")
+        properties = properties if isinstance(properties, Mapping) else {}
+        for name, sub in properties.items():
+            walk(sub, (*path, str(name)), depth + 1)
         items = node.get("items")
         if isinstance(items, Mapping):
-            walk(items, (*path, "*"))
+            walk(items, (*path, "*"), depth + 1)
+        extra = node.get("additionalProperties")
+        if isinstance(extra, Mapping):
+            walk(extra, (*path, AnyKey(frozenset(map(str, properties)))), depth + 1)
 
-    walk(schema, ())
+    walk(schema, (), 0)
     return out
 
 
 def model_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """`schema` as the model sees it: no marker, a hint in its place."""
+    """`schema` as the model sees it: no marker anywhere, a hint in its place."""
     copied = copy.deepcopy(dict(schema))
 
     def walk(node: Any) -> None:
+        if isinstance(node, list):
+            for sub in node:
+                walk(sub)
+            return
         if not isinstance(node, dict):
             return
         if node.pop(FILE_MARKER, None) is True:
             given = str(node.get("description") or "").strip()
             node["description"] = f"{given} {_FILE_HINT}".strip()
-        for sub in (node.get("properties") or {}).values():
+        for sub in node.values():
             walk(sub)
-        walk(node.get("items"))
 
     walk(copied)
     return copied
@@ -350,7 +395,12 @@ async def resolve_file_arguments(
                 references.append((parent, key, node))
             return
         head, rest = path[0], path[1:]
-        if head == "*":
+        if isinstance(head, AnyKey):
+            if isinstance(node, dict):
+                for name in list(node):
+                    if name not in head.declared:
+                        collect(node[name], rest, node, name)
+        elif head == "*":
             if isinstance(node, list):
                 for index, item in enumerate(node):
                     collect(item, rest, node, index)
