@@ -73,12 +73,14 @@ from oc8.agent.harness.stages.b_clarify import (
 from oc8.agent.harness.stages.b_direct_access import (
     NO_DIRECT_ACCESS,
     DirectAccessView,
+    direct_limits,
     offers_direct,
 )
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
+from oc8.agent.harness.stages.b_usage_limit import record_limit_refusal, reserve_usage
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
@@ -120,6 +122,7 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     effective_tool_policies,
+    has_usage_limit,
     offers_tool,
     required_right,
 )
@@ -1512,10 +1515,40 @@ async def run_agent(
                             if effect == "run"
                             else None
                         )
+                        held_hold = (
+                            await reserve_usage(
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool_key=held_route[0],
+                                tool=held_route[6],
+                                policy=(
+                                    direct_limits(
+                                        held_view,
+                                        connection_key=held_route[0] or "",
+                                        narrowing=pinned["narrowing"] or {},
+                                    )
+                                    if held_direct
+                                    else tool_policies.get(held_route[0] or "")
+                                ),
+                            )
+                            if effect == "run" and replayed is None
+                            else None
+                        )
                         if effect == "refuse":
                             finished = f"ERROR: {why}"
                         elif replayed is not None:
                             finished = replayed
+                        elif held_hold is not None and held_hold.refusal is not None:
+                            await record_limit_refusal(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tool_name,
+                                arguments=arguments,
+                                refusal=held_hold.refusal,
+                                originating_operator=originating_operator,
+                            )
+                            finished = held_hold.refusal
                         else:
                             try:
                                 finished = await server.call(tool_name, arguments)
@@ -1538,6 +1571,8 @@ async def run_agent(
                                     "skill_tool_names": pending.get("skill_tool_names") or [],
                                 }
                                 parked.context = parked_ctx
+                                if held_hold is not None:
+                                    await held_hold.settle(succeeded=False)
                                 messages.append(
                                     NeutralMessage(
                                         role="user",
@@ -1562,6 +1597,8 @@ async def run_agent(
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
+                            if held_hold is not None:
+                                await held_hold.settle(succeeded=not finished.startswith("ERROR:"))
                             if held_direct and run_row is not None:
                                 # Ran through the grant: audited and counted
                                 # like the step loop's direct calls.
@@ -2388,6 +2425,12 @@ async def run_agent(
                             )
                             is not None
                         ):
+                            break
+                        if has_usage_limit(
+                            tool_policies, connection_key=connection_key, tool=_pre_tc.name
+                        ):
+                            # Counted at dispatch, one call at a time: a
+                            # prefetched call would run before its count.
                             break
                         read_batch.append(_pre_tc)
                     if len(read_batch) > 1:
@@ -3242,6 +3285,43 @@ async def run_agent(
                                 message=outward.refusal.removeprefix("ERROR: ").strip(),
                             )
                             _tool_call_dispatched = False
+                        elif (
+                            usage_hold := await reserve_usage(
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool_key=call_key,
+                                tool=auth_tc.name,
+                                # Through a grant, the departments' policies
+                                # decide the call, so theirs count it too.
+                                policy=(
+                                    direct_limits(
+                                        direct_view,
+                                        connection_key=call_key or "",
+                                        narrowing=pinned["narrowing"] or {},
+                                    )
+                                    if direct_call
+                                    else tool_policies.get(call_key or "")
+                                ),
+                            )
+                        ).refusal is not None:
+                            # Last before the call: anything refused above
+                            # never used up the agent's budget.
+                            await record_limit_refusal(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tc.name,
+                                arguments=tc.arguments,
+                                refusal=usage_hold.refusal,
+                                originating_operator=originating_operator,
+                            )
+                            output = usage_hold.refusal
+                            source = "oc8"
+                            tool_error = ToolError(
+                                kind="deny",
+                                message=usage_hold.refusal.removeprefix("ERROR: ").strip(),
+                            )
+                            _tool_call_dispatched = False
                         else:
                             # Live-log which record the agent is working on, from
                             # the connection's own focus_spec (a plugin supplies
@@ -3271,6 +3351,8 @@ async def run_agent(
                                 idempotent=idempotent,
                             )
                             if replay is not None:
+                                # The first result again, not a new call.
+                                await usage_hold.settle(succeeded=False)
                                 output = replay
                             else:
                                 if tc.id in precomputed_outputs:
@@ -3298,6 +3380,9 @@ async def run_agent(
                                                     **_skill_snapshot(),
                                                 }
                                                 parked.context = parked_ctx
+                                        # Not done yet: it runs (and counts)
+                                        # once the question is answered.
+                                        await usage_hold.settle(succeeded=False)
                                         task.state = "waiting_for_input"
                                         await _finish_step_timing(step_rec, step_tool_wait_ms)
                                         return RunResult(
@@ -3320,6 +3405,10 @@ async def run_agent(
                                             ).total_seconds(),
                                         )
                                         output = f"ERROR: {exc}"
+                                # Only a successful call counts.
+                                await usage_hold.settle(
+                                    succeeded=tool_error is None and not output.startswith("ERROR:")
+                                )
                                 await remember_outward(
                                     db,
                                     tenant_id=tenant_id,

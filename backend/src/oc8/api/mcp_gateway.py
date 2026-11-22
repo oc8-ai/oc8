@@ -48,6 +48,7 @@ from oc8.agent.control_tools import (
     has_readable_context,
 )
 from oc8.agent.engine import _authorize, _call_sig
+from oc8.agent.harness.stages.b_usage_limit import record_limit_refusal, reserve_usage
 from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_requirements import wrap_with_requirements
@@ -1271,6 +1272,29 @@ async def _call_tool(
         if await already_delivered(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target):
             return _tool_result(REFUSAL.format(target=target), is_error=True)
 
+    # Usage limits, last before the call: anything refused above never used up
+    # the agent's budget. Settled below -- a call that failed is given back.
+    usage_hold = await reserve_usage(
+        tenant_id=run.tenant_id,
+        agent_id=agent.id,
+        tool_key=conn.name,
+        tool=tc.name,
+        policy=effective_tool_policies(frame, narrowing).get(conn.name),
+    )
+    if usage_hold.refusal is not None:
+        await record_limit_refusal(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tc.name,
+            arguments=tc.arguments,
+            refusal=usage_hold.refusal,
+            originating_operator=run.context.get("originating_operator"),
+        )
+        await db.commit()
+        await _rebind_tenant(db, run.tenant_id)
+        return _tool_result(usage_hold.refusal, is_error=True)
+
     focus = describe_focus(tc.name, tc.arguments, focus_spec)
     names_record = describes_a_record(tc.name, tc.arguments, focus_spec)
     try:
@@ -1283,8 +1307,10 @@ async def _call_tool(
     except ConnectionRequired as exc:
         # Already recorded on the run for the "connect" call to action; the
         # model gets the reason verbatim (it starts `connection_required:`).
+        await usage_hold.settle(succeeded=False)
         return _tool_result(str(exc), is_error=True)
     except Exception as exc:  # surface to the model, not as a broken server
+        await usage_hold.settle(succeeded=False)
         return _tool_result(f"ERROR: {exc}", is_error=True)
     link_ctx = link_context(conn, env)
     record_url = (
@@ -1324,7 +1350,10 @@ async def _call_tool(
             reusable=launch.reusable,
         )
     except Exception as exc:  # surface to the model, not as a broken server
+        await usage_hold.settle(succeeded=False)
         return _tool_result(f"ERROR: {exc}", is_error=True)
+    # A tool that answered with an error did not do what it was asked.
+    await usage_hold.settle(succeeded=not output.startswith("ERROR:"))
 
     # Now that the call has answered, the record's own name is available -- it is
     # in the RESULT, never in the arguments -- so the card can say WHICH ticket

@@ -2436,3 +2436,33 @@ async def test_a_malformed_structured_ask_is_a_model_error_not_a_park(
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         assert "isolated_result" not in run.context
+
+
+async def test_a_call_over_a_usage_limit_is_refused_by_the_gateway(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gateway the CLI runtimes call through counts like the engine does."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    frame = {
+        "tools": {
+            "odoo": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "limits": [{"tools": ["search_records"], "max": 1, "per": "hour"}],
+            }
+        }
+    }
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=frame)
+
+    token = _token(tenant, agent_id, run_id)
+    args = {"name": "search_records", "arguments": {"model": "crm.lead"}}
+    _c1, first = await _rpc(token, "tools/call", args)
+    _c2, second = await _rpc(token, "tools/call", args, rpc_id=2)
+    assert first["result"]["isError"] is False
+    assert second["result"]["isError"] is True
+    assert "Hourly limit of 1 reached for search_records" in second["result"]["content"][0]["text"]
+    assert [name for name, _ in _FakeMcp.calls] == ["search_records"]

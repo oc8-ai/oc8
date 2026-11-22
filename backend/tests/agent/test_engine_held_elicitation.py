@@ -75,6 +75,7 @@ async def _resume(
     approved_original: bool = False,
     focused: bool = False,
     proof: bool = False,
+    limits: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, list[Any], dict[str, Any]]:
     _reset(monkeypatch, [_turn("Done.")])
     tenant = uuid.uuid4()
@@ -87,6 +88,13 @@ async def _resume(
             parallel_tool_calls=False,
             agent_definition={"autonomy": autonomy},
         )
+        if limits is not None:
+            dept = await db.get(m.Department, agent.department_id)
+            assert dept is not None
+            tools = dict(dept.frame["tools"])
+            tools["things"] = {**tools["things"], "limits": limits}
+            dept.frame = {**dept.frame, "tools": tools}
+            await db.flush()
         held = {**HELD, "id": 115} if focused else HELD
         if focused:
             # A single-record identity, so read-before-write applies.
@@ -418,3 +426,20 @@ async def test_an_unproven_approval_does_not_waive_read_before_write_on_the_held
     )
     assert _Server.ran == []
     assert "waived_read_before_write" not in ctx
+
+
+async def test_an_answered_call_over_the_usage_limit_is_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The held re-run is a new call: it is counted, and refused when full."""
+    result, approvals, ctx = await _resume(
+        app_session,
+        monkeypatch,
+        answer="ACME",
+        autonomy="autonomous",
+        limits=[{"tools": ["write_a"], "max": 0}],
+    )
+    assert _Server.ran == []
+    assert approvals == []
+    assert "pending_elicitation" not in ctx
+    assert "Daily limit of 0 reached for write_a" in str(result.tool_calls)

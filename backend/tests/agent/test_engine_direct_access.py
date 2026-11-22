@@ -1379,3 +1379,30 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
     (entry3,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry3["result"])
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
+
+
+async def test_a_direct_call_over_the_departments_usage_limit_is_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through a grant, the department's policy decides the call -- and its
+    usage limit counts it, against the Copilot."""
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="search_records", arguments={"q": "a"})),
+            _turn("", ToolCall(id="c2", name="search_records", arguments={"q": "b"})),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    limited = {**READ_WRITE, "limits": [{"tools": ["search_records"], "max": 1}]}
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant, policy=limited)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        result = await _run(db, office, agent, await chat_run(db, office))
+    assert [name for name, _s, _e in recorder.windows] == ["search_records"]
+    refused = [e for e in result.tool_calls if e["tool"] == "search_records"][1]
+    assert "Daily limit of 1 reached for search_records" in str(refused["result"])

@@ -77,6 +77,7 @@ from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
+from oc8.agent.harness.stages.b_usage_limit import record_limit_refusal, reserve_usage
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
@@ -112,6 +113,7 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     effective_tool_policies,
+    has_usage_limit,
     offers_tool,
     required_right,
 )
@@ -1071,8 +1073,32 @@ async def _finish_elicitation(
             writes=held_writes,
             idempotent=held_idempotent,
         )
+        held_hold = (
+            await reserve_usage(
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool_key=conn.name,
+                tool=tool,
+                policy=effective_tool_policies(
+                    dept.frame if dept is not None else {}, pinned["narrowing"] or {}
+                ).get(conn.name),
+            )
+            if replayed is None
+            else None
+        )
         if replayed is not None:
             output = replayed
+        elif held_hold is not None and held_hold.refusal is not None:
+            await record_limit_refusal(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool=tool,
+                arguments=arguments,
+                refusal=held_hold.refusal,
+                originating_operator=ctx.get("originating_operator"),
+            )
+            output = held_hold.refusal
         else:
             dispatched = True
             try:
@@ -1110,6 +1136,8 @@ async def _finish_elicitation(
             except ElicitationNeeded as exc:
                 # Asked again: suspend for the operator, as the engine does and
                 # as /tools does on a first question -- not on to the model.
+                if held_hold is not None:
+                    await held_hold.settle(succeeded=False)
                 ctx["pending_elicitation"] = {
                     "connection": connection_name,
                     "tool": tool,
@@ -1133,6 +1161,8 @@ async def _finish_elicitation(
                 return "waiting_for_input", exc.message
             except Exception as exc:
                 output = f"ERROR: {exc}"
+            if held_hold is not None:
+                await held_hold.settle(succeeded=not output.startswith("ERROR:"))
         if not output.startswith("ERROR:"):
             # Linked like any tool result (the replay record above stays raw),
             # so the answered call's records carry oc8_url too.
@@ -2023,6 +2053,12 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 is not None
             ):
                 break
+            if has_usage_limit(
+                effective_tool_policies(frame, pinned["narrowing"] or {}),
+                connection_key=conn.name if conn is not None else None,
+                tool=t.name,
+            ):
+                break
             tool_tiers[t.id] = "read"
 
     return StepResult(
@@ -2190,6 +2226,14 @@ async def _precompute_leading_reads(
             outward_target(call.name, stripped, focus_spec, outward_tools, skip_spec=skip)
             is not None
         ):
+            break
+        if has_usage_limit(
+            effective_tool_policies(frame, pinned["narrowing"] or {}),
+            connection_key=conn.name,
+            tool=call.name,
+        ):
+            # Counted at dispatch, one call at a time: a prefetched call would
+            # run before its count.
             break
         batch.append((call, stripped))
     if len(batch) < 2:
@@ -2902,6 +2946,32 @@ async def _dispatch_one_tool(
             message=outward.refusal.removeprefix("ERROR: ").strip(),
         )
         dispatched = False
+    elif (
+        usage_hold := await reserve_usage(
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool_key=conn.name,
+            tool=tc.name,
+            policy=effective_tool_policies(frame, pinned["narrowing"] or {}).get(conn.name),
+        )
+    ).refusal is not None:
+        # Last before the call: anything refused above never used up the
+        # agent's budget.
+        await record_limit_refusal(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tc.name,
+            arguments=tc.arguments,
+            refusal=usage_hold.refusal,
+            originating_operator=ctx.get("originating_operator"),
+        )
+        output = usage_hold.refusal
+        source = "oc8"
+        tool_error = ToolError(
+            kind="deny", message=usage_hold.refusal.removeprefix("ERROR: ").strip()
+        )
+        dispatched = False
     else:
         focus = describe_focus(tc.name, tc.arguments, focus_spec)
         if focus is not None:
@@ -2927,6 +2997,8 @@ async def _dispatch_one_tool(
             idempotent=idempotent,
         )
         if replay is not None:
+            # The first result again, not a new call.
+            await usage_hold.settle(succeeded=False)
             output = replay
         else:
             if precomputed is not None:
@@ -2977,6 +3049,11 @@ async def _dispatch_one_tool(
                         duration_s=(dt.datetime.now(dt.UTC) - started_at).total_seconds(),
                     )
                     output = f"ERROR: {exc}"
+            # Only a successful call counts; one waiting for an answer has not
+            # happened yet and counts when it runs.
+            await usage_hold.settle(
+                succeeded=suspend is None and tool_error is None and not output.startswith("ERROR:")
+            )
             # Only a successful side effect is worth recording. Recording a failure
             # would answer a legitimate retry with the old error forever.
             # A precomputed read already ran; it still has to be remembered here.
