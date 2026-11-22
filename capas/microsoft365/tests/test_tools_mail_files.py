@@ -152,11 +152,85 @@ async def test_sending_tools_attach_run_files(tool: str, calls: list[tuple[str, 
     ]
 
 
+@pytest.mark.parametrize("tool", ["mail_send", "mail_reply", "mail_create_draft"])
 async def test_attachments_over_graphs_inline_limit_are_refused(
+    tool: str, calls: list[tuple[str, str, Any]]
+) -> None:
+    # Under 3 MB as bytes, but its base64 (what the request carries) is over
+    # the 2.9 MB that keeps a request under Graph's 4 MB.
+    big = b"x" * (2 * 1024 * 1024 + 300 * 1024)
+    with pytest.raises(RuntimeError, match=r"2\.9 MB"):
+        await CALL_HANDLERS[tool](
+            {
+                "messageId": "AAMk",
+                "to": ["a@example.com"],
+                "subject": "s",
+                "body": "b",
+                "attachments": [{"file": _run_file("big.bin", "application/pdf", big)}],
+            }
+        )
+    assert calls == []
+
+
+async def test_attachments_under_graphs_inline_limit_go_together(
+    calls: list[tuple[str, str, Any]],
+) -> None:
+    half = b"x" * (1024 * 1024)
+    await CALL_HANDLERS["mail_send"](
+        {
+            "to": ["a@example.com"],
+            "subject": "s",
+            "body": "b",
+            "attachments": [
+                {"file": _run_file("a.bin", "application/pdf", half)},
+                {"file": _run_file("b.bin", "application/pdf", half)},
+            ],
+        }
+    )
+    assert len(calls[-1][2]["message"]["attachments"]) == 2
+
+
+@pytest.mark.parametrize(
+    ("tool", "extra"),
+    [
+        ("mail_get", {}),
+        ("mail_reply", {"body": "b"}),
+        ("mail_move", {"destinationFolderId": "inbox"}),
+        ("mail_delete", {}),
+        ("mail_mark_read", {}),
+    ],
+)
+async def test_a_message_id_is_one_path_segment(
+    tool: str,
+    extra: dict[str, Any],
+    calls: list[tuple[str, str, Any]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_delete(path: str) -> None:
+        calls.append(("DELETE", path, None))
+
+    async def fake_patch(path: str, json: dict[str, Any]) -> dict[str, Any]:
+        calls.append(("PATCH", path, json))
+        return {}
+
+    monkeypatch.setattr(graph, "delete", fake_delete)
+    monkeypatch.setattr(graph, "patch", fake_patch)
+    await CALL_HANDLERS[tool]({"messageId": "AAMk/../x?y=1", **extra})
+    path = calls[-1][1]
+    assert "/messages/AAMk%2F..%2Fx%3Fy%3D1" in path, path
+
+
+async def test_a_missing_message_id_is_refused(calls: list[tuple[str, str, Any]]) -> None:
+    with pytest.raises(RuntimeError, match="messageId"):
+        await CALL_HANDLERS["mail_reply"]({"body": "b"})
+    assert calls == []
+
+
+async def test_attachments_over_three_mb_are_refused(
     calls: list[tuple[str, str, Any]],
 ) -> None:
     big = b"x" * (3 * 1024 * 1024 + 1)
-    with pytest.raises(RuntimeError, match="3 MB"):
+    with pytest.raises(RuntimeError, match=r"2\.9 MB"):
         await CALL_HANDLERS["mail_send"](
             {
                 "to": ["a@example.com"],

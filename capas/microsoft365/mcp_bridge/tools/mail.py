@@ -48,7 +48,8 @@ async def mail_search(args: dict[str, Any]) -> Any:
 
 async def mail_get(args: dict[str, Any]) -> Any:
     base = user_base(args)
-    return await graph.get(f"{base}/messages/{args['messageId']}")
+    message = _segment(args.get("messageId"), "messageId")
+    return await graph.get(f"{base}/messages/{message}")
 
 
 async def mail_send(args: dict[str, Any]) -> Any:
@@ -68,10 +69,11 @@ async def mail_send(args: dict[str, Any]) -> Any:
 async def mail_reply(args: dict[str, Any]) -> Any:
     files = _graph_attachments(args)
     base = user_base(args)
+    message = _segment(args.get("messageId"), "messageId")
     body: dict[str, Any] = {"comment": args["body"]}
     if files:
         body["message"] = {"attachments": files}
-    await graph.post(f"{base}/messages/{args['messageId']}/reply", body)
+    await graph.post(f"{base}/messages/{message}/reply", body)
     return {"status": "sent"}
 
 
@@ -125,15 +127,17 @@ async def mail_get_attachment(args: dict[str, Any]) -> Any:
 
 async def mail_move(args: dict[str, Any]) -> Any:
     base = user_base(args)
+    message = _segment(args.get("messageId"), "messageId")
     return await graph.post(
-        f"{base}/messages/{args['messageId']}/move",
+        f"{base}/messages/{message}/move",
         {"destinationId": args["destinationFolderId"]},
     )
 
 
 async def mail_delete(args: dict[str, Any]) -> Any:
     base = user_base(args)
-    await graph.delete(f"{base}/messages/{args['messageId']}")
+    message = _segment(args.get("messageId"), "messageId")
+    await graph.delete(f"{base}/messages/{message}")
     return {"status": "deleted"}
 
 
@@ -145,9 +149,8 @@ async def mail_list_folders(args: dict[str, Any]) -> Any:
 
 async def mail_mark_read(args: dict[str, Any]) -> Any:
     base = user_base(args)
-    return await graph.patch(
-        f"{base}/messages/{args['messageId']}", {"isRead": args.get("isRead", True)}
-    )
+    message = _segment(args.get("messageId"), "messageId")
+    return await graph.patch(f"{base}/messages/{message}", {"isRead": args.get("isRead", True)})
 
 
 #: Appended to every description below, so the addressing rule is stated on the

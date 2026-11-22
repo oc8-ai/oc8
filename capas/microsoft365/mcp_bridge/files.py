@@ -18,9 +18,12 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-#: Graph takes attachments inline in one request only up to 3 MB; larger
-#: ones need an upload session, which these tools do not open.
-MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024
+#: Graph takes a request of at most 4 MB, and an inline attachment travels
+#: base64-encoded (4 bytes for every 3): the attachments' encoded content may
+#: be 2.9 MB together, leaving room for the rest of the request. That is
+#: about 2.1 MB of files. Larger ones need an upload session, which these
+#: tools do not open.
+MAX_INLINE_BASE64_BYTES = int(2.9 * 1024 * 1024)
 
 _MEDIA_TYPE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]{0,126}"
@@ -43,7 +46,7 @@ class FileContent:
 ATTACHMENTS_SCHEMA: dict[str, Any] = {
     "type": "array",
     "description": (
-        "Files to attach, at most 3 MB together: each is {file} with the id of a file "
+        "Files to attach, at most about 2 MB together: each is {file} with the id of a file "
         "of this run (from mail_get_attachment or write_output_file); `name` and "
         "`type` override the file's."
     ),
@@ -77,10 +80,12 @@ def attachment_files(items: Sequence[Any] | None) -> list[tuple[str, str, bytes]
             data = base64.b64decode(str(file.get("content_base64") or ""), validate=True)
         except (binascii.Error, ValueError):
             raise RuntimeError(f"The content of {name!r} is not valid base64.") from None
-        total += len(data)
-        if total > MAX_ATTACHMENT_BYTES:
+        total += 4 * -(-len(data) // 3)
+        if total > MAX_INLINE_BASE64_BYTES:
             raise RuntimeError(
-                f"Graph takes attachments of at most 3 MB together this way; {name!r} goes over."
+                "Graph takes attachments in one request only up to 2.9 MB together as base64, "
+                f"about 2.1 MB of files; {name!r} goes over. Send larger files another way, "
+                "for example as a link."
             )
         mime = str(item.get("type") or file.get("mime_type") or "")
         if mime and not _MEDIA_TYPE.fullmatch(mime):
