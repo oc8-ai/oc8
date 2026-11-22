@@ -6,13 +6,31 @@ Gmail's label model folds move/archive/mark-read into one operation --
 from __future__ import annotations
 
 import base64
+import re
 from collections.abc import Awaitable, Callable
 from email.message import EmailMessage
 from typing import Any
+from urllib.parse import quote
 
 from mcp.types import Tool
 
 from .. import google_api
+
+#: A Gmail message or thread id: base64url characters, short.
+_GMAIL_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _path_id(value: object, label: str) -> str:
+    """`value` as one URL path segment: checked to be a Gmail id, then quoted
+    with nothing left safe. An id is the model's word, and unchecked, `../x`
+    or `x?alt=media` would reach another endpoint of the same mailbox."""
+    text = value if isinstance(value, str) else ""
+    if not _GMAIL_ID.fullmatch(text):
+        raise RuntimeError(
+            f"`{label}` must be a Gmail id (letters, digits, - and _, at most 64), "
+            "as gmail_search or gmail_get return it."
+        )
+    return quote(text, safe="")
 
 
 def _mailbox_schema_props() -> dict[str, Any]:
@@ -96,7 +114,7 @@ async def gmail_get(args: dict[str, Any]) -> Any:
     mailbox = args.get("mailbox") or "me"
     message = await google_api.get_json(
         google_api.API_GMAIL,
-        f"/users/{mailbox}/messages/{args['messageId']}",
+        f"/users/{mailbox}/messages/{_path_id(args.get('messageId'), 'messageId')}",
         token=token,
     )
     payload = message.get("payload", {})
@@ -153,9 +171,8 @@ async def gmail_reply(args: dict[str, Any]) -> Any:
     place for older callers, but is only ever the message's id. The reply goes
     into the thread Gmail reports for that message -- a message id is not its
     thread id once the thread has more than one message."""
-    message = str(args.get("messageId") or args.get("threadId") or "")
-    if not message:
-        raise RuntimeError("gmail_reply needs messageId, the id of the message replied to")
+    label = "messageId" if args.get("messageId") else "threadId"
+    message = _path_id(args.get(label), "messageId")
     token = google_api.resolve_mailbox_token(args.get("mailbox"))
     mailbox = args.get("mailbox") or "me"
     original = await google_api.get_json(
@@ -177,11 +194,12 @@ async def gmail_reply(args: dict[str, Any]) -> Any:
         {"In-Reply-To": message_id, "References": message_id} if message_id else {}
     )
     raw = _build_raw_message(reply_args, extra_headers=extra_headers)
+    thread = original.get("threadId")
     return await google_api.post_json(
         google_api.API_GMAIL,
         f"/users/{mailbox}/messages/send",
         token=token,
-        json={"raw": raw, "threadId": str(original.get("threadId") or message)},
+        json={"raw": raw, "threadId": str(thread) if thread else message},
     )
 
 
@@ -210,7 +228,7 @@ async def gmail_modify_labels(args: dict[str, Any]) -> Any:
     mailbox = args.get("mailbox") or "me"
     return await google_api.post_json(
         google_api.API_GMAIL,
-        f"/users/{mailbox}/messages/{args['messageId']}/modify",
+        f"/users/{mailbox}/messages/{_path_id(args.get('messageId'), 'messageId')}/modify",
         token=token,
         json={
             "addLabelIds": args.get("addLabelIds", []),
