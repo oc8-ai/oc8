@@ -2466,3 +2466,92 @@ async def test_a_call_over_a_usage_limit_is_refused_by_the_gateway(
     assert second["result"]["isError"] is True
     assert "Hourly limit of 1 reached for search_records" in second["result"]["content"][0]["text"]
     assert [name for name, _ in _FakeMcp.calls] == ["search_records"]
+
+
+class _BrokenMcp(_FakeMcp):
+    """A bridge whose tool times out after it was reached."""
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        type(self).calls.append((name, arguments))
+        raise TimeoutError("no answer in time")
+
+
+class _NeverStarts(_FakeMcp):
+    async def __aenter__(self) -> _FakeMcp:
+        raise RuntimeError("the bridge did not start")
+
+
+_LIMITED_FRAME = {
+    "tools": {
+        "odoo": {
+            "enabled": True,
+            "read": True,
+            "modify": True,
+            "limits": [{"tools": ["search_records"], "max": 1}],
+        }
+    }
+}
+
+
+async def test_a_gateway_call_that_timed_out_keeps_its_count(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _BrokenMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _BrokenMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=_LIMITED_FRAME)
+    token = _token(tenant, agent_id, run_id)
+    args = {"name": "search_records", "arguments": {"model": "crm.lead"}}
+    await _rpc(token, "tools/call", args)
+    _c, second = await _rpc(token, "tools/call", args, rpc_id=2)
+    assert "Daily limit of 1 reached" in second["result"]["content"][0]["text"]
+    assert len(_BrokenMcp.calls) == 1
+
+
+async def test_a_gateway_bridge_that_never_started_gives_the_count_back(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _NeverStarts)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=_LIMITED_FRAME)
+    token = _token(tenant, agent_id, run_id)
+    args = {"name": "search_records", "arguments": {"model": "crm.lead"}}
+    await _rpc(token, "tools/call", args)
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    _c, second = await _rpc(token, "tools/call", args, rpc_id=2)
+    assert second["result"]["isError"] is False, second
+
+
+async def test_a_gateway_call_whose_limit_is_full_is_refused_not_parked(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    frame = {
+        "tools": {
+            "odoo": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "approval_actions": ["modify"],
+                "limits": [{"tools": ["create_record"], "max": 0}],
+            }
+        }
+    }
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=frame)
+    _c, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "res.partner", "values": {}}},
+    )
+    text = body["result"]["content"][0]["text"]
+    assert "Daily limit of 0 reached for create_record" in text, body
+    async with app_session(tenant) as db:
+        held = (await db.execute(select(m.ApprovalRequest))).scalars().all()
+    assert held == []
+    assert _FakeMcp.calls == []

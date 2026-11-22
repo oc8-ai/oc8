@@ -868,7 +868,7 @@ _GUARDRAIL_DECISION = {
 _GUARDRAIL_USAGE_LIMIT = {
     "type": "object",
     "description": (
-        "Optionally: at most `max` successful calls per UTC day (or hour) of "
+        "Optionally: at most `max` calls per UTC day (or hour) of "
         "`tools` -- the function itself, plus any tools of the same system "
         "counted together with it, e.g. 50 mails a day across mail_send and "
         "mail_reply. Not with decision not_allowed."

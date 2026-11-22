@@ -65,6 +65,27 @@ class McpSessionFailed(RuntimeError):
     escaped every handler between the pool and the request."""
 
 
+#: Set on an exception raised while a session was being OPENED -- before any
+#: tool call was sent. A usage limit gives a call's count back only for such a
+#: failure; one that reached the tool keeps it, since the far system may have
+#: acted before it failed (`oc8.agent.harness.stages.b_usage_limit`).
+_NOT_REACHED = "_oc8_tool_not_reached"
+
+
+def mark_not_reached(exc: BaseException) -> BaseException:
+    """Mark `exc` as raised before the tool was reached, and return it."""
+    try:
+        setattr(exc, _NOT_REACHED, True)
+    except (AttributeError, TypeError):  # an exception type that takes no attributes
+        pass
+    return exc
+
+
+def never_reached_the_tool(exc: BaseException) -> bool:
+    """True for a failure that happened before any tool call was sent."""
+    return bool(getattr(exc, _NOT_REACHED, False))
+
+
 @dataclass
 class _Live:
     session: McpSession | HttpToolSession
@@ -129,6 +150,18 @@ async def _own(
 
 
 async def _start(
+    connection_id: uuid.UUID,
+    **kwargs: Any,
+) -> _Live:
+    """`_open`, with any failure marked as one that never reached a tool."""
+    try:
+        return await _open(connection_id, **kwargs)
+    except Exception as exc:
+        mark_not_reached(exc)
+        raise
+
+
+async def _open(
     connection_id: uuid.UUID,
     *,
     command: str,

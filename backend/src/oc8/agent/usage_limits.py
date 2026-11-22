@@ -3,7 +3,7 @@
 A mission line ("send no more than 50 mails a day") is a request to the model;
 a model having a bad day, or a mailbox full of strangers writing in, sends the
 51st anyway. A guardrail may therefore carry `limits`
-(`authz.pdp.UsageLimit`): which tools, how many successful calls, per UTC day
+(`authz.pdp.UsageLimit`): which tools, how many calls, per UTC day
 or hour. The count belongs to the agent and the connection (tool key), across
 all of its runs and tasks.
 
@@ -13,10 +13,14 @@ Three properties this deliberately has:
   single statement (`take`): two parallel runs at 49/50 cannot both get the
   50th call, because the second one's upsert waits on the first one's row
   lock and then sees 50.
-* **Only successful calls count.** The count is taken right before the call --
-  after every other gate let it through, so a refused or held call never
-  counts -- and given back (`give_back`) when the call failed. A call an
-  operator approved counts when it runs.
+* **Calls that reached the tool count, even if it reported an error.** The
+  count is taken right before the call -- after every other gate let it
+  through, so a call oc8 refused or held never counts -- and given back
+  (`give_back`) only when the call provably never reached the tool: a replay,
+  a call waiting for an answer, a connection that could not be opened. A call
+  that timed out, raised or returned an error keeps its count: the far system
+  may have acted (sent the mail) before it failed. A call an operator approved
+  counts when it runs.
 * **Calendar windows.** A day is a UTC calendar day, an hour a UTC clock hour,
   so "resets at 00:00 UTC" is a sentence the model and the admin can act on.
 
@@ -121,7 +125,7 @@ async def give_back(
     limit: UsageLimit,
     now: dt.datetime,
 ) -> None:
-    """Undo one `take` taken at `now` -- the call did not succeed."""
+    """Undo one `take` taken at `now` -- the call never reached the tool."""
     await db.execute(
         update(m.ToolUsageCounter)
         .where(
@@ -135,6 +139,31 @@ async def give_back(
         )
         .values(count=m.ToolUsageCounter.count - 1, updated_at=dt.datetime.now(dt.UTC))
     )
+
+
+async def used(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    tool_key: str,
+    limit: UsageLimit,
+    now: dt.datetime,
+) -> int:
+    """How many calls `limit`'s current window has counted. Read-only."""
+    count = (
+        await db.execute(
+            select(m.ToolUsageCounter.count).where(
+                m.ToolUsageCounter.tenant_id == tenant_id,
+                m.ToolUsageCounter.agent_id == agent_id,
+                m.ToolUsageCounter.tool_key == tool_key,
+                m.ToolUsageCounter.tools_key == limit.key,
+                m.ToolUsageCounter.period == limit.per,
+                m.ToolUsageCounter.window_start == window_start(limit.per, now),
+            )
+        )
+    ).scalar_one_or_none()
+    return int(count or 0)
 
 
 @dataclass(frozen=True)

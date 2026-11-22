@@ -10,7 +10,7 @@ the run's: the run's transaction stays open across every later model call, and
 a row lock held that long would make a second run of the same agent wait for
 the first to finish before it could send anything at all. Committed here, a
 count stays taken even if the run later fails -- right, because the mail went
-out -- and `settle` gives it back when the call itself did not succeed.
+out -- and `settle` gives it back only when the call never reached the tool.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.agent.usage_limits import give_back, limit_refusal, take
+from oc8.agent.usage_limits import give_back, limit_refusal, take, used
 from oc8.audit import append_event
 from oc8.authz.pdp import ToolPolicy, UsageLimit, usage_limits_for
 from oc8.realtime.emit import record_activity
@@ -41,7 +41,13 @@ class UsageHold:
     refusal: str | None = None
 
     async def settle(self, *, succeeded: bool) -> None:
-        """Keep the counts of a call that succeeded; give the others back."""
+        """Keep the counts of a call that reached the tool; give them back
+        only for one that provably never did (`succeeded=False`): refused or
+        held by oc8, a replay, waiting for an answer, or a connection that
+        could not be opened. A call that reached the tool keeps its count even
+        if it failed, timed out or was cancelled -- the far system may have
+        acted before it failed. (`succeeded` names the caller's question:
+        did the call happen?)"""
         if succeeded or not self.taken:
             return
         await _give_back_all(self, self.taken)
@@ -126,6 +132,49 @@ async def reserve_usage(
         now=now,
         taken=tuple(taken),
     )
+
+
+async def usage_full(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    tool_key: str | None,
+    tool: str,
+    policy: ToolPolicy | None,
+    now: dt.datetime | None = None,
+) -> str | None:
+    """Read-only: the refusal a call would get if it ran now, or None.
+
+    Asked before a call is parked for approval: a person should not be asked
+    to approve a call the limit would refuse anyway. Takes nothing -- the call
+    is counted (and may still be refused) when it actually runs."""
+    now = now or dt.datetime.now(dt.UTC)
+    limits = usage_limits_for(policy, tool) if tool_key else ()
+    if not limits:
+        return None
+    from oc8.db.session import tenant_session
+
+    async with tenant_session(tenant_id) as db:
+        for limit in sorted(limits, key=lambda lim: (lim.key, lim.per, lim.max)):
+            if (
+                await used(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    tool_key=tool_key or "",
+                    limit=limit,
+                    now=now,
+                )
+                >= limit.max
+            ):
+                return limit_refusal(limit, now)
+    return None
+
+
+def usage_limit_reason(refusal: str) -> str:
+    """The refusal as a policy reason: no "ERROR:" prefix, no advice to the model."""
+    reason = refusal.removeprefix("ERROR: ").strip()
+    return reason.split(" This is a policy decision", 1)[0]
 
 
 async def record_limit_refusal(

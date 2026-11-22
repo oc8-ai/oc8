@@ -770,7 +770,7 @@ class ConditionDTO(CamelModel):
 
 
 class UsageLimitDTO(CamelModel):
-    """ "At most `max` successful calls of `tools` per UTC `per`" --
+    """ "At most `max` calls of `tools` per UTC `per`" --
     `authz.pdp.UsageLimit`, as stored in a policy's `limits` and declared by a
     guardrail preset. Counted per agent and tool key by the core."""
 

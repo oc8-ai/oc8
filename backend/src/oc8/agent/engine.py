@@ -80,7 +80,12 @@ from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
-from oc8.agent.harness.stages.b_usage_limit import record_limit_refusal, reserve_usage
+from oc8.agent.harness.stages.b_usage_limit import (
+    record_limit_refusal,
+    reserve_usage,
+    usage_full,
+    usage_limit_reason,
+)
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
@@ -103,6 +108,7 @@ from oc8.agent.harness.step_timing import (
 from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import open_tool_session, resolve_auth_header
 from oc8.agent.mcp_env import resolve_mcp_env
+from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.offering import (
     allowed_connections_for_skills,
@@ -1550,6 +1556,7 @@ async def run_agent(
                             )
                             finished = held_hold.refusal
                         else:
+                            held_reached = True
                             try:
                                 finished = await server.call(tool_name, arguments)
                                 await record_for(
@@ -1597,8 +1604,10 @@ async def run_agent(
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
+                                held_reached = not never_reached_the_tool(exc)
                             if held_hold is not None:
-                                await held_hold.settle(succeeded=not finished.startswith("ERROR:"))
+                                # Reached the tool: counts, even if it failed.
+                                await held_hold.settle(succeeded=held_reached)
                             if held_direct and run_row is not None:
                                 # Ran through the grant: audited and counted
                                 # like the step loop's direct calls.
@@ -2745,6 +2754,26 @@ async def run_agent(
                             elif gate_verdict.effect == "deny":
                                 decision = Decision(Effect.DENY, gate_verdict.reason)
                             tool_span.set_attribute("decision", decision.effect.value)
+                        if decision.effect is Effect.REQUIRE_APPROVAL and (
+                            full := await usage_full(
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool_key=call_key,
+                                tool=auth_tc.name,
+                                policy=(
+                                    direct_limits(
+                                        direct_view,
+                                        connection_key=call_key or "",
+                                        narrowing=pinned["narrowing"] or {},
+                                    )
+                                    if direct_call
+                                    else tool_policies.get(call_key or "")
+                                ),
+                            )
+                        ):
+                            # Never ask a person to approve a call the usage
+                            # limit would refuse once approved.
+                            decision = Decision(Effect.DENY, usage_limit_reason(full))
                         if decision.effect is Effect.REQUIRE_APPROVAL:
                             task.state = "waiting_for_approval"
                             # Not over a pause or stop somebody made during the run: the
@@ -3292,9 +3321,24 @@ async def run_agent(
                                 tool_key=call_key,
                                 tool=auth_tc.name,
                                 # Through a grant, the departments' policies
-                                # decide the call, so theirs count it too.
+                                # decide the call, so theirs count it too. A
+                                # replay is not a new call: it gets its first
+                                # result back, even at the limit, and counts
+                                # nothing.
                                 policy=(
-                                    direct_limits(
+                                    None
+                                    if (
+                                        early_replay := await replay_for(
+                                            db,
+                                            tenant_id=tenant_id,
+                                            task_id=task.id,
+                                            tc=tc,
+                                            writes=writes,
+                                            idempotent=idempotent,
+                                        )
+                                    )
+                                    is not None
+                                    else direct_limits(
                                         direct_view,
                                         connection_key=call_key or "",
                                         narrowing=pinned["narrowing"] or {},
@@ -3342,19 +3386,15 @@ async def run_agent(
                                         auth_tc.name, tc.arguments, call_key, call_focus
                                     ),
                                 )
-                            replay = await replay_for(
-                                db,
-                                tenant_id=tenant_id,
-                                task_id=task.id,
-                                tc=tc,
-                                writes=writes,
-                                idempotent=idempotent,
-                            )
+                            replay = early_replay
                             if replay is not None:
-                                # The first result again, not a new call.
-                                await usage_hold.settle(succeeded=False)
+                                # The first result again, not a new call (and
+                                # counted nothing: see the reservation above).
                                 output = replay
                             else:
+                                # Whether the call reached the tool: only one
+                                # that never did gives its count back.
+                                _reached_tool = True
                                 if tc.id in precomputed_outputs:
                                     (
                                         output,
@@ -3405,10 +3445,10 @@ async def run_agent(
                                             ).total_seconds(),
                                         )
                                         output = f"ERROR: {exc}"
-                                # Only a successful call counts.
-                                await usage_hold.settle(
-                                    succeeded=tool_error is None and not output.startswith("ERROR:")
-                                )
+                                        _reached_tool = not never_reached_the_tool(exc)
+                                # A call that reached the tool counts, even if it
+                                # failed: the far system may have acted first.
+                                await usage_hold.settle(succeeded=_reached_tool)
                                 await remember_outward(
                                     db,
                                     tenant_id=tenant_id,

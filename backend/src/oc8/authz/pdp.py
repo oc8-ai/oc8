@@ -147,7 +147,8 @@ LIMIT_PERIODS = ("day", "hour")
 
 @dataclass(frozen=True)
 class UsageLimit:
-    """At most `max` successful calls of `tools` per `per` -- "50 mails a day".
+    """At most `max` calls of `tools` per `per` -- "50 mails a day". A call
+    counts once it reached the tool, even if the tool reported an error.
 
     Counted per agent and connection (tool key), across all of the agent's
     runs and tasks, by `oc8.agent.usage_limits`. This module only carries the

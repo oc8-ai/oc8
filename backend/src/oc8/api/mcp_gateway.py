@@ -48,9 +48,15 @@ from oc8.agent.control_tools import (
     has_readable_context,
 )
 from oc8.agent.engine import _authorize, _call_sig
-from oc8.agent.harness.stages.b_usage_limit import record_limit_refusal, reserve_usage
+from oc8.agent.harness.stages.b_usage_limit import (
+    record_limit_refusal,
+    reserve_usage,
+    usage_full,
+    usage_limit_reason,
+)
 from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import resolve_auth_header
+from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
     REFUSAL,
@@ -1072,6 +1078,22 @@ async def _call_tool(
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
+    if (
+        decision.effect is Effect.REQUIRE_APPROVAL
+        and conn is not None
+        and (
+            full := await usage_full(
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool_key=conn.name,
+                tool=tc.name,
+                policy=effective_tool_policies(frame, narrowing).get(conn.name),
+            )
+        )
+    ):
+        # Never ask a person to approve a call the usage limit would refuse
+        # once approved.
+        decision = Decision(Effect.DENY, usage_limit_reason(full))
 
     await append_event(
         db,
@@ -1273,7 +1295,8 @@ async def _call_tool(
             return _tool_result(REFUSAL.format(target=target), is_error=True)
 
     # Usage limits, last before the call: anything refused above never used up
-    # the agent's budget. Settled below -- a call that failed is given back.
+    # the agent's budget. Settled below -- given back only for a call that
+    # never reached the tool.
     usage_hold = await reserve_usage(
         tenant_id=run.tenant_id,
         agent_id=agent.id,
@@ -1350,10 +1373,13 @@ async def _call_tool(
             reusable=launch.reusable,
         )
     except Exception as exc:  # surface to the model, not as a broken server
-        await usage_hold.settle(succeeded=False)
+        # A call that reached the tool counts, even if it failed or timed out:
+        # the far system may have acted first. Only a session that never
+        # opened gives the count back.
+        await usage_hold.settle(succeeded=not never_reached_the_tool(exc))
         return _tool_result(f"ERROR: {exc}", is_error=True)
-    # A tool that answered with an error did not do what it was asked.
-    await usage_hold.settle(succeeded=not output.startswith("ERROR:"))
+    # Reached the tool: counts, even if the tool reported an error.
+    await usage_hold.settle(succeeded=True)
 
     # Now that the call has answered, the record's own name is available -- it is
     # in the RESULT, never in the arguments -- so the card can say WHICH ticket

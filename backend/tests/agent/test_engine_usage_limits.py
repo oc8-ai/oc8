@@ -65,15 +65,17 @@ class _Server:
 
 
 async def _agent(
-    db: Any, tenant: uuid.UUID, *, limits: list[dict[str, Any]], scopes: dict[str, list[str]]
+    db: Any,
+    tenant: uuid.UUID,
+    *,
+    limits: list[dict[str, Any]],
+    scopes: dict[str, list[str]],
+    approval_actions: list[str] | None = None,
 ) -> tuple[m.Agent, m.McpConnection]:
-    dept = m.Department(
-        tenant_id=tenant,
-        name="Postfach",
-        frame={
-            "tools": {"email": {"enabled": True, "read": True, "modify": True, "limits": limits}}
-        },
-    )
+    policy: dict[str, Any] = {"enabled": True, "read": True, "modify": True, "limits": limits}
+    if approval_actions:
+        policy["approval_actions"] = approval_actions
+    dept = m.Department(tenant_id=tenant, name="Postfach", frame={"tools": {"email": policy}})
     db.add(dept)
     await db.flush()
     model_config = m.ModelConfig(
@@ -172,11 +174,40 @@ async def test_the_call_over_the_limit_is_refused_audited_and_shown(
         assert any("Daily limit of 1" in e.message for e in shown)
 
 
-async def test_a_failed_call_does_not_use_up_the_limit(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+class _Answers(_Server):
+    """A server whose calls reach the tool and then go wrong in a given way."""
+
+    def __init__(self, tools: list[str], outcome: dict[str, BaseException | str]) -> None:
+        super().__init__(tools)
+        self.outcome = outcome
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        self.calls.append(name)
+        got = self.outcome.get(name)
+        if isinstance(got, BaseException):
+            raise got
+        return got if got is not None else f"{name} ok"
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        TimeoutError("the SMTP server did not answer in time"),
+        RuntimeError("connection reset after DATA"),
+        "ERROR: 550 mailbox unavailable",
+    ],
+    ids=["timeout", "exception", "error-result"],
+)
+async def test_a_call_that_reached_the_tool_keeps_its_count_even_when_it_failed(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: BaseException | str,
 ) -> None:
+    """A timed-out or failed send may still have gone out: the tool was
+    reached, so the count stays. Giving it back would let a flaky server send
+    more than the limit allows."""
     tenant = uuid.uuid4()
-    server = _Server(["mail_send", "mail_reply"], failures={"mail_send"})
+    server = _Answers(["mail_send", "mail_reply"], {"mail_send": outcome})
     _setup(
         monkeypatch,
         server,
@@ -188,9 +219,73 @@ async def test_a_failed_call_does_not_use_up_the_limit(
     )
     async with app_session(tenant) as db:
         agent, conn = await _agent(db, tenant, limits=SEND_ONCE, scopes=SCOPES)
-        await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
-    assert server.calls == ["mail_send", "mail_reply"]
+    assert server.calls == ["mail_send"]
+    assert "Daily limit of 1 reached" in str(result.tool_calls[1]["result"])
+
+
+async def test_an_identical_retry_at_the_limit_gets_its_first_result_back(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replayed write is not a new call: it is answered before the count
+    is asked, so a retry at 1/1 still gets the first result, not a refusal."""
+    tenant = uuid.uuid4()
+    server = _Server(["mail_send"])
+    same = {"to": "a@example.org", "subject": "Hi"}
+    _setup(
+        monkeypatch,
+        server,
+        [
+            _turn(ToolCall(id="c1", name="mail_send", arguments=same)),
+            _turn(ToolCall(id="c2", name="mail_send", arguments=same)),
+            _turn(),
+        ],
+    )
+    async with app_session(tenant) as db:
+        agent, conn = await _agent(db, tenant, limits=SEND_ONCE, scopes=SCOPES)
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
+
+    assert server.calls == ["mail_send"]
+    assert "limit" not in str(result.tool_calls[1]["result"]).lower()
+    assert "mail_send ok" in str(result.tool_calls[1]["result"])
+
+
+async def test_a_held_call_whose_limit_is_full_is_refused_not_parked(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Asking a person to approve a call the limit will refuse anyway wastes
+    their time: a full limit refuses before the approval is raised."""
+    tenant = uuid.uuid4()
+    server = _Server(["mail_send"])
+    _setup(
+        monkeypatch,
+        server,
+        [_turn(ToolCall(id="c1", name="mail_send", arguments={"to": "a@example.org"})), _turn()],
+    )
+    async with app_session(tenant) as db:
+        agent, conn = await _agent(
+            db,
+            tenant,
+            limits=[{"tools": ["mail_send"], "max": 0}],
+            scopes=SCOPES,
+            approval_actions=["modify"],
+        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
+        approvals = (
+            (
+                await db.execute(
+                    select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert result.status != "waiting_for_approval"
+    assert approvals == []
+    assert server.calls == []
+    assert "Daily limit of 0 reached for mail_send" in str(result.tool_calls[0]["result"])
 
 
 async def test_a_limited_read_is_never_prefetched_in_a_parallel_batch(

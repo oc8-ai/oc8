@@ -77,7 +77,12 @@ from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
 from oc8.agent.harness.stages.b_risk_tier import classify_tier
-from oc8.agent.harness.stages.b_usage_limit import record_limit_refusal, reserve_usage
+from oc8.agent.harness.stages.b_usage_limit import (
+    record_limit_refusal,
+    reserve_usage,
+    usage_full,
+    usage_limit_reason,
+)
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
@@ -99,6 +104,7 @@ from oc8.agent.harness.step_timing import (
 from oc8.agent.http_tools import resolve_http_login
 from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_env import has_oauth_ref
+from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
@@ -1101,6 +1107,9 @@ async def _finish_elicitation(
             output = held_hold.refusal
         else:
             dispatched = True
+            # Whether the call reached the tool: only one that never did (its
+            # environment or session could not be set up) gives its count back.
+            held_reached = False
             try:
                 # `ctx` is written back whole below: the call to action goes in too.
                 launch = await _mcp_env(conn, db, run, tool=tool, ctx=ctx)
@@ -1110,6 +1119,7 @@ async def _finish_elicitation(
                 command, args = wrap_with_requirements(
                     cfg.get("command", ""), cfg.get("args", []), cfg
                 )
+                held_reached = True
                 output = await mcp_pool.call(
                     conn.id,
                     command=command,
@@ -1161,8 +1171,10 @@ async def _finish_elicitation(
                 return "waiting_for_input", exc.message
             except Exception as exc:
                 output = f"ERROR: {exc}"
+                held_reached = held_reached and not never_reached_the_tool(exc)
             if held_hold is not None:
-                await held_hold.settle(succeeded=not output.startswith("ERROR:"))
+                # Reached the tool: counts, even if it failed.
+                await held_hold.settle(succeeded=held_reached)
         if not output.startswith("ERROR:"):
             # Linked like any tool result (the replay record above stays raw),
             # so the answered call's records carry oc8_url too.
@@ -2531,6 +2543,23 @@ async def _dispatch_one_tool(
         elif gate_verdict.effect == "deny":
             decision = Decision(Effect.DENY, gate_verdict.reason)
 
+    if (
+        decision.effect is Effect.REQUIRE_APPROVAL
+        and conn is not None
+        and (
+            full := await usage_full(
+                tenant_id=run.tenant_id,
+                agent_id=agent.id,
+                tool_key=conn.name,
+                tool=tc.name,
+                policy=effective_tool_policies(frame, pinned["narrowing"] or {}).get(conn.name),
+            )
+        )
+    ):
+        # Never ask a person to approve a call the usage limit would refuse
+        # once approved.
+        decision = Decision(Effect.DENY, usage_limit_reason(full))
+
     await append_event(
         db,
         tenant_id=run.tenant_id,
@@ -2952,7 +2981,21 @@ async def _dispatch_one_tool(
             agent_id=agent.id,
             tool_key=conn.name,
             tool=tc.name,
-            policy=effective_tool_policies(frame, pinned["narrowing"] or {}).get(conn.name),
+            # A replay is not a new call: it gets its first result back, even
+            # at the limit, and counts nothing.
+            policy=None
+            if (
+                early_replay := await replay_for(
+                    db,
+                    tenant_id=run.tenant_id,
+                    task_id=run.task_id,
+                    tc=tc,
+                    writes=writes,
+                    idempotent=idempotent,
+                )
+            )
+            is not None
+            else effective_tool_policies(frame, pinned["narrowing"] or {}).get(conn.name),
         )
     ).refusal is not None:
         # Last before the call: anything refused above never used up the
@@ -2988,19 +3031,14 @@ async def _dispatch_one_tool(
         # restarted task replaying a write must get the first result rather than
         # act twice. Reads are exempt on purpose -- deduplicating a search would
         # hide the very changes the agent is meant to observe.
-        replay = await replay_for(
-            db,
-            tenant_id=run.tenant_id,
-            task_id=run.task_id,
-            tc=tc,
-            writes=writes,
-            idempotent=idempotent,
-        )
+        replay = early_replay
         if replay is not None:
-            # The first result again, not a new call.
-            await usage_hold.settle(succeeded=False)
+            # The first result again, not a new call (and counted nothing).
             output = replay
         else:
+            # Whether the call reached the tool: only one that never did (its
+            # environment or session could not be set up) gives its count back.
+            reached_tool = precomputed is not None
             if precomputed is not None:
                 output, tool_error, precomputed_duration_ms = precomputed
             else:
@@ -3016,6 +3054,7 @@ async def _dispatch_one_tool(
                     command, args = wrap_with_requirements(
                         cfg.get("command", ""), cfg.get("args", []), cfg
                     )
+                    reached_tool = True
                     output = await mcp_pool.call(
                         conn.id,
                         command=command,
@@ -3049,11 +3088,11 @@ async def _dispatch_one_tool(
                         duration_s=(dt.datetime.now(dt.UTC) - started_at).total_seconds(),
                     )
                     output = f"ERROR: {exc}"
-            # Only a successful call counts; one waiting for an answer has not
+                    reached_tool = reached_tool and not never_reached_the_tool(exc)
+            # A call that reached the tool counts, even if it failed: the far
+            # system may have acted first. One waiting for an answer has not
             # happened yet and counts when it runs.
-            await usage_hold.settle(
-                succeeded=suspend is None and tool_error is None and not output.startswith("ERROR:")
-            )
+            await usage_hold.settle(succeeded=suspend is None and reached_tool)
             # Only a successful side effect is worth recording. Recording a failure
             # would answer a legitimate retry with the old error forever.
             # A precomputed read already ran; it still has to be remembered here.
