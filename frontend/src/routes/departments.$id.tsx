@@ -24,7 +24,7 @@ import { InlineRename } from "@/components/inline-rename";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
 import { MemoryEditor } from "@/components/memory-editor";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
-import type { Condition, GuardrailValue } from "@/components/guardrail-preset-picker";
+import type { Condition, GuardrailValue, UsageLimit } from "@/components/guardrail-preset-picker";
 import {
   ToolGuardrailTable,
   type ToolGuardrailRow,
@@ -838,6 +838,7 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
       approvalEur: typeof raw.approval_eur === "number" ? (raw.approval_eur as number) : null,
       only: Array.isArray(raw.only) ? (raw.only as string[]) : [],
       conditions: Array.isArray(raw.conditions) ? (raw.conditions as Condition[]) : [],
+      limits: Array.isArray(raw.limits) ? (raw.limits as UsageLimit[]) : [],
     };
   }
 
@@ -859,6 +860,7 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
         approval_actions: next.approvalActions,
         only: next.only,
         conditions: next.conditions,
+        limits: next.limits,
       },
     };
     return new Promise((resolve) => {
@@ -885,6 +887,7 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
         approvalEur: null,
         only: [],
         conditions: [],
+        limits: [],
       },
     );
   }

@@ -1512,6 +1512,7 @@ export function AgentGuardrailsPanel({
       approvalEur: src?.approvalEur ?? null,
       only: src?.only ?? [],
       conditions: src?.conditions ?? [],
+      limits: src?.limits ?? [],
     };
   }
 
@@ -1540,6 +1541,7 @@ export function AgentGuardrailsPanel({
         approval_actions: val.approvalActions,
         only: val.only,
         conditions: val.conditions,
+        limits: val.limits,
         connection_id:
           isEdited && connectionIdOverride !== undefined
             ? connectionIdOverride
@@ -1575,6 +1577,7 @@ export function AgentGuardrailsPanel({
         approvalEur: null,
         only: [],
         conditions: [],
+        limits: [],
       },
       connectionId,
     );
@@ -1592,6 +1595,7 @@ export function AgentGuardrailsPanel({
           approvalEur: frame[key]?.approvalEur ?? null,
           only: frame[key]?.only ?? [],
           conditions: frame[key]?.conditions ?? [],
+          limits: frame[key]?.limits ?? [],
         };
     // Mere presence in `narrowing` is NOT the signal -- every save rewrites
     // every currently-relevant key whether or not it was the one edited, so

@@ -2,6 +2,28 @@ import { useT } from "@/lib/i18n";
 import { useConnectionToolNames, type McpConnection } from "@/lib/hooks";
 import { GuardrailPresetPicker, type GuardrailValue } from "@/components/guardrail-preset-picker";
 import { GuardrailFunctionRules } from "@/components/guardrail-function-rules";
+import { GuardrailUsageLimits } from "@/components/guardrail-usage-limits";
+import { useAgentToolUsage } from "@/lib/hooks-agent-detail";
+
+// Today's usage is counted per agent, so only the agent view loads it -- in a
+// child, so the department view (and its tests) never needs a query client
+// for it.
+function AgentUsageLimits({
+  agentId,
+  toolKey,
+  ...props
+}: Omit<Parameters<typeof GuardrailUsageLimits>[0], "usage"> & {
+  agentId: string;
+  toolKey: string;
+}) {
+  const usage = useAgentToolUsage(agentId);
+  return (
+    <GuardrailUsageLimits
+      {...props}
+      usage={usage.data ? usage.data.filter((u) => u.toolKey === toolKey) : undefined}
+    />
+  );
+}
 
 // Renders inline, inside the table row `ToolGuardrailTable` expands into --
 // no backdrop, no fixed positioning, no close button of its own. Editing a
@@ -57,6 +79,10 @@ export function ToolGuardrailEditorPanel({
             {ceiling.approvalActions.length > 0 &&
               ` — ${t("approval for", "Freigabe für")}: ${ceiling.approvalActions.join(", ")}`}
             {ceiling.approvalEur != null && ` — ≥ ${ceiling.approvalEur} €`}
+            {(ceiling.limits ?? []).map(
+              (lim) =>
+                ` — ${t("at most", "höchstens")} ${lim.max} ${lim.per === "day" ? t("per day", "pro Tag") : t("per hour", "pro Stunde")}: ${lim.tools.join("/")}`,
+            )}
           </div>
         </div>
       )}
@@ -85,6 +111,18 @@ export function ToolGuardrailEditorPanel({
           approvalSuggestions={toolCatalog}
           onlyOptions={toolCatalog}
         />
+      )}
+
+      {agentId ? (
+        <AgentUsageLimits
+          agentId={agentId}
+          toolKey={toolKey}
+          value={value}
+          onChange={onChange}
+          toolCatalog={toolCatalog}
+        />
+      ) : (
+        <GuardrailUsageLimits value={value} onChange={onChange} toolCatalog={toolCatalog} />
       )}
 
       <div className="mt-5 flex gap-2">

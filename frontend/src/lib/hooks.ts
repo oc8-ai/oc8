@@ -66,6 +66,8 @@ export interface ToolPolicy {
   // Generic "with limits" rules -- see `Condition`
   // (@/components/guardrail-preset-picker). Mirrors `ToolPolicyDTO.conditions`.
   conditions?: import("@/components/guardrail-preset-picker").Condition[];
+  // Usage limits -- see `UsageLimit`. Mirrors `ToolPolicyDTO.limits`.
+  limits?: import("@/components/guardrail-preset-picker").UsageLimit[];
 }
 
 export interface AgentDetail extends Agent {

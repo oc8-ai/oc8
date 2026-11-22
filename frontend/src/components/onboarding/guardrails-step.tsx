@@ -43,6 +43,7 @@ export function GuardrailsStep({
     approvalEur: null,
     only: [],
     conditions: [],
+    limits: [],
   });
 
   const connection = connections.find((c) => c.id === connectionId);

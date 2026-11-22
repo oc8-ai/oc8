@@ -71,6 +71,12 @@ msgstr ""
 msgid "/summarise this conversation"
 msgstr ""
 
+msgid "+ Add limit"
+msgstr ""
+
+msgid "+ count also…"
+msgstr ""
+
 msgid "1 block"
 msgstr ""
 
@@ -711,6 +717,12 @@ msgid "Assignment cleared — that person’s token decides again."
 msgstr ""
 
 msgid "At least 8 characters"
+msgstr ""
+
+msgid "at most"
+msgstr ""
+
+msgid "At most this many successful calls of the listed functions together, per UTC day or hour. The next call is refused until the count resets."
 msgstr ""
 
 msgid "Attach a file"
@@ -1716,6 +1728,9 @@ msgid "Couldn't update schedule"
 msgstr ""
 
 msgid "Couldn't upload the file"
+msgstr ""
+
+msgid "Count also"
 msgstr ""
 
 msgid "Create"
@@ -3239,6 +3254,9 @@ msgstr ""
 msgid "Max. active follow-ups per person"
 msgstr ""
 
+msgid "Maximum calls"
+msgstr ""
+
 msgid "MCP Connections"
 msgstr ""
 
@@ -4133,6 +4151,15 @@ msgstr ""
 msgid "People"
 msgstr ""
 
+msgid "Per"
+msgstr ""
+
+msgid "per day"
+msgstr ""
+
+msgid "per hour"
+msgstr ""
+
 msgid "per-agent, optional"
 msgstr ""
 
@@ -4493,6 +4520,9 @@ msgstr ""
 msgid "Remove from project"
 msgstr ""
 
+msgid "Remove limit"
+msgstr ""
+
 msgid "Remove parameter"
 msgstr ""
 
@@ -4572,6 +4602,9 @@ msgid "Reset their two-factor authentication?"
 msgstr ""
 
 msgid "Reset two-factor"
+msgstr ""
+
+msgid "resets at"
 msgstr ""
 
 msgid "Resetting…"
@@ -5247,6 +5280,9 @@ msgid "Still in use"
 msgstr ""
 
 msgid "Stop"
+msgstr ""
+
+msgid "Stop counting"
 msgstr ""
 
 msgid "Stop run"
@@ -6239,6 +6275,9 @@ msgstr ""
 msgid "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures."
 msgstr ""
 
+msgid "Usage limits"
+msgstr ""
+
 msgid "USD per 1M tokens — editable"
 msgstr ""
 
@@ -6296,7 +6335,13 @@ msgstr ""
 msgid "used in 1 department"
 msgstr ""
 
+msgid "Used this hour"
+msgstr ""
+
 msgid "used this month"
+msgstr ""
+
+msgid "Used today"
 msgstr ""
 
 msgid "User created"

@@ -87,6 +87,26 @@ export function useAgent(agentId: string) {
   });
 }
 
+// GET /agents/{id}/tool-usage -- mirrors `ToolUsageDTO`: how much of each
+// usage limit the agent has used in the current UTC window. A limit nothing
+// has counted against yet has no row (0 used).
+export interface ToolUsage {
+  toolKey: string;
+  tools: string[];
+  per: "day" | "hour";
+  used: number;
+  resetsAt: string;
+}
+
+export function useAgentToolUsage(agentId: string) {
+  return useQuery({
+    queryKey: ["agents", agentId, "tool-usage"],
+    queryFn: () => api.get<ToolUsage[]>(`/agents/${encodeURIComponent(agentId)}/tool-usage`),
+    enabled: !!agentId,
+    refetchInterval: 60_000,
+  });
+}
+
 // PUT /agents/{id}/narrowing expects { narrowing: Record<string, unknown> }
 // (NarrowingRequest in backend/src/oc8/schemas/requests.py:23).
 export function useUpdateNarrowing(agentId: string) {
