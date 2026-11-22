@@ -113,12 +113,14 @@ it.
 
 **Taking a file.** Mark the parameter in the tool's input schema with
 `"x-oc8-file": true`, on a property, an array's `items` or `prefixItems`, an
-object's `additionalProperties` or `patternProperties`, at any depth, also
+object's `additionalProperties`, at any depth, also
 behind `anyOf`/`oneOf`/`allOf`, `if`/`then`/`else` and local `$ref`s
 (`#/$defs/...`, `#/definitions/...`). A recursive schema is followed 12
 levels deep, a `$ref` is never re-entered on its own path, and one schema's
 walk stops after 10,000 nodes; a file parameter past those limits is not
-resolved (the tool receives the bare id and should refuse it):
+resolved (the tool receives the bare id and should refuse it). So is a
+marker under `patternProperties`: core never runs a tool server's regex.
+In every case the marker is still removed from the model's copy:
 
 ```python
 "attachments": {

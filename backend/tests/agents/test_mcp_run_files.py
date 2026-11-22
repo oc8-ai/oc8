@@ -898,11 +898,6 @@ def test_the_walk_stops_at_its_budget_and_says_so(
             ["keep", "<a>"],
         ),
         (
-            {"type": "object", "patternProperties": {"^file_": _MARKED}},
-            {"file_a": "a", "other": "b"},
-            {"file_a": "<a>", "other": "b"},
-        ),
-        (
             {
                 "type": "object",
                 "if": {"properties": {"kind": {"const": "file"}}},
@@ -913,7 +908,7 @@ def test_the_walk_stops_at_its_budget_and_says_so(
             {"kind": "file", "value": "<a>"},
         ),
     ],
-    ids=["prefixItems", "patternProperties", "if_then_else"],
+    ids=["prefixItems", "if_then_else"],
 )
 async def test_the_other_schema_keywords_take_files_too(
     schema: dict[str, Any], arguments: Any, expected: Any
@@ -957,3 +952,32 @@ def test_a_property_named_like_the_marker_is_kept() -> None:
     assert shown["properties"][FILE_MARKER] == {"type": "boolean"}
     assert shown["required"] == [FILE_MARKER]
     assert FILE_MARKER not in shown["properties"]["f"]
+
+
+def test_a_server_pattern_is_never_run_and_its_marker_is_still_stripped() -> None:
+    """A tool server's regex is not run (a catastrophic one would hold the
+    event loop): a file under `patternProperties` is not resolved -- the bare
+    id reaches the tool, which refuses it -- but the model sees no marker."""
+    import time
+
+    from oc8.agent.run_files import file_paths, model_schema
+
+    schema = {
+        "type": "object",
+        "properties": {"to": {"type": "string"}},
+        "patternProperties": {"^(a+)+$": _MARKED},
+    }
+    started = time.perf_counter()
+    assert file_paths(schema) == []
+    shown = model_schema(schema)
+    assert time.perf_counter() - started < 0.1
+    assert FILE_MARKER not in json.dumps(shown)
+    assert "file id" in shown["patternProperties"]["^(a+)+$"]["description"]
+
+
+async def test_arguments_under_a_pattern_pass_unresolved() -> None:
+    from oc8.agent.run_files import file_paths, resolve_file_arguments
+
+    schema = {"type": "object", "patternProperties": {"^(a+)+$": _MARKED}}
+    arguments = {"a" * 40 + "!": "x"}
+    assert await resolve_file_arguments(arguments, file_paths(schema), None) == arguments

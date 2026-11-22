@@ -302,17 +302,13 @@ class AnyKey:
     declared: frozenset[str] = frozenset()
 
 
-@dataclass(frozen=True)
-class PatternKey:
-    """A path step into every value of an object whose key matches
-    `pattern` (`patternProperties`)."""
-
-    pattern: str
-
-
 #: One step of a path: a property name, "*" for every array item, an index
 #: for one item (`prefixItems`), or a step into a map's other values.
-PathStep = str | int | AnyKey | PatternKey
+#: `patternProperties` is not followed: that would run the tool server's
+#: regex on the event loop (a catastrophic one holds it). A file marked
+#: there is not resolved; the tool gets the bare id and refuses it, and
+#: `model_schema` still strips the marker.
+PathStep = str | int | AnyKey
 #: A path to a marked value.
 FilePath = tuple[PathStep, ...]
 
@@ -349,10 +345,6 @@ def _children(node: Mapping[str, Any]) -> Iterator[tuple[Any, PathStep | None]]:
     properties = properties if isinstance(properties, Mapping) else {}
     for name, sub in properties.items():
         yield sub, str(name)
-    patterns = node.get("patternProperties")
-    if isinstance(patterns, Mapping):
-        for pattern, sub in patterns.items():
-            yield sub, PatternKey(str(pattern))
     extra = node.get("additionalProperties")
     if isinstance(extra, Mapping):
         yield extra, AnyKey(frozenset(map(str, properties)))
@@ -449,13 +441,6 @@ def model_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
     return copied
 
 
-def _matches(pattern: str, name: str) -> bool:
-    try:
-        return re.search(pattern, name) is not None
-    except re.error:
-        return False
-
-
 async def resolve_file_arguments(
     arguments: dict[str, Any], paths: list[FilePath], files: RunFiles | None
 ) -> dict[str, Any]:
@@ -471,12 +456,7 @@ async def resolve_file_arguments(
                 references.append((parent, key, node))
             return
         head, rest = path[0], path[1:]
-        if isinstance(head, PatternKey):
-            if isinstance(node, dict):
-                for name in list(node):
-                    if _matches(head.pattern, name):
-                        collect(node[name], rest, node, name)
-        elif isinstance(head, int):
+        if isinstance(head, int):
             if isinstance(node, list) and head < len(node):
                 collect(node[head], rest, node, head)
         elif isinstance(head, AnyKey):
