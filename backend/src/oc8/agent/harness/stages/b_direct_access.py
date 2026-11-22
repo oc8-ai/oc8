@@ -24,10 +24,10 @@ from oc8.authz.pdp import (
     Decision,
     Effect,
     ToolPolicy,
-    UsageLimit,
     authorize_tool_call,
     effective_tool_policies,
     frame_denial,
+    merge_limits,
     required_right,
 )
 
@@ -124,12 +124,13 @@ def direct_limits(
     the departments behind the grant sets (narrowed by the Copilot's own),
     counted against the Copilot. A policy only adds a gate, so all of them
     apply; None when none sets one."""
-    limits: list[UsageLimit] = []
-    for _department, raw in view.granted.get(connection_key, ()):
-        for limit in _narrowed(raw, connection_key, narrowing).limits:
-            if limit not in limits:
-                limits.append(limit)
-    return ToolPolicy(enabled=True, limits=tuple(limits)) if limits else None
+    limits = merge_limits(
+        *(
+            _narrowed(raw, connection_key, narrowing).limits
+            for _department, raw in view.granted.get(connection_key, ())
+        )
+    )
+    return ToolPolicy(enabled=True, limits=limits) if limits else None
 
 
 _RANK = {Effect.ALLOW: 0, Effect.REQUIRE_APPROVAL: 1, Effect.DENY: 2}

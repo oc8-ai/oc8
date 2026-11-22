@@ -106,3 +106,44 @@ def test_has_usage_limit_reads_the_policy_of_the_calls_connection() -> None:
 def test_limits_that_are_not_a_list_are_refused() -> None:
     with pytest.raises(ValueError):
         ToolPolicy.from_json({"enabled": True, "limits": "fifty"})
+
+
+def test_the_same_limit_in_frame_and_narrowing_counts_once_with_the_tighter_max() -> None:
+    """An agent's narrowing often repeats the frame's limit (the editor saves
+    what it shows). Counted twice, every call would use up two of the budget."""
+    frame = {
+        "tools": {
+            "email": {
+                "enabled": True,
+                "modify": True,
+                "limits": [
+                    {"tools": ["mail_send", "mail_reply"], "max": 50},
+                ],
+            }
+        }
+    }
+    narrowing = {
+        "tools": {
+            "email": {
+                "enabled": True,
+                "modify": True,
+                "limits": [
+                    {"tools": ["mail_reply", "mail_send"], "max": 20},
+                    {"tools": ["mail_send"], "max": 5, "per": "hour"},
+                ],
+            }
+        }
+    }
+    policy = effective_tool_policies(frame, narrowing)["email"]
+    assert [lim.to_json() for lim in policy.limits] == [
+        {"tools": ["mail_send", "mail_reply"], "max": 20, "per": "day"},
+        {"tools": ["mail_send"], "max": 5, "per": "hour"},
+    ]
+    doubled = ToolPolicy(
+        enabled=True,
+        limits=(
+            UsageLimit(tools=("mail_send",), max=9),
+            UsageLimit(tools=("mail_send",), max=3),
+        ),
+    )
+    assert [lim.max for lim in usage_limits_for(doubled, "mail_send")] == [3]

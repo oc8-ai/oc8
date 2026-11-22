@@ -367,7 +367,7 @@ def effective_tool_policies(
             conditions=f.conditions + (no.conditions if no else ()),
             # Union, like `conditions`: an agent may count tighter, never
             # stop counting what its department counts.
-            limits=f.limits + (no.limits if no else ()),
+            limits=merge_limits(f.limits, no.limits if no else ()),
         )
     # Agent-exclusive grants: a narrowing key with no frame counterpart at
     # all. There is nothing to intersect against, so the narrowing term IS
@@ -775,11 +775,27 @@ def frame_denial(
     return None
 
 
+def merge_limits(*groups: tuple[UsageLimit, ...]) -> tuple[UsageLimit, ...]:
+    """The union of several policies' limits, one per counted window: the
+    same tools and period (in any order) is ONE counter, so it appears once,
+    with the tightest `max` -- a narrowing may tighten a frame's limit, never
+    loosen it, and repeating it must not count each call twice."""
+    merged: dict[tuple[str, str], UsageLimit] = {}
+    for group in groups:
+        for lim in group:
+            seen = merged.get((lim.key, lim.per))
+            if seen is None:
+                merged[(lim.key, lim.per)] = lim
+            elif lim.max < seen.max:
+                merged[(lim.key, lim.per)] = UsageLimit(tools=seen.tools, max=lim.max, per=seen.per)
+    return tuple(merged.values())
+
+
 def usage_limits_for(policy: ToolPolicy | None, tool: str) -> tuple[UsageLimit, ...]:
     """The usage limits that count a call of `tool` under `policy`."""
     if policy is None:
         return ()
-    return tuple(lim for lim in policy.limits if lim.covers(tool))
+    return merge_limits(tuple(lim for lim in policy.limits if lim.covers(tool)))
 
 
 def has_usage_limit(
