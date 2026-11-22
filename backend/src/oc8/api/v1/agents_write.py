@@ -20,6 +20,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.hire import create_hire_request, require_hire_approval
@@ -52,6 +53,7 @@ from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
+from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.login import login_chosen
 from oc8.connections.tool_connection import not_retired
 from oc8.connections.usable import system_tool_scopes
@@ -117,6 +119,21 @@ async def _load_agent(db: DbSession, agent_id: uuid.UUID) -> m.Agent:
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     return agent
+
+
+async def reject_unknown_limit_tools(
+    db: AsyncSession, tenant_id: uuid.UUID, narrowing: Any
+) -> None:
+    """422 for a narrowing limit naming a tool its connection does not have."""
+    raw_tools = narrowing.get("tools", {}) if isinstance(narrowing, dict) else {}
+    if not isinstance(raw_tools, dict):
+        return
+    unknown = await unknown_limit_tools(db, tenant_id=tenant_id, tools=raw_tools)
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"error": "limit_names_unknown_tools", "violations": unknown},
+        )
 
 
 def reject_malformed_policies(narrowing: Any) -> None:
@@ -262,6 +279,7 @@ async def create_agent(
 
     if body.narrowing:
         reject_malformed_policies(body.narrowing)
+        await reject_unknown_limit_tools(db, actor.principal.tenant_id, body.narrowing)
         violations = narrowing_within_frame(dept.frame, body.narrowing)
         if violations:
             raise HTTPException(
@@ -410,6 +428,7 @@ async def set_narrowing(
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
     reject_malformed_policies(body.narrowing)
+    await reject_unknown_limit_tools(db, principal.tenant_id, body.narrowing)
     violations = narrowing_within_frame(frame, body.narrowing)
     if violations:
         raise HTTPException(

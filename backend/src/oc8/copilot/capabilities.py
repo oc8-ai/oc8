@@ -61,6 +61,7 @@ from oc8.capas.service import (
     install_with_dependencies,
     validate_setup_values,
 )
+from oc8.connections.limit_tools import connection_tool_names, unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
@@ -963,6 +964,14 @@ async def apply_operation(
             raise InvalidOperation() from exc
         if outside:
             raise InvalidOperation("system_outside_frame")
+        if await unknown_limit_tools(
+            db,
+            tenant_id=agent.tenant_id,
+            tools=operation.narrowing.get("tools", {})
+            if isinstance(operation.narrowing, dict)
+            else {},
+        ):
+            raise InvalidOperation()
         raw_tools = (
             operation.narrowing.get("tools", {}) if isinstance(operation.narrowing, dict) else {}
         )
@@ -1302,23 +1311,11 @@ async def _apply_board_update(
 
 def _connection_tool_names(conn: m.McpConnection) -> frozenset[str]:
     """The real, manifest-declared function catalog for `conn` -- the same
-    catalog `GET /mcp/connections/{name}/tool-names` serves the frontend, read
-    through `resolve_tool_pack_connection` rather than `api/v1/mcp.py` to keep
-    this service-layer module free of API route imports. Empty (never raises)
-    when the plugin was removed from disk or ships no tool pack: callers must
-    treat that as "no known function", the same fail-closed default as an
-    unrecognised name.
-    """
-    cfg = conn.config if isinstance(conn.config, dict) else {}
-    plugin_name = cfg.get("_plugin_name")
-    connection_key = cfg.get("_connection_key")
-    if not isinstance(plugin_name, str) or not isinstance(connection_key, str):
-        return frozenset()
-    manifest_conn = resolve_tool_pack_connection(plugin_name, connection_key)
-    if manifest_conn is None:
-        return frozenset()
-    scopes = manifest_conn.scopes if isinstance(manifest_conn.scopes, dict) else {}
-    return frozenset({*scopes.get("read", []), *scopes.get("modify", [])})
+    catalog `GET /mcp/connections/{name}/tool-names` serves the frontend.
+    Empty (never raises) when the plugin was removed from disk or ships no
+    tool pack: callers must treat that as "no known function", the same
+    fail-closed default as an unrecognised name."""
+    return connection_tool_names(conn)
 
 
 def _connection_guardrail_attributes(conn: m.McpConnection) -> list[GuardrailAttribute]:

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -162,3 +162,61 @@ async def test_an_agent_limit_above_the_departments_is_a_422(
         )
     assert r.status_code == 422, r.text
     assert "The department allows at most 50 per day" in r.text
+
+
+@pytest.fixture
+def _capas(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from pathlib import Path
+
+    from oc8.config import get_settings
+
+    monkeypatch.setenv("OC8_CAPAS_PATH", str(Path(__file__).resolve().parents[3] / "capas"))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+async def _with_email_connection(app_session: AppSessionFactory, tenant: uuid.UUID) -> None:
+    async with app_session(tenant) as db:
+        db.add(
+            m.McpConnection(
+                tenant_id=tenant,
+                name="email",
+                server_url="",
+                transport="stdio",
+                config={"_plugin_name": "email", "_connection_key": "primary"},
+            )
+        )
+
+
+TYPO = {"tools": ["mail_sned"], "max": 5}
+
+
+async def test_a_department_limit_on_an_unknown_tool_is_a_422(
+    app_session: AppSessionFactory, _capas: None
+) -> None:
+    tenant, dept_id, _agent = await _seed(app_session)
+    await _with_email_connection(app_session, tenant)
+    async with _http() as http:
+        r = await http.put(
+            f"/api/v1/departments/{dept_id}/tools",
+            json=_email(limits=[TYPO]),
+            headers=_headers(tenant),
+        )
+    assert r.status_code == 422, r.text
+    assert "mail_sned" in r.text
+
+
+async def test_an_agent_limit_on_an_unknown_tool_is_a_422(
+    app_session: AppSessionFactory, _capas: None
+) -> None:
+    tenant, _dept, agent_id = await _seed(app_session)
+    await _with_email_connection(app_session, tenant)
+    async with _http() as http:
+        r = await http.put(
+            f"/api/v1/agents/{agent_id}/narrowing",
+            json={"narrowing": _email(limits=[TYPO])},
+            headers=_headers(tenant),
+        )
+    assert r.status_code == 422, r.text
+    assert "mail_sned" in r.text

@@ -98,6 +98,23 @@ class SandboxManifest(BaseModel):
     registry_credential: str = ""
 
 
+def check_policy_limits(policies: dict[str, Any]) -> dict[str, Any]:
+    """A template's frame or narrowing is an untyped dict, so nothing else
+    reads its `limits` before a run does: parse them here, so a malformed one
+    fails the install with a clear message instead of every later run."""
+    tools = policies.get("tools") if isinstance(policies, dict) else None
+    if not isinstance(tools, dict):
+        return policies
+    for key, raw in tools.items():
+        if not isinstance(raw, dict) or "limits" not in raw:
+            continue
+        try:
+            parse_usage_limits(raw["limits"])
+        except ValueError as exc:
+            raise ValueError(f"tool '{key}' has a malformed usage limit: {exc}") from exc
+    return policies
+
+
 class TemplateAgentTrigger(BaseModel):
     """A cron schedule an agent template ships. The ONLY trigger kind a
     template may declare -- a webhook trigger's token is a secret and an
@@ -120,6 +137,12 @@ class TemplateAgent(BaseModel):
     skills: list[str] = []
     persona: str = ""
     narrowing: dict[str, Any] = {}
+
+    @field_validator("narrowing")
+    @classmethod
+    def _narrowing_limits_parse(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return check_policy_limits(v)
+
     # Per-agent step budget (0 = framework default). Lets an agent plugin give a
     # long, multi-record workflow more room without touching the core.
     max_steps: int = 0
@@ -161,6 +184,11 @@ class DepartmentTemplateSpec(BaseModel):
     frame: dict[str, Any] = {}
     agents: list[TemplateAgent] = []
     starter_tasks: list[dict[str, Any]] = []  # reserved; not instantiated in v1
+
+    @field_validator("frame")
+    @classmethod
+    def _frame_limits_parse(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return check_policy_limits(v)
 
 
 class SkillTemplateSpec(BaseModel):

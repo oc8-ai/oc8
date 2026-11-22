@@ -211,3 +211,33 @@ async def test_the_copilot_cannot_raise_the_departments_limit(app_session, acme_
         )
         with pytest.raises(ProposalRejected):
             await apply_proposal(db, proposal.id, actor)
+
+
+async def test_a_narrowing_limit_on_an_unknown_tool_is_refused(app_session, acme_tenant) -> None:  # type: ignore[no-untyped-def]
+    from oc8.copilot.proposals import ProposalRejected
+
+    async with app_session(acme_tenant) as db:
+        agent = await _mail_agent(db, acme_tenant, {})
+        actor = _actor(acme_tenant)
+        proposal = await create_proposal(
+            db,
+            actor,
+            [
+                {
+                    "type": "agent.narrowing.set",
+                    "agentId": str(agent.id),
+                    "narrowing": {
+                        "tools": {
+                            "email": {
+                                "enabled": True,
+                                "read": True,
+                                "limits": [{"tools": ["mail_sned"], "max": 5}],
+                            }
+                        }
+                    },
+                }
+            ],
+        )
+        with pytest.raises(ProposalRejected):
+            await apply_proposal(db, proposal.id, actor)
+        assert "limits" not in str(agent.narrowing)

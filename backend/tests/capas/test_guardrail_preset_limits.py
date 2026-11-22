@@ -96,3 +96,17 @@ def test_a_library_entry_parses_its_limits() -> None:
     assert [lim.to_json() for lim in entry.limits] == [
         {"tools": ["create_record"], "max": 20, "per": "day"}
     ]
+
+
+def test_a_malformed_limit_in_a_department_template_fails_the_manifest() -> None:
+    """Template frames and narrowings are untyped dicts: a bad limit there
+    must fail at install with a clear message, not break every run later."""
+    from oc8.capas.manifest import DepartmentTemplateSpec, TemplateAgent
+
+    bad = {"tools": {"email": {"enabled": True, "limits": [{"tools": [], "max": 5}]}}}
+    with pytest.raises(ValueError, match=r"email.*usage limit"):
+        DepartmentTemplateSpec.model_validate({"frame": bad})
+    with pytest.raises(ValueError, match=r"email.*usage limit"):
+        TemplateAgent.model_validate({"name": "Mila", "narrowing": bad})
+    ok = {"tools": {"email": {"enabled": True, "limits": [SENDING]}}}
+    assert DepartmentTemplateSpec.model_validate({"frame": ok}).frame == ok

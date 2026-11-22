@@ -55,6 +55,7 @@ from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
+from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.schemas.base import CamelModel
@@ -597,6 +598,13 @@ async def set_department_tools(
     frame = dict(dept.frame or {})
     old_tools = dict(frame.get("tools", {}))
     new_tools = {k: v.model_dump() for k, v in body.tools.items()}
+
+    unknown = await unknown_limit_tools(db, tenant_id=_p.tenant_id, tools=new_tools)
+    if unknown:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"error": "limit_names_unknown_tools", "violations": unknown},
+        )
 
     value_spec_violations: list[dict[str, str]] = []
     for key, policy in body.tools.items():
