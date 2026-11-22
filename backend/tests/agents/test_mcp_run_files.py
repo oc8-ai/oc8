@@ -611,3 +611,79 @@ async def test_the_agents_instruction_files_are_visible_and_no_other_agents(
     assert await _resolves(files, "policy.pdf") == str(policy.id)
     assert await _resolves(files, str(foreign.id)) is None
     assert await _resolves(files, "x.pdf") is None
+
+
+# --- incoming caps ----------------------------------------------------------------
+
+
+def _images(count: int) -> list[Any]:
+    import mcp.types as types
+
+    return [
+        types.ImageContent(type="image", data=base64.b64encode(PNG).decode(), mime_type="image/png")
+        for _ in range(count)
+    ]
+
+
+async def _kept(app_session: Any, tenant: uuid.UUID, run: m.AgentRun) -> int:
+    async with app_session(tenant) as db:
+        rows = await db.execute(
+            select(m.FileAttachment.id).where(
+                m.FileAttachment.owner_type == "agent_run", m.FileAttachment.owner_id == run.id
+            )
+        )
+        return len(rows.all())
+
+
+async def test_one_result_keeps_at_most_so_many_files(
+    app_session: Any, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent import run_files
+
+    monkeypatch.setattr(run_files, "MAX_KEPT_FILES_PER_RESULT", 2)
+    tenant, agent, run = await _setup(app_session)
+    with bind_run_files(_files(app_session, tenant, agent, run)):
+        output = await run_files.render_content(_images(3))
+    assert await _kept(app_session, tenant, run) == 2
+    assert output.count("File kept for this run") == 2
+    assert output.count("not kept: limit") == 1
+
+
+async def test_one_result_keeps_at_most_so_many_bytes(
+    app_session: Any, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent import run_files
+
+    monkeypatch.setattr(run_files, "MAX_KEPT_BYTES_PER_RESULT", 2 * len(PNG))
+    tenant, agent, run = await _setup(app_session)
+    with bind_run_files(_files(app_session, tenant, agent, run)):
+        output = await run_files.render_content(_images(3))
+    assert await _kept(app_session, tenant, run) == 2
+    assert output.count("not kept: limit") == 1
+
+
+def test_the_incoming_caps_are_what_the_contract_says() -> None:
+    from oc8.agent import run_files
+
+    assert run_files.MAX_KEPT_FILES_PER_RESULT == 20
+    assert run_files.MAX_KEPT_BYTES_PER_RESULT == 50 * 1024 * 1024
+
+
+async def test_text_is_extracted_off_the_event_loop(
+    app_session: Any, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+
+    from oc8.storage import attachments
+
+    threads: list[threading.Thread] = []
+
+    def recording_extract(**kw: Any) -> str:
+        threads.append(threading.current_thread())
+        return "text"
+
+    monkeypatch.setattr(attachments, "extract_text", recording_extract)
+    tenant, _agent, run = await _setup(app_session)
+    row = await _stored(app_session, tenant, "agent_run", run.id, "a.pdf")
+    assert row.extracted_text == "text"
+    assert threads and threads[0] is not threading.main_thread()

@@ -81,6 +81,11 @@ _FILE_HINT = (
 #: file's content is loaded.
 MAX_FILE_REFERENCES = 20
 MAX_FILE_BYTES_PER_CALL = 50 * 1024 * 1024
+#: The other direction: one tool result keeps at most this many files and
+#: this many bytes of them; the rest are named "not kept", so a tool cannot
+#: fill the object store (or the event loop, extracting text) in one answer.
+MAX_KEPT_FILES_PER_RESULT = 20
+MAX_KEPT_BYTES_PER_RESULT = 50 * 1024 * 1024
 
 SessionOpener = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
 
@@ -402,6 +407,7 @@ async def render_content(blocks: list[Any]) -> str:
     """A tool result's content as the text the model reads."""
     files = current_run_files()
     parts: list[str] = []
+    kept_files = kept_bytes = 0
     for index, block in enumerate(blocks):
         text = getattr(block, "text", None)
         if isinstance(text, str):
@@ -417,7 +423,22 @@ async def render_content(blocks: list[Any]) -> str:
         name, mime, raw = found
         if files is None:
             parts.append(_not_kept(name, mime, len(raw), "this call is not part of an agent run"))
+        elif (
+            kept_files >= MAX_KEPT_FILES_PER_RESULT
+            or kept_bytes + len(raw) > MAX_KEPT_BYTES_PER_RESULT
+        ):
+            parts.append(
+                _not_kept(
+                    name,
+                    mime,
+                    len(raw),
+                    f"limit (one tool result keeps at most {MAX_KEPT_FILES_PER_RESULT} "
+                    f"files, {_size(MAX_KEPT_BYTES_PER_RESULT)} together)",
+                )
+            )
         else:
+            kept_files += 1
+            kept_bytes += len(raw)
             parts.append(await files.keep(name=name, content_type=mime, raw=raw))
     return "\n".join(parts)
 

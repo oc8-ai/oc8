@@ -106,8 +106,10 @@ type allowlist as every other run file, and the model reads a line such as
 
 in its place. A type the allowlist refuses, or a call made outside an agent
 run (the connection test, say), is named in a `not kept` line instead; the
-bytes are never handed to the model. Put whatever else the model should
-read (ids, sizes) in a `TextContent` next to it.
+bytes are never handed to the model. One tool result keeps at most 20 files
+and 50 MB of them together; the rest are named `not kept: limit`. Put
+whatever else the model should read (ids, sizes) in a `TextContent` next to
+it.
 
 **Taking a file.** Mark the parameter in the tool's input schema with
 `"x-oc8-file": true`, on a property or on an array's `items`, at any depth:
