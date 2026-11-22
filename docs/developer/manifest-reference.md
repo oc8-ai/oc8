@@ -136,7 +136,10 @@ a file id goes there. A run may hand over its own files, those of the same
 agent's other runs, the agent's instruction files and the files attached in
 the run's own chat — always within its tenant. Anything else, and any file
 reference outside an agent run, fails the call before it leaves, with the
-same answer whether the file exists or not.
+same answer whether the file exists or not. One call may name at most 20 files
+(a repeat counts again) and at most 50 MB of distinct files; each distinct
+file is loaded once however often it is named, and both limits are checked
+before any content is loaded.
 
 ## Triggers: `[[plugin.triggers]]`
 

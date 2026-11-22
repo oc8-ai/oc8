@@ -318,3 +318,96 @@ async def test_arguments_without_files_pass_unchanged(tmp_path: Path) -> None:
     async with McpSession(command, args) as session:
         output = await session.call("send", {"to": "a@example.com", "attachments": []})
     assert json.loads(output) == {"to": "a@example.com", "attachments": []}
+
+
+# --- per-call caps --------------------------------------------------------------
+
+
+async def test_a_repeated_file_is_loaded_once_and_its_bytes_count_once(
+    tmp_path: Path, app_session: Any, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent import run_files
+
+    tenant, agent, run = await _setup(app_session)
+    own = await _stored(app_session, tenant, "agent_run", run.id, "report.pdf")
+    # Room for the file once, not twice: a repeat must not count again.
+    monkeypatch.setattr(run_files, "MAX_FILE_BYTES_PER_CALL", len(PDF) + 1)
+    loads: list[str] = []
+    real_get = s3.get_object
+
+    async def counting_get(key: str) -> bytes:
+        loads.append(key)
+        return await real_get(key)
+
+    monkeypatch.setattr(s3, "get_object", counting_get)
+    command, args = _server(tmp_path)
+    async with McpSession(command, args) as session:
+        with bind_run_files(_files(app_session, tenant, agent, run)):
+            output = await session.call(
+                "send",
+                {
+                    "attachments": [{"file": str(own.id)}, {"file": "report.pdf"}],
+                    "cover": str(own.id),
+                },
+            )
+    sent = json.loads(output)
+    assert [a["file"]["file_id"] for a in sent["attachments"]] == [str(own.id)] * 2
+    assert sent["cover"]["content_base64"] == base64.b64encode(PDF).decode()
+    assert loads == [own.bucket_key]
+
+
+async def test_too_many_references_are_refused_before_anything_loads(
+    tmp_path: Path, app_session: Any, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent import run_files
+
+    tenant, agent, run = await _setup(app_session)
+    own = await _stored(app_session, tenant, "agent_run", run.id, "report.pdf")
+    loads: list[str] = []
+
+    async def counting_get(key: str) -> bytes:
+        loads.append(key)
+        return PDF
+
+    monkeypatch.setattr(s3, "get_object", counting_get)
+    too_many = run_files.MAX_FILE_REFERENCES + 1
+    command, args = _server(tmp_path)
+    async with McpSession(command, args) as session:
+        with bind_run_files(_files(app_session, tenant, agent, run)):
+            with pytest.raises(McpToolError, match=f"at most {run_files.MAX_FILE_REFERENCES}"):
+                await session.call("send", {"attachments": [{"file": str(own.id)}] * too_many})
+    assert loads == []
+
+
+async def test_too_many_bytes_are_refused_before_anything_loads(
+    tmp_path: Path, app_session: Any, minio_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.agent import run_files
+
+    tenant, agent, run = await _setup(app_session)
+    first = await _stored(app_session, tenant, "agent_run", run.id, "a.pdf")
+    second = await _stored(app_session, tenant, "agent_run", run.id, "b.pdf")
+    monkeypatch.setattr(run_files, "MAX_FILE_BYTES_PER_CALL", 2 * len(PDF) - 1)
+    loads: list[str] = []
+
+    async def counting_get(key: str) -> bytes:
+        loads.append(key)
+        return PDF
+
+    monkeypatch.setattr(s3, "get_object", counting_get)
+    command, args = _server(tmp_path)
+    async with McpSession(command, args) as session:
+        with bind_run_files(_files(app_session, tenant, agent, run)):
+            with pytest.raises(McpToolError, match="together"):
+                await session.call(
+                    "send",
+                    {"attachments": [{"file": str(first.id)}, {"file": str(second.id)}]},
+                )
+    assert loads == []
+
+
+def test_the_caps_are_what_the_contract_says() -> None:
+    from oc8.agent import run_files
+
+    assert run_files.MAX_FILE_REFERENCES == 20
+    assert run_files.MAX_FILE_BYTES_PER_CALL == 50 * 1024 * 1024

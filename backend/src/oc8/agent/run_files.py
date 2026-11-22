@@ -62,6 +62,13 @@ _FILE_HINT = (
     "oc8 hands the tool the file itself."
 )
 
+#: At most this many file references in one tool call (repeats count), and at
+#: most this many bytes of distinct files behind them: one call must not be
+#: able to pull an unbounded amount into memory. Both are checked before any
+#: file's content is loaded.
+MAX_FILE_REFERENCES = 20
+MAX_FILE_BYTES_PER_CALL = 50 * 1024 * 1024
+
 SessionOpener = Callable[[uuid.UUID], AbstractAsyncContextManager[AsyncSession]]
 
 
@@ -116,23 +123,42 @@ class RunFiles:
             f"file id {file_id}. Pass this id where a tool takes a file.]"
         )
 
-    async def resolve(self, ref: str) -> dict[str, Any]:
-        """The file `ref` names, as a tool receives it."""
+    async def resolve_many(self, refs: list[str]) -> list[dict[str, Any]]:
+        """The files `refs` name, in order, as a tool receives them. Each
+        distinct file is loaded and encoded once, however often it is named."""
+        if len(refs) > MAX_FILE_REFERENCES:
+            raise FileReferenceError(
+                f"A tool call may name at most {MAX_FILE_REFERENCES} files; this one names "
+                f"{len(refs)}."
+            )
         async with self.open_session(self.tenant_id) as db:
-            row = await self._find(db, ref)
-            if row is None:
-                raise FileReferenceError(
-                    f"There is no file {ref!r} this run can use. Pass the file id a tool "
-                    "result or write_output_file gave you."
-                )
+            rows: list[m.FileAttachment] = []
+            for ref in refs:
+                row = await self._find(db, ref)
+                if row is None:
+                    raise FileReferenceError(
+                        f"There is no file {ref!r} this run can use. Pass the file id a "
+                        "tool result or write_output_file gave you."
+                    )
+                rows.append(row)
+        distinct = {row.id: row for row in rows}
+        total = sum(row.size_bytes for row in distinct.values())
+        if total > MAX_FILE_BYTES_PER_CALL:
+            raise FileReferenceError(
+                f"The files of one tool call may be at most {_size(MAX_FILE_BYTES_PER_CALL)} "
+                f"together; these are {_size(total)}."
+            )
+        loaded: dict[uuid.UUID, dict[str, Any]] = {}
+        for file_id, row in distinct.items():
             data = await s3.get_object(row.bucket_key)
-            return {
+            loaded[file_id] = {
                 "file_id": str(row.id),
                 "name": row.filename,
                 "mime_type": row.content_type,
                 "size": row.size_bytes,
                 "content_base64": base64.b64encode(data).decode(),
             }
+        return [loaded[row.id] for row in rows]
 
     async def _find(self, db: AsyncSession, ref: str) -> m.FileAttachment | None:
         own_runs = select(m.AgentRun.id).where(
@@ -272,10 +298,13 @@ async def resolve_file_arguments(
         raise FileReferenceError(
             "This tool takes a file, and files only exist within an agent run."
         )
-    for parent, key, value in references:
+    refs: list[str] = []
+    for _, _, value in references:
         if not isinstance(value, str):
             raise FileReferenceError("Pass a file as its file id (text).")
-        parent[key] = await files.resolve(value)
+        refs.append(value)
+    for (parent, key, _), file in zip(references, await files.resolve_many(refs), strict=True):
+        parent[key] = file
     return resolved
 
 
