@@ -120,6 +120,7 @@ ENV_FIELDS: dict[str, str] = {
     "MAIL_SMTP_PASSWORD": "smtp_password",
     "MAIL_FROM_ADDRESS": "from_address",
     "MAIL_FROM_NAME": "from_name",
+    "MAIL_SENT_FOLDER": "sent_folder",
 }
 
 logger = logging.getLogger(__name__)
@@ -341,6 +342,8 @@ class Account:
     smtp_password: str
     from_address: str
     from_name: str
+    #: Where sent mail is kept (IMAP); empty means found by SPECIAL-USE or name.
+    sent_folder: str = ""
 
     def __repr__(self) -> str:
         return f"Account({self.username!r} at {self.incoming_host!r})"
@@ -400,6 +403,7 @@ class Account:
             smtp_password=str(values.get("smtp_password") or "") or password,
             from_address=from_address,
             from_name=_one_line(get("from_name")),
+            sent_folder=_one_line(get("sent_folder"), 200),
         )
 
 
@@ -1227,7 +1231,11 @@ def _imap_search(
 
 def _list_folders(account: Account, guard: Guard | None) -> list[dict[str, Any]]:
     with imap_session(account, guard) as conn:
-        data = _ok(*conn.list(), "The server refused to list folders.")
+        return _folders(conn)
+
+
+def _folders(conn: imaplib.IMAP4) -> list[dict[str, Any]]:
+    data = _ok(*conn.list(), "The server refused to list folders.")
     out: list[dict[str, Any]] = []
     pattern = re.compile(r'^\((?P<flags>[^)]*)\) (?P<delim>"(?:[^"\\]|\\.)*"|NIL) (?P<name>.*)$')
     pending: str | None = None
@@ -1258,6 +1266,36 @@ def _list_folders(account: Account, guard: Guard | None) -> list[dict[str, Any]]
 
 
 _SPECIAL_USE = {"\\all", "\\archive", "\\drafts", "\\flagged", "\\junk", "\\sent", "\\trash"}
+
+#: What a Sent folder is called where the server does not mark it (RFC 6154
+#: SPECIAL-USE), compared without case: the common English names, Dovecot's
+#: and Courier's INBOX-prefixed ones, and the German ones.
+_SENT_NAMES = (
+    "sent",
+    "sent items",
+    "sent messages",
+    "sent mail",
+    "inbox.sent",
+    "inbox/sent",
+    "inbox.sent items",
+    "inbox.sent messages",
+    "gesendet",
+    "gesendete elemente",
+    "gesendete objekte",
+)
+
+
+def sent_folder_of(folders: Sequence[Mapping[str, Any]]) -> str | None:
+    """The mailbox's Sent folder: the one marked \\Sent, else the first with
+    a common Sent name, else None."""
+    for folder in folders:
+        if any(str(f).lower() == "\\sent" for f in folder.get("special_use") or []):
+            return str(folder["name"])
+    by_name = {str(f["name"]).lower(): str(f["name"]) for f in folders}
+    for name in _SENT_NAMES:
+        if name in by_name:
+            return by_name[name]
+    return None
 
 
 # --- POP3 ---------------------------------------------------------------------
@@ -1544,7 +1582,8 @@ def get(account: Account, mail_id: str, *, guard: Guard | None = None) -> dict[s
 def get_attachment(
     account: Account, mail_id: str, attachment_id: str, *, guard: Guard | None = None
 ) -> dict[str, Any]:
-    """One attachment's content: as text for a text type, else base64."""
+    """One attachment: its details, its bytes (`data`), and for a text type
+    also its text, cut like a mail's (`text`, `text_truncated`)."""
     raw, _, _ = _with_message(account, guard, mail_id)
     msg = parse(raw)
     parts = _attachment_parts(msg)
@@ -1571,16 +1610,16 @@ def get_attachment(
         "name": _attachment_name(part, index),
         "type": mime,
         "size": len(data),
+        "data": data,
     }
     if part.get_content_maintype() == "text" or mime in _TEXT_TYPES:
-        # The whole attachment, which is capped by MAX_ATTACHMENT_BYTES, but
-        # only with a real text encoding.
+        # Only with a real text encoding; the whole file travels as `data`.
         try:
             content = data.decode(_codec(part.get_content_charset()), "replace")
         except (UnicodeError, LookupError, ValueError):
             content = data.decode("utf-8", "replace")
-        return {**result, "encoding": "text", "content": content}
-    return {**result, "encoding": "base64", "content": base64.b64encode(data).decode()}
+        result["text"], result["text_truncated"] = truncate(content)
+    return result
 
 
 def _need_imap(account: Account, what: str) -> None:
@@ -1793,33 +1832,44 @@ _MEDIA_TYPE = re.compile(
 )
 
 
-def _attachment_data(items: Sequence[Mapping[str, Any]] | None) -> list[tuple[str, str, bytes]]:
-    """`(name, type, bytes)` for each attachment the agent passes: `name`
-    plus either `text` or `content_base64`, optionally `type`."""
+def _attachment_data(
+    items: Sequence[Mapping[str, Any]] | None,
+) -> list[tuple[str, str, bytes]]:
+    """`(name, type, bytes)` for each attachment the agent passes: a run file
+    (`file`, which core has already turned into the file itself), or `name`
+    plus `text` or `content_base64`; `type` is optional either way."""
     out: list[tuple[str, str, bytes]] = []
     total = 0
     for item in items or []:
         if not isinstance(item, Mapping):
-            raise MailError("Each attachment needs a name and text or content_base64.")
-        name = _one_line(str(item.get("name") or ""), 200).replace("/", "_").replace("\\", "_")
+            raise MailError("Each attachment needs a file, or a name and text or content_base64.")
+        file = item.get("file")
+        if file is not None and not isinstance(file, Mapping):
+            raise MailError(
+                "An attachment's `file` is a file id that oc8 turns into the file; "
+                "this one reached the mail tool unresolved."
+            )
+        given_name = item.get("name") or (file or {}).get("name") or ""
+        name = _one_line(str(given_name), 200).replace("/", "_").replace("\\", "_")
         if not name:
             raise MailError("Each attachment needs a name.")
-        if isinstance(item.get("text"), str):
+        encoded = (file or {}).get("content_base64", item.get("content_base64"))
+        if file is None and isinstance(item.get("text"), str):
             data = item["text"].encode("utf-8")
-        elif isinstance(item.get("content_base64"), str):
+        elif isinstance(encoded, str):
             try:
-                data = base64.b64decode(item["content_base64"], validate=True)
+                data = base64.b64decode(encoded, validate=True)
             except (binascii.Error, ValueError):
                 raise MailError(f"The content of {name!r} is not valid base64.") from None
         else:
-            raise MailError(f"The attachment {name!r} needs text or content_base64.")
+            raise MailError(f"The attachment {name!r} needs a file, text or content_base64.")
         total += len(data)
         if len(data) > MAX_ATTACHMENT_BYTES or total > MAX_ATTACHMENT_BYTES:
             raise MailError(
                 f"Attachments may be at most {_size(MAX_ATTACHMENT_BYTES)} together; "
                 f"{name!r} goes over that."
             )
-        given = item.get("type")
+        given = item.get("type") or (file or {}).get("mime_type")
         if given not in (None, "") and not (
             isinstance(given, str) and _MEDIA_TYPE.fullmatch(given)
         ):
@@ -1873,11 +1923,45 @@ def _deliver(
 ) -> dict[str, Any]:
     with smtp_session(account, guard) as conn:
         conn.send_message(msg, from_addr=account.from_address, to_addrs=recipients.everyone)
-    return {
+    result: dict[str, Any] = {
         "status": "sent",
         "message_id": str(msg["Message-ID"]),
         "recipients": len(recipients.everyone),
     }
+    folder, note = _keep_sent(account, guard, msg)
+    if folder:
+        result["sent_folder"] = folder
+    if note:
+        result["note"] = note
+    return result
+
+
+def _keep_sent(account: Account, guard: Guard | None, msg: EmailMessage) -> tuple[str | None, str]:
+    """Put a sent mail in the Sent folder, marked read, as a mail program
+    does: SMTP alone keeps no copy. `(folder, "")` when it was kept, `(None,
+    "")` when there is nowhere to keep it (POP3, no Sent folder), `(None,
+    note)` when keeping it failed. Never raises: the mail is already sent."""
+    if account.incoming_protocol != "imap":
+        return None, ""
+    folder: str | None = account.sent_folder or None
+    try:
+        with imap_session(account, guard) as conn:
+            folder = folder or sent_folder_of(_folders(conn))
+            if folder is None:
+                return None, ""
+            typ, _ = conn.append(
+                _folder_arg(folder),
+                "(\\Seen)",
+                imaplib.Time2Internaldate(time.time()),
+                msg.as_bytes(),
+            )
+    except Exception as exc:
+        logger.info("keeping a sent mail failed: %s", type(exc).__name__)
+        typ = "NO"
+    if typ != "OK":
+        where = f"the folder {folder!r}" if folder else "the Sent folder"
+        return None, f"The mail was sent, but no copy could be kept in {where}."
+    return folder, ""
 
 
 def send(
@@ -1971,7 +2055,7 @@ def reply(
     _attach(msg, _attachment_data(attachments))
     result = _deliver(account, guard, msg, recipients)
     if note:
-        result["note"] = note
+        result["note"] = " ".join(n for n in (note, result.get("note")) if n)
     return result
 
 
@@ -2009,16 +2093,20 @@ def forward(
     to: Sequence[str],
     body: str = "",
     cc: Sequence[str] | None = None,
+    attachments: Sequence[Mapping[str, Any]] | None = None,
     guard: Guard | None = None,
 ) -> dict[str, Any]:
-    """Send a mail on, attached whole (message/rfc822) below `body`."""
+    """Send a mail on, attached whole (message/rfc822) below `body`, with any
+    further `attachments` after it."""
     recipients = _recipients(to, cc, None)
+    files = _attachment_data(attachments)
     raw, _, _ = _with_message(account, guard, mail_id)
     if len(raw) > MAX_ATTACHMENT_BYTES:
         raise MailError(f"This mail is {_size(len(raw))}, too large to forward.")
     original = parse(raw)
     msg = _new_message(account, recipients, _prefixed("Fwd:", _header(original, "Subject")), body)
     msg.add_attachment(original)
+    _attach(msg, files)
     return _deliver(account, guard, msg, recipients)
 
 

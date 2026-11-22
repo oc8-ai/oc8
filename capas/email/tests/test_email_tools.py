@@ -6,7 +6,9 @@ from __future__ import annotations
 import base64
 import email
 import email.policy
-from collections.abc import Callable
+import json
+import uuid
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -128,12 +130,23 @@ async def test_attachment_round_trip(
     ]
     assert "line one" not in mail["text"]
 
+    # Every attachment comes back as a file (core keeps it as a file of the
+    # run); a text one is also readable in place.
     text = await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="1")
-    assert text["encoding"] == "text" and text["content"] == "line one\nline two\n"
+    assert (text.name, text.mime_type, text.data) == (
+        "notes.txt",
+        "text/plain",
+        b"line one\nline two\n",
+    )
+    assert text.details["content"] == "line one\nline two\n"
     binary = await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="2")
-    assert binary["name"] == "invoice.pdf" and binary["size"] == len(pdf)
-    assert binary["encoding"] == "base64"
-    assert base64.b64decode(binary["content"]) == pdf
+    assert (binary.name, binary.mime_type, binary.data) == (
+        "invoice.pdf",
+        "application/pdf",
+        pdf,
+    )
+    assert binary.details["size"] == len(pdf) and "content" not in binary.details
+    assert base64.b64encode(pdf).decode()[:40] not in json.dumps(binary.details)
 
     with pytest.raises(Exception, match="no attachment 3"):
         await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="3")
@@ -283,6 +296,232 @@ async def test_forward_attaches_the_original(
     assert inner["Subject"] == "FYI"
 
 
+def _run_file(name: str, mime: str, data: bytes) -> dict[str, Any]:
+    """An attachment as core hands it over once it resolved a run file id
+    (oc8.agent.run_files): the bridge never sees oc8's storage."""
+    return {
+        "file_id": "0190f0aa-0000-7000-8000-000000000001",
+        "name": name,
+        "mime_type": mime,
+        "size": len(data),
+        "content_base64": base64.b64encode(data).decode(),
+    }
+
+
+async def test_send_reply_and_forward_attach_run_files(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+) -> None:
+    pdf = b"%PDF-1.4 \x00\x01 quarterly" * 20
+    alice = {"login": "alice", "password": "alice-pw-123"}
+    await call(
+        tools,
+        "mail_send",
+        to=["alice@example.com"],
+        subject="Q3",
+        body="Attached.",
+        attachments=[
+            {"file": _run_file("q3.pdf", "application/pdf", pdf)},
+            # A name of its own wins over the file's.
+            {"file": _run_file("x.pdf", "application/pdf", pdf), "name": "renamed.pdf"},
+        ],
+    )
+    greenmail.append(make_mail(subject="Question", message_id="<q1@example.com>"))
+    [hit] = await call(tools, "mail_search")
+    await call(
+        tools,
+        "mail_reply",
+        id=hit["id"],
+        body="See the file.",
+        attachments=[{"file": _run_file("answer.pdf", "application/pdf", pdf)}],
+    )
+    await call(
+        tools,
+        "mail_forward",
+        id=hit["id"],
+        to=["alice@example.com"],
+        attachments=[{"file": _run_file("extra.pdf", "application/pdf", pdf)}],
+    )
+    sent, replied, forwarded = (parsed(raw) for raw in greenmail.messages(user=alice))
+    files = {p.get_filename(): p for p in sent.iter_attachments()}
+    assert set(files) == {"q3.pdf", "renamed.pdf"}
+    assert files["q3.pdf"].get_content_type() == "application/pdf"
+    assert files["q3.pdf"].get_payload(decode=True) == pdf
+    [answer] = replied.iter_attachments()
+    assert answer.get_filename() == "answer.pdf" and answer.get_payload(decode=True) == pdf
+    names = sorted(p.get_filename() or p.get_content_type() for p in forwarded.iter_attachments())
+    assert names == ["extra.pdf", "message/rfc822"]
+
+
+async def test_an_unresolved_file_reference_is_refused(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    """Only core can turn a file id into a file; a bare id reaching the bridge
+    means nothing resolved it, and nothing is sent."""
+    with pytest.raises(Exception, match="file id"):
+        await call(
+            tools,
+            "mail_send",
+            to=["alice@example.com"],
+            subject="s",
+            body="b",
+            attachments=[{"file": "0190f0aa-0000-7000-8000-000000000001"}],
+        )
+    assert greenmail.messages(user={"login": "alice", "password": "alice-pw-123"}) == []
+
+
+def test_attachment_parameters_take_run_files(tools: ModuleType) -> None:
+    """The marker core looks for (oc8.agent.run_files.FILE_MARKER)."""
+    by_name = {t.name: t for t in tools.TOOLS}
+    for name in ("mail_send", "mail_reply", "mail_forward"):
+        items = by_name[name].input_schema["properties"]["attachments"]["items"]
+        assert items["properties"]["file"]["x-oc8-file"] is True, name
+
+
+# --- the Sent folder -----------------------------------------------------------
+
+
+def _flags(greenmail: Any, folder: str) -> list[bytes]:
+    conn = greenmail.imap()
+    try:
+        typ, _ = conn.select(f'"{folder}"')
+        assert typ == "OK"
+        _, data = conn.uid("FETCH", "1:*", "(FLAGS)")
+        return [line if isinstance(line, bytes) else line[0] for line in data if line]
+    finally:
+        conn.logout()
+
+
+@pytest.fixture
+def folders(greenmail: Any) -> Iterator[Callable[[str], None]]:
+    """Creates folders for one test and deletes them after: purging GreenMail
+    empties mailboxes but keeps their folders."""
+    made: list[str] = []
+
+    def create(folder: str) -> None:
+        conn = greenmail.imap()
+        try:
+            typ, data = conn.create(f'"{folder}"')
+            assert typ == "OK", data
+        finally:
+            conn.logout()
+        made.append(folder)
+
+    yield create
+    # Renamed away rather than deleted: GreenMail drops the connection on
+    # DELETE of a folder that has held mail. The new name matches no Sent name.
+    for folder in made:
+        conn = greenmail.imap()
+        try:
+            typ, data = conn.rename(f'"{folder}"', f'"zz-{uuid.uuid4().hex}"')
+            assert typ == "OK", data
+        finally:
+            conn.logout()
+
+
+async def test_a_sent_mail_is_kept_in_the_sent_folder_as_read(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    result = await call(
+        tools,
+        "mail_send",
+        to=["alice@example.com"],
+        subject="Kept",
+        body="A copy, please.",
+    )
+    assert result["status"] == "sent" and result["sent_folder"] == "Sent"
+    assert "note" not in result
+    [copy] = greenmail.messages(folder="Sent")
+    assert parsed(copy)["Message-ID"] == result["message_id"]
+    assert all(b"\\Seen" in flags for flags in _flags(greenmail, "Sent"))
+    # A reply and a forward are kept too.
+    greenmail.append(make_mail())
+    [hit] = await call(tools, "mail_search")
+    await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    await call(tools, "mail_forward", id=hit["id"], to=["bob@example.com"])
+    assert len(greenmail.messages(folder="Sent")) == 3
+
+
+async def test_the_configured_sent_folder_wins(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    folders("Outbox-Archive")
+    mail_env(sent_folder="Outbox-Archive")
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["sent_folder"] == "Outbox-Archive"
+    assert len(greenmail.messages(folder="Outbox-Archive")) == 1
+    assert greenmail.messages(folder="Sent") == []
+
+
+async def test_without_a_sent_folder_the_mail_is_only_sent(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent"
+    assert "sent_folder" not in result and "note" not in result
+    assert len(greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})) == 1
+
+
+async def test_a_failed_copy_does_not_fail_the_send(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    mail_env(sent_folder="No Such Folder")
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent"
+    assert "sent_folder" not in result
+    assert "No Such Folder" in result["note"] and "sent" in result["note"]
+    assert len(greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})) == 1
+
+
+async def test_pop3_keeps_no_copy(
+    tools: ModuleType,
+    mailbox: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    mail_env(protocol="pop3")
+
+    def no_imap(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("POP3 must not open IMAP")
+
+    monkeypatch.setattr(mailbox, "imap_session", no_imap)
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent" and "sent_folder" not in result and "note" not in result
+    assert greenmail.messages(folder="Sent") == []
+
+
+@pytest.mark.parametrize(
+    ("listing", "expected"),
+    [
+        # SPECIAL-USE wins over any name.
+        ([("Sent", []), ("Gesendete Elemente", ["\\Sent"])], "Gesendete Elemente"),
+        ([("INBOX", []), ("Sent Items", [])], "Sent Items"),
+        ([("INBOX", []), ("INBOX.Sent", [])], "INBOX.Sent"),
+        ([("inbox", []), ("sent messages", [])], "sent messages"),
+        ([("INBOX", []), ("Drafts", ["\\Drafts"])], None),
+    ],
+)
+def test_which_folder_is_the_sent_folder(
+    mailbox: ModuleType, listing: list[tuple[str, list[str]]], expected: str | None
+) -> None:
+    folders = [{"name": name, "special_use": use} for name, use in listing]
+    assert mailbox.sent_folder_of(folders) == expected
+
+
 async def test_recipient_and_size_limits(
     tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
 ) -> None:
@@ -336,7 +575,7 @@ async def test_pop3_reads_searches_and_deletes_by_uidl(
     mail = await call(tools, "mail_get", id=found[0]["id"])
     assert mail["subject"] == "Pop one" and mail["folder"] is None
     att = await call(tools, "mail_get_attachment", id=found[0]["id"], attachment_id="1")
-    assert att["content"] == "hi"
+    assert att.details["content"] == "hi" and att.data == b"hi"
     assert len(await call(tools, "mail_search", text="look")) == 2
 
     await call(tools, "mail_delete", id=found[0]["id"])
@@ -384,6 +623,38 @@ async def test_the_bridge_reports_a_tool_error_as_an_error_result(
 
     listed = await bridge._on_list_tools(None, None)
     assert len(listed.tools) == 10
+
+
+async def test_the_bridge_returns_an_attachment_as_binary_content(
+    bridge: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+) -> None:
+    from mcp import types
+
+    pdf = b"%PDF-1.4 \x00\x01" * 30
+    greenmail.append(make_mail(attachments=[("März bericht.pdf", "application/pdf", pdf)]))
+    listed = await bridge._on_call_tool(
+        None, types.CallToolRequestParams(name="mail_search", arguments={})
+    )
+    mail_id = json.loads(listed.content[0].text)[0]["id"]
+    result = await bridge._on_call_tool(
+        None,
+        types.CallToolRequestParams(
+            name="mail_get_attachment", arguments={"id": mail_id, "attachment_id": "1"}
+        ),
+    )
+    assert not result.is_error
+    details, blob = result.content
+    assert json.loads(details.text)["name"] == "März bericht.pdf"
+    assert isinstance(blob, types.EmbeddedResource)
+    assert blob.resource.mime_type == "application/pdf"
+    assert base64.b64decode(blob.resource.blob) == pdf
+    # The name core files it under is the URI's last segment.
+    from urllib.parse import unquote, urlparse
+
+    assert unquote(urlparse(str(blob.resource.uri)).path).rsplit("/", 1)[-1] == "März bericht.pdf"
 
 
 async def test_the_bridge_starts_the_way_core_launches_it(

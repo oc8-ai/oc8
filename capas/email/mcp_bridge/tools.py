@@ -12,12 +12,25 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from mcp.types import Tool
 
 from . import mailbox
 from .mailbox import Account, MailError
+
+
+@dataclass(frozen=True)
+class FileContent:
+    """A tool result that is a file. `__main__.py` sends it as MCP binary
+    content, which core keeps as a file of the run; the model reads
+    `details` and core's reference to the file, never the bytes."""
+
+    name: str
+    mime_type: str
+    data: bytes
+    details: dict[str, Any]
 
 
 def _account() -> Account:
@@ -71,7 +84,7 @@ def _bool(args: dict[str, Any], key: str, default: bool) -> bool:
 def _attachments(args: dict[str, Any]) -> list[dict[str, Any]]:
     value = args.get("attachments") or []
     if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
-        raise MailError("`attachments` must be a list of {name, text | content_base64}.")
+        raise MailError("`attachments` must be a list of {file} or {name, text | content_base64}.")
     return value
 
 
@@ -102,11 +115,19 @@ async def mail_get(args: dict[str, Any]) -> Any:
 
 
 async def mail_get_attachment(args: dict[str, Any]) -> Any:
-    return await _run(
+    found = await _run(
         mailbox.get_attachment,
         _text(args, "id", required=True),
         _text(args, "attachment_id", required=True),
     )
+    data = found.pop("data")
+    text = found.pop("text", None)
+    truncated = found.pop("text_truncated", False)
+    details = dict(found)
+    if text is not None:
+        details["content"] = text
+        details["content_truncated"] = truncated
+    return FileContent(name=found["name"], mime_type=found["type"], data=data, details=details)
 
 
 async def mail_send(args: dict[str, Any]) -> Any:
@@ -138,6 +159,7 @@ async def mail_forward(args: dict[str, Any]) -> Any:
         to=_list(args, "to", required=True),
         cc=_list(args, "cc"),
         body=_text(args, "body"),
+        attachments=_attachments(args),
     )
 
 
@@ -165,22 +187,30 @@ _ADDRESSES = {"type": "array", "items": {"type": "string"}}
 _ATTACHMENTS = {
     "type": "array",
     "description": (
-        "Files to attach, at most 25 MB together. Each is {name, text} for text "
-        "or {name, content_base64} for any other file; `type` (a MIME type) is optional."
+        "Files to attach, at most 25 MB together. Each is {file} with the id of a "
+        "file of this run (from mail_get_attachment or write_output_file), or "
+        "{name, text} for a short text; `name` and `type` (a MIME type) override the file's."
     ),
     "items": {
         "type": "object",
         "properties": {
+            # oc8 swaps the id for the file itself (oc8.agent.run_files).
+            "file": {"type": "string", "description": "A run file's id.", "x-oc8-file": True},
             "name": {"type": "string"},
             "text": {"type": "string"},
-            "content_base64": {"type": "string"},
+            "content_base64": {
+                "type": "string",
+                "description": "Only where there is no file to name; prefer `file`.",
+            },
             "type": {"type": "string"},
         },
-        "required": ["name"],
     },
 }
 _POP3 = " On a POP3 mailbox this tool is not available."
-_LIMITS = " At most 50 recipients. The mail is marked Auto-Submitted: auto-replied."
+_LIMITS = (
+    " At most 50 recipients. The mail is marked Auto-Submitted: auto-replied. On IMAP a "
+    "copy is kept in the Sent folder."
+)
 
 TOOLS: list[Tool] = [
     Tool(
@@ -222,8 +252,9 @@ TOOLS: list[Tool] = [
     Tool(
         name="mail_get_attachment",
         description=(
-            "Fetch one attachment of a mail (at most 25 MB): text files come back as "
-            "text, any other file as base64."
+            "Fetch one attachment of a mail (at most 25 MB). It is kept as a file of this "
+            "run, whose id the result names: pass that id to attach it elsewhere. A text "
+            "attachment's content is also shown, cut at 20,000 characters."
         ),
         inputSchema={
             "type": "object",
@@ -269,7 +300,10 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="mail_forward",
-        description="Forward a mail, attached whole, with an optional note above it." + _LIMITS,
+        description=(
+            "Forward a mail, attached whole, with an optional note above it and any "
+            "further files." + _LIMITS
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -277,6 +311,7 @@ TOOLS: list[Tool] = [
                 "to": _ADDRESSES,
                 "cc": _ADDRESSES,
                 "body": {"type": "string", "description": "Your note, plain text."},
+                "attachments": _ATTACHMENTS,
             },
             "required": ["id", "to"],
         },

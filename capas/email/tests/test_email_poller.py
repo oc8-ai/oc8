@@ -90,7 +90,7 @@ async def test_new_mail_becomes_one_event_with_payload_and_summary(
     attachment = await tools.CALL_HANDLERS["mail_get_attachment"](
         {"id": payload["id"], "attachment_id": "1"}
     )
-    assert attachment["name"] == "order.pdf"
+    assert attachment.name == "order.pdf"
 
     # Polling never marks mail read.
     assert mail["unread"] is True

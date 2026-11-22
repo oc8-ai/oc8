@@ -131,6 +131,7 @@ def test_the_login_type_has_the_mail_account_fields_and_no_plain_text_option(
         "smtp_password",
         "from_address",
         "from_name",
+        "sent_folder",
     ]
     assert fields["incoming_protocol"]["options"] == ["imap", "pop3"]
     assert fields["incoming_security"]["options"] == ["ssl", "starttls"]
@@ -138,7 +139,7 @@ def test_the_login_type_has_the_mail_account_fields_and_no_plain_text_option(
     secret = {k for k, f in fields.items() if f.get("kind") == "password"}
     assert secret == {"password", "smtp_password"}
     optional = {k for k, f in fields.items() if f.get("required") is False}
-    assert optional == {"smtp_username", "smtp_password", "from_name"}
+    assert optional == {"smtp_username", "smtp_password", "from_name", "sent_folder"}
     assert spec["validate_entry_point"] == "credential:validate_mail_account"
     # Every field reaches the bridge under the name the bridge reads.
     manifest = _manifest()

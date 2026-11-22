@@ -29,6 +29,7 @@ MAIL_SMTP_USERNAME = "smtp_username"
 MAIL_SMTP_PASSWORD = "smtp_password"
 MAIL_FROM_ADDRESS = "from_address"
 MAIL_FROM_NAME = "from_name"
+MAIL_SENT_FOLDER = "sent_folder"
 
 # Reading changes nothing (not even the read flag: mail is fetched with PEEK).
 # Everything else changes the mailbox or reaches a person.
