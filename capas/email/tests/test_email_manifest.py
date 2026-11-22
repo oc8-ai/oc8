@@ -224,7 +224,10 @@ def test_autonomous_with_limit_sends_at_most_fifty_mails_a_day() -> None:
     assert "anyone" in capped.summary
     assert "per agent" in capped.summary
     assert "up to 50 recipients" in capped.summary
-    assert "even" in capped.summary and "error" in capped.summary
+    assert (
+        "A mail counts once it was handed to the mail tool, even if sending then failed."
+        in capped.summary
+    )
 
 
 def test_every_shown_string_has_a_german_translation() -> None:
