@@ -218,9 +218,13 @@ def test_autonomous_with_limit_sends_at_most_fifty_mails_a_day() -> None:
     assert [lim.to_json() for lim in capped.limits] == [
         {"tools": ["mail_send", "mail_reply", "mail_forward"], "max": 50, "per": "day"}
     ]
-    # Honest about what it allows: new mail to anyone, up to the cap.
+    # Honest about what it allows: new mail to anyone, up to the cap -- which
+    # is per agent, counts calls that reached the mail server even if it
+    # refused them, and is per mail, not per recipient.
     assert "anyone" in capped.summary
-    assert "50" in capped.summary
+    assert "per agent" in capped.summary
+    assert "up to 50 recipients" in capped.summary
+    assert "even" in capped.summary and "error" in capped.summary
 
 
 def test_every_shown_string_has_a_german_translation() -> None:
