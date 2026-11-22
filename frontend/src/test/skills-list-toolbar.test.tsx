@@ -21,6 +21,7 @@ vi.mock("@/lib/hooks", () => ({
   useUpdateSkill: () => ({ mutate: vi.fn(), isPending: false }),
   usePublishSkillVersion: () => ({ mutate: vi.fn(), isPending: false }),
   useDuplicateSkill: () => ({ mutate: vi.fn(), isPending: false }),
+  useResetSkill: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 import { SkillsPage } from "@/routes/skills";
@@ -102,5 +103,38 @@ describe("Skills list page", () => {
 
     expect(screen.getByRole("heading", { name: "New name" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Old name" })).toBeNull();
+  });
+
+  it("badges a customised shipped skill on its card", () => {
+    const shipped = {
+      id: "s2",
+      name: "Shipped skill",
+      description: "d",
+      category: "operations",
+      origin: "store",
+      version: "1.0.1",
+      author: "acme.skills",
+      tools: [],
+      knowledge: [],
+      guardrails: [],
+      instructions: "",
+      usedByAgents: 0,
+      updatedAt: "",
+      currentVersionId: "v2",
+      deletedAt: null,
+    };
+    useSkillsMock.mockReturnValue({
+      data: {
+        items: [
+          { ...shipped, customizedAt: "2026-11-20T10:00:00Z", shippedUpdateAvailable: true },
+          { ...shipped, id: "s3", name: "Untouched" },
+        ],
+        totalCount: 2,
+      },
+    });
+    renderPage();
+
+    expect(screen.getAllByText("Customised")).toHaveLength(1);
+    expect(screen.getAllByTitle("A newer shipped version is available")).toHaveLength(1);
   });
 });

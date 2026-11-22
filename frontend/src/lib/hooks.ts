@@ -2999,6 +2999,16 @@ export function usePublishSkillVersion() {
   });
 }
 
+/** Puts a customised shipped skill back on its (newest) shipped version. */
+export function useResetSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, updateAssignments }: { id: string; updateAssignments?: boolean }) =>
+      api.post<SkillVersionPublished>(`/skills/${id}/reset`, { updateAssignments }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: keys.skills }),
+  });
+}
+
 /** A new local skill from the source's current version; no assignments copied. */
 export function useDuplicateSkill() {
   const qc = useQueryClient();

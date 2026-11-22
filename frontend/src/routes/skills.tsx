@@ -1,11 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
+  ArrowUpCircle,
   Blocks,
   BookOpen,
   Check,
   Copy,
   Download,
+  PencilLine,
   Plus,
+  RotateCcw,
   Search,
   ShieldAlert,
   Sparkles,
@@ -17,6 +20,7 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { DetailSheet } from "@/components/detail-sheet";
+import { useConfirm } from "@/hooks/use-confirm";
 import { ListToolbar, groupItems, type ListQueryState } from "@/components/list-toolbar";
 import {
   type CreateSkillBody,
@@ -29,6 +33,7 @@ import {
   useAgents,
   useAssignSkill,
   useDepartments,
+  useResetSkill,
   useRestoreSkill,
   useSkills,
   useUpdateSkill,
@@ -371,6 +376,7 @@ function SkillCard({
                 {t("Archived", "Archiviert")}
               </span>
             )}
+            <ShippedSkillBadges skill={skill} />
           </div>
           <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
             <span className="rounded bg-primary/10 px-1.5 py-0.5 text-primary">
@@ -448,6 +454,34 @@ function SkillCard({
   );
 }
 
+/** "Customised" on a shipped skill an admin edited in place, plus a marker when
+ * a newer shipped version is waiting for it. Nothing for a local skill. */
+function ShippedSkillBadges({ skill }: { skill: Skill }) {
+  const t = useT();
+  if (skill.origin !== "store" || !skill.customizedAt) return null;
+  const newer = t(
+    "A newer shipped version is available",
+    "Eine neuere ausgelieferte Version ist verfügbar",
+  );
+  return (
+    <>
+      <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-primary">
+        <PencilLine className="h-3 w-3" />
+        {t("Customised", "Angepasst")}
+      </span>
+      {skill.shippedUpdateAvailable && (
+        <span
+          title={newer}
+          aria-label={newer}
+          className="inline-flex items-center text-[color:var(--status-warning)]"
+        >
+          <ArrowUpCircle className="h-3.5 w-3.5" />
+        </span>
+      )}
+    </>
+  );
+}
+
 export function SkillDrawer({
   skill,
   categoryLabel,
@@ -467,6 +501,8 @@ export function SkillDrawer({
   const assign = useAssignSkill();
   const updateSkill = useUpdateSkill();
   const publish = usePublishSkillVersion();
+  const reset = useResetSkill();
+  const { confirm, ConfirmDialog } = useConfirm();
   const duplicateAction = useDuplicateAction(onDuplicated);
   const [target, setTarget] = useState("");
   // The list shows translations; the editor must start from, compare against and
@@ -486,16 +522,51 @@ export function SkillDrawer({
   const [guardrailsText, setGuardrailsText] = useState(src.guardrails.join("\n"));
   const [updateAssignments, setUpdateAssignments] = useState(true);
 
-  // Only a skill we authored may be changed in place; anything imported or
-  // shipped is changed by duplicating it.
-  const editable = skill.origin === "local";
+  // Every skill is edited in place. A shipped (store) one keeps its origin and
+  // its shipped version: the edit marks it customised, a shipped update then
+  // leaves it alone, and "Reset to shipped version" takes the shipped content back.
   const contentChanged =
-    editable &&
-    (instructions.trim() !== src.instructions.trim() ||
-      !sameList(splitComma(toolsText), skill.tools) ||
-      !sameList(splitLines(knowledgeText), skill.knowledge ?? []) ||
-      !sameList(splitLines(guardrailsText), src.guardrails));
+    instructions.trim() !== src.instructions.trim() ||
+    !sameList(splitComma(toolsText), skill.tools) ||
+    !sameList(splitLines(knowledgeText), skill.knowledge ?? []) ||
+    !sameList(splitLines(guardrailsText), src.guardrails);
   const assignedCount = skill.assignmentCount ?? 0;
+  const resettable = skill.origin === "store" && !!skill.customizedAt;
+
+  const handleReset = async () => {
+    const ok = await confirm({
+      title: t("Reset to shipped version?", "Auf ausgelieferte Version zurücksetzen?"),
+      description: t(
+        "Your changes to the instructions, tools and guardrails are replaced by the shipped version. Your edited versions stay in the history.",
+        "Deine Änderungen an Anweisungen, Tools und Guardrails werden durch die ausgelieferte Version ersetzt. Deine bearbeiteten Versionen bleiben im Verlauf erhalten.",
+      ),
+      confirmLabel: t("Reset", "Zurücksetzen"),
+      cancelLabel: t("Cancel", "Abbrechen"),
+    });
+    if (!ok) return;
+    reset.mutate(
+      { id: skill.id, updateAssignments: assignedCount > 0 && updateAssignments },
+      {
+        onSuccess: (res) => {
+          // The form holds what was typed; show the shipped content now live.
+          setInstructions(res.instructions);
+          setToolsText(res.tools.join(", "));
+          setKnowledgeText((res.knowledge ?? []).join("\n"));
+          setGuardrailsText(res.guardrails.join("\n"));
+          toast.success(
+            t("Reset to the shipped version", "Auf die ausgelieferte Version zurückgesetzt"),
+            { description: `v${res.version}` },
+          );
+        },
+        onError: (e: unknown) =>
+          toast.error(
+            e instanceof Error
+              ? e.message
+              : t("Could not reset the skill.", "Skill konnte nicht zurückgesetzt werden."),
+          ),
+      },
+    );
+  };
 
   const saveError = (e: unknown) =>
     toast.error(
@@ -582,6 +653,17 @@ export function SkillDrawer({
           >
             <Copy className="h-3.5 w-3.5" /> {t("Duplicate", "Duplizieren")}
           </button>
+          {resettable && (
+            <button
+              type="button"
+              disabled={reset.isPending}
+              onClick={handleReset}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-50"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {t("Reset to shipped version", "Auf ausgelieferte Version zurücksetzen")}
+            </button>
+          )}
           <button
             type="button"
             onClick={onClose}
@@ -602,10 +684,28 @@ export function SkillDrawer({
         </>
       }
     >
-      <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-        {categoryLabel} · v{skill.version}
+      {ConfirmDialog}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[11px] uppercase tracking-widest text-muted-foreground">
+          {categoryLabel} · v{skill.version}
+        </span>
+        {resettable && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-primary">
+            <PencilLine className="h-3 w-3" />
+            {t("Customised", "Angepasst")}
+          </span>
+        )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">{skill.author}</p>
+      {resettable && skill.shippedUpdateAvailable && (
+        <p className="mt-3 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-3 py-2 text-xs text-[color:var(--status-warning)]">
+          <ArrowUpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          {t(
+            "A newer shipped version is available. Your changes stay until you reset the skill to it.",
+            "Eine neuere ausgelieferte Version ist verfügbar. Deine Änderungen bleiben, bis du den Skill darauf zurücksetzt.",
+          )}
+        </p>
+      )}
 
       <Section icon={Sparkles} title={t("Edit skill", "Skill bearbeiten")}>
         <div className="space-y-3">
@@ -643,112 +743,63 @@ export function SkillDrawer({
         </div>
       </Section>
 
-      {editable ? (
-        <Section icon={BookOpen} title={t("Content", "Inhalt")}>
-          <div className="space-y-3">
-            {hasTranslation && (
-              <p className="text-[11px] text-muted-foreground">
-                {t(
-                  "You are editing the original text. Translations are not updated.",
-                  "Du bearbeitest den Originaltext. Übersetzungen werden nicht aktualisiert.",
-                )}
-              </p>
-            )}
-            <Field label={t("Instructions", "Anweisungen")}>
-              <textarea
-                value={instructions}
-                onChange={(e) => setInstructions(e.target.value)}
-                rows={10}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary/60"
-              />
-            </Field>
-            <Field label={t("Tools (comma-separated)", "Tools (kommagetrennt)")}>
-              <input
-                value={toolsText}
-                onChange={(e) => setToolsText(e.target.value)}
-                placeholder="Accounting, ERP, OCR"
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
-              />
-            </Field>
-            <Field
-              label={t("Knowledge bases (one per line)", "Wissensdatenbanken (eine pro Zeile)")}
-            >
-              <textarea
-                value={knowledgeText}
-                onChange={(e) => setKnowledgeText(e.target.value)}
-                rows={3}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
-              />
-            </Field>
-            <Field label={t("Guardrails (one per line)", "Guardrails (eine pro Zeile)")}>
-              <textarea
-                value={guardrailsText}
-                onChange={(e) => setGuardrailsText(e.target.value)}
-                rows={4}
-                className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
-              />
-            </Field>
-            {contentChanged && assignedCount > 0 && (
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={updateAssignments}
-                  onChange={(e) => setUpdateAssignments(e.target.checked)}
-                />
-                {t(
-                  `Also update the ${assignedCount} agents that use this skill`,
-                  `Auch die ${assignedCount} Agenten aktualisieren, die diesen Skill nutzen`,
-                )}
-              </label>
-            )}
-          </div>
-        </Section>
-      ) : (
-        <>
-          <p className="mt-5 rounded-md border border-border bg-background/50 px-3 py-2 text-xs text-muted-foreground">
-            {t("Duplicate this skill to change it", "Dupliziere diesen Skill, um ihn anzupassen")}
-          </p>
-          <Section icon={BookOpen} title={t("Instructions", "Anweisungen")}>
-            <p className="text-sm text-muted-foreground">{skill.instructions}</p>
-          </Section>
-
-          <Section icon={Wrench} title={t("Required tools (MCP)", "Benötigte Tools (MCP)")}>
-            <div className="flex flex-wrap gap-1.5">
-              {skill.tools.map((tool) => (
-                <span
-                  key={tool}
-                  className="rounded border border-border bg-background/50 px-2 py-1 text-xs"
-                >
-                  {tool}
-                </span>
-              ))}
-            </div>
-          </Section>
-
-          {skill.knowledge && skill.knowledge.length > 0 && (
-            <Section icon={BookOpen} title={t("Knowledge bases", "Wissensdatenbanken")}>
-              <ul className="space-y-1 text-sm text-muted-foreground">
-                {skill.knowledge.map((k) => (
-                  <li key={k} className="flex items-center gap-2">
-                    <Check className="h-3.5 w-3.5 text-primary" /> {k}
-                  </li>
-                ))}
-              </ul>
-            </Section>
+      <Section icon={BookOpen} title={t("Content", "Inhalt")}>
+        <div className="space-y-3">
+          {hasTranslation && (
+            <p className="text-[11px] text-muted-foreground">
+              {t(
+                "You are editing the original text. Translations are not updated.",
+                "Du bearbeitest den Originaltext. Übersetzungen werden nicht aktualisiert.",
+              )}
+            </p>
           )}
-
-          <Section icon={ShieldAlert} title={t("Guardrails", "Guardrails")}>
-            <ul className="space-y-1 text-sm text-muted-foreground">
-              {skill.guardrails.map((g) => (
-                <li key={g} className="flex items-start gap-2">
-                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 text-[color:var(--status-warning)]" />
-                  <span>{g}</span>
-                </li>
-              ))}
-            </ul>
-          </Section>
-        </>
-      )}
+          <Field label={t("Instructions", "Anweisungen")}>
+            <textarea
+              value={instructions}
+              onChange={(e) => setInstructions(e.target.value)}
+              rows={10}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary/60"
+            />
+          </Field>
+          <Field label={t("Tools (comma-separated)", "Tools (kommagetrennt)")}>
+            <input
+              value={toolsText}
+              onChange={(e) => setToolsText(e.target.value)}
+              placeholder="Accounting, ERP, OCR"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
+            />
+          </Field>
+          <Field label={t("Knowledge bases (one per line)", "Wissensdatenbanken (eine pro Zeile)")}>
+            <textarea
+              value={knowledgeText}
+              onChange={(e) => setKnowledgeText(e.target.value)}
+              rows={3}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
+            />
+          </Field>
+          <Field label={t("Guardrails (one per line)", "Guardrails (eine pro Zeile)")}>
+            <textarea
+              value={guardrailsText}
+              onChange={(e) => setGuardrailsText(e.target.value)}
+              rows={4}
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
+            />
+          </Field>
+          {contentChanged && assignedCount > 0 && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={updateAssignments}
+                onChange={(e) => setUpdateAssignments(e.target.checked)}
+              />
+              {t(
+                `Also update the ${assignedCount} agents that use this skill`,
+                `Auch die ${assignedCount} Agenten aktualisieren, die diesen Skill nutzen`,
+              )}
+            </label>
+          )}
+        </div>
+      </Section>
 
       <Section icon={Users2} title={t("Assign to agent", "An Agent zuweisen")}>
         {/* This used to be a button that showed "Skill assigned" and closed

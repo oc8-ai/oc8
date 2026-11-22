@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 // Task 11: SkillDrawer used to be a hand-rolled `fixed inset-0 ... flex
@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 const useUpdateSkillMock = vi.fn();
 const publishMock = vi.fn();
 const duplicateMock = vi.fn();
+const resetMock = vi.fn();
 
 vi.mock("@/lib/hooks", () => ({
   useAgents: () => ({ data: [] }),
@@ -25,6 +26,13 @@ vi.mock("@/lib/hooks", () => ({
         assignmentsSkipped: 1,
         assignmentsNotAllowed: 1,
       });
+    },
+    isPending: false,
+  }),
+  useResetSkill: () => ({
+    mutate: (vars: unknown, opts?: { onSuccess?: (r: unknown) => void }) => {
+      resetMock(vars);
+      opts?.onSuccess?.({ ...skill, version: "1.0.0", customizedAt: null });
     },
     isPending: false,
   }),
@@ -180,14 +188,65 @@ describe("SkillDrawer", () => {
     expect(mutate).toHaveBeenCalledTimes(1);
   });
 
-  it("shows a non-local skill read-only with the duplicate hint", () => {
+  it("edits a shipped (store) skill in place and still offers Duplicate", () => {
     useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    publishMock.mockClear();
 
     renderDrawer(vi.fn(), { ...skill, origin: "store" });
 
-    expect(screen.getByText("Duplicate this skill to change it")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Instructions")).not.toBeInTheDocument();
-    expect(screen.getByText(skill.instructions)).toBeInTheDocument();
+    expect(screen.queryByText("Duplicate this skill to change it")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Duplicate" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Ours." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(publishMock).toHaveBeenCalledWith(
+      expect.objectContaining({ skillId: "sk-1", instructions: "Ours." }),
+    );
+    // Not customised yet: nothing to reset.
+    expect(screen.queryByText("Customised")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Reset to shipped version" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("badges a customised shipped skill and resets it only after confirming", async () => {
+    useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    resetMock.mockClear();
+
+    renderDrawer(vi.fn(), { ...skill, origin: "store", customizedAt: "2026-11-20T10:00:00Z" });
+
+    expect(screen.getByText("Customised")).toBeInTheDocument();
+    expect(screen.queryByText(/A newer shipped version is available/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reset to shipped version" }));
+    expect(resetMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Reset" }));
+    await waitFor(() =>
+      expect(resetMock).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "sk-1", updateAssignments: true }),
+      ),
+    );
+  });
+
+  it("does not reset when the confirmation is cancelled", async () => {
+    useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    resetMock.mockClear();
+
+    renderDrawer(vi.fn(), { ...skill, origin: "store", customizedAt: "2026-11-20T10:00:00Z" });
+    fireEvent.click(screen.getByRole("button", { name: "Reset to shipped version" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+    expect(resetMock).not.toHaveBeenCalled();
+  });
+
+  it("says when a newer shipped version is waiting", () => {
+    useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+
+    renderDrawer(vi.fn(), {
+      ...skill,
+      origin: "store",
+      customizedAt: "2026-11-20T10:00:00Z",
+      shippedUpdateAvailable: true,
+    });
+
+    expect(screen.getByText(/A newer shipped version is available/)).toBeInTheDocument();
   });
 
   it("duplicates with the localized default name and hands the copy to the page", () => {

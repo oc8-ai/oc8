@@ -140,6 +140,12 @@ msgstr ""
 msgid "A message to the running answer is text only. Remove the attachments, or send them once it's done."
 msgstr ""
 
+msgid "A newer shipped version is available"
+msgstr ""
+
+msgid "A newer shipped version is available. Your changes stay until you reset the skill to it."
+msgstr ""
+
 msgid "A reset email was sent to them"
 msgstr ""
 
@@ -1526,6 +1532,9 @@ msgstr ""
 msgid "Could not rename the passkey."
 msgstr ""
 
+msgid "Could not reset the skill."
+msgstr ""
+
 msgid "Could not reset two-factor authentication."
 msgstr ""
 
@@ -1848,6 +1857,9 @@ msgid "Custom setting"
 msgstr ""
 
 msgid "Custom value"
+msgstr ""
+
+msgid "Customised"
 msgstr ""
 
 msgid "Daily"
@@ -2187,9 +2199,6 @@ msgid "Drift guard — pause on off-role actions"
 msgstr ""
 
 msgid "Duplicate"
-msgstr ""
-
-msgid "Duplicate this skill to change it"
 msgstr ""
 
 msgid "Duration"
@@ -2958,9 +2967,6 @@ msgid "Knowledge base deleted"
 msgstr ""
 
 msgid "Knowledge base updated"
-msgstr ""
-
-msgid "Knowledge bases"
 msgstr ""
 
 msgid "Knowledge Bases"
@@ -4592,13 +4598,19 @@ msgstr ""
 msgid "Required by your organisation"
 msgstr ""
 
-msgid "Required tools (MCP)"
-msgstr ""
-
 msgid "Reset"
 msgstr ""
 
 msgid "Reset their two-factor authentication?"
+msgstr ""
+
+msgid "Reset to shipped version"
+msgstr ""
+
+msgid "Reset to shipped version?"
+msgstr ""
+
+msgid "Reset to the shipped version"
 msgstr ""
 
 msgid "Reset two-factor"
@@ -6741,6 +6753,9 @@ msgid "Your answer was not sent. Try again."
 msgstr ""
 
 msgid "Your assigned role could not be read from the database just now. What follows is what your token carries; an assignment on top of it would not be shown. Nothing was changed."
+msgstr ""
+
+msgid "Your changes to the instructions, tools and guardrails are replaced by the shipped version. Your edited versions stay in the history."
 msgstr ""
 
 msgid "Your chats by date and project"
