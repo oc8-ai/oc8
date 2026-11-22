@@ -112,10 +112,13 @@ whatever else the model should read (ids, sizes) in a `TextContent` next to
 it.
 
 **Taking a file.** Mark the parameter in the tool's input schema with
-`"x-oc8-file": true`, on a property, an array's `items` or an object's
-`additionalProperties`, at any depth, also behind `anyOf`/`oneOf`/`allOf` and
-local `$ref`s (`#/$defs/...`, `#/definitions/...`; a recursive schema is
-followed 12 levels deep):
+`"x-oc8-file": true`, on a property, an array's `items` or `prefixItems`, an
+object's `additionalProperties` or `patternProperties`, at any depth, also
+behind `anyOf`/`oneOf`/`allOf`, `if`/`then`/`else` and local `$ref`s
+(`#/$defs/...`, `#/definitions/...`). A recursive schema is followed 12
+levels deep, a `$ref` is never re-entered on its own path, and one schema's
+walk stops after 10,000 nodes; a file parameter past those limits is not
+resolved (the tool receives the bare id and should refuse it):
 
 ```python
 "attachments": {

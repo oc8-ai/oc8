@@ -302,15 +302,70 @@ class AnyKey:
     declared: frozenset[str] = frozenset()
 
 
-#: A path to a marked value: property names, "*" for every array item, an
-#: `AnyKey` for every other value of a map.
-FilePath = tuple["str | AnyKey", ...]
+@dataclass(frozen=True)
+class PatternKey:
+    """A path step into every value of an object whose key matches
+    `pattern` (`patternProperties`)."""
 
-#: A recursive schema (a `$ref` back to itself) is followed this deep, no
-#: further: a file nested deeper is not swapped, and the tool receives the
-#: model's text as given (and refuses it as no file).
+    pattern: str
+
+
+#: One step of a path: a property name, "*" for every array item, an index
+#: for one item (`prefixItems`), or a step into a map's other values.
+PathStep = str | int | AnyKey | PatternKey
+#: A path to a marked value.
+FilePath = tuple[PathStep, ...]
+
+#: A recursive schema is followed this deep, no further, and a `$ref`
+#: already on the way there is never entered again. All of one schema's walk
+#: visits at most `_MAX_SCHEMA_VISITS` nodes: it runs while the tool list is
+#: read, and a schema of mutually referring definitions would otherwise take
+#: exponential time. A file behind either limit is not swapped; the tool gets
+#: the model's text as given and refuses it as no file (fails closed), and
+#: `model_schema` still strips its marker.
 _MAX_SCHEMA_DEPTH = 12
-_COMBINATORS = ("anyOf", "oneOf", "allOf")
+_MAX_SCHEMA_VISITS = 10_000
+
+#: Keywords whose value is one subschema, or a list of them, at the same
+#: place in the instance (no path step).
+_IN_PLACE = ("anyOf", "oneOf", "allOf", "if", "then", "else")
+#: Keywords whose value is data, never a schema: `model_schema` leaves them.
+_DATA_KEYWORDS = frozenset({"const", "default", "enum", "examples", "required"})
+#: Keywords whose value maps names to subschemas: the names are not keywords.
+_SCHEMA_MAPS = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+)
+
+
+def _children(node: Mapping[str, Any]) -> Iterator[tuple[Any, PathStep | None]]:
+    """The subschemas of `node` that apply to its instance or a value in it,
+    each with the path step that reaches that value (None: the same value).
+    The one list of keywords both `file_paths` and `model_schema` follow."""
+    for key in _IN_PLACE:
+        sub = node.get(key)
+        for item in sub if isinstance(sub, list) else [sub]:
+            yield item, None
+    properties = node.get("properties")
+    properties = properties if isinstance(properties, Mapping) else {}
+    for name, sub in properties.items():
+        yield sub, str(name)
+    patterns = node.get("patternProperties")
+    if isinstance(patterns, Mapping):
+        for pattern, sub in patterns.items():
+            yield sub, PatternKey(str(pattern))
+    extra = node.get("additionalProperties")
+    if isinstance(extra, Mapping):
+        yield extra, AnyKey(frozenset(map(str, properties)))
+    prefix = node.get("prefixItems")
+    if isinstance(prefix, list):
+        for index, sub in enumerate(prefix):
+            yield sub, index
+    items = node.get("items")
+    if isinstance(items, Mapping):
+        yield items, "*"
+    elif isinstance(items, list):  # draft 4-7 tuple form
+        for index, sub in enumerate(items):
+            yield sub, index
 
 
 def _ref(root: Mapping[str, Any], ref: Any) -> Mapping[str, Any] | None:
@@ -328,39 +383,47 @@ def _ref(root: Mapping[str, Any], ref: Any) -> Mapping[str, Any] | None:
 
 
 def file_paths(schema: Mapping[str, Any]) -> list[FilePath]:
-    """Where `schema` takes a run file: through `properties`, array `items`,
-    `additionalProperties`, `anyOf`/`oneOf`/`allOf` and local `$ref`s."""
-    out: list[FilePath] = []
+    """Where `schema` takes a run file (`_children`, and local `$ref`s)."""
+    out: set[FilePath] = set()
+    visits = 0
+    exhausted = False
 
-    def walk(node: Any, path: FilePath, depth: int) -> None:
-        if not isinstance(node, Mapping) or depth > _MAX_SCHEMA_DEPTH:
+    def walk(node: Any, path: FilePath, depth: int, refs: frozenset[str]) -> None:
+        nonlocal visits, exhausted
+        if exhausted or not isinstance(node, Mapping) or depth > _MAX_SCHEMA_DEPTH:
             return
-        if node.get(FILE_MARKER) is True and path and path not in out:
-            out.append(path)
+        visits += 1
+        if visits > _MAX_SCHEMA_VISITS:
+            exhausted = True
+            logger.warning(
+                "a tool schema exceeds the walk budget of %d nodes; file parameters "
+                "beyond it are not resolved",
+                _MAX_SCHEMA_VISITS,
+            )
             return
-        target = _ref(schema, node.get("$ref"))
-        if target is not None:
-            walk(target, path, depth + 1)
-        for key in _COMBINATORS:
-            for sub in node.get(key) or []:
-                walk(sub, path, depth + 1)
-        properties = node.get("properties")
-        properties = properties if isinstance(properties, Mapping) else {}
-        for name, sub in properties.items():
-            walk(sub, (*path, str(name)), depth + 1)
-        items = node.get("items")
-        if isinstance(items, Mapping):
-            walk(items, (*path, "*"), depth + 1)
-        extra = node.get("additionalProperties")
-        if isinstance(extra, Mapping):
-            walk(extra, (*path, AnyKey(frozenset(map(str, properties)))), depth + 1)
+        if node.get(FILE_MARKER) is True:
+            if path:
+                out.add(path)
+            return
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref not in refs:
+            target = _ref(schema, ref)
+            if target is not None:
+                walk(target, path, depth + 1, refs | {ref})
+        for sub, step in _children(node):
+            walk(sub, path if step is None else (*path, step), depth + 1, refs)
 
-    walk(schema, (), 0)
-    return out
+    walk(schema, (), 0, frozenset())
+    return sorted(out, key=repr)
 
 
 def model_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
-    """`schema` as the model sees it: no marker anywhere, a hint in its place."""
+    """`schema` as the model sees it: no marker anywhere, a hint in its place.
+
+    Every schema in it, reachable by `file_paths` or not ($defs nobody
+    references, nodes past its limits), loses the `x-oc8-file` keyword; a
+    property that happens to be named so, and data such as `const`, are left
+    alone. No `$ref` is followed, so each node is seen once."""
     copied = copy.deepcopy(dict(schema))
 
     def walk(node: Any) -> None:
@@ -373,11 +436,24 @@ def model_schema(schema: Mapping[str, Any]) -> dict[str, Any]:
         if node.pop(FILE_MARKER, None) is True:
             given = str(node.get("description") or "").strip()
             node["description"] = f"{given} {_FILE_HINT}".strip()
-        for sub in node.values():
-            walk(sub)
+        for key, value in node.items():
+            if key in _DATA_KEYWORDS:
+                continue
+            if key in _SCHEMA_MAPS and isinstance(value, dict):
+                for sub in value.values():
+                    walk(sub)
+            else:
+                walk(value)
 
     walk(copied)
     return copied
+
+
+def _matches(pattern: str, name: str) -> bool:
+    try:
+        return re.search(pattern, name) is not None
+    except re.error:
+        return False
 
 
 async def resolve_file_arguments(
@@ -395,7 +471,15 @@ async def resolve_file_arguments(
                 references.append((parent, key, node))
             return
         head, rest = path[0], path[1:]
-        if isinstance(head, AnyKey):
+        if isinstance(head, PatternKey):
+            if isinstance(node, dict):
+                for name in list(node):
+                    if _matches(head.pattern, name):
+                        collect(node[name], rest, node, name)
+        elif isinstance(head, int):
+            if isinstance(node, list) and head < len(node):
+                collect(node[head], rest, node, head)
+        elif isinstance(head, AnyKey):
             if isinstance(node, dict):
                 for name in list(node):
                     if name not in head.declared:

@@ -826,3 +826,134 @@ def test_a_recursive_schema_ends() -> None:
         },
     }
     assert ("file",) in file_paths(schema)
+
+
+# --- the schema walk stays bounded and both walks cover the same keywords --------
+
+
+def _timed_paths(schema: dict[str, Any]) -> tuple[list[Any], float]:
+    import time
+
+    from oc8.agent.run_files import file_paths
+
+    started = time.perf_counter()
+    found = file_paths(schema)
+    return found, time.perf_counter() - started
+
+
+def test_a_wide_self_referencing_any_of_ends_quickly() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "node": {"anyOf": [{"$ref": "#"} for _ in range(20)] + [_MARKED]},
+        },
+    }
+    found, took = _timed_paths(schema)
+    assert ("node",) in found
+    assert took < 0.1, took
+
+
+def test_mutually_referencing_definitions_end_quickly() -> None:
+    names = [f"N{i}" for i in range(20)]
+    defs = {
+        name: {"anyOf": [{"$ref": f"#/$defs/{other}"} for other in names if other != name]}
+        for name in names
+    }
+    schema = {"type": "object", "properties": {"x": {"$ref": "#/$defs/N0"}}, "$defs": defs}
+    _found, took = _timed_paths(schema)
+    assert took < 0.1, took
+
+
+def test_self_referencing_properties_end_quickly() -> None:
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            **{f"p{i}": {"$ref": "#"} for i in range(20)},
+            "file": _MARKED,
+        },
+    }
+    found, took = _timed_paths(schema)
+    assert ("file",) in found
+    assert took < 0.1, took
+
+
+def test_the_walk_stops_at_its_budget_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from oc8.agent import run_files
+
+    monkeypatch.setattr(run_files, "_MAX_SCHEMA_VISITS", 3)
+    schema = {"type": "object", "properties": {f"p{i}": {"type": "string"} for i in range(10)}}
+    with caplog.at_level("WARNING", logger="oc8.agent.run_files"):
+        run_files.file_paths(schema)
+    assert sum("budget" in r.getMessage() for r in caplog.records) == 1
+
+
+@pytest.mark.parametrize(
+    ("schema", "arguments", "expected"),
+    [
+        (
+            {"type": "array", "prefixItems": [{"type": "string"}, _MARKED]},
+            ["keep", "a"],
+            ["keep", "<a>"],
+        ),
+        (
+            {"type": "object", "patternProperties": {"^file_": _MARKED}},
+            {"file_a": "a", "other": "b"},
+            {"file_a": "<a>", "other": "b"},
+        ),
+        (
+            {
+                "type": "object",
+                "if": {"properties": {"kind": {"const": "file"}}},
+                "then": {"properties": {"value": _MARKED}},
+                "else": {"properties": {"other": _MARKED}},
+            },
+            {"kind": "file", "value": "a"},
+            {"kind": "file", "value": "<a>"},
+        ),
+    ],
+    ids=["prefixItems", "patternProperties", "if_then_else"],
+)
+async def test_the_other_schema_keywords_take_files_too(
+    schema: dict[str, Any], arguments: Any, expected: Any
+) -> None:
+    from oc8.agent.run_files import file_paths, model_schema, resolve_file_arguments
+
+    class _Echo:
+        async def resolve_many(self, refs: list[str]) -> list[str]:
+            return [f"<{ref}>" for ref in refs]
+
+    wrapped = {"type": "object", "properties": {"v": schema}}
+    paths = file_paths(wrapped)
+    assert paths
+    resolved = await resolve_file_arguments({"v": arguments}, paths, _Echo())  # type: ignore[arg-type]
+    assert resolved == {"v": expected}
+    assert FILE_MARKER not in json.dumps(model_schema(wrapped))
+
+
+def test_a_marker_the_walk_cannot_reach_is_still_stripped_for_the_model() -> None:
+    from oc8.agent.run_files import _MAX_SCHEMA_DEPTH, file_paths, model_schema
+
+    deep: dict[str, Any] = _MARKED
+    for _ in range(_MAX_SCHEMA_DEPTH + 5):
+        deep = {"type": "object", "properties": {"x": deep}}
+    unused = {"type": "object", "properties": {}, "$defs": {"Lone": _MARKED}}
+    for schema in (deep, unused):
+        assert file_paths(schema) == []
+        shown = json.dumps(model_schema(schema))
+        assert FILE_MARKER not in shown and "file id" in shown
+
+
+def test_a_property_named_like_the_marker_is_kept() -> None:
+    from oc8.agent.run_files import model_schema
+
+    schema = {
+        "type": "object",
+        "properties": {FILE_MARKER: {"type": "boolean"}, "f": _MARKED},
+        "required": [FILE_MARKER],
+    }
+    shown = model_schema(schema)
+    assert shown["properties"][FILE_MARKER] == {"type": "boolean"}
+    assert shown["required"] == [FILE_MARKER]
+    assert FILE_MARKER not in shown["properties"]["f"]
