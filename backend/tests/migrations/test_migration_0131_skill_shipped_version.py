@@ -39,7 +39,7 @@ def test_upgrade_adds_the_columns_backfills_store_skills_and_downgrade_removes_t
     tenant = uuid.uuid4()
     store, local = uuid.uuid4(), uuid.uuid4()
     store_version, local_version = uuid.uuid4(), uuid.uuid4()
-    command.downgrade(cfg, "0129")
+    command.downgrade(cfg, "0130")
     try:
         assert not _COLUMNS & _columns(dsn)
         with psycopg.connect(dsn) as conn:
@@ -84,7 +84,7 @@ def test_a_capa_skill_gets_no_shipped_description_so_an_earlier_edit_is_not_take
     cfg = _cfg()
     tenant = uuid.uuid4()
     capa_skill, seeded = uuid.uuid4(), uuid.uuid4()
-    command.downgrade(cfg, "0129")
+    command.downgrade(cfg, "0130")
     try:
         with psycopg.connect(dsn) as conn:
             conn.execute(
