@@ -29,6 +29,9 @@ Frame / narrowing JSON shape (stored on ``department.frame`` / ``agent.narrowing
           "conditions": [  # generic "with limits" rules -- see `Condition` below
             {"attribute": "order_value", "datatype": "number", "operator": ">",
              "value": 5000, "then": "require_approval"}
+          ],
+          "limits": [  # usage limits -- see `UsageLimit` below
+            {"tools": ["mail_send", "mail_reply"], "max": 50, "per": "day"}
           ]
         }
       },
@@ -136,6 +139,57 @@ class Condition:
         }
 
 
+#: The windows a usage limit may count in: a UTC calendar day or a UTC clock
+#: hour. Calendar windows, not rolling ones, so "resets at 00:00 UTC" is a
+#: sentence the model and the admin can both act on.
+LIMIT_PERIODS = ("day", "hour")
+
+
+@dataclass(frozen=True)
+class UsageLimit:
+    """At most `max` successful calls of `tools` per `per` -- "50 mails a day".
+
+    Counted per agent and connection (tool key), across all of the agent's
+    runs and tasks, by `oc8.agent.usage_limits`. This module only carries the
+    rule; the count needs the database and is taken at dispatch, after every
+    other gate has let the call through, so a refused or held call never
+    counts.
+
+    `tools` keeps its declared order for the sentence the model is told;
+    `key` is order-free so two levels limiting the same tools share a counter.
+    """
+
+    tools: tuple[str, ...]
+    max: int
+    per: str = "day"
+
+    @property
+    def key(self) -> str:
+        return "/".join(sorted(self.tools))
+
+    def covers(self, tool: str) -> bool:
+        return tool in self.tools
+
+    @classmethod
+    def from_json(cls, data: Mapping[str, Any]) -> UsageLimit:
+        raw_tools = data.get("tools")
+        if not isinstance(raw_tools, (list, tuple)) or not raw_tools:
+            raise ValueError("a usage limit names at least one tool")
+        tools = tuple(dict.fromkeys(str(t) for t in raw_tools))
+        if any(not t for t in tools):
+            raise ValueError("a usage limit's tool names must not be empty")
+        raw_max = data.get("max")
+        if isinstance(raw_max, bool) or not isinstance(raw_max, int) or raw_max < 0:
+            raise ValueError("a usage limit's max is a whole number of at least 0")
+        per = str(data.get("per", "day"))
+        if per not in LIMIT_PERIODS:
+            raise ValueError(f"a usage limit counts per {' or '.join(LIMIT_PERIODS)}")
+        return cls(tools=tools, max=raw_max, per=per)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"tools": list(self.tools), "max": self.max, "per": self.per}
+
+
 @dataclass(frozen=True)
 class ToolPolicy:
     enabled: bool = False
@@ -177,6 +231,11 @@ class ToolPolicy:
     # design. Frame-level policies never set this (a department default has
     # no login of its own); only agent-level narrowing does.
     connection_id: str | None = None
+    #: Usage limits ("at most 50 mail_send a day") -- see `UsageLimit`. A
+    #: tighten-only field like `conditions`: `effective_tool_policies` unions a
+    #: frame's and a narrowing's limits, so an agent can add one but never
+    #: drop one its department set.
+    limits: tuple[UsageLimit, ...] = ()
 
     @classmethod
     def from_json(cls, data: dict[str, Any] | None) -> ToolPolicy:
@@ -185,7 +244,11 @@ class ToolPolicy:
         raw_only = data.get("only")
         raw_actions = data.get("approval_actions")
         raw_conditions = data.get("conditions")
+        raw_limits = data.get("limits")
         return cls(
+            limits=tuple(UsageLimit.from_json(lim) for lim in raw_limits)
+            if isinstance(raw_limits, list)
+            else (),
             enabled=bool(data.get("enabled", False)),
             read=bool(data.get("read", False)),
             modify=bool(data.get("modify", False)),
@@ -208,6 +271,7 @@ class ToolPolicy:
             "only": sorted(self.only) if self.only is not None else None,
             "connection_id": self.connection_id,
             "conditions": [c.to_json() for c in self.conditions],
+            "limits": [lim.to_json() for lim in self.limits],
         }
 
     def has_right(self, action: str) -> bool:
@@ -294,6 +358,9 @@ def effective_tool_policies(
             # frame did -- so the effective rule set is everything either
             # level named, not just what both agree on.
             conditions=f.conditions + (no.conditions if no else ()),
+            # Union, like `conditions`: an agent may count tighter, never
+            # stop counting what its department counts.
+            limits=f.limits + (no.limits if no else ()),
         )
     # Agent-exclusive grants: a narrowing key with no frame counterpart at
     # all. There is nothing to intersect against, so the narrowing term IS
@@ -313,6 +380,7 @@ def effective_tool_policies(
             only=exclusive.only,
             connection_id=exclusive.connection_id,
             conditions=exclusive.conditions,
+            limits=exclusive.limits,
         )
     return out
 
@@ -698,6 +766,23 @@ def frame_denial(
             context=terms,
         )
     return None
+
+
+def usage_limits_for(policy: ToolPolicy | None, tool: str) -> tuple[UsageLimit, ...]:
+    """The usage limits that count a call of `tool` under `policy`."""
+    if policy is None:
+        return ()
+    return tuple(lim for lim in policy.limits if lim.covers(tool))
+
+
+def has_usage_limit(
+    policies: Mapping[str, ToolPolicy], *, connection_key: str | None, tool: str
+) -> bool:
+    """Whether a call is counted at all. A counted call is never prefetched in a
+    parallel read batch: the count is taken at dispatch, one call at a time."""
+    if connection_key is None:
+        return False
+    return bool(usage_limits_for(policies.get(connection_key), tool))
 
 
 def offers_tool(

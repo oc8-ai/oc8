@@ -6,7 +6,7 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import CheckConstraint, DateTime, Text, UniqueConstraint, Uuid
+from sqlalchemy import CheckConstraint, DateTime, Integer, Text, UniqueConstraint, Uuid
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -187,4 +187,42 @@ class RecordClaim(Base, PkMixin, TenantMixin, TimestampMixin):
 
     __table_args__ = (
         UniqueConstraint("tenant_id", "entity", "record_ref", name="uq_record_claim"),
+    )
+
+
+class ToolUsageCounter(Base, PkMixin, TenantMixin, TimestampMixin):
+    """How many calls a usage limit has counted in one window
+    (`oc8.agent.usage_limits`): per agent, tool key (the connection), the
+    limit's tools (`tools_key`, sorted and joined) and its period.
+
+    One row per window, incremented by a single conditional upsert, so the
+    database decides who gets the last call -- the same reason `record_claim`
+    is a unique constraint and not a check followed by a write. Runtime state,
+    not company data: never backed up, pruned once the window is old.
+
+    No foreign keys on purpose: the count is taken in its own short
+    transaction (the run's transaction stays open across model calls and must
+    not hold this row's lock), which must not wait on, or fail against, rows
+    the run's transaction has not committed yet.
+    """
+
+    __tablename__ = "tool_usage_counter"
+
+    agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    tool_key: Mapped[str] = mapped_column(Text, nullable=False)
+    tools_key: Mapped[str] = mapped_column(Text, nullable=False)
+    period: Mapped[str] = mapped_column(Text, nullable=False)
+    window_start: Mapped[dt.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "agent_id",
+            "tool_key",
+            "tools_key",
+            "period",
+            "window_start",
+            name="uq_tool_usage_counter_window",
+        ),
     )
