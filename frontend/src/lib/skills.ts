@@ -30,6 +30,9 @@ export interface Skill {
   deletedAt?: string | null;
   /** Set once an admin changed a shipped (store) skill's content in place. */
   customizedAt?: string | null;
+  /** Changed away from its shipped content, computed by the backend: flagged,
+   * or no longer on the shipped version. Drives the badge and Reset. */
+  customized?: boolean;
   /** A newer shipped version arrived while the skill was customised; a reset
    * takes it. */
   shippedUpdateAvailable?: boolean;

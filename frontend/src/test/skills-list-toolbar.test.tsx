@@ -24,6 +24,10 @@ vi.mock("@/lib/hooks", () => ({
   useResetSkill: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
+vi.mock("@/lib/governance-hooks", () => ({
+  useMay: () => () => true,
+}));
+
 import { SkillsPage } from "@/routes/skills";
 
 function renderPage() {
@@ -126,7 +130,9 @@ describe("Skills list page", () => {
     useSkillsMock.mockReturnValue({
       data: {
         items: [
-          { ...shipped, customizedAt: "2026-11-20T10:00:00Z", shippedUpdateAvailable: true },
+          // `customized` drives the badge, not the timestamp: a skill edited
+          // before the flag existed has none.
+          { ...shipped, customized: true, customizedAt: null, shippedUpdateAvailable: true },
           { ...shipped, id: "s3", name: "Untouched" },
         ],
         totalCount: 2,

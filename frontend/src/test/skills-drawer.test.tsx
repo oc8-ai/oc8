@@ -12,6 +12,11 @@ const useUpdateSkillMock = vi.fn();
 const publishMock = vi.fn();
 const duplicateMock = vi.fn();
 const resetMock = vi.fn();
+const granted = vi.hoisted(() => ({ current: ["skill:manage"] as string[] }));
+
+vi.mock("@/lib/governance-hooks", () => ({
+  useMay: () => (permission: string) => granted.current.includes(permission),
+}));
 
 vi.mock("@/lib/hooks", () => ({
   useAgents: () => ({ data: [] }),
@@ -212,7 +217,7 @@ describe("SkillDrawer", () => {
     useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
     resetMock.mockClear();
 
-    renderDrawer(vi.fn(), { ...skill, origin: "store", customizedAt: "2026-11-20T10:00:00Z" });
+    renderDrawer(vi.fn(), { ...skill, origin: "store", customized: true });
 
     expect(screen.getByText("Customised")).toBeInTheDocument();
     expect(screen.queryByText(/A newer shipped version is available/)).not.toBeInTheDocument();
@@ -221,16 +226,64 @@ describe("SkillDrawer", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Reset" }));
     await waitFor(() =>
       expect(resetMock).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "sk-1", updateAssignments: false }),
+      ),
+    );
+  });
+
+  it("moves the agents on reset only when the dialog's checkbox is ticked", async () => {
+    useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    resetMock.mockClear();
+
+    renderDrawer(vi.fn(), { ...skill, origin: "store", customized: true });
+    fireEvent.click(screen.getByRole("button", { name: "Reset to shipped version" }));
+    const box = await screen.findByLabelText(
+      "Also move the 2 agents using this skill to the shipped version",
+    );
+    expect(box).not.toBeChecked();
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await waitFor(() =>
+      expect(resetMock).toHaveBeenCalledWith(
         expect.objectContaining({ id: "sk-1", updateAssignments: true }),
       ),
     );
+  });
+
+  it("offers no agent checkbox on reset when no agent uses the skill", async () => {
+    useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+
+    renderDrawer(vi.fn(), { ...skill, origin: "store", customized: true, assignmentCount: 0 });
+    fireEvent.click(screen.getByRole("button", { name: "Reset to shipped version" }));
+    await screen.findByRole("button", { name: "Reset" });
+    expect(screen.queryByLabelText(/Also move the/)).not.toBeInTheDocument();
+  });
+
+  it("is read-only without skill:manage: no Save, Reset or Duplicate", () => {
+    useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    granted.current = [];
+    try {
+      renderDrawer(vi.fn(), { ...skill, origin: "store", customized: true });
+
+      expect(screen.getByLabelText("Instructions")).toHaveAttribute("readonly");
+      expect(screen.getByLabelText("Name")).toHaveAttribute("readonly");
+      expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Reset to shipped version" }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Duplicate" })).not.toBeInTheDocument();
+      // Still shown as customised: it is information, not an action.
+      expect(screen.getByText("Customised")).toBeInTheDocument();
+    } finally {
+      granted.current = ["skill:manage"];
+    }
   });
 
   it("does not reset when the confirmation is cancelled", async () => {
     useUpdateSkillMock.mockReturnValue({ mutate: vi.fn(), isPending: false });
     resetMock.mockClear();
 
-    renderDrawer(vi.fn(), { ...skill, origin: "store", customizedAt: "2026-11-20T10:00:00Z" });
+    renderDrawer(vi.fn(), { ...skill, origin: "store", customized: true });
     fireEvent.click(screen.getByRole("button", { name: "Reset to shipped version" }));
     fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
     expect(resetMock).not.toHaveBeenCalled();
@@ -242,7 +295,7 @@ describe("SkillDrawer", () => {
     renderDrawer(vi.fn(), {
       ...skill,
       origin: "store",
-      customizedAt: "2026-11-20T10:00:00Z",
+      customized: true,
       shippedUpdateAvailable: true,
     });
 

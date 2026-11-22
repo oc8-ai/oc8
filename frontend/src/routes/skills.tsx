@@ -16,11 +16,12 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { DetailSheet } from "@/components/detail-sheet";
 import { useConfirm } from "@/hooks/use-confirm";
+import { useMay } from "@/lib/governance-hooks";
 import { ListToolbar, groupItems, type ListQueryState } from "@/components/list-toolbar";
 import {
   type CreateSkillBody,
@@ -357,6 +358,7 @@ function SkillCard({
   duplicating?: boolean;
 }) {
   const t = useT();
+  const mayManage = useMay()("skill:manage");
   return (
     <Panel
       className={cn(
@@ -419,7 +421,15 @@ function SkillCard({
           <Users2 className="h-3.5 w-3.5" />
           {t(`${skill.usedByAgents} agents`, `${skill.usedByAgents} Agenten`)}
         </span>
-        {archived ? (
+        {!mayManage ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="rounded-md border border-border px-2.5 py-1 text-xs transition hover:border-primary/50 hover:text-foreground"
+          >
+            {t("Open", "Öffnen")}
+          </button>
+        ) : archived ? (
           <button
             type="button"
             onClick={onRestore}
@@ -458,7 +468,7 @@ function SkillCard({
  * a newer shipped version is waiting for it. Nothing for a local skill. */
 function ShippedSkillBadges({ skill }: { skill: Skill }) {
   const t = useT();
-  if (skill.origin !== "store" || !skill.customizedAt) return null;
+  if (skill.origin !== "store" || !skill.customized) return null;
   const newer = t(
     "A newer shipped version is available",
     "Eine neuere ausgelieferte Version ist verfügbar",
@@ -502,6 +512,10 @@ export function SkillDrawer({
   const updateSkill = useUpdateSkill();
   const publish = usePublishSkillVersion();
   const reset = useResetSkill();
+  // Every write on the skill -- save, reset, duplicate -- needs skill:manage,
+  // exactly what the backend asks for. Without it the drawer is read-only.
+  const mayManage = useMay()("skill:manage");
+  const moveOnReset = useRef(false);
   const { confirm, ConfirmDialog } = useConfirm();
   const duplicateAction = useDuplicateAction(onDuplicated);
   const [target, setTarget] = useState("");
@@ -531,21 +545,41 @@ export function SkillDrawer({
     !sameList(splitLines(knowledgeText), skill.knowledge ?? []) ||
     !sameList(splitLines(guardrailsText), src.guardrails);
   const assignedCount = skill.assignmentCount ?? 0;
-  const resettable = skill.origin === "store" && !!skill.customizedAt;
+  const customised = skill.origin === "store" && !!skill.customized;
+  const resettable = mayManage && customised;
 
   const handleReset = async () => {
+    moveOnReset.current = false;
     const ok = await confirm({
       title: t("Reset to shipped version?", "Auf ausgelieferte Version zurücksetzen?"),
       description: t(
         "Your changes to the instructions, tools and guardrails are replaced by the shipped version. Your edited versions stay in the history.",
         "Deine Änderungen an Anweisungen, Tools und Guardrails werden durch die ausgelieferte Version ersetzt. Deine bearbeiteten Versionen bleiben im Verlauf erhalten.",
       ),
+      body:
+        assignedCount > 0 ? (
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              defaultChecked={false}
+              onChange={(e) => {
+                moveOnReset.current = e.target.checked;
+              }}
+            />
+            {t(
+              `Also move the ${assignedCount} agents using this skill to the shipped version`,
+              `Auch die ${assignedCount} Agenten mit diesem Skill auf die ausgelieferte Version umstellen`,
+            )}
+          </label>
+        ) : undefined,
       confirmLabel: t("Reset", "Zurücksetzen"),
       cancelLabel: t("Cancel", "Abbrechen"),
     });
     if (!ok) return;
+    // Off unless ticked in the dialog: a reset must not silently change what
+    // running agents do.
     reset.mutate(
-      { id: skill.id, updateAssignments: assignedCount > 0 && updateAssignments },
+      { id: skill.id, updateAssignments: assignedCount > 0 && moveOnReset.current },
       {
         onSuccess: (res) => {
           // The form holds what was typed; show the shipped content now live.
@@ -645,14 +679,16 @@ export function SkillDrawer({
       description={skill.description}
       footer={
         <>
-          <button
-            type="button"
-            disabled={duplicateAction.pending}
-            onClick={() => duplicateAction.run(skill)}
-            className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-50"
-          >
-            <Copy className="h-3.5 w-3.5" /> {t("Duplicate", "Duplizieren")}
-          </button>
+          {mayManage && (
+            <button
+              type="button"
+              disabled={duplicateAction.pending}
+              onClick={() => duplicateAction.run(skill)}
+              className="mr-auto inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-muted-foreground transition hover:text-foreground disabled:opacity-50"
+            >
+              <Copy className="h-3.5 w-3.5" /> {t("Duplicate", "Duplizieren")}
+            </button>
+          )}
           {resettable && (
             <button
               type="button"
@@ -671,16 +707,18 @@ export function SkillDrawer({
           >
             {t("Close", "Schließen")}
           </button>
-          <button
-            type="button"
-            disabled={!name.trim() || updateSkill.isPending || publish.isPending}
-            onClick={handleSave}
-            className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
-          >
-            {updateSkill.isPending || publish.isPending
-              ? t("Saving…", "Speichern …")
-              : t("Save", "Speichern")}
-          </button>
+          {mayManage && (
+            <button
+              type="button"
+              disabled={!name.trim() || updateSkill.isPending || publish.isPending}
+              onClick={handleSave}
+              className="rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
+            >
+              {updateSkill.isPending || publish.isPending
+                ? t("Saving…", "Speichern …")
+                : t("Save", "Speichern")}
+            </button>
+          )}
         </>
       }
     >
@@ -689,7 +727,7 @@ export function SkillDrawer({
         <span className="text-[11px] uppercase tracking-widest text-muted-foreground">
           {categoryLabel} · v{skill.version}
         </span>
-        {resettable && (
+        {customised && (
           <span className="inline-flex items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-primary">
             <PencilLine className="h-3 w-3" />
             {t("Customised", "Angepasst")}
@@ -697,7 +735,7 @@ export function SkillDrawer({
         )}
       </div>
       <p className="mt-1 text-xs text-muted-foreground">{skill.author}</p>
-      {resettable && skill.shippedUpdateAvailable && (
+      {customised && skill.shippedUpdateAvailable && (
         <p className="mt-3 flex items-start gap-2 rounded-md border border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/10 px-3 py-2 text-xs text-[color:var(--status-warning)]">
           <ArrowUpCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           {t(
@@ -711,6 +749,7 @@ export function SkillDrawer({
         <div className="space-y-3">
           <Field label={t("Name", "Name")}>
             <input
+              readOnly={!mayManage}
               value={name}
               onChange={(e) => setName(e.target.value)}
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
@@ -718,6 +757,7 @@ export function SkillDrawer({
           </Field>
           <Field label={t("Description", "Beschreibung")}>
             <textarea
+              readOnly={!mayManage}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               rows={3}
@@ -726,6 +766,7 @@ export function SkillDrawer({
           </Field>
           <Field label={t("Category", "Kategorie")}>
             <select
+              disabled={!mayManage}
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary/60"
@@ -755,6 +796,7 @@ export function SkillDrawer({
           )}
           <Field label={t("Instructions", "Anweisungen")}>
             <textarea
+              readOnly={!mayManage}
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
               rows={10}
@@ -763,6 +805,7 @@ export function SkillDrawer({
           </Field>
           <Field label={t("Tools (comma-separated)", "Tools (kommagetrennt)")}>
             <input
+              readOnly={!mayManage}
               value={toolsText}
               onChange={(e) => setToolsText(e.target.value)}
               placeholder="Accounting, ERP, OCR"
@@ -771,6 +814,7 @@ export function SkillDrawer({
           </Field>
           <Field label={t("Knowledge bases (one per line)", "Wissensdatenbanken (eine pro Zeile)")}>
             <textarea
+              readOnly={!mayManage}
               value={knowledgeText}
               onChange={(e) => setKnowledgeText(e.target.value)}
               rows={3}
@@ -779,6 +823,7 @@ export function SkillDrawer({
           </Field>
           <Field label={t("Guardrails (one per line)", "Guardrails (eine pro Zeile)")}>
             <textarea
+              readOnly={!mayManage}
               value={guardrailsText}
               onChange={(e) => setGuardrailsText(e.target.value)}
               rows={4}
