@@ -20,6 +20,7 @@ from oc8.capas.manifest import (
     ManifestError,
     PluginSetupSpec,
     SetupFieldSpec,
+    check_manifest_limits,
     http_api_login_in_base_url,
     parse_manifest,
 )
@@ -247,6 +248,7 @@ async def install_plugin(
     trust_level: str | None = None,
 ) -> CapaVersion:
     manifest = parse_manifest(manifest_data)
+    check_manifest_limits(manifest)
     _check_core_compat(manifest.core_compat)
     if (problem := http_api_login_in_base_url(manifest)) is not None:
         raise PluginError(problem)

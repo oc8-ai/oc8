@@ -9,6 +9,7 @@ applying the preset writes them into the stored guardrail.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 import pytest
@@ -98,15 +99,62 @@ def test_a_library_entry_parses_its_limits() -> None:
     ]
 
 
-def test_a_malformed_limit_in_a_department_template_fails_the_manifest() -> None:
-    """Template frames and narrowings are untyped dicts: a bad limit there
-    must fail at install with a clear message, not break every run later."""
-    from oc8.capas.manifest import DepartmentTemplateSpec, TemplateAgent
+_BAD_FRAME = {"tools": {"email": {"enabled": True, "limits": [{"tools": [], "max": 5}]}}}
 
-    bad = {"tools": {"email": {"enabled": True, "limits": [{"tools": [], "max": 5}]}}}
-    with pytest.raises(ValueError, match=r"email.*usage limit"):
-        DepartmentTemplateSpec.model_validate({"frame": bad})
-    with pytest.raises(ValueError, match=r"email.*usage limit"):
-        TemplateAgent.model_validate({"name": "Mila", "narrowing": bad})
-    ok = {"tools": {"email": {"enabled": True, "limits": [SENDING]}}}
-    assert DepartmentTemplateSpec.model_validate({"frame": ok}).frame == ok
+
+def _email_manifest_with_bad_template(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    from pathlib import Path
+
+    from oc8.capas.discovery import find_plugin
+    from oc8.config import get_settings
+
+    monkeypatch.setenv("OC8_CAPAS_PATH", str(Path(__file__).resolve().parents[3] / "capas"))
+    get_settings.cache_clear()
+    found = find_plugin("email")
+    assert found is not None and found.manifest is not None
+    return {
+        **found.manifest,
+        "department_template": {
+            "frame": _BAD_FRAME,
+            "agents": [{"name": "Mila", "narrowing": _BAD_FRAME}],
+        },
+    }
+
+
+def test_a_stored_manifest_with_a_malformed_limit_still_parses_and_stays_listed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stored version is parsed on every listing: a bad limit in it must not
+    make the whole capa (and its integration) disappear."""
+    from oc8.capas.manifest import parse_manifest
+    from oc8.connections.integrations import integration_from_manifest
+
+    manifest = parse_manifest(_email_manifest_with_bad_template(monkeypatch))
+    assert integration_from_manifest(manifest) is not None
+
+
+def test_install_and_discovery_refuse_a_malformed_template_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oc8.capas.manifest import check_manifest_limits, parse_manifest
+
+    manifest = parse_manifest(_email_manifest_with_bad_template(monkeypatch))
+    with pytest.raises(ManifestError, match=r"email.*usage limit"):
+        check_manifest_limits(manifest)
+    ok = parse_manifest(
+        {
+            **_email_manifest_with_bad_template(monkeypatch),
+            "department_template": {"frame": {"tools": {"email": {"limits": [SENDING]}}}},
+        }
+    )
+    check_manifest_limits(ok)
+
+
+async def test_installing_a_malformed_template_limit_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from oc8.capas.service import install_plugin
+
+    data = _email_manifest_with_bad_template(monkeypatch)
+    with pytest.raises(ManifestError, match=r"usage limit"):
+        await install_plugin(None, tenant_id=uuid.uuid4(), manifest_data=data)  # type: ignore[arg-type]

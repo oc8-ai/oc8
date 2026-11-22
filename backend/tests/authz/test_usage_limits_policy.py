@@ -105,7 +105,8 @@ def test_has_usage_limit_reads_the_policy_of_the_calls_connection() -> None:
 
 def test_limits_that_are_not_a_list_are_refused() -> None:
     with pytest.raises(ValueError):
-        ToolPolicy.from_json({"enabled": True, "limits": "fifty"})
+        ToolPolicy.from_json({"enabled": True, "limits": "fifty"}, strict=True)
+    assert ToolPolicy.from_json({"enabled": True, "limits": "fifty"}).enabled is False
 
 
 def test_the_same_limit_in_frame_and_narrowing_counts_once_with_the_tighter_max() -> None:
@@ -184,3 +185,32 @@ def test_a_narrowing_may_not_raise_the_departments_limit() -> None:
         )
         == []
     )
+
+
+def test_a_stored_malformed_limit_closes_only_its_own_tool_key() -> None:
+    """A malformed limit already stored (an old row, a hand edit) must not
+    fail the whole run: that tool key is denied, every other one works."""
+    from oc8.authz.pdp import Effect, authorize_tool_call
+
+    frame = {
+        "tools": {
+            "email": {"enabled": True, "read": True, "modify": True, "limits": [{"max": 5}]},
+            "odoo": {"enabled": True, "read": True, "modify": True},
+        }
+    }
+    policies = effective_tool_policies(frame, {})
+    assert policies["email"].enabled is False
+    assert policies["odoo"].enabled is True
+
+    def decide(key: str) -> Effect:
+        return authorize_tool_call(
+            policies=policies, connection_key=key, right="read", value=None, tool="x"
+        ).effect
+
+    assert decide("email") is Effect.DENY
+    assert decide("odoo") is Effect.ALLOW
+
+
+def test_a_write_still_refuses_a_malformed_limit() -> None:
+    with pytest.raises(ValueError):
+        ToolPolicy.from_json({"enabled": True, "limits": [{"max": 5}]}, strict=True)

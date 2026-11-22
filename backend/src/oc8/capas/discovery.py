@@ -34,6 +34,7 @@ from oc8.capas.manifest import (
     PluginSetupSpec,
     SkillTemplateSpec,
     ToolPackConnection,
+    check_manifest_limits,
     parse_guardrail_preset,
     parse_manifest,
 )
@@ -194,14 +195,10 @@ def _read_skills_folder(folder: Path) -> list[SkillTemplateSpec]:
     unexpected = sorted(
         p.name
         for p in skills_dir.iterdir()
-        if p.is_file()
-        and not p.name.startswith(".")
-        and p.suffix != ".toml"
+        if p.is_file() and not p.name.startswith(".") and p.suffix != ".toml"
     )
     unexpected_dirs = sorted(
-        p.name
-        for p in skills_dir.iterdir()
-        if p.is_dir() and not (p / "SKILL.md").is_file()
+        p.name for p in skills_dir.iterdir() if p.is_dir() and not (p / "SKILL.md").is_file()
     )
     if unexpected or unexpected_dirs:
         detail = []
@@ -583,6 +580,7 @@ def _read(folder: Path) -> DiscoveredPlugin:
 
     try:
         manifest = parse_manifest(table)
+        check_manifest_limits(manifest)
     except ManifestError as exc:
         return _invalid(plugin_id, folder, f"invalid manifest: {exc}")
 

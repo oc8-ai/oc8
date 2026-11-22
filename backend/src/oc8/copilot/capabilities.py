@@ -1392,9 +1392,18 @@ async def _apply_guardrail_set(
     narrowing = dict(agent.narrowing) if isinstance(agent.narrowing, dict) else {}
     tools = dict(narrowing.get("tools", {}))
     existing_raw = tools.get(operation.connectionName)
+    try:
+        existing = (
+            pdp.ToolPolicy.from_json(existing_raw, strict=True)
+            if existing_raw is not None
+            else None
+        )
+    except ValueError as exc:
+        # A malformed stored policy: editing it would silently replace it.
+        raise InvalidOperation() from exc
     current = (
-        pdp.ToolPolicy.from_json(existing_raw)
-        if existing_raw is not None
+        existing
+        if existing is not None
         # No prior narrowing entry for this connection means "no additional
         # restriction" (see `effective_tool_policies`'s `no is None` branches) --
         # a freshly-created entry must start from that same permissive baseline,

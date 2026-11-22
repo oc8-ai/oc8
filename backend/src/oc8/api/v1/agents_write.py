@@ -147,7 +147,7 @@ def reject_malformed_policies(narrowing: Any) -> None:
         if not isinstance(raw, dict):
             continue
         try:
-            ToolPolicy.from_json(raw)
+            ToolPolicy.from_json(raw, strict=True)
         except ValueError as exc:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,

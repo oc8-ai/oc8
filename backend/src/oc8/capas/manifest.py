@@ -100,8 +100,10 @@ class SandboxManifest(BaseModel):
 
 def check_policy_limits(policies: dict[str, Any]) -> dict[str, Any]:
     """A template's frame or narrowing is an untyped dict, so nothing else
-    reads its `limits` before a run does: parse them here, so a malformed one
-    fails the install with a clear message instead of every later run."""
+    reads its `limits` before a run does. Checked on install and discovery
+    (`check_manifest_limits`), never on every parse of a stored version: a
+    stored manifest must keep parsing, and the runtime closes a bad policy
+    for its own tool key (`ToolPolicy.from_json`)."""
     tools = policies.get("tools") if isinstance(policies, dict) else None
     if not isinstance(tools, dict):
         return policies
@@ -137,11 +139,6 @@ class TemplateAgent(BaseModel):
     skills: list[str] = []
     persona: str = ""
     narrowing: dict[str, Any] = {}
-
-    @field_validator("narrowing")
-    @classmethod
-    def _narrowing_limits_parse(cls, v: dict[str, Any]) -> dict[str, Any]:
-        return check_policy_limits(v)
 
     # Per-agent step budget (0 = framework default). Lets an agent plugin give a
     # long, multi-record workflow more room without touching the core.
@@ -184,11 +181,6 @@ class DepartmentTemplateSpec(BaseModel):
     frame: dict[str, Any] = {}
     agents: list[TemplateAgent] = []
     starter_tasks: list[dict[str, Any]] = []  # reserved; not instantiated in v1
-
-    @field_validator("frame")
-    @classmethod
-    def _frame_limits_parse(cls, v: dict[str, Any]) -> dict[str, Any]:
-        return check_policy_limits(v)
 
 
 class SkillTemplateSpec(BaseModel):
@@ -1185,6 +1177,22 @@ def http_api_login_in_base_url(manifest: Manifest) -> str | None:
         if conn.transport == "manual_http" and base_url_has_login(conn.server_url):
             return f"{conn.name}: {LOGIN_IN_BASE_URL}"
     return None
+
+
+def check_manifest_limits(manifest: Manifest) -> None:
+    """Install- and discovery-time check of the usage limits in a manifest's
+    untyped template frames and narrowings. Raises `ManifestError`."""
+    policies: list[dict[str, Any]] = []
+    if manifest.agent_template is not None:
+        policies.append(manifest.agent_template.narrowing)
+    if manifest.department_template is not None:
+        policies.append(manifest.department_template.frame)
+        policies.extend(agent.narrowing for agent in manifest.department_template.agents)
+    for policy in policies:
+        try:
+            check_policy_limits(policy)
+        except ValueError as exc:
+            raise ManifestError(str(exc)) from exc
 
 
 def parse_manifest(data: dict[str, Any]) -> Manifest:

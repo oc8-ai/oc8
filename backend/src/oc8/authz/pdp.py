@@ -196,6 +196,29 @@ class UsageLimit:
         return {"tools": list(self.tools), "max": self.max, "per": self.per}
 
 
+def _parse_limits(raw: Any) -> tuple[UsageLimit, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("limits is a list of { tools, max, per }")
+    return tuple(UsageLimit.from_json(lim) for lim in raw)
+
+
+_CLOSED_LOGGED: set[str] = set()
+
+
+def _log_closed_once(raw: Any) -> None:
+    sig = repr(raw)
+    if sig in _CLOSED_LOGGED:
+        return
+    if len(_CLOSED_LOGGED) < 1000:
+        _CLOSED_LOGGED.add(sig)
+    logger.warning(
+        "a stored tool policy has a malformed usage limit %r; its tool is denied until it is fixed",
+        raw,
+    )
+
+
 @dataclass(frozen=True)
 class ToolPolicy:
     enabled: bool = False
@@ -244,19 +267,25 @@ class ToolPolicy:
     limits: tuple[UsageLimit, ...] = ()
 
     @classmethod
-    def from_json(cls, data: dict[str, Any] | None) -> ToolPolicy:
+    def from_json(cls, data: dict[str, Any] | None, *, strict: bool = False) -> ToolPolicy:
+        """The stored policy. A malformed usage limit raises with `strict`
+        (every write path: refuse it with a 422) and otherwise CLOSES this one
+        policy -- a disabled tool, logged once -- so a bad row already stored
+        denies its own tool key instead of failing every run that reads it."""
         if not data:
             return cls()
         raw_only = data.get("only")
         raw_actions = data.get("approval_actions")
         raw_conditions = data.get("conditions")
-        raw_limits = data.get("limits")
-        if raw_limits is not None and not isinstance(raw_limits, list):
-            raise ValueError("limits is a list of { tools, max, per }")
+        try:
+            limits = _parse_limits(data.get("limits"))
+        except ValueError:
+            if strict:
+                raise
+            _log_closed_once(data.get("limits"))
+            return cls()
         return cls(
-            limits=tuple(UsageLimit.from_json(lim) for lim in raw_limits)
-            if isinstance(raw_limits, list)
-            else (),
+            limits=limits,
             enabled=bool(data.get("enabled", False)),
             read=bool(data.get("read", False)),
             modify=bool(data.get("modify", False)),
@@ -646,7 +675,9 @@ def narrowing_within_frame(
     for key, raw in _tools(narrowing).items():
         if key not in frame_tools:
             continue
-        n = ToolPolicy.from_json(raw)
+        # The narrowing being written is held to the strict parse; the stored
+        # frame is read as the runtime reads it.
+        n = ToolPolicy.from_json(raw, strict=True)
         f = ToolPolicy.from_json(frame_tools.get(key))
         if n.enabled and not f.enabled:
             violations.append(SubsetViolation(key, "tool disabled in department frame"))

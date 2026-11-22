@@ -315,3 +315,21 @@ async def test_a_limited_read_is_never_prefetched_in_a_parallel_batch(
 
     assert server.calls == ["mail_get"]
     assert "Daily limit of 1 reached for mail_get" in str(result.tool_calls[1]["result"])
+
+
+async def test_a_stored_malformed_limit_denies_its_tool_and_the_run_goes_on(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    server = _Server(["mail_send"])
+    _setup(
+        monkeypatch,
+        server,
+        [_turn(ToolCall(id="c1", name="mail_send", arguments={"to": "a@example.org"})), _turn()],
+    )
+    async with app_session(tenant) as db:
+        agent, conn = await _agent(db, tenant, limits=[{"max": 5}], scopes=SCOPES)
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
+
+    assert result.status == "done"
+    assert server.calls == []
