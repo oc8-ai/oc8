@@ -2128,6 +2128,12 @@ def forward(
     raw, _, _ = _with_message(account, guard, mail_id)
     if len(raw) > MAX_ATTACHMENT_BYTES:
         raise MailError(f"This mail is {_size(len(raw))}, too large to forward.")
+    extra = sum(len(data) for _, _, data in files)
+    if len(raw) + extra > MAX_ATTACHMENT_BYTES:
+        raise MailError(
+            f"The forwarded mail ({_size(len(raw))}) and the further attachments "
+            f"({_size(extra)}) may be at most {_size(MAX_ATTACHMENT_BYTES)} together."
+        )
     original = parse(raw)
     msg = _new_message(account, recipients, _prefixed("Fwd:", _header(original, "Subject")), body)
     msg.add_attachment(original)

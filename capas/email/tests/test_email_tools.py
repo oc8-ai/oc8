@@ -667,6 +667,25 @@ async def test_a_too_large_attachment_is_not_read(
         await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="1")
 
 
+async def test_a_forward_counts_the_mail_and_its_extra_files_together(
+    tools: ModuleType,
+    mailbox: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    greenmail.append(make_mail())
+    [hit] = await call(tools, "mail_search")
+    [stored] = greenmail.messages()
+    # Room for the mail, and for the extra file, but not for both.
+    monkeypatch.setattr(mailbox, "MAX_ATTACHMENT_BYTES", len(stored) + 100)
+    extra = [{"name": "notes.txt", "text": "x" * 200}]
+    with pytest.raises(Exception, match="together"):
+        await call(tools, "mail_forward", id=hit["id"], to=["bob@example.com"], attachments=extra)
+    assert greenmail.messages(user={"login": "bob", "password": "bob-pw-123"}) == []
+
+
 # --- POP3 ---------------------------------------------------------------------
 
 
