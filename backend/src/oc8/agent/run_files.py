@@ -41,6 +41,7 @@ import copy
 import logging
 import posixpath
 import re
+import unicodedata
 import uuid
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, contextmanager
@@ -447,18 +448,40 @@ def _not_kept(name: str, mime: str, size: int, why: str) -> str:
     return f'[File "{name}" ({mime}, {_size(size)}) not kept: {why}.]'
 
 
+#: A media type as RFC 6838 allows it (`type/subtype`, restricted names);
+#: anything else a tool claims is echoed as octet-stream, never verbatim.
+_MEDIA_TYPE = re.compile(
+    r"[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}", re.ASCII
+)
+
+
 def _mime(obj: Any) -> str:
     raw = getattr(obj, "mime_type", None) or getattr(obj, "mimeType", None) or ""
-    return str(raw).split(";", 1)[0].strip().lower()
+    mime = str(raw).split(";", 1)[0].strip().lower()
+    if not mime:
+        return ""
+    return mime if _MEDIA_TYPE.fullmatch(mime) else "application/octet-stream"
 
 
-_UNSAFE_NAME = re.compile(r"[\x00-\x1f\x7f/\\]+")
+#: Characters a kept file's name loses: path separators, and what could
+#: make the reference line the model reads say something else -- quotes and
+#: brackets to break out of it, invisible format characters (a right-to-left
+#: override turns "fdp.exe" into what reads as "exe.pdf"), line breaks.
+_NAME_PUNCTUATION = frozenset("/\\\"'`()[]{}<>")
+_NAME_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+
+
+def _safe_name(name: str) -> str:
+    cleaned = "".join(
+        "_" if ch in _NAME_PUNCTUATION or unicodedata.category(ch) in _NAME_CATEGORIES else ch
+        for ch in name
+    )
+    return cleaned.strip()[:200]
 
 
 def _name_from_uri(uri: str) -> str:
     path = urlparse(uri).path or uri
-    name = posixpath.basename(unquote(path).rstrip("/"))
-    return _UNSAFE_NAME.sub("_", name).strip()[:200]
+    return _safe_name(posixpath.basename(unquote(path).rstrip("/")))
 
 
 _EXTENSIONS = {
