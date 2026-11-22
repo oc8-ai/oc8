@@ -51,6 +51,7 @@ export const Route = createFileRoute("/skills")({
 
 export function SkillsPage() {
   const t = useT();
+  const mayManageSkills = useMay()("skill:manage");
   const { lang } = useLang();
   const catLabel = (id: string) => {
     const c = skillCategories.find((x) => x.id === id);
@@ -212,22 +213,24 @@ export function SkillsPage() {
           onStateChange={setQueryState}
           totalCount={data?.totalCount ?? 0}
         />
-        <div className="flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={() => setWizardOpen(true)}
-            className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" /> {t("New skill", "Neuer Skill")}
-          </button>
-          <button
-            type="button"
-            onClick={() => setImportOpen(true)}
-            className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium transition hover:border-primary/60"
-          >
-            <Download className="h-4 w-4" /> {t("Import from source", "Aus Quelle importieren")}
-          </button>
-        </div>
+        {mayManageSkills && (
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setWizardOpen(true)}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:opacity-90"
+            >
+              <Plus className="h-4 w-4" /> {t("New skill", "Neuer Skill")}
+            </button>
+            <button
+              type="button"
+              onClick={() => setImportOpen(true)}
+              className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium transition hover:border-primary/60"
+            >
+              <Download className="h-4 w-4" /> {t("Import from source", "Aus Quelle importieren")}
+            </button>
+          </div>
+        )}
       </Panel>
 
       <div className="space-y-6">
@@ -567,9 +570,9 @@ export function SkillDrawer({
               }}
             />
             {t(
-              `Also move the ${assignedCount} agents using this skill to the shipped version`,
-              `Auch die ${assignedCount} Agenten mit diesem Skill auf die ausgelieferte Version umstellen`,
-            )}
+              "Also move the {count} agents using this skill to the shipped version",
+              "Auch die {count} Agenten mit diesem Skill auf die ausgelieferte Version umstellen",
+            ).replace("{count}", String(assignedCount))}
           </label>
         ) : undefined,
       confirmLabel: t("Reset", "Zurücksetzen"),
@@ -838,9 +841,9 @@ export function SkillDrawer({
                 onChange={(e) => setUpdateAssignments(e.target.checked)}
               />
               {t(
-                `Also update the ${assignedCount} agents that use this skill`,
-                `Auch die ${assignedCount} Agenten aktualisieren, die diesen Skill nutzen`,
-              )}
+                "Also update the {count} agents that use this skill",
+                "Auch die {count} Agenten aktualisieren, die diesen Skill nutzen",
+              ).replace("{count}", String(assignedCount))}
             </label>
           )}
         </div>

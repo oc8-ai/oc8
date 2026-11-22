@@ -473,7 +473,13 @@ msgstr ""
 msgid "Also fits: "
 msgstr ""
 
+msgid "Also move the {count} agents using this skill to the shipped version"
+msgstr ""
+
 msgid "Also require approval for a specific tool (optional)"
+msgstr ""
+
+msgid "Also update the {count} agents that use this skill"
 msgstr ""
 
 msgid "Amount"

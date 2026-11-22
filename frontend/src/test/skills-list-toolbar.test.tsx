@@ -24,8 +24,10 @@ vi.mock("@/lib/hooks", () => ({
   useResetSkill: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
+const granted = vi.hoisted(() => ({ current: ["skill:manage"] as string[] }));
+
 vi.mock("@/lib/governance-hooks", () => ({
-  useMay: () => () => true,
+  useMay: () => (permission: string) => granted.current.includes(permission),
 }));
 
 import { SkillsPage } from "@/routes/skills";
@@ -142,5 +144,22 @@ describe("Skills list page", () => {
 
     expect(screen.getAllByText("Customised")).toHaveLength(1);
     expect(screen.getAllByTitle("A newer shipped version is available")).toHaveLength(1);
+  });
+
+  it("offers New skill and Import to a caller with skill:manage", () => {
+    renderPage();
+    expect(screen.getByRole("button", { name: /new skill/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /import from source/i })).toBeInTheDocument();
+  });
+
+  it("offers neither New skill nor Import to a caller without skill:manage", () => {
+    granted.current = [];
+    try {
+      renderPage();
+      expect(screen.queryByRole("button", { name: /new skill/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /import from source/i })).not.toBeInTheDocument();
+    } finally {
+      granted.current = ["skill:manage"];
+    }
   });
 });
