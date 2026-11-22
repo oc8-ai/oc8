@@ -29,6 +29,10 @@ class Skill(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     #: imported from a store) -- what "reset to shipped version" restores, and
     #: what a shipped update compares against. None for a local skill.
     shipped_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: The shipped description and category. An admin may change both; that
+    #: customises the skill like a content edit, and a reset restores them.
+    shipped_description: Mapped[str | None] = mapped_column(Text)
+    shipped_category: Mapped[str | None] = mapped_column(Text)
     #: When an admin first changed a shipped skill's content in place. A
     #: customised skill keeps its content when a newer version ships.
     customized_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))

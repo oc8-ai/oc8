@@ -58,14 +58,23 @@ def needs_copy_on_write(skill: m.Skill) -> bool:
     )
 
 
+def record_shipped(skill: m.Skill, version_id: Any) -> None:
+    """Take `version_id` and the skill's current description and category as
+    what was shipped."""
+    skill.shipped_version_id = version_id
+    skill.shipped_description = skill.description
+    skill.shipped_category = skill.category
+
+
 def mark_customized(skill: m.Skill, *, previous_version_id: Any) -> None:
-    """Record an in-place edit of a store skill. A store skill that predates the
-    shipped-version record (seeded, or imported before it existed) takes the
-    version it had until this edit as its shipped one."""
+    """Record an in-place edit of a store skill -- of its content, description
+    or category. Call it BEFORE applying the edit: a store skill that predates
+    the shipped record (seeded, or imported before it existed) takes what it
+    had until this edit as its shipped state."""
     if skill.origin != "store":
         return
     if skill.shipped_version_id is None:
-        skill.shipped_version_id = previous_version_id
+        record_shipped(skill, previous_version_id)
     if skill.customized_at is None:
         skill.customized_at = dt.datetime.now(tz=dt.UTC)
 
@@ -101,15 +110,26 @@ async def sync_shipped_skill(
     set. Live assignments stay pinned either way, exactly as an admin's own
     publish leaves them unless asked to move them.
 
-    An uncustomised skill also follows the shipped description and category.
-    Never the name: the name is how the shipped skill is found again.
+    The shipped description and category are kept the same way: an
+    uncustomised skill follows them, a customised one keeps the admin's and a
+    changed shipped value counts as a newer shipped version. Never the name:
+    the name is how the shipped skill is found again.
     """
     customized = is_customized(skill)
-    if not customized:
-        if description is not None and skill.description != description:
+    if description is not None:
+        meta_known = skill.shipped_description is not None
+        meta_changed = (skill.shipped_description, skill.shipped_category) != (
+            description,
+            category,
+        )
+        skill.shipped_description = description
+        skill.shipped_category = category
+        if not customized:
             skill.description = description
-        if skill.category != category:
             skill.category = category
+        elif meta_changed and meta_known:
+            skill.shipped_update_at = dt.datetime.now(tz=dt.UTC)
+        await db.flush()
     shipped_id = skill.shipped_version_id or (None if customized else skill.current_version_id)
     shipped = await db.get(m.SkillVersion, shipped_id) if shipped_id is not None else None
     if shipped is not None and _content_hash(shipped.definition) == _content_hash(definition):

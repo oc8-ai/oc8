@@ -35,7 +35,12 @@ from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SkillDTO
 from oc8.skills.importer import DEFAULT_BUDGET_TOKENS, discover
 from oc8.skills.schema import SkillDefinitionError, parse_definition
-from oc8.skills.shipped import artifact_hash, mark_customized, needs_copy_on_write
+from oc8.skills.shipped import (
+    artifact_hash,
+    mark_customized,
+    needs_copy_on_write,
+    record_shipped,
+)
 
 router = APIRouter()
 
@@ -612,6 +617,13 @@ async def update_skill(
     skill = await _load_skill(db, skill_id, principal.tenant_id)
     if skill.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
+    # On a shipped skill the description and category are shipped content as
+    # well: changing either customises it, so a shipped update keeps the edit.
+    # The name is not -- it is how the shipped skill is found again.
+    if (body.description is not None and body.description != skill.description) or (
+        body.category is not None and body.category != (skill.category or "")
+    ):
+        mark_customized(skill, previous_version_id=skill.current_version_id)
     if body.name is not None:
         skill.name = body.name
     if body.description is not None:
@@ -687,6 +699,9 @@ async def reset_skill(
             status.HTTP_409_CONFLICT, "this skill has no shipped version to reset to"
         )
     skill.current_version_id = shipped.id
+    if skill.shipped_description is not None:
+        skill.description = skill.shipped_description
+        skill.category = skill.shipped_category
     skill.customized_at = None
     skill.shipped_update_at = None
     updated = skipped = not_allowed = 0
@@ -1012,7 +1027,7 @@ async def import_skills(
         )
         db.add(version)
         await db.flush()
-        skill.shipped_version_id = version.id
+        record_shipped(skill, version.id)
         for rel_path, content in candidate.bundled_files.items():
             db.add(
                 m.ImportedSkillFile(

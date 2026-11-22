@@ -222,11 +222,11 @@ async def test_patching_a_store_skills_instructions_marks_it_customised(
     async with LifespanManager(app), _client(app) as c:
         r = await c.patch(
             f"/api/v1/skills/{shipped.id}",
-            json={"description": "Only the description."},
+            json={"description": "Checks invoices against the PO."},
             headers=_h(tenant),
         )
         assert r.status_code == 200, r.text
-        # Name, description and category are not shipped content.
+        # The name is not shipped content: it is how the shipped skill is found.
         assert r.json()["customizedAt"] is None
         r = await c.patch(
             f"/api/v1/skills/{shipped.id}",
@@ -549,3 +549,96 @@ async def test_skill_versions_are_hashed_in_one_place() -> None:
     assert not hasattr(materialise, "_hash")
     assert vars(skills_write)["artifact_hash"] is shipped.artifact_hash
     assert vars(materialise)["artifact_hash"] is shipped.artifact_hash
+
+
+async def _patch(c: AsyncClient, tenant: uuid.UUID, skill_id: uuid.UUID, **body: Any) -> Any:
+    r = await c.patch(f"/api/v1/skills/{skill_id}", json=body, headers=_h(tenant))
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+async def test_editing_a_shipped_skills_description_customises_it_and_survives_a_re_enable(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        got = await _patch(c, tenant, shipped.id, description="Our description.")
+        assert got["customized"] is True
+    # Same manifest again: a re-enable must not write the shipped text back.
+    await _ship(
+        app_session, tenant, _upgraded("1.0.1", SKILL_MANIFEST["skill_template"]["instruction"])
+    )
+    skill = await _skill(app_session, tenant)
+    assert skill.description == "Our description."
+    assert skill.customized_at is not None
+    assert skill.shipped_update_at is None
+
+
+async def test_editing_a_shipped_skills_category_customises_it_and_survives_a_re_enable(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        got = await _patch(c, tenant, shipped.id, category="operations")
+        assert got["customized"] is True
+    await _ship(
+        app_session, tenant, _upgraded("1.0.1", SKILL_MANIFEST["skill_template"]["instruction"])
+    )
+    skill = await _skill(app_session, tenant)
+    assert skill.category == "operations"
+    assert skill.customized_at is not None
+
+
+async def test_a_newer_shipped_description_on_a_customised_skill_is_recorded_not_applied(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await _patch(c, tenant, shipped.id, description="Our description.")
+    upgraded = _upgraded("1.0.1", SKILL_MANIFEST["skill_template"]["instruction"])
+    upgraded["skill_template"]["description"] = "Newer shipped description."
+    await _ship(app_session, tenant, upgraded)
+    skill = await _skill(app_session, tenant)
+    assert skill.description == "Our description."
+    assert skill.shipped_update_at is not None
+
+
+async def test_reset_brings_back_the_shipped_description_and_category(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        await _patch(c, tenant, shipped.id, description="Our description.", category="operations")
+        r = await c.post(f"/api/v1/skills/{shipped.id}/reset", json={}, headers=_h(tenant))
+        assert r.status_code == 200, r.text
+        assert r.json()["description"] == "Checks invoices against the PO."
+        assert r.json()["category"] == "finance"
+        assert r.json()["customized"] is False
+    skill = await _skill(app_session, tenant)
+    assert skill.description == "Checks invoices against the PO."
+    assert skill.category == "finance"
+
+
+async def test_saving_an_unchanged_description_does_not_customise_a_shipped_skill(
+    app_session: AppSessionFactory,
+) -> None:
+    """The drawer sends the description on every save; an unchanged one is not an edit."""
+    tenant = uuid.uuid4()
+    await _ship(app_session, tenant, SKILL_MANIFEST)
+    shipped = await _skill(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        got = await _patch(c, tenant, shipped.id, description=shipped.description)
+        assert got["customized"] is False

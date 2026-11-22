@@ -10,7 +10,13 @@ import psycopg
 from alembic import command
 from alembic.config import Config
 
-_COLUMNS = {"shipped_version_id", "customized_at", "shipped_update_at"}
+_COLUMNS = {
+    "shipped_version_id",
+    "shipped_description",
+    "shipped_category",
+    "customized_at",
+    "shipped_update_at",
+}
 
 
 def _cfg() -> Config:
@@ -42,9 +48,9 @@ def test_upgrade_adds_the_columns_backfills_store_skills_and_downgrade_removes_t
                 (local, "local", local_version),
             ):
                 conn.execute(
-                    "INSERT INTO skill (id, tenant_id, name, description, author, origin, "
-                    "trust_level, current_version_id) "
-                    "VALUES (%s, %s, %s, '', 'x', %s, 'first_party', %s)",
+                    "INSERT INTO skill (id, tenant_id, name, description, category, author, "
+                    "origin, trust_level, current_version_id) "
+                    "VALUES (%s, %s, %s, 'Shipped text.', 'finance', 'x', %s, 'first_party', %s)",
                     (skill_id, tenant, f"s-{skill_id.hex[:6]}", origin, version_id),
                 )
             conn.commit()
@@ -52,12 +58,15 @@ def test_upgrade_adds_the_columns_backfills_store_skills_and_downgrade_removes_t
         command.upgrade(cfg, "head")
     assert _COLUMNS <= _columns(dsn)
     with psycopg.connect(dsn) as conn:
-        rows: dict[uuid.UUID, uuid.UUID | None] = dict(
-            conn.execute(
-                "SELECT id, shipped_version_id FROM skill WHERE id = ANY(%s)", ([store, local],)
+        rows = {
+            row[0]: row[1:]
+            for row in conn.execute(
+                "SELECT id, shipped_version_id, shipped_description, shipped_category "
+                "FROM skill WHERE id = ANY(%s)",
+                ([store, local],),
             ).fetchall()
-        )
+        }
         conn.execute("DELETE FROM skill WHERE id = ANY(%s)", ([store, local],))
         conn.commit()
-    assert rows[store] == store_version
-    assert rows[local] is None
+    assert rows[store] == (store_version, "Shipped text.", "finance")
+    assert rows[local] == (None, None, None)

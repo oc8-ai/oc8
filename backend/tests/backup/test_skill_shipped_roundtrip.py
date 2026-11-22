@@ -52,6 +52,8 @@ async def test_shipped_skill_tracking_survives_a_restore_into_another_instance(
             author="acme.invoice-skill",
             origin="store",
             trust_level="first_party",
+            shipped_description="Shipped description.",
+            shipped_category="finance",
             customized_at=customized,
             shipped_update_at=waiting,
         )
@@ -96,3 +98,5 @@ async def test_shipped_skill_tracking_survives_a_restore_into_another_instance(
         assert restored.current_version_id == edited_id
         assert restored.customized_at == customized
         assert restored.shipped_update_at == waiting
+        assert restored.shipped_description == "Shipped description."
+        assert restored.shipped_category == "finance"

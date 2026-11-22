@@ -37,7 +37,7 @@ from oc8 import models as m
 from oc8.capas.manifest import Manifest, SkillTemplateSpec, ToolPackConnection
 from oc8.connections.tool_connection import without_reserved
 from oc8.skills.schema import SkillDefinitionError, parse_definition
-from oc8.skills.shipped import artifact_hash, sync_shipped_skill
+from oc8.skills.shipped import artifact_hash, record_shipped, sync_shipped_skill
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ async def _materialise_one_skill(
     db.add(version)
     await db.flush()
     skill.current_version_id = version.id
-    skill.shipped_version_id = version.id
+    record_shipped(skill, version.id)
     await db.flush()
 
 
