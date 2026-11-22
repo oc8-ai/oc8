@@ -132,9 +132,12 @@ too). Before the call reaches the bridge, core replaces the value with
 
 so the bridge receives the file and needs no access to oc8's storage. The
 marker is removed from the schema the model sees, and the description says
-a file id goes there. A run may hand over its own files, those of the same
-agent's other runs, the agent's instruction files and the files attached in
-the run's own chat — always within its tenant. Anything else, and any file
+a file id goes there. A run may hand over its own files; those of the same
+agent's other runs that belong to the same person (a member's run sees her own
+other runs' files, never a colleague's), or, for an autonomous run (a trigger
+or a schedule), those of the agent's other autonomous runs and never a
+member's; the agent's instruction files; and the files attached in the run's
+own chat — always within its tenant. Anything else, and any file
 reference outside an agent run, fails the call before it leaves, with the
 same answer whether the file exists or not. One call may name at most 20 files
 (a repeat counts again) and at most 50 MB of distinct files; each distinct

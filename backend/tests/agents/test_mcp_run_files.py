@@ -19,7 +19,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.mcp_client import McpSession, McpToolError
-from oc8.agent.run_files import FILE_MARKER, RunFiles, bind_run_files
+from oc8.agent.run_files import FILE_MARKER, FileReferenceError, RunFiles, bind_run_files
 from oc8.storage import s3
 from oc8.storage.attachments import store_attachment_bytes
 
@@ -266,20 +266,134 @@ async def test_a_file_reference_reaches_the_tool_as_the_files_content(
     assert sent["cover"]["name"] == "report.pdf"
 
 
-async def test_another_runs_file_of_the_same_agent_is_visible(
-    tmp_path: Path, app_session: Any, minio_url: str
-) -> None:
-    tenant, agent, run = await _setup(app_session)
+# --- which files a run may use (Ruling 15) ---------------------------------------
+#
+# Another run's files are as private as that run: a member's run sees her own
+# other runs' files, an autonomous run the agent's other autonomous runs' --
+# never a colleague's, and never across that line in either direction.
+
+ANNA = {"originating_operator": "anna"}
+BEN = {"originating_operator": "ben"}
+
+
+async def _run(
+    app_session: Any,
+    tenant: uuid.UUID,
+    agent: m.Agent,
+    *,
+    source: str = "manual",
+    context: dict[str, Any] | None = None,
+) -> m.AgentRun:
     async with app_session(tenant) as db:
-        earlier = m.AgentRun(tenant_id=tenant, agent_id=agent.id, state="done")
-        db.add(earlier)
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            state="running",
+            source=source,
+            context=dict(context or {}),
+        )
+        db.add(run)
         await db.flush()
-    produced = await _stored(app_session, tenant, "agent_run", earlier.id, "earlier.pdf")
-    command, args = _server(tmp_path)
-    async with McpSession(command, args) as session:
-        with bind_run_files(_files(app_session, tenant, agent, run)):
-            output = await session.call("send", {"cover": str(produced.id)})
-    assert json.loads(output)["cover"]["file_id"] == str(produced.id)
+    return run
+
+
+async def _members_chat(
+    app_session: Any, tenant: uuid.UUID, agent: m.Agent, subject: str
+) -> m.ChatSession:
+    async with app_session(tenant) as db:
+        member = m.OrgMember(tenant_id=tenant, subject=subject, subject_uuid=uuid.uuid4())
+        db.add(member)
+        await db.flush()
+        chat = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=member.id)
+        db.add(chat)
+        await db.flush()
+    return chat
+
+
+async def _resolves(files: RunFiles, ref: str) -> str | None:
+    """The file id `ref` resolves to for `files`' run, None when refused."""
+    try:
+        [found] = await files.resolve_many([ref])
+    except FileReferenceError:
+        return None
+    return str(found["file_id"])
+
+
+@pytest.mark.parametrize(
+    ("earlier", "current"),
+    [
+        (("manual", ANNA), ("manual", ANNA)),
+        (("cron", {}), ("event", {})),
+    ],
+    ids=["same_member", "autonomous"],
+)
+async def test_a_file_of_a_run_alike_is_visible_by_id(
+    earlier: tuple[str, dict[str, Any]],
+    current: tuple[str, dict[str, Any]],
+    app_session: Any,
+    minio_url: str,
+) -> None:
+    tenant, agent, _ = await _setup(app_session)
+    before = await _run(app_session, tenant, agent, source=earlier[0], context=earlier[1])
+    run = await _run(app_session, tenant, agent, source=current[0], context=current[1])
+    produced = await _stored(app_session, tenant, "agent_run", before.id, "earlier.pdf")
+    files = _files(app_session, tenant, agent, run)
+    assert await _resolves(files, str(produced.id)) == str(produced.id)
+
+
+@pytest.mark.parametrize(
+    ("earlier", "current"),
+    [
+        (("manual", ANNA), ("manual", BEN)),
+        (("manual", ANNA), ("cron", {})),
+        (("cron", {}), ("manual", ANNA)),
+        (("manual", {}), ("manual", {})),
+    ],
+    ids=["colleague", "member_to_autonomous", "autonomous_to_member", "nobodys"],
+)
+async def test_a_file_of_another_kind_of_run_is_refused_by_id_and_name(
+    earlier: tuple[str, dict[str, Any]],
+    current: tuple[str, dict[str, Any]],
+    app_session: Any,
+    minio_url: str,
+) -> None:
+    tenant, agent, _ = await _setup(app_session)
+    before = await _run(app_session, tenant, agent, source=earlier[0], context=earlier[1])
+    run = await _run(app_session, tenant, agent, source=current[0], context=current[1])
+    theirs = await _stored(app_session, tenant, "agent_run", before.id, "theirs.pdf")
+    files = _files(app_session, tenant, agent, run)
+    assert await _resolves(files, str(theirs.id)) is None
+    assert await _resolves(files, f"file:{theirs.id}") is None
+    assert await _resolves(files, "theirs.pdf") is None
+
+
+async def test_an_autonomous_run_cannot_use_a_members_chat_run_file(
+    app_session: Any, minio_url: str
+) -> None:
+    tenant, agent, _ = await _setup(app_session)
+    chat = await _members_chat(app_session, tenant, agent, "anna")
+    chat_run = await _run(
+        app_session,
+        tenant,
+        agent,
+        source="chat",
+        context={**ANNA, "chat_session_id": str(chat.id)},
+    )
+    theirs = await _stored(app_session, tenant, "agent_run", chat_run.id, "offer.pdf")
+    run = await _run(app_session, tenant, agent, source="cron")
+    files = _files(app_session, tenant, agent, run)
+    assert await _resolves(files, str(theirs.id)) is None
+    # ... while her own next chat turn may.
+    mine = await _run(
+        app_session,
+        tenant,
+        agent,
+        source="chat",
+        context={**ANNA, "chat_session_id": str(chat.id)},
+    )
+    assert await _resolves(_files(app_session, tenant, agent, mine), str(theirs.id)) == str(
+        theirs.id
+    )
 
 
 @pytest.mark.parametrize("whose", ["other_tenant", "other_agent", "unknown"])

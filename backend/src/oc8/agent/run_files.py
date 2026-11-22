@@ -21,10 +21,13 @@ loop (the in-process engine, the gateway for isolated runtimes), because the
 call reaches the MCP session through layers -- routing, pooling, replay --
 that know nothing about runs and should not have to.
 
-Which files a run may hand to a tool: its own, those of the same agent's other
-runs (the agent's workspace), the agent's instruction files, and the files
-attached in the run's own chat. Always within the run's tenant; a file
-outside that set and a file that does not exist are refused alike.
+Which files a run may hand to a tool: its own; those of the same agent's
+other runs that are as much its own as it is (Ruling 15, `whose_run`): a
+member's run sees her other runs' files, an autonomous run the agent's other
+autonomous runs' -- never a colleague's, never across that line; the agent's
+instruction files; and the files attached in the run's own chat. Always
+within the run's tenant; a file outside that set and a file that does not
+exist are refused alike.
 """
 
 from __future__ import annotations
@@ -48,6 +51,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.db.session import tenant_session
+from oc8.runtime.person import (
+    SEVERAL_PEOPLE,
+    autonomous_sql,
+    run_columns,
+    run_person_sql,
+    whose_run,
+)
 from oc8.storage import s3
 from oc8.storage.attachments import AttachmentRejected, store_attachment_bytes
 
@@ -160,12 +170,45 @@ class RunFiles:
             }
         return [loaded[row.id] for row in rows]
 
-    async def _find(self, db: AsyncSession, ref: str) -> m.FileAttachment | None:
-        own_runs = select(m.AgentRun.id).where(
-            m.AgentRun.tenant_id == self.tenant_id, m.AgentRun.agent_id == self.agent_id
+    async def _runs_alike(self, db: AsyncSession) -> Any:
+        """The runs whose files this run may use: itself, and the agent's other
+        runs that are the same person's -- or, for an autonomous run, the
+        agent's other autonomous runs (Ruling 15). A run that is nobody's own
+        and not autonomous either (several people, an unreadable account) sees
+        its own files only."""
+        run = (
+            await db.execute(
+                select(m.AgentRun).where(
+                    m.AgentRun.id == self.run_id, m.AgentRun.tenant_id == self.tenant_id
+                )
+            )
+        ).scalar_one_or_none()
+        if run is None or run.agent_id != self.agent_id:
+            return None
+        whose = await whose_run(db, run)
+        cols = run_columns()
+        if whose.autonomous:
+            alike = autonomous_sql(cols)
+        elif whose.person and whose.person != SEVERAL_PEOPLE:
+            alike = run_person_sql(cols) == whose.person
+        else:
+            return None
+        return select(m.AgentRun.id).where(
+            m.AgentRun.tenant_id == self.tenant_id, m.AgentRun.agent_id == self.agent_id, alike
         )
+
+    async def _find(self, db: AsyncSession, ref: str) -> m.FileAttachment | None:
+        of_run = m.FileAttachment.owner_type == "agent_run"
+        alike = await self._runs_alike(db)
         visible = [
-            (m.FileAttachment.owner_type == "agent_run") & m.FileAttachment.owner_id.in_(own_runs),
+            of_run
+            & (
+                (m.FileAttachment.owner_id == self.run_id)
+                if alike is None
+                else or_(
+                    m.FileAttachment.owner_id == self.run_id, m.FileAttachment.owner_id.in_(alike)
+                )
+            ),
             (m.FileAttachment.owner_type == "agent_instructions")
             & (m.FileAttachment.owner_id == self.agent_id),
         ]
