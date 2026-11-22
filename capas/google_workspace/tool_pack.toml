@@ -10,7 +10,7 @@ server_url = ""
 
 [connections.scopes]
 read = [
-    "gmail_search", "gmail_get", "gmail_list_labels",
+    "gmail_search", "gmail_get", "gmail_get_attachment", "gmail_list_labels",
     "calendar_list_events", "calendar_get_event", "calendar_check_free_busy",
     "drive_list", "drive_get_content", "drive_search",
     "docs_get_text", "sheets_read_range", "sheets_list_worksheets",
@@ -97,6 +97,7 @@ calendar_update_event = "calendar_event"
 calendar_create_meet_link = "calendar_event"
 gmail_search = "message"
 gmail_get = "message"
+gmail_get_attachment = "message"
 
 # NEUTRAL SEAM (record_url): Drive and Calendar results carry their own link
 # (`webViewLink`, `htmlLink`), preferred; a Gmail message has none, so its
