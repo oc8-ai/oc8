@@ -147,3 +147,40 @@ def test_the_same_limit_in_frame_and_narrowing_counts_once_with_the_tighter_max(
         ),
     )
     assert [lim.max for lim in usage_limits_for(doubled, "mail_send")] == [3]
+
+
+def test_a_narrowing_may_not_raise_the_departments_limit() -> None:
+    """The tighter max is the one in force, so an agent row that shows a
+    higher one would be a number nobody enforces: refused at write time."""
+    from oc8.authz.pdp import narrowing_within_frame
+
+    frame = {
+        "tools": {
+            "email": {
+                "enabled": True,
+                "modify": True,
+                "limits": [{"tools": ["mail_send", "mail_reply"], "max": 50}],
+            }
+        }
+    }
+
+    def narrowing(*limits: dict[str, object]) -> dict[str, object]:
+        return {"tools": {"email": {"enabled": True, "modify": True, "limits": list(limits)}}}
+
+    raised = narrowing_within_frame(
+        frame, narrowing({"tools": ["mail_reply", "mail_send"], "max": 80})
+    )
+    assert [v.reason for v in raised] == [
+        "The department allows at most 50 per day for mail_send/mail_reply"
+    ]
+    assert (
+        narrowing_within_frame(frame, narrowing({"tools": ["mail_send", "mail_reply"], "max": 20}))
+        == []
+    )
+    assert narrowing_within_frame(frame, narrowing({"tools": ["mail_send"], "max": 80})) == []
+    assert (
+        narrowing_within_frame(
+            frame, narrowing({"tools": ["mail_send", "mail_reply"], "max": 80, "per": "hour"})
+        )
+        == []
+    )

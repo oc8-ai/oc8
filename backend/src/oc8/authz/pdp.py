@@ -661,6 +661,20 @@ def narrowing_within_frame(
             violations.append(SubsetViolation(key, "approval threshold higher (looser) than frame"))
         if f.approval_eur is not None and n.approval_eur is None:
             violations.append(SubsetViolation(key, "narrowing removes a frame approval threshold"))
+        # A narrowing may tighten a limit, never loosen it: the tighter max is
+        # the one counted (`merge_limits`), so a higher one here would show an
+        # admin a number nobody enforces.
+        frame_limits = {(lim.key, lim.per): lim for lim in f.limits}
+        for lim in n.limits:
+            ceiling = frame_limits.get((lim.key, lim.per))
+            if ceiling is not None and lim.max > ceiling.max:
+                violations.append(
+                    SubsetViolation(
+                        key,
+                        f"The department allows at most {ceiling.max} per {ceiling.per} "
+                        f"for {'/'.join(ceiling.tools)}",
+                    )
+                )
     return violations
 
 

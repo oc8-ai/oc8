@@ -142,3 +142,23 @@ async def test_todays_usage_is_listed_per_agent(app_session: AppSessionFactory) 
     assert row["tools"] == ["mail_reply", "mail_send"]
     assert (row["per"], row["used"]) == ("day", 3)
     assert row["resetsAt"].endswith(("+00:00", "Z"))
+
+
+async def test_an_agent_limit_above_the_departments_is_a_422(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id, agent_id = await _seed(app_session)
+    async with _http() as http:
+        r = await http.put(
+            f"/api/v1/departments/{dept_id}/tools",
+            json=_email(limits=[SENDING]),
+            headers=_headers(tenant),
+        )
+        assert r.status_code == 200, r.text
+        r = await http.put(
+            f"/api/v1/agents/{agent_id}/narrowing",
+            json={"narrowing": _email(limits=[{**SENDING, "max": 80}])},
+            headers=_headers(tenant),
+        )
+    assert r.status_code == 422, r.text
+    assert "The department allows at most 50 per day" in r.text
