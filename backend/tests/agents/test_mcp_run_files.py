@@ -525,3 +525,74 @@ def test_the_caps_are_what_the_contract_says() -> None:
 
     assert run_files.MAX_FILE_REFERENCES == 20
     assert run_files.MAX_FILE_BYTES_PER_CALL == 50 * 1024 * 1024
+
+
+# --- by name: own files and the agent's instructions only ------------------------
+
+
+async def test_a_name_finds_only_the_runs_own_files_and_the_instructions(
+    app_session: Any, minio_url: str
+) -> None:
+    tenant, agent, _ = await _setup(app_session)
+    policy = await _stored(app_session, tenant, "agent_instructions", agent.id, "AGB.pdf")
+    # An earlier run of the same member kept a mail attachment of the same
+    # name -- later, so newest-first would have picked it.
+    earlier = await _run(app_session, tenant, agent, context=ANNA)
+    spoof = await _stored(app_session, tenant, "agent_run", earlier.id, "AGB.pdf")
+    run = await _run(app_session, tenant, agent, context=ANNA)
+    own = await _stored(app_session, tenant, "agent_run", run.id, "report.pdf")
+    files = _files(app_session, tenant, agent, run)
+
+    assert await _resolves(files, "AGB.pdf") == str(policy.id)
+    assert await _resolves(files, "report.pdf") == str(own.id)
+    # Another run's file is reachable by its id only.
+    assert await _resolves(files, "AGB.pdf") != str(spoof.id)
+    assert await _resolves(files, str(spoof.id)) == str(spoof.id)
+
+
+async def test_a_name_several_files_carry_is_refused(app_session: Any, minio_url: str) -> None:
+    tenant, agent, run = await _setup(app_session)
+    await _stored(app_session, tenant, "agent_instructions", agent.id, "AGB.pdf")
+    await _stored(app_session, tenant, "agent_run", run.id, "AGB.pdf")
+    files = _files(app_session, tenant, agent, run)
+    with pytest.raises(FileReferenceError, match=r"Several files are named 'AGB\.pdf'"):
+        await files.resolve_many(["AGB.pdf"])
+
+
+# --- chat attachments -------------------------------------------------------------
+
+
+async def test_the_runs_own_chat_attachments_are_visible_by_id(
+    app_session: Any, minio_url: str
+) -> None:
+    tenant, agent, _ = await _setup(app_session)
+    chat = await _members_chat(app_session, tenant, agent, "anna")
+    other_chat = await _members_chat(app_session, tenant, agent, "anna-too")
+    async with app_session(tenant) as db:
+        message = m.ChatMessage(
+            tenant_id=tenant, session_id=chat.id, role="user", content="see attached"
+        )
+        db.add(message)
+        await db.flush()
+    pending = await _stored(app_session, tenant, "chat_message", chat.id, "draft.pdf")
+    sent = await _stored(app_session, tenant, "chat_message", message.id, "sent.pdf")
+    elsewhere = await _stored(app_session, tenant, "chat_message", other_chat.id, "x.pdf")
+    run = await _run(
+        app_session, tenant, agent, source="chat", context={**ANNA, "chat_session_id": str(chat.id)}
+    )
+    async with app_session(tenant) as db:
+        stored = await db.get(m.AgentRun, run.id)
+        files = RunFiles.of(stored)
+    files = RunFiles(
+        tenant_id=files.tenant_id,
+        run_id=files.run_id,
+        agent_id=files.agent_id,
+        chat_session_id=files.chat_session_id,
+        open_session=app_session,
+    )
+    assert files.chat_session_id == chat.id
+    assert await _resolves(files, str(pending.id)) == str(pending.id)
+    assert await _resolves(files, str(sent.id)) == str(sent.id)
+    assert await _resolves(files, str(elsewhere.id)) is None
+    # Not by name: a chat attachment is no file of the run.
+    assert await _resolves(files, "sent.pdf") is None

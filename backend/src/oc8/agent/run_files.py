@@ -14,7 +14,10 @@ take part in the same thing instead of pushing bytes through the model:
   input schema. The model passes a file id there (or `file:<id>`, or a
   filename); core swaps it for `{file_id, name, mime_type, size,
   content_base64}` before the call leaves, and the marker never reaches the
-  model's copy of the schema.
+  model's copy of the schema. A filename names only one of the run's own
+  files or the agent's instruction files, and only when it is unique there;
+  everything else goes by id, so a file an earlier run kept cannot shadow
+  the one meant by carrying its name.
 
 Which run a call belongs to is a context variable, bound by whoever runs the
 loop (the in-process engine, the gateway for isolated runtimes), because the
@@ -198,6 +201,9 @@ class RunFiles:
         )
 
     async def _find(self, db: AsyncSession, ref: str) -> m.FileAttachment | None:
+        file_id = _file_id(ref)
+        if file_id is None:
+            return await self._find_by_name(db, ref.strip())
         of_run = m.FileAttachment.owner_type == "agent_run"
         alike = await self._runs_alike(db)
         visible = [
@@ -227,27 +233,39 @@ class RunFiles:
         query = select(m.FileAttachment).where(
             m.FileAttachment.tenant_id == self.tenant_id, or_(*visible)
         )
-        file_id = _file_id(ref)
-        if file_id is not None:
-            found: m.FileAttachment | None = (
-                await db.execute(query.where(m.FileAttachment.id == file_id))
-            ).scalar_one_or_none()
-            return found
-        # A filename: this run's own newest copy first, then the newest anywhere
-        # the run may look (filenames are not unique).
-        return (
+        found: m.FileAttachment | None = (
+            await db.execute(query.where(m.FileAttachment.id == file_id))
+        ).scalar_one_or_none()
+        return found
+
+    async def _find_by_name(self, db: AsyncSession, name: str) -> m.FileAttachment | None:
+        # A name is looked up among this run's own files and the agent's
+        # instructions only: anything else could carry a chosen name (a mail
+        # attachment kept by an earlier run) and shadow the file meant. Names
+        # are not unique, so two matches are refused rather than guessed.
+        named = (
             (
                 await db.execute(
-                    query.where(m.FileAttachment.filename == ref.strip()).order_by(
-                        (m.FileAttachment.owner_id != self.run_id),
-                        m.FileAttachment.created_at.desc(),
-                        m.FileAttachment.id.desc(),
+                    select(m.FileAttachment)
+                    .where(
+                        m.FileAttachment.tenant_id == self.tenant_id,
+                        m.FileAttachment.filename == name,
+                        or_(
+                            (m.FileAttachment.owner_type == "agent_run")
+                            & (m.FileAttachment.owner_id == self.run_id),
+                            (m.FileAttachment.owner_type == "agent_instructions")
+                            & (m.FileAttachment.owner_id == self.agent_id),
+                        ),
                     )
+                    .limit(2)
                 )
             )
             .scalars()
-            .first()
+            .all()
         )
+        if len(named) > 1:
+            raise FileReferenceError(f"Several files are named {name!r}; pass the file id.")
+        return named[0] if named else None
 
 
 _CURRENT: ContextVar[RunFiles | None] = ContextVar("oc8_run_files", default=None)

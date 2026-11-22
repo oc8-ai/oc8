@@ -122,8 +122,9 @@ read (ids, sizes) in a `TextContent` next to it.
 },
 ```
 
-The model passes a file id there (`file:<id>` and an exact file name work
-too). Before the call reaches the bridge, core replaces the value with
+The model passes a file id there (`file:<id>` works too). An exact file name
+works only for the run's own files and the agent's instruction files, and is
+refused when several of those carry it; every other file goes by its id. Before the call reaches the bridge, core replaces the value with
 
 ```json
 {"file_id": "…", "name": "report.pdf", "mime_type": "application/pdf",
