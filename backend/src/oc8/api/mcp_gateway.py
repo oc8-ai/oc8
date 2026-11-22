@@ -65,6 +65,7 @@ from oc8.agent.outward import (
     remember_delivery,
 )
 from oc8.agent.provenance import fence, shorten_long_strings
+from oc8.agent.run_files import RunFiles
 from oc8.agent.tool_idempotency import (
     record_invocation,
     replayed_result,
@@ -1371,6 +1372,7 @@ async def _call_tool(
             http_tools=list(cfg.get("http_tools", [])),
             login=resolve_http_login(cfg, env),
             reusable=launch.reusable,
+            files=RunFiles.of(run),
         )
     except Exception as exc:  # surface to the model, not as a broken server
         # A call that reached the tool counts, even if it failed or timed out:

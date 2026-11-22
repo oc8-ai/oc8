@@ -49,6 +49,7 @@ from typing import Any
 
 from oc8.agent.http_tools import HttpLogin
 from oc8.agent.mcp_client import HttpToolSession, McpSession, open_tool_session
+from oc8.agent.run_files import RunFiles, bind_run_files
 
 logger = logging.getLogger(__name__)
 
@@ -293,8 +294,14 @@ async def call(
     login: HttpLogin | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
+    files: RunFiles | None = None,
 ) -> str:
     """Run one tool call, reusing this connection's session where possible.
+
+    `files` is the run the call belongs to: binary content it returns becomes
+    that run's files, and file arguments resolve against them
+    (oc8.agent.run_files). The session is shared between runs, so this is
+    bound per call, never per session.
 
     Raises whatever the bridge raises, having first dropped the session so the
     next caller starts a fresh one. Callers already turn an exception here into
@@ -310,6 +317,40 @@ async def call(
     than the ~3s it saves, and a token-bearing bridge does no far-system
     authentication during startup anyway (that cost was Odoo's).
     """
+    with bind_run_files(files):
+        return await _call(
+            connection_id,
+            command=command,
+            args=args,
+            env=env,
+            tool=tool,
+            arguments=arguments,
+            transport=transport,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
+            login=login,
+            now=now,
+            reusable=reusable,
+        )
+
+
+async def _call(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    tool: str,
+    arguments: dict[str, Any],
+    transport: str,
+    server_url: str,
+    headers: dict[str, str] | None,
+    http_tools: list[dict[str, Any]] | None,
+    login: HttpLogin | None,
+    now: dt.datetime | None,
+    reusable: bool,
+) -> str:
     stamp = now or dt.datetime.now(tz=dt.UTC)
 
     if not reusable:

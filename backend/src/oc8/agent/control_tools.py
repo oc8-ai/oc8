@@ -3535,7 +3535,9 @@ async def execute_control_tool(
             status="info",
             message=f"Produced file: {filename}",
         )
-        return ControlOutcome(output=f"Saved '{filename}' ({attachment.size_bytes} bytes).")
+        return ControlOutcome(
+            output=f"Saved '{filename}' ({attachment.size_bytes} bytes), file id {attachment.id}."
+        )
 
     if tc.name == RUN_SHELL.name:
         # isolated_shell.py already ran this locally before the call ever

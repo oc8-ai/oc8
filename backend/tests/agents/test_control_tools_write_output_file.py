@@ -159,6 +159,8 @@ async def test_writes_a_file_and_persists_it_under_the_run(
         assert row.tenant_id == tenant
         assert row.content_type == "text/plain"
         assert row.extracted_text == "Q3 numbers look good."
+        # The id is what a tool taking a file is handed (oc8.agent.run_files).
+        assert f"file id {row.id}" in outcome.output
 
 
 @pytest.mark.asyncio

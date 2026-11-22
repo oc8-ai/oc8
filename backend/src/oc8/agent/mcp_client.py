@@ -22,6 +22,15 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import MCP_DEFAULT_SSE_READ_TIMEOUT, MCP_DEFAULT_TIMEOUT
 
 from oc8.agent.http_tools import BLOCKED_MESSAGE, HttpLogin, HttpToolSession, guarded_ip
+from oc8.agent.run_files import (
+    FilePath,
+    FileReferenceError,
+    current_run_files,
+    file_paths,
+    model_schema,
+    render_content,
+    resolve_file_arguments,
+)
 from oc8.modelrouter.types import NeutralTool
 from oc8.net.outbound import USER_AGENT, OutboundBlocked
 
@@ -376,6 +385,8 @@ class McpSession:
         self._session: ClientSession | None = None
         self._timeout_s = MCP_REQUEST_TIMEOUT_SECONDS if timeout_s is None else timeout_s
         self.tools: list[NeutralTool] = []
+        #: Where each tool takes a run file (oc8.agent.run_files).
+        self._file_paths: dict[str, list[FilePath]] = {}
         self.resources: list[dict[str, str]] = []
         self.prompt_names: list[str] = []
         self._errlog = _StderrTail()
@@ -472,11 +483,14 @@ class McpSession:
             NeutralTool(
                 name=t.name,
                 description=t.description or "",
-                parameters=_schema_of(t),
+                parameters=model_schema(_schema_of(t)),
                 annotations=_annotations_of(t),
             )
             for t in listed.tools
         ]
+        self._file_paths = {
+            t.name: paths for t in listed.tools if (paths := file_paths(_schema_of(t)))
+        }
         self.resources = await _list_resources(self._session)
         self.prompt_names = await _list_prompt_names(self._session)
         return self
@@ -499,6 +513,12 @@ class McpSession:
         if self._session is None:
             raise RuntimeError("MCP session not started")
         try:
+            arguments = await resolve_file_arguments(
+                arguments, self._file_paths.get(name, []), current_run_files()
+            )
+        except FileReferenceError as exc:
+            raise McpToolError(str(exc)) from None
+        try:
             result = await self._session.call_tool(name, arguments, allow_input_required=True)
         except TypeError as exc:
             if "allow_input_required" not in str(exc):
@@ -509,12 +529,8 @@ class McpSession:
         question = elicitation_message(result)
         if question is not None:
             raise ElicitationNeeded(question)
-        parts: list[str] = []
-        for block in result.content:
-            text = getattr(block, "text", None)
-            if text is not None:
-                parts.append(text)
-        text = "\n".join(parts) if parts else "(no output)"
+        # Binary content becomes a file of the run; the model reads a reference.
+        text = await render_content(list(result.content)) or "(no output)"
         # The MCP protocol marks a tool-level failure (the server ran the
         # tool, the tool itself rejected the call -- e.g. Odoo refusing an
         # unknown field) via `is_error`, not an exception; call_tool() never

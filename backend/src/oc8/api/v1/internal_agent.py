@@ -108,6 +108,7 @@ from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
+from oc8.agent.run_files import RunFiles
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
@@ -1133,6 +1134,7 @@ async def _finish_elicitation(
                     http_tools=list(cfg.get("http_tools", [])),
                     login=resolve_http_login(cfg, env),
                     reusable=launch.reusable,
+                    files=RunFiles.of(run),
                 )
                 await record_for(
                     db,
@@ -2282,6 +2284,7 @@ async def _precompute_leading_reads(
                     http_tools=list(cfg.get("http_tools", [])),
                     login=resolve_http_login(cfg, env),
                     reusable=launch.reusable,
+                    files=RunFiles.of(run),
                 )
                 error = None
             except ElicitationNeeded:
@@ -3068,6 +3071,7 @@ async def _dispatch_one_tool(
                         http_tools=list(cfg.get("http_tools", [])),
                         login=resolve_http_login(cfg, env),
                         reusable=launch.reusable,
+                        files=RunFiles.of(run),
                     )
                 except ElicitationNeeded as exc:
                     output = exc.message

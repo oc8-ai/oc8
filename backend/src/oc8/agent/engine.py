@@ -117,6 +117,7 @@ from oc8.agent.offering import (
 )
 from oc8.agent.outward import outward_target
 from oc8.agent.preamble import build_run_preamble
+from oc8.agent.run_files import RunFiles, bind_run_files
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
@@ -3843,7 +3844,10 @@ async def run_agent(
                 if session_state["started"]:
                     await dispatch_claude_event(tenant_id, "SessionEnd", _hook_ctx())
 
-        return await _run_with_session_end()
+        # Every MCP call of this run keeps its binary results as this run's
+        # files and resolves file arguments against them (agent/run_files.py).
+        with bind_run_files(RunFiles.of(run_row) if run_row is not None else None):
+            return await _run_with_session_end()
 
     with get_tracer().start_as_current_span("agent.run") as span:
         span.set_attribute("tenant_id", str(tenant_id))
