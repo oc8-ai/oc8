@@ -220,3 +220,40 @@ async def test_an_agent_limit_on_an_unknown_tool_is_a_422(
         )
     assert r.status_code == 422, r.text
     assert "mail_sned" in r.text
+
+
+async def test_usage_is_not_shown_outside_what_the_caller_may_see(
+    app_session: AppSessionFactory,
+) -> None:
+    """Another department's agent (for a caller seated elsewhere) and another
+    tenant's agent are a 404, never their counts."""
+    from tests.api.test_department_reads_department_scoped import _headers as seat_headers
+    from tests.api.test_department_reads_department_scoped import _office
+
+    office = await _office(app_session)
+    limit = UsageLimit.from_json(SENDING)
+    now = dt.datetime.now(dt.UTC)
+    for agent_id in (office.sales_agent, office.engineering_agent):
+        async with app_session(office.tenant) as db:
+            await take(
+                db,
+                tenant_id=office.tenant,
+                agent_id=agent_id,
+                tool_key="email",
+                limit=limit,
+                now=now,
+            )
+    seated = seat_headers(office.tenant, office.seated_subject)
+    async with _http() as http:
+        own = await http.get(f"/api/v1/agents/{office.sales_agent}/tool-usage", headers=seated)
+        other_dept = await http.get(
+            f"/api/v1/agents/{office.engineering_agent}/tool-usage", headers=seated
+        )
+        other_tenant = await http.get(
+            f"/api/v1/agents/{office.sales_agent}/tool-usage",
+            headers=_headers(uuid.uuid4()),
+        )
+    assert own.status_code == 200, own.text
+    assert [row["used"] for row in own.json()] == [1]
+    assert other_dept.status_code == 404, other_dept.text
+    assert other_tenant.status_code == 404, other_tenant.text
