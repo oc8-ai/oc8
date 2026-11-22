@@ -15,20 +15,22 @@
 # which run in the bridge and see only OC8_MCP_* variables. Having the bridge
 # follow OC8_OUTBOUND_ALLOWED_PRIVATE by itself is a follow-up.
 #
-# Known limits of 1.0.0, accepted for now:
+# Known limits of 1.1.0, accepted for now:
 # * Attachments travel inline, as text or base64 in the tool call and result,
 #   not as run files: core's MCP client keeps only text from a tool. Handing
 #   them over as run files is a core follow-up.
-# * There is no daily send counter: the guardrail model has no per-day
-#   budget. What bounds sending is the preset (see answer_on_its_own) and
-#   core's outward rule, one message per mail in each task.
+# * Daily send budgets come from core's guardrail usage limits: the
+#   autonomous_with_limit preset allows at most 50 sends, replies and
+#   forwards together per agent and UTC day. The other presets bound sending
+#   by the tools they reach and core's outward rule, one message per mail in
+#   each task.
 # * Sent mail is not copied to a Sent folder; SMTP alone does not do that,
 #   and the provider may or may not.
 
 [plugin]
 name = "email"
 label = "Email"
-version = "1.0.0"
+version = "1.1.0"
 type = "tool_pack"
 trust = "first_party"
 summary = "Give an agent its own mailbox over IMAP or POP3 and SMTP: read, search, send, reply and react to new mail"
