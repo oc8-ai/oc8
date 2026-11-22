@@ -791,7 +791,12 @@ PROPOSE_CHANGE = NeutralTool(
                     "invent one), datatype ('number', 'string', 'boolean', "
                     "or 'enum'), operator ('>', '>=', '<', '<=', '==', '!=', "
                     "'in', or 'not_in'), value (typed to match the "
-                    "attribute), then ('require_approval' or 'deny'))]. "
+                    "attribute), then ('require_approval' or 'deny')), "
+                    "usageLimit (object, not with 'not_allowed': max (whole "
+                    "number), [tools (list of this system's tool names counted "
+                    "together; must include function; default just function), "
+                    "per ('day' or 'hour', UTC; default 'day')] -- e.g. at most "
+                    "50 mails a day)]. "
                     "Every id must be one you actually saw in your context -- "
                     "never invent a uuid, the proposal is refused if it "
                     "refers to nothing."
@@ -858,6 +863,25 @@ _GUARDRAIL_DECISION = {
         "call; not_allowed: never; with_limits: on its own until a condition hits"
     ),
 }
+#: `agent.guardrail.set`'s optional usage limit (`copilot.capabilities.
+#: GuardrailUsageLimitInput`), the same shape a preset's `limits` entry has.
+_GUARDRAIL_USAGE_LIMIT = {
+    "type": "object",
+    "description": (
+        "Optionally: at most `max` successful calls per UTC day (or hour) of "
+        "`tools` -- the function itself, plus any tools of the same system "
+        "counted together with it, e.g. 50 mails a day across mail_send and "
+        "mail_reply. Not with decision not_allowed."
+    ),
+    "properties": {
+        "tools": {"type": "array", "items": {"type": "string"}, "maxItems": 50},
+        "max": {"type": "integer", "minimum": 0},
+        "per": {"type": "string", "enum": ["day", "hour"]},
+    },
+    "required": ["max"],
+    "additionalProperties": False,
+}
+
 _GUARDRAIL_CONDITIONS = {
     "type": "array",
     "maxItems": 20,
@@ -936,6 +960,7 @@ _BUILDER_OPERATION = {
         "function": {"type": "string", "description": "agent.guardrail.set: the tool name."},
         "decision": {**_GUARDRAIL_DECISION, "description": "agent.guardrail.set."},
         "conditions": _GUARDRAIL_CONDITIONS,
+        "usageLimit": _GUARDRAIL_USAGE_LIMIT,
         "narrowing": {
             "type": "object",
             "description": 'agent.narrowing.set: {"tools": {"<system>": {...}}}.',
@@ -1038,7 +1063,9 @@ PROPOSE_AGENT = NeutralTool(
             "limits": {
                 "type": "array",
                 "maxItems": 16,
-                "description": "What it may do only with approval, or never.",
+                "description": (
+                    "What it may do only with approval, never, or only so often (usageLimit)."
+                ),
                 "items": {
                     "type": "object",
                     "properties": {
@@ -1046,6 +1073,7 @@ PROPOSE_AGENT = NeutralTool(
                         "function": {"type": "string", "description": "The tool name."},
                         "decision": _GUARDRAIL_DECISION,
                         "conditions": _GUARDRAIL_CONDITIONS,
+                        "usageLimit": _GUARDRAIL_USAGE_LIMIT,
                     },
                     "required": ["system", "function", "decision"],
                     "additionalProperties": False,

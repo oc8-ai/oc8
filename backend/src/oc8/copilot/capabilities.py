@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from dataclasses import replace
 from typing import Annotated, Any, Literal
 
 from fastapi import HTTPException
@@ -289,6 +290,18 @@ class GuardrailConditionInput(BaseModel):
     then: str
 
 
+class GuardrailUsageLimitInput(BaseModel):
+    """`payload.usageLimit` for `GuardrailSet`: "at most `max` calls of `tools`
+    per `per`" (`authz.pdp.UsageLimit`). `tools` defaults to the operation's
+    own function and must name it; at apply time every name is checked
+    against the connection's real tool list."""
+
+    model_config = ConfigDict(extra="forbid")
+    tools: list[str] = Field(default_factory=list, max_length=50)
+    max: int = Field(ge=0, le=1_000_000)
+    per: Literal["day", "hour"] = "day"
+
+
 class GuardrailSet(_Operation):
     """Same 4-state decision the manual editor and the free-text interpreter
     both write (`self_sufficient`/`with_limits`/`approval_required`/
@@ -303,6 +316,10 @@ class GuardrailSet(_Operation):
     function: str = Field(min_length=1, max_length=200)
     decision: Literal["self_sufficient", "with_limits", "approval_required", "not_allowed"]
     conditions: list[GuardrailConditionInput] = Field(default_factory=list, max_length=20)
+    #: Optionally a usage limit on this function (and the tools it names with
+    #: it), replacing any limit on exactly those tools and period. Only with a
+    #: decision that lets the function run.
+    usageLimit: GuardrailUsageLimitInput | None = None
 
 
 #: The pydantic error type a refused board spec becomes. Its message is fixed:
@@ -1432,15 +1449,36 @@ async def _apply_guardrail_set(
         base_only.add(operation.function)
         approval_actions.discard(operation.function)
 
-    updated = pdp.ToolPolicy(
-        enabled=current.enabled,
-        read=current.read,
-        modify=current.modify,
-        approval_eur=current.approval_eur,
+    limits = current.limits
+    if operation.usageLimit is not None:
+        if operation.decision == "not_allowed":
+            # A function that never runs has nothing to count.
+            raise InvalidOperation()
+        try:
+            limit = pdp.UsageLimit.from_json(
+                {
+                    "tools": operation.usageLimit.tools or [operation.function],
+                    "max": operation.usageLimit.max,
+                    "per": operation.usageLimit.per,
+                }
+            )
+        except ValueError as exc:
+            raise InvalidOperation() from exc
+        if not limit.covers(operation.function) or not set(limit.tools) <= set(tool_names):
+            raise InvalidOperation()
+        limits = (
+            *(lim for lim in current.limits if (lim.key, lim.per) != (limit.key, limit.per)),
+            limit,
+        )
+
+    # `replace`, never a field-by-field rebuild: every field this operation
+    # does not decide (limits, a pinned login, ...) must survive it.
+    updated = replace(
+        current,
         approval_actions=frozenset(approval_actions),
         only=frozenset(base_only),
-        connection_id=current.connection_id,
         conditions=conditions,
+        limits=limits,
     )
     tools[operation.connectionName] = updated.to_json()
     narrowing["tools"] = tools
