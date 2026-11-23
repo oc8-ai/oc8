@@ -108,13 +108,18 @@ async def _wake_parked_run(db: AsyncSession, run: m.AgentRun) -> None:
     from oc8.runtime.repository import RunRepository
     from oc8.runtime.states import RunState
 
-    # Re-read: the executor's own park may have committed since the caller
-    # loaded the row.
+    # A first, unlocked look: most runs a Stop reaches are not parked.
     fresh = await db.get(m.AgentRun, run.id, populate_existing=True)
     if fresh is None or fresh.state != RunState.WAITING_FOR_APPROVAL.value:
         return
+    # The Approve's lock order (approvals/service.py `decide`): the cards
+    # first, then the run. A decision that got there first has resumed the
+    # run by the time these locks are ours; the run is re-read under its own
+    # lock and left alone unless it is still parked -- otherwise a running
+    # run would be put back into the queue.
+    pending: list[m.ApprovalRequest] = []
     if fresh.task_id is not None:
-        pending = (
+        pending = list(
             (
                 await db.execute(
                     select(m.ApprovalRequest)
@@ -129,10 +134,21 @@ async def _wake_parked_run(db: AsyncSession, run: m.AgentRun) -> None:
             .scalars()
             .all()
         )
-        for approval in pending:
-            raiser = await run_of_approval(db, approval)
-            if raiser is not None and raiser.id == fresh.id:
-                await expire_approval(db, approval)
+    locked = (
+        await db.execute(
+            select(m.AgentRun)
+            .where(m.AgentRun.id == run.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if locked is None or locked.state != RunState.WAITING_FOR_APPROVAL.value:
+        return
+    fresh = locked
+    for approval in pending:
+        raiser = await run_of_approval(db, approval)
+        if raiser is not None and raiser.id == fresh.id:
+            await expire_approval(db, approval)
     await RunRepository(db).transition(fresh, RunState.QUEUED)
     await db.flush()
     run_id, tenant_id = fresh.id, fresh.tenant_id

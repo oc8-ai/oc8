@@ -166,3 +166,76 @@ async def test_stop_ends_a_run_parked_on_an_approval(
             .all()
         )
         assert len(cancels) == 1
+
+
+async def test_a_stop_racing_an_approve_leaves_the_resumed_run_alone(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of F6: the Approve locks the card and resumes the run; a Stop
+    that read the run as parked just before must not, once the card's lock is
+    released, put the now-running run back into the queue."""
+    import asyncio
+
+    from sqlalchemy import update
+
+    from oc8.runtime.cancellation import _wake_parked_run
+
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id, approval_id, _other, _agent, _task = await _parked_second_turn(app_session, tenant)
+
+    async with app_session(tenant) as approver:
+        # The Approve: card locked first, then the run resumed and picked up.
+        card = (
+            await approver.execute(
+                select(m.ApprovalRequest)
+                .where(m.ApprovalRequest.id == approval_id)
+                .with_for_update()
+            )
+        ).scalar_one()
+        card.status = "approved"
+        await approver.execute(
+            update(m.AgentRun).where(m.AgentRun.id == run_id).values(state=RunState.RUNNING.value)
+        )
+        await approver.flush()
+
+        async def stop() -> None:
+            async with app_session(tenant) as db:
+                run = await db.get(m.AgentRun, run_id)
+                assert run is not None
+                await _wake_parked_run(db, run)
+
+        stopping = asyncio.create_task(stop())
+        await asyncio.sleep(0.5)  # the Stop reads the run as parked, then waits on the card
+    await asyncio.wait_for(stopping, timeout=10)
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        card_after = await db.get(m.ApprovalRequest, approval_id)
+        assert run is not None and run.state == RunState.RUNNING.value
+        assert card_after is not None and card_after.status == "approved"
+    assert queue.enqueued == []
+
+
+async def test_a_stop_finding_the_run_already_queued_does_nothing(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.runtime.cancellation import _wake_parked_run
+
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id, approval_id, _other, _agent, _task = await _parked_second_turn(app_session, tenant)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.state = RunState.QUEUED.value
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await _wake_parked_run(db, run)
+    async with app_session(tenant) as db:
+        card = await db.get(m.ApprovalRequest, approval_id)
+        assert card is not None and card.status == "pending"
+    assert queue.enqueued == []
