@@ -1153,11 +1153,15 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # the rejected ones), and hand the engine the per-call verdicts so it
             # executes them instead of suspending again.
             approvals = run.context.get("resolved_tool_approvals", [])
-            pre_decided: dict[str, str] = {}
-            if approvals:
-                from oc8.runtime.approval_resume import pre_decided_map
+            pre_decided = None
+            from oc8.runtime.approval_resume import live_decisions, pre_decided_map
 
-                pre_decided = pre_decided_map(approvals)
+            if approvals:
+                # Each approval covers one run of its call: what earlier legs
+                # used up is no longer a decision (`consume_approval`).
+                pre_decided = await live_decisions(
+                    db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
+                )
             # The calls the legs before this one recorded: this leg's final
             # write replaces `toolCalls` with its own, so a resumed run would
             # lose the reads that led up to its held write (E2E F10).
@@ -1414,7 +1418,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             "toolCalls": (
                                 _merge_leg_calls(
                                     earlier_calls,
-                                    pre_decided,
+                                    pre_decided_map(approvals),
                                     result.tool_calls,
                                     leg_from=leg_from,
                                 )
@@ -1562,7 +1566,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             "toolCalls": (
                                 _merge_leg_calls(
                                     earlier_calls,
-                                    pre_decided,
+                                    pre_decided_map(approvals),
                                     result.tool_calls,
                                     leg_from=leg_from,
                                 )

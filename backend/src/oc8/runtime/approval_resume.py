@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -18,7 +18,7 @@ from oc8.approvals.repo import department_after_person
 from oc8.models.ops import ApprovalRequest
 from oc8.models.run import AgentRun
 from oc8.runtime.repository import RunRepository
-from oc8.runtime.run_context import append_resolved_approval
+from oc8.runtime.run_context import append_consumed_approval, append_resolved_approval
 from oc8.runtime.states import RunState
 
 
@@ -120,6 +120,9 @@ async def resolve_tool_approval(
             "tool": tool,
             "arguments": arguments,
             "decision": decision,
+            # Names the approval, so the call that uses it up can say which
+            # one it used (`consume_approval`).
+            "approval_id": str(approval.id),
             # Only a raiser that saw the call pass read-before-write sets it.
             **(
                 {
@@ -183,3 +186,132 @@ def resume_instruction(entries: list[dict[str, Any]]) -> str:
 def pre_decided_map(entries: list[dict[str, Any]]) -> dict[str, str]:
     """signature -> "approve"|"reject", for the engine to honour on replay."""
     return {e["sig"]: e["decision"] for e in entries if e.get("sig") and e.get("decision")}
+
+
+#: Prefix of the delivery marker an approval leaves when its call runs.
+APPROVAL_MARKER = "approval#"
+
+
+class Decisions:
+    """An operator's decisions on held calls, as a run may still use them.
+
+    One approval covers exactly ONE execution of the call it approved (E2E N1,
+    security review): read from `resolved_tool_approvals` minus what
+    `consumed_tool_approvals` already used up, so an identical repeat in the
+    same run is a new call -- asked again, or guarded when it runs
+    unattended. A rejection stays: it is never used up.
+
+    Every path that honours a decision reads it through here -- the engine,
+    the MCP gateway, the isolated runtime's /tool and /tools, its local-tool
+    pre-verdict and a held call's re-run -- and the call that runs on an
+    approval uses it up through `consume_approval`. Behaves as the
+    `signature -> verdict` mapping those paths used before.
+    """
+
+    def __init__(self, context: Mapping[str, Any] | None) -> None:
+        ctx = context or {}
+        entries = [e for e in ctx.get("resolved_tool_approvals") or [] if isinstance(e, dict)]
+        latest = pre_decided_map(entries)
+        self.decided = bool(latest)
+        used = {
+            str(c.get("key"))
+            for c in ctx.get("consumed_tool_approvals") or []
+            if isinstance(c, dict)
+        }
+        #: signature -> the key of the first approval not yet used up.
+        self.open: dict[str, str] = {}
+        seen: dict[str, int] = {}
+        for e in entries:
+            sig = e.get("sig")
+            if not sig or e.get("decision") != "approve":
+                continue
+            seen[sig] = seen.get(sig, 0) + 1
+            key = str(e.get("approval_id") or f"{sig}#{seen[sig]}")
+            if key not in used and sig not in self.open:
+                self.open[sig] = key
+        self.verdicts: dict[str, str] = {
+            sig: verdict
+            for sig, verdict in latest.items()
+            if verdict == "reject" or sig in self.open
+        }
+
+    @classmethod
+    def of(cls, decided: Decisions | Mapping[str, str] | None) -> Decisions | None:
+        """A plain `signature -> verdict` map as unused decisions."""
+        if decided is None or isinstance(decided, Decisions):
+            return decided
+        return cls(
+            {"resolved_tool_approvals": [{"sig": k, "decision": v} for k, v in decided.items()]}
+        )
+
+    def get(self, sig: str, default: str | None = None) -> str | None:
+        return self.verdicts.get(sig, default)
+
+    def __bool__(self) -> bool:
+        """Whether anybody decided anything for this run -- a resume leg --
+        even if every approval is used up by now."""
+        return self.decided
+
+    def approved(self, sig: str) -> bool:
+        return self.verdicts.get(sig) == "approve"
+
+    def drop(self, sig: str) -> str | None:
+        """Forget an approval this process just used up; its key."""
+        key = self.open.pop(sig, None)
+        if self.verdicts.get(sig) == "approve":
+            self.verdicts.pop(sig, None)
+        return key
+
+
+async def live_decisions(
+    db: AsyncSession,
+    *,
+    context: Mapping[str, Any] | None,
+    tenant_id: uuid.UUID,
+    task_id: uuid.UUID | None,
+) -> Decisions:
+    """`Decisions` of a run, also dropping an approval whose call already
+    ran by its delivery marker -- which lives outside the run context, so a
+    leg redelivered after a crash, or a context written back from an older
+    copy, cannot make one approval send twice."""
+    decisions = Decisions(context)
+    if task_id is None:
+        return decisions
+    from oc8.agent.outward import already_delivered
+
+    for sig, key in list(decisions.open.items()):
+        if await already_delivered(
+            db, tenant_id=tenant_id, task_id=task_id, target=APPROVAL_MARKER + key
+        ):
+            decisions.drop(sig)
+    return decisions
+
+
+async def consume_approval(
+    db: AsyncSession,
+    run: AgentRun | None,
+    decisions: Decisions,
+    sig: str,
+    *,
+    ctx: dict[str, Any] | None = None,
+) -> None:
+    """Use up the approval a call ran on: in the run context and as a delivery
+    marker, in the caller's transaction -- the one that records the call's own
+    delivery. Nothing when the call ran without an approval. `ctx`: a copy
+    of the context the caller writes back whole, kept in step."""
+    if not decisions.approved(sig):
+        return
+    key = decisions.drop(sig)
+    if key is None or run is None:
+        return
+    entry = {"sig": sig, "key": key}
+    await append_consumed_approval(db, run, entry)
+    if ctx is not None:
+        # A caller holding its own copy of the context, to write back whole.
+        ctx["consumed_tool_approvals"] = [*(ctx.get("consumed_tool_approvals") or []), entry]
+    if run.task_id is not None:
+        from oc8.agent.outward import remember_delivery
+
+        await remember_delivery(
+            db, tenant_id=run.tenant_id, task_id=run.task_id, target=APPROVAL_MARKER + key
+        )

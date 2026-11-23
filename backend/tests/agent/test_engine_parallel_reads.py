@@ -289,6 +289,51 @@ async def test_resolved_b5_ask_does_not_park_again(
         assert expected_error in result.tool_calls[0]["result"]
 
 
+async def test_one_approval_runs_its_call_once_in_the_engine(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security review of N1, in-process engine: the approval is used up by
+    the call it approved, so the model repeating that call is asked again."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr(
+        "oc8.agent.mcp_client.McpSession",
+        _session_factory(recorder, ["delete_a"]),
+    )
+    call = {"id": 7, "justification": "Duplicate record"}
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream(
+            [
+                _turn("", ToolCall(id="c1", name="delete_a", arguments=dict(call))),
+                _turn("", ToolCall(id="c2", name="delete_a", arguments=dict(call))),
+                _turn("All done."),
+            ]
+        ),
+    )
+
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": [], "modify": ["delete_a"]},
+            destructive_tools=["delete_a"],
+            approval_templates={"delete_a": "Allow deleting record {id}?"},
+        )
+        resolved_call = ToolCall(id="resolved", name="delete_a", arguments={"id": 7})
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            mcp_conn=conn,
+            pre_decided={call_sig(resolved_call): "approve"},
+        )
+
+    assert result.status == "waiting_for_approval", result
+    assert len(recorder.windows) == 1
+
+
 async def test_leading_read_batch_dispatches_concurrently(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

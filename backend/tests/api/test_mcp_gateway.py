@@ -1174,10 +1174,27 @@ async def _a_message_already_sent(
                 ],
             }
 
+    _LAST_CALL["world"] = (tenant, agent_id, run_id)
+    _LAST_CALL["arguments"] = arguments
     code, body = await _rpc(
         _token(tenant, agent_id, run_id),
         "tools/call",
         {"name": "send_email", "arguments": arguments},
+    )
+    assert code == 200, body
+    return dict(body["result"])
+
+
+#: The world `_a_message_already_sent` built, for a test that calls again.
+_LAST_CALL: dict[str, Any] = {}
+
+
+async def _rpc_again(app_session: AppSessionFactory) -> dict[str, Any]:
+    tenant, agent_id, run_id = _LAST_CALL["world"]
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "send_email", "arguments": _LAST_CALL["arguments"]},
     )
     assert code == 200, body
     return dict(body["result"])
@@ -1211,6 +1228,36 @@ async def test_a_repeat_a_person_approved_goes_out(
     it. An approved call is the person's decision; the guard never refuses it."""
     result = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True)
     assert result.get("isError") is not True, result
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+
+
+async def test_one_approval_covers_exactly_one_delivery(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security review of N1: the approval stays in the run context, so a
+    model repeating the identical approved call would ride on it forever. The
+    call that runs uses the approval up; the repeat is asked again."""
+    first = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True)
+    assert first.get("isError") is not True, first
+    again = await _rpc_again(app_session)
+    assert "approval" in again["content"][0]["text"].lower()
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+
+
+async def test_a_redelivered_call_does_not_send_twice(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leg redelivered after a crash may carry the run context from before
+    the approval was used up; the delivery marker it left still stops it."""
+    first = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True)
+    assert first.get("isError") is not True, first
+    tenant, _agent, run_id = _LAST_CALL["world"]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {k: v for k, v in run.context.items() if k != "consumed_tool_approvals"}
+    again = await _rpc_again(app_session)
+    assert "approval" in again["content"][0]["text"].lower()
     assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
 
 

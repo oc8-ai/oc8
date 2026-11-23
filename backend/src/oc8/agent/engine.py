@@ -214,6 +214,7 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
+from oc8.runtime.approval_resume import Decisions, consume_approval
 from oc8.runtime.run_context import (
     append_tool_call,
     append_waived_read_before_write,
@@ -585,10 +586,13 @@ async def run_agent(
     delegation_depth: int = 0,
     cancel_check: CancelCheck | None = None,
     inbox_check: InboxCheck | None = None,
-    pre_decided: dict[str, str] | None = None,
+    pre_decided: Decisions | Mapping[str, str] | None = None,
     originating_operator: str | None = None,
     task_images_raw: list[dict[str, str]] | None = None,
 ) -> RunResult:
+    # Each approval covers one run of its call (`consume_approval`).
+    decided = Decisions.of(pre_decided)
+
     async def _run() -> RunResult:
         settings = get_settings()
         router = get_model_router()
@@ -1325,7 +1329,7 @@ async def run_agent(
                     routed=True,
                     direct_access=direct_view,
                 )
-                verdict = (pre_decided or {}).get(_call_sig(held))
+                verdict = decided.get(_call_sig(held)) if decided is not None else None
                 if decision.effect is Effect.DENY:
                     return "refuse", decision.reason or "denied", decision, False
                 if verdict == "reject":
@@ -1636,6 +1640,15 @@ async def run_agent(
                             if held_hold is not None:
                                 # Reached the tool: counts, even if it failed.
                                 await held_hold.settle(succeeded=held_reached)
+                            if decided is not None:
+                                # Ran, so the approval it ran on is used up.
+                                await consume_approval(
+                                    db,
+                                    parked,
+                                    decided,
+                                    _call_sig(held_tc),
+                                    ctx=parked_ctx,
+                                )
                             if held_direct and run_row is not None:
                                 # Ran through the grant: audited and counted
                                 # like the step loop's direct calls.
@@ -2424,8 +2437,8 @@ async def run_agent(
                         stripped, justification = strip_justification(_pre_tc.arguments)
                         _pre_tc.arguments = stripped
                         call_justifications[_pre_tc.id] = justification
-                        if pre_decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
-                            verdict = pre_decided.get(_call_sig(_pre_tc))
+                        if pre_decision.effect is Effect.REQUIRE_APPROVAL and decided:
+                            verdict = decided.get(_call_sig(_pre_tc))
                             if verdict == "approve":
                                 pre_decision = Decision(Effect.ALLOW, "operator approved")
                         if pre_decision.effect is not Effect.ALLOW:
@@ -2625,8 +2638,8 @@ async def run_agent(
                     # decided this exact call. Honour that instead of suspending
                     # again -- approve executes it, reject turns it into a DENY
                     # the model sees and moves past.
-                    if decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
-                        verdict = pre_decided.get(_call_sig(tc))
+                    if decision.effect is Effect.REQUIRE_APPROVAL and decided:
+                        verdict = decided.get(_call_sig(tc))
                         if verdict == "approve":
                             decision = Decision(Effect.ALLOW, "operator approved")
                         elif verdict == "reject":
@@ -2751,7 +2764,7 @@ async def run_agent(
                                 direct=direct_call,
                             )
                             if gate_verdict.effect == "ask":
-                                verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
+                                verdict = decided.get(_call_sig(tc)) if decided else None
                                 if verdict == "approve":
                                     # The approved write runs: spend its proof
                                     # (if it carries one) even though this leg
@@ -2770,8 +2783,8 @@ async def run_agent(
                             elif (
                                 gate_verdict.effect == "deny"
                                 and gate_verdict.rule == "read_before_write"
-                                and pre_decided
-                                and pre_decided.get(_call_sig(tc)) == "approve"
+                                and decided
+                                and decided.get(_call_sig(tc)) == "approve"
                                 and await _consume_waiver(call_key, _call_sig(tc))
                             ):
                                 # A resumed leg starts with a fresh ledger, but
@@ -3336,7 +3349,7 @@ async def run_agent(
                                 ),
                                 # A person approved this very call: their
                                 # decision, not a repeat to refuse (E2E N1).
-                                approved=(pre_decided or {}).get(_call_sig(tc)) == "approve",
+                                approved=(decided is not None and decided.approved(_call_sig(tc))),
                             )
                         ).refusal is not None:
                             # Before the call, not after: the point is that the
@@ -3491,6 +3504,10 @@ async def run_agent(
                                     target=outward.target,
                                     output=output,
                                 )
+                                if decided is not None:
+                                    # Used up with the delivery: one approval,
+                                    # one call -- a repeat is asked again.
+                                    await consume_approval(db, run_row, decided, _call_sig(tc))
                                 await record_for(
                                     db,
                                     tenant_id=tenant_id,

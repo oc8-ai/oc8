@@ -1167,6 +1167,71 @@ async def test_resolved_b5_ask_does_not_park_again_on_internal_tool(
 
 
 @pytest.mark.asyncio
+async def test_one_approval_runs_its_call_once_on_internal_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security review of N1, isolated runtime: the approved call runs and
+    uses its approval up; the identical call again is asked again, also when
+    the run context was written back from a copy that predates the use (a
+    leg redelivered after a crash) -- the approval's marker still stops it."""
+    from oc8 import models as m
+    from oc8.agent.harness.calls import call_sig
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _RecordingSession(_EmptySchemaSession):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append((name, arguments))
+            return "deleted"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _RecordingSession)
+
+    tenant = uuid.uuid4()
+    resolved_call = ToolCall(id="resolved", name="create_record", arguments={"id": 7})
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(
+            db,
+            tenant,
+            destructive_tools=["create_record"],
+            approval_templates={"create_record": "Allow deleting record {id}?"},
+        )
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_sig(resolved_call),
+                    "tool": "create_record",
+                    "arguments": {"id": 7},
+                    "decision": "approve",
+                    "approval_id": "a1",
+                }
+            ],
+        }
+
+    args = {"id": 7, "justification": "Duplicate record"}
+    code, body = await _post_tool(tenant, agent_id, run_id, "create_record", args)
+    assert (code, body["status"]) == (200, "ok"), body
+    code, body = await _post_tool(tenant, agent_id, run_id, "create_record", args)
+    assert body["status"] == "waiting_for_approval", body
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert [c["key"] for c in run.context["consumed_tool_approvals"]] == ["a1"]
+        run.context = {
+            k: v
+            for k, v in run.context.items()
+            if k not in ("consumed_tool_approvals", "isolated_result")
+        }
+        run.state = "running"
+    code, body = await _post_tool(tenant, agent_id, run_id, "create_record", args)
+    assert body["status"] == "waiting_for_approval", body
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_dispatched_call_records_started_at_and_duration(
     app_session: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2510,6 +2575,8 @@ async def test_step_never_hands_the_shell_a_local_call_the_mode_withholds(
         ("conservative", None, []),
         ("conservative", "approve", ["run_shell"]),
         ("conservative", "reject", []),
+        # An approval its call already used up approves nothing more.
+        ("conservative", "used", []),
     ],
 )
 async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
@@ -2532,9 +2599,12 @@ async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
                 "sig": call_signature("run_shell", {"command": "ls"}),
                 "tool": "run_shell",
                 "arguments": {"command": "ls"},
-                "decision": pre_decided,
+                "decision": "approve" if pre_decided == "used" else pre_decided,
+                "approval_id": "a1",
             }
         ]
+        if pre_decided == "used":
+            context["consumed_tool_approvals"] = [{"sig": "x", "key": "a1"}]
     body, _n, _ctx = await _step_with_scripted_turns(
         app_session,
         monkeypatch,
@@ -3821,12 +3891,12 @@ async def test_a_parked_held_call_runs_exactly_once_after_its_approval(
     merged = {"model": "sale.order", "elicitation_answer": "ACME"}
     assert reached == [merged]
 
-    # The approval holds for the whole run: only replay-safety stops the model
-    # repeating the merged call from writing a second time.
+    # The approval covered that one run of the call (security review of N1):
+    # the model repeating the merged call is asked again, not let through.
     code, repeated = await _post_tool(tenant, agent_id, run_id, "create_record", merged)
     assert code == 200, repeated
-    assert reached == [merged], "replayed, not executed again"
-    assert "replay" in repeated["output"]
+    assert reached == [merged], "asked again, not executed again"
+    assert repeated["status"] == "waiting_for_approval", repeated
     async with app_session(tenant) as db:  # type: ignore[operator]
         row = await db.get(m.AgentRun, run_id)
         assert row is not None

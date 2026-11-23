@@ -135,6 +135,24 @@ _APPEND_WAIVED = text(
 ).bindparams(bindparam("entry", type_=JSONB))
 
 
+_APPEND_CONSUMED = text(
+    "UPDATE agent_run SET context = jsonb_set("
+    "  context, '{consumed_tool_approvals}',"
+    "  coalesce(context->'consumed_tool_approvals', '[]'::jsonb) || :entry"
+    ") WHERE id = :id RETURNING context"
+).bindparams(bindparam("entry", type_=JSONB))
+
+
+async def append_consumed_approval(
+    db: AsyncSession, run: AgentRun, entry: dict[str, Any]
+) -> dict[str, Any]:
+    """Record that one approval was used up by the call it approved. An
+    append, like the writers above: a decision landing concurrently must not
+    be lost, nor this mark."""
+    stored = (await db.execute(_APPEND_CONSUMED, {"entry": [entry], "id": run.id})).scalar_one()
+    return _adopt(run, stored)
+
+
 async def append_waived_read_before_write(
     db: AsyncSession, run: AgentRun, key: str
 ) -> dict[str, Any]:

@@ -168,7 +168,7 @@ from oc8.records.links import (
     related_links,
 )
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import pre_decided_map
+from oc8.runtime.approval_resume import Decisions, consume_approval, live_decisions
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call, write_back_context
@@ -468,7 +468,7 @@ def _local_allowed(
     Keyed by tool name, because that is what the shell matches on -- so one
     call of a tool that may not run keeps every call of it from running.
     """
-    decided = pre_decided_map(ctx.get("resolved_tool_approvals", []) or [])
+    decided = Decisions(ctx)
     allowed: list[str] = []
     for name in _LOCAL_TOOLS:
         if _local_refusal(tools, mode, name) is not None:
@@ -854,6 +854,7 @@ def _held_call_verdict(
     arguments: dict[str, Any],
     active_skills: Sequence[LoadedSkill],
     stored: Mapping[str, Any] | None = None,
+    decisions: Decisions | None = None,
 ) -> tuple[str, str]:
     """What happens to a held connection call now: ("run" | "refuse" | "park", why).
 
@@ -894,7 +895,7 @@ def _held_call_verdict(
         # Always the connection's tool, whatever core tool shares its name.
         routed=True,
     )
-    verdict = pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held))
+    verdict = (decisions if decisions is not None else Decisions(ctx)).get(_call_sig(held))
     if decision.effect is Effect.DENY:
         return "refuse", decision.reason or "denied"
     if verdict == "reject":
@@ -1012,6 +1013,11 @@ async def _finish_elicitation(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
     )
+    # An approval covers one run of the call it approved (`consume_approval`).
+    decisions = await live_decisions(
+        db, context=dict(ctx), tenant_id=run.tenant_id, task_id=run.task_id
+    )
+    held_sig = _call_sig(ToolCall(id="held", name=tool, arguments=arguments))
     effect, why = (
         _held_call_verdict(
             agent=agent,
@@ -1025,6 +1031,7 @@ async def _finish_elicitation(
             arguments=arguments,
             active_skills=active_skills,
             stored=pending,
+            decisions=decisions,
         )
         if conn is not None and tool
         else ("refuse", "")
@@ -1183,6 +1190,9 @@ async def _finish_elicitation(
             if held_hold is not None:
                 # Reached the tool: counts, even if it failed.
                 await held_hold.settle(succeeded=held_reached)
+            # Ran, so the approval it ran on is used up; `ctx` is written back
+            # whole, so it learns it too.
+            await consume_approval(db, run, decisions, held_sig, ctx=ctx)
         if not output.startswith("ERROR:"):
             # Linked like any tool result (the replay record above stays raw),
             # so the answered call's records carry oc8_url too.
@@ -2501,10 +2511,16 @@ async def _dispatch_one_tool(
             matched["arguments"] = dict(tc.arguments)
             break
     ctx["transcript"] = transcript
-    # Honour an operator's earlier decision on this exact call (resume).
+    # Honour an operator's earlier decision on this exact call (resume) -- an
+    # approval only until the call it approved has run once.
+    decisions = await live_decisions(
+        db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
+    )
+    approved_call = False
     if decision.effect is Effect.REQUIRE_APPROVAL:
-        verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
+        verdict = decisions.get(_call_sig(tc))
         if verdict == "approve":
+            approved_call = True
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
@@ -2540,10 +2556,9 @@ async def _dispatch_one_tool(
         )
         tier = gate_verdict.tier
         if gate_verdict.effect == "ask":
-            verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
-                _call_sig(tc)
-            )
+            verdict = decisions.get(_call_sig(tc))
             if verdict == "approve":
+                approved_call = True
                 decision = Decision(Effect.ALLOW, "operator approved")
             elif verdict == "reject":
                 decision = Decision(Effect.DENY, "operator rejected this action")
@@ -2976,10 +2991,7 @@ async def _dispatch_one_tool(
             skip_spec=cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None,
             # A person approved this very call: their decision, not a repeat
             # to refuse (E2E N1).
-            approved=pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
-                _call_sig(tc)
-            )
-            == "approve",
+            approved=approved_call,
         )
     ).refusal is not None:
         # Checked before the call, not after: the point is that the recipient is
@@ -3123,6 +3135,10 @@ async def _dispatch_one_tool(
                     target=outward.target,
                     output=output,
                 )
+                if approved_call:
+                    # Used up with the delivery: one approval, one call.
+                    # `ctx` is written back whole, so it learns it too.
+                    await consume_approval(db, run, decisions, _call_sig(tc), ctx=ctx)
                 await record_for(
                     db,
                     tenant_id=run.tenant_id,

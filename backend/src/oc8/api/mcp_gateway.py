@@ -110,7 +110,7 @@ from oc8.realtime.emit import note_focus, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import pre_decided_map
+from oc8.runtime.approval_resume import consume_approval, live_decisions
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
 from oc8.skills.runtime import (
@@ -1072,10 +1072,16 @@ async def _call_tool(
         edition_offer=edition,
         routed=routed,
     )
-    # Honour an operator's earlier decision on this exact call (resume).
+    # Honour an operator's earlier decision on this exact call (resume) -- an
+    # approval only until the call it approved has run once.
+    decisions = await live_decisions(
+        db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
+    )
+    approved_call = False
     if decision.effect is Effect.REQUIRE_APPROVAL:
-        verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
+        verdict = decisions.get(_call_sig(tc))
         if verdict == "approve":
+            approved_call = True
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
@@ -1293,11 +1299,7 @@ async def _call_tool(
     )
     # A call a person approved through its card is the person's decision: the
     # guard stops unattended repeats, never a human's "yes" (E2E N1).
-    approved = (
-        pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
-        == "approve"
-    )
-    if target is not None and run.task_id is not None and not approved:
+    if target is not None and run.task_id is not None and not approved_call:
         if await already_delivered(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target):
             return _tool_result(REFUSAL.format(target=target), is_error=True)
 
@@ -1385,6 +1387,10 @@ async def _call_tool(
         # the far system may have acted first. Only a session that never
         # opened gives the count back.
         await usage_hold.settle(succeeded=not never_reached_the_tool(exc))
+        if approved_call:
+            # Ran, so used up: the far system may have acted first.
+            await consume_approval(db, run, decisions, _call_sig(tc))
+            await db.commit()
         return _tool_result(f"ERROR: {exc}", is_error=True)
     # Reached the tool: counts, even if the tool reported an error.
     await usage_hold.settle(succeeded=True)
@@ -1409,6 +1415,9 @@ async def _call_tool(
 
     if target is not None and run.task_id is not None:
         await remember_delivery(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target)
+    if approved_call:
+        # Used up with the delivery, in its transaction: one approval, one call.
+        await consume_approval(db, run, decisions, _call_sig(tc))
     if writes and run.task_id is not None:
         # Only a SUCCESSFUL side effect is worth replaying; recording a failure
         # would answer a legitimate retry with the old error forever.
