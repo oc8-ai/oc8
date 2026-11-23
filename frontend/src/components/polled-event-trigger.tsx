@@ -309,7 +309,7 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
         >
           {t("Error at {time}: {error}", "Fehler um {time}: {error}")
             .replace("{time}", formatWhen(status.lastErrorAt, lang))
-            .replace("{error}", status.lastError ?? "")}{" "}
+            .replace("{error}", () => status.lastError ?? "")}{" "}
           {status.lastOkAt
             ? t("Last success {time}.", "Zuletzt erfolgreich {time}.").replace(
                 "{time}",
@@ -322,7 +322,7 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
         <p>
           {t("Last skipped {time}: {reason}", "Zuletzt übersprungen {time}: {reason}")
             .replace("{time}", formatWhen(status.lastSkippedAt, lang))
-            .replace("{reason}", status.lastSkipped)}
+            .replace("{reason}", () => status.lastSkipped ?? "")}
         </p>
       )}
     </div>

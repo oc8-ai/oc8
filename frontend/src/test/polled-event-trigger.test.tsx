@@ -322,6 +322,23 @@ describe("polled event trigger", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows a reason and an error with $ in them as they are", () => {
+    panel({
+      ...TRIGGER,
+      pollStatus: {
+        lastPolledAt: "2026-11-20T11:00:00+00:00",
+        lastOkAt: "2026-11-20T09:00:00+00:00",
+        lastError: "LoginFailed: bad $& and $1 and $$",
+        lastErrorAt: "2026-11-20T10:42:00+00:00",
+        lastSkipped: "rule $& matched $'",
+        lastSkippedAt: "2026-11-20T10:58:00+00:00",
+      },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("LoginFailed: bad $& and $1 and $$");
+    expect(screen.getByText(/rule \$& matched \$'$/)).toBeInTheDocument();
+  });
+
   it("says nothing about skips when there were none", () => {
     panel({
       ...TRIGGER,
