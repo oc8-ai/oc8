@@ -114,3 +114,40 @@ async def test_agent_create_rejects_a_department_that_does_not_exist(
         )
         with pytest.raises(ProposalRejected):
             await apply_proposal(db, proposal.id, actor)
+
+
+async def test_a_gated_agent_create_proposal_raises_the_hire_request(app_session) -> None:
+    """Security scan: with hire approval required, the Copilot's agent.create
+    left a pending agent with no hire request -- nobody could ever approve it.
+    It raises one, exactly as the agent-create route does."""
+    tenant = uuid.uuid4()
+    actor = _actor(tenant)
+    async with app_session(tenant) as db:
+        db.add(
+            m.Organization(
+                id=tenant, slug=f"t{tenant.hex[:6]}", name="T", tier="standard", region="eu",
+                settings={"require_hire_approval": True},
+            )
+        )
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={})
+        db.add(dept)
+        await db.flush()
+        proposal = await create_proposal(
+            db,
+            actor,
+            [{"type": "agent.create", "departmentId": str(dept.id), "name": "Nora"}],
+        )
+        assert (await apply_proposal(db, proposal.id, actor)).status == "applied"
+        agent = (
+            await db.execute(select(m.Agent).where(m.Agent.department_id == dept.id))
+        ).scalar_one()
+        assert agent.status == "pending_approval"
+        requests = (
+            await db.execute(
+                select(m.ApprovalRequest).where(
+                    m.ApprovalRequest.agent_id == agent.id,
+                    m.ApprovalRequest.action_type == "hire_agent",
+                )
+            )
+        ).scalars().all()
+        assert len(requests) == 1

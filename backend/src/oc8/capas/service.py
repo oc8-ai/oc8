@@ -13,7 +13,7 @@ from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.agents.hire import HIRED_STATUS
+from oc8.agents.hire import create_hire_request, initial_status, require_hire_approval
 from oc8.agents.versioning import publish_version
 from oc8.capas.discovery import DiscoveredPlugin, find_plugin
 from oc8.capas.manifest import (
@@ -508,6 +508,8 @@ async def instantiate_agent(
     }
     if spec.get("max_steps"):
         definition["max_steps"] = int(spec["max_steps"])
+    # The tenant's hire gate holds a template's agents like any hire.
+    gated = await require_hire_approval(db, tenant_id=tenant_id)
     target = await db.get(Department, department_id)
     narrowing = await _checked_template_narrowing(
         db,
@@ -522,7 +524,7 @@ async def instantiate_agent(
         name=name or str(spec.get("name") or mf.get("name", "Agent")),
         role_title=_substitute_template_values(str(spec.get("role_title") or ""), config),
         mission=_substitute_template_values(str(spec.get("mission") or ""), config),
-        status=HIRED_STATUS,
+        status=initial_status(gated=gated),
         narrowing=narrowing,
         definition=definition,
         # `presentation` is the DISPLAY side of an agent (agent_to_dto reads it);
@@ -532,6 +534,8 @@ async def instantiate_agent(
     )
     db.add(agent)
     await db.flush()
+    if gated:
+        await create_hire_request(db, agent=agent)
     db.add(MemoryStore(tenant_id=tenant_id, tier="agent", owner_id=agent.id))
     await db.flush()
     await _assign_named_skills(
@@ -589,6 +593,8 @@ async def instantiate_department(
     await db.flush()
 
     lead_id: uuid.UUID | None = None
+    # The tenant's hire gate holds a template's agents like any hire.
+    gated = await require_hire_approval(db, tenant_id=tenant_id)
     for a in agent_defs:
         narrowing = await _checked_template_narrowing(
             db,
@@ -604,7 +610,7 @@ async def instantiate_department(
             role_title=_substitute_template_values(str(a.get("role_title", "")), config),
             mission=_substitute_template_values(str(a.get("mission", "")), config),
             is_team_lead=bool(a.get("is_team_lead", False)),
-            status=HIRED_STATUS,
+            status=initial_status(gated=gated),
             narrowing=narrowing,
             definition={
                 "plugin": mf.get("name", ""),
@@ -618,6 +624,8 @@ async def instantiate_department(
         )
         db.add(agent)
         await db.flush()
+        if gated:
+            await create_hire_request(db, agent=agent)
         db.add(MemoryStore(tenant_id=tenant_id, tier="agent", owner_id=agent.id))
         await _assign_named_skills(
             db, tenant_id=tenant_id, agent_id=agent.id, skill_names=list(a.get("skills") or [])
