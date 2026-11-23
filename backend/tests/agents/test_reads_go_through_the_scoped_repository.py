@@ -166,6 +166,11 @@ ALLOWED: dict[str, str] = {
         "flagged agent by that flag, provisioning it if missing -- a system "
         "provisioning helper with no human caller in the path, not a departmental browse"
     ),
+    "departments/personal.py": (
+        "owned_personal_department looks up the one department keyed on the "
+        "caller's own owner_member_id, provisioning it if missing -- the owner's "
+        "own row by construction, not a departmental browse"
+    ),
     "agent/claims.py": "the runtime resolving a record-claim holder's display name",
     "agent/engine.py": "the agent runtime loading its OWN department's tool frame",
     "agents/hire.py": "hire_agent effect resolution acts on the approval's own bound agent",
