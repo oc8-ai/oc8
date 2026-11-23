@@ -1511,7 +1511,7 @@ async def instantiate(
             name=body.name,
         )
     except PersonalAgentLimit as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     return {"agentId": str(agent.id)}

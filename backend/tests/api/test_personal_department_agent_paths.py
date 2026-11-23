@@ -27,6 +27,7 @@ from oc8.authz.pdp import effective_tool_policies
 from oc8.authz.scope import subject_uuid_for
 from oc8.capas.lifecycle import enable_plugin
 from oc8.capas.service import install_plugin
+from oc8.copilot.profile import offboard_member
 from oc8.departments.personal import (
     ENABLED_KEY,
     FRAME_KEY,
@@ -450,3 +451,80 @@ async def test_the_admin_instantiate_route_answers_409_at_the_cap(
         )
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == {"error": "personal_agent_limit"}
+
+
+async def _owner_left(
+    app_session: AppSessionFactory, tenant: uuid.UUID, dept_id: uuid.UUID
+) -> None:
+    """The owner leaves the way the members route does it: offboarding, then the
+    soft delete."""
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, dept_id)
+        assert dept is not None and dept.owner_member_id is not None
+        owner = await db.get(m.OrgMember, dept.owner_member_id)
+        assert owner is not None
+        await offboard_member(db, tenant_id=tenant, member_id=owner.id)
+        owner.deleted_at = datetime.now(UTC)
+
+
+async def test_creating_an_agent_in_a_departed_owners_department_is_a_409(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    await _owner_left(app_session, tenant, dept_id)
+    async with _http() as http:
+        r = await http.post(
+            "/api/v1/agents", json=_body(dept_id), headers=_headers(tenant, "org_admin")
+        )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "owner_left"}
+
+
+async def test_a_template_install_into_a_departed_owners_department_is_a_409(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    async with app_session(tenant) as db:
+        version = await install_plugin(
+            db,
+            tenant_id=tenant,
+            manifest_data={
+                "name": "mail_helper",
+                "version": "1.0.0",
+                "type": "agent_template",
+                "trust": "first_party",
+                "summary": "s",
+                "agent_template": {"name": "Mia", "mission": "m", "scope": "personal"},
+            },
+        )
+        await enable_plugin(db, tenant_id=tenant, capa_id=version.capa_id, granted_permissions=[])
+        capa_id = version.capa_id
+    await _owner_left(app_session, tenant, dept_id)
+    async with _http() as http:
+        r = await http.post(
+            f"/api/v1/capas/{capa_id}/instantiate",
+            json={"departmentId": str(dept_id)},
+            headers=_headers(tenant, role="org_admin"),
+        )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "owner_left"}
+
+
+async def test_restoring_a_personal_department_whose_owner_left_is_a_409(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    await _owner_left(app_session, tenant, dept_id)
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, dept_id)
+        assert dept is not None
+        dept.deleted_at = datetime.now(UTC)
+    async with _http() as http:
+        r = await http.post(
+            f"/api/v1/departments/{dept_id}/restore", headers=_headers(tenant, "org_admin")
+        )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "owner_left"}
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, dept_id)
+        assert dept is not None and dept.deleted_at is not None

@@ -171,7 +171,7 @@ async def _ensure_personal_capacity(db: DbSession, dept: m.Department) -> None:
     try:
         await ensure_personal_capacity(db, dept)
     except PersonalAgentLimit as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
 
 
 def _violation_body(violations: list[Any]) -> dict[str, Any]:
@@ -1727,11 +1727,6 @@ async def restore_agent(
     except SubscriptionModelNotManualOnly as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     dept = await db.get(m.Department, agent.department_id)
-    if dept is not None and dept.owner_member_id is not None:
-        owner = await db.get(m.OrgMember, dept.owner_member_id)
-        if owner is None or owner.deleted_at is not None:
-            # Offboarding archived it; nobody is left to own what it would do.
-            raise HTTPException(status.HTTP_409_CONFLICT, {"error": "owner_left"})
     if dept is not None:
         # An archived agent is skipped by the department's frame cascade, so its
         # narrowing may predate a tighter frame; and it takes a place again.

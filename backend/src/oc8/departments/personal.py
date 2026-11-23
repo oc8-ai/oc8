@@ -57,6 +57,18 @@ class PersonalFrameViolation(Exception):
 class PersonalAgentLimit(Exception):
     """The personal department already holds the tenant's cap of live agents."""
 
+    #: The `error` a route answers with (409).
+    error = "personal_agent_limit"
+
+
+class PersonalOwnerLeft(PersonalAgentLimit):
+    """The department's owner has left: nothing may be added to or brought
+    back into it, since an agent there would run with nobody to answer for it.
+    A subclass so every route that maps `PersonalAgentLimit` to a 409 maps this
+    one too, with its own `error`."""
+
+    error = "owner_left"
+
 
 def enforce_personal_narrowing(dept: m.Department, narrowing: dict[str, Any] | None) -> None:
     """The one check every write of an agent's narrowing in a department goes
@@ -83,11 +95,23 @@ def enforce_personal_narrowing(dept: m.Department, narrowing: dict[str, Any] | N
         raise PersonalFrameViolation
 
 
+async def ensure_owner_present(db: AsyncSession, dept: m.Department) -> None:
+    """Raise `PersonalOwnerLeft` for a department whose owner member is gone
+    (soft-deleted or missing). Departments without an owner pass."""
+    if dept.owner_member_id is None:
+        return
+    owner = await db.get(m.OrgMember, dept.owner_member_id)
+    if owner is None or owner.deleted_at is not None:
+        raise PersonalOwnerLeft
+
+
 async def ensure_personal_capacity(db: AsyncSession, dept: m.Department) -> None:
-    """Raise `PersonalAgentLimit` when a personal department holds the tenant's
-    cap of live agents. Other kinds of department have no cap."""
+    """Raise `PersonalOwnerLeft` when the department's owner has left, and
+    `PersonalAgentLimit` when a personal department holds the tenant's cap of
+    live agents. Other kinds of department have neither."""
     if dept.kind != DEPARTMENT_KIND_PERSONAL:
         return
+    await ensure_owner_present(db, dept)
     # Lock the department row before counting: two hires at cap-1 would both
     # count cap-1 and both insert. The second waits here for the first's
     # commit, then counts it. The lock lasts until the transaction ends.

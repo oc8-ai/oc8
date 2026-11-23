@@ -238,7 +238,7 @@ async def hire_personal_agent(
     try:
         await ensure_personal_capacity(db, dept)
     except PersonalAgentLimit as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
 
     try:
         # Plan ruling 4: a personal hire is exempt from the tenant's
@@ -255,7 +255,7 @@ async def hire_personal_agent(
             hire_gate=False,
         )
     except PersonalAgentLimit as exc:  # a concurrent hire took the last place
-        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 

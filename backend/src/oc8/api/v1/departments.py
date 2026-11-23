@@ -56,7 +56,11 @@ from oc8.departments.frames import (
     deviation_counts,
     validate_frame_tools,
 )
-from oc8.departments.personal import mark_frame_overridden
+from oc8.departments.personal import (
+    PersonalOwnerLeft,
+    ensure_owner_present,
+    mark_frame_overridden,
+)
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.schemas.base import CamelModel
@@ -425,6 +429,10 @@ async def restore_department(
     dept = await db.get(m.Department, dept_id)
     if dept is None or dept.deleted_at is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no archived department with that id")
+    try:
+        await ensure_owner_present(db, dept)
+    except PersonalOwnerLeft as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     dept.deleted_at = None
     await restore_department_boards(db, department_id=dept_id)
     await db.flush()
