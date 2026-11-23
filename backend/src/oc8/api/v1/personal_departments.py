@@ -31,8 +31,6 @@ from oc8.api.v1._serializers import department_to_dto
 from oc8.api.v1.departments import (
     DepartmentToolsDTO,
     DepartmentToolsWriteRequest,
-    _deviation_counts,
-    validate_frame_tools,
 )
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
@@ -47,6 +45,7 @@ from oc8.authz.permissions import (
 )
 from oc8.authz.scope import scope_for_principal
 from oc8.capas.service import PluginError, instantiate_agent, template_scope
+from oc8.departments.frames import deviation_counts, validate_frame_tools
 from oc8.departments.personal import (
     BUDGET_KEY,
     ENABLED_KEY,
@@ -329,7 +328,7 @@ async def _default_frame_dto(db: AsyncSession, tenant_id: uuid.UUID) -> Departme
     agents = await default_frame_agents(db, tenant_id=tenant_id)
     return DepartmentToolsDTO(
         tools=tools,
-        deviation_counts=_deviation_counts(tools, agents),
+        deviation_counts=deviation_counts(tools, agents),
         agent_count=len(agents),
     )
 

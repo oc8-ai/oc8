@@ -502,7 +502,7 @@ async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_va
     threshold on a connection that reports no amount never fires, and copied
     it goes stale when the department changes its value -- the frame's own
     applies anyway (`connections.value_spec`). €0 is enforced and copied."""
-    from oc8.api.v1.departments import cascade_department_tools_change
+    from oc8.departments.frames import cascade_department_tools_change
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:

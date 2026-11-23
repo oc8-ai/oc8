@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.authz.pdp import narrowing_within_frame
+from oc8.departments.frames import cascade_department_tools_change
 from oc8.departments.repo import live_department
 from oc8.metering.budget import get_budget, resume_budget_scope, set_budget
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
@@ -80,32 +81,6 @@ def enforce_personal_narrowing(dept: m.Department, narrowing: dict[str, Any] | N
         raise PersonalFrameViolation from exc
     if violations:
         raise PersonalFrameViolation
-
-
-def clip_narrowing_to_frame(
-    frame_tools: dict[str, Any], narrowing: dict[str, Any] | None
-) -> dict[str, Any] | None:
-    """The narrowing with every tool the frame no longer allows dropped (a key
-    absent from `frame_tools`, a widening of it, or a malformed policy -- the
-    keys `enforce_personal_narrowing` refuses), or `None` when nothing changes.
-    A dropped key falls back to what the frame grants."""
-    raw_tools = (narrowing or {}).get("tools")
-    if not isinstance(raw_tools, dict):
-        return None
-    frame = {"tools": frame_tools}
-    kept: dict[str, Any] = {}
-    for key, raw in raw_tools.items():
-        if key not in frame_tools:
-            continue
-        try:
-            if narrowing_within_frame(frame, {"tools": {key: raw}}):
-                continue
-        except ValueError:
-            continue
-        kept[key] = raw
-    if len(kept) == len(raw_tools):
-        return None
-    return {**(narrowing or {}), "tools": kept}
 
 
 async def ensure_personal_capacity(db: AsyncSession, dept: m.Department) -> None:
@@ -467,9 +442,6 @@ async def default_frame_agents(db: AsyncSession, *, tenant_id: uuid.UUID) -> lis
 
 
 async def _apply_frame(db: AsyncSession, *, dept: m.Department, new_tools: dict[str, Any]) -> None:
-    # Imported here: `api.v1.departments` imports this module at load time.
-    from oc8.api.v1.departments import cascade_department_tools_change
-
     old_tools = dict((dept.frame or {}).get("tools", {}))
     dept.frame = personal_frame(new_tools)
     agents = await _live_agents(db, tenant_id=dept.tenant_id, department_ids=[dept.id])

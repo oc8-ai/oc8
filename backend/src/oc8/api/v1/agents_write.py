@@ -65,10 +65,10 @@ from oc8.copilot.guardrail_interpret import (
     interpret_guardrail_definition,
     interpret_guardrails_from_instruction,
 )
+from oc8.departments.frames import clip_narrowing_to_frame
 from oc8.departments.personal import (
     PersonalAgentLimit,
     PersonalFrameViolation,
-    clip_narrowing_to_frame,
     enforce_personal_narrowing,
     ensure_personal_capacity,
 )

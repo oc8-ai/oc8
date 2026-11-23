@@ -845,7 +845,7 @@ class AgentDetailDTO(AgentDTO):
     #: key, touched or not, so a key can appear there without ever having been
     #: deliberately changed. This is the authoritative "has this agent
     #: diverged from the department default for this tool" answer -- the same
-    #: one `departments.py`'s `_deviation_counts` (§ Abweichungen) uses.
+    #: one `departments/frames.py`'s `deviation_counts` (§ Abweichungen) uses.
     narrowing_overridden_keys: list[str] = []
     #: Per-`effective_tools` key, which level actually produced that key's
     #: current value -- "agent" / "department" / "capa_default" (see
