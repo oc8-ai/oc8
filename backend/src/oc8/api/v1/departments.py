@@ -54,7 +54,7 @@ from oc8.agents.versioning import (
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, task_to_dto
 from oc8.audit import append_event
-from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ConditionDatatype, ConditionOperator, Effect, UsageLimit
 from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
@@ -548,10 +548,20 @@ async def restore_department(
 
 
 async def _visible_department_or_404(
-    db: DbSession, *, actor: HumanActor, tenant_wide: bool, dept_id: uuid.UUID
+    db: DbSession,
+    *,
+    actor: HumanActor,
+    tenant_wide: bool,
+    dept_id: uuid.UUID,
+    authority: Authority,
 ) -> m.Department:
     dept = await visible_department(
-        db, scope=actor.scope, tenant_wide=tenant_wide, department_id=dept_id
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        department_id=dept_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
     )
     if dept is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
@@ -571,7 +581,7 @@ async def get_department(
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
     dept = await _visible_department_or_404(
-        db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id
+        db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id, authority=authority
     )
     return department_to_dto(dept)
 
@@ -589,7 +599,7 @@ async def get_department_tools(
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
     dept = await _visible_department_or_404(
-        db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id
+        db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id, authority=authority
     )
     tools = dict((dept.frame or {}).get("tools", {}))
     agents = (
@@ -833,7 +843,9 @@ async def department_agents(
 ) -> list[AgentDTO]:
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
-    await _visible_department_or_404(db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id)
+    await _visible_department_or_404(
+        db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id, authority=authority
+    )
     # `visible_agents` returns `(rows, total_count)` as of Task 6 -- this route's
     # own response_model stays a bare `list[AgentDTO]` (not `Page`), so the
     # count is simply discarded here.
@@ -867,7 +879,9 @@ async def department_board(
     """
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
-    await _visible_department_or_404(db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id)
+    await _visible_department_or_404(
+        db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id, authority=authority
+    )
 
     limit = max(1, min(limit, 200))
     rows = (

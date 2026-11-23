@@ -32,7 +32,7 @@ from oc8 import models as m
 from oc8.agents.repo import visible_agent
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
-from oc8.authz.permissions import AGENT, DEPARTMENT, STATISTICS, VIEW, perm
+from oc8.authz.permissions import AGENT, DEPARTMENT, MANAGE, STATISTICS, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.departments.repo import visible_department
 from oc8.kpis.aggregate import KPIResult, compute_kpis
@@ -267,7 +267,12 @@ async def department_kpis(
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
     dept = await visible_department(
-        db, scope=actor.scope, tenant_wide=tenant_wide, department_id=dept_id
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        department_id=dept_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
     )
     if dept is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")

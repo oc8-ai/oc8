@@ -102,7 +102,9 @@ class Department(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # The two scoped repositories (`departments/repo.py`, `agents/repo.py`)
     # filter everything but `standard` out of the user-facing lists, and an
     # explicit column is cheaper and clearer than joining back through
-    # `team_lead_agent_id` on every read.
+    # `team_lead_agent_id` on every read. `visible_department` by id follows an
+    # allowlist: `standard` by scope, `personal` only to its owner or a
+    # tenant-wide `department:manage` holder (never to read access alone).
     kind: Mapped[str] = mapped_column(
         Text, nullable=False, default=DEPARTMENT_KIND_STANDARD, server_default="standard"
     )

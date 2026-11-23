@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from oc8.models.core import (
-    DEPARTMENT_KIND_ASSISTANT,
+    DEPARTMENT_KIND_PERSONAL,
     DEPARTMENT_KIND_STANDARD,
     Department,
 )
@@ -91,6 +91,8 @@ async def visible_department(
     scope: DepartmentScope,
     tenant_wide: bool,
     department_id: uuid.UUID,
+    member_id: uuid.UUID | None = None,
+    manage_all: bool = False,
 ) -> Department | None:
     """One department, or `None` for BOTH "no such row" and "exists outside
     scope" -- see `agents.repo.visible_agent` for the full reasoning; the same
@@ -100,19 +102,29 @@ async def visible_department(
     `visible_agent` there is no opt-in: nothing in the Assistant's own machinery
     loads its department through this funnel (`get_or_create_assistant` holds
     the row it just made, and `_assistant_visible` asks about the agent), so a
-    bypass here would have no caller."""
+    bypass here would have no caller.
+
+    An allowlist on `kind`: a `standard` department follows the scope; a
+    `personal` one is returned only to its owner (`member_id`) or to a caller
+    holding tenant-wide `department:manage` (`manage_all`). Tenant-wide READ
+    alone never exposes it. Both default to "no", so a caller that passes
+    neither cannot see a personal department."""
     row = (
         await db.execute(
             select(Department)
             .where(
                 Department.id == department_id,
                 Department.deleted_at.is_(None),
-                Department.kind != DEPARTMENT_KIND_ASSISTANT,
             )
             .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if row is None:
+        return None
+    if row.kind == DEPARTMENT_KIND_PERSONAL:
+        mine = member_id is not None and row.owner_member_id == member_id
+        return row if mine or manage_all else None
+    if row.kind != DEPARTMENT_KIND_STANDARD:
         return None
     if tenant_wide or row.id in scope.viewable:
         return row

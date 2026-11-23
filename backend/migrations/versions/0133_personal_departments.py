@@ -15,6 +15,10 @@ fresh database already has these columns, constraints and index. Downgrade
 soft-deletes personal departments before dropping the columns, so a downgraded
 database never turns a private department into an ordinary visible one.
 
+This is ruling 1 of the personal-departments plan: the flag is folded into
+`kind`, and this file is the only one that carries the id 0133 (a rebase
+renumbers it here alone).
+
 Revision ID: 0133
 Revises: 0132
 """
@@ -46,7 +50,8 @@ def upgrade() -> None:
         BEGIN
             IF EXISTS (
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name = 'department' AND column_name = 'is_assistant_department'
+                WHERE table_schema = current_schema()
+                  AND table_name = 'department' AND column_name = 'is_assistant_department'
             ) THEN
                 UPDATE department SET kind = 'assistant' WHERE is_assistant_department;
             END IF;

@@ -32,7 +32,8 @@ def _module() -> ModuleType:
 def _columns(dsn: str) -> set[str]:
     with psycopg.connect(dsn) as conn:
         rows = conn.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_name = 'department'"
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = 'department'"
         ).fetchall()
     return {row[0] for row in rows}
 
@@ -58,7 +59,7 @@ def test_upgrade_folds_the_flag_and_downgrade_restores_it(pg_url: str) -> None:
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
     module = _module()
-    revision, down_revision = module.revision, module.down_revision
+    down_revision = module.down_revision
     tenant = uuid.uuid4()
     owner = uuid.uuid4()
     command.downgrade(cfg, down_revision)
@@ -105,4 +106,17 @@ def test_upgrade_folds_the_flag_and_downgrade_restores_it(pg_url: str) -> None:
         assert not _NEW & _columns(dsn)
     finally:
         command.upgrade(cfg, "head")
-    assert revision == "0133"
+
+
+def test_the_owner_index_ignores_soft_deleted_rows_and_other_tenants(pg_url: str) -> None:
+    dsn = pg_url.replace("+psycopg", "")
+    tenant, other_tenant, owner = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        first = _insert(conn, tenant, "kind, owner_member_id", "personal", owner)
+        with pytest.raises(psycopg.errors.UniqueViolation):
+            _insert(conn, tenant, "kind, owner_member_id", "personal", owner)
+        # The same owner id in another tenant is a different person's row.
+        _insert(conn, other_tenant, "kind, owner_member_id", "personal", owner)
+        # A soft-deleted row frees the slot.
+        conn.execute("UPDATE department SET deleted_at = now() WHERE id = %s", (first,))
+        _insert(conn, tenant, "kind, owner_member_id", "personal", owner)

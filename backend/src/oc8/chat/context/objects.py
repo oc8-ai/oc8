@@ -46,7 +46,7 @@ from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.approvals.repo import load_for_actor
 from oc8.authz.authority import tenant_wide_read
-from oc8.authz.permissions import AGENT, COPILOT_USE, DEPARTMENT, VIEW, perm
+from oc8.authz.permissions import AGENT, COPILOT_USE, DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import APPROVAL_VIEW, AgentActor
 from oc8.chat.context.base import ContextPage, Viewer
 from oc8.chat.context.registry import register
@@ -179,6 +179,8 @@ class DepartmentResolver(_Summarized):
             scope=viewer.scope,
             tenant_wide=tenant_wide_read(viewer.authority, perm(DEPARTMENT, VIEW)),
             department_id=obj.id,
+            member_id=viewer.member.id,
+            manage_all=tenant_wide_read(viewer.authority, perm(DEPARTMENT, MANAGE)),
         )
         if row is None or row.tenant_id != viewer.member.tenant_id:
             return False
