@@ -16,6 +16,7 @@ from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
+from oc8.models.core import DEPARTMENT_KIND_STANDARD
 from oc8.schemas.dto import (
     ActivityDTO,
     AgentDTO,
@@ -146,7 +147,7 @@ def department_to_dto(d: m.Department) -> DepartmentDTO:
         activity=p.get("activity", 0),
         accent=p.get("accent", ""),
         prompt_caching_enabled=d.prompt_caching_enabled,
-        kind=d.kind,
+        kind=d.kind or DEPARTMENT_KIND_STANDARD,
         deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
         name_translations=_i18n_str(i18n, "name"),
         goal_translations=_i18n_str(i18n, "goal"),
