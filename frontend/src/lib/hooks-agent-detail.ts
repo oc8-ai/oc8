@@ -128,6 +128,20 @@ export function useUpdateNarrowing(agentId: string) {
   });
 }
 
+// The same PUT for a caller that only learns the agent's id after mounting --
+// the hire dialog, granting a tool right after the agent was created.
+export function useSetAgentNarrowing() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ agentId, narrowing }: { agentId: string; narrowing: Record<string, unknown> }) =>
+      api.put<AgentDetail>(`/agents/${encodeURIComponent(agentId)}/narrowing`, { narrowing }),
+    onSuccess: (_data, { agentId }) => {
+      qc.invalidateQueries({ queryKey: ["agents", agentId] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
 // POST /agents/{id}/guardrails/interpret -- single-shot, non-conversational
 // translation of a free-text guardrail definition into the same generic
 // 4-state decision (plus structured Conditions for "with_limits") the manual

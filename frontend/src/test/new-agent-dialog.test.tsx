@@ -61,8 +61,14 @@ vi.mock("@/lib/hooks", () => ({
   useAuth: () => ({ data: { organisationTimezone: "Europe/Berlin" } }),
 }));
 
+const setNarrowingMock = vi.fn().mockResolvedValue({});
+vi.mock("@/lib/hooks-agent-detail", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/hooks-agent-detail")>();
+  return { ...actual, useSetAgentNarrowing: () => ({ mutateAsync: setNarrowingMock }) };
+});
+
 vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
 function renderDialog(defaultDepartmentId?: string) {
@@ -97,6 +103,7 @@ beforeEach(() => {
   connectionsMock.mockReturnValue({ data: connections });
   createLoginMock.mockReset();
   createCredentialMock.mockReset();
+  setNarrowingMock.mockClear();
   departmentToolsMock.mockReset();
   departmentToolsMock.mockReturnValue({
     data: { tools: { Odoo: { enabled: true, read: true, modify: true } } },
@@ -158,21 +165,62 @@ describe("NewAgentDialog: inline credential picker", () => {
     expect(screen.queryByRole("button", { name: /create new/i })).not.toBeInTheDocument();
   });
 
-  it("shows the picker even for a tool not yet enabled in the target department's frame, with a hint that the pick won't grant access yet", async () => {
-    // Live user feedback: the picker only appeared for Odoo because it was
-    // the one tool already in the test department's frame -- every checked
-    // tool with a known credential type should offer it automatically.
+  it("grants a tool the department doesn't offer to the new agent alone, after fixing its login (E2E F5)", async () => {
+    // The wizard used to keep such a pick presentation-only: the agent's
+    // narrowing stayed {} although a login was fixed for it, and the card
+    // said both "enabled for all departments" and "not yet enabled".
     connectionsMock.mockReturnValue({
       data: [{ ...connections[0], credentialType: "odoo_login" }],
     });
+    credentialsMock.mockReturnValue({
+      data: [{ id: "cred-1", name: "oc8-local", credentialType: "odoo_login" }],
+    });
+    createLoginMock.mockResolvedValue({ id: "cred-1", name: "Odoo" });
     departmentToolsMock.mockReturnValue({ data: { tools: {} } }); // Odoo not in frame
     renderDialog();
     await screen.findByText("Hire a new agent");
     fillIdentityAndGoToTools();
     fireEvent.click(screen.getByRole("button", { name: "Add tool" }));
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    expect(screen.getByText(/select a credential/i)).toBeInTheDocument();
-    expect(screen.getByText(/not yet enabled for this department/i)).toBeInTheDocument();
+    expect(screen.getByText(/only for this agent/i)).toBeInTheDocument();
+    expect(screen.queryByText(/not yet enabled for this department/i)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "cred-1" } });
+
+    fireEvent.click(screen.getByRole("button", { name: /Next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
+    await waitFor(() => expect(setNarrowingMock).toHaveBeenCalled());
+    expect(setNarrowingMock).toHaveBeenCalledWith({
+      agentId: "new-agent-id",
+      narrowing: {
+        tools: {
+          Odoo: expect.objectContaining({ enabled: true, read: true, modify: false }),
+        },
+      },
+    });
+    // The login is fixed first, so the grant finds it.
+    expect(createLoginMock.mock.invocationCallOrder[0]).toBeLessThan(
+      setNarrowingMock.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("says a tool the department turned off can't be used yet, and grants nothing for it", async () => {
+    connectionsMock.mockReturnValue({
+      data: [{ ...connections[0], credentialType: "odoo_login" }],
+    });
+    departmentToolsMock.mockReturnValue({
+      data: { tools: { Odoo: { enabled: false, read: true, modify: true } } },
+    });
+    renderDialog();
+    await screen.findByText("Hire a new agent");
+    fillIdentityAndGoToTools();
+    fireEvent.click(screen.getByRole("button", { name: "Add tool" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(screen.getByText(/turned off for this department/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
+    await waitFor(() => expect(createAgentMock).toHaveBeenCalled());
+    expect(createAgentMock.mock.calls[0][0].narrowing).toBeUndefined();
+    expect(setNarrowingMock).not.toHaveBeenCalled();
   });
 
   it("hires without a login picked, leaving the login to the department", async () => {

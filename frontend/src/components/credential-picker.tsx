@@ -239,13 +239,19 @@ export function CredentialPicker({
       {chosen && (
         <p className="text-[11px] text-muted-foreground">
           {chosen.allDepartments
-            ? t("Enabled for all departments", "Für alle Abteilungen freigegeben")
+            ? t("Login usable in all departments", "Login in allen Abteilungen nutzbar")
             : enabledFor > 0
               ? fill(
-                  t("Enabled for {count} department(s)", "Für {count} Abteilung(en) freigegeben"),
+                  t(
+                    "Login usable in {count} department(s)",
+                    "Login in {count} Abteilung(en) nutzbar",
+                  ),
                   { count: String(enabledFor) },
                 )
-              : t("Not enabled for any department yet", "Noch für keine Abteilung freigegeben")}
+              : t(
+                  "Login not usable in any department yet",
+                  "Login noch in keiner Abteilung nutzbar",
+                )}
           {usedBy && ` · ${usedBy}`}
         </p>
       )}

@@ -37,6 +37,9 @@ import {
   useModelProviders,
   useModels,
 } from "@/lib/hooks";
+import { useSetAgentNarrowing } from "@/lib/hooks-agent-detail";
+import { useT } from "@/lib/i18n";
+import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { mcpToolsFromConnections, type McpTool } from "@/lib/permissions";
 import { useOrgTimezone } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
@@ -69,9 +72,9 @@ export function NewAgentDialog({
   const { data: providers = [] } = useModelProviders();
   // The tools a new agent CAN be handed are the tenant's real MCP
   // connections -- never a static vendor catalog (see permissions-panel.tsx,
-  // which sources the same way). Selecting a tool here is descriptive only
-  // (stored on `presentation.tools` for the profile card / summary) -- actual
-  // access is granted afterwards via the department frame + agent narrowing.
+  // which sources the same way). Selecting a tool here grants it through the
+  // agent's narrowing (see `frameState`) and also lists it on
+  // `presentation.tools` for the profile card / summary.
   const { data: connections = [] } = useMcpConnections();
   const mcpTools = useMemo(() => mcpToolsFromConnections(connections), [connections]);
   const connectedNames = useMemo(
@@ -83,7 +86,9 @@ export function NewAgentDialog({
   const departments = departmentsPage?.items ?? [];
   const createAgent = useCreateAgent();
   const createTrigger = useCreateAgentTrigger();
+  const setNarrowing = useSetAgentNarrowing();
   const navigate = useNavigate();
+  const t = useT();
 
   const [step, setStep] = useState(0);
   const [identity, setIdentity] = useState<AgentIdentity>({
@@ -95,6 +100,9 @@ export function NewAgentDialog({
   });
   const [llm, setLlm] = useState<string>("");
   const [tools, setTools] = useState<string[]>([]);
+  // The guardrails "Add tool" picked for a tool (the capa's recommendation,
+  // or none): what a tool the department doesn't offer is granted with.
+  const [toolPolicies, setToolPolicies] = useState<Record<string, GuardrailValue | null>>({});
   const [pickerOpen, setPickerOpen] = useState(false);
   const [trigger, setTrigger] = useState("on-demand");
   const [cronExpression, setCronExpression] = useState(DEFAULT_CRON);
@@ -149,6 +157,11 @@ export function NewAgentDialog({
 
   function removeTool(id: string) {
     setTools((t) => t.filter((x) => x !== id));
+    setToolPolicies((s) => {
+      const next = { ...s };
+      delete next[id];
+      return next;
+    });
     setCredentialId((s) => {
       const next = { ...s };
       delete next[id];
@@ -160,6 +173,7 @@ export function NewAgentDialog({
     setStep(0);
     setIdentity((prev) => ({ ...prev, name: "", role: "", description: "" }));
     setTools([]);
+    setToolPolicies({});
     setLlm(models[0]?.id ?? "");
     setTrigger("on-demand");
     setCronExpression(DEFAULT_CRON);
@@ -197,15 +211,22 @@ export function NewAgentDialog({
     }
   }
 
-  // Only tool keys the target department's frame actually enables become
-  // real access -- narrowing can only tighten within the frame (never widen
-  // it), so a tile selected outside the frame stays presentation-only, same
-  // as every tool did before this feature.
-  function buildNarrowing(): Record<string, unknown> | undefined {
+  // A tool the department's frame enables is inherited as the frame sets it.
+  // One the frame doesn't name at all is granted to this agent alone (an
+  // agent-exclusive grant, `narrowing_within_frame`), with the guardrails
+  // picked when adding it. One the frame names but turned off can't be
+  // granted: a narrowing never widens the frame.
+  function frameState(key: string): "enabled" | "absent" | "disabled" {
+    const frame = frameTools[key];
+    if (!frame) return "absent";
+    return frame.enabled ? "enabled" : "disabled";
+  }
+
+  function inheritedNarrowing(): Record<string, unknown> {
     const toolsPayload: Record<string, unknown> = {};
     for (const key of tools) {
+      if (frameState(key) !== "enabled") continue;
       const frame = frameTools[key];
-      if (!frame || !frame.enabled) continue;
       toolsPayload[key] = {
         enabled: true,
         read: !!frame.read,
@@ -214,22 +235,40 @@ export function NewAgentDialog({
         connection_id: null,
       };
     }
-    return Object.keys(toolsPayload).length > 0 ? { tools: toolsPayload } : undefined;
+    return toolsPayload;
+  }
+
+  function agentOnlyNarrowing(): Record<string, unknown> {
+    const toolsPayload: Record<string, unknown> = {};
+    for (const key of tools) {
+      if (frameState(key) !== "absent") continue;
+      const policy = toolPolicies[key] ?? null;
+      toolsPayload[key] = {
+        enabled: true,
+        read: policy ? policy.read : true,
+        modify: policy ? policy.modify : false,
+        approval_eur: policy?.approvalEur ?? null,
+        approval_actions: policy?.approvalActions ?? [],
+        only: policy?.only ?? [],
+        conditions: policy?.conditions ?? [],
+        limits: policy?.limits ?? [],
+        connection_id: null,
+      };
+    }
+    return toolsPayload;
   }
 
   async function finish() {
     const model = models.find((m) => m.id === llm);
     const selectedTools = mcpTools.filter((i) => tools.includes(i.id));
 
-    // A tool picked here only becomes real access once the department's own
-    // frame already enables it -- buildNarrowing() silently leaves these out
-    // of the request, matching "narrowing can only tighten, never widen"
-    // (see its own comment). Silent is the bug: a login was still picked and
-    // pinned for it, so without this the agent looks fully configured and
-    // simply can't reach the tool the first time it tries -- surfaced live
-    // when a freshly hired agent had an Odoo login pinned in this dialog but
-    // no access at run time, department frame not enabled for it.
-    const notInDeptFrame = tools.filter((key) => !frameTools[key]?.enabled);
+    // A tool the department turned off is left out of the grant (see
+    // `frameState`). Silent would be the bug: a login was still picked and
+    // pinned for it, so without the warning below the agent looks fully
+    // configured and simply can't reach the tool the first time it tries.
+    const notInDeptFrame = tools.filter((key) => frameState(key) === "disabled");
+    const inherited = inheritedNarrowing();
+    const agentOnly = agentOnlyNarrowing();
 
     try {
       const agent = await createAgent.mutateAsync({
@@ -238,7 +277,7 @@ export function NewAgentDialog({
         roleTitle: identity.role,
         mission: identity.description,
         modelConfigId: llm || null,
-        narrowing: buildNarrowing(),
+        narrowing: Object.keys(inherited).length > 0 ? { tools: inherited } : undefined,
         presentation: {
           provider: model?.provider ?? "Ollama",
           llm: model?.name ?? "",
@@ -249,6 +288,26 @@ export function NewAgentDialog({
         },
       });
       await fixLogins(agent.id);
+      // After the logins: a tool that takes one is granted only once the
+      // agent's login for it is fixed.
+      if (Object.keys(agentOnly).length > 0) {
+        try {
+          await setNarrowing.mutateAsync({
+            agentId: agent.id,
+            narrowing: { tools: { ...inherited, ...agentOnly } },
+          });
+        } catch (err) {
+          toast.error(
+            t(
+              "Agent hired, but its tools could not be granted",
+              "Agent eingestellt, aber seine Tools konnten nicht freigegeben werden",
+            ),
+            {
+              description: `${Object.keys(agentOnly).join(", ")}: ${err instanceof Error ? err.message : String(err)}`,
+            },
+          );
+        }
+      }
 
       // A real cron trigger needs a real agent id, so it can't ride in the
       // creation request -- fire it right after, same endpoint the agent
@@ -286,10 +345,19 @@ export function NewAgentDialog({
         description: `${identity.name || "New hire"} is ready — ${tools.length} tools, ${model?.name ?? ""}.`,
       });
       if (notInDeptFrame.length > 0) {
-        toast.warning("Some tools need department approval first", {
-          description: `${notInDeptFrame.join(", ")} — not yet enabled in this department's tool settings, so ${identity.name || "the agent"} cannot use ${notInDeptFrame.length === 1 ? "it" : "them"} yet. Enable it under the department's Settings tab.`,
-          duration: 10000,
-        });
+        toast.warning(
+          t(
+            "Some tools are turned off for this department",
+            "Einige Tools sind für diese Abteilung abgeschaltet",
+          ),
+          {
+            description: t(
+              `${notInDeptFrame.join(", ")}: ${identity.name || "the agent"} can use ${notInDeptFrame.length === 1 ? "it" : "them"} once the department turns ${notInDeptFrame.length === 1 ? "it" : "them"} on in its tool settings.`,
+              `${notInDeptFrame.join(", ")}: ${identity.name || "Der Agent"} kann ${notInDeptFrame.length === 1 ? "es" : "sie"} nutzen, sobald die Abteilung ${notInDeptFrame.length === 1 ? "es" : "sie"} in ihren Tool-Einstellungen einschaltet.`,
+            ),
+            duration: 10000,
+          },
+        );
       }
       reset();
       onOpenChange(false);
@@ -441,7 +509,7 @@ export function NewAgentDialog({
                   .filter((i) => tools.includes(i.id))
                   .map((i) => {
                     const Icon = i.icon;
-                    const inFrame = !!frameTools[i.id]?.enabled;
+                    const inFrame = frameState(i.id);
                     const credentialType = connections.find((c) => c.name === i.id)?.credentialType;
                     const pickedCredentialId = credentialId[i.id] ?? "";
                     return (
@@ -475,13 +543,20 @@ export function NewAgentDialog({
                               value={pickedCredentialId}
                               onChange={(picked) => pickCredential(i.id, picked)}
                             />
-                            {!inFrame && (
-                              <p className="mt-1.5 text-[10px] text-muted-foreground">
-                                Not yet enabled for this department — the pick is saved, but won't
-                                grant access until it is.
-                              </p>
-                            )}
                           </div>
+                        )}
+                        {inFrame !== "enabled" && (
+                          <p className="text-[10px] text-muted-foreground">
+                            {inFrame === "absent"
+                              ? t(
+                                  "Only for this agent: the department doesn't offer this tool, so it is granted to this agent alone.",
+                                  "Nur für diesen Agenten: Die Abteilung bietet dieses Tool nicht an, darum bekommt es nur dieser Agent.",
+                                )
+                              : t(
+                                  "Turned off for this department: the agent can use it once the department turns it on.",
+                                  "Für diese Abteilung abgeschaltet: Der Agent kann es nutzen, sobald die Abteilung es einschaltet.",
+                                )}
+                          </p>
                         )}
                       </div>
                     );
@@ -494,8 +569,9 @@ export function NewAgentDialog({
             <AddToolPicker
               addableNames={connections.filter((c) => !tools.includes(c.name)).map((c) => c.name)}
               connections={connections}
-              onAdd={(name) => {
+              onAdd={(name, policy) => {
                 toggleTool(name);
+                setToolPolicies((prev) => ({ ...prev, [name]: policy }));
                 setPickerOpen(false);
               }}
               onClose={() => setPickerOpen(false)}
