@@ -288,3 +288,19 @@ async def test_a_guardrail_edit_on_a_narrowing_without_the_frame_threshold_is_ap
             assert result.status == "applied"
     finally:
         get_settings.cache_clear()
+
+
+async def test_narrowing_set_with_a_new_tighter_threshold_nothing_can_enforce_is_rejected(
+    app_session, acme_tenant
+) -> None:
+    """Stored 200, frame 300: a NEW 100 never fires on a connection without a
+    value spec -- refused, never dropped silently."""
+    _agent, result = await _propose_threshold_after_a_frame_raise(app_session, acme_tenant, 100)
+    assert isinstance(result, ProposalRejected)
+
+
+async def test_narrowing_set_keeps_a_zero_threshold(app_session, acme_tenant) -> None:
+    """A missing amount counts as zero, so €0 is enforced: kept."""
+    agent, result = await _propose_threshold_after_a_frame_raise(app_session, acme_tenant, 0)
+    assert not isinstance(result, ProposalRejected), result
+    assert agent.narrowing["tools"]["microsoft365"]["approval_eur"] == 0

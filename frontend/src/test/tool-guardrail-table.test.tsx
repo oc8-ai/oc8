@@ -232,8 +232,10 @@ describe("describeGuardrailSaveError", () => {
       }),
       422,
     );
+    // Not "doesn't support a threshold": €0 is enforced there (a missing
+    // amount counts as zero), only a positive one never applies.
     expect(describeGuardrailSaveError(error, t)).toBe(
-      "github doesn't support a euro threshold for this tool",
+      "github reports no amount, so a euro threshold above €0 never applies to it",
     );
   });
 

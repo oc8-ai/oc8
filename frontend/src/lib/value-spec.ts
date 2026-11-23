@@ -1,10 +1,10 @@
-// An approval threshold (`approval_eur`) holds a call above an amount, so it
-// needs the connection's manifest to say where a record's amount lives (its
-// value spec). On a connection without one, an agent's own threshold could
-// never hold, and the department's applies through the frame anyway: the
-// backend drops such a value instead of storing it (`connections.value_spec`).
-// So a payload leaves it out rather than echo a copy that went stale the moment
-// the department changed its value (E2E F3 review).
+// An approval threshold (`approval_eur`) holds a call at or above an amount,
+// and the amount comes from the connection's manifest (its value spec). On a
+// connection without one there is no amount, which counts as zero: €0 asks
+// for every change and is kept, while a positive threshold never fires and the
+// department's applies through the frame anyway (`connections.value_spec`).
+// So a payload leaves a positive one out rather than echo a copy that went
+// stale the moment the department changed its value (E2E F3 review).
 
 type WithValueSpec = { name: string; hasValueSpec: boolean };
 
@@ -16,12 +16,14 @@ export function valueSpecByName(connections: readonly WithValueSpec[]): Map<stri
   return byName;
 }
 
-/** The `approval_eur` field of a narrowing payload: left out for a connection
- *  known to have no value spec, sent as given otherwise. */
+/** The `approval_eur` field of a narrowing payload: a positive one is left out
+ *  for a connection known to have no value spec; €0 and everything else is
+ *  sent as given. */
 export function thresholdField(
   name: string,
   approvalEur: number | null,
   specs: ReadonlyMap<string, boolean>,
 ): { approval_eur?: number | null } {
-  return specs.get(name) === false ? {} : { approval_eur: approvalEur };
+  if (specs.get(name) === false && approvalEur !== 0) return {};
+  return { approval_eur: approvalEur };
 }

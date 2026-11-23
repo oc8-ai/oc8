@@ -2,6 +2,7 @@ import { Fragment, useState } from "react";
 import { Plus } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { ApiError } from "@/lib/api";
+import { fill } from "@/components/connections/texts";
 import type { McpConnection } from "@/lib/hooks";
 import type { AgentDetail } from "@/lib/hooks-agent-detail";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
@@ -51,9 +52,14 @@ export function describeGuardrailSaveError(
     }
     if (kind === "value_spec_not_supported" && Array.isArray(violations) && violations.length > 0) {
       const first = violations[0] as { connection?: string; field?: string };
-      return t(
-        `${first.connection} doesn't support a euro threshold for this tool`,
-        `${first.connection} unterstützt keine €-Schwelle für dieses Tool`,
+      // A missing amount counts as zero, so €0 still asks every time there;
+      // only a positive threshold never applies.
+      return fill(
+        t(
+          "{connection} reports no amount, so a euro threshold above €0 never applies to it",
+          "{connection} meldet keinen Betrag, daher greift dort keine €-Schwelle über 0 €",
+        ),
+        { connection: String(first.connection ?? "") },
       );
     }
   }

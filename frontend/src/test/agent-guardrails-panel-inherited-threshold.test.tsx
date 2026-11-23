@@ -65,12 +65,12 @@ const AGENT: Partial<AgentDetail> = {
   narrowingTools: {},
 };
 
-function addEmail(): Record<string, Record<string, unknown>> {
+function addEmail(agent: Partial<AgentDetail> = AGENT): Record<string, Record<string, unknown>> {
   updateMutate.mockClear();
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={qc}>
-      <AgentGuardrailsPanel agent={AGENT as AgentDetail} mayManage />
+      <AgentGuardrailsPanel agent={agent as AgentDetail} mayManage />
     </QueryClientProvider>,
   );
   tableProps.current!.onAdd("email", null);
@@ -93,5 +93,16 @@ describe("AgentGuardrailsPanel inherited threshold", () => {
     const tools = addEmail();
     expect(tools.microsoft365).toMatchObject({ enabled: true });
     expect(tools.microsoft365).not.toHaveProperty("approval_eur");
+  });
+
+  it("keeps a zero threshold there, because a missing amount counts as zero", () => {
+    // €0 asks for every change even without a value spec; leaving it out
+    // would quietly loosen the agent to the department's threshold.
+    connectionsData.current = [{ name: "microsoft365", hasValueSpec: false }];
+    const tools = addEmail({
+      ...AGENT,
+      narrowingTools: { microsoft365: { ...M365, approvalEur: 0 } },
+    });
+    expect(tools.microsoft365).toMatchObject({ approval_eur: 0 });
   });
 });

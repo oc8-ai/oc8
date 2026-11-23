@@ -32,6 +32,9 @@ msgstr ""
 msgid "(requires settings:manage)"
 msgstr ""
 
+msgid "{connection} reports no amount, so a euro threshold above €0 never applies to it"
+msgstr ""
+
 msgid "{count} departments"
 msgstr ""
 

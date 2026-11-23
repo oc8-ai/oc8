@@ -454,8 +454,8 @@ async def test_a_save_after_the_department_raised_its_threshold_still_works(
     """Review of F3: the frame went from 200 to 300 after the agent's narrowing
     was saved with 200. Accepting only the frame's exact value made every save
     of that agent a 422 -- with the threshold field hidden, so nothing the
-    person could change. The stale value is dropped, and the frame's 300
-    applies."""
+    person could change. The stored 200 never fired (no amount to compare),
+    so the unchanged legacy value is dropped and the frame's 300 applies."""
     status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
         app_session, 200, frame_eur=300, saved_eur=200
     )
@@ -464,15 +464,47 @@ async def test_a_save_after_the_department_raised_its_threshold_still_works(
     assert '"approvalEur":300' in text.replace(" ", "")
 
 
-async def test_a_threshold_nothing_can_enforce_is_dropped_not_stored(
+async def test_a_new_tighter_threshold_nothing_can_enforce_is_refused_by_name(
     app_session: AppSessionFactory,
 ) -> None:
-    """The connection has no value to compare a threshold against, so a
-    tighter one would be shown as a guardrail that never holds: it is not
-    stored, and the department's own threshold applies."""
-    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(app_session, 50)
+    """The connection reports no amount, so a positive threshold never fires:
+    stored, it would be shown as a guardrail that never holds; dropped, the
+    person would never learn why. Refused, saying what makes sense."""
+    status_code, text, _agent = await _put_narrowing_under_a_frame_threshold(app_session, 50)
+    assert status_code == 422, text
+    assert "value_spec_not_supported" in text
+    assert "only 0" in text
+
+
+async def test_a_zero_threshold_is_kept_because_it_is_enforced(
+    app_session: AppSessionFactory,
+) -> None:
+    """Security review: a missing amount counts as zero, so €0 asks for every
+    modify even on a connection without a value spec. Dropping it would
+    loosen the agent's guardrail to the department's."""
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(app_session, 0)
     assert status_code == 200, text
-    assert "approval_eur" not in await _stored_microsoft365(app_session, agent_id)
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
+
+
+async def test_a_stored_zero_threshold_sent_back_unchanged_is_kept(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+        app_session, 0, frame_eur=300, saved_eur=0
+    )
+    assert status_code == 200, text
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
+
+
+async def test_a_zero_threshold_where_the_department_sets_none_is_kept(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+        app_session, 0, frame_eur=None
+    )
+    assert status_code == 200, text
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
 
 
 async def test_leaving_out_an_inherited_frame_threshold_is_accepted(
@@ -493,16 +525,16 @@ async def test_loosening_an_inherited_frame_threshold_is_still_rejected(
     assert "narrowing_exceeds_frame" in text
 
 
-async def test_an_agent_own_threshold_on_a_connection_with_no_value_spec_is_not_stored(
+async def test_an_agent_own_threshold_where_the_department_sets_none_is_refused(
     app_session: AppSessionFactory,
 ) -> None:
-    """A threshold the department never set, on a connection with nothing to
-    compare it against, would be a guardrail that never holds: dropped."""
-    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+    """A positive threshold the department never set, on a connection with
+    nothing to compare it against, would be a guardrail that never holds."""
+    status_code, text, _agent = await _put_narrowing_under_a_frame_threshold(
         app_session, 100, frame_eur=None
     )
-    assert status_code == 200, text
-    assert "approval_eur" not in await _stored_microsoft365(app_session, agent_id)
+    assert status_code == 422, text
+    assert "value_spec_not_supported" in text
 
 
 async def test_resetting_an_overridden_key_drops_it_and_clears_the_override_flag(
@@ -638,3 +670,20 @@ async def test_hiring_with_a_looser_threshold_than_the_department_is_rejected(
     status_code, text = await _hire_under_a_frame_threshold(app_session, 500)
     assert status_code == 422, text
     assert "narrowing_exceeds_frame" in text
+
+
+async def test_hiring_with_a_zero_threshold_keeps_it(app_session: AppSessionFactory) -> None:
+    import json
+
+    status_code, text = await _hire_under_a_frame_threshold(app_session, 0)
+    assert status_code == 201, text
+    agent_id = uuid.UUID(json.loads(text)["id"])
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
+
+
+async def test_hiring_with_a_new_tighter_threshold_nothing_can_enforce_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text = await _hire_under_a_frame_threshold(app_session, 50)
+    assert status_code == 422, text
+    assert "value_spec_not_supported" in text

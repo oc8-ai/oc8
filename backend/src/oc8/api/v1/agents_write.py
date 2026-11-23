@@ -289,6 +289,7 @@ async def create_agent(
             tenant_id=actor.principal.tenant_id,
             frame=dept.frame or {},
             narrowing=body.narrowing,
+            stored=None,
         )
         if checked.violations:
             raise HTTPException(
@@ -298,6 +299,7 @@ async def create_agent(
                     "violations": [v.__dict__ for v in checked.violations],
                 },
             )
+        _refuse_unenforceable_thresholds(checked.unenforceable)
         narrowing = checked.narrowing
 
     principal = actor.principal
@@ -415,6 +417,31 @@ async def lifecycle(
     return agent_to_dto(agent)
 
 
+def _refuse_unenforceable_thresholds(keys: list[str]) -> None:
+    """422 for a new threshold that would never hold on a connection without
+    a value spec (`connections.value_spec`). The Copilot refuses it as
+    `system_no_amount_limit`."""
+    if keys:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "error": "value_spec_not_supported",
+                "violations": [
+                    {
+                        "connection": key,
+                        "field": "approval_eur",
+                        "reason": (
+                            "this connection reports no amount, so a euro threshold "
+                            "never applies: only 0 (ask every time) or the "
+                            "department's value make sense"
+                        ),
+                    }
+                    for key in keys
+                ],
+            },
+        )
+
+
 @router.put(
     "/agents/{agent_id}/narrowing",
     response_model=AgentDetailDTO,
@@ -442,7 +469,11 @@ async def set_narrowing(
     # A threshold on a connection with no value_spec is judged against the
     # frame and then dropped, never refused (E2E F3): see `value_spec`.
     checked = await check_agent_narrowing(
-        db, tenant_id=principal.tenant_id, frame=frame, narrowing=body.narrowing
+        db,
+        tenant_id=principal.tenant_id,
+        frame=frame,
+        narrowing=body.narrowing,
+        stored=agent.narrowing,
     )
     if checked.violations:
         raise HTTPException(
@@ -452,6 +483,7 @@ async def set_narrowing(
                 "violations": [v.__dict__ for v in checked.violations],
             },
         )
+    _refuse_unenforceable_thresholds(checked.unenforceable)
     narrowing = checked.narrowing
 
     await enforce_narrowing_logins(
@@ -1431,7 +1463,13 @@ async def rollback_agent_version(
     frame = dept.frame if dept else {}
     violations = (
         await check_agent_narrowing(
-            db, tenant_id=principal.tenant_id, frame=frame, narrowing=payload.get("narrowing") or {}
+            db,
+            tenant_id=principal.tenant_id,
+            frame=frame,
+            narrowing=payload.get("narrowing") or {},
+            # A rollback restores the version as it was: every threshold in it
+            # is the agent's own, none is new.
+            stored=payload.get("narrowing") or {},
         )
     ).violations
     if violations:

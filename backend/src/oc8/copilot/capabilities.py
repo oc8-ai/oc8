@@ -963,12 +963,18 @@ async def apply_operation(
         # dropped, never refused (E2E F3) -- see `connections.value_spec`.
         try:
             checked = await check_agent_narrowing(
-                db, tenant_id=tenant_id, frame=frame, narrowing=operation.narrowing
+                db,
+                tenant_id=tenant_id,
+                frame=frame,
+                narrowing=operation.narrowing,
+                stored=agent.narrowing,
             )
         except ValueError as exc:  # e.g. a malformed usage limit
             raise InvalidOperation() from exc
         if checked.violations:
             raise InvalidOperation("system_outside_frame")
+        if checked.unenforceable:
+            raise InvalidOperation("system_no_amount_limit")
         narrowing = checked.narrowing
         if await unknown_limit_tools(
             db,
@@ -1471,9 +1477,9 @@ async def _apply_guardrail_set(
     # a stored narrowing carries no threshold on a connection without a value
     # spec, and its absence must not read as removing the frame's.
     checked = await check_agent_narrowing(
-        db, tenant_id=agent.tenant_id, frame=frame, narrowing=narrowing
+        db, tenant_id=agent.tenant_id, frame=frame, narrowing=narrowing, stored=agent.narrowing
     )
-    if checked.violations:
+    if checked.violations or checked.unenforceable:
         raise InvalidOperation()
 
     had_no_draft = await _has_no_draft(db, agent)
