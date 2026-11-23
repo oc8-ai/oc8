@@ -205,6 +205,10 @@ class ApprovalNames:
     #: queue must sort by how much work they block. One batched query like
     #: every other field here, never one per row.
     runs: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
+    #: raising run id (the payload's `run_id`) -> the message that run
+    #: answers. Every turn of a chat runs on one task titled after the first
+    #: message; the card quotes the turn that asked (E2E N8).
+    turns: dict[str, str] = field(default_factory=dict)
 
 
 _NO_NAMES = ApprovalNames()
@@ -235,6 +239,41 @@ async def resolve_approval_names(
         found = (await db.execute(select(column, label).where(column.in_(ids)))).all()
         return {row[0]: row[1] or "" for row in found}
 
+    async def _turns() -> dict[str, str]:
+        """The message each raising run answers, in two batched queries."""
+        run_ids: set[uuid.UUID] = set()
+        for a in rows:
+            raw = (a.payload or {}).get("run_id")
+            try:
+                run_ids.add(uuid.UUID(str(raw)))
+            except ValueError:
+                continue
+        if not run_ids:
+            return {}
+        replies = (
+            await db.execute(
+                select(m.AgentRun.id, m.AgentRun.context["reply_to_message_id"].astext).where(
+                    m.AgentRun.id.in_(run_ids)
+                )
+            )
+        ).all()
+        message_of: dict[uuid.UUID, str] = {}
+        for run_id, raw_message in replies:
+            try:
+                message_of[uuid.UUID(str(raw_message))] = str(run_id)
+            except ValueError:
+                continue
+        if not message_of:
+            return {}
+        found = (
+            await db.execute(
+                select(m.ChatMessage.id, m.ChatMessage.content).where(
+                    m.ChatMessage.id.in_(set(message_of))
+                )
+            )
+        ).all()
+        return {message_of[mid]: (content or "")[:200] for mid, content in found if content}
+
     async def _runs(ids: set[uuid.UUID]) -> dict[uuid.UUID, uuid.UUID]:
         """task_id -> run_id. Ordered so a task with more than one run (a
         resumed run opens no new one, but a re-run of the same task does)
@@ -260,6 +299,7 @@ async def resolve_approval_names(
         # raw uuid printed under "entschieden von" is worse than a blank.
         members=await _names(m.OrgMember.id, m.OrgMember.display_name, member_ids),
         runs=await _runs(task_ids),
+        turns=await _turns(),
     )
 
 
@@ -355,7 +395,8 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         department_name=(resolved.departments.get(a.department_id, "") if a.department_id else ""),
         agent_name=resolved.agents.get(a.agent_id, ""),
         task_id=str(a.task_id) if a.task_id else None,
-        task_title=resolved.tasks.get(a.task_id, "") if a.task_id else "",
+        task_title=resolved.turns.get(str(payload.get("run_id") or ""))
+        or (resolved.tasks.get(a.task_id, "") if a.task_id else ""),
         # The raiser's own run first: a Copilot conversation runs every turn
         # on one task, so the task's run is only a guess there.
         run_id=(
