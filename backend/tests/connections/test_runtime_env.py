@@ -659,3 +659,48 @@ async def test_a_run_that_tried_and_got_nowhere_asks_for_the_missing_account(
         )
     result = await _asked(app_session, tenant, run_id)
     assert (result is not None) is asked
+
+
+@pytest.mark.parametrize(
+    ("name", "calls", "output", "asked"),
+    [
+        pytest.param(
+            "microsoft365",
+            [_OK],
+            "I used your email tools instead of Microsoft 365.",
+            False,
+            id="named after a successful send",
+        ),
+        pytest.param(
+            "microsoft365",
+            [],
+            "microsoft365 is not available to me.",
+            True,
+            id="named as one word",
+        ),
+        pytest.param("git", [], "I put the digits together for you.", False, id="inside a word"),
+        pytest.param("git", [], "Git is not available to me.", True, id="as a word"),
+    ],
+)
+async def test_an_answer_names_the_connection_only_as_a_word_and_only_when_nothing_worked(
+    app_session: AppSessionFactory,
+    name: str,
+    calls: list[dict[str, Any]],
+    output: str,
+    asked: bool,
+) -> None:
+    """Review of round 9: a run that got its work done may still mention the
+    connection it did without, and a short name must not match inside
+    another word."""
+    from oc8.agent import engine
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry(name, missing)]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [missing], opened_any=True)
+        await engine._ask_after_idle_run(
+            db, run, unavailable, status="done", calls=calls, output=output
+        )
+    result = await _asked(app_session, tenant, run_id)
+    assert (result is not None) is asked

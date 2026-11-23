@@ -16,6 +16,7 @@ import asyncio
 import datetime as dt
 import json
 import logging
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack
@@ -575,23 +576,32 @@ async def _ask_after_idle_run(
     connection. A plain chat turn, a run that got by on core tools, and a
     failed or interrupted run stay quiet -- "Connect now" on a "thanks" was
     the original complaint (E2E N3)."""
-    from oc8.agent.offering import named_by_find
-
     if run is None or status != "done" or (run.context or {}).get("connection_required"):
         return
     needed = [e for e in unavailable if isinstance(e.get("connection_required"), dict)]
     if not needed:
         return
-    # "Microsoft 365" in prose names the connection "microsoft365".
-    named = named_by_find(needed, output, None) or named_by_find(
-        needed, output.replace(" ", ""), None
-    )
+    # Only when nothing worked: a run that got its work done may still
+    # mention the connection it did without ("instead of Microsoft 365").
+    succeeded = any(c.get("state") == "done" for c in calls)
+    named = [] if succeeded else [e for e in needed if _names_connection(output, str(e["name"]))]
     tried = any(c.get("tool") == FIND_TOOLS.name for c in calls) or (
         bool(calls) and all(c.get("state") in ("failed", "denied") for c in calls)
     )
     pick = named[0] if named else needed[0] if tried else None
     if pick is not None:
         await merge_context(db, run, {"connection_required": pick["connection_required"]})
+
+
+def _names_connection(text: str, name: str) -> bool:
+    """Whether `text` names the connection as a word of its own: "Microsoft
+    365" and "microsoft365" both name `microsoft365`, "digits" does not name
+    `git`. The name's letter and digit runs may be written apart."""
+    parts = re.findall(r"[a-z]+|[0-9]+", name.lower())
+    if not parts:
+        return False
+    pattern = r"\b" + r"[\s_-]*".join(re.escape(p) for p in parts) + r"\b"
+    return re.search(pattern, text, re.IGNORECASE) is not None
 
 
 def _startup_entry(name: str, exc: BaseException) -> dict[str, Any]:
