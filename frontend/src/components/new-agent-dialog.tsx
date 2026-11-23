@@ -1,3 +1,4 @@
+import { fill } from "@/components/connections/texts";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -48,12 +49,34 @@ import { cn } from "@/lib/utils";
 // not a free-text field -- see new-agent-dialog's "Guardrail" label below.
 const DEFAULT_CRON = "0 9 * * 1-5";
 
-const steps = [
-  { title: "Name & Role", subtitle: "Who is this agent?", icon: User },
-  { title: "Choose LLM", subtitle: "Which model should think?", icon: Sparkles },
-  { title: "Tools (MCP)", subtitle: "What should it work with?", icon: Wrench },
-  { title: "Guardrails & Trigger", subtitle: "Rules, then go live.", icon: Shield },
-] as const;
+function wizardSteps(t: (en: string, de?: string) => string) {
+  return [
+    {
+      key: "identity",
+      title: t("Name & Role", "Name & Rolle"),
+      subtitle: t("Who is this agent?", "Wer ist dieser Agent?"),
+      icon: User,
+    },
+    {
+      key: "model",
+      title: t("Choose LLM", "LLM wählen"),
+      subtitle: t("Which model should think?", "Welches Modell soll denken?"),
+      icon: Sparkles,
+    },
+    {
+      key: "tools",
+      title: t("Tools (MCP)", "Tools (MCP)"),
+      subtitle: t("What should it work with?", "Womit soll er arbeiten?"),
+      icon: Wrench,
+    },
+    {
+      key: "launch",
+      title: t("Guardrails & Trigger", "Guardrails & Auslöser"),
+      subtitle: t("Rules, then go live.", "Regeln, dann live."),
+      icon: Shield,
+    },
+  ];
+}
 
 export function NewAgentDialog({
   open,
@@ -89,6 +112,7 @@ export function NewAgentDialog({
   const setNarrowing = useSetAgentNarrowing();
   const navigate = useNavigate();
   const t = useT();
+  const steps = wizardSteps(t);
 
   const [step, setStep] = useState(0);
   const [identity, setIdentity] = useState<AgentIdentity>({
@@ -204,9 +228,15 @@ export function NewAgentDialog({
           agentId,
         });
       } catch (err) {
-        toast.error("Agent hired, but its login could not be set", {
-          description: `${toolKey}: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        toast.error(
+          t(
+            "Agent hired, but its login could not be set",
+            "Agent eingestellt, aber sein Zugang konnte nicht gesetzt werden",
+          ),
+          {
+            description: `${toolKey}: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        );
       }
     }
   }
@@ -319,30 +349,60 @@ export function NewAgentDialog({
             agentId: agent.id,
             cronExpression,
             timezone,
-            taskText: `Scheduled run for ${identity.name}`,
+            taskText: fill(t("Scheduled run for {name}", "Geplanter Lauf für {name}"), {
+              name: identity.name,
+            }),
           });
         } catch (err) {
-          toast.error("Agent hired, but the schedule could not be saved", {
-            description: String(err),
-          });
+          toast.error(
+            t(
+              "Agent hired, but the schedule could not be saved",
+              "Agent eingestellt, aber der Zeitplan konnte nicht gespeichert werden",
+            ),
+            {
+              description: String(err),
+            },
+          );
         }
       } else if (trigger === "webhook") {
         try {
           await createTrigger.mutateAsync({
             agentId: agent.id,
             kind: "webhook",
-            taskText: `React to whatever this webhook sends, on ${identity.name}'s behalf.`,
+            taskText: fill(
+              t(
+                "React to whatever this webhook sends, on {name}'s behalf.",
+                "Reagiere im Namen von {name} auf das, was dieser Webhook sendet.",
+              ),
+              { name: identity.name },
+            ),
           });
           webhookCreated = true;
         } catch (err) {
-          toast.error("Agent hired, but the webhook could not be created", {
-            description: String(err),
-          });
+          toast.error(
+            t(
+              "Agent hired, but the webhook could not be created",
+              "Agent eingestellt, aber der Webhook konnte nicht angelegt werden",
+            ),
+            {
+              description: String(err),
+            },
+          );
         }
       }
 
-      toast.success("Agent hired", {
-        description: `${identity.name || "New hire"} is ready — ${tools.length} tools, ${model?.name ?? ""}.`,
+      toast.success(t("Agent hired", "Agent eingestellt"), {
+        description: fill(
+          t(
+            "{name} is ready — {count} tools, {model}.",
+            "{name} ist bereit — {count} Tools, {model}.",
+          ),
+          {
+            name: identity.name || t("New hire", "Neuer Agent"),
+            count: String(tools.length),
+            model: model?.name ?? "",
+          },
+        ),
       });
       if (notInDeptFrame.length > 0) {
         toast.warning(
@@ -351,9 +411,20 @@ export function NewAgentDialog({
             "Einige Tools sind für diese Abteilung abgeschaltet",
           ),
           {
-            description: t(
-              `${notInDeptFrame.join(", ")}: ${identity.name || "the agent"} can use ${notInDeptFrame.length === 1 ? "it" : "them"} once the department turns ${notInDeptFrame.length === 1 ? "it" : "them"} on in its tool settings.`,
-              `${notInDeptFrame.join(", ")}: ${identity.name || "Der Agent"} kann ${notInDeptFrame.length === 1 ? "es" : "sie"} nutzen, sobald die Abteilung ${notInDeptFrame.length === 1 ? "es" : "sie"} in ihren Tool-Einstellungen einschaltet.`,
+            description: fill(
+              notInDeptFrame.length === 1
+                ? t(
+                    "{tools}: {name} can use it once the department turns it on in its tool settings.",
+                    "{tools}: {name} kann es nutzen, sobald die Abteilung es in ihren Tool-Einstellungen einschaltet.",
+                  )
+                : t(
+                    "{tools}: {name} can use them once the department turns them on in its tool settings.",
+                    "{tools}: {name} kann sie nutzen, sobald die Abteilung sie in ihren Tool-Einstellungen einschaltet.",
+                  ),
+              {
+                tools: notInDeptFrame.join(", "),
+                name: identity.name || t("the agent", "der Agent"),
+              },
             ),
             duration: 10000,
           },
@@ -366,7 +437,9 @@ export function NewAgentDialog({
       // rendering it inside this dialog.
       if (webhookCreated) navigate({ to: "/agents/$id", params: { id: agent.id } });
     } catch (err) {
-      toast.error("Could not hire agent", { description: String(err) });
+      toast.error(t("Could not hire agent", "Agent konnte nicht eingestellt werden"), {
+        description: String(err),
+      });
     }
   }
 
@@ -397,9 +470,15 @@ export function NewAgentDialog({
                 <StepIcon className="h-5 w-5" />
               </div>
               <div>
-                <h3 className="font-serif text-2xl leading-none">Hire a new agent</h3>
+                <h3 className="font-serif text-2xl leading-none">
+                  {t("Hire a new agent", "Neuen Agenten einstellen")}
+                </h3>
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  Step {step + 1} of {steps.length} · {activeStep.subtitle}
+                  {fill(t("Step {step} of {total}", "Schritt {step} von {total}"), {
+                    step: String(step + 1),
+                    total: String(steps.length),
+                  })}{" "}
+                  · {activeStep.subtitle}
                 </p>
               </div>
             </div>
@@ -425,7 +504,7 @@ export function NewAgentDialog({
             </div>
             <ol className="mt-3 grid grid-cols-4 gap-2">
               {steps.map((s, i) => (
-                <li key={s.title} className="flex min-w-0 items-center gap-2">
+                <li key={s.key} className="flex min-w-0 items-center gap-2">
                   <span
                     className={cn(
                       "grid h-5 w-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold transition",
@@ -483,7 +562,12 @@ export function NewAgentDialog({
               <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span className="inline-flex items-center gap-1.5">
                   <Plug className="h-3.5 w-3.5 text-primary" />
-                  {tools.length} tool{tools.length === 1 ? "" : "s"} selected
+                  {fill(
+                    tools.length === 1
+                      ? t("{count} tool selected", "{count} Tool ausgewählt")
+                      : t("{count} tools selected", "{count} Tools ausgewählt"),
+                    { count: String(tools.length) },
+                  )}
                 </span>
                 <button
                   type="button"
@@ -491,17 +575,23 @@ export function NewAgentDialog({
                   disabled={connections.filter((c) => !tools.includes(c.name)).length === 0}
                   className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background/40 px-2.5 py-1.5 text-xs font-medium text-foreground transition hover:bg-background/70 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Wrench className="h-3.5 w-3.5" /> Add tool
+                  <Wrench className="h-3.5 w-3.5" /> {t("Add tool", "Tool hinzufügen")}
                 </button>
               </div>
               {mcpTools.length === 0 && (
                 <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                  No MCP connections yet. Add one under Capas to offer it here.
+                  {t(
+                    "No MCP connections yet. Add one under Capas to offer it here.",
+                    "Noch keine MCP-Verbindungen. Füge unter Capas eine hinzu, um sie hier anzubieten.",
+                  )}
                 </p>
               )}
               {tools.length === 0 && mcpTools.length > 0 && (
                 <p className="rounded-md border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-                  No tools selected yet — click "Add tool" to pick one.
+                  {t(
+                    'No tools selected yet — click "Add tool" to pick one.',
+                    'Noch keine Tools ausgewählt — klicke auf "Tool hinzufügen", um eines zu wählen.',
+                  )}
                 </p>
               )}
               <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3">
@@ -524,7 +614,7 @@ export function NewAgentDialog({
                           <button
                             type="button"
                             onClick={() => removeTool(i.id)}
-                            title="Remove tool"
+                            title={t("Remove tool", "Tool entfernen")}
                             className="grid h-6 w-6 place-items-center rounded-md text-muted-foreground transition hover:text-destructive"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -533,7 +623,9 @@ export function NewAgentDialog({
                         <div className="w-full min-w-0">
                           <div className="truncate text-sm font-medium">{i.name}</div>
                           <div className="truncate text-[10px] text-muted-foreground">
-                            {connectedNames.has(i.id) ? "via MCP" : "not connected"}
+                            {connectedNames.has(i.id)
+                              ? t("via MCP", "über MCP")
+                              : t("not connected", "nicht verbunden")}
                           </div>
                         </div>
                         {credentialType && (
@@ -581,42 +673,63 @@ export function NewAgentDialog({
           {step === 3 && (
             <div className="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,320px)]">
               <div className="space-y-4">
-                <Field label="Guardrail label">
+                <Field label={t("Guardrail label", "Guardrail-Beschriftung")}>
                   <input
                     value={guardrail}
                     onChange={(e) => setGuardrail(e.target.value)}
-                    placeholder="A short note for the profile card"
+                    placeholder={t(
+                      "A short note for the profile card",
+                      "Eine kurze Notiz für die Profilkarte",
+                    )}
                     className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
                   />
                   <p className="mt-1 text-[11px] text-muted-foreground">
-                    Just a label for this card — it doesn't change what the agent can actually do.
+                    {t(
+                      "Just a label for this card — it doesn't change what the agent can actually do.",
+                      "Nur eine Beschriftung für diese Karte — sie ändert nicht, was der Agent tatsächlich darf.",
+                    )}
                   </p>
                 </Field>
-                <Field label="Trigger">
+                <Field label={t("Trigger", "Auslöser")}>
                   <div className="grid gap-2 sm:grid-cols-3">
                     {[
-                      { id: "on-demand", label: "On-Demand", icon: Zap, disabled: false },
-                      { id: "schedule", label: "Schedule", icon: Clock, disabled: false },
-                      { id: "webhook", label: "Webhook", icon: Webhook, disabled: false },
-                    ].map((t) => {
-                      const Icon = t.icon;
-                      const on = trigger === t.id;
+                      {
+                        id: "on-demand",
+                        label: t("On-Demand", "Bei Bedarf"),
+                        icon: Zap,
+                        disabled: false,
+                      },
+                      {
+                        id: "schedule",
+                        label: t("Schedule", "Zeitplan"),
+                        icon: Clock,
+                        disabled: false,
+                      },
+                      {
+                        id: "webhook",
+                        label: t("Webhook", "Webhook"),
+                        icon: Webhook,
+                        disabled: false,
+                      },
+                    ].map((option) => {
+                      const Icon = option.icon;
+                      const on = trigger === option.id;
                       return (
                         <button
-                          key={t.id}
+                          key={option.id}
                           type="button"
-                          onClick={() => !t.disabled && setTrigger(t.id)}
-                          disabled={t.disabled}
+                          onClick={() => !option.disabled && setTrigger(option.id)}
+                          disabled={option.disabled}
                           className={cn(
                             "inline-flex flex-col items-center gap-1.5 rounded-md border px-3 py-3 text-xs transition",
                             on
                               ? "border-primary bg-primary/10 text-primary"
                               : "border-border bg-background/30 text-muted-foreground hover:border-primary/40 hover:text-foreground",
-                            t.disabled && "cursor-not-allowed opacity-50 hover:border-border",
+                            option.disabled && "cursor-not-allowed opacity-50 hover:border-border",
                           )}
                         >
                           <Icon className="h-4 w-4" />
-                          {t.label}
+                          {option.label}
                         </button>
                       );
                     })}
@@ -627,11 +740,14 @@ export function NewAgentDialog({
                         initial={cronExpression}
                         onChange={setCronExpression}
                         onSave={() =>
-                          toast.success("Schedule set", {
-                            description: "Saved once you hire the agent.",
+                          toast.success(t("Schedule set", "Zeitplan gesetzt"), {
+                            description: t(
+                              "Saved once you hire the agent.",
+                              "Wird gespeichert, sobald du den Agenten einstellst.",
+                            ),
                           })
                         }
-                        saveLabel="Looks good"
+                        saveLabel={t("Looks good", "Passt so")}
                         timezone={timezone}
                         onTimezoneChange={setPickedZone}
                       />
@@ -639,9 +755,10 @@ export function NewAgentDialog({
                   )}
                   {trigger === "webhook" && (
                     <p className="mt-3 rounded-md border border-dashed border-border px-3 py-2 text-[11px] text-muted-foreground">
-                      A unique webhook URL is generated once the agent is hired. You'll land on the
-                      agent's page to copy it — Odoo's Automation Rules or any other tool that can
-                      send a POST request works.
+                      {t(
+                        "A unique webhook URL is generated once the agent is hired. You'll land on the agent's page to copy it — Odoo's Automation Rules or any other tool that can send a POST request works.",
+                        "Sobald der Agent eingestellt ist, wird eine eigene Webhook-URL erzeugt. Du landest auf der Seite des Agenten, um sie zu kopieren — Odoos Automatisierungsregeln oder jedes andere Tool, das einen POST-Request senden kann, funktioniert.",
+                      )}
                     </p>
                   )}
                 </Field>
@@ -670,10 +787,10 @@ export function NewAgentDialog({
             className="inline-flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-muted-foreground transition hover:text-foreground"
           >
             {step === 0 ? (
-              "Cancel"
+              t("Cancel", "Abbrechen")
             ) : (
               <>
-                <ChevronLeft className="h-4 w-4" /> Back
+                <ChevronLeft className="h-4 w-4" /> {t("Back", "Zurück")}
               </>
             )}
           </button>
@@ -688,14 +805,14 @@ export function NewAgentDialog({
                   : "cursor-not-allowed bg-background/40 text-muted-foreground",
               )}
             >
-              Next <ChevronRight className="h-4 w-4" />
+              {t("Next", "Weiter")} <ChevronRight className="h-4 w-4" />
             </button>
           ) : (
             <button
               onClick={finish}
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal"
             >
-              <Check className="h-4 w-4" /> Hire agent
+              <Check className="h-4 w-4" /> {t("Hire agent", "Agent einstellen")}
             </button>
           )}
         </footer>
@@ -727,12 +844,17 @@ function ProfileCard({
   toolIds: string[];
   mcpTools: McpTool[];
 }) {
+  const t = useT();
   const selected = useMemo(
     () => mcpTools.filter((i) => toolIds.includes(i.id)),
     [mcpTools, toolIds],
   );
   const triggerLabel =
-    trigger === "on-demand" ? "On-Demand" : trigger === "schedule" ? "Schedule" : "Webhook";
+    trigger === "on-demand"
+      ? t("On-Demand", "Bei Bedarf")
+      : trigger === "schedule"
+        ? t("Schedule", "Zeitplan")
+        : t("Webhook", "Webhook");
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-primary/40 bg-gradient-to-b from-primary/10 via-panel to-panel p-5 shadow-[0_0_0_1px_var(--primary)]/10">
@@ -740,10 +862,10 @@ function ProfileCard({
       <div className="mb-4 flex items-center justify-between text-[10px] uppercase tracking-widest text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
           <Sparkles className="h-3 w-3 text-primary" />
-          Agent profile
+          {t("Agent profile", "Agentenprofil")}
         </span>
         <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[9px] text-primary">
-          ready to launch
+          {t("ready to launch", "startklar")}
         </span>
       </div>
 
@@ -755,8 +877,12 @@ function ProfileCard({
           hue={hueFromOklch(avatarColor)}
         />
         <div className="min-w-0">
-          <div className="truncate font-serif text-2xl leading-none">{name || "New agent"}</div>
-          <div className="mt-1 truncate text-xs text-muted-foreground">{role || "Role …"}</div>
+          <div className="truncate font-serif text-2xl leading-none">
+            {name || t("New agent", "Neuer Agent")}
+          </div>
+          <div className="mt-1 truncate text-xs text-muted-foreground">
+            {role || t("Role …", "Rolle …")}
+          </div>
         </div>
       </div>
 
@@ -771,7 +897,7 @@ function ProfileCard({
           <span className="font-medium text-foreground">{llm}</span>
           <span className="text-muted-foreground"> · {provider}</span>
         </Row>
-        <Row icon={<Zap className="h-3 w-3" />} label="Trigger">
+        <Row icon={<Zap className="h-3 w-3" />} label={t("Trigger", "Auslöser")}>
           <span className="font-medium text-foreground">{triggerLabel}</span>
         </Row>
         <Row icon={<Shield className="h-3 w-3" />} label="Guardrail">
@@ -781,11 +907,11 @@ function ProfileCard({
 
       <div className="mt-4">
         <div className="mb-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
-          Tools ({selected.length})
+          {fill(t("Tools ({count})", "Tools ({count})"), { count: String(selected.length) })}
         </div>
         {selected.length === 0 ? (
           <div className="rounded-md border border-dashed border-border px-2 py-1.5 text-[11px] text-muted-foreground">
-            No tools selected yet.
+            {t("No tools selected yet.", "Noch keine Tools ausgewählt.")}
           </div>
         ) : (
           <div className="flex flex-wrap gap-1.5">
