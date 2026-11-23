@@ -110,6 +110,7 @@ def agent_to_dto(a: m.Agent) -> AgentDTO:
         llm=p.get("llm", ""),
         provider=p.get("provider", ""),
         status=AGENT_STATUS_TO_UI.get(a.status, "running"),
+        awaiting_hire_approval=a.status == "pending_approval",
         tools=p.get("tools", []),
         last_action=p.get("last_action", ""),
         last_run=p.get("last_run", ""),

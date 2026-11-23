@@ -70,6 +70,7 @@ async def test_gate_off_creates_a_ready_agent_no_incident(app_session: AppSessio
             )
             assert r.status_code == 201
             assert r.json()["status"] == "waiting_for_task"
+            assert r.json()["awaitingHireApproval"] is False
             agent_id = r.json()["id"]
     async with app_session(tenant) as s:
         # r.json()["status"] is the UI-facing 4-state mapping (agent_to_dto /
@@ -99,6 +100,8 @@ async def test_gate_on_creates_pending_with_incident_and_blocks(
             # The DTO surfaces a gated agent as "warning" (needs attention), NOT
             # "running" -- pending_approval maps through AGENT_STATUS_TO_UI.
             assert r.json()["status"] == "warning"
+            # Said plainly, so the wizard publishes nothing on top of it.
+            assert r.json()["awaitingHireApproval"] is True
             # a pending agent cannot run or be started
             run = await client.post(f"/api/v1/agents/{agent_id}/run",
                                     json={"task": "x"}, headers=_headers(tenant))
@@ -106,6 +109,14 @@ async def test_gate_on_creates_pending_with_incident_and_blocks(
             life = await client.post(f"/api/v1/agents/{agent_id}/lifecycle",
                                      json={"action": "start"}, headers=_headers(tenant))
             assert life.status_code == 409
+            # Nor can a change be published on top of what the approver sees:
+            # they approve what was requested (review of round 6).
+            published = await client.post(
+                f"/api/v1/agents/{agent_id}/versions",
+                json={"expectedCurrentVersionNo": 1}, headers=_headers(tenant),
+            )
+            assert published.status_code == 409, published.text
+            assert "hire approval" in published.text
 
     async with app_session(tenant) as s:
         agent_row = await s.get(m.Agent, uuid.UUID(agent_id))

@@ -304,6 +304,33 @@ describe("NewAgentDialog: inline credential picker", () => {
     );
   });
 
+  it("publishes nothing on a hire that awaits its approval (review of round 6)", async () => {
+    // The approver approves what was requested; the server refuses it too.
+    createAgentMock.mockResolvedValueOnce({
+      id: "new-agent-id",
+      currentVersionNo: 1,
+      awaitingHireApproval: true,
+    });
+    connectionsMock.mockReturnValue({
+      data: [{ ...connections[0], credentialType: "odoo_login" }],
+    });
+    credentialsMock.mockReturnValue({
+      data: [{ id: "cred-1", name: "oc8-local", credentialType: "odoo_login" }],
+    });
+    createLoginMock.mockResolvedValue({ id: "cred-1", name: "Odoo" });
+    renderDialog();
+    await screen.findByText("Hire a new agent");
+    fillIdentityAndGoToTools();
+    fireEvent.click(screen.getByRole("button", { name: "Add tool" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "cred-1" } });
+    fireEvent.click(screen.getByRole("button", { name: /Next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
+    await waitFor(() => expect(createLoginMock).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 50)); // the rest of finish()
+    expect(publishHireMock).not.toHaveBeenCalled();
+  });
+
   it("creates a new credential inline and fixes it for the agent on hire -- no separate modal, no free-text tool scopes", async () => {
     // Live user feedback: a stacked modal asking for raw tool-call names
     // "das bekommt doch kein mitarbeiter hin" -- creating a credential now

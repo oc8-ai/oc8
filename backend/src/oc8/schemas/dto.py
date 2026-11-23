@@ -20,6 +20,9 @@ class AgentDTO(CamelModel):
     llm: str
     provider: str
     status: str  # running | warning | error | paused | waiting_for_task
+    #: Hired while the tenant requires hire approval, and not yet decided:
+    #: nothing may be published on top of what the approver sees.
+    awaiting_hire_approval: bool = False
     tools: list[str]
     last_action: str
     last_run: str

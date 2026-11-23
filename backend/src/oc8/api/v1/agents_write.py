@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.hire import create_hire_request, require_hire_approval
+from oc8.agents.hire import create_hire_request, initial_status, require_hire_approval
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
@@ -271,13 +271,6 @@ async def enforce_narrowing_logins(
                 current_frame, connection_id=None
             ) or (own_login and str(own_login) != str(frame_login or "")):
                 overridden.add(key)
-                continue
-            submitted = effective_tool_policies(
-                {"tools": {key: frame_tools.get(key)}}, {"tools": {key: raw}}
-            )[key]
-            current_frame = ToolPolicy.from_json(frame_tools.get(key))
-            if replace(submitted, connection_id=None) != replace(current_frame, connection_id=None):
-                overridden.add(key)
         agent.narrowing_overridden_keys = sorted(overridden)
 
 
@@ -343,9 +336,7 @@ async def create_agent(
         model_config_id=body.model_config_id,
         narrowing={},
         is_team_lead=body.is_team_lead,
-        # Ready for work: "stopped" reads as "paused", and nobody paused a
-        # fresh hire (E2E N9). Only a deliberate pause or stop shows as one.
-        status="pending_approval" if gated else "idle",
+        status=initial_status(gated=gated),
         trust_level="first_party",
         definition={"oc8_agent": 1, "name": body.name, "mission": body.mission},
         presentation=body.presentation,
@@ -1281,6 +1272,10 @@ async def _publish_or_refuse(
     working-copy write before it) never reaches the database -- which is what
     makes a hook a veto rather than a complaint after the fact.
     """
+    if agent.status == "pending_approval":
+        # The approver approves what was requested: nothing is published on
+        # top of it while they decide (review of round 6).
+        raise HTTPException(status.HTTP_409_CONFLICT, "agent awaiting hire approval")
     try:
         return await publish_version(db, agent, note=note, published_by=published_by, meta=meta)
     except NoChangesToPublish as exc:

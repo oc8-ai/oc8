@@ -78,6 +78,8 @@ export interface AgentDetail extends Agent {
   missionTranslations?: Record<string, string>;
   /** The published version a run executes; v1 from the hire on. */
   currentVersionNo?: number | null;
+  /** Hired, but the hire awaits its approval: nothing is published on top. */
+  awaitingHireApproval?: boolean;
 }
 
 export interface ApprovalOption {

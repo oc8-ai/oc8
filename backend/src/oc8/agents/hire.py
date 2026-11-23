@@ -11,6 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.approvals import raise_approval
 
+#: What a new agent starts as -- hired, installed from a template or created
+#: by the Copilot: ready for work. Not "stopped", which reads as paused, and
+#: nobody paused it (E2E N9); only a deliberate pause or stop shows as one.
+HIRED_STATUS = "idle"
+
+
+def initial_status(*, gated: bool) -> str:
+    """A new agent's status: waiting for its hire approval, or ready."""
+    return "pending_approval" if gated else HIRED_STATUS
+
 
 async def require_hire_approval(db: AsyncSession, *, tenant_id: uuid.UUID) -> bool:
     """Whether new agents in this tenant need hire approval. Defaults to False
@@ -69,7 +79,7 @@ async def resolve_hire_agent(
         return
     if decision == "approve":
         if agent.status == "pending_approval":
-            agent.status = "idle"
+            agent.status = HIRED_STATUS
     else:  # reject
         agent.status = "stopped"
         agent.deleted_at = dt.datetime.now(tz=dt.UTC)

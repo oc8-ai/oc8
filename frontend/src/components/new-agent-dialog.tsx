@@ -351,11 +351,14 @@ export function NewAgentDialog({
 
       // The login pins and grants above are part of the hire: publish them
       // with it, so the new agent starts with no unpublished changes (E2E N9).
+      // Not while the hire awaits its approval: the approver approves what
+      // was requested (the server refuses it as well).
       try {
-        await publishHire.mutateAsync({
-          agentId: agent.id,
-          expectedCurrentVersionNo: agent.currentVersionNo ?? null,
-        });
+        if (!agent.awaitingHireApproval)
+          await publishHire.mutateAsync({
+            agentId: agent.id,
+            expectedCurrentVersionNo: agent.currentVersionNo ?? null,
+          });
       } catch {
         // Not fatal: the changes stay as a draft the agent page offers to publish.
       }

@@ -28,7 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.hire import require_hire_approval
+from oc8.agents.hire import initial_status, require_hire_approval
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
@@ -901,7 +901,7 @@ async def apply_operation(
             name=operation.name,
             role_title=operation.roleTitle,
             mission=operation.mission,
-            status="pending_approval" if gated else "stopped",
+            status=initial_status(gated=gated),
             trust_level="first_party",
             definition={"oc8_agent": 1, "name": operation.name, "mission": operation.mission},
         )

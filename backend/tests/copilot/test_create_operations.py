@@ -85,7 +85,7 @@ async def test_agent_create_proposal_applies_into_an_existing_department(
         assert agent.department_id == dept_id
         assert agent.mission == "Qualify inbound leads"
         # No hire-approval flag set on the tenant -> not gated.
-        assert agent.status == "stopped"
+        assert agent.status == "idle"
         store = (
             await db.execute(select(m.MemoryStore).where(m.MemoryStore.owner_id == agent.id))
         ).scalar_one_or_none()
