@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -40,7 +40,9 @@ def _agent_template_manifest(**overrides: object) -> dict[str, object]:
                     "name": "Month-end close",
                     "category": "finance",
                     "description": "Run a controlled month-end close.",
-                    "instruction": "Follow the close calendar and reconcile every balance sheet account.",
+                    "instruction": (
+                        "Follow the close calendar and reconcile every balance sheet account."
+                    ),
                     "guardrails": ["Never invent balances."],
                 }
             ]
@@ -56,7 +58,9 @@ async def test_instantiate_agent_fills_mission_persona_and_memory(
         dept = m.Department(tenant_id=tenant, name="Finance", frame={})
         s.add(dept)
         await s.flush()
-        version = await install_plugin(s, tenant_id=tenant, manifest_data=_agent_template_manifest())
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest()
+        )
         agent = await instantiate_agent(
             s,
             tenant_id=tenant,
@@ -93,7 +97,9 @@ async def test_instantiate_agent_respects_override_name(
         dept = m.Department(tenant_id=tenant, name="Finance", frame={})
         s.add(dept)
         await s.flush()
-        version = await install_plugin(s, tenant_id=tenant, manifest_data=_agent_template_manifest())
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest()
+        )
         agent = await instantiate_agent(
             s,
             tenant_id=tenant,
@@ -124,9 +130,7 @@ async def test_instantiate_agent_rejects_wrong_type(
             },
         )
         with pytest.raises(PluginError):
-            await instantiate_agent(
-                s, tenant_id=tenant, version=version, department_id=dept.id
-            )
+            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
 
 
 async def test_agent_template_skills_materialise_on_enable(
@@ -134,7 +138,9 @@ async def test_agent_template_skills_materialise_on_enable(
 ) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as s:
-        version = await install_plugin(s, tenant_id=tenant, manifest_data=_agent_template_manifest())
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest()
+        )
         await enable_plugin(
             s,
             tenant_id=tenant,
@@ -161,9 +167,7 @@ async def test_legacy_thin_agent_template_still_instantiates(
             tenant_id=tenant,
             manifest_data={"name": "legacy.mod", "version": "0.1.0"},
         )
-        agent = await instantiate_agent(
-            s, tenant_id=tenant, version=version, department_id=dept.id
-        )
+        agent = await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
         assert agent.name == "legacy.mod"
         assert agent.mission == ""
         assert agent.definition["plugin"] == "legacy.mod"
@@ -267,9 +271,7 @@ async def test_instantiate_agent_substitutes_template_values_from_installation_c
         )
         await s.flush()
 
-        agent = await instantiate_agent(
-            s, tenant_id=tenant, version=version, department_id=dept.id
-        )
+        agent = await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
         assert agent.mission == "Reconcile cash-eur every daily."
         trigger = (
             await s.execute(select(m.Trigger).where(m.Trigger.agent_id == agent.id))
@@ -377,3 +379,30 @@ async def test_personal_template_hires_into_a_personal_department(
         )
         agent = await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
         assert agent.department_id == dept.id
+
+
+async def test_an_unknown_department_is_not_found(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest()
+        )
+        with pytest.raises(PluginError, match=r"^department not found$"):
+            await instantiate_agent(
+                s, tenant_id=tenant, version=version, department_id=uuid.uuid4()
+            )
+        assert await _agent_count(s, tenant) == 0
+
+
+async def test_a_deleted_department_is_not_found(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = await _dept(s, tenant, DEPARTMENT_KIND_STANDARD)
+        dept.deleted_at = func.now()
+        await s.flush()
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest()
+        )
+        with pytest.raises(PluginError, match=r"^department not found$"):
+            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        assert await _agent_count(s, tenant) == 0

@@ -213,6 +213,14 @@ COPILOT_USE: Final = perm(COPILOT, "use")
 #: one's own mailbox is what every employee does, not an administrator's act.
 CONNECTION_OWN: Final = perm(CONNECTION, "own")
 
+#: Read the caller's OWN personal department, list the personal agent templates
+#: an administrator has enabled, and hire one into it -- never anybody else's
+#: department. Shaped exactly like `connection:own`: tenant-wide, delegatable and
+#: held by every built-in human role that holds that one. `require_departmental`
+#: would refuse a member who holds no seat yet (the department is created on the
+#: first hire), and `copilot:use` would misname the right.
+DEPARTMENT_OWN: Final = perm(DEPARTMENT, "own")
+
 #: A readable copy of the whole tenant (transcripts, knowledge, and with a
 #: passphrase every credential) and the ability to replace it wholesale from
 #: an uploaded one. Neither is a `:view`/`:manage` pair -- `backup:view`
@@ -284,6 +292,7 @@ ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
         CLARIFICATION_ANSWER,
         COPILOT_USE,
         CONNECTION_OWN,
+        DEPARTMENT_OWN,
         AUDIT_VERIFY,
         TOOL_READ,
         TOOL_WRITE,
@@ -351,6 +360,7 @@ DELEGATABLE_PERMISSIONS: Final[frozenset[str]] = frozenset(
         perm(PLUGIN, VIEW),
         # The caller's own rows only; safe tenant-wide by construction.
         CONNECTION_OWN,
+        DEPARTMENT_OWN,
         # A read of aggregate numbers, same sensitivity class as `audit:view`
         # above (also delegatable, also tenant-wide-only): a tenant-defined
         # role holding it sees run counts and durations, never a transcript,
@@ -611,6 +621,7 @@ _OPERATOR: Final[frozenset[str]] = _VIEW_EVERYTHING | {
     CLARIFICATION_ANSWER,
     COPILOT_USE,
     CONNECTION_OWN,
+    DEPARTMENT_OWN,
 }
 
 #: Everything an operator has, plus authority over the department's own shape:
@@ -648,6 +659,7 @@ _AUDITOR: Final[frozenset[str]] = _VIEW_EVERYTHING | {
     APPROVAL_VIEW_ANY,
     COPILOT_USE,
     CONNECTION_OWN,
+    DEPARTMENT_OWN,
 }
 
 #: An agent token is refused by the operator API as a whole
@@ -672,7 +684,7 @@ BUILTIN_ROLE_PERMISSIONS: Final[dict[str, frozenset[str]]] = {
     # see COPILOT_USE's own docstring. This is the one thing that keeps
     # `member` from being the empty set: a bare member still holds nothing
     # that lets them see or change the OFFICE, but they can talk to it.
-    MEMBER_ROLE: frozenset({COPILOT_USE, CONNECTION_OWN}),
+    MEMBER_ROLE: frozenset({COPILOT_USE, CONNECTION_OWN, DEPARTMENT_OWN}),
 }
 
 

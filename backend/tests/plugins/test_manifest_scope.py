@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -35,7 +36,12 @@ def test_unknown_scope_is_refused() -> None:
 
 
 def test_a_department_template_cannot_carry_a_personal_agent() -> None:
-    with pytest.raises(ValueError, match="personal"):
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "agent 'A' has scope 'personal'; a department template cannot carry a personal agent"
+        ),
+    ):
         parse_manifest(
             {
                 "name": "sales",

@@ -498,23 +498,37 @@ async def instantiate_agent(
     version: CapaVersion,
     department_id: uuid.UUID,
     name: str | None = None,
+    hire_gate: bool = True,
 ) -> Agent:
+    """Hire one stopped agent from an agent_template version into a live
+    department. add/flush only -- the endpoint owns the commit.
+
+    `hire_gate=False` exempts this hire from the tenant's
+    `require_hire_approval` (plan ruling 4): a member's personal hire, where the
+    administrator enabling the template's capa is the approval. This function
+    raises no hire request of its own today, so the flag is a no-op here; it
+    keeps the exemption visible at the call site for when the gate moves in.
+    """
+    del hire_gate  # no hire gate on this path yet -- see the docstring
     mf = version.manifest
     if mf.get("type", "agent_template") != "agent_template":
         raise PluginError("only agent_template plugins can be instantiated as agents")
     dept = (
         await db.execute(
             select(Department).where(
-                Department.id == department_id, Department.tenant_id == tenant_id
+                Department.id == department_id,
+                Department.tenant_id == tenant_id,
+                Department.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
     if dept is None:
         raise PluginError("department not found")
     is_personal_dept = dept.kind == DEPARTMENT_KIND_PERSONAL
-    if template_scope(mf) == "personal" and not is_personal_dept:
+    is_personal_template = template_scope(mf) == "personal"
+    if is_personal_template and not is_personal_dept:
         raise PluginError("a personal template can only be hired into a personal department")
-    if template_scope(mf) != "personal" and is_personal_dept:
+    if not is_personal_template and is_personal_dept:
         raise PluginError("a personal department can only hire a personal template")
     config = await _load_installation_config(db, capa_id=version.capa_id)
     # Same shape as one entry under department_template.agents — when present,
