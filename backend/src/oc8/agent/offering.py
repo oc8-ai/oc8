@@ -11,9 +11,10 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-#: How `ConnectionRequired` reasons begin (connections/access.py): the
-#: connection has no usable login for this run.
-_NOT_CONNECTED = "connection_required:"
+#: The `ConnectionRequired` reason (connections/access.py) of a connection
+#: nobody has connected. Every other reason names a remedy (reconnect,
+#: complete the login, confirm a schedule) and is kept as it is.
+_NOT_CONNECTED = "connection_required: this task needs "
 
 
 def unavailable_sentence(name: str, reason: str) -> str:

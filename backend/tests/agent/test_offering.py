@@ -140,3 +140,17 @@ def test_read_resource_needs_a_uri_and_the_connections_read_right() -> None:
         is_team_lead=False,
     )
     assert allowed.effect is Effect.ALLOW
+
+
+def test_a_connection_that_must_be_reconnected_keeps_its_remedy() -> None:
+    """Review of F11: only "not connected" is rewritten. A reason that names
+    what someone must do (reconnect, complete the login, confirm a schedule)
+    is the one thing that tells the model what to tell the user."""
+    reason = (
+        "connection_required: the person's Suite account must be connected again. "
+        "Tell the user to reconnect it under Connections."
+    )
+    sentence = unavailable_sentence("suite", reason)
+    assert "must be connected again" in sentence
+    assert "reconnect it under Connections" in sentence
+    assert "is not available in this run: it is not connected" not in sentence
