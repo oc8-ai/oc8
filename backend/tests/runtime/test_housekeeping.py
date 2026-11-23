@@ -32,6 +32,7 @@ def _patch_sweeps(monkeypatch: pytest.MonkeyPatch, calls: list[str], *, failing:
 
     for name in (
         "close_abandoned_runs",
+        "wake_cancelled_parked_runs",
         "release_stale_running_agents",
         "recover_stranded_runs",
         "sweep_evidence",
@@ -52,6 +53,7 @@ async def test_tick_runs_every_sweep_in_order(monkeypatch: pytest.MonkeyPatch) -
 
     assert calls == [
         "close_abandoned_runs",
+        "wake_cancelled_parked_runs",
         "release_stale_running_agents",
         "recover_stranded_runs",
         "reap_orphans",

@@ -26,6 +26,7 @@ from oc8.runtime.reconcile import (
     close_abandoned_runs,
     recover_stranded_runs,
     release_stale_running_agents,
+    wake_cancelled_parked_runs,
 )
 from oc8.sandbox import get_sandbox_driver
 
@@ -63,23 +64,26 @@ async def run_worker_housekeeping() -> None:
     """One tick of the run worker's timer. Order matters:
 
     1. close runs whose executor stopped beating, freeing their agents;
-    2. free agents shown "running" whose run's process died before its commit;
-    3. republish queued runs nothing will start -- after 1, so a run whose
+    2. wake runs parked on an approval whose stop could not wake them, so
+       they end instead of waiting on a decision nobody will make;
+    3. free agents shown "running" whose run's process died before its commit;
+    4. republish queued runs nothing will start -- after 1, so a run whose
        agent this tick freed is already a candidate;
-    4. reap containers of finished runs;
-    5. archive evidence (inert unless OC8_EVIDENCE_SWEEP_ENABLED) -- after the
+    5. reap containers of finished runs;
+    6. archive evidence (inert unless OC8_EVIDENCE_SWEEP_ENABLED) -- after the
        close, so a run closed this tick is archived on the next one;
-    6. remove knowledge a sync observed as gone upstream (inert unless
+    7. remove knowledge a sync observed as gone upstream (inert unless
        OC8_KNOWLEDGE_RECONCILE_ENABLED; no network IO, no connector calls);
-    7. delete issued record links past their TTL;
-    8. delete member notifications read more than 90 days ago;
-    9. delete usage-limit counts of windows that are long over.
+    8. delete issued record links past their TTL;
+    9. delete member notifications read more than 90 days ago;
+    10. delete usage-limit counts of windows that are long over.
 
     Only the run queue gets these -- an ingestion job has no containers, no
     agent to free and no evidence on disk. A sandbox runtime syncs its own
     /workspace/output while the leg runs, so there is no output sweep here.
     """
     await _run("close_abandoned_runs", close_abandoned_runs)
+    await _run("wake_cancelled_parked_runs", wake_cancelled_parked_runs)
     await _run("release_stale_running_agents", release_stale_running_agents)
     await _run("recover_stranded_runs", recover_stranded_runs)
     await _run("reap_orphans", _reap_orphans)
