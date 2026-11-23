@@ -82,7 +82,7 @@ async def _setup(app_session: AppSessionFactory) -> _Tenant:
         personal = m.Department(
             tenant_id=tenant,
             name="Owner",
-            frame={},
+            frame={"closed": True},
             kind="personal",
             owner_member_id=members["owner"].id,
         )

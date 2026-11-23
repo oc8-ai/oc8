@@ -189,7 +189,7 @@ async def _personal_department(owner_session: OwnerSessionFactory, tenant_id: uu
                 tenant_id=tenant_id,
                 name="Persoenlich",
                 goal="",
-                frame={},
+                frame={"closed": True},
                 kind=DEPARTMENT_KIND_PERSONAL,
                 owner_member_id=owner.id,
             )

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agents.versioning import resolve_version
 from oc8.approvals.repo import DIRECT_ACCESS_ACTION
+from oc8.authz.pdp import frame_allows_key
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
     ActingPerson,
@@ -701,8 +702,16 @@ async def _resolve_mcp_connection(
     # Sorted so two runs of the same agent always decide identically. Keys are
     # connection NAMES (the frame keys tools by name, not id) -- the same shape
     # `PUT /agents/{id}/narrowing` validates against.
+    # A closed frame (a personal department's) grants only what it lists, so a
+    # pinned key it lacks selects no login -- the PDP's rule (`frame_allows_key`).
+    dept = (
+        await db.get(m.Department, agent.department_id) if agent.department_id is not None else None
+    )
+    frame = (dept.frame or {}) if dept is not None else None
     enabled = sorted(
-        key for key, policy in tools.items() if isinstance(policy, dict) and policy.get("enabled")
+        key
+        for key, policy in tools.items()
+        if isinstance(policy, dict) and policy.get("enabled") and frame_allows_key(frame, key)
     )
 
     #: Which of this agent's enabled tool keys name a Credential-backed login.
@@ -735,12 +744,10 @@ async def _resolve_mcp_connection(
     # would, and wins over the untargeted legacy department lookup exactly
     # like a pin does.
     dept_tools: dict[str, Any] = {}
-    if enabled and agent.department_id is not None:
-        dept = await db.get(m.Department, agent.department_id)
-        if dept is not None:
-            raw_dept_tools = (dept.frame or {}).get("tools")
-            if isinstance(raw_dept_tools, dict):
-                dept_tools = raw_dept_tools
+    if enabled and frame is not None:
+        raw_dept_tools = frame.get("tools")
+        if isinstance(raw_dept_tools, dict):
+            dept_tools = raw_dept_tools
 
     def _dept_default(key: str) -> str | None:
         entry = dept_tools.get(key)

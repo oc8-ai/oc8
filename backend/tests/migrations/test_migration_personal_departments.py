@@ -49,7 +49,7 @@ def _insert(
     conn.execute(
         "INSERT INTO department (id, tenant_id, name, frame, presentation, "
         f"prompt_caching_enabled, created_at, updated_at{cols}) "
-        f"VALUES (%s, %s, 'D', '{{}}', '{{}}', true, now(), now(){marks})",
+        f"VALUES (%s, %s, 'D', '{{\"closed\": true}}', '{{}}', true, now(), now(){marks})",
         (dept_id, tenant, *values),
     )
     return dept_id

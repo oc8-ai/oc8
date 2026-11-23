@@ -70,6 +70,13 @@ def upgrade() -> None:
         "CHECK ((kind = 'personal') = (owner_member_id IS NOT NULL))"
     )
     op.execute(
+        "ALTER TABLE department DROP CONSTRAINT IF EXISTS ck_department_personal_frame_closed"
+    )
+    op.execute(
+        "ALTER TABLE department ADD CONSTRAINT ck_department_personal_frame_closed "
+        "CHECK (kind <> 'personal' OR COALESCE(frame->>'closed', '') = 'true')"
+    )
+    op.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS uq_department_personal_owner "
         "ON department (tenant_id, owner_member_id) "
         "WHERE kind = 'personal' AND deleted_at IS NULL"
@@ -87,6 +94,9 @@ def downgrade() -> None:
     )
     op.execute("UPDATE department SET is_assistant_department = (kind = 'assistant')")
     op.execute("DROP INDEX IF EXISTS uq_department_personal_owner")
+    op.execute(
+        "ALTER TABLE department DROP CONSTRAINT IF EXISTS ck_department_personal_frame_closed"
+    )
     op.execute("ALTER TABLE department DROP CONSTRAINT IF EXISTS ck_department_personal_owner")
     op.execute("ALTER TABLE department DROP CONSTRAINT IF EXISTS ck_department_kind")
     op.execute("ALTER TABLE department DROP COLUMN IF EXISTS budget_overridden_at")

@@ -356,6 +356,20 @@ def _tools(frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return frame.get("tools", {}) if frame else {}
 
 
+def frame_is_closed(frame: dict[str, Any] | None) -> bool:
+    """A closed frame (a personal department's, `departments.personal.
+    personal_frame`) grants only the tools it lists: a narrowing key it lacks
+    is not an agent-exclusive grant, it grants nothing."""
+    return bool(frame) and (frame or {}).get("closed") is True
+
+
+def frame_allows_key(frame: dict[str, Any] | None, key: str) -> bool:
+    """Whether an agent's narrowing may take effect for `key` under this frame:
+    always, except on a closed frame that does not list it. The one rule the PDP
+    and the runtime's connection resolution share."""
+    return not frame_is_closed(frame) or key in _tools(frame or {})
+
+
 def effective_tool_policies(
     frame: dict[str, Any],
     narrowing: dict[str, Any],
@@ -407,9 +421,8 @@ def effective_tool_policies(
     # A CLOSED frame (a personal department's, `departments.personal.
     # personal_frame`) has no such grants: a key it lacks grants nothing, so a
     # pinned or drafted narrowing written before the frame tightened is inert.
-    closed = bool(frame and frame.get("closed") is True)
     for key, raw in narrow_tools.items():
-        if key in frame_tools or closed:
+        if key in frame_tools or not frame_allows_key(frame, key):
             continue
         exclusive = ToolPolicy.from_json(raw)
         out[key] = ToolPolicy(

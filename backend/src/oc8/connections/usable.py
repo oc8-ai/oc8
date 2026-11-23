@@ -31,7 +31,7 @@ from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.authz.pdp import ToolPolicy
+from oc8.authz.pdp import ToolPolicy, frame_allows_key
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.capas.materialise import unbound_connection
 from oc8.connections.access import ConnectionRequired
@@ -154,7 +154,7 @@ def frame_switches_off(frame: dict[str, Any] | None, key: str) -> bool:
     that blocks an integration (an absent key is an agent-exclusive grant,
     unless the frame is closed, as a personal department's is)."""
     tools = _frame_tools(frame)
-    if key not in tools and (frame or {}).get("closed") is True:
+    if not frame_allows_key(frame, key):
         return True  # a closed frame has no agent-exclusive grants
     return key in tools and not frame_enables(frame, key)
 

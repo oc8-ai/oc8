@@ -122,6 +122,12 @@ class Department(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
             "(kind = 'personal') = (owner_member_id IS NOT NULL)",
             name="ck_department_personal_owner",
         ),
+        # The PDP ignores an agent-exclusive grant on a closed frame
+        # (`authz.pdp.frame_allows_key`); a personal frame must always be one.
+        CheckConstraint(
+            "kind <> 'personal' OR COALESCE(frame->>'closed', '') = 'true'",
+            name="ck_department_personal_frame_closed",
+        ),
         Index(
             "uq_department_personal_owner",
             "tenant_id",
