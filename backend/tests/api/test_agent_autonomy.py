@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.harness.stages.b_approval import autonomy_of, posture
@@ -78,6 +79,18 @@ async def test_an_admin_makes_an_agent_autonomous_for_outward_calls(
         definition = agent.definition
         # Other definition keys survive.
         assert definition["max_steps"] == 12
+        # A deliberate choice leaves a trace: who, what, from what.
+        events = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "agent.autonomy.updated")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 1
+        assert events[0].resource.get("agent_id") == str(agent_id)
     assert posture(
         "outward", autonomy_of(definition), granted="outward" in definition["b5_grants"]
     ) == ("allow")
@@ -130,4 +143,6 @@ async def test_a_member_without_agent_write_may_not(app_session: AppSessionFacto
             json={"autonomy": "autonomous", "grants": ["outward"]},
             headers=_h(tenant, role="member"),
         )
-        assert r.status_code in (403, 404), r.text
+        # A tenant-wide `member` holds no agent write at all: refused at the
+        # door, not answered as a missing agent.
+        assert r.status_code == 403, r.text
