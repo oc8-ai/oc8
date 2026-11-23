@@ -570,8 +570,12 @@ async def test_the_list_is_read_from_the_logins_own_setup_only(
 
 @pytest.mark.parametrize(
     ("directory", "fresh"),
-    [("contoso.onmicrosoft.com", False), ("fabrikam.onmicrosoft.com", True)],
-    ids=["same directory", "another directory"],
+    [
+        ("contoso.onmicrosoft.com", False),
+        (" Contoso.OnMicrosoft.com ", False),
+        ("fabrikam.onmicrosoft.com", True),
+    ],
+    ids=["same directory", "same directory, other spelling", "another directory"],
 )
 async def test_an_app_login_moved_to_another_directory_takes_a_fresh_baseline(
     app_session: AppSessionFactory, directory: str, fresh: bool

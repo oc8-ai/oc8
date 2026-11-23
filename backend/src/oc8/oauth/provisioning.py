@@ -111,9 +111,12 @@ async def _provision_microsoft(
 
     if existing is not None:
         conn = existing
-        if conn.azure_tenant_id != azure_tenant_id:
+        if (conn.azure_tenant_id or "").strip().lower() != azure_tenant_id.lower():
             # The same app id in another directory reaches another organisation:
-            # whatever listens on this login starts afresh there.
+            # whatever listens on this login starts afresh there. Compared as
+            # Microsoft does (case-insensitive), so the same directory typed
+            # again differently is not a move. The token's `tid` would be
+            # surer, but it is only minted further down, after the row changed.
             from oc8.events.sources import LoginTarget, reset_cursors_on_login
 
             await reset_cursors_on_login(db, LoginTarget("oauth", conn.id))
