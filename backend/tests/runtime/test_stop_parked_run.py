@@ -287,10 +287,27 @@ async def test_a_stop_just_before_the_run_parks_still_ends_it(
                 steps=1,
             )
 
+    told: list[str] = []
+
+    async def _sender(db: Any, run: Any) -> tuple[str, str]:
+        return ("telegram", "chat-1")
+
+    async def _tell(*, tenant_id: Any, channel: str, external_id: str, text: str) -> None:
+        told.append(text)
+
+    monkeypatch.setattr("oc8.runtime.executor._current_chat_sender", _sender)
+    monkeypatch.setattr("oc8.runtime.executor._tell_channel", _tell)
+
     await execute_run(
         RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
         runtime=_StoppedWhileRunning(),
     )
+
+    # The sender is not told the request waits for approval: it was stopped,
+    # and the card it would wait on is already closed.
+    from oc8.runtime.executor import _CHAT_WAITING_FOR_APPROVAL
+
+    assert _CHAT_WAITING_FOR_APPROVAL not in told
 
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)

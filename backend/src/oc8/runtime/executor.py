@@ -1695,21 +1695,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     if run.source == "chat" and new_state is RunState.FAILED:
                         await _tell_unread_inputs(db, run, channel_replies)
                     if new_state is RunState.WAITING_FOR_APPROVAL:
-                        # Same reason as the waiting_for_input park above: the
-                        # run is suspended, not finished, so nothing else tells
-                        # the Telegram sender that their request is now sitting
-                        # in somebody's approval queue.
-                        held_sender = await _current_chat_sender(db, run)
-                        if held_sender is not None:
-                            held_channel, held_external_id = held_sender
-                            channel_replies.append(
-                                (
-                                    run.tenant_id,
-                                    held_channel,
-                                    held_external_id,
-                                    _CHAT_WAITING_FOR_APPROVAL,
-                                )
-                            )
+                        stopped = False
                         # Close the parking race (see requeue_if_already_decided):
                         # an operator may have decided the held call while this run
                         # was still parking. Publish only after the transition
@@ -1729,7 +1715,24 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
                             await release_parked_run(db, run)
                             pending_runs.append(run.id)
+                            stopped = True
                             logger.info("run %s: stopped while parking, re-queued to end", run_id)
+                        # Same reason as the waiting_for_input park above: the
+                        # run is suspended, not finished, so nothing else tells
+                        # the Telegram sender that their request is now sitting
+                        # in somebody's approval queue. Not a stopped one: its
+                        # card is already closed and it ends on its next start.
+                        held_sender = None if stopped else await _current_chat_sender(db, run)
+                        if held_sender is not None:
+                            held_channel, held_external_id = held_sender
+                            channel_replies.append(
+                                (
+                                    run.tenant_id,
+                                    held_channel,
+                                    held_external_id,
+                                    _CHAT_WAITING_FOR_APPROVAL,
+                                )
+                            )
 
         # The session committed on block exit. Only now is it safe to publish:
         # the worker's XREADGROUP can return the instant a stream entry lands, so
