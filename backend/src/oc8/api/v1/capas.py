@@ -68,7 +68,7 @@ from oc8.credentials.service import (
     missing_required,
     resolve_credential_field,
 )
-from oc8.departments.personal import PersonalAgentLimit
+from oc8.departments.personal import PersonalDepartmentRefused
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.sources import SourceRejected, validate_source_config
 from oc8.oauth.errors import OAuthError
@@ -1510,7 +1510,7 @@ async def instantiate(
             department_id=body.department_id,
             name=body.name,
         )
-    except PersonalAgentLimit as exc:
+    except PersonalDepartmentRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

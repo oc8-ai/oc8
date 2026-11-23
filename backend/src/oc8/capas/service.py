@@ -546,7 +546,8 @@ async def instantiate_agent(
         raise PluginError(
             "the template grants tools the personal department does not allow"
         ) from exc
-    # Raises `PersonalAgentLimit`, which the route maps to a 409.
+    # Raises `PersonalDepartmentRefused` (the cap, or the owner left), which
+    # the routes map to a 409.
     await ensure_personal_capacity(db, dept)
     config = await _load_installation_config(db, capa_id=version.capa_id)
     definition: dict[str, object] = {

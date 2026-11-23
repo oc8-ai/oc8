@@ -52,7 +52,7 @@ from oc8.departments.personal import (
     ENABLED_KEY,
     FRAME_KEY,
     MAX_AGENTS_KEY,
-    PersonalAgentLimit,
+    PersonalDepartmentRefused,
     PersonalDepartmentsDisabled,
     PersonalDepartmentSummary,
     default_frame_agents,
@@ -238,7 +238,7 @@ async def hire_personal_agent(
         ) from exc
     try:
         await ensure_personal_capacity(db, dept)
-    except PersonalAgentLimit as exc:
+    except PersonalDepartmentRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
 
     try:
@@ -256,7 +256,7 @@ async def hire_personal_agent(
             hire_gate=False,
             owner_hire=True,
         )
-    except PersonalAgentLimit as exc:  # a concurrent hire took the last place
+    except PersonalDepartmentRefused as exc:  # a concurrent hire took the last place
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

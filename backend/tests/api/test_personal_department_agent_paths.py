@@ -321,7 +321,7 @@ async def test_an_offboarding_racing_a_hire_leaves_no_live_agent(
             assert dept is not None
             try:
                 await ensure_personal_capacity(db, dept)
-            except PersonalAgentLimit:  # PersonalOwnerLeft
+            except PersonalOwnerLeft:
                 return
             db.add(
                 m.Agent(

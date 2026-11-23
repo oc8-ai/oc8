@@ -54,18 +54,23 @@ class PersonalFrameViolation(Exception):
     """An agent narrowing in a personal department that its frame does not allow."""
 
 
-class PersonalAgentLimit(Exception):
-    """The personal department already holds the tenant's cap of live agents."""
+class PersonalDepartmentRefused(Exception):
+    """A personal department takes no further agent. Routes answer a 409 with
+    `{"error": <error>}` and catch this base, so every subclass is mapped."""
 
     #: The `error` a route answers with (409).
+    error = "personal_department_refused"
+
+
+class PersonalAgentLimit(PersonalDepartmentRefused):
+    """The personal department already holds the tenant's cap of live agents."""
+
     error = "personal_agent_limit"
 
 
-class PersonalOwnerLeft(PersonalAgentLimit):
+class PersonalOwnerLeft(PersonalDepartmentRefused):
     """The department's owner has left: nothing may be added to or brought
-    back into it, since an agent there would run with nobody to answer for it.
-    A subclass so every route that maps `PersonalAgentLimit` to a 409 maps this
-    one too, with its own `error`."""
+    back into it, since an agent there would run with nobody to answer for it."""
 
     error = "owner_left"
 

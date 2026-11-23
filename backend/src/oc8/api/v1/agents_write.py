@@ -67,7 +67,7 @@ from oc8.copilot.guardrail_interpret import (
 )
 from oc8.departments.frames import clip_narrowing_to_frame
 from oc8.departments.personal import (
-    PersonalAgentLimit,
+    PersonalDepartmentRefused,
     PersonalFrameViolation,
     enforce_personal_narrowing,
     ensure_personal_capacity,
@@ -170,7 +170,7 @@ async def _ensure_personal_capacity(db: DbSession, dept: m.Department) -> None:
     """409 when a personal department is at the tenant's agent cap."""
     try:
         await ensure_personal_capacity(db, dept)
-    except PersonalAgentLimit as exc:
+    except PersonalDepartmentRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
 
 
