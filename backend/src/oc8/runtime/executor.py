@@ -1674,6 +1674,15 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 "parking, re-queued immediately",
                                 run_id,
                             )
+                        elif await _cancellation_kind(db, run_id) is not None:
+                            # A Stop that landed while the run still ran found
+                            # nothing parked to wake; the park must honour it,
+                            # or the run waits for ever on a card nobody needs.
+                            from oc8.runtime.cancellation import release_parked_run
+
+                            await release_parked_run(db, run)
+                            pending_runs.append(run.id)
+                            logger.info("run %s: stopped while parking, re-queued to end", run_id)
 
         # The session committed on block exit. Only now is it safe to publish:
         # the worker's XREADGROUP can return the instant a stream entry lands, so

@@ -239,3 +239,143 @@ async def test_a_stop_finding_the_run_already_queued_does_nothing(
         card = await db.get(m.ApprovalRequest, approval_id)
         assert card is not None and card.status == "pending"
     assert queue.enqueued == []
+
+
+async def test_a_stop_just_before_the_run_parks_still_ends_it(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of F6: a Stop that lands while the run is still running finds
+    nothing parked to wake; the run then parks on its card and, without this,
+    waits for ever. The park itself now sees the recorded cancel."""
+    import datetime as dt
+
+    from sqlalchemy import text as sql_text
+
+    from oc8.agent.engine import RunResult
+
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id, approval_id, other_id, _agent, task_id = await _parked_second_turn(app_session, tenant)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.state = RunState.QUEUED.value
+
+    class _StoppedWhileRunning:
+        async def execute(self, db: Any, **kw: Any) -> RunResult:
+            # Release the executor's row lock, as the real runtimes do.
+            await db.commit()
+            await db.execute(
+                sql_text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant)}
+            )
+            async with app_session(tenant) as stop:
+                stop.add(
+                    m.RunCancellation(
+                        tenant_id=tenant,
+                        run_id=run_id,
+                        requested_at=dt.datetime.now(tz=dt.UTC),
+                        cancellation_kind="operator",
+                    )
+                )
+            return RunResult(
+                task_id=task_id,
+                agent_id=kw["agent"].id,
+                status="waiting_for_approval",
+                output="",
+                tool_calls=[],
+                steps=1,
+            )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_StoppedWhileRunning(),
+    )
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        approval = await db.get(m.ApprovalRequest, approval_id)
+        other = await db.get(m.ApprovalRequest, other_id)
+        assert run is not None and run.state == RunState.QUEUED.value
+        assert approval is not None and approval.status == "expired"
+        assert other is not None and other.status == "pending"
+    assert queue.enqueued == [run_id]
+
+    await _drive_worker(run_id, tenant)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+
+
+async def test_a_stop_on_a_run_another_writer_holds_still_records_the_cancel(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security review of F6: the wake must never cost the Stop itself. A run
+    row another writer holds past the wait leaves the run as it is, but the
+    cancel commits -- the run honours it at its next step or park."""
+    import asyncio
+
+    from oc8.runtime.cancellation import record_operator_cancel
+
+    monkeypatch.setattr("oc8.runtime.cancellation._WAKE_LOCK_TIMEOUT", "200ms")
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id, approval_id, _other, _agent, _task = await _parked_second_turn(app_session, tenant)
+
+    async with app_session(tenant) as holder:
+        await holder.execute(select(m.AgentRun).where(m.AgentRun.id == run_id).with_for_update())
+
+        async def stop() -> None:
+            async with app_session(tenant) as db:
+                run = await db.get(m.AgentRun, run_id)
+                assert run is not None
+                await record_operator_cancel(db, run=run, principal=None, actor_id=None)
+
+        await asyncio.wait_for(stop(), timeout=10)
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        card = await db.get(m.ApprovalRequest, approval_id)
+        cancels = (
+            (await db.execute(select(m.RunCancellation).where(m.RunCancellation.run_id == run_id)))
+            .scalars()
+            .all()
+        )
+        assert run is not None and run.state == RunState.WAITING_FOR_APPROVAL.value
+        assert card is not None and card.status == "pending"
+        assert len(cancels) == 1
+    assert queue.enqueued == []
+
+
+async def test_a_parked_run_is_woken_exactly_once(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.runtime.cancellation import _wake_parked_run
+
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id, approval_id, _other, _agent, _task = await _parked_second_turn(app_session, tenant)
+    for _ in range(2):
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            await _wake_parked_run(db, run)
+    async with app_session(tenant) as db:
+        card = await db.get(m.ApprovalRequest, approval_id)
+        history = (
+            (
+                await db.execute(
+                    select(m.RunStateTransition).where(
+                        m.RunStateTransition.run_id == run_id,
+                        m.RunStateTransition.to_state == RunState.QUEUED.value,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert card is not None and card.status == "expired"
+        assert len(history) == 1
+    assert queue.enqueued == [run_id]

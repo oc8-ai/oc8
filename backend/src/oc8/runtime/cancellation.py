@@ -14,6 +14,7 @@ of the checks and the kinds they record cannot drift between the two doors.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Final
@@ -89,68 +90,126 @@ async def record_operator_cancel(
     await _wake_parked_run(db, run)
 
 
+logger = logging.getLogger(__name__)
+
+
 #: The holds a run parks on and is resumed from. A `decision` card carries a
 #: run id too, but its run never waited for it.
 _PARKING_ACTIONS: Final = ("tool_send", "direct_access")
+
+
+async def _parking_cards(
+    db: AsyncSession, run: m.AgentRun, *, skip_locked: bool = False
+) -> list[m.ApprovalRequest]:
+    """The task's open parking cards, locked."""
+    if run.task_id is None:
+        return []
+    return list(
+        (
+            await db.execute(
+                select(m.ApprovalRequest)
+                .where(
+                    m.ApprovalRequest.task_id == run.task_id,
+                    m.ApprovalRequest.status == "pending",
+                    m.ApprovalRequest.action_type.in_(_PARKING_ACTIONS),
+                )
+                .with_for_update(skip_locked=skip_locked)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+async def _expire_cards_of(
+    db: AsyncSession, run: m.AgentRun, cards: list[m.ApprovalRequest]
+) -> None:
+    """Expire those of `cards` that `run` raised; another run's stay open."""
+    from oc8.approvals.service import expire_approval
+    from oc8.runtime.approval_resume import run_of_approval
+
+    for approval in cards:
+        raiser = await run_of_approval(db, approval)
+        if raiser is not None and raiser.id == run.id:
+            await expire_approval(db, approval)
+
+
+async def release_parked_run(db: AsyncSession, run: m.AgentRun) -> None:
+    """At the park itself: a run that has a cancel recorded expires the cards
+    it is parking on and goes back to queued, so the worker's before-start
+    check ends it. `run` was just moved to waiting for approval in this
+    session, so its row is ours: a card an Approve is deciding right now is
+    skipped rather than waited for (the Approve waits on the run -- a
+    deadlock), and that Approve then finds the run queued and leaves it to
+    the cancel. The caller publishes the run after commit."""
+    from oc8.runtime.repository import RunRepository
+    from oc8.runtime.states import RunState
+
+    cards = await _parking_cards(db, run, skip_locked=True)
+    await _expire_cards_of(db, run, cards)
+    await RunRepository(db).transition(run, RunState.QUEUED)
+    await db.flush()
+
+
+#: How long a Stop waits on a card or a run another writer holds before it
+#: leaves the wake to the run itself (its next step, or its park).
+_WAKE_LOCK_TIMEOUT: Final = "3s"
 
 
 async def _wake_parked_run(db: AsyncSession, run: m.AgentRun) -> None:
     """Close the cards a parked run waits on and re-queue it, so the worker's
     before-start check honours the cancel just recorded. Left parked, the run
     waited for a decision nobody had a reason to make any more -- and in a
-    chat's second turn, one nobody could make (E2E F6)."""
+    chat's second turn, one nobody could make (E2E F6).
+
+    A compare-and-set, in a savepoint: the cards are locked first (the
+    Approve's order, approvals/service.py `decide`), then the run moves to
+    queued only if it is still waiting for approval -- a run an Approve
+    already resumed is left alone. A wait that runs out, or any error, rolls
+    back only the wake: the cancel row the caller wrote still commits, and a
+    run that is not parked honours it at its next step or at its park
+    (executor.py, `release_parked_run`)."""
     # Deferred: the approvals service and the run queue reach the engine,
     # which reaches this module.
-    from oc8.approvals.service import expire_approval
+    from sqlalchemy import text as sql_text
+    from sqlalchemy.exc import DBAPIError
+
     from oc8.realtime.emit import publish_after_commit
-    from oc8.runtime.approval_resume import run_of_approval
     from oc8.runtime.intake import publish_run
     from oc8.runtime.repository import RunRepository
     from oc8.runtime.states import RunState
 
-    # A first, unlocked look: most runs a Stop reaches are not parked.
     fresh = await db.get(m.AgentRun, run.id, populate_existing=True)
     if fresh is None or fresh.state != RunState.WAITING_FOR_APPROVAL.value:
         return
-    # The Approve's lock order (approvals/service.py `decide`): the cards
-    # first, then the run. A decision that got there first has resumed the
-    # run by the time these locks are ours; the run is re-read under its own
-    # lock and left alone unless it is still parked -- otherwise a running
-    # run would be put back into the queue.
-    pending: list[m.ApprovalRequest] = []
-    if fresh.task_id is not None:
-        pending = list(
-            (
-                await db.execute(
-                    select(m.ApprovalRequest)
-                    .where(
-                        m.ApprovalRequest.task_id == fresh.task_id,
-                        m.ApprovalRequest.status == "pending",
-                        m.ApprovalRequest.action_type.in_(_PARKING_ACTIONS),
-                    )
-                    .with_for_update()
-                )
+    previous = (await db.execute(sql_text("SELECT current_setting('lock_timeout')"))).scalar_one()
+    woke = False
+    try:
+        async with db.begin_nested():
+            await db.execute(
+                sql_text("SELECT set_config('lock_timeout', :t, true)"),
+                {"t": _WAKE_LOCK_TIMEOUT},
             )
-            .scalars()
-            .all()
+            pending = await _parking_cards(db, fresh)
+            woke = await RunRepository(db).transition_if(
+                fresh, RunState.WAITING_FOR_APPROVAL, RunState.QUEUED
+            )
+            if woke:
+                await _expire_cards_of(db, fresh, pending)
+            await db.flush()
+    except DBAPIError:
+        logger.warning(
+            "run %s: could not wake it for its cancel now; it ends at its next step or park",
+            run.id,
+            exc_info=True,
         )
-    locked = (
+        woke = False
+    finally:
         await db.execute(
-            select(m.AgentRun)
-            .where(m.AgentRun.id == run.id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
+            sql_text("SELECT set_config('lock_timeout', :t, true)"), {"t": str(previous)}
         )
-    ).scalar_one_or_none()
-    if locked is None or locked.state != RunState.WAITING_FOR_APPROVAL.value:
+    if not woke:
         return
-    fresh = locked
-    for approval in pending:
-        raiser = await run_of_approval(db, approval)
-        if raiser is not None and raiser.id == fresh.id:
-            await expire_approval(db, approval)
-    await RunRepository(db).transition(fresh, RunState.QUEUED)
-    await db.flush()
     run_id, tenant_id = fresh.id, fresh.tenant_id
 
     async def _publish() -> None:
