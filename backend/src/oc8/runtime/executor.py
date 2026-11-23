@@ -197,6 +197,30 @@ def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
     return str(channel), str(external_id)
 
 
+def _settled_earlier_calls(raw: Any, decided: dict[str, str]) -> list[Any]:
+    """The tool calls earlier legs of a run recorded, for the next leg's record
+    to start from. A call held for a person was settled by its decision: an
+    approved one is the call the resumed leg runs and records itself, so it is
+    dropped here; a rejected one never ran and stays, refused."""
+    from oc8.runtime.approval_resume import call_signature
+
+    calls: list[Any] = []
+    for call in raw if isinstance(raw, list) else []:
+        if isinstance(call, dict) and call.get("state") == "awaiting_approval":
+            arguments = call.get("arguments")
+            verdict = decided.get(
+                call_signature(
+                    str(call.get("tool", "")), arguments if isinstance(arguments, dict) else {}
+                )
+            )
+            if verdict == "approve":
+                continue
+            if verdict == "reject":
+                call = {**call, "state": "denied"}
+        calls.append(call)
+    return calls
+
+
 async def requeue_if_already_decided(db: AsyncSession, *, run: m.AgentRun) -> bool:
     """Re-queue a just-parked run whose decision has already been made.
 
@@ -1089,6 +1113,14 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 from oc8.runtime.approval_resume import pre_decided_map
 
                 pre_decided = pre_decided_map(approvals)
+            # The calls the legs before this one recorded: this leg's final
+            # write replaces `toolCalls` with its own, so a resumed run would
+            # lose the reads that led up to its held write (E2E F10).
+            earlier_calls = (
+                _settled_earlier_calls(run.context.get("toolCalls"), pre_decided)
+                if approvals or clarifications or run.context.get("resolved_direct_access")
+                else []
+            )
             # The resume text tells only the answer that woke this leg. Both
             # lists accumulate over the run, so an unconsumed offer answer is
             # the waker: the run carries on with the request (a held write's
@@ -1315,7 +1347,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            "toolCalls": result.tool_calls,
+                            "toolCalls": earlier_calls + list(result.tool_calls),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "pending_question": result.output,
@@ -1453,7 +1485,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            "toolCalls": result.tool_calls,
+                            "toolCalls": earlier_calls + list(result.tool_calls),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "rendered_components": result.rendered_components,

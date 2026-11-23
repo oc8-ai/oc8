@@ -1729,3 +1729,62 @@ async def test_execute_run_stops_a_running_run_when_its_agent_is_archived_mid_fl
         assert run.state == RunState.INTERRUPTED.value
         assert run.context["cancellation_kind"] == "agent_archived"
         assert "deleted" in run.context["output"]
+
+
+async def test_a_resumed_leg_keeps_the_calls_of_the_leg_before_the_approval(
+    app_session: AppSessionFactory,
+) -> None:
+    """E2E F10: after an approval the run record listed only the resumed leg's
+    call -- the reads that led up to the held write were gone from the audit
+    trail. The held call itself is settled by its decision: an approved one is
+    the call the resumed leg runs, a rejected one stays, as refused."""
+    from oc8.runtime.approval_resume import call_signature
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    refused = {"tool": "mail_delete", "arguments": {"uid": 1}, "state": "awaiting_approval"}
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **(run.context or {}),
+            "toolCalls": [read, held, refused],
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_signature("mail_reply", {"uid": 1}),
+                    "tool": "mail_reply",
+                    "arguments": {"uid": 1},
+                    "decision": "approve",
+                },
+                {
+                    "sig": call_signature("mail_delete", {"uid": 1}),
+                    "tool": "mail_delete",
+                    "arguments": {"uid": 1},
+                    "decision": "reject",
+                },
+            ],
+        }
+    replayed = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "done", "step": 1}
+
+    async def fake_runner(db: Any, **kw: Any) -> RunResult:
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="replied",
+            tool_calls=[replayed],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(fake_runner),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        calls = run.context["toolCalls"]
+    assert calls == [read, {**refused, "state": "denied"}, replayed]
