@@ -51,16 +51,18 @@ function row(over: Record<string, unknown> = {}) {
 }
 
 let list: unknown[];
+let settingsEnabled = true;
 
 beforeEach(() => {
   granted.current = new Set(ALL);
   list = [row()];
+  settingsEnabled = true;
   getMock.mockReset();
   putMock.mockReset();
   postMock.mockReset();
   getMock.mockImplementation((path: string) => {
     if (path === "/settings/personal-departments")
-      return Promise.resolve({ enabled: true, maxAgents: 5 });
+      return Promise.resolve({ enabled: settingsEnabled, maxAgents: 5 });
     if (path === "/personal-departments/default-budget")
       return Promise.resolve({ softLimitTokens: null, hardLimitTokens: 1000 });
     if (path === "/personal-departments/default-frame")
@@ -124,7 +126,8 @@ describe("PersonalDepartmentsAdminPanel", () => {
     );
     const soft = screen.getByRole("spinbutton", { name: /soft limit/i });
     fireEvent.change(soft, { target: { value: "5000" } });
-    fireEvent.click(screen.getAllByRole("button", { name: /^save$/i })[1]);
+    const budget = screen.getByRole("region", { name: /default budget/i });
+    fireEvent.click(within(budget).getByRole("button", { name: /^save$/i }));
     expect(await screen.findByText(/soft limit must not exceed hard limit/i)).toBeInTheDocument();
   });
 
@@ -159,5 +162,73 @@ describe("PersonalDepartmentsAdminPanel", () => {
       "href",
       "/departments/d1",
     );
+  });
+
+  it("keeps an unsaved max-agents edit when the switch is toggled", async () => {
+    putMock.mockImplementation(async () => {
+      settingsEnabled = false;
+      return { enabled: false, maxAgents: 5 };
+    });
+    renderPanel();
+    const toggle = await screen.findByRole("switch", { name: /personal departments/i });
+    await waitFor(() => expect(toggle).toBeEnabled());
+    const max = screen.getByRole("spinbutton", { name: /max personal agents/i });
+    fireEvent.change(max, { target: { value: "9" } });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(putMock).toHaveBeenCalled());
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    await waitFor(() => expect(toggle).toBeEnabled());
+    expect(max).toHaveValue(9);
+  });
+
+  it("renders nothing without any section permission", async () => {
+    granted.current = new Set();
+    const { container } = renderPanel();
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("does not fetch the frame or list without department:manage", async () => {
+    granted.current = new Set(["settings:view", "budget:view"]);
+    renderPanel();
+    await screen.findByRole("switch", { name: /personal departments/i });
+    const paths = getMock.mock.calls.map((c) => c[0]);
+    expect(paths).not.toContain("/personal-departments");
+    expect(paths).not.toContain("/personal-departments/default-frame");
+  });
+
+  it("saves the default budget with an empty field as null", async () => {
+    putMock.mockResolvedValue({ softLimitTokens: 200, hardLimitTokens: null });
+    renderPanel();
+    await waitFor(() =>
+      expect(screen.getByRole("spinbutton", { name: /hard limit/i })).toHaveValue(1000),
+    );
+    fireEvent.change(screen.getByRole("spinbutton", { name: /soft limit/i }), {
+      target: { value: "200" },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: /hard limit/i }), {
+      target: { value: "" },
+    });
+    const budget = screen.getByRole("region", { name: /default budget/i });
+    fireEvent.click(within(budget).getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(putMock).toHaveBeenCalledWith("/personal-departments/default-budget", {
+        softLimitTokens: 200,
+        hardLimitTokens: null,
+      }),
+    );
+  });
+
+  it("rejects max-agents values outside 1..1000 client-side", async () => {
+    renderPanel();
+    const max = await screen.findByRole("spinbutton", { name: /max personal agents/i });
+    await waitFor(() => expect(max).toHaveValue(5));
+    const region = screen.getByRole("region", { name: /switch/i });
+    const save = within(region).getByRole("button", { name: /^save$/i });
+    for (const bad of ["0", "1001"]) {
+      fireEvent.change(max, { target: { value: bad } });
+      expect(save).toBeDisabled();
+    }
+    fireEvent.change(max, { target: { value: "6" } });
+    expect(save).toBeEnabled();
   });
 });

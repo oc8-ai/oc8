@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { Loader2, Save } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { FrameGuardrailsEditor } from "@/components/frame-guardrails-editor";
@@ -40,6 +40,7 @@ export function PersonalDepartmentsAdminPanel() {
   const canViewBudget = may("budget:view") || may("budget:manage");
   const canManageDepartments = may("department:manage");
   const canFollow = canManageDepartments && may("budget:manage");
+  if (!canViewSettings && !canViewBudget && !canManageDepartments) return null;
 
   return (
     <Panel id="personal-departments" className="p-5 md:col-span-2">
@@ -68,8 +69,14 @@ function SwitchSection({ canManage }: { canManage: boolean }) {
   const update = useUpdatePersonalDepartmentsSetting();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // Reset the draft only when the server's cap itself changed: a refetch after
+  // toggling the switch must not discard an unsaved edit.
+  const synced = useRef<number | null>(null);
   useEffect(() => {
-    if (data) setDraft(String(data.maxAgents));
+    if (data && data.maxAgents !== synced.current) {
+      synced.current = data.maxAgents;
+      setDraft(String(data.maxAgents));
+    }
   }, [data]);
 
   const value = Number(draft);
@@ -94,7 +101,7 @@ function SwitchSection({ canManage }: { canManage: boolean }) {
   };
 
   return (
-    <div className="mt-4">
+    <section aria-label={t("Switch", "Schalter")} className="mt-4">
       <div className="flex items-center gap-3">
         <Switch
           aria-label={t("Personal departments", "Persönliche Abteilungen")}
@@ -149,7 +156,7 @@ function SwitchSection({ canManage }: { canManage: boolean }) {
           {error}
         </p>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -203,7 +210,7 @@ function BudgetSection({ canManage }: { canManage: boolean }) {
   };
 
   return (
-    <>
+    <section aria-label={t("Default budget", "Standard-Budget")}>
       <SectionTitle>{t("Default budget", "Standard-Budget")}</SectionTitle>
       <div className="mt-2 flex flex-wrap gap-4">
         <label className="block text-xs text-muted-foreground">
@@ -255,7 +262,7 @@ function BudgetSection({ canManage }: { canManage: boolean }) {
           {error}
         </p>
       )}
-    </>
+    </section>
   );
 }
 
@@ -299,7 +306,9 @@ function PersonalList({ canFollow }: { canFollow: boolean }) {
   const { data = [], isLoading, isError } = usePersonalDepartments();
   return (
     <>
-      <SectionTitle>{t("Personal", "Persönlich")}</SectionTitle>
+      <SectionTitle>
+        {t("Existing personal departments", "Bestehende persönliche Abteilungen")}
+      </SectionTitle>
       {isLoading ? (
         <p className="mt-2 text-xs text-muted-foreground">{t("Loading…", "Wird geladen …")}</p>
       ) : isError ? (
