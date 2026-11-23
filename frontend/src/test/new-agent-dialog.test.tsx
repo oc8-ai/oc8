@@ -67,6 +67,12 @@ vi.mock("@/lib/hooks-agent-detail", async (importOriginal) => {
   return { ...actual, useSetAgentNarrowing: () => ({ mutateAsync: setNarrowingMock }) };
 });
 
+const publishHireMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/agent-versions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent-versions")>();
+  return { ...actual, usePublishHireFollowUps: () => ({ mutateAsync: publishHireMock }) };
+});
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
@@ -104,6 +110,7 @@ beforeEach(() => {
   createLoginMock.mockReset();
   createCredentialMock.mockReset();
   setNarrowingMock.mockClear();
+  publishHireMock.mockClear();
   departmentToolsMock.mockReset();
   departmentToolsMock.mockReturnValue({
     data: { tools: { Odoo: { enabled: true, read: true, modify: true } } },
@@ -196,13 +203,21 @@ describe("NewAgentDialog: inline credential picker", () => {
           Odoo: expect.objectContaining({ enabled: true, read: true, modify: false }),
         },
       },
-      // Part of the hire, so published with it: a new agent starts with no
-      // unpublished changes (E2E N9).
-      publishOn: 1,
     });
     // The login is fixed first, so the grant finds it.
     expect(createLoginMock.mock.invocationCallOrder[0]).toBeLessThan(
       setNarrowingMock.mock.invocationCallOrder[0],
+    );
+    // Both are part of the hire, so published with it: a new agent starts
+    // with no unpublished changes (E2E N9).
+    await waitFor(() =>
+      expect(publishHireMock).toHaveBeenCalledWith({
+        agentId: "new-agent-id",
+        expectedCurrentVersionNo: 1,
+      }),
+    );
+    expect(setNarrowingMock.mock.invocationCallOrder[0]).toBeLessThan(
+      publishHireMock.mock.invocationCallOrder[0],
     );
   });
 
@@ -281,6 +296,11 @@ describe("NewAgentDialog: inline credential picker", () => {
         scopes: [],
         agentId: "new-agent-id",
       }),
+    );
+    // The pinned login is part of the hire too: published after it (E2E N9).
+    await waitFor(() => expect(publishHireMock).toHaveBeenCalled());
+    expect(createLoginMock.mock.invocationCallOrder[0]).toBeLessThan(
+      publishHireMock.mock.invocationCallOrder[0],
     );
   });
 

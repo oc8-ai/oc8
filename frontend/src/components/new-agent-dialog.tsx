@@ -39,6 +39,7 @@ import {
   useModels,
 } from "@/lib/hooks";
 import { useSetAgentNarrowing } from "@/lib/hooks-agent-detail";
+import { usePublishHireFollowUps } from "@/lib/agent-versions";
 import { useT } from "@/lib/i18n";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { mcpToolsFromConnections, type McpTool } from "@/lib/permissions";
@@ -112,6 +113,7 @@ export function NewAgentDialog({
   const createAgent = useCreateAgent();
   const createTrigger = useCreateAgentTrigger();
   const setNarrowing = useSetAgentNarrowing();
+  const publishHire = usePublishHireFollowUps();
   const navigate = useNavigate();
   const t = useT();
   const steps = wizardSteps(t);
@@ -333,9 +335,6 @@ export function NewAgentDialog({
           await setNarrowing.mutateAsync({
             agentId: agent.id,
             narrowing: { tools: { ...inherited, ...agentOnly } },
-            // Part of the hire: published with it, so the new agent starts
-            // with no unpublished changes (E2E N9).
-            publishOn: agent.currentVersionNo ?? null,
           });
         } catch (err) {
           toast.error(
@@ -348,6 +347,17 @@ export function NewAgentDialog({
             },
           );
         }
+      }
+
+      // The login pins and grants above are part of the hire: publish them
+      // with it, so the new agent starts with no unpublished changes (E2E N9).
+      try {
+        await publishHire.mutateAsync({
+          agentId: agent.id,
+          expectedCurrentVersionNo: agent.currentVersionNo ?? null,
+        });
+      } catch {
+        // Not fatal: the changes stay as a draft the agent page offers to publish.
       }
 
       // A real cron trigger needs a real agent id, so it can't ride in the

@@ -66,6 +66,12 @@ vi.mock("@/lib/hooks-agent-detail", async (importOriginal) => {
   return { ...actual, useSetAgentNarrowing: () => ({ mutateAsync: setNarrowingMock }) };
 });
 
+const publishHireMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/agent-versions", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent-versions")>();
+  return { ...actual, usePublishHireFollowUps: () => ({ mutateAsync: publishHireMock }) };
+});
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));

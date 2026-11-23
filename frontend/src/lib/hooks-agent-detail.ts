@@ -5,7 +5,7 @@
 // so this data stays live without any changes to the shared file.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, ApiError } from "@/lib/api";
+import { api } from "@/lib/api";
 import type { ToolPolicy } from "@/lib/hooks";
 import type { Condition } from "@/components/guardrail-preset-picker";
 
@@ -133,33 +133,8 @@ export function useUpdateNarrowing(agentId: string) {
 export function useSetAgentNarrowing() {
   const qc = useQueryClient();
   return useMutation({
-    /** `publishOn`: the version the caller believes is current, to publish
-     *  the change right away -- a grant that is part of a hire, which must
-     *  not leave a brand-new agent with unpublished changes (E2E N9). */
-    mutationFn: async ({
-      agentId,
-      narrowing,
-      publishOn,
-    }: {
-      agentId: string;
-      narrowing: Record<string, unknown>;
-      publishOn?: number | null;
-    }) => {
-      const path = `/agents/${encodeURIComponent(agentId)}`;
-      const saved = await api.put<AgentDetail>(`${path}/narrowing`, { narrowing });
-      if (publishOn !== undefined) {
-        try {
-          await api.post(`${path}/versions`, {
-            note: "Hired",
-            expectedCurrentVersionNo: publishOn,
-          });
-        } catch (err) {
-          // Nothing to publish is fine: the grant matched the hire already.
-          if (!(err instanceof ApiError && err.status === 409)) throw err;
-        }
-      }
-      return saved;
-    },
+    mutationFn: ({ agentId, narrowing }: { agentId: string; narrowing: Record<string, unknown> }) =>
+      api.put<AgentDetail>(`/agents/${encodeURIComponent(agentId)}/narrowing`, { narrowing }),
     onSuccess: (_data, { agentId }) => {
       qc.invalidateQueries({ queryKey: ["agents", agentId] });
       qc.invalidateQueries({ queryKey: ["agents"] });
