@@ -1,17 +1,5 @@
 msgid ""
-msgstr ""
-"Project-Id-Version: oc8\n"
-"PO-Revision-Date: 2026-11-21 14:14+0000\n"
-"Last-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\n"
-"Language-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\n"
-"Language: nl\n"
-"MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=UTF-8\n"
-"Content-Transfer-Encoding: 8bit\n"
-"X-Native-Name: Nederlands\n"
-"X-Flag: 🇳🇱\n"
-"Plural-Forms: nplurals=2; plural=n != 1;\n"
-"X-Generator: Weblate 2026.11.1\n"
+msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-23 07:48+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
 
 msgid " (opens in a new tab)"
 msgstr " (opent in een nieuw tabblad)"
@@ -1702,10 +1690,8 @@ msgstr "Vangrails opslaan mislukt"
 msgid "Couldn't save instructions"
 msgstr "Instructies opslaan mislukt"
 
-#, fuzzy
-#| msgid "Could not save the preset."
 msgid "Couldn't save the trigger"
-msgstr "Preset opslaan mislukt."
+msgstr "Trigger opslaan mislukt"
 
 msgid "Couldn't send answer"
 msgstr "Antwoord versturen mislukt"
@@ -1945,13 +1931,11 @@ msgid "Delete agent"
 msgstr "Agent verwijderen"
 
 msgid "Delete anyway"
-msgstr "Toch verwijderen?"
+msgstr "Toch verwijderen"
 
-#, fuzzy
 msgid "Delete chat?"
 msgstr "Chat verwijderen?"
 
-#, fuzzy
 msgid "Delete connection"
 msgstr "Koppeling verwijderen"
 
@@ -1965,7 +1949,7 @@ msgid "Delete dashboard"
 msgstr "Databron verwijderen"
 
 msgid "Delete dashboard?"
-msgstr "Databron verwijderen?"
+msgstr "Dashboard verwijderen?"
 
 msgid "Delete data source?"
 msgstr "Databron verwijderen?"
@@ -2000,810 +1984,617 @@ msgstr "Project verwijderen?"
 msgid "Delete this agent?"
 msgstr "Deze agent verwijderen?"
 
-#, fuzzy
 msgid "Delete this chat…"
 msgstr "Deze chat verwijderen…"
 
-#, fuzzy
 msgid "Delete this file?"
 msgstr "Dit bestand verwijderen?"
 
-#, fuzzy
 msgid "Delete this memory"
 msgstr "Deze herinnering verwijderen"
 
-#, fuzzy
 msgid "Delete this preset?"
 msgstr "Deze preset verwijderen?"
 
-#, fuzzy
 msgid "Delete this user?"
 msgstr "Deze gebruiker verwijderen?"
 
-#, fuzzy
 msgid "Delete user"
 msgstr "Gebruiker verwijderen"
 
-#, fuzzy
 msgid "Delete…"
 msgstr "Verwijderen…"
 
-#, fuzzy
 msgid "Deleted"
 msgstr "Verwijderd"
 
-#, fuzzy
 msgid "Deleting…"
 msgstr "Verwijderen…"
 
-#, fuzzy
 msgid "Delta"
 msgstr "Delta"
 
-#, fuzzy
 msgid "Department"
 msgstr "Afdeling"
 
-#, fuzzy
 msgid "Department allows (ceiling)"
 msgstr "Afdeling staat toe (plafond)"
 
-#, fuzzy
 msgid "Department archived"
 msgstr "Afdeling gearchiveerd"
 
-#, fuzzy
 msgid "Department assigned"
 msgstr "Afdeling toegewezen"
 
-#, fuzzy
 msgid "Department deleted"
 msgstr "Afdeling verwijderd"
 
-#, fuzzy
 msgid "Department knowledge"
 msgstr "Afdelingskennis"
 
-#, fuzzy
 msgid "Department lead"
 msgstr "Afdelingshoofd"
 
-#, fuzzy
 msgid "Department name"
 msgstr "Afdelingsnaam"
 
-#, fuzzy
 msgid "Department not found, or you don't have access."
 msgstr "Afdeling niet gevonden, of je hebt geen toegang."
 
-#, fuzzy
 msgid "Department restored"
 msgstr "Afdeling hersteld"
 
-#, fuzzy
 msgid "Department seats"
 msgstr "Afdelingsseats"
 
-#, fuzzy
 msgid "departments"
 msgstr "afdelingen"
 
-#, fuzzy
 msgid "Departments"
 msgstr "Afdelingen"
 
-#, fuzzy
 msgid "departments · jointly coordinated"
 msgstr "afdelingen · gezamenlijk gecoördineerd"
 
-#, fuzzy
 msgid "Departments for {name}"
-msgstr "Afdelingsnaam"
+msgstr "Afdelingen voor {name}"
 
 msgid "Departments saved."
 msgstr "Afdeling opgeslagen."
 
-#, fuzzy
 msgid "Describe roughly what this agent should do"
 msgstr "Beschrijf ruwweg wat deze agent moet doen"
 
-#, fuzzy
 msgid "Describe step by step what the skill should do…"
 msgstr "Beschrijf stap voor stap wat de skill moet doen…"
 
-#, fuzzy
 msgid "Describe them by hand"
 msgstr "Beschrijf ze handmatig"
 
-#, fuzzy
 msgid "Description"
 msgstr "Beschrijving"
 
-#, fuzzy
 msgid "Details"
 msgstr "Details"
 
-#, fuzzy
 msgid "Development only. A person's authority comes from their seats and any tenant role assigned to them, never from this screen."
 msgstr "Alleen voor ontwikkeling. Iemands bevoegdheid komt van zijn seats en eventuele tenantrol, nooit van dit scherm."
 
-#, fuzzy
 msgid "Development only. Production instances are set up once through POST /auth/setup, not this picker."
 msgstr "Alleen voor ontwikkeling. Productie-instanties worden eenmalig ingericht via POST /auth/setup, niet via deze keuzelijst."
 
-#, fuzzy
 msgid "Deviations"
 msgstr "Afwijkingen"
 
-#, fuzzy
 msgid "Did something"
 msgstr "Heeft iets gedaan"
 
 msgid "Diff"
 msgstr "Verschil"
 
-#, fuzzy
 msgid "Direct access"
-msgstr "Jouw toegang"
+msgstr "Directe toegang"
 
-#, fuzzy
 msgid "Disable"
 msgstr "Uitschakelen"
 
-#, fuzzy
 msgid "Disabled"
 msgstr "Uitgeschakeld"
 
-#, fuzzy
 msgid "Discard"
 msgstr "Verwerpen"
 
-#, fuzzy
 msgid "Disconnect"
 msgstr "Ontkoppelen"
 
-#, fuzzy
 msgid "Disconnect?"
 msgstr "Ontkoppelen?"
 
-#, fuzzy
 msgid "Discovered tools"
 msgstr "Gevonden tools"
 
-#, fuzzy
 msgid "Discuss with Copilot"
 msgstr "Bespreken met Copilot"
 
-#, fuzzy
 msgid "Dismiss"
 msgstr "Sluiten"
 
-#, fuzzy
 msgid "Display name"
 msgstr "Weergavenaam"
 
-#, fuzzy
 msgid "Display Name"
 msgstr "Weergavenaam"
 
-#, fuzzy
 msgid "Display name (optional)"
 msgstr "Weergavenaam (optioneel)"
 
-#, fuzzy
 msgid "Do a first test run and tell me briefly what you did."
 msgstr "Doe een eerste testrun en vertel me kort wat je hebt gedaan."
 
-#, fuzzy
 msgid "Documents"
 msgstr "Documenten"
 
 msgid "Don't see your app?"
 msgstr "Zie je je app niet?"
 
-#, fuzzy
 msgid "done"
 msgstr "klaar"
 
-#, fuzzy
 msgid "Done"
 msgstr "Klaar"
 
-#, fuzzy
 msgid "Done."
 msgstr "Klaar."
 
-#, fuzzy
 msgid "Download"
 msgstr "Downloaden"
 
-#, fuzzy
 msgid "Download a fresh backup above first — restoring is irreversible, and this is the recovery path if it goes wrong."
 msgstr "Download hierboven eerst een nieuwe back-up — herstellen is onomkeerbaar en dit is je herstelroute als het misgaat."
 
-#, fuzzy
 msgid "Download backup"
 msgstr "Back-up downloaden"
 
-#, fuzzy
 msgid "Download failed."
 msgstr "Downloaden mislukt."
 
-#, fuzzy
 msgid "Downloads every agent, department, run history and knowledge item this company holds as one file."
 msgstr "Downloadt elke agent, afdeling, runhistorie en kennisitem van dit bedrijf als één bestand."
 
-#, fuzzy
 msgid "Draft with copilot"
 msgstr "Opstellen met Copilot"
 
-#, fuzzy
 msgid "Drift guard — pause on off-role actions"
 msgstr "Driftbewaking — pauzeer bij acties buiten de rol"
 
 msgid "Duplicate"
-msgstr ""
+msgstr "Duplicaat"
 
 msgid "Duplicate this skill to change it"
-msgstr ""
+msgstr "Dupliceer deze skill om deze te wijzigen"
 
-#, fuzzy
 msgid "Duration"
 msgstr "Duur"
 
-#, fuzzy
 msgid "E-mail, calendar and files"
 msgstr "E-mail, agenda en bestanden"
 
-#, fuzzy
 msgid "e.g. \"Handles first-level IT support tickets, replies to users, escalates hardware issues.\""
 msgstr "bijv. \"Behandelt eerstelijns IT-supporttickets, beantwoordt gebruikers, escaleert hardwareproblemen.\""
 
-#, fuzzy
 msgid "e.g. Claude Desktop"
 msgstr "bijv. Claude Desktop"
 
-#, fuzzy
 msgid "e.g. Close deals"
 msgstr "bijv. Deals sluiten"
 
-#, fuzzy
 msgid "e.g. Customer service, research, marketing …"
-msgstr "bijv. Klantenservice, onderzoek, marketing …"
+msgstr "bijv. klantenservice, onderzoek, marketing …"
 
-#, fuzzy
 msgid "e.g. delete_record"
 msgstr "bijv. delete_record"
 
-#, fuzzy
 msgid "e.g. discount too high for this customer"
 msgstr "bijv. korting te hoog voor deze klant"
 
-#, fuzzy
 msgid "e.g. Invoice Review"
-msgstr "bijv. Factuurcontrole"
+msgstr "bijv. factuurcontrole"
 
-#, fuzzy
 msgid "e.g. Legal & Compliance"
-msgstr "bijv. Juridisch en compliance"
+msgstr "bijv. juridisch en compliance"
 
-#, fuzzy
 msgid "e.g. max"
 msgstr "bijv. max"
 
-#, fuzzy
 msgid "e.g. Nova, Atlas, Miro …"
 msgstr "bijv. Nova, Atlas, Miro …"
 
-#, fuzzy
 msgid "e.g. Review contracts on time"
-msgstr "bijv. Contracten op tijd beoordelen"
+msgstr "bijv. contracten op tijd beoordelen"
 
-#, fuzzy
 msgid "e.g. Sales sign-off"
-msgstr "bijv. Akkoord van sales"
+msgstr "bijv. akkoord van sales"
 
 msgid "e.g. Work laptop"
-msgstr ""
+msgstr "bijv. werklaptop"
 
-#, fuzzy
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
 msgstr "Elke code werkt één keer. Bewaar ze op een veilige plek — je ziet ze niet opnieuw."
 
-#, fuzzy
 msgid "Each person changes their email and password in their own account."
 msgstr "Iedereen wijzigt zijn e-mailadres en wachtwoord in het eigen account."
 
-#, fuzzy
 msgid "Edit"
 msgstr "Bewerken"
 
-#, fuzzy
 msgid "Edit and resend"
 msgstr "Bewerken en opnieuw versturen"
 
-#, fuzzy
 msgid "Edit Auto router"
 msgstr "Auto-router bewerken"
 
-#, fuzzy
 msgid "Edit credential"
 msgstr "Inloggegevens bewerken"
 
-#, fuzzy
 msgid "Edit data source"
 msgstr "Databron bewerken"
 
-#, fuzzy
 msgid "Edit endpoints"
 msgstr "Endpoints bewerken"
 
-#, fuzzy
 msgid "Edit model"
 msgstr "Model bewerken"
 
-#, fuzzy
 msgid "Edit project"
 msgstr "Project bewerken"
 
-#, fuzzy
 msgid "Edit skill"
 msgstr "Skill bewerken"
 
-#, fuzzy
 msgid "Efficiency"
 msgstr "Efficiëntie"
 
-#, fuzzy
 msgid "Efficiency / load"
 msgstr "Efficiëntie / belasting"
 
-#, fuzzy
 msgid "Effort"
 msgstr "Inspanning"
 
-#, fuzzy
 msgid "Effort (optional)"
 msgstr "Inspanning (optioneel)"
 
-#, fuzzy
 msgid "Email"
 msgstr "E-mail"
 
-#, fuzzy
 msgid "Email updated"
 msgstr "E-mailadres bijgewerkt"
 
-#, fuzzy
 msgid "Embedding model"
 msgstr "Embeddingmodel"
 
-#, fuzzy
 msgid "Employee"
 msgstr "Medewerker"
 
-#, fuzzy
 msgid "Empty"
 msgstr "Leeg"
 
-#, fuzzy
 msgid "Empty means no limit. A number here, or a context window recorded on the model, is what makes size a verdict at all."
-msgstr "Leeg betekent geen limiet. Pas met een getal hier, of een contextvenster dat op het model is vastgelegd, wordt grootte überhaupt een oordeel."
+msgstr "Leeg betekent: geen limiet. Pas wanneer er een getal wordt ingevuld, of wanneer er in het model een contextvenster is vastgelegd, krijgt de omvang daadwerkelijk een concrete invulling."
 
-#, fuzzy
 msgid "en"
-msgstr "nl"
+msgstr "en"
 
-#, fuzzy
 msgid "Enable"
 msgstr "Inschakelen"
 
-#, fuzzy
 msgid "Enable a vector-index capa (Qdrant, pgvector) first."
 msgstr "Schakel eerst een vectorindex-Capa (Qdrant, pgvector) in."
 
-#, fuzzy
 msgid "Enabled"
 msgstr "Ingeschakeld"
 
 msgid "Enabled for {count} department(s)"
 msgstr "Ingeschakeld voor {count} afdeling(en)"
 
-#, fuzzy
-#| msgid "all departments"
 msgid "Enabled for all departments"
-msgstr "alle afdelingen"
+msgstr "Ingeschakeld voor alle afdelingen"
 
-#, fuzzy
 msgid "Enabling…"
 msgstr "Inschakelen…"
 
-#, fuzzy
 msgid "End schedule"
 msgstr "Schema beëindigen"
 
-#, fuzzy
 msgid "Endpoint to test"
 msgstr "Te testen endpoint"
 
-#, fuzzy
 msgid "Ends"
 msgstr "Eindigt"
 
-#, fuzzy
 msgid "Enforced by the platform — a hard limit pauses new tasks with budget_exceeded."
 msgstr "Afgedwongen door het platform — een harde limiet pauzeert nieuwe taken met budget_exceeded."
 
-#, fuzzy
 msgid "Enrol somebody by their sign-in identity. They can also be added automatically the first time they sign in — this just lets you set them up (and assign a role) ahead of time."
 msgstr "Registreer iemand op basis van de inlogidentiteit. Ze kunnen ook automatisch worden toegevoegd bij hun eerste keer inloggen — hiermee stel je ze (en een rol) alvast van tevoren in."
 
-#, fuzzy
 msgid "Enter a sign-in email or username."
 msgstr "Voer een inlog-e-mailadres of gebruikersnaam in."
 
-#, fuzzy
 msgid "Enter manually"
 msgstr "Handmatig invoeren"
 
-#, fuzzy
 msgid "Enter manually instead"
 msgstr "Liever handmatig invoeren"
 
 msgid "Enter one of the backup codes you saved when you set up two-factor authentication."
-msgstr ""
+msgstr "Voer een van de reservecodes in die je hebt opgeslagen toen je tweefactorauthenticatie instelde."
 
-#, fuzzy
 msgid "Enter room"
 msgstr "Ruimte betreden"
 
-#, fuzzy
 msgid "Enter the 6-digit code"
 msgstr "Voer de code van 6 cijfers in"
 
-#, fuzzy
 msgid "Enter the path below the base URL, starting with /."
 msgstr "Geef het pad onder de basis-URL op, beginnend met /."
 
-#, fuzzy
 msgid "Enter this code on that page:"
 msgstr "Voer deze code in op die pagina:"
 
-#, fuzzy
 msgid "Enter valid, non-negative prices."
 msgstr "Voer geldige, niet-negatieve prijzen in."
 
-#, fuzzy
 msgid "Enter your authentication code"
 msgstr "Voer je authenticatiecode in"
 
-#, fuzzy
 msgid "Enter your credentials to continue."
 msgstr "Voer je inloggegevens in om door te gaan."
 
-#, fuzzy
 msgid "Enter your office"
 msgstr "Ga naar je kantoor"
 
-#, fuzzy
 msgid "Entering…"
 msgstr "Binnengaan…"
 
-#, fuzzy
 msgid "Entries are missing from this log."
 msgstr "Er ontbreken items in deze log."
 
-#, fuzzy
 msgid "error"
 msgstr "fout"
 
-#, fuzzy
 msgid "Error"
 msgstr "Fout"
 
 msgid "Error at {time}: {error}"
-msgstr ""
+msgstr "Fout op {time}: {error}"
 
-#, fuzzy
 msgid "Est. cost / 1k req"
 msgstr "Gesch. kosten / 1k verzoeken"
 
-#, fuzzy
 msgid "Estimate assumes ~1,500 input + 500 output tokens per request. Cost totals per agent and department use these prices."
 msgstr "De schatting gaat uit van ~1.500 invoer- en 500 uitvoertokens per verzoek. Kostentotalen per agent en afdeling gebruiken deze prijzen."
 
-#, fuzzy
 msgid "event"
 msgstr "gebeurtenis"
 
-#, fuzzy
 msgid "Event"
 msgstr "Gebeurtenis"
 
-#, fuzzy
 msgid "Event to handoff"
 msgstr "Van gebeurtenis naar overdracht"
 
-#, fuzzy
 msgid "Every action, every timestamp."
 msgstr "Elke actie, elk tijdstip."
 
-#, fuzzy
 msgid "Every day at {time}"
 msgstr "Elke dag om {time}"
 
-#, fuzzy
 msgid "Every department"
 msgstr "Elke afdeling"
 
-#, fuzzy
 msgid "Every department — decisions and questions waiting on a person."
 msgstr "Elke afdeling — beslissingen en vragen die op een persoon wachten."
 
-#, fuzzy
 msgid "Every export, with or without a passphrase, carries every member's password hash. With a passphrase, the file also carries every provider credential and OAuth token this company holds, encrypted under it — anyone with the file AND the passphrase holds those credentials too. The passphrase cannot be recovered if lost; losing it only costs the secrets, everything else still restores."
 msgstr "Elke export, met of zonder wachtzin, bevat de wachtwoordhash van elk lid. Met een wachtzin bevat het bestand ook alle provider-inloggegevens en OAuth-tokens van dit bedrijf, daarmee versleuteld — wie het bestand EN de wachtzin heeft, heeft ook die inloggegevens. De wachtzin is niet te herstellen als je hem kwijtraakt; je verliest alleen de geheimen, al het andere wordt nog steeds hersteld."
 
-#, fuzzy
 msgid "Every hour"
 msgstr "Elk uur"
 
-#, fuzzy
 msgid "Every installable capability — connectors, tools, guardrails, templates."
 msgstr "Elke installeerbare mogelijkheid — connectors, tools, vangrails, sjablonen."
 
 msgid "Every member must set one up within the grace period."
-msgstr ""
+msgstr "Elk lid moet er binnen de respijtperiode een opzetten."
 
-#, fuzzy
 msgid "Every minute"
 msgstr "Elke minuut"
 
-#, fuzzy
 msgid "Every save is kept — nothing is pruned."
 msgstr "Elke opslag wordt bewaard — er wordt niets opgeschoond."
 
-#, fuzzy
 msgid "Everyone"
-msgstr "Elke minuut"
+msgstr "Iedereen"
 
-#, fuzzy
 msgid "Everything"
 msgstr "Alles"
 
-#, fuzzy
 msgid "Everything: selected"
 msgstr "Alles: geselecteerd"
 
-#, fuzzy
 msgid "Execution"
 msgstr "Uitvoering"
 
-#, fuzzy
 msgid "execution environment"
 msgstr "uitvoeringsomgeving"
 
-#, fuzzy
 msgid "Expand sidebar"
 msgstr "Zijbalk uitklappen"
 
-#, fuzzy
 msgid "Expired"
 msgstr "Verlopen"
 
-#, fuzzy
 msgid "Expires"
 msgstr "Verloopt"
 
-#, fuzzy
 msgid "Expires (optional)"
 msgstr "Verloopt (optioneel)"
 
-#, fuzzy
 msgid "explicit"
 msgstr "expliciet"
 
-#, fuzzy
 msgid "Export"
 msgstr "Exporteren"
 
-#, fuzzy
 msgid "Export as Capa"
 msgstr "Exporteren als Capa"
 
-#, fuzzy
 msgid "Export CSV"
 msgstr "CSV exporteren"
 
-#, fuzzy
 msgid "Export failed"
 msgstr "Exporteren mislukt"
 
-#, fuzzy
 msgid "Export your whole company to one file, or replace it in place from a previously exported file."
 msgstr "Exporteer je hele bedrijf naar één bestand, of vervang het ter plekke vanuit een eerder geëxporteerd bestand."
 
-#, fuzzy
 msgid "Exporting…"
 msgstr "Exporteren…"
 
-#, fuzzy
 msgid "failed"
 msgstr "mislukt"
 
-#, fuzzy
 msgid "Failed"
 msgstr "Mislukt"
 
-#, fuzzy
-#| msgid "All agents"
 msgid "Failed agents"
-msgstr "Alle agents"
+msgstr "Gefaalde agenten"
 
-#, fuzzy
 msgid "Fast"
 msgstr "Snel"
 
-#, fuzzy
 msgid "Fetch again"
 msgstr "Opnieuw ophalen"
 
-#, fuzzy
 msgid "Fetch available models"
 msgstr "Beschikbare modellen ophalen"
 
-#, fuzzy
 msgid "Fetching models…"
 msgstr "Modellen ophalen…"
 
-#, fuzzy
 msgid "Field"
 msgstr "Veld"
 
 msgid "Fields marked * are required."
 msgstr "Velden gemarkeerd met * zijn verplicht."
 
-#, fuzzy
 msgid "File"
 msgstr "Bestand"
 
-#, fuzzy
 msgid "File deleted"
 msgstr "Bestand verwijderd"
 
-#, fuzzy
 msgid "File in a source"
 msgstr "Bestand in een bron"
 
-#, fuzzy
 msgid "File is too large"
 msgstr "Bestand is te groot"
 
-#, fuzzy
 msgid "File truncated for display."
 msgstr "Bestand ingekort voor weergave."
 
-#, fuzzy
 msgid "Files"
 msgstr "Bestanden"
 
-#, fuzzy
 msgid "Files can be attached once the question is answered."
 msgstr "Bestanden kun je bijvoegen zodra de vraag is beantwoord."
 
-#, fuzzy
 msgid "Fill in provider, model pattern, and valid prices."
 msgstr "Vul provider, modelpatroon en geldige prijzen in."
 
-#, fuzzy
 msgid "Fill in the other required fields first."
 msgstr "Vul eerst de andere verplichte velden in."
 
-#, fuzzy
 msgid "Filter"
 msgstr "Filter"
 
-#, fuzzy
 msgid "Filter:"
 msgstr "Filter:"
 
-#, fuzzy
 msgid "Find more integrations under Capas →"
 msgstr "Vind meer integraties onder Capas →"
 
-#, fuzzy
 msgid "Find similar"
 msgstr "Vergelijkbare zoeken"
 
-#, fuzzy
 msgid "Finishing the connection …"
 msgstr "De koppeling wordt afgerond …"
 
-#, fuzzy
 msgid "First seen"
 msgstr "Voor het eerst gezien"
 
-#, fuzzy
 msgid "fits"
 msgstr "past"
 
-#, fuzzy
 msgid "Floor 1 · Live operations"
 msgstr "Verdieping 1 · Live operaties"
 
-#, fuzzy
 msgid "Flow archived"
 msgstr "Flow gearchiveerd"
 
-#, fuzzy
 msgid "Flow run cancelled"
 msgstr "Flow-run geannuleerd"
 
 msgid "Flows"
 msgstr "Flows"
 
-#, fuzzy
 msgid "Folders"
 msgstr "Mappen"
 
-#, fuzzy
 msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
 msgstr "Open voor persoonlijke notities een agent en ga naar het tabblad \"Geheugen\"."
 
-#, fuzzy
 msgid "For scheduled runs the account of the person who created the schedule is used."
 msgstr "Bij geplande runs wordt het account gebruikt van de persoon die het schema heeft aangemaakt."
 
 msgid "For someone who lost their phone or can no longer reach their email: removes their second factors so they can set one up again."
-msgstr ""
+msgstr "Voor iemand die zijn telefoon is kwijtgeraakt of geen toegang meer heeft tot zijn e-mail: verwijdert de tweede factoren, zodat de gebruiker deze opnieuw kan instellen."
 
-#, fuzzy
 msgid "For task-specific instructions, assign a skill instead — this field is only the agent's base mission."
 msgstr "Wijs voor taakspecifieke instructies liever een skill toe — dit veld is alleen de basismissie van de agent."
 
-#, fuzzy
 msgid "For the organisation"
 msgstr "Voor de organisatie"
 
-#, fuzzy
 msgid "For the whole team"
 msgstr "Voor het hele team"
 
-#, fuzzy
 msgid "Forgot password?"
 msgstr "Wachtwoord vergeten?"
 
-#, fuzzy
 msgid "Forwarded verbatim to the provider after every named field above -- for knobs oc8 has no dedicated field for (e.g. OpenRouter's provider/top_p). Not validated here; the provider decides what it accepts."
 msgstr "Na alle bovenstaande benoemde velden letterlijk doorgestuurd naar de provider -- voor instellingen waarvoor oc8 geen eigen veld heeft (bijv. provider/top_p van OpenRouter). Hier niet gevalideerd; de provider bepaalt wat hij accepteert."
 
-#, fuzzy
 msgid "Framework default"
 msgstr "Standaard van het framework"
 
-#, fuzzy
 msgid "From"
 msgstr "Van"
 
-#, fuzzy
 msgid "From (UTC)"
 msgstr "Van (UTC)"
 
-#, fuzzy
 msgid "From a chat"
 msgstr "Uit een chat"
 
-#, fuzzy
 msgid "from extra parameters"
 msgstr "uit extra parameters"
 
-#, fuzzy
 msgid "From store"
 msgstr "Uit de store"
 
-#, fuzzy
 msgid "From the connection's setup"
-msgstr "Nog geen MCP-koppelingen."
+msgstr "Vanaf de verbindingssetup"
 
 #, fuzzy
 msgid "from the department"
@@ -2860,9 +2651,8 @@ msgstr "Geef eerst een reden — een afwijzing zonder reden is een doodlopende w
 msgid "Give each endpoint a name first."
 msgstr "Geef eerst elk endpoint een naam."
 
-#, fuzzy
 msgid "Give this agent a mailbox first"
-msgstr "Geef eerst elk endpoint een naam."
+msgstr "Geef deze agent eerst een mailbox"
 
 #, fuzzy
 msgid "Give this tool a name."
@@ -3186,10 +2976,8 @@ msgstr "Ongeldige code"
 msgid "Invite"
 msgstr "Uitnodigen"
 
-#, fuzzy
-#| msgid "Not shared yet"
 msgid "It has not worked yet."
-msgstr "Nog niet gedeeld"
+msgstr "Het heeft nog niet gewerkt."
 
 msgid "It listens on the mailbox the agent uses for its tools. "
 msgstr ""
@@ -4389,10 +4177,8 @@ msgstr "Niet beschikbaar: "
 msgid "Not available."
 msgstr "Niet beschikbaar."
 
-#, fuzzy
-#| msgid "Not shared yet"
 msgid "Not checked yet"
-msgstr "Nog niet gedeeld"
+msgstr "Nog niet gecontroleerd"
 
 #, fuzzy
 msgid "Not connected"
@@ -5146,7 +4932,6 @@ msgstr "Zijn instructies lezen"
 msgid "Reading…"
 msgstr "Lezen…"
 
-#, fuzzy
 msgid "Ready"
 msgstr "Klaar"
 
@@ -5318,7 +5103,6 @@ msgstr "Bron verwijderen?"
 msgid "Remove trigger"
 msgstr "Provider verwijderen"
 
-#, fuzzy
 msgid "Remove user"
 msgstr "Gebruiker verwijderen"
 
@@ -7711,9 +7495,8 @@ msgstr ""
 msgid "Uses your personal subscription — agents on it can only be started manually."
 msgstr "Gebruikt een persoonlijk abonnement — agents hierop kunnen alleen handmatig worden gestart."
 
-#, fuzzy
 msgid "Using the organisation account"
-msgstr "Voor de organisatie"
+msgstr "Het organisatieaccount gebruiken"
 
 #, fuzzy
 #| msgid "Answer in your own words"
