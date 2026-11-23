@@ -492,3 +492,37 @@ async def test_a_cascade_is_published_so_the_next_run_actually_gets_the_tool(
         status = await draft_status(db, reloaded_mid_edit)
         assert status.dirty is True
         assert "narrowing.tools" in status.changed_fields
+
+
+@pytest.mark.parametrize(("frame_eur", "cascaded"), [(200, None), (0, 0)])
+async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_value_spec(
+    app_session: AppSessionFactory, frame_eur: int, cascaded: int | None
+) -> None:
+    """The cascade writes the department's policy onto the agent. A positive
+    threshold on a connection that reports no amount never fires, and copied
+    it goes stale when the department changes its value -- the frame's own
+    applies anyway (`connections.value_spec`). €0 is enforced and copied."""
+    from oc8.api.v1.departments import _cascade_department_tools_change
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Sales", frame={"tools": {}})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora", narrowing={})
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name="microsoft365",
+            server_url="",
+            transport="stdio",
+            config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+        )
+        db.add_all([agent, conn])
+        await db.flush()
+        policy = {"enabled": True, "read": True, "modify": True, "approval_eur": frame_eur}
+        await _cascade_department_tools_change(
+            db, old_tools={}, new_tools={"microsoft365": policy}, agents=[agent]
+        )
+        copied = agent.narrowing["tools"]["microsoft365"]
+    assert copied["enabled"] is True
+    assert copied.get("approval_eur") == cascaded

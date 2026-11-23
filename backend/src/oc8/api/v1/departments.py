@@ -57,6 +57,7 @@ from oc8.boards.lifecycle import archive_department_boards, restore_department_b
 from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
 from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
+from oc8.connections.value_spec import has_value_spec
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDTO, TaskDTO
@@ -344,7 +345,19 @@ async def _cascade_department_tools_change(
     # Read BEFORE the write below, which would make every one of them dirty.
     publishable = {agent.id for agent in touched if not (await draft_status(db, agent)).dirty}
     for key in changed_keys:
-        new_policy = new_tools.get(key, {})
+        new_policy = dict(new_tools.get(key, {}))
+        eur = new_policy.get("approval_eur")
+        if (
+            isinstance(eur, int | float)
+            and eur > 0
+            and agents
+            and not await has_value_spec(db, tenant_id=agents[0].tenant_id, key=key)
+        ):
+            # A positive threshold on a connection that reports no amount never
+            # fires, and an agent copy goes stale when the department changes
+            # its value; the frame's own applies anyway. €0 is enforced and
+            # copied (`connections.value_spec`).
+            del new_policy["approval_eur"]
         for agent in agents:
             if key in (agent.narrowing_overridden_keys or []):
                 continue  # a genuine, deliberate operator override -- never touch it
