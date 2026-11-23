@@ -4,10 +4,14 @@ import uuid
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.authz.scope import subject_uuid_for
 from oc8.capas.lifecycle import enable_plugin
 from oc8.capas.service import PluginError, install_plugin, instantiate_agent
+from oc8.departments.personal import ENABLED_KEY, get_or_create_personal_department
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL, DEPARTMENT_KIND_STANDARD
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -301,3 +305,75 @@ async def test_instantiate_agent_checks_the_templates_narrowing(
         )
         with pytest.raises(PluginError, match="narrowing"):
             await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+
+
+async def _dept(s: AsyncSession, tenant: uuid.UUID, kind: str) -> m.Department:
+    if kind == DEPARTMENT_KIND_PERSONAL:
+        s.add(
+            m.Organization(
+                id=tenant,
+                slug=f"t-{tenant.hex[:8]}",
+                name="T",
+                settings={ENABLED_KEY: True},
+            )
+        )
+        subject = f"user-{uuid.uuid4().hex[:8]}"
+        member = m.OrgMember(
+            tenant_id=tenant,
+            subject=subject,
+            subject_uuid=subject_uuid_for(subject),
+            display_name="Ada",
+        )
+        s.add(member)
+        await s.flush()
+        return await get_or_create_personal_department(s, member=member)
+    dept = m.Department(tenant_id=tenant, name="Standard", frame={}, kind=kind)
+    s.add(dept)
+    await s.flush()
+    return dept
+
+
+async def _agent_count(s: AsyncSession, tenant: uuid.UUID) -> int:
+    rows = await s.execute(select(m.Agent).where(m.Agent.tenant_id == tenant))
+    return len(rows.scalars().all())
+
+
+async def test_personal_template_refuses_a_standard_department(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = await _dept(s, tenant, DEPARTMENT_KIND_STANDARD)
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest(scope="personal")
+        )
+        with pytest.raises(PluginError, match="personal template"):
+            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        assert await _agent_count(s, tenant) == 0
+
+
+async def test_department_template_refuses_a_personal_department(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = await _dept(s, tenant, DEPARTMENT_KIND_PERSONAL)
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest()
+        )
+        with pytest.raises(PluginError, match="personal department"):
+            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        assert await _agent_count(s, tenant) == 0
+
+
+async def test_personal_template_hires_into_a_personal_department(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = await _dept(s, tenant, DEPARTMENT_KIND_PERSONAL)
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest(scope="personal")
+        )
+        agent = await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        assert agent.department_id == dept.id

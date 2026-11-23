@@ -165,6 +165,9 @@ class TemplateAgent(BaseModel):
     #: not a manual; each one capped at 120 characters because a starter that
     #: wraps twice is not a starter.
     prompt_starters: list[str] = Field(default_factory=list, max_length=6)
+    #: Where this template may be hired: a standard department, or a member's
+    #: personal one. A6 adds more.
+    scope: Literal["department", "personal"] = "department"
 
     @field_validator("prompt_starters")
     @classmethod
@@ -181,6 +184,17 @@ class DepartmentTemplateSpec(BaseModel):
     frame: dict[str, Any] = {}
     agents: list[TemplateAgent] = []
     starter_tasks: list[dict[str, Any]] = []  # reserved; not instantiated in v1
+
+    @model_validator(mode="after")
+    def _agents_are_department_scoped(self) -> DepartmentTemplateSpec:
+        # A department template creates a standard department.
+        for agent in self.agents:
+            if agent.scope == "personal":
+                raise ValueError(
+                    f"agent {agent.name!r} has scope 'personal'; "
+                    "a department template cannot carry a personal agent"
+                )
+        return self
 
 
 class SkillTemplateSpec(BaseModel):
