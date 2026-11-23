@@ -903,3 +903,34 @@ async def test_a_nul_in_a_skip_reason_is_kept_without_it(app_session: AppSession
     row = await _cursor(app_session, polled, trigger_id)
     assert row.last_skipped == "loop guard" and row.cursor == {"pos": 6}
     assert row.failures == 0
+
+
+async def test_a_baseline_from_before_baseline_ids_never_fires_an_event_again(
+    app_session: AppSessionFactory,
+) -> None:
+    """The upgrade: a cursor whose baseline predates baseline ids, and a run
+    fired under the old key. Polling that event again fires nothing."""
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(baseline_then(lambda _c: [event(1)])))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()
+    await _make_due(app_session, polled, trigger_id)
+    async with app_session(polled.tenant) as db:
+        row = await db.scalar(
+            select(m.EventSourceCursor).where(m.EventSourceCursor.trigger_id == trigger_id)
+        )
+        assert row is not None
+        row.baseline_id = None  # as migration 0132 leaves an existing cursor
+    await poll_tick()
+    [run] = await _runs(app_session, polled)
+    assert run.idempotency_key == f"{polled.source}:d-1:{trigger_id}"
+
+    async with app_session(polled.tenant) as db:
+        row = await db.scalar(
+            select(m.EventSourceCursor).where(m.EventSourceCursor.trigger_id == trigger_id)
+        )
+        assert row is not None
+        row.cursor = {"pos": 5}  # the same event comes again
+        row.next_poll_at = None
+    await poll_tick()
+    assert len(await _runs(app_session, polled)) == 1
