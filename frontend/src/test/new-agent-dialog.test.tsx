@@ -437,3 +437,44 @@ describe("NewAgentDialog: the department's threshold on an inherited tool", () =
     expect(await hireWithFrameThreshold(true)).toMatchObject({ approval_eur: 200 });
   });
 });
+
+describe("NewAgentDialog: an agent-only grant from a preset with a threshold", () => {
+  it("leaves a positive threshold out on a connection without a value spec", async () => {
+    // The backend refuses a NEW positive threshold there (it never fires: the
+    // connection reports no amount), so sending the preset's €100 would turn
+    // a plain hire into a 422.
+    connectionsMock.mockReturnValue({
+      data: [
+        {
+          ...connections[0],
+          hasValueSpec: false,
+          guardrailPresets: [
+            {
+              key: "careful",
+              label: "Careful",
+              recommended: true,
+              read: true,
+              modify: true,
+              approvalActions: [],
+              approvalEur: 100,
+              only: null,
+              limits: [],
+            },
+          ],
+        },
+      ],
+    });
+    departmentToolsMock.mockReturnValue({ data: { tools: {} } }); // agent-only grant
+    renderDialog();
+    await screen.findByText("Hire a new agent");
+    fillIdentityAndGoToTools();
+    fireEvent.click(screen.getByRole("button", { name: "Add tool" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: /Next/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
+    await waitFor(() => expect(setNarrowingMock).toHaveBeenCalled());
+    const granted = setNarrowingMock.mock.calls[0][0].narrowing.tools.Odoo;
+    expect(granted).toMatchObject({ enabled: true, modify: true });
+    expect(granted).not.toHaveProperty("approval_eur");
+  });
+});

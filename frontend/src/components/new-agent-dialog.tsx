@@ -283,7 +283,7 @@ export function NewAgentDialog({
         enabled: true,
         read: policy ? policy.read : true,
         modify: policy ? policy.modify : false,
-        approval_eur: policy?.approvalEur ?? null,
+        ...thresholdField(key, policy?.approvalEur ?? null, valueSpecs),
         approval_actions: policy?.approvalActions ?? [],
         only: policy?.only ?? [],
         conditions: policy?.conditions ?? [],
