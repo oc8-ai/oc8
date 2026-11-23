@@ -42,13 +42,13 @@ ran in a different container.
 
 from __future__ import annotations
 
-import re
 import uuid
+from email.utils import getaddresses
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.agent.tool_idempotency import record_invocation, replayed_result
+from oc8.agent.tool_idempotency import claim_invocation, record_invocation, replayed_result
 from oc8.agent.tool_semantics import call_entity, focus_ref_id
 
 #: What the model is told when the second message is refused. It has to say what
@@ -109,7 +109,7 @@ def outward_target(
     # exactly the repeat this guard is for (E2E N1, security review).
     recipients = _declared_recipients(tool_name, arguments, spec)
     if recipients:
-        return "recipients#" + ",".join(recipients)
+        return RECIPIENTS + ",".join(recipients)
     # Both declared shapes, not just `entity_field`: software with one endpoint
     # per KIND of thing (`calendar_create_event`) names the entity in the tool,
     # never in an argument, so reading only the argument left every such call
@@ -125,8 +125,25 @@ def outward_target(
     return f"{entity or tool_name}#"
 
 
-#: An address inside a display name: `Ann <ann@example.com>`.
-_ANGLE = re.compile(r"<([^<>]+)>")
+#: The prefix of a target keyed by the people a call reaches.
+RECIPIENTS = "recipients#"
+
+
+def _normalised_address(raw: str) -> str | None:
+    """One mailbox, comparably: trimmed and lowercased, the domain in its
+    IDNA (ASCII) form, plus-addressing kept -- `ann+x@` is another mailbox.
+    None for anything that is not an address."""
+    address = raw.strip().lower()
+    local, at, domain = address.rpartition("@")
+    if not at or not local or not domain or any(c.isspace() for c in address):
+        return None
+    try:
+        domain = domain.encode("idna").decode("ascii")
+    except UnicodeError:
+        return None
+    if "." not in domain.strip("."):
+        return None
+    return f"{local}@{domain}"
 
 
 def _declared_recipients(
@@ -134,26 +151,34 @@ def _declared_recipients(
 ) -> list[str]:
     """The people a call reaches, from the arguments its connection declares
     for that (`focus_spec.outward_fields`: tool -> argument names), as one
-    set: trimmed, lowercased, deduplicated and sorted, whichever field
-    (to/cc/bcc) names them. Empty when nothing is declared or named -- then
-    the caller fails closed to the coarser keys."""
+    set: parsed as address headers (`"Doe, Ann" <ann@x.com>` is one person),
+    only valid addresses, normalised (`_normalised_address`), deduplicated
+    and sorted, whichever field (to/cc/bcc) names them. Empty when nothing
+    is declared or named -- then the caller fails closed to the coarser
+    keys."""
     declared = spec.get("outward_fields")
     fields = declared.get(tool_name) if isinstance(declared, dict) else None
     if not isinstance(fields, list):
         return []
-    found: set[str] = set()
+    headers: list[str] = []
     for field in fields:
         value = arguments.get(str(field))
         items = value if isinstance(value, list) else [value]
-        for item in items:
-            if not isinstance(item, str):
-                continue
-            for part in item.split(","):
-                inner = _ANGLE.search(part)
-                address = (inner.group(1) if inner else part).strip().lower()
-                if address:
-                    found.add(address)
+        headers.extend(item for item in items if isinstance(item, str))
+    found = {
+        normalised
+        for _name, address in getaddresses(headers)
+        if (normalised := _normalised_address(address)) is not None
+    }
     return sorted(found)
+
+
+def _people(target: str) -> list[str]:
+    """The per-person targets a recipients target stands for: each person is
+    remembered, and checked, on their own."""
+    if not target.startswith(RECIPIENTS):
+        return [target]
+    return [f"recipient#{a}" for a in target[len(RECIPIENTS) :].split(",") if a]
 
 
 def _marker(target: str) -> str:
@@ -163,11 +188,16 @@ def _marker(target: str) -> str:
 async def already_delivered(
     db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID, target: str
 ) -> bool:
-    return (
-        await replayed_result(
-            db, tenant_id=tenant_id, task_id=task_id, tool=_marker(target), arguments={}
-        )
-    ) is not None
+    """Whether this target -- for a recipients target: ANY of its people --
+    was reached in the task. `[a]` then `[a, b]` reaches a twice."""
+    for one in _people(target):
+        if (
+            await replayed_result(
+                db, tenant_id=tenant_id, task_id=task_id, tool=_marker(one), arguments={}
+            )
+        ) is not None:
+            return True
+    return False
 
 
 async def remember_delivery(
@@ -175,7 +205,25 @@ async def remember_delivery(
 ) -> None:
     """Record that a person has been reached. Only ever after a call SUCCEEDED --
     remembering a failed send would silence the retry that should happen."""
-    await record_invocation(
+    for one in _people(target):
+        await record_invocation(
+            db,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            tool=_marker(one),
+            arguments={},
+            result=target,
+        )
+
+
+async def claim_delivery(
+    db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID, target: str
+) -> bool:
+    """Record this target as reached, BEFORE the call that reaches it: True
+    only for the one request that inserted the marker (`claim_invocation`).
+    A concurrent claim of the same target waits for this transaction and
+    then loses, so of two racing requests exactly one goes on."""
+    return await claim_invocation(
         db,
         tenant_id=tenant_id,
         task_id=task_id,

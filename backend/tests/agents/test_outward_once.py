@@ -227,3 +227,55 @@ async def test_remembering_twice_does_not_raise(app_session: AppSessionFactory) 
         assert await already_delivered(
             db, tenant_id=tenant, task_id=task.id, target="helpdesk.ticket#73"
         )
+
+
+# ------------------------------------------------- recipients, one by one (review)
+
+
+def test_a_display_name_with_a_comma_is_one_person() -> None:
+    """`"Doe, Ann" <ann@x.com>` is Ann, not "Doe" plus Ann: a split on the
+    comma made it a different key from `ann@x.com`, so a second mail to Ann
+    passed the guard."""
+    assert _send(to='"Doe, Ann" <ann@x.com>') == _send(to=["ann@x.com"])
+    assert _send(to=['"Doe, Ann" <ANN@X.COM>']) == _send(to=["ann@x.com"])
+
+
+def test_only_valid_addresses_count() -> None:
+    assert _send(to=["not an address", "ann@x.com", ""]) == _send(to=["ann@x.com"])
+    assert _send(to=["nobody"]) == "post_message#"
+
+
+def test_plus_addressing_is_another_mailbox() -> None:
+    assert _send(to=["ann+billing@x.com"]) != _send(to=["ann@x.com"])
+
+
+def test_an_international_domain_is_one_domain() -> None:
+    assert _send(to=["ann@bücher.de"]) == _send(to=["ann@xn--bcher-kva.de"])
+
+
+async def _reached(db: Any, tenant: uuid.UUID, task: m.Task, **arguments: Any) -> bool:
+    target = _send(**arguments)
+    assert target is not None
+    return await already_delivered(db, tenant_id=tenant, task_id=task.id, target=target)
+
+
+async def _deliver(db: Any, tenant: uuid.UUID, task: m.Task, **arguments: Any) -> None:
+    target = _send(**arguments)
+    assert target is not None
+    await remember_delivery(db, tenant_id=tenant, task_id=task.id, target=target)
+
+
+async def test_a_send_reaching_anybody_already_reached_is_a_repeat(
+    app_session: AppSessionFactory,
+) -> None:
+    """One marker per person: `[a]` then `[a, b]` reaches a a second time,
+    and so does `to: a` then `cc: a` -- whatever else the second send names."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        task = await _task(db, tenant)
+        await _deliver(db, tenant, task, to=["ann@x.com"])
+        assert await _reached(db, tenant, task, to=["ann@x.com", "bob@x.com"])
+        assert await _reached(db, tenant, task, to=["carl@x.com"], cc=["ANN@x.com"])
+        assert await _reached(db, tenant, task, to='"Doe, Ann" <Ann@X.com>')
+        assert not await _reached(db, tenant, task, to=["bob@x.com"])
+        assert not await _reached(db, tenant, task, to=["ann+other@x.com"])
