@@ -193,6 +193,34 @@ async def test_restore_at_the_cap_is_a_409(app_session: AppSessionFactory) -> No
     assert r.json()["detail"] == {"error": "personal_agent_limit"}
 
 
+async def test_restore_after_the_owner_left_is_a_409(app_session: AppSessionFactory) -> None:
+    tenant, dept_id = await _personal(app_session)
+    async with _http() as http:
+        made = await http.post("/api/v1/agents", json=_body(dept_id), headers=_headers(tenant))
+        assert made.status_code == 201, made.text
+        agent_id = uuid.UUID(made.json()["id"])
+        async with app_session(tenant) as db:
+            agent = await db.get(m.Agent, agent_id)
+            dept = await db.get(m.Department, dept_id)
+            assert agent is not None and dept is not None and dept.owner_member_id is not None
+            agent.deleted_at = datetime.now(UTC)
+        r = await http.post(f"/api/v1/agents/{agent_id}/restore", headers=_headers(tenant))
+        assert r.status_code == 200, r.text  # control: the owner is still here
+        async with app_session(tenant) as db:
+            agent = await db.get(m.Agent, agent_id)
+            dept = await db.get(m.Department, dept_id)
+            assert agent is not None and dept is not None and dept.owner_member_id is not None
+            owner = await db.get(m.OrgMember, dept.owner_member_id)
+            assert owner is not None
+            agent.deleted_at = datetime.now(UTC)
+            owner.deleted_at = datetime.now(UTC)
+        r = await http.post(
+            f"/api/v1/agents/{agent_id}/restore", headers=_headers(tenant, "org_admin")
+        )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "owner_left"}
+
+
 async def test_a_standard_department_keeps_its_behaviour(app_session: AppSessionFactory) -> None:
     """No personal frame, no personal cap: the same calls as above go through."""
     tenant, _ = await _personal(app_session, max_agents=1)

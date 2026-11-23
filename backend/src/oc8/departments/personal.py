@@ -561,21 +561,24 @@ async def follow_default(
 async def stop_departments_owned_by(
     db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
 ) -> int:
-    """Stop everything the departments a leaving member owns still run, and
-    return how many agents were stopped.
+    """Archive every live agent of the departments a leaving member owns, and
+    return how many there were.
 
     Keys on `owner_member_id` alone -- no kind and no `deleted_at` predicate --
     so an archived department is covered too, and so is any kind that later
-    gains an owner. Agents become `stopped` (the departments stay, as
-    metadata); their triggers are disabled, their tool bindings revoked, and
-    their in-flight work is ended through `agents.retire.retire_agent`: open
-    approvals expire, unfinished runs get the `agent_archived` cancellation
-    (a queued run is skipped at pickup, a running one stops at its next step
-    boundary, a parked one is woken and ended). add/flush only: the caller owns
-    the commit.
+    gains an owner. The departments stay, as metadata. The agents are archived
+    (`deleted_at`, kept as rows: a run's `agent_id` must keep pointing at one),
+    because `stopped` is only the idle status and the worker still runs queued
+    work for it; an archived agent is refused by the executor's archived guard.
+    Their tool bindings are revoked, and `agents.retire.retire_agent` ends the
+    in-flight work: open approvals expire, unfinished runs get the
+    `agent_archived` cancellation (a queued run is skipped at pickup, a running
+    one stops at its next step boundary, a parked one is woken and ended).
+    add/flush only: the caller owns the commit.
     """
     from oc8.agents.retire import retire_agent
     from oc8.audit.chain import append_event
+    from oc8.runtime.cancellation import AGENT_ARCHIVED
 
     owned = select(m.Department.id).where(
         m.Department.tenant_id == tenant_id, m.Department.owner_member_id == member_id
@@ -599,24 +602,25 @@ async def stop_departments_owned_by(
         m.Agent.tenant_id == tenant_id, m.Agent.department_id.in_(owned)
     )
     # Triggers first (see `retire_agent`): the lock keeps a scheduler from
-    # starting a run between here and the commit.
+    # starting a run between here and the commit. Every trigger of these
+    # agents, the member's chat-session follow-ups included on purpose
+    # (`retire_agent` skips those: they belong to the member, who is leaving).
     await db.execute(
         update(m.Trigger)
         .where(m.Trigger.tenant_id == tenant_id, m.Trigger.agent_id.in_(all_agents))
-        .values(enabled=False, last_skip_reason=None)
-    )
-    await db.execute(
-        update(m.Agent)
-        .where(
-            m.Agent.tenant_id == tenant_id,
-            m.Agent.id.in_(agent_ids),
-        )
-        .values(status="stopped")
+        .values(enabled=False, last_skip_reason=AGENT_ARCHIVED)
     )
     await db.execute(
         delete(m.AgentToolAccess).where(
             m.AgentToolAccess.tenant_id == tenant_id, m.AgentToolAccess.agent_id.in_(all_agents)
         )
+    )
+    if not agent_ids:
+        return 0
+    await db.execute(
+        update(m.Agent)
+        .where(m.Agent.tenant_id == tenant_id, m.Agent.id.in_(agent_ids))
+        .values(deleted_at=dt.datetime.now(tz=dt.UTC))
     )
     for agent_id in agent_ids:
         await retire_agent(
@@ -626,13 +630,6 @@ async def stop_departments_owned_by(
             principal=None,
             resource_extra={"member_id": str(member_id), "offboarded": True},
         )
-    # `retire_agent` records its own skip reason on the triggers; an offboarded
-    # owner's triggers carry none.
-    await db.execute(
-        update(m.Trigger)
-        .where(m.Trigger.tenant_id == tenant_id, m.Trigger.agent_id.in_(all_agents))
-        .values(last_skip_reason=None)
-    )
     await append_event(
         db,
         tenant_id=tenant_id,

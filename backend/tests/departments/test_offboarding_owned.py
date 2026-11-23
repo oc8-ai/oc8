@@ -18,6 +18,7 @@ from oc8.departments.personal import (
     get_or_create_personal_department,
     stop_departments_owned_by,
 )
+from oc8.runtime.cancellation import AGENT_ARCHIVED, run_stop
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -84,9 +85,9 @@ async def test_offboarding_stops_agents_disables_triggers_and_revokes_bindings(
 
     async with app_session(tenant) as db:
         a = await db.get(m.Agent, ids[2])
-        assert a is not None and a.status == "stopped"
+        assert a is not None and a.deleted_at is not None
         t = await db.get(m.Trigger, ids[3])
-        assert t is not None and t.enabled is False and t.last_skip_reason is None
+        assert t is not None and t.enabled is False and t.last_skip_reason == AGENT_ARCHIVED
         assert await db.get(m.AgentToolAccess, ids[4]) is None
         d = await db.get(m.Department, ids[1])
         assert d is not None and d.deleted_at is None
@@ -161,15 +162,20 @@ async def test_the_hook_also_covers_an_archived_owned_department(
         db.add(old)
         await db.flush()
         _, t1, _ = await _agent_with_gear(db, tenant, live.id, "A")
-        _, t2, _ = await _agent_with_gear(db, tenant, old.id, "B")
-        ids = (owner.id, t1.id, t2.id)
+        a2, t2, _ = await _agent_with_gear(db, tenant, old.id, "B")
+        archived_before = dt.datetime(2020, 1, 1, tzinfo=dt.UTC)
+        a2.deleted_at = archived_before
 
         stopped = await stop_departments_owned_by(db, tenant_id=tenant, member_id=owner.id)
-        assert stopped == 2
+        # Only the live agent is archived now; the already archived one keeps
+        # its own timestamp, and both departments' triggers are off.
+        assert stopped == 1
         await db.refresh(t1)
         await db.refresh(t2)
+        await db.refresh(a2)
         assert (t1.enabled, t2.enabled) == (False, False)
-        assert ids[1] != ids[2]
+        assert t2.last_skip_reason == AGENT_ARCHIVED
+        assert a2.deleted_at == archived_before
 
 
 async def test_a_returning_subject_gets_a_fresh_department(
@@ -201,4 +207,56 @@ async def test_a_returning_subject_gets_a_fresh_department(
         fresh = await get_or_create_personal_department(db, member=returning)
         assert fresh.id != old_dept
         old_agent = await db.get(m.Agent, agent_id)
-        assert old_agent is not None and old_agent.status == "stopped"
+        assert old_agent is not None and old_agent.deleted_at is not None
+
+
+async def test_a_run_created_after_offboarding_is_stopped_by_the_archived_guard(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        owner = await _tenant_with_member(db, tenant)
+        dept = await get_or_create_personal_department(db, member=owner)
+        agent, _, _ = await _agent_with_gear(db, tenant, dept.id, "Mailer")
+        running = m.AgentRun(tenant_id=tenant, agent_id=agent.id, context={}, state="running")
+        db.add(running)
+        await db.flush()
+        owner_id, agent_id, running_id = owner.id, agent.id, running.id
+
+    async with app_session(tenant) as db:
+        await offboard_member(db, tenant_id=tenant, member_id=owner_id)
+
+    async with app_session(tenant) as db:
+        cancelled = (await db.execute(select(m.RunCancellation))).scalars().all()
+        assert [c.run_id for c in cancelled] == [running_id]
+        late = m.AgentRun(tenant_id=tenant, agent_id=agent_id, context={}, state="running")
+        db.add(late)
+        await db.flush()
+        stop = await run_stop(db, late)
+        assert stop is not None and stop.kind == AGENT_ARCHIVED
+
+
+async def test_offboarding_twice_stops_nothing_new_and_audits_once(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        owner = await _tenant_with_member(db, tenant)
+        dept = await get_or_create_personal_department(db, member=owner)
+        await _agent_with_gear(db, tenant, dept.id, "Mailer")
+        owner_id = owner.id
+
+    async with app_session(tenant) as db:
+        assert await stop_departments_owned_by(db, tenant_id=tenant, member_id=owner_id) == 1
+    async with app_session(tenant) as db:
+        assert await stop_departments_owned_by(db, tenant_id=tenant, member_id=owner_id) == 0
+        events = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "department.owner_offboarded")
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(events) == 1
