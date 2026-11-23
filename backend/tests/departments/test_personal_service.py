@@ -24,10 +24,12 @@ from oc8.departments.personal import (
     FRAME_KEY,
     PersonalDefaults,
     PersonalDepartmentsDisabled,
+    follow_default,
     get_or_create_personal_department,
     owned_personal_department,
     personal_defaults,
     personal_frame,
+    resync_frames,
 )
 from oc8.metering.budget import get_budget
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
@@ -314,3 +316,42 @@ async def test_concurrent_first_use_creates_one_department(
             (await db.execute(select(m.Budget).where(m.Budget.tenant_id == tenant))).scalars().all()
         )
         assert len(budgets) == 1
+
+
+@pytest.mark.parametrize("how", ["resync", "follow_default"])
+async def test_reapplying_the_default_frame_replaces_only_its_tools(
+    app_session: AppSessionFactory, how: str
+) -> None:
+    """Final review M2: a re-sync or follow-default rebuilt the whole frame from
+    `personal_frame`, dropping every other key a department's frame carries.
+    It now swaps `tools` alone and keeps the frame closed."""
+    tenant, member_id = await _tenant(app_session, {ENABLED_KEY: True, FRAME_KEY: {}})
+    connection = str(uuid.uuid4())
+    async with app_session(tenant) as db:
+        dept = await get_or_create_personal_department(db, member=await _member(db, member_id))
+        dept.frame = {
+            **(dept.frame or {}),
+            "emits": ["note.created"],
+            "intakes": ["request"],
+            "default_connection_id": connection,
+        }
+        if how == "follow_default":
+            dept.frame_overridden_at = dt.datetime.now(dt.UTC)
+        await db.flush()
+        new_tools = {"docs.files": {"enabled": True, "read": True}}
+        if how == "resync":
+            assert await resync_frames(db, tenant_id=tenant, new_tools=new_tools) == 1
+        else:
+            org = await db.get(m.Organization, tenant)
+            assert org is not None
+            org.settings = {**org.settings, FRAME_KEY: new_tools}
+            await db.flush()
+            assert await follow_default(db, tenant_id=tenant, department_id=dept.id) is not None
+        await db.flush()
+        await db.refresh(dept)
+        assert dept.frame["tools"] == new_tools
+        assert dept.frame["closed"] is True
+        assert dept.frame["emits"] == ["note.created"]
+        assert dept.frame["intakes"] == ["request"]
+        assert dept.frame["default_connection_id"] == connection
+        assert dept.frame["memory"] == {"department": ["read", "write"]}

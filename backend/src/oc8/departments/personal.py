@@ -481,7 +481,13 @@ async def default_frame_agents(db: AsyncSession, *, tenant_id: uuid.UUID) -> lis
 
 async def _apply_frame(db: AsyncSession, *, dept: m.Department, new_tools: dict[str, Any]) -> None:
     old_tools = dict((dept.frame or {}).get("tools", {}))
-    dept.frame = personal_frame(new_tools)
+    # Only the tools follow the tenant's default: every other key of this
+    # department's frame (what it emits, takes in, its default connection)
+    # stays, and the frame stays closed (`personal_frame`).
+    frame = copy.deepcopy(dict(dept.frame or {}))
+    frame["tools"] = copy.deepcopy(new_tools)
+    frame["closed"] = True
+    dept.frame = frame
     agents = await _live_agents(db, tenant_id=dept.tenant_id, department_ids=[dept.id])
     await cascade_department_tools_change(
         db, old_tools=old_tools, new_tools=new_tools, agents=agents, clip_to_frame=True
