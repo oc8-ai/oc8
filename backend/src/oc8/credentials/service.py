@@ -250,6 +250,10 @@ async def update_credential(
             # Any non-secret field may name the account (a host, a user, a
             # tenant): the login may now reach another one, so whatever
             # listens on it starts afresh. A new secret alone does not.
+            # Deliberately broad (the safe direction: never a replay, never a
+            # missed new id); the cost is that events which arrived since the
+            # last poll, at most one poll interval's worth, are taken into
+            # the new baseline and do not fire.
             from oc8.events.sources import LoginTarget, reset_cursors_on_login
 
             await reset_cursors_on_login(db, LoginTarget("credential", cred.id))
