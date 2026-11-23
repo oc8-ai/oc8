@@ -268,7 +268,6 @@ describe("NewAgentDialog: inline credential picker", () => {
       enabled: true,
       read: true,
       modify: true,
-      approval_eur: null,
       connection_id: null,
     });
     await waitFor(() =>
@@ -408,5 +407,33 @@ describe("NewAgentDialog: real schedule + webhook triggers", () => {
         params: { id: "new-agent-id" },
       }),
     );
+  });
+});
+
+describe("NewAgentDialog: the department's threshold on an inherited tool", () => {
+  async function hireWithFrameThreshold(hasValueSpec: boolean) {
+    connectionsMock.mockReturnValue({ data: [{ ...connections[0], hasValueSpec }] });
+    departmentToolsMock.mockReturnValue({
+      data: { tools: { Odoo: { enabled: true, read: true, modify: true, approval_eur: 200 } } },
+    });
+    renderDialog();
+    await screen.findByText("Hire a new agent");
+    fillIdentityAndGoToTools();
+    fireEvent.click(screen.getByRole("button", { name: "Add tool" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    fireEvent.click(screen.getByRole("button", { name: /Next/i })); // -> Guardrails & Trigger
+    fireEvent.click(screen.getByRole("button", { name: /Hire agent/i }));
+    await waitFor(() => expect(createAgentMock).toHaveBeenCalled());
+    return createAgentMock.mock.calls[0][0].narrowing.tools.Odoo;
+  }
+
+  it("leaves it out for a connection with no value to compare it against", async () => {
+    // The frame's threshold applies anyway; a copy saved on the agent went
+    // stale the moment the department changed its value (E2E F3 review).
+    expect(await hireWithFrameThreshold(false)).not.toHaveProperty("approval_eur");
+  });
+
+  it("keeps it for a connection with a value spec", async () => {
+    expect(await hireWithFrameThreshold(true)).toMatchObject({ approval_eur: 200 });
   });
 });

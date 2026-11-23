@@ -999,3 +999,54 @@ async def test_rolling_back_the_model_refreshes_the_displayed_model(
             assert res.status_code == 201, res.text
             after = await client.get(f"/api/v1/agents/{agent_id}", headers=headers)
     assert (after.json()["llm"], after.json()["provider"]) == (first_name, "anthropic")
+
+
+async def test_a_rollback_to_a_version_without_the_frame_threshold_is_accepted(
+    app_session: AppSessionFactory,
+) -> None:
+    """A saved narrowing no longer carries the department's threshold on a
+    connection without a value spec (microsoft365): the frame's applies. A
+    rollback to such a version must not read its absence as removing it."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    policy = {"enabled": True, "read": True, "modify": True}
+    async with app_session(tenant) as db:
+        department = m.Department(
+            tenant_id=tenant,
+            name=f"D-{uuid.uuid4().hex}",
+            frame={"tools": {"microsoft365": {**policy, "approval_eur": 200}}},
+        )
+        db.add(department)
+        db.add(
+            m.McpConnection(
+                tenant_id=tenant,
+                name="microsoft365",
+                server_url="",
+                transport="stdio",
+                config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+            )
+        )
+        await db.flush()
+        department_id = department.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            created = await client.post(
+                "/api/v1/agents",
+                json={
+                    "departmentId": str(department_id),
+                    "name": f"A-{uuid.uuid4().hex[:8]}",
+                    "roleTitle": "Tester",
+                    "mission": "v1",
+                    "narrowing": {"tools": {"microsoft365": policy}},
+                },
+                headers=headers,
+            )
+            assert created.status_code == 201, created.text
+            agent_id = str(created.json()["id"])
+            await _publish_missions(client, headers, agent_id, ["v2"])
+            res = await client.post(
+                f"/api/v1/agents/{agent_id}/versions/1/rollback", headers=headers
+            )
+    assert res.status_code == 201, res.text

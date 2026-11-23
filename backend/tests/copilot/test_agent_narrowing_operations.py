@@ -5,6 +5,7 @@ apply_operation instead of the REST route."""
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +15,8 @@ from oc8.auth import Principal
 from oc8.copilot.proposals import ProposalRejected, apply_proposal, create_proposal
 
 pytestmark = pytest.mark.asyncio
+
+_CAPAS_DIR = str(Path(__file__).resolve().parents[3] / "capas")
 
 
 def _actor(tenant: uuid.UUID) -> Principal:
@@ -162,3 +165,126 @@ async def test_narrowing_set_on_a_published_agent_is_published(app_session, acme
         live = await db.get(m.AgentVersion, agent.current_version_id)
         assert live is not None and live.version_no == 2
         assert version_payload(live)["narrowing"] == narrowing
+
+
+async def _propose_threshold_after_a_frame_raise(
+    app_session, acme_tenant, sent_eur: float
+) -> tuple[m.Agent, object]:
+    """Review of F3, through the Copilot: the department raised its threshold
+    on a connection without a value spec (microsoft365) from 200 to 300 after
+    the agent's narrowing was saved with 200, and the Copilot proposes the
+    agent's narrowing again with `sent_eur`."""
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        policy = {"enabled": True, "read": True, "modify": True}
+        dept = m.Department(
+            tenant_id=acme_tenant,
+            name="Sales",
+            frame={"tools": {"microsoft365": {**policy, "approval_eur": 300}}},
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=acme_tenant,
+            department_id=dept.id,
+            name="Petra",
+            definition={},
+            narrowing={"tools": {"microsoft365": {**policy, "approval_eur": 200}}},
+        )
+        conn = m.McpConnection(
+            tenant_id=acme_tenant,
+            name="microsoft365",
+            server_url="",
+            transport="stdio",
+            config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+        )
+        db.add_all([agent, conn])
+        await db.flush()
+        proposal = await create_proposal(
+            db,
+            actor,
+            [
+                {
+                    "type": "agent.narrowing.set",
+                    "agentId": str(agent.id),
+                    "narrowing": {"tools": {"microsoft365": {**policy, "approval_eur": sent_eur}}},
+                }
+            ],
+        )
+        try:
+            result: object = await apply_proposal(db, proposal.id, actor)
+        except ProposalRejected as exc:
+            result = exc
+        await db.refresh(agent)
+        return agent, result
+
+
+async def test_narrowing_set_after_the_department_raised_its_threshold_is_applied(
+    app_session, acme_tenant
+) -> None:
+    agent, result = await _propose_threshold_after_a_frame_raise(app_session, acme_tenant, 200)
+    assert not isinstance(result, ProposalRejected), result
+    assert "approval_eur" not in agent.narrowing["tools"]["microsoft365"]
+
+
+async def test_narrowing_set_with_a_looser_threshold_than_the_frame_is_rejected(
+    app_session, acme_tenant
+) -> None:
+    _agent, result = await _propose_threshold_after_a_frame_raise(app_session, acme_tenant, 500)
+    assert isinstance(result, ProposalRejected)
+
+
+async def test_a_guardrail_edit_on_a_narrowing_without_the_frame_threshold_is_applied(
+    app_session, acme_tenant, monkeypatch
+) -> None:
+    """A saved narrowing no longer carries the department's threshold on a
+    connection without a value spec, so the Copilot's guardrail edit must not
+    read its absence as removing it."""
+    from oc8.config import get_settings
+
+    monkeypatch.setenv("OC8_CAPAS_PATH", _CAPAS_DIR)
+    get_settings.cache_clear()
+    actor = _actor(acme_tenant)
+    try:
+        async with app_session(acme_tenant) as db:
+            policy = {"enabled": True, "read": True, "modify": True}
+            dept = m.Department(
+                tenant_id=acme_tenant,
+                name="Sales",
+                frame={"tools": {"microsoft365": {**policy, "approval_eur": 200}}},
+            )
+            db.add(dept)
+            await db.flush()
+            agent = m.Agent(
+                tenant_id=acme_tenant,
+                department_id=dept.id,
+                name="Petra",
+                definition={},
+                narrowing={"tools": {"microsoft365": dict(policy)}},
+            )
+            conn = m.McpConnection(
+                tenant_id=acme_tenant,
+                name="microsoft365",
+                server_url="",
+                transport="stdio",
+                config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+            )
+            db.add_all([agent, conn])
+            await db.flush()
+            proposal = await create_proposal(
+                db,
+                actor,
+                [
+                    {
+                        "type": "agent.guardrail.set",
+                        "agentId": str(agent.id),
+                        "connectionName": "microsoft365",
+                        "function": "mail_delete",
+                        "decision": "not_allowed",
+                    }
+                ],
+            )
+            result = await apply_proposal(db, proposal.id, actor)
+            assert result.status == "applied"
+    finally:
+        get_settings.cache_clear()

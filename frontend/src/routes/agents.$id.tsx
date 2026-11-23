@@ -147,6 +147,7 @@ import { formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useLang, useT } from "@/lib/i18n";
 import { useMayManageAgent } from "@/lib/governance-hooks";
+import { thresholdField, valueSpecByName } from "@/lib/value-spec";
 import { useConfirm } from "@/hooks/use-confirm";
 import { AgentAutonomyPanel } from "@/components/agent-autonomy-panel";
 
@@ -1493,6 +1494,7 @@ export function AgentGuardrailsPanel({
   const agentOnlyKeys = Object.keys(effective).filter((k) => !(k in frame));
   const allKeys = [...frameKeys, ...agentOnlyKeys];
   const connectionByName = new Map(connections.map((c) => [c.name, c] as const));
+  const valueSpecs = valueSpecByName(connections);
   // Only logins this agent's own department could use: tenant-wide
   // (departmentId === null) plus ones scoped to this agent's department --
   // never another department's login sharing this tool key (agent tool
@@ -1541,7 +1543,7 @@ export function AgentGuardrailsPanel({
         enabled: isEdited ? true : !!src?.enabled,
         read: val.read,
         modify: val.modify,
-        approval_eur: val.approvalEur,
+        ...thresholdField(k, val.approvalEur, valueSpecs),
         approval_actions: val.approvalActions,
         only: val.only,
         conditions: val.conditions,

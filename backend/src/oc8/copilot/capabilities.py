@@ -49,7 +49,6 @@ from oc8.boards.spec import (
     parse_board_spec,
 )
 from oc8.capas.discovery import (
-    connection_supports_value_spec,
     find_plugin,
     resolve_tool_pack_connection,
 )
@@ -63,6 +62,7 @@ from oc8.capas.service import (
 )
 from oc8.connections.limit_tools import connection_tool_names, unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
+from oc8.connections.value_spec import check_agent_narrowing
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     attributes_for_function,
@@ -958,50 +958,24 @@ async def apply_operation(
             raise InvalidOperation()
         dept = await db.get(m.Department, agent.department_id)
         frame = dept.frame if dept else {}
+        # The same check as PUT /agents/{id}/narrowing: a threshold on a
+        # connection with no value_spec is judged against the frame and then
+        # dropped, never refused (E2E F3) -- see `connections.value_spec`.
         try:
-            outside = pdp.narrowing_within_frame(frame, operation.narrowing)
+            checked = await check_agent_narrowing(
+                db, tenant_id=tenant_id, frame=frame, narrowing=operation.narrowing
+            )
         except ValueError as exc:  # e.g. a malformed usage limit
             raise InvalidOperation() from exc
-        if outside:
+        if checked.violations:
             raise InvalidOperation("system_outside_frame")
+        narrowing = checked.narrowing
         if await unknown_limit_tools(
             db,
             tenant_id=agent.tenant_id,
-            tools=operation.narrowing.get("tools", {})
-            if isinstance(operation.narrowing, dict)
-            else {},
+            tools=narrowing.get("tools", {}) if isinstance(narrowing, dict) else {},
         ):
             raise InvalidOperation()
-        raw_tools = (
-            operation.narrowing.get("tools", {}) if isinstance(operation.narrowing, dict) else {}
-        )
-        if isinstance(raw_tools, dict):
-            for key, raw in raw_tools.items():
-                if not isinstance(raw, dict) or raw.get("approval_eur") is None:
-                    continue
-                mcp_conn = (
-                    await db.execute(
-                        select(m.McpConnection)
-                        .where(
-                            m.McpConnection.tenant_id == tenant_id,
-                            m.McpConnection.name == key,
-                            m.McpConnection.credential_id.is_(None),
-                            not_retired(),
-                        )
-                        .order_by(m.McpConnection.created_at)
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                cfg = (
-                    mcp_conn.config
-                    if mcp_conn is not None and isinstance(mcp_conn.config, dict)
-                    else {}
-                )
-                manifest_conn = resolve_tool_pack_connection(
-                    str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
-                )
-                if not connection_supports_value_spec(manifest_conn):
-                    raise InvalidOperation("system_no_amount_limit")
         # Deferred import: `oc8.api.v1`'s package __init__ eagerly aggregates
         # every route module for the router, including `copilot.py`, which
         # imports back from this module -- a top-level import here would make
@@ -1019,11 +993,11 @@ async def apply_operation(
         had_no_draft = await _has_no_draft(db, agent)
         try:
             await enforce_narrowing_logins(
-                db, tenant_id=tenant_id, agent=agent, narrowing=operation.narrowing, frame=frame
+                db, tenant_id=tenant_id, agent=agent, narrowing=narrowing, frame=frame
             )
         except HTTPException as exc:
             raise InvalidOperation("system_login_needed") from exc
-        agent.narrowing = operation.narrowing
+        agent.narrowing = narrowing
         await db.flush()
         await _publish_copilot_change(
             db, agent, had_no_draft=had_no_draft, what="tool access", publish=publish
@@ -1493,12 +1467,17 @@ async def _apply_guardrail_set(
     tools[operation.connectionName] = updated.to_json()
     narrowing["tools"] = tools
 
-    violations = pdp.narrowing_within_frame(frame, narrowing)
-    if violations:
+    # The same check as PUT /agents/{id}/narrowing (`connections.value_spec`):
+    # a stored narrowing carries no threshold on a connection without a value
+    # spec, and its absence must not read as removing the frame's.
+    checked = await check_agent_narrowing(
+        db, tenant_id=agent.tenant_id, frame=frame, narrowing=narrowing
+    )
+    if checked.violations:
         raise InvalidOperation()
 
     had_no_draft = await _has_no_draft(db, agent)
-    agent.narrowing = narrowing
+    agent.narrowing = checked.narrowing
     overridden = list(agent.narrowing_overridden_keys or [])
     if operation.connectionName not in overridden:
         overridden.append(operation.connectionName)

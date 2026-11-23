@@ -42,6 +42,7 @@ import { useSetAgentNarrowing } from "@/lib/hooks-agent-detail";
 import { useT } from "@/lib/i18n";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { mcpToolsFromConnections, type McpTool } from "@/lib/permissions";
+import { thresholdField, valueSpecByName } from "@/lib/value-spec";
 import { useOrgTimezone } from "@/lib/timezones";
 import { cn } from "@/lib/utils";
 
@@ -100,6 +101,7 @@ export function NewAgentDialog({
   // `presentation.tools` for the profile card / summary.
   const { data: connections = [] } = useMcpConnections();
   const mcpTools = useMemo(() => mcpToolsFromConnections(connections), [connections]);
+  const valueSpecs = useMemo(() => valueSpecByName(connections), [connections]);
   const connectedNames = useMemo(
     () => new Set(connections.filter((c) => c.connected).map((c) => c.name)),
     [connections],
@@ -261,7 +263,11 @@ export function NewAgentDialog({
         enabled: true,
         read: !!frame.read,
         modify: !!frame.modify,
-        approval_eur: (frame.approval_eur as number | null | undefined) ?? null,
+        ...thresholdField(
+          key,
+          (frame.approval_eur as number | null | undefined) ?? null,
+          valueSpecs,
+        ),
         connection_id: null,
       };
     }

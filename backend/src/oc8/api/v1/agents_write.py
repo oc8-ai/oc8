@@ -48,15 +48,16 @@ from oc8.api.v1.agents import _agent_detail_dto
 from oc8.api.v1.files import _attachment_dto, _store_upload
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_principal
-from oc8.authz.pdp import ToolPolicy, missing_skill_requirements, narrowing_within_frame
+from oc8.authz.pdp import ToolPolicy, missing_skill_requirements
 from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
-from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pack_connection
+from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
 from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.login import login_chosen
 from oc8.connections.tool_connection import not_retired
 from oc8.connections.usable import system_tool_scopes
+from oc8.connections.value_spec import check_agent_narrowing
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     interpret_guardrail_definition,
@@ -278,18 +279,26 @@ async def create_agent(
         not_found=HTTPException(status.HTTP_400_BAD_REQUEST, "unknown department"),
     )
 
+    narrowing: dict[str, Any] = {}
     if body.narrowing:
         reject_malformed_policies(body.narrowing)
         await reject_unknown_limit_tools(db, actor.principal.tenant_id, body.narrowing)
-        violations = narrowing_within_frame(dept.frame, body.narrowing)
-        if violations:
+        # The same check as PUT /agents/{id}/narrowing (`connections.value_spec`).
+        checked = await check_agent_narrowing(
+            db,
+            tenant_id=actor.principal.tenant_id,
+            frame=dept.frame or {},
+            narrowing=body.narrowing,
+        )
+        if checked.violations:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 {
                     "error": "narrowing_exceeds_frame",
-                    "violations": [v.__dict__ for v in violations],
+                    "violations": [v.__dict__ for v in checked.violations],
                 },
             )
+        narrowing = checked.narrowing
 
     principal = actor.principal
     gated = await require_hire_approval(db, tenant_id=principal.tenant_id)
@@ -308,15 +317,15 @@ async def create_agent(
         definition={"oc8_agent": 1, "name": body.name, "mission": body.mission},
         presentation=body.presentation,
     )
-    if body.narrowing:
+    if narrowing:
         await enforce_narrowing_logins(
             db,
             tenant_id=principal.tenant_id,
             agent=agent,
-            narrowing=body.narrowing,
+            narrowing=narrowing,
             frame=dept.frame or {},
         )
-        agent.narrowing = body.narrowing
+        agent.narrowing = narrowing
     db.add(agent)
     db.add(m.MemoryStore(tenant_id=principal.tenant_id, tier="agent", owner_id=agent.id))
     await db.flush()
@@ -430,84 +439,29 @@ async def set_narrowing(
     frame = dept.frame if dept else {}
     reject_malformed_policies(body.narrowing)
     await reject_unknown_limit_tools(db, principal.tenant_id, body.narrowing)
-    violations = narrowing_within_frame(frame, body.narrowing)
-    if violations:
+    # A threshold on a connection with no value_spec is judged against the
+    # frame and then dropped, never refused (E2E F3): see `value_spec`.
+    checked = await check_agent_narrowing(
+        db, tenant_id=principal.tenant_id, frame=frame, narrowing=body.narrowing
+    )
+    if checked.violations:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {"error": "narrowing_exceeds_frame", "violations": [v.__dict__ for v in violations]},
+            {
+                "error": "narrowing_exceeds_frame",
+                "violations": [v.__dict__ for v in checked.violations],
+            },
         )
-
-    raw_tools = body.narrowing.get("tools", {}) if isinstance(body.narrowing, dict) else {}
-    value_spec_violations: list[dict[str, str]] = []
-    if isinstance(raw_tools, dict):
-        for key, raw in raw_tools.items():
-            if not isinstance(raw, dict):
-                continue
-            # `only` is a plain tool-name allowlist -- meaningful for ANY
-            # connection that has tools to restrict, with no dependency on a
-            # `value_spec` (github_mcp/jira_mcp/microsoft365/google_workspace
-            # all ship real `only`-based guardrail presets and declare no
-            # value_spec at all; the frontend's own drawer already gates
-            # `only`'s visibility on the connection having tool names, not on
-            # `hasValueSpec` -- `tool-guardrail-editor-drawer.tsx`). Only
-            # `approval_eur` (a monetary threshold) genuinely needs to know a
-            # value_spec exists, since that's where the threshold gets
-            # compared against.
-            wants_eur = raw.get("approval_eur") is not None
-            if not wants_eur:
-                continue
-            # The department frame's own threshold, repeated unchanged, is
-            # inherited, not introduced here: `narrowing_within_frame` above
-            # forbids dropping it, so rejecting it as well would leave no
-            # payload that passes both checks (E2E F3). Any other value -- a
-            # tighter one included -- still needs a value to compare against,
-            # or it would be a guardrail that never holds.
-            frame_tools = frame.get("tools") if isinstance(frame, dict) else None
-            frame_raw = frame_tools.get(key) if isinstance(frame_tools, dict) else None
-            frame_eur = ToolPolicy.from_json(frame_raw).approval_eur
-            if frame_eur is not None and ToolPolicy.from_json(raw).approval_eur == frame_eur:
-                continue
-            # `credential_id.is_(None)` picks the manifest row, never another
-            # login sharing this same tenant-global name -- `POST /mcp/logins`
-            # creates a SECOND `McpConnection` row with the same `name` (see
-            # its own docstring), and a bare `.where(name == ...)` here would
-            # raise `MultipleResultsFound` for any tenant that has pinned a
-            # login on exactly the connections that have a value_spec.
-            mcp_conn = (
-                await db.execute(
-                    select(m.McpConnection)
-                    .where(
-                        m.McpConnection.tenant_id == principal.tenant_id,
-                        m.McpConnection.name == key,
-                        m.McpConnection.credential_id.is_(None),
-                        not_retired(),
-                    )
-                    .order_by(m.McpConnection.created_at)
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            _cfg: dict[str, Any] = {}
-            if mcp_conn is not None and isinstance(mcp_conn.config, dict):
-                _cfg = mcp_conn.config
-            manifest_conn = resolve_tool_pack_connection(
-                str(_cfg.get("_plugin_name", "")), str(_cfg.get("_connection_key", ""))
-            )
-            if not connection_supports_value_spec(manifest_conn):
-                value_spec_violations.append({"connection": key, "field": "approval_eur"})
-    if value_spec_violations:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {"error": "value_spec_not_supported", "violations": value_spec_violations},
-        )
+    narrowing = checked.narrowing
 
     await enforce_narrowing_logins(
         db,
         tenant_id=principal.tenant_id,
         agent=agent,
-        narrowing=body.narrowing,
+        narrowing=narrowing,
         frame=frame,
     )
-    agent.narrowing = body.narrowing
+    agent.narrowing = narrowing
     await db.flush()
     await append_event(
         db,
@@ -1475,7 +1429,11 @@ async def rollback_agent_version(
             )
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
-    violations = narrowing_within_frame(frame, payload.get("narrowing") or {})
+    violations = (
+        await check_agent_narrowing(
+            db, tenant_id=principal.tenant_id, frame=frame, narrowing=payload.get("narrowing") or {}
+        )
+    ).violations
     if violations:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
