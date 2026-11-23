@@ -26,6 +26,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from oc8.authz.scope import DepartmentScope
 
 
+def personal_reachable(
+    *, owner_member_id: uuid.UUID | None, member_id: uuid.UUID | None, manage_all: bool
+) -> bool:
+    """Whether a caller reaches a personal department, or an agent of one, by
+    id: its owner (`member_id`), or a holder of tenant-wide
+    `department:manage` (`manage_all`, metadata only). The one allowlist
+    `visible_department` and `agents.repo.visible_agent` share."""
+    mine = member_id is not None and owner_member_id == member_id
+    return mine or manage_all
+
+
 async def visible_departments(
     db: AsyncSession,
     *,
@@ -185,8 +196,10 @@ async def visible_department(
     if row is None:
         return None
     if row.kind == DEPARTMENT_KIND_PERSONAL:
-        mine = member_id is not None and row.owner_member_id == member_id
-        return row if mine or manage_all else None
+        reachable = personal_reachable(
+            owner_member_id=row.owner_member_id, member_id=member_id, manage_all=manage_all
+        )
+        return row if reachable else None
     if row.kind != DEPARTMENT_KIND_STANDARD:
         return None
     if tenant_wide or row.id in scope.viewable:

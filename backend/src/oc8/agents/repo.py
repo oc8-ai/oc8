@@ -34,6 +34,7 @@ from oc8.authz.permissions import (
     VIEW,
     perm,
 )
+from oc8.departments.repo import personal_reachable
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Agent, Department
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -190,8 +191,10 @@ async def visible_agent(
     if row.department_id in scope.viewable:
         return row
     if kind == DEPARTMENT_KIND_PERSONAL:
-        mine = member_id is not None and owner_member_id == member_id
-        return row if mine or manage_all else None
+        reachable = personal_reachable(
+            owner_member_id=owner_member_id, member_id=member_id, manage_all=manage_all
+        )
+        return row if reachable else None
     if tenant_wide:
         return row
     return None
