@@ -359,6 +359,146 @@ async def test_setting_approval_eur_for_a_connection_with_a_value_spec_is_accept
             assert r.status_code == 200, r.text
 
 
+async def _put_narrowing_under_a_frame_threshold(
+    app_session: AppSessionFactory, inherited_eur: float | None
+) -> tuple[int, str]:
+    """An agent in a department whose frame puts a €200 threshold on a
+    connection without a value_spec (microsoft365), saving a second tool while
+    echoing `inherited_eur` for the inherited one -- the payload the agent
+    page's REPLACE save sends for every key it didn't edit."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        department = m.Department(
+            tenant_id=tenant,
+            name=f"D-{uuid.uuid4().hex}",
+            frame={
+                "tools": {
+                    "microsoft365": {
+                        "enabled": True,
+                        "read": True,
+                        "modify": True,
+                        "approval_eur": 200,
+                    }
+                }
+            },
+        )
+        db.add(department)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=department.id, name="Probe")
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name="microsoft365",
+            server_url="",
+            transport="stdio",
+            config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+        )
+        db.add_all([agent, conn])
+        await db.flush()
+        agent_id = agent.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            r = await client.put(
+                f"/api/v1/agents/{agent_id}/narrowing",
+                json={
+                    "narrowing": {
+                        "tools": {
+                            "microsoft365": {
+                                "enabled": True,
+                                "read": True,
+                                "modify": True,
+                                "approval_eur": inherited_eur,
+                            },
+                            "github": {"enabled": True, "read": True, "modify": False},
+                        }
+                    }
+                },
+                headers=headers,
+            )
+            return r.status_code, r.text
+
+
+async def test_echoing_an_inherited_frame_threshold_is_accepted(
+    app_session: AppSessionFactory,
+) -> None:
+    """Regression (E2E F3): the frame check REQUIRES the narrowing to keep the
+    frame's threshold ("narrowing removes a frame approval threshold"), while
+    the value_spec check rejected that very value for a connection with no
+    value_spec -- so no agent in such a department could save any guardrail
+    or add any tool."""
+    status_code, text = await _put_narrowing_under_a_frame_threshold(app_session, 200)
+    assert status_code == 200, text
+
+
+async def test_tightening_an_inherited_frame_threshold_is_accepted(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text = await _put_narrowing_under_a_frame_threshold(app_session, 50)
+    assert status_code == 200, text
+
+
+async def test_loosening_an_inherited_frame_threshold_is_still_rejected(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text = await _put_narrowing_under_a_frame_threshold(app_session, 500)
+    assert status_code == 422, text
+    assert "narrowing_exceeds_frame" in text
+
+
+async def test_an_agent_own_threshold_on_a_connection_with_no_value_spec_is_rejected(
+    app_session: AppSessionFactory,
+) -> None:
+    """Only a threshold the department already set is let through: an agent
+    can't introduce one the connection has no value to compare against."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        department = m.Department(
+            tenant_id=tenant,
+            name=f"D-{uuid.uuid4().hex}",
+            frame={"tools": {"github": {"enabled": True, "read": True, "modify": True}}},
+        )
+        db.add(department)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=department.id, name="Probe")
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name="github",
+            server_url="",
+            transport="stdio",
+            config={"_plugin_name": "github_mcp", "_connection_key": "primary"},
+        )
+        db.add_all([agent, conn])
+        await db.flush()
+        agent_id = agent.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            r = await client.put(
+                f"/api/v1/agents/{agent_id}/narrowing",
+                json={
+                    "narrowing": {
+                        "tools": {
+                            "github": {
+                                "enabled": True,
+                                "read": True,
+                                "modify": True,
+                                "approval_eur": 100,
+                            }
+                        }
+                    }
+                },
+                headers=headers,
+            )
+            assert r.status_code == 422, r.text
+            assert r.json()["detail"]["error"] == "value_spec_not_supported"
+
+
 async def test_resetting_an_overridden_key_drops_it_and_clears_the_override_flag(
     app_session: AppSessionFactory,
 ) -> None:

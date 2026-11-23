@@ -455,6 +455,14 @@ async def set_narrowing(
             wants_eur = raw.get("approval_eur") is not None
             if not wants_eur:
                 continue
+            # A threshold the department frame already sets is inherited, not
+            # introduced here: `narrowing_within_frame` above forbids dropping
+            # it and caps it at the frame's value, so rejecting it as well
+            # would leave no payload that passes both checks (E2E F3).
+            frame_tools = frame.get("tools") if isinstance(frame, dict) else None
+            frame_raw = frame_tools.get(key) if isinstance(frame_tools, dict) else None
+            if ToolPolicy.from_json(frame_raw).approval_eur is not None:
+                continue
             # `credential_id.is_(None)` picks the manifest row, never another
             # login sharing this same tenant-global name -- `POST /mcp/logins`
             # creates a SECOND `McpConnection` row with the same `name` (see
