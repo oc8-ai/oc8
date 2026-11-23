@@ -148,6 +148,7 @@ import { cn } from "@/lib/utils";
 import { useLang, useT } from "@/lib/i18n";
 import { useMayManageAgent } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
+import { AgentAutonomyPanel } from "@/components/agent-autonomy-panel";
 
 // Mirrors mapAgentStatus in src/lib/live/apply-event.ts (not exported there).
 // Handles BOTH vocabularies: the WS "agent.status" event carries the raw
@@ -548,6 +549,9 @@ function AgentDetail() {
               className="mt-4 w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
             />
           </Panel>
+          <div className="md:col-span-2">
+            <AgentAutonomyPanel agent={agent} mayManage={mayManage} />
+          </div>
           <AssignedModelPanel agent={agent} models={models} mayManage={mayManage} />
           <AgentRuntimePanel
             agentId={agent.id}
@@ -1679,6 +1683,7 @@ export function AgentGuardrailsPanel({
           saving={update.isPending}
           departmentId={agent.departmentId}
           agentId={agent.id}
+          agentAutonomy={agent}
         />
       </div>
     </Panel>

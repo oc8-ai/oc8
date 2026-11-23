@@ -3,6 +3,7 @@ import { Plus } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { ApiError } from "@/lib/api";
 import type { McpConnection } from "@/lib/hooks";
+import type { AgentDetail } from "@/lib/hooks-agent-detail";
 import type { GuardrailValue } from "@/components/guardrail-preset-picker";
 import { ToolGuardrailEditorPanel } from "@/components/tool-guardrail-editor-panel";
 import { AddToolPicker } from "@/components/add-tool-picker";
@@ -110,6 +111,7 @@ export function ToolGuardrailTable({
   saving,
   departmentId,
   agentId,
+  agentAutonomy,
 }: {
   level: "department" | "agent";
   rows: ToolGuardrailRow[];
@@ -132,6 +134,9 @@ export function ToolGuardrailTable({
   // undefined at the department level, which has no per-agent identity to
   // interpret against (see that panel's own comment on this prop).
   agentId?: string;
+  // Agent level only: passed through to ToolGuardrailEditorPanel's autonomy
+  // hint.
+  agentAutonomy?: Pick<AgentDetail, "autonomy" | "autonomyGrants">;
 }) {
   const t = useT();
   const [editingKey, setEditingKey] = useState<string | null>(null);
@@ -221,6 +226,7 @@ export function ToolGuardrailTable({
                         }}
                         saving={saving}
                         agentId={level === "agent" ? agentId : undefined}
+                        agentAutonomy={level === "agent" ? agentAutonomy : undefined}
                       />
                     </td>
                   </tr>

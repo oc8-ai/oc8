@@ -865,6 +865,11 @@ class AgentDetailDTO(AgentDTO):
     #: ["max_steps"], a top-level key -- see engine._max_steps). None means
     #: "inherit settings.agent_max_steps", not a framework default value.
     max_steps: int | None = None
+    #: `definition["autonomy"]` and `["b5_grants"]` of the working copy: how
+    #: far the agent acts before asking, and the risk tiers it may act on
+    #: unasked (`b_approval.posture`). See `PUT /agents/{id}/autonomy`.
+    autonomy: str = "default"
+    autonomy_grants: list[str] = []
     #: The version that actually runs. The thin shape `lib/skills.ts` already
     #: uses for skills -- an id plus the number, and no client-side version
     #: state machine. Whether the working copy has DRIFTED from it is a separate
@@ -1155,6 +1160,11 @@ class McpConnectionDTO(CamelModel):
     #: a euro-threshold field in a preset ever affect a decision; the spec
     #: itself stays server-side.
     has_value_spec: bool = False
+    #: The tools that reach people outside the organisation (the connection's
+    #: `outward_tools` seam). Even an autonomous agent asks before these
+    #: unless it was granted the outward tier, so a preset allowing them
+    #: unasked only works on such an agent.
+    outward_tools: list[str] = []
     #: Named, typed attributes this connection's tools expose for "with
     #: limits" Conditions, resolved from the manifest exactly like
     #: `guardrail_presets` -- empty for a connection whose plugin declares

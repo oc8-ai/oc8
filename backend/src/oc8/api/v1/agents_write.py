@@ -87,6 +87,7 @@ from oc8.schemas.dto import (
 from oc8.schemas.requests import (
     AgentRenameRequest,
     AssignSkillRequest,
+    AutonomyRequest,
     CreateAgentRequest,
     GuardrailInterpretFromInstructionRequest,
     GuardrailInterpretRequest,
@@ -887,6 +888,61 @@ async def switch_model(
         principal=principal,
     )
     return agent_to_dto(agent)
+
+
+@router.put(
+    "/agents/{agent_id}/autonomy",
+    response_model=AgentDetailDTO,
+)
+async def set_autonomy(
+    agent_id: uuid.UUID,
+    body: AutonomyRequest,
+    db: DbSession,
+    request: Request,
+    actor: Annotated[HumanActor, Depends(require_agent_write())],
+) -> AgentDetailDTO:
+    """The deliberate choice that lets an agent act without asking: guardrail
+    presets limit WHAT it may do, this decides whether it does it unasked.
+    Written to the working copy like every other behavioural field, so it
+    takes effect on publish."""
+    agent = await _load_agent(db, agent_id)
+    await authorize_agent_write(
+        request,
+        db,
+        actor,
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
+    principal = actor.principal
+    definition = dict(agent.definition or {})
+    before = {"autonomy": definition.get("autonomy"), "grants": definition.get("b5_grants")}
+    definition["autonomy"] = body.autonomy
+    # A grant means something only under `autonomous` (posture): kept under
+    # another level it would come back unnoticed the day someone picks
+    # autonomous again.
+    grants = sorted(set(body.grants)) if body.autonomy == "autonomous" else []
+    if grants:
+        definition["b5_grants"] = grants
+    else:
+        definition.pop("b5_grants", None)
+    agent.definition = definition
+    await db.flush()
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="authz",
+        action="agent.autonomy.updated",
+        resource={
+            "agent_id": str(agent.id),
+            "before": before,
+            "after": {"autonomy": body.autonomy, "grants": grants},
+            "by": principal.subject,
+        },
+        principal=principal,
+    )
+    return await _agent_detail_dto(db, agent)
 
 
 @router.patch(

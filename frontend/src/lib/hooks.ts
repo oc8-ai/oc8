@@ -250,6 +250,10 @@ export interface McpConnection {
   // an approval-euro threshold can ever affect a decision for this
   // connection.
   hasValueSpec: boolean;
+  // The tools that reach people outside (the connection's `outward_tools`
+  // seam). Even an autonomous agent asks before these unless it was granted
+  // the outward tier. Optional so fixtures that predate it read as none.
+  outwardTools?: string[];
   // The plugin this connection was set up from (matched server-side via the
   // config["_plugin_name"] stamp `CapaSetupDialog`'s flow writes) -- null
   // for a connection created by hand via "Add connection", never through a

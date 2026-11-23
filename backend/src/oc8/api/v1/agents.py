@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
+from oc8.agent.harness.stages.b_approval import autonomy_grants_of, autonomy_of
 from oc8.agent.usage_limits import current_usage
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import (
@@ -559,6 +560,8 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
         # Top-level key, unlike the four sampling fields above -- see
         # engine._max_steps and switch_model in agents_write.py.
         max_steps=(agent.definition or {}).get("max_steps"),
+        autonomy=autonomy_of(agent.definition),
+        autonomy_grants=autonomy_grants_of(agent.definition),
         current_version_id=(
             str(agent.current_version_id) if agent.current_version_id is not None else None
         ),

@@ -214,6 +214,12 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
     # disk (or ships no tool pack) still reports which plugin created it,
     # rather than silently falling back to None like the guardrail fields do.
     plugin_name = cfg.get("_plugin_name")
+    # The same seam the risk tier reads (b_risk_tier): the tools that reach
+    # people outside, which ask even an autonomous agent without a grant.
+    raw_outward = cfg.get("outward_tools")
+    if not isinstance(raw_outward, list) and manifest_conn is not None:
+        raw_outward = manifest_conn.config.get("outward_tools")
+    outward_tools = [str(t) for t in raw_outward] if isinstance(raw_outward, list) else []
     return McpConnectionDTO(
         id=str(c.id),
         name=c.name,
@@ -230,6 +236,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
         guardrail_library=library,
         guardrail_attributes=attributes,
         has_value_spec=has_value_spec,
+        outward_tools=outward_tools,
         plugin_name=plugin_name if isinstance(plugin_name, str) and plugin_name else None,
         credential_type=manifest_conn.credential_type or None if manifest_conn else None,
     )

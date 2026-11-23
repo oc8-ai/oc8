@@ -18,6 +18,12 @@ def autonomy_of(definition: dict[str, Any] | None) -> str:
     return raw if raw in {"conservative", "default", "autonomous"} else "default"
 
 
+def autonomy_grants_of(definition: dict[str, Any] | None) -> list[str]:
+    """The risk tiers an autonomous agent may act on unasked (`b5_grants`)."""
+    raw = (definition or {}).get("b5_grants")
+    return [str(tier) for tier in raw] if isinstance(raw, list) else []
+
+
 def posture(
     tier: str, autonomy: str, *, granted: bool, always_ask_writes: bool = False
 ) -> ApprovalPosture:

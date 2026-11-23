@@ -67,6 +67,11 @@ export interface AgentDetail {
   // null means "inherit settings.agent_max_steps", not a literal framework
   // default value.
   maxSteps: number | null;
+  // How far the agent acts before asking, and the risk tiers it may then act
+  // on unasked (definition.autonomy / b5_grants, b_approval.posture). Optional
+  // so fixtures that predate them read as the default.
+  autonomy?: AgentAutonomy;
+  autonomyGrants?: string[];
   /** Last successful Auto-router tier for this agent (fast|balanced|strong). */
   autoRouterAffinityTier?: string | null;
   // The version that actually runs. Mirrors lib/skills.ts's thin shape -- an id
@@ -76,6 +81,8 @@ export interface AgentDetail {
   currentVersionId: string | null;
   currentVersionNo: number | null;
 }
+
+export type AgentAutonomy = "conservative" | "default" | "autonomous";
 
 // Reuses the ["agents", id] key already invalidated by the "agent.status"
 // live patcher in live/apply-event.ts, so this query stays live.
@@ -175,6 +182,21 @@ export function useUpdateAgentRuntime(agentId: string) {
   return useMutation({
     mutationFn: (body: { runtimePluginId: string | null }) =>
       api.put<AgentDetail>(`/agents/${agentId}/runtime`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agents", agentId] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+// PUT /agents/{id}/autonomy expects { autonomy, grants } (AutonomyRequest in
+// backend/src/oc8/schemas/requests.py). Grants are kept only under
+// "autonomous"; the backend drops them for any other level.
+export function useSetAgentAutonomy(agentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { autonomy: AgentAutonomy; grants: string[] }) =>
+      api.put<AgentDetail>(`/agents/${encodeURIComponent(agentId)}/autonomy`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["agents", agentId] });
       qc.invalidateQueries({ queryKey: ["agents"] });
