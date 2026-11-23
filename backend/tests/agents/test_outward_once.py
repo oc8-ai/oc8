@@ -119,6 +119,37 @@ def test_a_call_that_names_no_record_still_has_a_target() -> None:
     assert outward_target("post_message", {}, FOCUS_SPEC, OUTWARD) is not None
 
 
+def test_two_different_calls_that_name_no_record_are_two_targets() -> None:
+    """E2E N1: every new message of a chat shares one task, and keying a call
+    without a record on the tool alone allowed one new message per chat,
+    ever. Without a declared recipient, the call itself is the target."""
+    first = outward_target("post_message", {"to": "a", "body": "x"}, FOCUS_SPEC, OUTWARD)
+    second = outward_target("post_message", {"to": "b", "body": "y"}, FOCUS_SPEC, OUTWARD)
+    assert first is not None and second is not None
+    assert first != second
+
+
+def test_the_same_call_that_names_no_record_is_one_target() -> None:
+    args = {"to": "a", "body": "x"}
+    assert outward_target("post_message", dict(args), FOCUS_SPEC, OUTWARD) == outward_target(
+        "post_message", dict(args), FOCUS_SPEC, OUTWARD
+    )
+
+
+def test_declared_target_fields_identify_who_a_call_without_a_record_reaches() -> None:
+    """A connection may declare which arguments say who a call reaches
+    (`focus_spec.outward_fields`): a reworded body to the same recipient is
+    the duplicate the guard exists for, another recipient is not."""
+    spec = {**FOCUS_SPEC, "outward_fields": {"post_message": ["to", "subject"]}}
+    first = outward_target("post_message", {"to": "a", "subject": "S", "body": "x"}, spec, OUTWARD)
+    reworded = outward_target(
+        "post_message", {"to": "a", "subject": "S", "body": "y"}, spec, OUTWARD
+    )
+    other = outward_target("post_message", {"to": "b", "subject": "S", "body": "x"}, spec, OUTWARD)
+    assert first == reworded
+    assert first != other
+
+
 # ------------------------------------------------------------------ the memory
 
 async def test_the_second_message_to_one_record_is_refused(

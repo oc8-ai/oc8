@@ -133,19 +133,13 @@ def test_a_meet_link_at_the_same_moment_is_the_same_recipient() -> None:
 
 def test_the_mail_tools_are_unchanged_by_the_calendar_scoping() -> None:
     """`focus_spec` is per CONNECTION, so it is seen by every tool. Gmail names
-    no event, so it must keep exactly the blanket per-task cap it had -- adding
-    a calendar seam must not quietly widen what an agent may send."""
-    assert (
-        _target(
-            "gmail_send",
-            {"to": ["bob@customer.com"], "subject": "Hi", "body": "..."},
-        )
-        == "gmail_send#"
-    )
-    assert (
-        _target("calendar_respond_to_invite", {"eventId": "evt1", "response": "accepted"})
-        == "calendar_respond_to_invite#"
-    )
+    no event, so it is keyed by the call itself (E2E N1): the same mail twice is
+    one target, a different mail another -- the calendar seam changes neither."""
+    mail = {"to": ["bob@customer.com"], "subject": "Hi", "body": "..."}
+    first = _target("gmail_send", mail)
+    assert first is not None and first.startswith("gmail_send#")
+    assert _target("gmail_send", dict(mail)) == first
+    assert _target("gmail_send", {**mail, "subject": "Other"}) != first
 
 
 def test_a_tool_that_reaches_nobody_still_has_no_target() -> None:

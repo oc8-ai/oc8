@@ -20,7 +20,9 @@ declares it, the same way it declares where a call's value and its record are:
     outward_tools = ["post_message"]
 
 An empty declaration leaves the guard inert, so nothing changes for a connection
-that has not thought about it.
+that has not thought about it. A call that names no record is keyed by who it
+reaches: the arguments the connection declares for that in
+`focus_spec.outward_fields` (tool -> argument names), or else the whole call.
 
 LIMIT, deliberately: a call is identified by its record, not by its channel. A
 connection whose single tool writes both an internal note and a customer-visible
@@ -35,6 +37,8 @@ ran in a different container.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from typing import Any
 
@@ -105,10 +109,28 @@ def outward_target(
     ref = focus_ref_id(arguments, spec)
     if entity and ref:
         return f"{entity}#{ref}"
-    # No record named: fall back to the tool itself, which still stops a run
-    # from firing the same broadcast twice. Coarser on purpose -- a guard that
-    # gives up when it cannot identify the recipient guards nothing.
-    return f"{entity or tool_name}#"
+    # No record named. Keying on the tool alone allowed ONE such message per
+    # task, ever -- and every turn of a chat shares one task, so a second,
+    # different new message was refused, after a person had approved it
+    # (E2E N1). The target is who the call reaches: the arguments a connection
+    # declares for that (`focus_spec.outward_fields`, tool -> argument names),
+    # or else the whole call. The same call twice is still refused; a
+    # different one is a different message to somebody.
+    return f"{entity or tool_name}#{_call_key(tool_name, arguments, spec)}"
+
+
+def _call_key(tool_name: str, arguments: dict[str, Any], spec: dict[str, Any]) -> str:
+    declared = spec.get("outward_fields")
+    fields = declared.get(tool_name) if isinstance(declared, dict) else None
+    if isinstance(fields, list) and fields:
+        picked = {str(f): arguments.get(str(f)) for f in fields}
+        # Readable, because it is what the refusal names to the model.
+        return "|".join(
+            json.dumps(v, sort_keys=True, default=str) if not isinstance(v, str) else v
+            for v in picked.values()
+        )
+    blob = json.dumps(arguments, sort_keys=True, default=str)
+    return hashlib.sha256(f"{tool_name}\n{blob}".encode()).hexdigest()[:16]
 
 
 def _marker(target: str) -> str:

@@ -1124,6 +1124,44 @@ async def test_a_call_over_the_threshold_suspends_for_approval(
         assert run.context["isolated_result"]["status"] == "waiting_for_approval"
 
 
+async def test_a_message_already_sent_is_refused_before_anyone_is_asked(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E2E N1: the once-per-recipient guard ran only when the call was about to
+    go out -- after a person had approved it. A call it would refuse must be
+    refused before an approval card asks anybody."""
+    from sqlalchemy import select
+
+    from oc8.agent.outward import outward_target, remember_delivery
+
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    arguments = {"model": "sale.order", "values": {"amount_total": 3900}}
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, task_id = await _seed(
+            db, tenant, config_extra={"outward_tools": ["create_record"]}
+        )
+        target = outward_target("create_record", arguments, None, ["create_record"])
+        assert target is not None
+        await remember_delivery(db, tenant_id=tenant, task_id=task_id, target=target)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": arguments},
+    )
+    assert code == 200, body
+    assert body["result"]["isError"] is True
+    assert "already sent" in body["result"]["content"][0]["text"]
+    assert _FakeMcp.calls == []
+    async with app_session(tenant) as db:
+        cards = await db.execute(
+            select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant)
+        )
+        assert cards.scalars().all() == []
+
+
 async def test_an_unknown_method_is_a_jsonrpc_error(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
