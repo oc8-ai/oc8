@@ -3,9 +3,9 @@
 `event_source_cursor.baseline_id` is drawn anew each time the poller takes a
 baseline, and goes into the idempotency key of every event fired from it
 together with the trigger's login. A source's event ids are only unique for
-one login and one run of it (two mailboxes on one server number their mail
-alike), so a trigger moved to another login, or started afresh, never takes a
-new event for one it fired before.
+one login and one run of it (two accounts on one server may number their
+items alike), so a trigger moved to another login, or started afresh, never
+takes a new event for one it fired before.
 
 A cursor that took its baseline before this revision has none, and keeps the
 old key until its next baseline, so nothing it already fired fires again.

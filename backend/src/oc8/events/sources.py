@@ -755,10 +755,10 @@ def event_key(
     baseline_id: uuid.UUID | None,
 ) -> str:
     """The idempotency key of `delivery_id` fired for a trigger. A source's
-    ids repeat across logins (two mailboxes on one server number their mail
-    alike) and may repeat after a fresh start, so the login the trigger polls
-    and the baseline it fires from are part of it: a moved or restarted
-    trigger never takes a new event for one it fired before. A cursor that
+    ids repeat across logins (two accounts on one server may number their
+    items alike) and may repeat after a fresh start, so the login the
+    trigger polls and the baseline it fires from are part of it: a moved or
+    restarted trigger never takes a new event for one it fired before. A cursor that
     took its baseline before baselines had an id (`baseline_id` None) keeps
     the old key, so nothing it fired fires again."""
     if baseline_id is None:
