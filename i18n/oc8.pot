@@ -35,6 +35,12 @@ msgstr ""
 msgid "{count} departments"
 msgstr ""
 
+msgid "{count} tool selected"
+msgstr ""
+
+msgid "{count} tools selected"
+msgstr ""
+
 msgid "{field} is required."
 msgstr ""
 
@@ -56,6 +62,9 @@ msgstr ""
 msgid "{name} is incomplete: {fields} missing"
 msgstr ""
 
+msgid "{name} is ready — {count} tools, {model}."
+msgstr ""
+
 msgid "{name} is still in use ({what}). Delete it anyway? Agents that chose it then have no login until someone chooses another."
 msgstr ""
 
@@ -65,13 +74,22 @@ msgstr ""
 msgid "{name} is still read by the data sources {sources}. Choose another credential there first, then delete it."
 msgstr ""
 
+msgid "{name} will send mail and messages to customers and partners without a person approving each one. Guardrails and usage limits still apply, so set a daily limit on each tool that sends, so a mistake can't send hundreds of messages."
+msgstr ""
+
+msgid "{tools}: {name} can use it once the department turns it on in its tool settings."
+msgstr ""
+
+msgid "{tools}: {name} can use them once the department turns them on in its tool settings."
+msgstr ""
+
 msgid "/do carry out the plan above"
 msgstr ""
 
 msgid "/summarise this conversation"
 msgstr ""
 
-msgid "+ Add limit"
+msgid "+ Add limit…"
 msgstr ""
 
 msgid "+ count also…"
@@ -161,6 +179,9 @@ msgstr ""
 msgid "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in."
 msgstr ""
 
+msgid "A short note for the profile card"
+msgstr ""
+
 msgid "A skill is no longer available."
 msgstr ""
 
@@ -180,6 +201,9 @@ msgid "A system needs a login chosen for this agent first. Set it up under Conne
 msgstr ""
 
 msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
+msgstr ""
+
+msgid "A unique webhook URL is generated once the agent is hired. You'll land on the agent's page to copy it — Odoo's Automation Rules or any other tool that can send a POST request works."
 msgstr ""
 
 msgid "A virtual router that picks among your connected models by task complexity."
@@ -243,6 +267,9 @@ msgid "Actor type"
 msgstr ""
 
 msgid "Add"
+msgstr ""
+
+msgid "Add a limit for…"
 msgstr ""
 
 msgid "Add a model configuration"
@@ -362,13 +389,28 @@ msgstr ""
 msgid "Agent deleted"
 msgstr ""
 
+msgid "Agent hired"
+msgstr ""
+
+msgid "Agent hired, but its login could not be set"
+msgstr ""
+
 msgid "Agent hired, but its tools could not be granted"
+msgstr ""
+
+msgid "Agent hired, but the schedule could not be saved"
+msgstr ""
+
+msgid "Agent hired, but the webhook could not be created"
 msgstr ""
 
 msgid "agent identity"
 msgstr ""
 
 msgid "Agent not found, or you don't have access."
+msgstr ""
+
+msgid "Agent profile"
 msgstr ""
 
 msgid "Agent restored"
@@ -639,6 +681,9 @@ msgid "Approve this?"
 msgstr ""
 
 msgid "Approved"
+msgstr ""
+
+msgid "Approved by a person, but not carried out in this run."
 msgstr ""
 
 msgid "Archive"
@@ -1031,7 +1076,13 @@ msgstr ""
 msgid "Changed"
 msgstr ""
 
+msgid "Changed something in {connection}"
+msgstr ""
+
 msgid "Changes inside your systems run on their own. Anything that reaches people outside, deletes something or can't be undone waits for a person."
+msgstr ""
+
+msgid "Changing something in {connection}"
 msgstr ""
 
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
@@ -1134,6 +1185,9 @@ msgid "Choose from available models"
 msgstr ""
 
 msgid "Choose from data source ›"
+msgstr ""
+
+msgid "Choose LLM"
 msgstr ""
 
 msgid "Choose the model it thinks with and, if more than one is installed, the runtime it works in."
@@ -1512,6 +1566,9 @@ msgid "Could not fetch model list"
 msgstr ""
 
 msgid "Could not finish onboarding"
+msgstr ""
+
+msgid "Could not hire agent"
 msgstr ""
 
 msgid "Could not link this credential"
@@ -2759,10 +2816,19 @@ msgstr ""
 msgid "Group by"
 msgstr ""
 
+msgid "Guardrail label"
+msgstr ""
+
 msgid "Guardrails"
 msgstr ""
 
 msgid "Guardrails (one per line)"
+msgstr ""
+
+msgid "Guardrails & Trigger"
+msgstr ""
+
+msgid "Guardrails decide what {name} may do. This decides whether it does it without asking a person first."
 msgstr ""
 
 msgid "Guardrails saved"
@@ -2823,6 +2889,9 @@ msgid "Hide the text"
 msgstr ""
 
 msgid "Hide work panel"
+msgstr ""
+
+msgid "Hire a new agent"
 msgstr ""
 
 msgid "Hire agent"
@@ -2987,13 +3056,31 @@ msgstr ""
 msgid "Invite"
 msgstr ""
 
+msgid "It asks no approval for {names}, which the department requires."
+msgstr ""
+
+msgid "It changes things, which the department does not allow."
+msgstr ""
+
 msgid "It has not worked yet."
 msgstr ""
 
 msgid "It listens on the mailbox the agent uses for its tools. "
 msgstr ""
 
+msgid "It reaches all functions, including functions the department does not offer."
+msgstr ""
+
+msgid "It reaches functions the department does not offer: {names}."
+msgstr ""
+
+msgid "It reads, which the department does not allow."
+msgstr ""
+
 msgid "It takes effect when you publish this version."
+msgstr ""
+
+msgid "Its approval threshold is above the department's {amount} €."
 msgstr ""
 
 msgid "its model configuration"
@@ -3012,6 +3099,9 @@ msgid "Judge against this department's model"
 msgstr ""
 
 msgid "Judging against your number for this look only — nothing is saved."
+msgstr ""
+
+msgid "Just a label for this card — it doesn't change what the agent can actually do."
 msgstr ""
 
 msgid "just now"
@@ -3281,6 +3371,9 @@ msgstr ""
 msgid "Looking through its notes …"
 msgstr ""
 
+msgid "Looks good"
+msgstr ""
+
 msgid "Made a note"
 msgstr ""
 
@@ -3485,6 +3578,9 @@ msgstr ""
 msgid "Name & description"
 msgstr ""
 
+msgid "Name & Role"
+msgstr ""
+
 msgid "name + rights"
 msgstr ""
 
@@ -3573,6 +3669,9 @@ msgid "New email"
 msgstr ""
 
 msgid "New guardrail"
+msgstr ""
+
+msgid "New hire"
 msgstr ""
 
 msgid "New key"
@@ -3791,6 +3890,9 @@ msgstr ""
 msgid "No MCP connections yet."
 msgstr ""
 
+msgid "No MCP connections yet. Add one under Capas to offer it here."
+msgstr ""
+
 msgid "No member has connected an account yet."
 msgstr ""
 
@@ -3878,6 +3980,12 @@ msgstr ""
 msgid "No tools match your search."
 msgstr ""
 
+msgid "No tools selected yet — click \"Add tool\" to pick one."
+msgstr ""
+
+msgid "No tools selected yet."
+msgstr ""
+
 msgid "No tools yet — add one directly for this agent, or grant it to the whole department first."
 msgstr ""
 
@@ -3930,6 +4038,9 @@ msgid "Not available."
 msgstr ""
 
 msgid "Not checked yet"
+msgstr ""
+
+msgid "not connected"
 msgstr ""
 
 msgid "Not connected"
@@ -4062,6 +4173,9 @@ msgid "On demand"
 msgstr ""
 
 msgid "on its own"
+msgstr ""
+
+msgid "On-Demand"
 msgstr ""
 
 msgid "once"
@@ -4478,6 +4592,9 @@ msgstr ""
 msgid "Re-sync"
 msgstr ""
 
+msgid "React to whatever this webhook sends, on {name}'s behalf."
+msgstr ""
+
 msgid "read"
 msgstr ""
 
@@ -4491,6 +4608,9 @@ msgid "Read a resource"
 msgstr ""
 
 msgid "Read a web page"
+msgstr ""
+
+msgid "Read from {connection}"
 msgstr ""
 
 msgid "Read its instructions"
@@ -4517,6 +4637,9 @@ msgstr ""
 msgid "Reading archive…"
 msgstr ""
 
+msgid "Reading from {connection}"
+msgstr ""
+
 msgid "Reading is allowed for the rest of this chat. Every change asks you again."
 msgstr ""
 
@@ -4527,6 +4650,9 @@ msgid "Reading…"
 msgstr ""
 
 msgid "Ready"
+msgstr ""
+
+msgid "ready to launch"
 msgstr ""
 
 msgid "Real server connections agents can use as tools — separate from the catalog above."
@@ -4653,6 +4779,9 @@ msgid "Remove seat"
 msgstr ""
 
 msgid "Remove source?"
+msgstr ""
+
+msgid "Remove tool"
 msgstr ""
 
 msgid "Remove trigger"
@@ -4796,6 +4925,9 @@ msgstr ""
 msgid "Role"
 msgstr ""
 
+msgid "Role …"
+msgstr ""
+
 msgid "Role created."
 msgstr ""
 
@@ -4818,6 +4950,9 @@ msgid "rooms"
 msgstr ""
 
 msgid "Routes each turn to a configured tier model"
+msgstr ""
+
+msgid "Rules, then go live."
 msgstr ""
 
 msgid "run"
@@ -4922,6 +5057,9 @@ msgstr ""
 msgid "Saved by caching:"
 msgstr ""
 
+msgid "Saved once you hire the agent."
+msgstr ""
+
 msgid "Saved presets"
 msgstr ""
 
@@ -4943,10 +5081,16 @@ msgstr ""
 msgid "Schedule / trigger"
 msgstr ""
 
+msgid "Schedule set"
+msgstr ""
+
 msgid "Schedule updated"
 msgstr ""
 
 msgid "Scheduled"
+msgstr ""
+
+msgid "Scheduled run for {name}"
 msgstr ""
 
 msgid "Scope"
@@ -5405,6 +5549,9 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
+msgid "Step {step} of {total}"
+msgstr ""
+
 msgid "Step detail is not available for this run."
 msgstr ""
 
@@ -5613,6 +5760,9 @@ msgid "The account could not be determined."
 msgstr ""
 
 msgid "The account's owner or an administrator can confirm it."
+msgstr ""
+
+msgid "the agent"
 msgstr ""
 
 msgid "The agent changed since this access was confirmed. Runs that need it fail until it is confirmed again."
@@ -5918,6 +6068,9 @@ msgstr ""
 msgid "These functions are counted separately: today's count starts again at 0."
 msgstr ""
 
+msgid "These guardrails let this agent reach people outside without approval in some cases, but it may still ask before each one until you make it autonomous and allow it to reach people outside."
+msgstr ""
+
 msgid "These guardrails let this agent reach people outside without approval, but it will still ask before each one until you make it autonomous and allow it to reach people outside."
 msgstr ""
 
@@ -6110,6 +6263,9 @@ msgstr ""
 msgid "This passkey is already registered."
 msgstr ""
 
+msgid "This preset is looser than the department allows. Saving it will be refused until you change:"
+msgstr ""
+
 msgid "This proposal has expired."
 msgstr ""
 
@@ -6281,7 +6437,13 @@ msgstr ""
 msgid "Tools"
 msgstr ""
 
+msgid "Tools ({count})"
+msgstr ""
+
 msgid "Tools (comma-separated)"
+msgstr ""
+
+msgid "Tools (MCP)"
 msgstr ""
 
 msgid "Tools & Access"
@@ -6303,6 +6465,9 @@ msgid "Total spend"
 msgstr ""
 
 msgid "Total tokens"
+msgstr ""
+
+msgid "Trigger"
 msgstr ""
 
 msgid "Trigger removed"
@@ -6575,6 +6740,9 @@ msgstr ""
 msgid "via department lead"
 msgstr ""
 
+msgid "via MCP"
+msgstr ""
+
 msgid "Visibility"
 msgstr ""
 
@@ -6627,6 +6795,9 @@ msgid "Waiting for you"
 msgstr ""
 
 msgid "Waiting on your answer"
+msgstr ""
+
+msgid "Wants to change something in {connection}"
 msgstr ""
 
 msgid "warning"
@@ -6698,6 +6869,9 @@ msgstr ""
 msgid "What powers this agent?"
 msgstr ""
 
+msgid "What should it work with?"
+msgstr ""
+
 msgid "What should the team lead do?"
 msgstr ""
 
@@ -6726,6 +6900,12 @@ msgid "Where the money goes"
 msgstr ""
 
 msgid "Where this person stands, and at which level."
+msgstr ""
+
+msgid "Which model should think?"
+msgstr ""
+
+msgid "Who is this agent?"
 msgstr ""
 
 msgid "Who may do what — and why you were refused."
