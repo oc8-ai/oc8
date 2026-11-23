@@ -13,9 +13,11 @@ export function unaskedOutwardTools(
   value: GuardrailValue,
   toolKey: string,
   outwardTools: string[],
+  // The department frame (agent level): its approval actions hold too.
+  ceiling: GuardrailValue | null = null,
 ): string[] {
-  if (!value.modify) return [];
-  const asks = new Set(value.approvalActions);
+  if (!value.modify || (ceiling && !ceiling.modify)) return [];
+  const asks = new Set([...value.approvalActions, ...(ceiling?.approvalActions ?? [])]);
   if (asks.has("modify") || asks.has(toolKey)) return [];
   return outwardTools.filter(
     (tool) => !asks.has(tool) && (value.only.length === 0 || value.only.includes(tool)),
@@ -26,4 +28,10 @@ export function unaskedOutwardTools(
  * outward tier granted, the same two conditions `b_approval.posture` checks. */
 export function actsOutwardUnasked(agent: Pick<AgentDetail, "autonomy" | "autonomyGrants">) {
   return agent.autonomy === "autonomous" && (agent.autonomyGrants ?? []).includes("outward");
+}
+
+/** Whether a condition (the agent's or its department's) may ask for an
+ * approval on some calls: then the hint can only say the agent *may* ask. */
+export function hasApprovalConditions(value: GuardrailValue, ceiling: GuardrailValue | null) {
+  return (value.conditions ?? []).length > 0 || (ceiling?.conditions ?? []).length > 0;
 }

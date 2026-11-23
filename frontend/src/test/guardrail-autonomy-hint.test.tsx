@@ -52,13 +52,18 @@ const sendsUnasked: GuardrailValue = {
   limits: [{ tools: ["mail_send"], max: 50, per: "day" }],
 };
 
-function renderPanel(value: GuardrailValue, autonomy: "default" | "autonomous", grants: string[]) {
+function renderPanel(
+  value: GuardrailValue,
+  autonomy: "default" | "autonomous",
+  grants: string[],
+  ceiling: GuardrailValue | null = null,
+) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
       <ToolGuardrailEditorPanel
         toolKey="email"
         connection={email}
-        ceiling={null}
+        ceiling={ceiling}
         value={value}
         onChange={vi.fn()}
         onCancel={vi.fn()}
@@ -84,6 +89,30 @@ describe("autonomy hint on the guardrail editor", () => {
   it("stays quiet once the agent is autonomous with the outward tier", () => {
     renderPanel(sendsUnasked, "autonomous", ["outward"]);
     expect(screen.queryByText(/still ask before each one/i)).not.toBeInTheDocument();
+  });
+
+  it("stays quiet when the department asks before sending anyway", () => {
+    // Review of F2: the department frame's approval actions hold too, so the
+    // agent asks there whatever its own guardrails say.
+    renderPanel(sendsUnasked, "default", [], {
+      ...sendsUnasked,
+      approvalActions: ["mail_send"],
+    });
+    expect(screen.queryByText(/still ask before each one/i)).not.toBeInTheDocument();
+  });
+
+  it("only says it may ask when a condition decides", () => {
+    renderPanel(
+      {
+        ...sendsUnasked,
+        conditions: [
+          { attribute: "recipient_domain", op: "not_in", value: ["acme.test"], approval: true },
+        ] as unknown as GuardrailValue["conditions"],
+      },
+      "default",
+      [],
+    );
+    expect(screen.getByText(/may still ask before each one/i)).toBeInTheDocument();
   });
 
   it("stays quiet when the guardrails ask before sending anyway", () => {

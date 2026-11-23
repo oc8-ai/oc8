@@ -58,6 +58,23 @@ describe("AgentAutonomyPanel", () => {
     expect(mutate).toHaveBeenCalledWith({ autonomy: "default", grants: [] }, expect.anything());
   });
 
+  it("keeps the agent's other grants when only the outward one changes", () => {
+    // Review of F2: the panel shows the outward tier only; a grant set some
+    // other way (destructive) must survive a save here.
+    render(
+      <AgentAutonomyPanel
+        agent={agent({ autonomy: "autonomous", autonomyGrants: ["destructive", "outward"] })}
+        mayManage
+      />,
+    );
+    fireEvent.click(screen.getByRole("checkbox", { name: /outside without asking/i }));
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    expect(mutate).toHaveBeenCalledWith(
+      { autonomy: "autonomous", grants: ["destructive"] },
+      expect.anything(),
+    );
+  });
+
   it("is read-only without the right to manage the agent", () => {
     render(<AgentAutonomyPanel agent={agent()} mayManage={false} />);
     expect(screen.getByRole("radio", { name: /autonomous/i })).toBeDisabled();

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { fill } from "@/components/connections/texts";
 import { useT } from "@/lib/i18n";
 import { AUTONOMY_ANCHOR } from "@/lib/autonomy";
 import {
@@ -42,6 +43,8 @@ export function AgentAutonomyPanel({
 
   const outwardOn = level === "autonomous" && outward;
   const dirty = level !== savedLevel || outwardOn !== (savedLevel === "autonomous" && savedOutward);
+  // Grants this panel does not show (set some other way): kept as they are.
+  const otherGrants = (agent.autonomyGrants ?? []).filter((grant) => grant !== "outward");
 
   const labels: Record<AgentAutonomy, { title: string; body: string }> = {
     conservative: {
@@ -69,7 +72,11 @@ export function AgentAutonomyPanel({
 
   function onSave() {
     save.mutate(
-      { autonomy: level, grants: outwardOn ? ["outward"] : [] },
+      {
+        autonomy: level,
+        // Below autonomous no grant means anything (the server drops them).
+        grants: level === "autonomous" ? [...otherGrants, ...(outwardOn ? ["outward"] : [])] : [],
+      },
       {
         onSuccess: () =>
           toast.success(t("Autonomy saved", "Selbstständigkeit gespeichert"), {
@@ -93,9 +100,12 @@ export function AgentAutonomyPanel({
       </div>
       <h3 className="mt-0.5 font-serif text-lg">{t("Autonomy", "Selbstständigkeit")}</h3>
       <p className="mt-1 text-xs text-muted-foreground">
-        {t(
-          `Guardrails decide what ${agent.name} may do. This decides whether it does it without asking a person first.`,
-          `Guardrails legen fest, was ${agent.name} darf. Hier legst du fest, ob er es tut, ohne vorher einen Menschen zu fragen.`,
+        {fill(
+          t(
+            "Guardrails decide what {name} may do. This decides whether it does it without asking a person first.",
+            "Guardrails legen fest, was {name} darf. Hier legst du fest, ob er es tut, ohne vorher einen Menschen zu fragen.",
+          ),
+          { name: agent.name },
         )}
       </p>
 
@@ -160,9 +170,12 @@ export function AgentAutonomyPanel({
         <div className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
           <span>
-            {t(
-              `${agent.name} will send mail and messages to customers and partners without a person approving each one. Guardrails and usage limits still apply, so set a daily limit on each tool that sends, so a mistake can't send hundreds of messages.`,
-              `${agent.name} schickt dann Mails und Nachrichten an Kunden und Partner, ohne dass ein Mensch jede einzelne freigibt. Guardrails und Nutzungslimits gelten weiter. Setz deshalb an jedem Tool, das sendet, ein Tageslimit, damit ein Fehler nicht hunderte Nachrichten verschickt.`,
+            {fill(
+              t(
+                "{name} will send mail and messages to customers and partners without a person approving each one. Guardrails and usage limits still apply, so set a daily limit on each tool that sends, so a mistake can't send hundreds of messages.",
+                "{name} schickt dann Mails und Nachrichten an Kunden und Partner, ohne dass ein Mensch jede einzelne freigibt. Guardrails und Nutzungslimits gelten weiter. Setz deshalb an jedem Tool, das sendet, ein Tageslimit, damit ein Fehler nicht hunderte Nachrichten verschickt.",
+              ),
+              { name: agent.name },
             )}
           </span>
         </div>

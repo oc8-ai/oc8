@@ -1,7 +1,12 @@
 import { Link } from "@tanstack/react-router";
 import { Info } from "lucide-react";
 import { useT } from "@/lib/i18n";
-import { AUTONOMY_ANCHOR, actsOutwardUnasked, unaskedOutwardTools } from "@/lib/autonomy";
+import {
+  AUTONOMY_ANCHOR,
+  actsOutwardUnasked,
+  hasApprovalConditions,
+  unaskedOutwardTools,
+} from "@/lib/autonomy";
 import type { AgentDetail } from "@/lib/hooks-agent-detail";
 import { useConnectionToolNames, type McpConnection } from "@/lib/hooks";
 import { GuardrailPresetPicker, type GuardrailValue } from "@/components/guardrail-preset-picker";
@@ -76,7 +81,8 @@ export function ToolGuardrailEditorPanel({
     !!agentId &&
     !!agentAutonomy &&
     !actsOutwardUnasked(agentAutonomy) &&
-    unaskedOutwardTools(value, toolKey, connection?.outwardTools ?? []).length > 0;
+    unaskedOutwardTools(value, toolKey, connection?.outwardTools ?? [], ceiling).length > 0;
+  const onlySometimes = hasApprovalConditions(value, ceiling);
 
   return (
     <div className="rounded-md border border-border/70 bg-background/20 p-4">
@@ -130,10 +136,15 @@ export function ToolGuardrailEditorPanel({
         <div className="mt-4 flex items-start gap-2 rounded-md border border-primary/40 bg-primary/5 p-3 text-xs">
           <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <span>
-            {t(
-              "These guardrails let this agent reach people outside without approval, but it will still ask before each one until you make it autonomous and allow it to reach people outside.",
-              "Diese Guardrails erlauben, ohne Freigabe nach außen zu kommunizieren. Der Agent fragt aber trotzdem vor jeder Nachricht, bis du ihn auf selbstständig stellst und Kommunikation nach außen erlaubst.",
-            )}{" "}
+            {onlySometimes
+              ? t(
+                  "These guardrails let this agent reach people outside without approval in some cases, but it may still ask before each one until you make it autonomous and allow it to reach people outside.",
+                  "Diese Guardrails erlauben in manchen Fällen, ohne Freigabe nach außen zu kommunizieren. Der Agent fragt aber womöglich trotzdem vor jeder Nachricht, bis du ihn auf selbstständig stellst und Kommunikation nach außen erlaubst.",
+                )
+              : t(
+                  "These guardrails let this agent reach people outside without approval, but it will still ask before each one until you make it autonomous and allow it to reach people outside.",
+                  "Diese Guardrails erlauben, ohne Freigabe nach außen zu kommunizieren. Der Agent fragt aber trotzdem vor jeder Nachricht, bis du ihn auf selbstständig stellst und Kommunikation nach außen erlaubst.",
+                )}{" "}
             <Link
               to="/agents/$id"
               params={{ id: agentId }}
