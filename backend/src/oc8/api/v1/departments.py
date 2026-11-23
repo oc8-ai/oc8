@@ -53,6 +53,7 @@ from oc8.authz.permissions import DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.boards.lifecycle import archive_department_boards, restore_department_boards
 from oc8.departments.frames import (
+    FrameChangeRefused,
     cascade_department_tools_change,
     deviation_counts,
     validate_frame_tools,
@@ -212,6 +213,12 @@ class ToolPolicyWriteDTO(CamelModel):
 
 class DepartmentToolsWriteRequest(CamelModel):
     tools: dict[str, ToolPolicyWriteDTO] = {}
+
+
+def frame_tools_of(body: DepartmentToolsWriteRequest) -> dict[str, dict[str, Any]]:
+    """A tools write request's policies as the plain dicts a frame stores
+    (`departments.frames.validate_frame_tools`)."""
+    return {key: policy.model_dump() for key, policy in body.tools.items()}
 
 
 class DepartmentPatchRequest(CamelModel):
@@ -548,7 +555,12 @@ async def set_department_tools(
     dept = await _get_department(db, dept_id)
     frame = dict(dept.frame or {})
     old_tools = dict(frame.get("tools", {}))
-    new_tools = await validate_frame_tools(db, tenant_id=_p.tenant_id, body=body)
+    try:
+        new_tools = await validate_frame_tools(
+            db, tenant_id=_p.tenant_id, tools=frame_tools_of(body)
+        )
+    except FrameChangeRefused as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.detail) from exc
 
     frame["tools"] = new_tools
     dept.frame = frame
@@ -602,13 +614,16 @@ async def set_department_tools(
         .scalars()
         .all()
     )
-    await cascade_department_tools_change(
-        db,
-        old_tools=old_tools,
-        new_tools=frame["tools"],
-        agents=agents,
-        clip_to_frame=dept.kind == DEPARTMENT_KIND_PERSONAL,
-    )
+    try:
+        await cascade_department_tools_change(
+            db,
+            old_tools=old_tools,
+            new_tools=frame["tools"],
+            agents=agents,
+            clip_to_frame=dept.kind == DEPARTMENT_KIND_PERSONAL,
+        )
+    except FrameChangeRefused as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.detail) from exc
 
     await db.flush()
     return DepartmentToolsDTO(
@@ -670,13 +685,16 @@ async def reset_department_tool(
         .scalars()
         .all()
     )
-    await cascade_department_tools_change(
-        db,
-        old_tools=old_tools,
-        new_tools=new_tools,
-        agents=agents,
-        clip_to_frame=dept.kind == DEPARTMENT_KIND_PERSONAL,
-    )
+    try:
+        await cascade_department_tools_change(
+            db,
+            old_tools=old_tools,
+            new_tools=new_tools,
+            agents=agents,
+            clip_to_frame=dept.kind == DEPARTMENT_KIND_PERSONAL,
+        )
+    except FrameChangeRefused as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.detail) from exc
 
     await db.flush()
     await append_event(

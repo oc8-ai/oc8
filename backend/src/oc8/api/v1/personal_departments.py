@@ -31,6 +31,7 @@ from oc8.api.v1._serializers import department_to_dto
 from oc8.api.v1.departments import (
     DepartmentToolsDTO,
     DepartmentToolsWriteRequest,
+    frame_tools_of,
 )
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
@@ -45,7 +46,7 @@ from oc8.authz.permissions import (
 )
 from oc8.authz.scope import scope_for_principal
 from oc8.capas.service import PluginError, instantiate_agent, template_scope
-from oc8.departments.frames import deviation_counts, validate_frame_tools
+from oc8.departments.frames import FrameChangeRefused, deviation_counts, validate_frame_tools
 from oc8.departments.personal import (
     BUDGET_KEY,
     ENABLED_KEY,
@@ -416,8 +417,13 @@ async def get_personal_default_frame(
 async def put_personal_default_frame(
     body: DepartmentToolsWriteRequest, db: DbSession, principal: CurrentPrincipal
 ) -> DepartmentToolsDTO:
-    new_tools = await validate_frame_tools(db, tenant_id=principal.tenant_id, body=body)
-    resynced = await resync_frames(db, tenant_id=principal.tenant_id, new_tools=new_tools)
+    try:
+        new_tools = await validate_frame_tools(
+            db, tenant_id=principal.tenant_id, tools=frame_tools_of(body)
+        )
+        resynced = await resync_frames(db, tenant_id=principal.tenant_id, new_tools=new_tools)
+    except FrameChangeRefused as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.detail) from exc
     await _write_settings(
         db, principal, {FRAME_KEY: new_tools}, {"setting": FRAME_KEY, "resynced": resynced}
     )
@@ -490,7 +496,10 @@ async def follow_personal_default(
 ) -> PersonalDepartmentAdminDTO:
     """Drop both overrides of one personal department and re-apply the tenant's
     current default frame and budget to it."""
-    dept = await follow_default(db, tenant_id=principal.tenant_id, department_id=dept_id)
+    try:
+        dept = await follow_default(db, tenant_id=principal.tenant_id, department_id=dept_id)
+    except FrameChangeRefused as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.detail) from exc
     if dept is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "personal department not found")
     await append_event(

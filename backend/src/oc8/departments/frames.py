@@ -10,10 +10,9 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping, Sequence
+from typing import Any
 
-from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,10 +30,25 @@ from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
 from oc8.connections.value_spec import has_value_spec
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from oc8.api.v1.departments import DepartmentToolsWriteRequest
-
 logger = logging.getLogger(__name__)
+
+
+class FrameChangeRefused(Exception):
+    """A department frame change refused. `detail` is the body the routes
+    answer with, as a 422."""
+
+    def __init__(self, detail: dict[str, Any]) -> None:
+        super().__init__(detail.get("error", "frame_change_refused"))
+        self.detail = detail
+
+
+class FrameToolsInvalid(FrameChangeRefused):
+    """The tools fail a check before they are stored (`validate_frame_tools`)."""
+
+
+class CascadePublishRefused(FrameChangeRefused):
+    """A publish hook refused an agent the cascade publishes: the whole
+    department change is refused, and the caller's transaction rolls back."""
 
 
 def clip_narrowing_to_frame(
@@ -107,8 +121,9 @@ async def cascade_department_tools_change(
     longer allows -- an overridden key too, which the cascade leaves alone -- and
     those agents are published like any other touched one.
 
-    A publish hook refusing rejects the whole department change (422, and
-    `get_db` rolls every write back) rather than leave agents half-published.
+    A publish hook refusing rejects the whole department change
+    (`CascadePublishRefused`, which the routes answer as a 422, and `get_db`
+    rolls every write back) rather than leave agents half-published.
     """
     changed_keys = {
         key
@@ -187,35 +202,33 @@ async def cascade_department_tools_change(
             # The cascade wrote what the version already had.
             continue
         except PublishHookFailed as exc:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
+            raise CascadePublishRefused(
                 {
                     "error": "publish_hook_rejected",
                     "agentId": str(agent.id),
                     "hook": exc.hook_name,
                     "reason": str(exc.cause),
-                },
+                }
             ) from exc
 
 
 async def validate_frame_tools(
-    db: AsyncSession, *, tenant_id: uuid.UUID, body: DepartmentToolsWriteRequest
+    db: AsyncSession, *, tenant_id: uuid.UUID, tools: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, Any]:
     """The checks a department frame's tools must pass before they are stored,
     shared by `PUT /departments/{id}/tools` and the personal departments'
-    default frame. Returns the tools as the frame stores them; raises 422
-    (`limit_names_unknown_tools`, `value_spec_not_supported`) otherwise."""
-    new_tools = {k: v.model_dump() for k, v in body.tools.items()}
+    default frame. `tools` is the frame's tool policies as plain dicts (a
+    request's `model_dump()`). Returns them as the frame stores them; raises
+    `FrameToolsInvalid` (`limit_names_unknown_tools`,
+    `value_spec_not_supported`) otherwise."""
+    new_tools = {key: dict(policy) for key, policy in tools.items()}
 
     unknown = await unknown_limit_tools(db, tenant_id=tenant_id, tools=new_tools)
     if unknown:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {"error": "limit_names_unknown_tools", "violations": unknown},
-        )
+        raise FrameToolsInvalid({"error": "limit_names_unknown_tools", "violations": unknown})
 
     value_spec_violations: list[dict[str, str]] = []
-    for key, policy in body.tools.items():
+    for key, policy in new_tools.items():
         # `only` is a plain tool-name allowlist -- meaningful for ANY
         # connection that has tools to restrict, with no dependency on a
         # `value_spec` (github_mcp/jira_mcp/microsoft365/google_workspace all
@@ -232,7 +245,7 @@ async def validate_frame_tools(
         # (matching approval_eur's real absent/present distinction) treats
         # every save as "wants an allowlist". Only a genuinely non-empty list
         # means the operator actually wants one.
-        wants_eur = policy.approval_eur is not None
+        wants_eur = policy.get("approval_eur") is not None
         if not wants_eur:
             continue
         # `credential_id.is_(None)` picks the manifest row, never another
@@ -261,9 +274,8 @@ async def validate_frame_tools(
         if not connection_supports_value_spec(manifest_conn):
             value_spec_violations.append({"connection": key, "field": "approval_eur"})
     if value_spec_violations:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {"error": "value_spec_not_supported", "violations": value_spec_violations},
+        raise FrameToolsInvalid(
+            {"error": "value_spec_not_supported", "violations": value_spec_violations}
         )
 
     return new_tools
