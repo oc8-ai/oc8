@@ -679,6 +679,13 @@ async def _publish_copilot_change(
         raise InvalidOperation() from exc
 
 
+def _refuse_personal(dept: m.Department) -> None:
+    """Personal departments are not the Copilot's to edit, delete, restore or
+    hire into before it owns that surface; fail closed."""
+    if dept.kind == DEPARTMENT_KIND_PERSONAL:
+        raise InvalidOperation("a personal department cannot be edited")
+
+
 async def apply_operation(
     db: AsyncSession,
     *,
@@ -843,10 +850,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
             raise InvalidOperation()
-        if dept.kind == DEPARTMENT_KIND_PERSONAL:
-            # Not the Copilot's to edit (name, goal or icon) before it owns that
-            # surface; fail closed rather than pick fields to allow.
-            raise InvalidOperation("a personal department cannot be edited")
+        _refuse_personal(dept)
         if operation.name is not None:
             dept.name = operation.name
         if operation.goal is not None:
@@ -859,6 +863,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         live_agents = (
             (
                 await db.execute(
@@ -893,6 +898,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         dept.deleted_at = None
         await restore_department_boards(db, department_id=dept.id)
         await db.flush()
@@ -901,6 +907,7 @@ async def apply_operation(
         target_dept = await db.get(m.Department, operation.departmentId)
         if target_dept is None or target_dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(target_dept)
         # Deliberately minimal (name/department/mission only, no narrowing,
         # no model, no runtime override): the Copilot bootstraps a starting
         # point, same as everywhere else in this module -- a human fills in

@@ -3,6 +3,7 @@ frame or budget are stamped as overrides."""
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -235,3 +236,40 @@ async def test_the_copilot_cannot_update_a_personal_department(
             tenant_id=w.tenant,
             data={"type": "department.update", "departmentId": str(w.standard), "name": "Z"},
         )
+
+
+async def test_the_copilot_cannot_delete_restore_or_hire_into_a_personal_department(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.capabilities import InvalidOperation, apply_operation
+
+    w = await _world(app_session)
+    live_ops: list[dict[str, Any]] = [
+        {"type": "department.delete", "departmentId": str(w.personal)},
+        {
+            "type": "agent.create",
+            "departmentId": str(w.personal),
+            "name": "Helper",
+            "roleTitle": "Helper",
+            "mission": "help",
+        },
+    ]
+    restore = {"type": "department.restore", "departmentId": str(w.personal)}
+
+    async def refused(op: dict[str, Any]) -> None:
+        async with app_session(w.tenant) as db:
+            with pytest.raises(InvalidOperation) as caught:
+                await apply_operation(db, tenant_id=w.tenant, data=op)
+        assert caught.value.reason == "a personal department cannot be edited", op["type"]
+
+    for op in live_ops:
+        await refused(op)
+    assert (await _dept(app_session, w, w.personal)).deleted_at is None
+
+    # Restore only gets past the "is it archived" check for an archived one.
+    async with app_session(w.tenant) as db:
+        archived = await db.get(m.Department, w.personal)
+        assert archived is not None
+        archived.deleted_at = dt.datetime.now(dt.UTC)
+    await refused(restore)
+    assert (await _dept(app_session, w, w.personal)).deleted_at is not None
