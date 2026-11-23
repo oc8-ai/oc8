@@ -121,4 +121,16 @@ describe("CapaSetupDialog", () => {
     );
     expect(testMock).not.toHaveBeenCalled();
   });
+
+  it("keeps Save & test reachable: the dialog is bounded and its body scrolls", () => {
+    // E2E N2: a long login form pushed the button below a 900 px window,
+    // with nothing to scroll.
+    renderDialog();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.className).toMatch(/max-h-/);
+    const body = screen.getByTestId("capa-setup-body");
+    expect(body.className).toMatch(/overflow-y-auto/);
+    expect(dialog).toContainElement(screen.getByRole("button", { name: "Save & test" }));
+    expect(body).not.toContainElement(screen.getByRole("button", { name: "Save & test" }));
+  });
 });

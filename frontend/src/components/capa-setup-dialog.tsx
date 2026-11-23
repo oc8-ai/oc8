@@ -98,10 +98,14 @@ export function CapaSetupDialog({
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4" onClick={onClose}>
       <div
-        className="w-full max-w-xl rounded-xl border border-border bg-panel p-5 shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        // Bounded by the window, with only the fields scrolling: a long login
+        // form otherwise pushed Save & test out of reach (E2E N2).
+        className="flex max-h-[calc(100dvh-2rem)] w-full max-w-xl flex-col rounded-xl border border-border bg-panel p-5 shadow-2xl"
         onClick={(event) => event.stopPropagation()}
       >
-        <header className="flex items-start justify-between gap-4">
+        <header className="flex shrink-0 items-start justify-between gap-4">
           <div className="flex gap-3">
             <div className="grid h-10 w-10 place-items-center rounded-lg bg-primary/15 text-primary">
               <Puzzle className="h-5 w-5" />
@@ -121,7 +125,7 @@ export function CapaSetupDialog({
             <X className="h-4 w-4" />
           </button>
         </header>
-        <div className="mt-5">
+        <div data-testid="capa-setup-body" className="-mr-2 mt-5 min-h-0 overflow-y-auto pr-2">
           <PluginSetupFields
             setup={setup}
             values={values}
@@ -132,7 +136,7 @@ export function CapaSetupDialog({
             loginMissing={loginMissing}
           />
         </div>
-        <footer className="mt-5 flex justify-end gap-2">
+        <footer className="mt-5 flex shrink-0 justify-end gap-2">
           <button onClick={onClose} className="rounded-md border border-border px-3 py-1.5 text-xs">
             {t("Cancel", "Abbrechen")}
           </button>
