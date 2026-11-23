@@ -552,7 +552,7 @@ async def instantiate_agent(
     # the snapshot includes them -- same create-and-publish shape as
     # api/v1/agents_write.py::create_agent. Every run is pinned to a version;
     # an agent without one would run off its live row.
-    await publish_version(db, agent)
+    await publish_version(db, agent, at_hire=True)
     return agent
 
 
@@ -643,7 +643,7 @@ async def instantiate_department(
                 db, tenant_id=tenant_id, plugin_name=runtime_name
             )
         # Per agent, after its skills and runtime -- see instantiate_agent.
-        await publish_version(db, agent)
+        await publish_version(db, agent, at_hire=True)
         if lead_id is None and agent.is_team_lead:
             lead_id = agent.id
 

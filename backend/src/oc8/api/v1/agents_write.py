@@ -29,6 +29,7 @@ from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
 from oc8.agents.versioning import (
+    AwaitingHireApproval,
     NoChangesToPublish,
     apply_payload,
     draft_status,
@@ -383,7 +384,7 @@ async def create_agent(
     # assignment, so a caller-requested runtime is already reflected in the
     # snapshot, and before the audit event below (skills_write.py's
     # create_skill follows the same create-and-publish-atomically shape).
-    await publish_version(db, agent, published_by=actor.member.id)
+    await publish_version(db, agent, published_by=actor.member.id, at_hire=True)
 
     if gated:
         await create_hire_request(db, agent=agent)
@@ -1272,12 +1273,10 @@ async def _publish_or_refuse(
     working-copy write before it) never reaches the database -- which is what
     makes a hook a veto rather than a complaint after the fact.
     """
-    if agent.status == "pending_approval":
-        # The approver approves what was requested: nothing is published on
-        # top of it while they decide (review of round 6).
-        raise HTTPException(status.HTTP_409_CONFLICT, "agent awaiting hire approval")
     try:
         return await publish_version(db, agent, note=note, published_by=published_by, meta=meta)
+    except AwaitingHireApproval as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, "agent awaiting hire approval") from exc
     except NoChangesToPublish as exc:
         raise HTTPException(
             status.HTTP_409_CONFLICT,

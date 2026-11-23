@@ -304,3 +304,34 @@ async def test_narrowing_set_keeps_a_zero_threshold(app_session, acme_tenant) ->
     agent, result = await _propose_threshold_after_a_frame_raise(app_session, acme_tenant, 0)
     assert not isinstance(result, ProposalRejected), result
     assert agent.narrowing["tools"]["microsoft365"]["approval_eur"] == 0
+
+
+async def test_a_copilot_change_to_a_pending_hire_is_held_as_a_draft(
+    app_session, acme_tenant
+) -> None:
+    """Review of round 7: a Copilot change published over a hire that awaits
+    approval. It is held in the working copy; the published v1 -- what the
+    approver approves -- stays as it was."""
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        dept = m.Department(tenant_id=acme_tenant, name="Sales", frame={"tools": {}})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=acme_tenant, department_id=dept.id, name="Pia", definition={},
+            status="pending_approval",
+        )
+        db.add(agent)
+        await db.flush()
+        await publish_version(db, agent, at_hire=True)
+        narrowing = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
+        proposal = await create_proposal(
+            db,
+            actor,
+            [{"type": "agent.narrowing.set", "agentId": str(agent.id), "narrowing": narrowing}],
+        )
+        assert (await apply_proposal(db, proposal.id, actor)).status == "applied"
+        await db.refresh(agent)
+        live = await db.get(m.AgentVersion, agent.current_version_id)
+        assert live is not None and live.version_no == 1
+        assert (await draft_status(db, agent)).dirty

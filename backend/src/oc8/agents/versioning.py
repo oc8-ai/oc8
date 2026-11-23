@@ -121,6 +121,12 @@ def version_meta(version: m.AgentVersion) -> dict[str, Any]:
     return dict(meta) if isinstance(meta, dict) else {}
 
 
+class AwaitingHireApproval(Exception):
+    """Raised by `publish_version` for an agent whose hire awaits approval:
+    the approver approves what was requested, so nothing is published on top
+    of it -- only the hire's own v1 (`at_hire=True`)."""
+
+
 class NoChangesToPublish(Exception):
     """Raised by `publish_version` when the agent's current configuration
     hashes identically to its current version. Publishing nothing is always a
@@ -324,6 +330,7 @@ async def publish_version(
     note: str | None = None,
     published_by: uuid.UUID | None = None,
     meta: dict[str, Any] | None = None,
+    at_hire: bool = False,
 ) -> m.AgentVersion:
     """Snapshot `agent`'s current configuration, and -- if it differs from the
     current version -- insert it as the next `version_no`, repoint
@@ -335,7 +342,13 @@ async def publish_version(
     `meta`, when given, is merged into the STORED payload after the hash is
     computed -- see `META_KEY`'s own comment for why the hash must never see
     it.
+
+    Raises `AwaitingHireApproval` for an agent whose hire awaits approval,
+    unless `at_hire` -- the v1 published as the agent is created, the one
+    the approver decides on.
     """
+    if agent.status == "pending_approval" and not at_hire:
+        raise AwaitingHireApproval(f"agent {agent.id} awaits hire approval")
     payload = await snapshot_agent(db, agent)
     new_hash = payload_hash(payload)
 

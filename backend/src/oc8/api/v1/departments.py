@@ -45,7 +45,12 @@ from oc8 import models as m
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.repo import visible_agents
 from oc8.agents.retire import delete_or_archive_agent
-from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
+from oc8.agents.versioning import (
+    AwaitingHireApproval,
+    NoChangesToPublish,
+    draft_status,
+    publish_version,
+)
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, task_to_dto
 from oc8.audit import append_event
@@ -381,6 +386,10 @@ async def _cascade_department_tools_change(
             continue
         try:
             await publish_version(db, agent, note="department tool access changed")
+        except AwaitingHireApproval:
+            # The approver approves the hire's v1; the change waits in the
+            # working copy instead of failing the department's cascade.
+            continue
         except NoChangesToPublish:
             # The cascade wrote what the version already had.
             continue

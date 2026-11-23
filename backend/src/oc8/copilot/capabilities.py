@@ -32,7 +32,12 @@ from oc8.agents.hire import initial_status, require_hire_approval
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
-from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
+from oc8.agents.versioning import (
+    AwaitingHireApproval,
+    NoChangesToPublish,
+    draft_status,
+    publish_version,
+)
 from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz import pdp
@@ -664,6 +669,9 @@ async def _publish_copilot_change(
         return
     try:
         await publish_version(db, agent, note=f"Copilot: {what}")
+    except AwaitingHireApproval:
+        # Held in the working copy: the approver approves the hire's v1.
+        logger.info("copilot change held for a pending hire: agent=%s what=%s", agent.id, what)
     except NoChangesToPublish:
         pass
     except PublishHookFailed as exc:
@@ -913,7 +921,7 @@ async def apply_operation(
         # path (api/v1/agents_write.py::create_agent): runs are pinned to a
         # version, and an agent without one would run off its live row.
         if publish:
-            await publish_version(db, agent, note="created by the Copilot")
+            await publish_version(db, agent, note="created by the Copilot", at_hire=True)
         return agent.id
     if isinstance(operation, AgentRename):
         agent = await db.get(m.Agent, operation.agentId)

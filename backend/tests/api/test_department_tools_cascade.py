@@ -566,3 +566,53 @@ async def test_a_cascade_keeps_the_login_an_agent_pinned(
         assert reloaded is not None
         assert reloaded.narrowing["tools"]["Odoo"]["enabled"] is True
         assert reloaded.narrowing["tools"]["Odoo"]["connection_id"] == login
+
+
+async def test_a_cascade_publishes_nothing_over_a_pending_hire(
+    app_session: AppSessionFactory,
+) -> None:
+    """Review of round 7: a hire that awaits approval keeps the v1 its
+    approver sees. The cascade skips publishing it (the change stays in its
+    working copy) instead of failing for the whole department."""
+    from oc8.agents.versioning import draft_status, publish_version, resolve_version
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant, name="Sales", frame={"tools": {"Odoo": {"enabled": False}}}
+        )
+        db.add(dept)
+        await db.flush()
+        ready = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Nora",
+            narrowing={"tools": {"Odoo": {"enabled": False}}},
+        )
+        pending = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="Pia", status="pending_approval",
+            narrowing={"tools": {"Odoo": {"enabled": False}}},
+        )
+        db.add_all([ready, pending])
+        await db.flush()
+        await publish_version(db, ready, note="v1")
+        await publish_version(db, pending, note="v1", at_hire=True)
+        dept_id, ready_id, pending_id = dept.id, ready.id, pending.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.put(
+                f"/api/v1/departments/{dept_id}/tools",
+                json={"tools": {"Odoo": {"enabled": True}}},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+        reloaded_ready = await db.get(m.Agent, ready_id)
+        reloaded_pending = await db.get(m.Agent, pending_id)
+        assert reloaded_ready is not None and reloaded_pending is not None
+        pinned = await resolve_version(db, None, reloaded_ready)
+        assert pinned["narrowing"]["tools"]["Odoo"]["enabled"] is True
+        pinned = await resolve_version(db, None, reloaded_pending)
+        assert pinned["narrowing"]["tools"]["Odoo"]["enabled"] is False
+        assert (await draft_status(db, reloaded_pending)).dirty is True
