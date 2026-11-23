@@ -15,6 +15,14 @@
 # which run in the bridge and see only OC8_MCP_* variables. Having the bridge
 # follow OC8_OUTBOUND_ALLOWED_PRIVATE by itself is a follow-up.
 #
+# Mail servers with a certificate from a private CA. Certificates are always
+# verified; there is no way to skip that. Either set SSL_CERT_FILE (or
+# SSL_CERT_DIR) to a bundle holding the CA on the backend, worker and
+# scheduler -- core passes both on to the bridge, so the poller, the
+# connection test and the tools all trust it -- or paste the CA's certificate
+# (PEM) into the login's `ca_certificate` field, which needs no change to the
+# containers.
+#
 # Attachments travel as files of the run, not through the model:
 # mail_get_attachment returns MCP binary content that core keeps as a run
 # file, and mail_send/mail_reply/mail_forward take run-file ids in

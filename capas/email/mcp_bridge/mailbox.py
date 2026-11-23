@@ -14,8 +14,9 @@ Rules that hold everywhere:
 
 * **Encrypted only.** `ssl` (implicit TLS) or `starttls`. A server that does
   not offer STARTTLS is refused before any login is sent. Certificates are
-  verified against the system trust store, host name included
-  (`tls_context`).
+  verified against the system trust store (which `SSL_CERT_FILE` and
+  `SSL_CERT_DIR` may point elsewhere) plus the login's own CA certificate,
+  if it has one, host name included (`tls_context`). Never skipped.
 * **Only where it may go.** A server's name is resolved once and checked
   (`Guard`); the socket then goes only to the addresses checked, while TLS
   still checks the certificate against the name, so a second DNS answer
@@ -121,6 +122,7 @@ ENV_FIELDS: dict[str, str] = {
     "MAIL_FROM_ADDRESS": "from_address",
     "MAIL_FROM_NAME": "from_name",
     "MAIL_SENT_FOLDER": "sent_folder",
+    "MAIL_CA_CERTIFICATE": "ca_certificate",
 }
 
 logger = logging.getLogger(__name__)
@@ -156,12 +158,46 @@ class NotOnPop3(MailError):
 Guard = Callable[[str], "str | Sequence[str]"]
 
 
-def tls_context(host: str) -> ssl.SSLContext:
-    """The TLS policy for every connection: the system trust store, host name
-    checked, TLS 1.2 at least. `host` is the server we are about to verify."""
+def tls_context(host: str, ca_certificate: str = "") -> ssl.SSLContext:
+    """The TLS policy for every connection: the system trust store (its
+    default paths, so `SSL_CERT_FILE`/`SSL_CERT_DIR` are honoured), plus the
+    login's own CA certificate (PEM) when it has one; host name checked, TLS
+    1.2 at least. `host` is the server we are about to verify."""
     context = ssl.create_default_context()
+    if ca_certificate:
+        context.load_verify_locations(cadata=ca_certificate)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     return context
+
+
+_PEM_CERT = re.compile(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", re.S)
+#: The most a login's CA certificate field may hold (a short chain).
+MAX_CA_CERTIFICATE = 64 * 1024
+
+
+def ca_certificate_pem(value: str) -> str:
+    """The login's CA certificate field as PEM, its line breaks restored (a
+    one-line form field drops them), checked to load. Empty for empty.
+    Raises `MailError` for anything that is not one or more certificates."""
+    value = value.strip()
+    if not value:
+        return ""
+    bodies = _PEM_CERT.findall(value) if len(value) <= MAX_CA_CERTIFICATE else []
+    pem = ""
+    for body in bodies:
+        b64 = "".join(body.split())
+        lines = "\n".join(b64[i : i + 64] for i in range(0, len(b64), 64))
+        pem += f"-----BEGIN CERTIFICATE-----\n{lines}\n-----END CERTIFICATE-----\n"
+    try:
+        if not pem:
+            raise ValueError
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=pem)
+    except (ValueError, ssl.SSLError):
+        raise MailError(
+            "The CA certificate must be one or more PEM certificates "
+            "(-----BEGIN CERTIFICATE----- ...)."
+        ) from None
+    return pem
 
 
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
@@ -344,6 +380,9 @@ class Account:
     from_name: str
     #: Where sent mail is kept (IMAP); empty means found by SPECIAL-USE or name.
     sent_folder: str = ""
+    #: The organisation's own CA (PEM) the servers' certificates come from,
+    #: trusted besides the system trust store; empty for none.
+    ca_certificate: str = ""
 
     def __repr__(self) -> str:
         return f"Account({self.username!r} at {self.incoming_host!r})"
@@ -404,6 +443,7 @@ class Account:
             from_address=from_address,
             from_name=_one_line(get("from_name")),
             sent_folder=_one_line(get("sent_folder"), 200),
+            ca_certificate=ca_certificate_pem(get("ca_certificate")),
         )
 
 
@@ -1038,7 +1078,7 @@ def imap_session(account: Account, guard: Guard | None = None) -> Iterator[imapl
     host, port = account.incoming_host, account.incoming_port
     addresses = _vet(host, guard)
     try:
-        context = tls_context(host)
+        context = tls_context(host, account.ca_certificate)
         conn: imaplib.IMAP4
         if account.incoming_security == "ssl":
             conn = _PinnedImapSsl(host, port, addresses, context)
@@ -1309,7 +1349,7 @@ def pop3_session(account: Account, guard: Guard | None = None) -> Iterator[popli
     host, port = account.incoming_host, account.incoming_port
     addresses = _vet(host, guard)
     try:
-        context = tls_context(host)
+        context = tls_context(host, account.ca_certificate)
         conn: poplib.POP3
         if account.incoming_security == "ssl":
             conn = _PinnedPop3Ssl(host, port, addresses, context)
@@ -1742,7 +1782,7 @@ def smtp_session(account: Account, guard: Guard | None = None) -> Iterator[smtpl
     host, port = account.smtp_host, account.smtp_port
     addresses = _vet(host, guard)
     try:
-        context = tls_context(host)
+        context = tls_context(host, account.ca_certificate)
         conn: smtplib.SMTP
         if account.smtp_security == "ssl":
             conn = _PinnedSmtpSsl(host, port, addresses, context)

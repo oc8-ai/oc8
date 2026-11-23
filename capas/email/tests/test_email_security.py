@@ -279,7 +279,7 @@ def test_a_certificate_for_another_name_is_refused_by_name(
     though the socket goes to the vetted address."""
     import ssl
 
-    def trusting(host: str) -> ssl.SSLContext:
+    def trusting(host: str, ca_certificate: str = "") -> ssl.SSLContext:
         context = ssl.create_default_context(cadata=greenmail.ca_pem)
         assert context.check_hostname
         return context
@@ -624,3 +624,62 @@ def test_decode_fails_closed(mailbox: ModuleType, monkeypatch: pytest.MonkeyPatc
     # Even a codec that passes the check but raises falls back to utf-8.
     monkeypatch.setattr(mailbox, "_codec", lambda charset: "undefined")
     assert mailbox._decode(b"caf\xc3\xa9", "x") == "café"
+
+
+@pytest.mark.parametrize("protocol", ["imap", "pop3"])
+def test_a_private_ca_on_the_login_is_trusted_and_only_then(
+    mailbox: ModuleType, greenmail: Any, protocol: str
+) -> None:
+    """A server whose certificate comes from the organisation's own CA: the
+    login's CA certificate makes it trusted, host name still checked; without
+    it the system trust store refuses it."""
+    fields = greenmail.fields(protocol=protocol, security="starttls", smtp_security="starttls")
+    with pytest.raises(mailbox.MailError, match="certificate could not be verified"):
+        mailbox.check_login(mailbox.Account.from_fields(fields))
+
+    trusted = mailbox.Account.from_fields({**fields, "ca_certificate": greenmail.ca_pem})
+    mailbox.check_login(trusted)
+    assert mailbox.search(trusted, folder="INBOX") == []
+
+
+def test_a_ca_pasted_on_one_line_is_still_read(mailbox: ModuleType, greenmail: Any) -> None:
+    # A one-line form field drops the PEM's line breaks.
+    fields = greenmail.fields(security="starttls", smtp_security="starttls")
+    one_line = greenmail.ca_pem.replace("\n", "")
+    mailbox.check_login(mailbox.Account.from_fields({**fields, "ca_certificate": one_line}))
+
+
+def test_a_ca_that_is_no_certificate_is_refused_by_name(
+    mailbox: ModuleType, greenmail: Any
+) -> None:
+    with pytest.raises(mailbox.MailError, match="CA certificate"):
+        mailbox.Account.from_fields({**greenmail.fields(), "ca_certificate": "not a certificate"})
+
+
+def test_the_operators_trust_store_is_honoured(
+    mailbox: ModuleType,
+    greenmail: Any,
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`SSL_CERT_FILE`, as core passes it to the bridge, is the trust store."""
+    bundle = tmp_path / "ca.pem"
+    bundle.write_text(greenmail.ca_pem)
+    monkeypatch.setenv("SSL_CERT_FILE", str(bundle))
+    fields = greenmail.fields(security="starttls", smtp_security="starttls")
+    mailbox.check_login(mailbox.Account.from_fields(fields))
+
+
+async def test_the_tools_trust_the_ca_core_hands_them(
+    tools: ModuleType,
+    mailbox: ModuleType,
+    greenmail: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The login's CA reaches the bridge through its environment, as
+    `credential_env_fields` hands it over."""
+    fields = greenmail.fields(security="starttls", smtp_security="starttls")
+    fields["ca_certificate"] = greenmail.ca_pem
+    for env_name, field_key in mailbox.ENV_FIELDS.items():
+        monkeypatch.setenv(env_name, fields.get(field_key, ""))
+    assert await call(tools, "mail_search") is not None

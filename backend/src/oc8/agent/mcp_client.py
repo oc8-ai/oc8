@@ -69,8 +69,20 @@ except Exception:  # pragma: no cover - a missing dist would break the import an
 
 # Only these host vars are forwarded to an MCP server subprocess. The full host
 # environment is deliberately NOT passed so provider keys and DB credentials never
-# leak into a (possibly third-party) tool server.
-_SAFE_ENV_KEYS = ("PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SYSTEMROOT")
+# leak into a (possibly third-party) tool server. `SSL_CERT_FILE`/`SSL_CERT_DIR`
+# are paths, not secrets: the trust store an operator points core at (a private
+# CA) is the tools' trust store too.
+_SAFE_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "SYSTEMROOT",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+)
 
 #: Ships with oc8 core -- its sitecustomize.py gives every MCP subprocess a
 #: real `oc8/<version>` User-Agent for outbound HTTP (odoo_mcp's raw urllib

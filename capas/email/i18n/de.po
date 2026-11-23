@@ -163,6 +163,12 @@ msgstr "Absenderadresse"
 msgid "Sender name"
 msgstr "Absendername"
 
+msgid "CA certificate"
+msgstr "CA-Zertifikat"
+
+msgid "Only if your mail server's certificate comes from your organisation's own certificate authority: paste that CA's certificate (PEM). It is trusted besides the usual ones; the server's certificate and name are still checked."
+msgstr "Nur wenn das Zertifikat des Mailservers von der eigenen Zertifizierungsstelle der Organisation stammt: hier das Zertifikat dieser CA (PEM) einfügen. Es gilt zusätzlich zu den üblichen; Zertifikat und Name des Servers werden weiterhin geprüft."
+
 msgid "Sent folder"
 msgstr "Ordner für gesendete Mails"
 
