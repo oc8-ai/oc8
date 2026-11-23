@@ -121,14 +121,20 @@ function toRow(
   const connection = str(call.connection);
   const step = num(call.step);
   const result = str(call.result);
+  const state = rowState(call);
   return {
     key: `${index}-${step ?? "x"}-${tool}`,
     step,
     tool,
     connection,
     args,
-    label: label({ tool, arguments: args, connection }),
-    state: rowState(call),
+    label: label({
+      tool,
+      arguments: args,
+      connection,
+      awaitingApproval: state === "awaiting_approval",
+    }),
+    state,
     durationMs: num(call.durationMs) ?? (step !== null ? (wallByStep.get(step) ?? null) : null),
     result,
     resultShortened: (result?.length ?? 0) >= RESULT_CAP,
