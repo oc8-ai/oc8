@@ -54,10 +54,14 @@ async def _owner_names(db: DbSession, triggers: list[m.Trigger]) -> dict[uuid.UU
         return {}
     rows = (
         await db.execute(
-            select(m.OrgMember.id, m.OrgMember.display_name).where(m.OrgMember.id.in_(ids))
+            select(
+                m.OrgMember.id, m.OrgMember.display_name, m.OrgMember.email, m.OrgMember.subject
+            ).where(m.OrgMember.id.in_(ids))
         )
     ).all()
-    return {r.id: r.display_name for r in rows}
+    # A member without a display name (the dev admin's is empty) is named by
+    # their email, else their login: "Created by" with no name says nothing.
+    return {r.id: (r.display_name or r.email or r.subject) for r in rows}
 
 
 async def _needs_confirmation(

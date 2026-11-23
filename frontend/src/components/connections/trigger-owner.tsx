@@ -11,7 +11,7 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
   const { data: me } = useAuth();
   const update = useUpdateAgentTrigger();
   const owner = trigger.createdByMemberId;
-  const ownerName = trigger.createdByName ?? t("a former member", "ein ehemaliges Mitglied");
+  const ownerName = trigger.createdByName || t("a former member", "ein ehemaliges Mitglied");
   const isCreator = !!owner && !!me?.memberId && me.memberId === owner;
   const offersActing = trigger.kind === "webhook" || trigger.kind === "event";
 

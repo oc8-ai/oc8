@@ -57,7 +57,12 @@ def render_preview(
     template: str | None,
     record: str,
 ) -> str:
-    text = template or "Allow {connection} to run {tool} on {record}?"
+    # A call with no record (a send) would read "... on ?".
+    text = template or (
+        "Allow {connection} to run {tool} on {record}?"
+        if record.strip()
+        else "Allow {connection} to run {tool}?"
+    )
     values = _Safe({key: str(value) for key, value in arguments.items()})
     values.update(connection=connection, tool=tool, record=record)
     return text.format_map(values)
