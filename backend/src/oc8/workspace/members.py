@@ -27,7 +27,6 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
 from oc8.auth.second_factors import sign_in_address_changed
 from oc8.authz.permissions import SEAT_PERMISSIONS
 from oc8.db.base import uuid7
@@ -223,6 +222,12 @@ async def list_members(
     precedent as `visible_departments`. A caller that passes a `group_by`
     anyway gets `ValueError`.
     """
+    # Imported here, not at module level: importing `oc8.api.v1._listquery`
+    # runs `oc8.api.v1`'s package init, whose routers import this module back,
+    # so a service that reaches `grant_seat` before the API is loaded (the
+    # personal department service) would hit a half-initialised module.
+    from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
+
     stmt = select(OrgMember).where(OrgMember.tenant_id == tenant_id, OrgMember.deleted_at.is_(None))
     stmt = apply_search(
         stmt, model=OrgMember, columns=[OrgMember.display_name, OrgMember.email], search=search
