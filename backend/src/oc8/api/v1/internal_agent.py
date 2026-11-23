@@ -2568,22 +2568,6 @@ async def _dispatch_one_tool(
         # Never ask a person to approve a call the usage limit would refuse
         # once approved.
         decision = Decision(Effect.DENY, usage_limit_reason(full))
-    if decision.effect is Effect.REQUIRE_APPROVAL and (
-        early := (
-            await check_outward(
-                db,
-                tenant_id=run.tenant_id,
-                task_id=run.task_id,
-                tc=tc,
-                focus_spec=focus_spec,
-                outward_tools=outward_tools,
-                skip_spec=cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None,
-            )
-        ).refusal
-    ):
-        # Nor one the once-per-recipient guard would refuse once approved
-        # (E2E N1): it ran only as the call went out, after a person said yes.
-        decision = Decision(Effect.DENY, early.removeprefix("ERROR: "))
 
     await append_event(
         db,
@@ -2990,6 +2974,12 @@ async def _dispatch_one_tool(
             focus_spec=focus_spec,
             outward_tools=outward_tools,
             skip_spec=cfg.get("outward_skip_spec") if isinstance(cfg, dict) else None,
+            # A person approved this very call: their decision, not a repeat
+            # to refuse (E2E N1).
+            approved=pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
+                _call_sig(tc)
+            )
+            == "approve",
         )
     ).refusal is not None:
         # Checked before the call, not after: the point is that the recipient is

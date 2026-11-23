@@ -48,7 +48,6 @@ from oc8.agent.control_tools import (
     has_readable_context,
 )
 from oc8.agent.engine import _authorize, _call_sig
-from oc8.agent.harness.stages.b_outward import check_outward
 from oc8.agent.harness.stages.b_usage_limit import (
     record_limit_refusal,
     reserve_usage,
@@ -1096,22 +1095,6 @@ async def _call_tool(
         # Never ask a person to approve a call the usage limit would refuse
         # once approved.
         decision = Decision(Effect.DENY, usage_limit_reason(full))
-    if decision.effect is Effect.REQUIRE_APPROVAL and (
-        early := (
-            await check_outward(
-                db,
-                tenant_id=run.tenant_id,
-                task_id=run.task_id,
-                tc=tc,
-                focus_spec=focus_spec,
-                outward_tools=outward_tools,
-                skip_spec=cfg.get("outward_skip_spec"),
-            )
-        ).refusal
-    ):
-        # Nor one the once-per-recipient guard would refuse once approved
-        # (E2E N1): it ran only as the call went out, after a person said yes.
-        decision = Decision(Effect.DENY, early.removeprefix("ERROR: "))
 
     await append_event(
         db,
@@ -1308,7 +1291,13 @@ async def _call_tool(
         outward_tools,
         skip_spec=cfg.get("outward_skip_spec"),
     )
-    if target is not None and run.task_id is not None:
+    # A call a person approved through its card is the person's decision: the
+    # guard stops unattended repeats, never a human's "yes" (E2E N1).
+    approved = (
+        pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
+        == "approve"
+    )
+    if target is not None and run.task_id is not None and not approved:
         if await already_delivered(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target):
             return _tool_result(REFUSAL.format(target=target), is_error=True)
 

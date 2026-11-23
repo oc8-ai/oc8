@@ -20,9 +20,14 @@ declares it, the same way it declares where a call's value and its record are:
     outward_tools = ["post_message"]
 
 An empty declaration leaves the guard inert, so nothing changes for a connection
-that has not thought about it. A call that names no record is keyed by who it
-reaches: the arguments the connection declares for that in
-`focus_spec.outward_fields` (tool -> argument names), or else the whole call.
+that has not thought about it. A connection may also say who a call reaches
+(`focus_spec.outward_fields`: tool -> argument names holding addresses); such a
+call is keyed by that set of people, whatever it says. Without it, a call that
+names no record stays at one per task: fail closed.
+
+A call a person approved through its card is the person's decision, and this
+guard does not refuse it (`check_outward(approved=...)`): it stops unattended
+repeats, not a human's second "yes".
 
 LIMIT, deliberately: a call is identified by its record, not by its channel. A
 connection whose single tool writes both an internal note and a customer-visible
@@ -37,8 +42,7 @@ ran in a different container.
 
 from __future__ import annotations
 
-import hashlib
-import json
+import re
 import uuid
 from typing import Any
 
@@ -100,6 +104,12 @@ def outward_target(
     if is_outward_skipped(tool_name, arguments, skip_spec):
         return None
     spec = focus_spec or {}
+    # Who the call reaches, where the connection declares it: the people are
+    # the target, never the wording. A reworded subject to the same person is
+    # exactly the repeat this guard is for (E2E N1, security review).
+    recipients = _declared_recipients(tool_name, arguments, spec)
+    if recipients:
+        return "recipients#" + ",".join(recipients)
     # Both declared shapes, not just `entity_field`: software with one endpoint
     # per KIND of thing (`calendar_create_event`) names the entity in the tool,
     # never in an argument, so reading only the argument left every such call
@@ -109,28 +119,41 @@ def outward_target(
     ref = focus_ref_id(arguments, spec)
     if entity and ref:
         return f"{entity}#{ref}"
-    # No record named. Keying on the tool alone allowed ONE such message per
-    # task, ever -- and every turn of a chat shares one task, so a second,
-    # different new message was refused, after a person had approved it
-    # (E2E N1). The target is who the call reaches: the arguments a connection
-    # declares for that (`focus_spec.outward_fields`, tool -> argument names),
-    # or else the whole call. The same call twice is still refused; a
-    # different one is a different message to somebody.
-    return f"{entity or tool_name}#{_call_key(tool_name, arguments, spec)}"
+    # No record named: fall back to the tool itself, which still stops a run
+    # from firing the same broadcast twice. Coarser on purpose -- a guard that
+    # gives up when it cannot identify the recipient guards nothing.
+    return f"{entity or tool_name}#"
 
 
-def _call_key(tool_name: str, arguments: dict[str, Any], spec: dict[str, Any]) -> str:
+#: An address inside a display name: `Ann <ann@example.com>`.
+_ANGLE = re.compile(r"<([^<>]+)>")
+
+
+def _declared_recipients(
+    tool_name: str, arguments: dict[str, Any], spec: dict[str, Any]
+) -> list[str]:
+    """The people a call reaches, from the arguments its connection declares
+    for that (`focus_spec.outward_fields`: tool -> argument names), as one
+    set: trimmed, lowercased, deduplicated and sorted, whichever field
+    (to/cc/bcc) names them. Empty when nothing is declared or named -- then
+    the caller fails closed to the coarser keys."""
     declared = spec.get("outward_fields")
     fields = declared.get(tool_name) if isinstance(declared, dict) else None
-    if isinstance(fields, list) and fields:
-        picked = {str(f): arguments.get(str(f)) for f in fields}
-        # Readable, because it is what the refusal names to the model.
-        return "|".join(
-            json.dumps(v, sort_keys=True, default=str) if not isinstance(v, str) else v
-            for v in picked.values()
-        )
-    blob = json.dumps(arguments, sort_keys=True, default=str)
-    return hashlib.sha256(f"{tool_name}\n{blob}".encode()).hexdigest()[:16]
+    if not isinstance(fields, list):
+        return []
+    found: set[str] = set()
+    for field in fields:
+        value = arguments.get(str(field))
+        items = value if isinstance(value, list) else [value]
+        for item in items:
+            if not isinstance(item, str):
+                continue
+            for part in item.split(","):
+                inner = _ANGLE.search(part)
+                address = (inner.group(1) if inner else part).strip().lower()
+                if address:
+                    found.add(address)
+    return sorted(found)
 
 
 def _marker(target: str) -> str:

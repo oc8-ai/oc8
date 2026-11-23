@@ -1124,42 +1124,94 @@ async def test_a_call_over_the_threshold_suspends_for_approval(
         assert run.context["isolated_result"]["status"] == "waiting_for_approval"
 
 
-async def test_a_message_already_sent_is_refused_before_anyone_is_asked(
-    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """E2E N1: the once-per-recipient guard ran only when the call was about to
-    go out -- after a person had approved it. A call it would refuse must be
-    refused before an approval card asks anybody."""
-    from sqlalchemy import select
-
+async def _a_message_already_sent(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    amount: int,
+    approved: bool,
+) -> dict[str, Any]:
+    """E2E N1: a `send_email` to bob was already delivered in this task, and
+    the model sends bob another one -- `amount` decides whether it needs an
+    approval, `approved` whether a person approved this very call."""
+    from oc8.agent.engine import _call_sig
     from oc8.agent.outward import outward_target, remember_delivery
+    from oc8.modelrouter import ToolCall
 
     _FakeMcp.calls = []
     monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
-    arguments = {"model": "sale.order", "values": {"amount_total": 3900}}
+    arguments = {"to": ["bob@example.com"], "subject": "Second", "amount_total": amount}
+    focus = {"outward_fields": {"send_email": ["to"]}}
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, task_id = await _seed(
-            db, tenant, config_extra={"outward_tools": ["create_record"]}
+            db,
+            tenant,
+            config_extra={
+                "outward_tools": ["send_email"],
+                "focus_spec": focus,
+                "value_spec": {"direct_fields": ["amount_total"]},
+            },
         )
-        target = outward_target("create_record", arguments, None, ["create_record"])
-        assert target is not None
-        await remember_delivery(db, tenant_id=tenant, task_id=task_id, target=target)
+        earlier = outward_target(
+            "send_email", {"to": ["Bob@example.com"], "subject": "First"}, focus, ["send_email"]
+        )
+        assert earlier is not None
+        await remember_delivery(db, tenant_id=tenant, task_id=task_id, target=earlier)
+        if approved:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            sig = _call_sig(ToolCall(id="x", name="send_email", arguments=arguments))
+            run.context = {
+                **run.context,
+                "resolved_tool_approvals": [
+                    {
+                        "sig": sig,
+                        "tool": "send_email",
+                        "arguments": arguments,
+                        "decision": "approve",
+                    }
+                ],
+            }
 
     code, body = await _rpc(
         _token(tenant, agent_id, run_id),
         "tools/call",
-        {"name": "create_record", "arguments": arguments},
+        {"name": "send_email", "arguments": arguments},
     )
     assert code == 200, body
-    assert body["result"]["isError"] is True
-    assert "already sent" in body["result"]["content"][0]["text"]
+    return dict(body["result"])
+
+
+async def test_an_unattended_repeat_to_the_same_recipient_is_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = await _a_message_already_sent(app_session, monkeypatch, amount=10, approved=False)
+    assert result["isError"] is True
+    assert "already sent" in result["content"][0]["text"]
     assert _FakeMcp.calls == []
-    async with app_session(tenant) as db:
-        cards = await db.execute(
-            select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant)
-        )
-        assert cards.scalars().all() == []
+
+
+async def test_a_repeat_that_needs_approval_is_asked_not_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The person decides: a call that will be asked about is not refused
+    before asking."""
+    result = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=False)
+    text = result["content"][0]["text"]
+    assert "already sent" not in text
+    assert "approval" in text.lower()
+    assert _FakeMcp.calls == []
+
+
+async def test_a_repeat_a_person_approved_goes_out(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E2E N1: the second mail of a chat was refused after a person approved
+    it. An approved call is the person's decision; the guard never refuses it."""
+    result = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True)
+    assert result.get("isError") is not True, result
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
 
 
 async def test_an_unknown_method_is_a_jsonrpc_error(app_session: AppSessionFactory) -> None:

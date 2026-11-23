@@ -133,13 +133,18 @@ def test_a_meet_link_at_the_same_moment_is_the_same_recipient() -> None:
 
 def test_the_mail_tools_are_unchanged_by_the_calendar_scoping() -> None:
     """`focus_spec` is per CONNECTION, so it is seen by every tool. Gmail names
-    no event, so it is keyed by the call itself (E2E N1): the same mail twice is
-    one target, a different mail another -- the calendar seam changes neither."""
+    no event: a send is keyed by its declared recipients (E2E N1), and the
+    calendar seam changes neither that nor the invite reply's per-task cap."""
     mail = {"to": ["bob@customer.com"], "subject": "Hi", "body": "..."}
     first = _target("gmail_send", mail)
-    assert first is not None and first.startswith("gmail_send#")
-    assert _target("gmail_send", dict(mail)) == first
-    assert _target("gmail_send", {**mail, "subject": "Other"}) != first
+    assert first is not None
+    assert _target("gmail_send", {**mail, "subject": "Other"}) == first
+    assert _target("gmail_reply", {"messageId": "m1", "to": ["BOB@customer.com"]}) == first
+    assert _target("gmail_send", {**mail, "to": ["ann@customer.com"]}) != first
+    assert (
+        _target("calendar_respond_to_invite", {"eventId": "evt1", "response": "accepted"})
+        == "calendar_respond_to_invite#"
+    )
 
 
 def test_a_tool_that_reaches_nobody_still_has_no_target() -> None:

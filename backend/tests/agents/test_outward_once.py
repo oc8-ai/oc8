@@ -119,35 +119,50 @@ def test_a_call_that_names_no_record_still_has_a_target() -> None:
     assert outward_target("post_message", {}, FOCUS_SPEC, OUTWARD) is not None
 
 
-def test_two_different_calls_that_name_no_record_are_two_targets() -> None:
-    """E2E N1: every new message of a chat shares one task, and keying a call
-    without a record on the tool alone allowed one new message per chat,
-    ever. Without a declared recipient, the call itself is the target."""
+def test_a_call_without_declared_recipients_stays_once_per_task() -> None:
+    """Fail closed: nothing says who an undeclared call reaches, so any two of
+    them may reach the same person -- one per task, whatever the arguments."""
     first = outward_target("post_message", {"to": "a", "body": "x"}, FOCUS_SPEC, OUTWARD)
     second = outward_target("post_message", {"to": "b", "body": "y"}, FOCUS_SPEC, OUTWARD)
-    assert first is not None and second is not None
-    assert first != second
+    assert first == second == "post_message#"
 
 
-def test_the_same_call_that_names_no_record_is_one_target() -> None:
-    args = {"to": "a", "body": "x"}
-    assert outward_target("post_message", dict(args), FOCUS_SPEC, OUTWARD) == outward_target(
-        "post_message", dict(args), FOCUS_SPEC, OUTWARD
-    )
+SEND_SPEC: dict[str, Any] = {
+    **FOCUS_SPEC,
+    "outward_fields": {"post_message": ["to", "cc", "bcc"], "forward": ["to"]},
+}
+SENDS = ["post_message", "forward"]
 
 
-def test_declared_target_fields_identify_who_a_call_without_a_record_reaches() -> None:
-    """A connection may declare which arguments say who a call reaches
-    (`focus_spec.outward_fields`): a reworded body to the same recipient is
-    the duplicate the guard exists for, another recipient is not."""
-    spec = {**FOCUS_SPEC, "outward_fields": {"post_message": ["to", "subject"]}}
-    first = outward_target("post_message", {"to": "a", "subject": "S", "body": "x"}, spec, OUTWARD)
-    reworded = outward_target(
-        "post_message", {"to": "a", "subject": "S", "body": "y"}, spec, OUTWARD
-    )
-    other = outward_target("post_message", {"to": "b", "subject": "S", "body": "x"}, spec, OUTWARD)
-    assert first == reworded
-    assert first != other
+def _send(**arguments: Any) -> str | None:
+    return outward_target("post_message", arguments, SEND_SPEC, SENDS)
+
+
+def test_declared_recipients_are_the_target_whatever_the_subject() -> None:
+    """E2E N1 under the security ruling: the key is who a call reaches, so a
+    reworded subject to the same person is the repeat the guard exists for,
+    and another person is another target."""
+    first = _send(to=["bob@example.com"], subject="Offer", body="x")
+    assert _send(to=["bob@example.com"], subject="Offer, again", body="y") == first
+    assert _send(to=["ann@example.com"], subject="Offer", body="x") != first
+
+
+def test_the_recipient_key_ignores_case_order_duplicates_and_the_field() -> None:
+    first = _send(to=["Bob@Example.com ", "ann@example.com"], cc=[])
+    assert _send(to=["ann@example.com"], cc=["bob@example.com", "BOB@example.com"]) == first
+    assert _send(to="Ann <ann@example.com>, bob@example.com") == first
+
+
+def test_declared_tools_share_one_recipient_key() -> None:
+    """Forwarding to the person a message was already sent to reaches them a
+    second time just the same."""
+    assert outward_target(
+        "forward", {"to": ["bob@example.com"]}, SEND_SPEC, SENDS
+    ) == _send(to=["bob@example.com"])
+
+
+def test_a_declared_call_naming_nobody_falls_back_to_once_per_task() -> None:
+    assert _send(subject="no recipients") == "post_message#"
 
 
 # ------------------------------------------------------------------ the memory

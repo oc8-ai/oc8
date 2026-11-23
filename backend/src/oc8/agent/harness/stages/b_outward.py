@@ -36,11 +36,15 @@ async def check_outward(
     focus_spec: dict[str, Any] | None,
     outward_tools: list[str] | None,
     skip_spec: dict[str, Any] | None = None,
+    approved: bool = False,
 ) -> OutwardCheck:
+    """`approved`: a person approved this very call through its card. That is
+    the person's decision, and the guard -- which stops unattended repeats --
+    does not refuse it; the delivery is still remembered (E2E N1)."""
     target = outward_target(
         tc.name, tc.arguments, focus_spec, outward_tools, skip_spec=skip_spec
     )
-    if target is None or task_id is None:
+    if target is None or task_id is None or approved:
         return OutwardCheck(target=target, refusal=None)
     if await already_delivered(db, tenant_id=tenant_id, task_id=task_id, target=target):
         return OutwardCheck(target=target, refusal=REFUSAL.format(target=target))
