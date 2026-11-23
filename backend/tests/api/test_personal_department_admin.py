@@ -627,8 +627,8 @@ async def test_resync_publishes_neither_a_pending_approval_nor_a_dirty_agent(
         )
         db.add_all([pending, dirty])
         await db.flush()
-        for agent in (pending, dirty):
-            await publish_version(db, agent, note="v1")
+        await publish_version(db, pending, note="v1", at_hire=True)
+        await publish_version(db, dirty, note="v1")
         dirty.mission = "an unpublished edit"  # a pending draft
         pending_id, dirty_id = pending.id, dirty.id
     async with _http() as c:

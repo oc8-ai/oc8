@@ -19,7 +19,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 
 from oc8 import models as m
-from oc8.agents.hire import set_require_hire_approval
+from oc8.agents.hire import HIRED_STATUS, set_require_hire_approval
 from oc8.auth import get_identity_provider
 from oc8.authz.permissions import COPILOT_USE
 from oc8.authz.scope import subject_uuid_for
@@ -128,12 +128,9 @@ async def _personal_departments(
 async def test_a_bare_member_hires_a_personal_template(app_session: AppSessionFactory) -> None:
     """Ruling 4: a personal hire is exempt from `require_hire_approval` -- the
     admin enabling the capa is the approval. The flag is on here, and the agent
-    is still a plain stopped agent with no hire request behind it.
-
-    On this branch `instantiate_agent` has no hire gate at all, so the
-    exemption half of this test passes trivially. It is here to pin the
-    exemption once the gate arrives on rebase: the route passes
-    `hire_gate=False`, and this test must keep passing then."""
+    still starts ready (`HIRED_STATUS`, like any ungated template hire), never
+    `pending_approval`, with no hire request behind it: the route passes
+    `hire_gate=False`."""
     tenant = await _tenant(app_session, hire_approval=True)
     cid = await _capa(app_session, tenant, _template("mail_helper"))
 
@@ -162,7 +159,7 @@ async def test_a_bare_member_hires_a_personal_template(app_session: AppSessionFa
         assert agent is not None
         assert agent.department_id == dept_id
         assert agent.name == "Mia"
-        assert agent.status == "stopped"
+        assert agent.status == HIRED_STATUS
         member = (
             await db.execute(
                 select(m.OrgMember).where(

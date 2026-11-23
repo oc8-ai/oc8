@@ -506,16 +506,15 @@ async def instantiate_agent(
     name: str | None = None,
     hire_gate: bool = True,
 ) -> Agent:
-    """Hire one stopped agent from an agent_template version into a live
+    """Hire one agent from an agent_template version into a live
     department. add/flush only -- the endpoint owns the commit.
 
     `hire_gate=False` exempts this hire from the tenant's
     `require_hire_approval` (plan ruling 4): a member's personal hire, where the
-    administrator enabling the template's capa is the approval. This function
-    raises no hire request of its own today, so the flag is a no-op here; it
-    keeps the exemption visible at the call site for when the gate moves in.
+    administrator enabling the template's capa is the approval. Such a hire
+    raises no hire request and never starts `pending_approval`; otherwise the
+    owner, approver in their own department, would approve their own hire.
     """
-    del hire_gate  # no hire gate on this path yet -- see the docstring
     mf = version.manifest
     if mf.get("type", "agent_template") != "agent_template":
         raise PluginError("only agent_template plugins can be instantiated as agents")
@@ -549,8 +548,9 @@ async def instantiate_agent(
     }
     if spec.get("max_steps"):
         definition["max_steps"] = int(spec["max_steps"])
-    # The tenant's hire gate holds a template's agents like any hire.
-    gated = await require_hire_approval(db, tenant_id=tenant_id)
+    # The tenant's hire gate holds a template's agents like any hire -- except
+    # an exempt one (`hire_gate=False`, see the docstring).
+    gated = hire_gate and await require_hire_approval(db, tenant_id=tenant_id)
     narrowing = await _checked_template_narrowing(
         db,
         tenant_id=tenant_id,

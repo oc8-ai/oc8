@@ -457,7 +457,9 @@ async def test_a_personal_template_within_the_frame_is_hired(
         dept = await _personal_with_frame(
             s, tenant, {"docs.files": {"enabled": True, "read": True, "approval_eur": 100}}
         )
-        narrowing = {"tools": {"docs.files": {"enabled": True, "read": True, "approval_eur": 50}}}
+        # €0: tighter than the frame's €100 and enforced even on a connection
+        # that reports no amount (`connections.value_spec`).
+        narrowing = {"tools": {"docs.files": {"enabled": True, "read": True, "approval_eur": 0}}}
         version = await install_plugin(
             s,
             tenant_id=tenant,
