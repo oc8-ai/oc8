@@ -3182,6 +3182,15 @@ async def test_a_routed_core_name_is_tiered_as_the_connections_write(
     assert code == 200, body
     assert body["status"] == "waiting_for_approval", body
     assert calls == []
+    # E2E F6: the card names the run that raised it -- every turn of a chat
+    # runs on one task, so the task alone does not say which run to resume.
+    from sqlalchemy import select
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        card = (
+            await db.execute(select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant))
+        ).scalar_one()
+        assert card.payload["run_id"] == str(run_id)
 
 
 @pytest.mark.parametrize(("chat_mode", "prefetched"), [(None, 2), ("ask", 0)])
@@ -3797,6 +3806,8 @@ async def test_a_parked_held_call_runs_exactly_once_after_its_approval(
         run = (
             await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant))
         ).scalar_one()
+        # E2E F6: the held call's card names the run that raised it.
+        assert approval.payload["run_id"] == str(run.id)
         run.state = "waiting_for_approval"
         await db.flush()
         await resolve_tool_approval(db, approval=approval, decision="approve")

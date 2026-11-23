@@ -1116,6 +1116,8 @@ async def test_a_call_over_the_threshold_suspends_for_approval(
         ).scalar_one()
         assert ar.status == "pending"
         assert ar.action_type == "tool_send"
+        # E2E F6: the card names the run that raised it.
+        assert ar.payload["run_id"] == str(run_id)
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         # The verdict the runtime reads to park the run.
