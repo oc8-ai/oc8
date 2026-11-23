@@ -43,6 +43,7 @@ from oc8.agent.harness import GateVerdict, Harness, resolve_caps
 from oc8.agent.harness.calls import (
     call_sig as _call_sig,  # re-exported for mcp_gateway.py and older tests
 )
+from oc8.agent.harness.calls import unique_call_ids
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
     procedure_haystack,
@@ -788,7 +789,7 @@ async def run_agent(
             unused = Decisions(run_row.context) if run_row is not None else decided
             if unused is None:
                 return False
-            mine = claimed.get(call_id)
+            mine = _claimed(call_id, sig)
             # A decision handed in as a plain map has no approval ids; its
             # claim then names no entry here, and the run's open ones count.
             keys = [mine] if mine in unused.entries else unused.open.get(sig) or []
@@ -799,20 +800,30 @@ async def run_agent(
                 for key in keys
             )
 
-        #: tool call id -> the approval claimed for it, before it ran.
-        claimed: dict[str, str] = {}
+        #: tool call id -> (its signature, the approval claimed for it before
+        #: it ran). Bound to the signature: a call id is the model's, and a
+        #: different call reusing it must never ride on this claim.
+        claimed: dict[str, tuple[str, str]] = {}
+        #: Every call id of this leg, so a reused one is renamed on arrival
+        #: (`unique_call_ids`); "held" is the held re-run's own.
+        seen_call_ids: set[str] = {"held"}
+
+        def _claimed(call_id: str, sig: str) -> str | None:
+            """The approval claimed for THIS call -- same id, same signature."""
+            mine = claimed.get(call_id)
+            return mine[1] if mine is not None and mine[0] == sig else None
 
         async def _claim(call_id: str, sig: str) -> bool:
             """Claim one unused approval of this call before it runs (once per
-            call id); False when none is left -- the call is asked again."""
-            if call_id in claimed:
+            call); False when none is left -- the call is asked again."""
+            if _claimed(call_id, sig) is not None:
                 return True
-            if decided is None or not decided.approved(sig):
+            if call_id in claimed or decided is None or not decided.approved(sig):
                 return False
             key = await claim_approval(db, run_row, decided, sig, call_id=call_id)
             if key is None:
                 return False
-            claimed[call_id] = key
+            claimed[call_id] = (sig, key)
             return True
 
         async def _direct_right_check(
@@ -2271,6 +2282,9 @@ async def run_agent(
 
                 if not result.tool_calls:
                     result.tool_calls = _salvage_tool_calls(result.text, _offered())
+                # Before anything is booked against a call id: a reused one is
+                # renamed, here and in what the model sees.
+                unique_call_ids(result.tool_calls, seen_call_ids)
 
                 if not result.tool_calls:
                     await _finish_step_timing(step_rec, 0)
@@ -2820,7 +2834,7 @@ async def run_agent(
                             )
                             if gate_verdict.effect == "ask":
                                 verdict = decided.get(_call_sig(tc)) if decided else None
-                                if tc.id in claimed or (
+                                if _claimed(tc.id, _call_sig(tc)) is not None or (
                                     verdict == "approve" and await _claim(tc.id, _call_sig(tc))
                                 ):
                                     decision = Decision(Effect.ALLOW, "operator approved")
@@ -2836,7 +2850,10 @@ async def run_agent(
                                 gate_verdict.effect == "deny"
                                 and gate_verdict.rule == "read_before_write"
                                 and decided
-                                and (tc.id in claimed or decided.get(_call_sig(tc)) == "approve")
+                                and (
+                                    _claimed(tc.id, _call_sig(tc)) is not None
+                                    or decided.get(_call_sig(tc)) == "approve"
+                                )
                                 and _open_proof(call_key, _call_sig(tc), tc.id)
                                 and await _claim(tc.id, _call_sig(tc))
                             ):
@@ -3402,7 +3419,7 @@ async def run_agent(
                                 ),
                                 # A person approved this very call: their
                                 # decision, not a repeat to refuse (E2E N1).
-                                approved=tc.id in claimed,
+                                approved=_claimed(tc.id, _call_sig(tc)) is not None,
                             )
                         ).refusal is not None:
                             # Before the call, not after: the point is that the

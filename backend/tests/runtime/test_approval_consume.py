@@ -77,8 +77,11 @@ def test_a_call_id_an_approval_was_claimed_for_is_known() -> None:
         "consumed_tool_approvals": [{"sig": "s", "key": "a1", "call_id": "c1"}],
     }
     decisions = Decisions(ctx)
-    assert decisions.claimed_call("c1") == "a1"
-    assert decisions.claimed_call("c2") is None
+    assert decisions.claimed_call("c1", "s") == "a1"
+    assert decisions.claimed_call("c2", "s") is None
+    # The same id on a DIFFERENT call does not ride on the claim (security
+    # scan: a model's call ids are not unique).
+    assert decisions.claimed_call("c1", "other") is None
     assert not decisions.approved("s")
 
 

@@ -46,6 +46,7 @@ from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.engine import _max_steps
 from oc8.agent.harness import Harness, resolve_caps
 from oc8.agent.harness.calls import call_sig as _call_sig
+from oc8.agent.harness.calls import unique_call_ids
 from oc8.agent.harness.pipeline import GateVerdict
 from oc8.agent.harness.procedures import (
     newly_satisfied_lines,
@@ -441,6 +442,23 @@ def _local_refusal(tools: Sequence[NeutralTool], mode: ChatMode | None, name: st
     return None
 
 
+def _taken_call_ids(transcript: Sequence[Mapping[str, Any]], ctx: Mapping[str, Any]) -> set[str]:
+    """Every call id the run already used: in its transcript, and the ones
+    an approval was claimed for."""
+    taken = {
+        str(call.get("id"))
+        for message in transcript
+        for call in message.get("tool_calls") or []
+        if isinstance(call, dict) and call.get("id")
+    }
+    taken.update(
+        str(c["call_id"])
+        for c in ctx.get("consumed_tool_approvals") or []
+        if isinstance(c, dict) and c.get("call_id")
+    )
+    return taken
+
+
 async def _local_allowed(
     db: DbSession,
     run: m.AgentRun,
@@ -478,6 +496,8 @@ async def _local_allowed(
     decisions = await live_decisions(db, context=ctx, tenant_id=run.tenant_id, task_id=run.task_id)
     names: list[str] = []
     ids: list[str] = []
+    seen = [c.id for c in calls]
+    repeated = {i for i in seen if seen.count(i) > 1}
     for name in _LOCAL_TOOLS:
         if _local_refusal(tools, mode, name) is not None:
             continue
@@ -486,6 +506,10 @@ async def _local_allowed(
             continue
         every = True
         for c in mine:
+            if c.id in repeated:
+                # Never a go-ahead for an id another call shares (fail closed).
+                every = False
+                continue
             sent = ToolCall(id=c.id, name=c.name, arguments=strip_justification(c.arguments)[0])
             verdict = _b_gate(
                 harness,
@@ -1951,6 +1975,10 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             if result.usage.tokens_in > 0
             else prompt_token_fallback(resolved_messages)
         )
+        # Before anything is booked against a call id: one reused -- in this
+        # turn, earlier in the run, or by a claimed approval -- is renamed,
+        # here and in what the model sees.
+        unique_call_ids(result.tool_calls, _taken_call_ids(transcript, ctx))
         transcript.append(
             _from_message(
                 NeutralMessage(
@@ -2559,7 +2587,10 @@ async def _dispatch_one_tool(
         /step claimed for its call id (`_local_allowed`) -- never on one
         claimed here, after the fact."""
         if is_local:
-            return body.local_result is not None and decisions.claimed_call(tc.id) is not None
+            return (
+                body.local_result is not None
+                and decisions.claimed_call(tc.id, _call_sig(tc)) is not None
+            )
         if decisions.get(_call_sig(tc)) != "approve":
             return False
         key = await claim_approval(db, run, decisions, _call_sig(tc), call_id=tc.id, ctx=ctx)

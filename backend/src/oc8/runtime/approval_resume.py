@@ -216,9 +216,13 @@ class Decisions:
         self.decided = bool(latest)
         consumed = [c for c in ctx.get("consumed_tool_approvals") or [] if isinstance(c, dict)]
         used = {str(c.get("key")) for c in consumed}
-        #: call id -> the approval claimed for it before it ran.
-        self.claimed_calls: dict[str, str] = {
-            str(c["call_id"]): str(c.get("key")) for c in consumed if c.get("call_id")
+        #: call id -> (its signature, the approval claimed for it before it
+        #: ran). Bound to the signature: a call id is the model's, and a
+        #: different call reusing it must never ride on the claim.
+        self.claimed_calls: dict[str, tuple[str, str]] = {
+            str(c["call_id"]): (str(c.get("sig")), str(c.get("key")))
+            for c in consumed
+            if c.get("call_id")
         }
         #: approval key -> its entry, for what the approval carries.
         self.entries: dict[str, dict[str, Any]] = {}
@@ -274,9 +278,11 @@ class Decisions:
             if self.verdicts.get(sig) == "approve":
                 self.verdicts.pop(sig, None)
 
-    def claimed_call(self, call_id: str) -> str | None:
-        """The approval claimed for this very call before it ran, if any."""
-        return self.claimed_calls.get(call_id)
+    def claimed_call(self, call_id: str, sig: str) -> str | None:
+        """The approval claimed for this very call -- same id AND same
+        signature -- before it ran, if any."""
+        mine = self.claimed_calls.get(call_id)
+        return mine[1] if mine is not None and mine[0] == sig else None
 
     def drop(self, sig: str) -> str | None:
         """Forget the next open approval of this call; its key."""
@@ -361,7 +367,7 @@ async def claim_approval(
         entry: dict[str, Any] = {"sig": sig, "key": key}
         if call_id is not None:
             entry["call_id"] = call_id
-            decisions.claimed_calls[call_id] = key
+            decisions.claimed_calls[call_id] = (sig, key)
         await append_consumed_approval(db, run, entry)
         if ctx is not None:
             ctx["consumed_tool_approvals"] = [*(ctx.get("consumed_tool_approvals") or []), entry]

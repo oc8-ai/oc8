@@ -2670,6 +2670,41 @@ async def test_two_identical_local_calls_on_one_approval_let_only_one_run(
         assert second["status"] == "waiting_for_approval", second
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved_first", [True, False])
+async def test_duplicate_call_ids_in_one_step_borrow_no_go_ahead(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, approved_first: bool
+) -> None:
+    """Security scan: two calls sharing one id -- one approved, one not.
+    The second is renamed before anything is booked, so only the approved
+    call may run, under its own id; the other never runs on its allow."""
+    from oc8.runtime.approval_resume import call_signature
+
+    context: dict[str, Any] = {
+        "resolved_tool_approvals": [
+            {
+                "sig": call_signature("run_shell", {"command": "ls"}),
+                "tool": "run_shell",
+                "arguments": {"command": "ls"},
+                "decision": "approve",
+                "approval_id": "a1",
+            }
+        ]
+    }
+    ls = ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})
+    rm = ToolCall(id="c1", name="run_shell", arguments={"command": "rm -rf x"})
+    turn = [ls, rm] if approved_first else [rm, ls]
+    body, _n, _ctx = await _step_with_scripted_turns(
+        app_session, monkeypatch, [turn], context=context,
+        definition={"autonomy": "conservative"},
+    )
+    ids = [c["id"] for c in body["tool_calls"]]
+    assert ids == ["c1", "c1_dup1"]
+    ls_id = ids[0] if approved_first else ids[1]
+    assert body["local_allowed_calls"] == [ls_id]
+    assert body["local_allowed"] == []
+
+
 # --------------------------------------------------- parallel reads under caps
 
 

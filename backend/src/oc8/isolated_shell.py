@@ -231,6 +231,10 @@ def main() -> int:
                 # identical calls lets exactly one of them run.
                 allowed_calls = step.get("local_allowed_calls")
                 local_allowed_ids = set(allowed_calls) if isinstance(allowed_calls, list) else None
+                # Never run a call whose id another call of the step shares:
+                # a go-ahead given for one must not run the other.
+                step_ids = [str(tc.get("id")) for tc in calls]
+                shared_ids = {i for i in step_ids if step_ids.count(i) > 1}
                 # Code-mode SDK: write once from /step's sdk_py when the file
                 # is not already on disk. Programs import oc8_tools from cwd.
                 sdk_py = step.get("sdk_py") or ""
@@ -305,7 +309,7 @@ def main() -> int:
                             "name": name,
                             "arguments": tc.get("arguments", {}),
                         }
-                        if (
+                        if str(tc.get("id")) in shared_ids or (
                             name not in local_allowed
                             if local_allowed_ids is None
                             else tc["id"] not in local_allowed_ids

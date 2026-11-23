@@ -62,8 +62,10 @@ class _RecordingServer:
         self.delay_s = delay_s
         self.failures = failures or set()
         self.windows: list[tuple[str, float, float]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
 
     async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        self.calls.append((name, dict(arguments)))
         start = asyncio.get_event_loop().time()
         await asyncio.sleep(self.delay_s)
         end = asyncio.get_event_loop().time()
@@ -332,6 +334,54 @@ async def test_one_approval_runs_its_call_once_in_the_engine(
 
     assert result.status == "waiting_for_approval", result
     assert len(recorder.windows) == 1
+
+
+@pytest.mark.parametrize("same_turn", [False, True], ids=["later turn", "same turn"])
+async def test_a_reused_call_id_does_not_ride_on_an_approval(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch, same_turn: bool
+) -> None:
+    """Security scan: the claim was keyed on the model's call id, which is
+    not unique -- a DIFFERENT call reusing the approved call's id rode on its
+    claim. A claim is bound to (call id, signature), and a turn's duplicate
+    ids are made unique before anything is booked against them."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr(
+        "oc8.agent.mcp_client.McpSession",
+        _session_factory(recorder, ["delete_a"]),
+    )
+    approved = ToolCall(id="c1", name="delete_a", arguments={"id": 7, "justification": "dup"})
+    other = ToolCall(id="c1", name="delete_a", arguments={"id": 8, "justification": "dup"})
+    turns = (
+        [_turn("", approved, other)]
+        if same_turn
+        else [_turn("", approved), _turn("", other)]
+    )
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream([*turns, _turn("All done.")]),
+    )
+
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": [], "modify": ["delete_a"]},
+            destructive_tools=["delete_a"],
+            approval_templates={"delete_a": "Allow deleting record {id}?"},
+        )
+        resolved_call = ToolCall(id="resolved", name="delete_a", arguments={"id": 7})
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            mcp_conn=conn,
+            pre_decided={call_sig(resolved_call): "approve"},
+        )
+
+    assert result.status == "waiting_for_approval", result
+    assert [args["id"] for _name, args in recorder.calls] == [7]
 
 
 async def test_leading_read_batch_dispatches_concurrently(
