@@ -38,6 +38,7 @@ from oc8.config import get_settings
 from oc8.connections.revoke import purge_member_connections
 from oc8.copilot.profile import offboard_member
 from oc8.mail.send import SmtpConfig, deliver, resolve_smtp_config
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.schemas.dto import MemberDTO, MemberPasswordResetDTO
 from oc8.schemas.paging import Page
 from oc8.schemas.requests import (
@@ -60,6 +61,8 @@ from oc8.workspace.members import (
     seats_for,
     upsert_member,
 )
+
+_PERSONAL_NO_SEATS = "personal departments take no extra seats"
 
 router = APIRouter()
 
@@ -599,6 +602,8 @@ async def grant_seat_route(
     department = await db.get(m.Department, department_id)
     if department is None or department.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
+    if department.kind == DEPARTMENT_KIND_PERSONAL:
+        raise HTTPException(status.HTTP_409_CONFLICT, _PERSONAL_NO_SEATS)
 
     granted_by = await _acting_member_id(db, principal)
     try:
@@ -661,6 +666,9 @@ async def revoke_seat_route(
     member = await get_member(db, tenant_id=principal.tenant_id, member_id=member_id)
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "member not found")
+    department = await db.get(m.Department, department_id)
+    if department is not None and department.kind == DEPARTMENT_KIND_PERSONAL:
+        raise HTTPException(status.HTTP_409_CONFLICT, _PERSONAL_NO_SEATS)
 
     seat = await revoke_seat(
         db, tenant_id=principal.tenant_id, member_id=member.id, department_id=department_id

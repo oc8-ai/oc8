@@ -167,9 +167,11 @@ ALLOWED: dict[str, str] = {
         "provisioning helper with no human caller in the path, not a departmental browse"
     ),
     "departments/personal.py": (
-        "owned_personal_department looks up the one department keyed on the "
-        "caller's own owner_member_id, provisioning it if missing -- the owner's "
-        "own row by construction, not a departmental browse"
+        "owned_personal_department is an owner-keyed lookup of the caller's own "
+        "personal department (owner_member_id == the caller), and the module also "
+        "creates it lazily on first use -- the owner's own row by construction, "
+        "not a departmental browse; stamp_budget_override reads one department by "
+        "id only to set its override stamp, and returns nothing"
     ),
     "agent/claims.py": "the runtime resolving a record-claim holder's display name",
     "agent/engine.py": "the agent runtime loading its OWN department's tool frame",

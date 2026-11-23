@@ -30,7 +30,8 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from oc8.auth.second_factors import sign_in_address_changed
 from oc8.authz.permissions import SEAT_PERMISSIONS
 from oc8.db.base import uuid7
-from oc8.models.core import Department, Role
+from oc8.departments.personal import PersonalDepartmentSeatRefused
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Department, Role
 from oc8.models.identity import OrgMember, OrgMemberDepartment
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -461,6 +462,9 @@ async def grant_seat(
     calls this with the argument genuinely absent -- not passed as an explicit
     `None` -- the shape a caller who has never heard of the toggle would write.
 
+    A personal department takes no seat for anyone but its owner:
+    `PersonalDepartmentSeatRefused`.
+
     A live seat there at the SAME role is updated in place: `agent_manage` is
     resolved (kept if the caller said nothing, overridden if they did) and
     written only if it actually changed. It is not unconditionally reissued --
@@ -477,6 +481,19 @@ async def grant_seat(
     administrator changed what she may READ.
     """
     validated_seat_role(seat_role)
+    department = (
+        await db.execute(
+            select(Department).where(
+                Department.tenant_id == tenant_id, Department.id == department_id
+            )
+        )
+    ).scalar_one_or_none()
+    if (
+        department is not None
+        and department.kind == DEPARTMENT_KIND_PERSONAL
+        and member_id != department.owner_member_id
+    ):
+        raise PersonalDepartmentSeatRefused
     live = (
         (
             await db.execute(

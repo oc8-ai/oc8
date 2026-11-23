@@ -63,7 +63,9 @@ from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pac
 from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
 from oc8.connections.value_spec import has_value_spec
+from oc8.departments.personal import mark_frame_overridden
 from oc8.departments.repo import visible_department, visible_departments
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDTO, TaskDTO
 from oc8.schemas.paging import Page
@@ -429,6 +431,8 @@ async def patch_department(
     _p: CurrentPrincipal,
 ) -> DepartmentDTO:
     dept = await _get_department(db, dept_id)
+    if body.name is not None and dept.kind == DEPARTMENT_KIND_PERSONAL:
+        raise HTTPException(status.HTTP_409_CONFLICT, "a personal department cannot be renamed")
     if body.name is not None:
         dept.name = body.name
     if body.goal is not None:
@@ -697,6 +701,7 @@ async def set_department_tools(
 
     frame["tools"] = new_tools
     dept.frame = frame
+    mark_frame_overridden(dept)
 
     # Cascade each tool's new `enabled` default to every CURRENT agent in this
     # department -- but only the ones who have never *deliberately* touched
@@ -797,6 +802,7 @@ async def reset_department_tool(
         del new_tools[key]
     frame["tools"] = new_tools
     dept.frame = frame
+    mark_frame_overridden(dept)
 
     agents = (
         (

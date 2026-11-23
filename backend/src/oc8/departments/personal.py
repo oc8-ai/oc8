@@ -12,6 +12,7 @@ value reads as the default.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +40,20 @@ class PersonalDepartmentsDisabled(Exception):
 
 class PersonalDepartmentSeatRefused(Exception):
     """A seat in a personal department for anyone but its owner."""
+
+
+def mark_frame_overridden(dept: m.Department) -> None:
+    """Stamp that an administrator edited a personal department's tool frame,
+    so later tenant-default syncs leave it alone. Only the first edit stamps;
+    other kinds of department carry no such stamp."""
+    if dept.kind == DEPARTMENT_KIND_PERSONAL and dept.frame_overridden_at is None:
+        dept.frame_overridden_at = dt.datetime.now(dt.UTC)
+
+
+def mark_budget_overridden(dept: m.Department) -> None:
+    """The budget counterpart of `mark_frame_overridden`."""
+    if dept.kind == DEPARTMENT_KIND_PERSONAL and dept.budget_overridden_at is None:
+        dept.budget_overridden_at = dt.datetime.now(dt.UTC)
 
 
 @dataclass(frozen=True)
@@ -85,6 +100,21 @@ def personal_frame(tools: dict[str, Any]) -> dict[str, Any]:
         "kbs": [],
         "memory": {"department": ["read", "write"]},
     }
+
+
+async def stamp_budget_override(
+    db: AsyncSession, *, tenant_id: uuid.UUID, department_id: uuid.UUID
+) -> None:
+    """`mark_budget_overridden` for the department with this id, if it exists."""
+    dept = (
+        await db.execute(
+            select(m.Department).where(
+                m.Department.tenant_id == tenant_id, m.Department.id == department_id
+            )
+        )
+    ).scalar_one_or_none()
+    if dept is not None:
+        mark_budget_overridden(dept)
 
 
 async def owned_personal_department(
