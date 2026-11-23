@@ -1035,6 +1035,49 @@ export function useFollowPersonalDefault(id: string) {
   });
 }
 
+// ---- Personal departments (member) ----
+export interface PersonalDepartmentMineDTO {
+  enabled: boolean;
+  department: Department | null;
+}
+export interface PersonalTemplateDTO {
+  capaId: string;
+  name: string;
+  label: string;
+  summary: string;
+}
+
+export function useMyPersonalDepartment(enabled = true) {
+  return useQuery({
+    queryKey: ["personal-department"],
+    queryFn: () => api.get<PersonalDepartmentMineDTO>("/personal-department"),
+    enabled,
+  });
+}
+
+export function usePersonalTemplates(enabled = true) {
+  return useQuery({
+    queryKey: ["personal-department", "templates"],
+    queryFn: () => api.get<PersonalTemplateDTO[]>("/personal-department/templates"),
+    enabled,
+  });
+}
+
+export function useHirePersonalTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { capaId: string; name?: string }) =>
+      api.post<{ agentId: string; departmentId: string }>("/personal-department/agents", body),
+    onSuccess: async (data) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["personal-department"] }),
+        qc.invalidateQueries({ queryKey: keys.agents }),
+        qc.invalidateQueries({ queryKey: ["departments", data.departmentId, "agents"] }),
+      ]);
+    },
+  });
+}
+
 /** The organisation's two-factor policy (`organization.settings.two_factor`). */
 export interface TwoFactorPolicyDTO {
   requirement: "off" | "optional" | "admins" | "everyone";

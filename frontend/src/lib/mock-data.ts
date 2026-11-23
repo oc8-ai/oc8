@@ -732,6 +732,8 @@ export interface Department {
   activity: number; // 0..100
   accent: string; // hue for tinting
   promptCachingEnabled: boolean;
+  /** `personal` is a member's own department (one per member). */
+  kind?: "standard" | "assistant" | "personal";
   /** Set once the department is archived (`DELETE /departments/{id}`).
    * Mirrors `Agent.deletedAt` -- see Task 18's report. */
   deletedAt?: string | null;

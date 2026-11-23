@@ -238,25 +238,29 @@ function DepartmentDetail() {
               <Icon className="h-7 w-7" />
             </div>
             <div>
-              <InlineRename
-                value={dept.name}
-                label={t("Rename department", "Abteilung umbenennen")}
-                headingClassName="font-serif text-3xl leading-tight"
-                onSave={(name) =>
-                  updateDepartment.mutateAsync(
-                    { name },
-                    {
-                      onError: () =>
-                        toast.error(
-                          t(
-                            "Couldn't rename the department",
-                            "Abteilung konnte nicht umbenannt werden",
+              {dept.kind === "personal" ? (
+                <h1 className="font-serif text-3xl leading-tight">{dept.name}</h1>
+              ) : (
+                <InlineRename
+                  value={dept.name}
+                  label={t("Rename department", "Abteilung umbenennen")}
+                  headingClassName="font-serif text-3xl leading-tight"
+                  onSave={(name) =>
+                    updateDepartment.mutateAsync(
+                      { name },
+                      {
+                        onError: () =>
+                          toast.error(
+                            t(
+                              "Couldn't rename the department",
+                              "Abteilung konnte nicht umbenannt werden",
+                            ),
                           ),
-                        ),
-                    },
-                  )
-                }
-              />
+                      },
+                    )
+                  }
+                />
+              )}
               <p className="mt-1 text-sm text-muted-foreground">{dept.goal}</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {t("Goal", "Ziel")}: {dept.okr}
