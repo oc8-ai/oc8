@@ -541,11 +541,59 @@ async def _ask_for_startup_accounts(
     """Sessions are opened at the start of a run, before the model picks a
     tool, without asking for a missing account (E2E N3: an email-only run of
     an agent whose department also grants Microsoft 365 said "Connect now").
-    Only a run left with nothing to work with asks, for the first account it
-    lacks."""
-    if run is None or opened_any or not missing:
+    It is asked for when the model reaches for it (`_ask_when_reached`), and
+    right away when the run has nothing else to work with -- or when the
+    login must be connected again: that one is broken, not merely unused."""
+    if run is None or not missing:
         return
-    await merge_context(db, run, {"connection_required": missing[0].as_context()})
+    expired = next((exc for exc in missing if exc.reason == "needs_reauth"), None)
+    ask = expired or (None if opened_any else missing[0])
+    if ask is not None:
+        await merge_context(db, run, {"connection_required": ask.as_context()})
+
+
+def _startup_entry(name: str, exc: BaseException) -> dict[str, Any]:
+    """One connection that offered no tools at startup, as the run keeps it:
+    with the call to action to record should the model reach for it."""
+    reason = " ".join(str(exc).split())[:200] or type(exc).__name__
+    entry: dict[str, Any] = {"name": name, "reason": reason}
+    if isinstance(exc, ConnectionRequired):
+        entry["connection_required"] = exc.as_context()
+    return entry
+
+
+def _reaches(entry: Mapping[str, Any], tc: ToolCall) -> bool:
+    """Whether this call reaches for the connection: a tool search naming
+    it, or a call addressed to it (`<connection>.<tool>`)."""
+    from oc8.agent.offering import named_by_find
+    from oc8.agent.tool_routing import SEPARATOR
+
+    name = str(entry.get("name") or "")
+    if not name:
+        return False
+    if tc.name == FIND_TOOLS.name:
+        raw = tc.arguments.get("connection")
+        connection = str(raw).strip() or None if raw is not None else None
+        return bool(named_by_find([entry], str(tc.arguments.get("query", "")), connection))
+    return tc.name.startswith(name + SEPARATOR)
+
+
+async def _ask_when_reached(
+    db: AsyncSession,
+    run: m.AgentRun | None,
+    unavailable: Sequence[Mapping[str, Any]],
+    tc: ToolCall,
+) -> None:
+    """The model reached for a connection whose account is missing: now the
+    person is asked to connect it (review of N3). Once per run -- the first
+    call to action stands."""
+    if run is None or (run.context or {}).get("connection_required"):
+        return
+    for entry in unavailable:
+        needed = entry.get("connection_required")
+        if isinstance(needed, dict) and _reaches(entry, tc):
+            await merge_context(db, run, {"connection_required": needed})
+            return
 
 
 async def _open_tool_session_for(
@@ -1068,7 +1116,7 @@ async def run_agent(
                 tenant_id, run_id=run_id, step=live_step["no"], text=text
             )
 
-        startup_unavailable: list[dict[str, str]] = []
+        startup_unavailable: list[dict[str, Any]] = []
 
         async def loop(tools: list[NeutralTool], server: Toolset | None) -> RunResult:
             nonlocal model_config, provider, model, model_locality, chat_mode
@@ -2648,6 +2696,9 @@ async def run_agent(
                             decision = Decision(Effect.ALLOW, "operator approved")
                         elif verdict == "reject":
                             decision = Decision(Effect.DENY, "operator rejected this action")
+                    # Reaching for a connection whose account is missing asks
+                    # the person for it now (quiet until then, E2E N3).
+                    await _ask_when_reached(db, run_row, startup_unavailable, tc)
                     record_tool_call(tool=tc.name, decision=decision.effect.value)
                     with get_tracer().start_as_current_span("tool.call") as tool_span:
                         tool_span.set_attribute("tool", tc.name)
@@ -3821,8 +3872,9 @@ async def run_agent(
                 startup_missing: list[ConnectionRequired] = []
 
                 def _note_unavailable(conn: m.McpConnection, exc: BaseException) -> None:
-                    reason = " ".join(str(exc).split())[:200] or type(exc).__name__
-                    startup_unavailable.append({"name": conn.name, "reason": reason})
+                    entry = _startup_entry(conn.name, exc)
+                    reason = str(entry["reason"])
+                    startup_unavailable.append(entry)
                     messages.append(
                         NeutralMessage(
                             role="user",

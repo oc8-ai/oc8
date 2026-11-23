@@ -513,3 +513,95 @@ async def test_startup_records_the_call_to_action_only_when_nothing_opened(
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         assert run.context["connection_required"]["reason"] == "not_connected"
+
+
+# ------------------------------------------- asked when it is needed (review)
+
+
+async def _missing_at_startup(
+    app_session: AppSessionFactory,
+) -> tuple[uuid.UUID, uuid.UUID, ConnectionRequired]:
+    from oc8.agent import engine
+
+    tenant, _anna, conn_id, run_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired) as missing:
+            await engine._open_mcp_session(
+                db, tenant_id=tenant, mcp_conn=conn, run=run, record=False
+            )
+    return tenant, run_id, missing.value
+
+
+async def _asked(app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID) -> Any:
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        return (run.context or {}).get("connection_required")
+
+
+async def test_an_account_to_reconnect_is_always_asked_for(
+    app_session: AppSessionFactory,
+) -> None:
+    """Review of N3: an expired login is not "an account this run may never
+    use" -- it is broken, and the person must reconnect it, whatever else
+    opened."""
+    from oc8.agent import engine
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    expired = ConnectionRequired(missing.integration, "needs_reauth")
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [expired], opened_any=True)
+    assert (await _asked(app_session, tenant, run_id))["reason"] == "needs_reauth"
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        pytest.param("find_tools", {"query": "send a mail with microsoft365"}, id="find names it"),
+        pytest.param(
+            "find_tools", {"query": "mail", "connection": "microsoft365"}, id="find scoped"
+        ),
+        pytest.param("microsoft365.mail_send", {"to": ["a@x.com"]}, id="a call routed to it"),
+    ],
+)
+async def test_an_account_the_model_reaches_for_is_asked_for(
+    app_session: AppSessionFactory, name: str, arguments: dict[str, Any]
+) -> None:
+    """Quiet at startup, but once the model reaches for the connection the
+    person is asked to connect it -- else the run just says "unavailable"."""
+    from oc8.agent import engine
+    from oc8.modelrouter import ToolCall
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry("microsoft365", missing)]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [missing], opened_any=True)
+        assert not (run.context or {}).get("connection_required")
+        await engine._ask_when_reached(
+            db, run, unavailable, ToolCall(id="c1", name=name, arguments=arguments)
+        )
+    assert (await _asked(app_session, tenant, run_id))["reason"] == "not_connected"
+
+
+async def test_a_run_that_never_needs_the_account_stays_quiet(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent import engine
+    from oc8.modelrouter import ToolCall
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry("microsoft365", missing)]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        for call in (
+            ToolCall(id="c1", name="email.mail_send", arguments={"to": ["a@x.com"]}),
+            ToolCall(id="c2", name="find_tools", arguments={"query": "calendar"}),
+            ToolCall(id="c3", name="mail_send", arguments={}),
+        ):
+            await engine._ask_when_reached(db, run, unavailable, call)
+    assert await _asked(app_session, tenant, run_id) is None

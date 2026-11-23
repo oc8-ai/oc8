@@ -57,18 +57,29 @@ def notice_for_find(
     connection: str | None,
 ) -> str | None:
     """The dead-connection sentence when a search names that connection."""
-    needle = (connection or query).strip().lower()
-    if not needle:
-        return None
     hits = [
         unavailable_sentence(str(item.get("name", "")), str(item.get("reason", "")))
-        for item in unavailable
-        if str(item.get("name", "")).strip()
-        and str(item.get("name", "")).lower() in needle
+        for item in named_by_find(unavailable, query, connection)
     ]
     if not hits:
         return None
     return "\n".join(hits)
+
+
+def named_by_find(
+    unavailable: Sequence[Mapping[str, Any]],
+    query: str,
+    connection: str | None,
+) -> list[Mapping[str, Any]]:
+    """The unavailable connections a tool search names."""
+    needle = (connection or query).strip().lower()
+    if not needle:
+        return []
+    return [
+        item
+        for item in unavailable
+        if str(item.get("name", "")).strip() and str(item.get("name", "")).lower() in needle
+    ]
 
 
 def connection_by_tool(routes: Mapping[str, Any] | None) -> dict[str, str]:
@@ -129,17 +140,14 @@ def resource_sentence(items: Sequence[Mapping[str, str]]) -> str:
             lines.append(f"{connection}: {name}")
     if not lines:
         return ""
-    return (
-        "Resources you can open with read_resource "
-        "(contents are not loaded yet):\n" + "\n".join(lines)
+    return "Resources you can open with read_resource (contents are not loaded yet):\n" + "\n".join(
+        lines
     )
 
 
 def prompt_sentence(items: Sequence[Mapping[str, str]]) -> str:
     names = [
-        f"{item.get('connection', '')}:{item.get('name', '')}"
-        for item in items
-        if item.get("name")
+        f"{item.get('connection', '')}:{item.get('name', '')}" for item in items if item.get("name")
     ]
     if not names:
         return ""
