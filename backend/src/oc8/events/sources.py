@@ -20,8 +20,11 @@ session:
 * a cursor of None takes a baseline: the poller's events are dropped and only
   its position is kept, so creating or re-enabling a trigger never replays a
   backlog;
-* otherwise each event fires the trigger once (idempotency key
-  `source:delivery_id:trigger_id`), at most `MAX_EVENTS_PER_TICK` per tick. The
+* a baseline draws a new `baseline_id` for the cursor row;
+* otherwise each event fires the trigger once (idempotency key `event_key`:
+  the source, the event's `delivery_id`, the trigger, its login and the
+  baseline -- a source's ids are only unique for one login and one run of it),
+  at most `MAX_EVENTS_PER_TICK` per tick. The
   cursor only moves on once every event it returned has fired, so the rest come
   again on the next tick and the ones already fired are skipped by their key;
 * a failure is recorded on the cursor row (exception class and message, with
@@ -725,6 +728,25 @@ async def _due_trigger_ids(tenant_id: uuid.UUID) -> list[uuid.UUID]:
         return list(rows.scalars().all())
 
 
+def event_key(
+    source: str,
+    delivery_id: str,
+    trigger_id: uuid.UUID,
+    target: LoginTarget,
+    baseline_id: uuid.UUID | None,
+) -> str:
+    """The idempotency key of `delivery_id` fired for a trigger. A source's
+    ids repeat across logins (two mailboxes on one server number their mail
+    alike) and may repeat after a fresh start, so the login the trigger polls
+    and the baseline it fires from are part of it: a moved or restarted
+    trigger never takes a new event for one it fired before. A cursor that
+    took its baseline before baselines had an id (`baseline_id` None) keeps
+    the old key, so nothing it fired fires again."""
+    if baseline_id is None:
+        return f"{source}:{delivery_id}:{trigger_id}"
+    return f"{source}:{delivery_id}:{trigger_id}:{target.kind}:{target.id}:{baseline_id}"
+
+
 async def _already_fired(tenant_id: uuid.UUID, key: str) -> bool:
     async with tenant_session(tenant_id) as db:
         found = await db.scalar(select(m.AgentRun.id).where(m.AgentRun.idempotency_key == key))
@@ -749,13 +771,20 @@ async def _fire(
 
 
 async def _fire_events(
-    tenant_id: uuid.UUID, trigger_id: uuid.UUID, source: str, label: str, events: list[PolledEvent]
+    tenant_id: uuid.UUID,
+    trigger_id: uuid.UUID,
+    source: str,
+    label: str,
+    events: list[PolledEvent],
+    *,
+    target: LoginTarget,
+    baseline_id: uuid.UUID | None,
 ) -> bool:
     """Fire every event not fired before, up to the per-tick limit. True when
     every event is now fired, so the cursor may move past them."""
     fired = 0
     for event in events:
-        key = f"{source}:{event.delivery_id}:{trigger_id}"
+        key = event_key(source, event.delivery_id, trigger_id, target, baseline_id)
         if await _already_fired(tenant_id, key):
             continue
         if fired >= MAX_EVENTS_PER_TICK:
@@ -845,9 +874,16 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             )
             if cursor_row.cursor is None:
                 done = True  # a baseline: what is there now is not news
+                cursor_row.baseline_id = uuid.uuid4()
             else:
                 done = await _fire_events(
-                    tenant_id, trigger_id, spec.source, spec.label, result.events
+                    tenant_id,
+                    trigger_id,
+                    spec.source,
+                    spec.label,
+                    result.events,
+                    target=target,
+                    baseline_id=cursor_row.baseline_id,
                 )
         except TenantInactive:
             raise  # the organisation stopped mid-tick: not the source's fault

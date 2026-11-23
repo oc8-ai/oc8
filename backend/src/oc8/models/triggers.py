@@ -148,5 +148,9 @@ class EventSourceCursor(Base, PkMixin, TenantMixin, TimestampMixin):
     last_error_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     failures: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_poll_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Drawn anew with each baseline; part of every fired event's idempotency
+    #: key (`oc8.events.sources.event_key`). NULL for a baseline taken before
+    #: it existed.
+    baseline_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
 
     __table_args__ = (UniqueConstraint("trigger_id", name="uq_event_source_cursor_trigger"),)

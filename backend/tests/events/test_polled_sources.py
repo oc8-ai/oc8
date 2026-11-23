@@ -91,6 +91,16 @@ async def _make_due(app_session: AppSessionFactory, polled: Polled, trigger_id: 
         row.next_poll_at = None
 
 
+async def _key(
+    app_session: AppSessionFactory, polled: Polled, trigger_id: uuid.UUID, delivery_id: str
+) -> str:
+    """The idempotency key an event fired from the trigger's current baseline has."""
+    row = await _cursor(app_session, polled, trigger_id)
+    assert row.baseline_id is not None
+    target = sources.LoginTarget("credential", polled.credential_id)
+    return sources.event_key(polled.source, delivery_id, trigger_id, target, row.baseline_id)
+
+
 async def _runs(app_session: AppSessionFactory, polled: Polled) -> list[m.AgentRun]:
     async with app_session(polled.tenant) as db:
         return list(
@@ -198,7 +208,7 @@ async def test_the_run_ends_with_the_untrusted_block_and_carries_the_payload(
     assert task.count(nonce) == 2
     assert run.context["event_payload"] == {"id": "x-1", "folder": "in"}
     assert run.context["trigger_id"] == str(trigger_id)
-    assert run.idempotency_key == f"{polled.source}:d-x:{trigger_id}"
+    assert run.idempotency_key == await _key(app_session, polled, trigger_id, "d-x")
 
 
 def test_each_block_gets_a_fresh_nonce_that_is_not_in_the_summary(
@@ -620,7 +630,7 @@ async def test_a_failed_fire_keeps_the_cursor_and_the_retry_fires_each_event_onc
     await poll_tick()
 
     assert [r.idempotency_key for r in await _runs(app_session, polled)] == [
-        f"{polled.source}:d-1:{trigger_id}"
+        await _key(app_session, polled, trigger_id, "d-1")
     ]
     row = await _cursor(app_session, polled, trigger_id)
     assert row.cursor == {"pos": 5} and row.failures == 1
@@ -629,7 +639,9 @@ async def test_a_failed_fire_keeps_the_cursor_and_the_retry_fires_each_event_onc
     await poll_tick()
 
     keys = sorted(str(r.idempotency_key) for r in await _runs(app_session, polled))
-    assert keys == [f"{polled.source}:d-{n}:{trigger_id}" for n in (1, 2, 3)]
+    assert keys == sorted(
+        [await _key(app_session, polled, trigger_id, f"d-{n}") for n in (1, 2, 3)]
+    )
     assert (await _cursor(app_session, polled, trigger_id)).cursor == {"pos": 8}
 
 
@@ -655,3 +667,94 @@ async def test_a_missing_poller_keeps_the_position_and_reports_it(
     wait = (row.next_poll_at - datetime.now(tz=UTC)).total_seconds()
     assert 50 < wait <= 60
     assert await _runs(app_session, polled) == []
+
+
+async def test_a_retargeted_trigger_fires_new_events_whose_id_the_old_login_used(
+    app_session: AppSessionFactory,
+) -> None:
+    """Two mailboxes on one server hand out the same `delivery_id`s (folder,
+    UIDVALIDITY, UID): after the trigger moves to the second one, its new
+    events fire although the first one's events had those ids."""
+    from oc8.connections.access_write import write_tool_access
+    from tests.events.polled import login
+
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(baseline_then(lambda _c: [event(1), event(2)])))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()  # baseline
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    assert len(await _runs(app_session, polled)) == 2
+
+    other = await login(app_session, polled.tenant, username="bert")
+    async with app_session(polled.tenant) as db:
+        agent = await db.get(m.Agent, polled.agent_id)
+        assert agent is not None
+        await write_tool_access(
+            db,
+            agent=agent,
+            tool_key=polled.tool_key,
+            mode="fixed",
+            oauth_connection_id=None,
+            credential_id=other,
+            set_by_member_id=None,
+            set_with_manage=True,
+            actor_type="system",
+            actor_id=None,
+        )
+    async with app_session(polled.tenant) as db:
+        trigger = await db.get(m.Trigger, trigger_id)
+        assert trigger is not None and trigger.enabled is False
+        await update_trigger(db, trigger, event_target_credential_id=other, enabled=True)
+
+    await poll_tick()  # a fresh baseline on the second login
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    runs = await _runs(app_session, polled)
+    assert len(runs) == 4
+    assert len({r.idempotency_key for r in runs}) == 4
+
+    # The same events polled again in the same baseline still fire once.
+    async with app_session(polled.tenant) as db:
+        row = await db.scalar(
+            select(m.EventSourceCursor).where(m.EventSourceCursor.trigger_id == trigger_id)
+        )
+        assert row is not None
+        row.cursor = {"pos": 5}
+        row.next_poll_at = None
+    await poll_tick()
+    assert len(await _runs(app_session, polled)) == 4
+
+
+async def test_re_enabling_on_the_same_login_fires_new_events_with_old_ids(
+    app_session: AppSessionFactory,
+) -> None:
+    """A fresh baseline is a fresh start: a source that reuses an id after it
+    (a mailbox recreated with the same UIDVALIDITY) still fires."""
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(baseline_then(lambda _c: [event(1)])))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    assert len(await _runs(app_session, polled)) == 1
+
+    for enabled in (False, True):
+        async with app_session(polled.tenant) as db:
+            trigger = await db.get(m.Trigger, trigger_id)
+            assert trigger is not None
+            await update_trigger(db, trigger, enabled=enabled)
+    await poll_tick()
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    assert len(await _runs(app_session, polled)) == 2
+
+
+def test_a_baseline_from_before_baseline_ids_keeps_the_old_key() -> None:
+    trigger_id = uuid.uuid4()
+    target = sources.LoginTarget("credential", uuid.uuid4())
+    assert sources.event_key("src", "d-1", trigger_id, target, None) == f"src:d-1:{trigger_id}"
+    baseline = uuid.uuid4()
+    assert sources.event_key("src", "d-1", trigger_id, target, baseline) == (
+        f"src:d-1:{trigger_id}:credential:{target.id}:{baseline}"
+    )
