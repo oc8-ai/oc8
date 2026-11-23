@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.agents.hire import create_hire_request, initial_status, require_hire_approval
 from oc8.agents.versioning import publish_version
-from oc8.authz.pdp import narrowing_within_frame
 from oc8.capas.discovery import DiscoveredPlugin, find_plugin
 from oc8.capas.manifest import (
     Manifest,
@@ -28,6 +27,11 @@ from oc8.capas.manifest import (
 )
 from oc8.capas.registry import enabled_capability_registry
 from oc8.constants import CORE_VERSION
+from oc8.departments.personal import (
+    PersonalFrameViolation,
+    enforce_personal_narrowing,
+    ensure_personal_capacity,
+)
 from oc8.departments.repo import live_department
 from oc8.models import (
     Agent,
@@ -493,27 +497,6 @@ def template_scope(manifest: dict[str, Any]) -> str:
     return str((manifest.get("agent_template") or {}).get("scope") or "department")
 
 
-_OUTSIDE_PERSONAL_FRAME = "the template grants tools the personal department does not allow"
-
-
-def _refuse_narrowing_outside_frame(frame: dict[str, Any], narrowing: dict[str, Any]) -> None:
-    """A personal department's frame binds the template it hires: every tool the
-    template's narrowing names must be in the frame, and none may widen it
-    (`narrowing_within_frame`: a right, an enabled flag, a looser or removed
-    approval threshold, a higher limit). Standard departments are not checked
-    here."""
-    frame_tools = frame.get("tools") or {}
-    narrowed_tools = narrowing.get("tools") or {}
-    if any(key not in frame_tools for key in narrowed_tools):
-        raise PluginError(_OUTSIDE_PERSONAL_FRAME)
-    try:
-        violations = narrowing_within_frame(frame, narrowing)
-    except ValueError as exc:  # a malformed policy in the template
-        raise PluginError(_OUTSIDE_PERSONAL_FRAME) from exc
-    if violations:
-        raise PluginError(_OUTSIDE_PERSONAL_FRAME)
-
-
 async def instantiate_agent(
     db: AsyncSession,
     *,
@@ -549,8 +532,14 @@ async def instantiate_agent(
     # mission/persona land on the Agent row. Absent = legacy thin instantiate.
     spec = dict(mf.get("agent_template") or {})
     narrowing = dict(spec.get("narrowing") or {})
-    if is_personal_dept:
-        _refuse_narrowing_outside_frame(dept.frame or {}, narrowing)
+    try:
+        enforce_personal_narrowing(dept, narrowing)
+    except PersonalFrameViolation as exc:
+        raise PluginError(
+            "the template grants tools the personal department does not allow"
+        ) from exc
+    # Raises `PersonalAgentLimit`, which the route maps to a 409.
+    await ensure_personal_capacity(db, dept)
     config = await _load_installation_config(db, capa_id=version.capa_id)
     definition: dict[str, object] = {
         "plugin": mf.get("name", ""),

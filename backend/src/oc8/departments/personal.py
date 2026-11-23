@@ -22,6 +22,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.authz.pdp import narrowing_within_frame
+from oc8.departments.repo import live_department
 from oc8.metering.budget import get_budget, resume_budget_scope, set_budget
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 
@@ -45,6 +47,80 @@ class PersonalDepartmentsDisabled(Exception):
 
 class PersonalDepartmentSeatRefused(Exception):
     """A seat in a personal department for anyone but its owner."""
+
+
+class PersonalFrameViolation(Exception):
+    """An agent narrowing in a personal department that its frame does not allow."""
+
+
+class PersonalAgentLimit(Exception):
+    """The personal department already holds the tenant's cap of live agents."""
+
+
+def enforce_personal_narrowing(dept: m.Department, narrowing: dict[str, Any] | None) -> None:
+    """The one check every write of an agent's narrowing in a department goes
+    through. In a personal department the frame binds: every tool the narrowing
+    names must be in the frame (a key the frame lacks would count as an
+    agent-exclusive grant, `authz.pdp.narrowing_within_frame`), none may widen
+    it, and the policies must be well formed. Raises `PersonalFrameViolation`.
+    Standard and assistant departments are not checked here."""
+    if dept.kind != DEPARTMENT_KIND_PERSONAL:
+        return
+    narrowing = narrowing or {}
+    frame = dept.frame or {}
+    narrowed_tools = narrowing.get("tools") or {}
+    frame_tools = frame.get("tools") or {}
+    if not isinstance(narrowed_tools, dict) or any(
+        key not in frame_tools for key in narrowed_tools
+    ):
+        raise PersonalFrameViolation
+    try:
+        violations = narrowing_within_frame(frame, narrowing)
+    except ValueError as exc:  # a malformed policy
+        raise PersonalFrameViolation from exc
+    if violations:
+        raise PersonalFrameViolation
+
+
+def clip_narrowing_to_frame(
+    frame_tools: dict[str, Any], narrowing: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    """The narrowing with every tool the frame no longer allows dropped (a key
+    absent from `frame_tools`, a widening of it, or a malformed policy -- the
+    keys `enforce_personal_narrowing` refuses), or `None` when nothing changes.
+    A dropped key falls back to what the frame grants."""
+    raw_tools = (narrowing or {}).get("tools")
+    if not isinstance(raw_tools, dict):
+        return None
+    frame = {"tools": frame_tools}
+    kept: dict[str, Any] = {}
+    for key, raw in raw_tools.items():
+        if key not in frame_tools:
+            continue
+        try:
+            if narrowing_within_frame(frame, {"tools": {key: raw}}):
+                continue
+        except ValueError:
+            continue
+        kept[key] = raw
+    if len(kept) == len(raw_tools):
+        return None
+    return {**(narrowing or {}), "tools": kept}
+
+
+async def ensure_personal_capacity(db: AsyncSession, dept: m.Department) -> None:
+    """Raise `PersonalAgentLimit` when a personal department holds the tenant's
+    cap of live agents. Other kinds of department have no cap."""
+    if dept.kind != DEPARTMENT_KIND_PERSONAL:
+        return
+    # Lock the department row before counting: two hires at cap-1 would both
+    # count cap-1 and both insert. The second waits here for the first's
+    # commit, then counts it. The lock lasts until the transaction ends.
+    await live_department(db, tenant_id=dept.tenant_id, department_id=dept.id, for_update=True)
+    defaults = await personal_defaults(db, tenant_id=dept.tenant_id)
+    held = await live_agent_count(db, tenant_id=dept.tenant_id, department_id=dept.id)
+    if held >= defaults.max_agents:
+        raise PersonalAgentLimit
 
 
 def mark_frame_overridden(dept: m.Department) -> None:
@@ -394,7 +470,7 @@ async def _apply_frame(db: AsyncSession, *, dept: m.Department, new_tools: dict[
     dept.frame = personal_frame(new_tools)
     agents = await _live_agents(db, tenant_id=dept.tenant_id, department_ids=[dept.id])
     await cascade_department_tools_change(
-        db, old_tools=old_tools, new_tools=new_tools, agents=agents
+        db, old_tools=old_tools, new_tools=new_tools, agents=agents, clip_to_frame=True
     )
 
 

@@ -64,7 +64,7 @@ from oc8.capas.discovery import connection_supports_value_spec, resolve_tool_pac
 from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
 from oc8.connections.value_spec import has_value_spec
-from oc8.departments.personal import mark_frame_overridden
+from oc8.departments.personal import clip_narrowing_to_frame, mark_frame_overridden
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.schemas.base import CamelModel
@@ -314,6 +314,7 @@ async def cascade_department_tools_change(
     old_tools: dict[str, Any],
     new_tools: dict[str, Any],
     agents: Sequence[m.Agent],
+    clip_to_frame: bool = False,
 ) -> None:
     """Shared by `set_department_tools` and `reset_department_tool`: cascade
     each tool's new `enabled` default to every CURRENT agent in this
@@ -336,6 +337,12 @@ async def cascade_department_tools_change(
     draft is published, so the new version holds the cascade and nothing else;
     for one mid-edit, publishing would push that operator's unfinished draft
     live, so the cascade joins the draft instead and shows in its publish bar.
+    `clip_to_frame` is for a personal department, whose frame is a ceiling no
+    agent may exceed (`departments.personal.enforce_personal_narrowing`): beyond
+    the cascade, every agent's narrowing then loses the tools `new_tools` no
+    longer allows -- an overridden key too, which the cascade leaves alone -- and
+    those agents are published like any other touched one.
+
     A publish hook refusing rejects the whole department change (422, and
     `get_db` rolls every write back) rather than leave agents half-published.
     """
@@ -350,6 +357,16 @@ async def cascade_department_tools_change(
         for agent in agents
         if any(key not in (agent.narrowing_overridden_keys or []) for key in changed_keys)
     ]
+    clipped_ids: set[uuid.UUID] = set()
+    if clip_to_frame:
+        clipped_ids = {
+            agent.id
+            for agent in agents
+            if clip_narrowing_to_frame(new_tools, agent.narrowing) is not None
+        }
+        touched = touched + [
+            agent for agent in agents if agent.id in clipped_ids and agent not in touched
+        ]
     # Read BEFORE the write below, which would make every one of them dirty.
     publishable = {agent.id for agent in touched if not (await draft_status(db, agent)).dirty}
     for key in changed_keys:
@@ -379,6 +396,14 @@ async def cascade_department_tools_change(
                 agent_tools[key]["connection_id"] = previous["connection_id"]
             narrowing["tools"] = agent_tools
             agent.narrowing = narrowing
+    if clip_to_frame:
+        for agent in touched:
+            clipped = clip_narrowing_to_frame(new_tools, agent.narrowing)
+            if clipped is not None:
+                agent.narrowing = clipped
+                agent.narrowing_overridden_keys = sorted(
+                    set(agent.narrowing_overridden_keys or []) & set(clipped.get("tools", {}))
+                )
     await db.flush()
     for agent in touched:
         if agent.id not in publishable:
@@ -765,7 +790,11 @@ async def set_department_tools(
         .all()
     )
     await cascade_department_tools_change(
-        db, old_tools=old_tools, new_tools=frame["tools"], agents=agents
+        db,
+        old_tools=old_tools,
+        new_tools=frame["tools"],
+        agents=agents,
+        clip_to_frame=dept.kind == DEPARTMENT_KIND_PERSONAL,
     )
 
     await db.flush()
@@ -829,7 +858,11 @@ async def reset_department_tool(
         .all()
     )
     await cascade_department_tools_change(
-        db, old_tools=old_tools, new_tools=new_tools, agents=agents
+        db,
+        old_tools=old_tools,
+        new_tools=new_tools,
+        agents=agents,
+        clip_to_frame=dept.kind == DEPARTMENT_KIND_PERSONAL,
     )
 
     await db.flush()

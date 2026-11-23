@@ -65,6 +65,12 @@ from oc8.copilot.guardrail_interpret import (
     interpret_guardrail_definition,
     interpret_guardrails_from_instruction,
 )
+from oc8.departments.personal import (
+    PersonalAgentLimit,
+    PersonalFrameViolation,
+    enforce_personal_narrowing,
+    ensure_personal_capacity,
+)
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
@@ -103,6 +109,36 @@ from oc8.schemas.requests import (
 )
 
 router = APIRouter()
+
+
+def _refuse_personal_narrowing(dept: m.Department | None, narrowing: Any) -> None:
+    """422 when a personal department's frame does not allow the narrowing
+    (`departments.personal.enforce_personal_narrowing`); no-op elsewhere."""
+    if dept is None:
+        return
+    try:
+        enforce_personal_narrowing(dept, narrowing if isinstance(narrowing, dict) else {})
+    except PersonalFrameViolation as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {
+                "error": "narrowing_exceeds_frame",
+                "violations": [
+                    {
+                        "tool_key": "",
+                        "reason": "the personal department's frame does not allow this",
+                    }
+                ],
+            },
+        ) from exc
+
+
+async def _ensure_personal_capacity(db: DbSession, dept: m.Department) -> None:
+    """409 when a personal department is at the tenant's agent cap."""
+    try:
+        await ensure_personal_capacity(db, dept)
+    except PersonalAgentLimit as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
 
 
 def _violation_body(violations: list[Any]) -> dict[str, Any]:
@@ -302,9 +338,11 @@ async def create_agent(
         not_found=HTTPException(status.HTTP_400_BAD_REQUEST, "unknown department"),
     )
 
+    await _ensure_personal_capacity(db, dept)
     narrowing: dict[str, Any] = {}
     if body.narrowing:
         reject_malformed_policies(body.narrowing)
+        _refuse_personal_narrowing(dept, body.narrowing)
         await reject_unknown_limit_tools(db, actor.principal.tenant_id, body.narrowing)
         # The same check as PUT /agents/{id}/narrowing (`connections.value_spec`).
         checked = await check_agent_narrowing(
@@ -488,6 +526,7 @@ async def set_narrowing(
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
     reject_malformed_policies(body.narrowing)
+    _refuse_personal_narrowing(dept, body.narrowing)
     await reject_unknown_limit_tools(db, principal.tenant_id, body.narrowing)
     # A threshold on a connection with no value_spec is judged against the
     # frame and then dropped, never refused (E2E F3): see `value_spec`.
@@ -1486,6 +1525,7 @@ async def rollback_agent_version(
             )
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
+    _refuse_personal_narrowing(dept, payload.get("narrowing") or {})
     violations = (
         await check_agent_narrowing(
             db,
@@ -1653,6 +1693,12 @@ async def restore_agent(
         )
     except SubscriptionModelNotManualOnly as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    dept = await db.get(m.Department, agent.department_id)
+    if dept is not None:
+        # An archived agent is skipped by the department's frame cascade, so its
+        # narrowing may predate a tighter frame; and it takes a place again.
+        _refuse_personal_narrowing(dept, agent.narrowing)
+        await _ensure_personal_capacity(db, dept)
     principal = actor.principal
     agent.deleted_at = None
     await db.flush()

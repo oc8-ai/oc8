@@ -356,7 +356,9 @@ async def test_default_frame_resync_skips_overrides(app_session: AppSessionFacto
         assert new_tools["x"]["enabled"] is False and new_tools["y"]["enabled"] is True
         # Agents in following departments: a1 and a2 only.
         assert body["agentCount"] == 2
-        assert body["deviationCounts"] == {"x": 1, "y": 0}
+        # a1's own override of x (enabled) now widens the frame, which disables
+        # x: a personal frame is a ceiling, so it is clipped and no longer deviates.
+        assert body["deviationCounts"] == {"x": 0, "y": 0}
 
         got = await c.get("/api/v1/personal-departments/default-frame", headers=_headers(w.tenant))
         assert got.status_code == 200, got.text
@@ -372,7 +374,9 @@ async def test_default_frame_resync_skips_overrides(app_session: AppSessionFacto
 
     a1 = await _agent(app_session, w, w.a1)
     a2 = await _agent(app_session, w, w.a2)
-    assert a1.narrowing["tools"]["x"] == {"enabled": True}
+    assert "x" not in a1.narrowing["tools"]
+    assert a1.narrowing_overridden_keys == []
+    assert await _versions(app_session, w, w.a1) == 2
     assert a2.narrowing["tools"]["x"]["enabled"] is False
     assert a2.narrowing["tools"]["y"]["enabled"] is True
     assert await _versions(app_session, w, w.a2) == 2
@@ -535,8 +539,8 @@ async def test_follow_default_clears_stamps_and_reapplies(
     assert dept.frame_overridden_at is None and dept.budget_overridden_at is None
     assert dept.frame == personal_frame(_OLD_TOOLS)
     b1 = await _agent(app_session, w, w.b1)
-    # "z" left the default: the cascade writes an empty policy, i.e. disabled.
-    assert b1.narrowing["tools"]["z"].get("enabled", False) is False
+    # "z" left the default: a personal frame is a ceiling, so the key is dropped.
+    assert "z" not in b1.narrowing["tools"]
     assert b1.narrowing["tools"]["x"]["enabled"] is True
     assert await _versions(app_session, w, w.b1) == 2
     assert await _budget(app_session, w, w.overridden) == (100, 200)

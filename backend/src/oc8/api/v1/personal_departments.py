@@ -52,12 +52,13 @@ from oc8.departments.personal import (
     ENABLED_KEY,
     FRAME_KEY,
     MAX_AGENTS_KEY,
+    PersonalAgentLimit,
     PersonalDepartmentsDisabled,
     PersonalDepartmentSummary,
     default_frame_agents,
+    ensure_personal_capacity,
     follow_default,
     get_or_create_personal_department,
-    live_agent_count,
     owned_personal_department,
     personal_defaults,
     personal_department_summaries,
@@ -235,9 +236,10 @@ async def hire_personal_agent(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, {"error": "personal_departments_disabled"}
         ) from exc
-    held = await live_agent_count(db, tenant_id=principal.tenant_id, department_id=dept.id)
-    if held >= defaults.max_agents:
-        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"})
+    try:
+        await ensure_personal_capacity(db, dept)
+    except PersonalAgentLimit as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
 
     try:
         # Plan ruling 4: a personal hire is exempt from the tenant's
@@ -253,6 +255,8 @@ async def hire_personal_agent(
             name=body.name or None,
             hire_gate=False,
         )
+    except PersonalAgentLimit as exc:  # pragma: no cover - checked above
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 

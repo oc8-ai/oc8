@@ -89,23 +89,30 @@ async def visible_departments(
 
 
 async def live_department(
-    db: AsyncSession, *, tenant_id: uuid.UUID, department_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    department_id: uuid.UUID,
+    for_update: bool = False,
 ) -> Department | None:
     """One live (not soft-deleted) department by id, any `kind`, WITHOUT the
     caller's scope. Only for paths that have already decided the caller may act
     on this department -- e.g. `capas.service.instantiate_agent`, reached from
     the admin route behind tenant-wide `plugin:manage`, or from the member's
     hire with the department the member owns. Never for a human's browse:
-    that is `visible_department`."""
-    return (
-        await db.execute(
-            select(Department).where(
-                Department.id == department_id,
-                Department.tenant_id == tenant_id,
-                Department.deleted_at.is_(None),
-            )
-        )
-    ).scalar_one_or_none()
+    that is `visible_department`.
+
+    `for_update` takes a row lock (`SELECT ... FOR UPDATE`) held until the
+    transaction ends, so a check-then-write on the department -- the personal
+    agent cap -- serialises with a concurrent one."""
+    stmt = select(Department).where(
+        Department.id == department_id,
+        Department.tenant_id == tenant_id,
+        Department.deleted_at.is_(None),
+    )
+    if for_update:
+        stmt = stmt.with_for_update()
+    return (await db.execute(stmt)).scalar_one_or_none()
 
 
 async def visible_department(
