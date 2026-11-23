@@ -30,7 +30,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from oc8.auth.second_factors import sign_in_address_changed
 from oc8.authz.permissions import SEAT_PERMISSIONS
 from oc8.db.base import uuid7
-from oc8.departments.personal import PersonalDepartmentSeatRefused
+from oc8.departments.personal import OWNER_SEAT_ROLE, PersonalDepartmentSeatRefused
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Department, Role
 from oc8.models.identity import OrgMember, OrgMemberDepartment
 
@@ -462,7 +462,9 @@ async def grant_seat(
     calls this with the argument genuinely absent -- not passed as an explicit
     `None` -- the shape a caller who has never heard of the toggle would write.
 
-    A personal department takes no seat for anyone but its owner:
+    A personal department takes no seat for anyone but its owner, and the
+    owner's seat is the one the department was created with (`dept_approver`,
+    `agent_manage` on), never another role or a seat without the toggle:
     `PersonalDepartmentSeatRefused`.
 
     A live seat there at the SAME role is updated in place: `agent_manage` is
@@ -488,11 +490,8 @@ async def grant_seat(
             )
         )
     ).scalar_one_or_none()
-    if (
-        department is not None
-        and department.kind == DEPARTMENT_KIND_PERSONAL
-        and member_id != department.owner_member_id
-    ):
+    personal = department is not None and department.kind == DEPARTMENT_KIND_PERSONAL
+    if personal and department is not None and member_id != department.owner_member_id:
         raise PersonalDepartmentSeatRefused("personal departments take no extra seats")
     live = (
         (
@@ -508,6 +507,14 @@ async def grant_seat(
         .scalars()
         .first()
     )
+    if personal:
+        keeps_manage = agent_manage is True or (
+            agent_manage is None and live is not None and live.agent_manage
+        )
+        if seat_role != OWNER_SEAT_ROLE or not keeps_manage:
+            raise PersonalDepartmentSeatRefused(
+                "the owner's seat in a personal department cannot be changed"
+            )
     if live is None:
         seat = OrgMemberDepartment(
             tenant_id=tenant_id,
@@ -561,7 +568,22 @@ async def revoke_seat(
     the JWT. That is the whole justification for keeping seats out of the token:
     every alternative means revoking the authority to release money takes effect
     somewhere between now and the next refresh, and nobody can say when.
+
+    The owner's seat in a personal department is not revoked here:
+    `PersonalDepartmentSeatRefused` (the only seat there, kept as long as the
+    department is; offboarding archives its agents instead).
     """
+    department = (
+        await db.execute(
+            select(Department).where(
+                Department.tenant_id == tenant_id, Department.id == department_id
+            )
+        )
+    ).scalar_one_or_none()
+    if department is not None and department.kind == DEPARTMENT_KIND_PERSONAL:
+        raise PersonalDepartmentSeatRefused(
+            "the owner's seat in a personal department cannot be revoked"
+        )
     live = (
         (
             await db.execute(

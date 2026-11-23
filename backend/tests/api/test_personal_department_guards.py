@@ -24,7 +24,7 @@ from oc8.departments.personal import (
 )
 from oc8.main import create_app
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
-from oc8.workspace.members import grant_seat
+from oc8.workspace.members import grant_seat, revoke_seat
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -425,3 +425,49 @@ async def test_target_revision_refuses_a_personal_agent(app_session: AppSessionF
         assert caught.value.reason == "a personal agent cannot be edited"
         ok = parse_operations([_agent_ops(standard)["rename"]])[0]
         assert await target_revision(db, ok) is not None
+
+
+async def test_the_owners_seat_cannot_be_revoked_or_altered_by_the_service(
+    app_session: AppSessionFactory,
+) -> None:
+    """Final review M3: the refusal lived in the routes only, so the CLI could
+    revoke the owner's seat or change its role. The services refuse now."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        with pytest.raises(PersonalDepartmentSeatRefused):
+            await revoke_seat(db, tenant_id=w.tenant, member_id=w.owner, department_id=w.personal)
+        with pytest.raises(PersonalDepartmentSeatRefused):
+            await grant_seat(
+                db,
+                tenant_id=w.tenant,
+                member_id=w.owner,
+                department_id=w.personal,
+                seat_role="dept_viewer",
+                granted_by=None,
+            )
+        with pytest.raises(PersonalDepartmentSeatRefused):
+            await grant_seat(
+                db,
+                tenant_id=w.tenant,
+                member_id=w.owner,
+                department_id=w.personal,
+                seat_role="dept_approver",
+                agent_manage=False,
+                granted_by=None,
+            )
+    async with app_session(w.tenant) as db:
+        seats = (
+            (
+                await db.execute(
+                    select(m.OrgMemberDepartment).where(
+                        m.OrgMemberDepartment.department_id == w.personal,
+                        m.OrgMemberDepartment.revoked_at.is_(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [(x.member_id, x.seat_role, x.agent_manage) for x in seats] == [
+            (w.owner, "dept_approver", True)
+        ]

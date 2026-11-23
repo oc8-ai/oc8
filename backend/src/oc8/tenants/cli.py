@@ -203,9 +203,13 @@ async def cmd_member_revoke(*, slug: str, subject: str, department: str) -> int:
         if member is None:
             _err(f"error: this tenant knows no member with subject {subject!r}")
             return EXIT_BAD_INPUT
-        seat = await revoke_seat(
-            db, tenant_id=tenant_id, member_id=member.id, department_id=dept.id
-        )
+        try:
+            seat = await revoke_seat(
+                db, tenant_id=tenant_id, member_id=member.id, department_id=dept.id
+            )
+        except PersonalDepartmentSeatRefused as exc:
+            _err(f"error: {exc}")
+            return EXIT_BAD_INPUT
         if seat is None:
             _err(f"error: {subject} holds no live seat in {dept.name}")
             return EXIT_BAD_INPUT

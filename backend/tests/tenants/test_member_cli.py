@@ -177,23 +177,36 @@ async def test_an_ambiguous_department_name_refuses_rather_than_guesses(
     assert await _seats(owner_session, tenant_id) == []
 
 
-async def _personal_department(owner_session: OwnerSessionFactory, tenant_id: uuid.UUID) -> None:
+async def _personal_department(
+    owner_session: OwnerSessionFactory, tenant_id: uuid.UUID, *, with_owner_seat: bool = False
+) -> None:
     from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 
     async with owner_session() as db:
         owner = m.OrgMember(tenant_id=tenant_id, subject="owner", subject_uuid=uuid.uuid4())
         db.add(owner)
         await db.flush()
-        db.add(
-            m.Department(
-                tenant_id=tenant_id,
-                name="Persoenlich",
-                goal="",
-                frame={"closed": True},
-                kind=DEPARTMENT_KIND_PERSONAL,
-                owner_member_id=owner.id,
-            )
+        dept = m.Department(
+            tenant_id=tenant_id,
+            name="Persoenlich",
+            goal="",
+            frame={"closed": True},
+            kind=DEPARTMENT_KIND_PERSONAL,
+            owner_member_id=owner.id,
         )
+        db.add(dept)
+        if with_owner_seat:
+            await db.flush()
+            db.add(
+                m.OrgMemberDepartment(
+                    tenant_id=tenant_id,
+                    member_id=owner.id,
+                    department_id=dept.id,
+                    seat_role=SEAT_APPROVER,
+                    agent_manage=True,
+                    granted_by=owner.id,
+                )
+            )
 
 
 async def test_a_personal_department_takes_no_seat_from_the_cli(
@@ -226,3 +239,23 @@ async def test_a_bulk_row_naming_a_personal_department_fails_as_a_row(
     assert await tcli.cmd_member_import(slug=slug, path=str(path)) == 2
     seats = await _seats(owner_session, tenant_id)
     assert len(seats) == 1  # ben's row landed, anna's did not
+
+
+async def test_the_cli_neither_revokes_nor_changes_the_owners_seat(
+    owner_session: OwnerSessionFactory,
+) -> None:
+    """Final review M3: the services refuse, so the CLI maps it like a grant."""
+    slug, tenant_id = await _tenant(owner_session)
+    await _personal_department(owner_session, tenant_id, with_owner_seat=True)
+
+    assert await tcli.cmd_member_revoke(slug=slug, subject="owner", department="Persoenlich") == 2
+    assert (
+        await tcli.cmd_member_grant(
+            slug=slug, subject="owner", department="Persoenlich", role=SEAT_VIEWER
+        )
+        == 2
+    )
+    seats = await _seats(owner_session, tenant_id)
+    assert [(s.seat_role, s.agent_manage, s.revoked_at) for s in seats] == [
+        (SEAT_APPROVER, True, None)
+    ]

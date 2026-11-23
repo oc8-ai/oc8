@@ -39,7 +39,7 @@ MAX_AGENTS_KEY = "personal_max_agents"
 DEFAULT_MAX_AGENTS = 10
 
 #: The seat the owner holds in their own department.
-_OWNER_SEAT_ROLE = "dept_approver"
+OWNER_SEAT_ROLE = "dept_approver"
 
 
 class PersonalDepartmentsDisabled(Exception):
@@ -331,7 +331,7 @@ async def get_or_create_personal_department(
                 tenant_id=tenant_id,
                 member_id=member.id,
                 department_id=dept.id,
-                seat_role=_OWNER_SEAT_ROLE,
+                seat_role=OWNER_SEAT_ROLE,
                 agent_manage=True,
                 granted_by=member.id,
             )
