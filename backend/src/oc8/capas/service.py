@@ -505,9 +505,16 @@ async def instantiate_agent(
     department_id: uuid.UUID,
     name: str | None = None,
     hire_gate: bool = True,
+    owner_hire: bool = False,
 ) -> Agent:
     """Hire one agent from an agent_template version into a live
     department. add/flush only -- the endpoint owns the commit.
+
+    `owner_hire=True` is passed by one caller only, the member's own hire
+    (`POST /personal-department/agents`): it alone may target a personal
+    department. Any other caller -- the admin capa route -- gets "department
+    not found" for one, since a personal department's agents answer to its
+    owner alone (the same rule as `api.deps.authorize_agent_write`).
 
     `hire_gate=False` exempts this hire from the tenant's
     `require_hire_approval` (plan ruling 4): a member's personal hire, where the
@@ -522,6 +529,8 @@ async def instantiate_agent(
     if dept is None:
         raise PluginError("department not found")
     is_personal_dept = dept.kind == DEPARTMENT_KIND_PERSONAL
+    if is_personal_dept and not owner_hire:
+        raise PluginError("department not found")
     is_personal_template = template_scope(mf) == "personal"
     if is_personal_template and not is_personal_dept:
         raise PluginError("a personal template can only be hired into a personal department")

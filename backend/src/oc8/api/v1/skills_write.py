@@ -23,7 +23,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
-from oc8.api.deps import CurrentPrincipal, DbSession, authorize_agent_write, require_permission
+from oc8.api.deps import (
+    CurrentPrincipal,
+    DbSession,
+    authorize_agent_write,
+    refuse_personal_agent_write,
+    require_permission,
+)
 from oc8.api.v1._serializers import skill_to_dto
 from oc8.authz.pdp import missing_skill_requirements
 from oc8.authz.permissions import MANAGE, SKILL, VIEW, perm
@@ -832,7 +838,13 @@ async def unassign_skill(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> Response:
-    await _agent_or_404(db, agent_id, principal.tenant_id)
+    agent = await _agent_or_404(db, agent_id, principal.tenant_id)
+    await refuse_personal_agent_write(
+        db,
+        principal,
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
     assignment = await db.get(m.SkillAssignment, assignment_id)
     if (
         assignment is None

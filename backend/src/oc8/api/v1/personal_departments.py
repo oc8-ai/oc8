@@ -253,6 +253,7 @@ async def hire_personal_agent(
             department_id=dept.id,
             name=body.name or None,
             hire_gate=False,
+            owner_hire=True,
         )
     except PersonalAgentLimit as exc:  # a concurrent hire took the last place
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc

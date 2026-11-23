@@ -20,6 +20,8 @@ from oc8.authz.permissions import AGENT, ALL_PERMISSIONS, MANAGE, perm
 from oc8.authz.scope import HumanActor, scope_for_principal
 from oc8.boards.repo import has_direct_share
 from oc8.db.session import tenant_session
+from oc8.departments.repo import department_kind
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 
 logger = logging.getLogger(__name__)
 
@@ -466,6 +468,18 @@ async def authorize_agent_write(
     and neither confirms a resource's existence to a caller who cannot reach
     it nor invites a route-specific 403/404 drift between call sites.
     """
+    kind = await department_kind(
+        db, tenant_id=actor.principal.tenant_id, department_id=department_id
+    )
+    if kind == DEPARTMENT_KIND_PERSONAL:
+        # A personal department's agents answer to its owner alone: the only
+        # seat there is the owner's (`grant_seat` refuses any other), and no
+        # tenant-wide `agent:manage` reaches past it -- administrators govern
+        # the department (frame, budget, archive), never its agents. Refused
+        # as not found, so the refusal confirms nothing.
+        if department_id in actor.scope.agent_manage_departments:
+            return
+        raise not_found
     authority = await _authority(request, db, actor.principal)
     if perm(AGENT, MANAGE) in authority.tenant_wide:
         return
@@ -477,6 +491,31 @@ async def authorize_agent_write(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=f"requires {perm(AGENT, MANAGE)} in this department",
     )
+
+
+async def refuse_personal_agent_write(
+    db: AsyncSession,
+    principal: Principal,
+    department_id: uuid.UUID | None,
+    *,
+    not_found: HTTPException,
+) -> None:
+    """The personal-department half of `authorize_agent_write`, for the few
+    routes that write an agent behind a plain permission instead of that door
+    (an agent's triggers, a skill unassignment). In a personal department
+    only the owner's seat may write; anybody else gets the route's own
+    `not_found`. Any other department passes untouched."""
+    if department_id is None:
+        return
+    kind = await department_kind(db, tenant_id=principal.tenant_id, department_id=department_id)
+    if kind != DEPARTMENT_KIND_PERSONAL:
+        return
+    try:
+        _member, scope = await scope_for_principal(db, principal)
+    except PermissionError:
+        raise not_found from None
+    if department_id not in scope.agent_manage_departments:
+        raise not_found
 
 
 def unguarded(reason: str) -> Callable[[], None]:

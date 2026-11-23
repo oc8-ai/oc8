@@ -115,6 +115,20 @@ async def live_department(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def department_kind(
+    db: AsyncSession, *, tenant_id: uuid.UUID, department_id: uuid.UUID
+) -> str | None:
+    """The `kind` of one department by id, archived ones included, or None for
+    no such department in this tenant. Without the caller's scope, and only
+    the kind: for the agent-write door (`api.deps.authorize_agent_write`),
+    which must tell a personal department apart before it decides who may
+    write an agent there."""
+    stmt = select(Department.kind).where(
+        Department.id == department_id, Department.tenant_id == tenant_id
+    )
+    return (await db.execute(stmt)).scalar_one_or_none()
+
+
 async def lock_departments_owned_by(
     db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
 ) -> list[uuid.UUID]:

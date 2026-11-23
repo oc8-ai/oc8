@@ -10,7 +10,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
+from oc8.api.deps import (
+    CurrentPrincipal,
+    DbSession,
+    refuse_personal_agent_write,
+    require_permission,
+)
 from oc8.authz.permissions import MANAGE, TRIGGER, VIEW, perm
 from oc8.authz.scope import scope_for_principal
 from oc8.automation.catalogue import list_installed_automation_events
@@ -285,6 +290,20 @@ async def list_trigger_events(db: DbSession, principal: CurrentPrincipal) -> lis
     return out
 
 
+async def _refuse_foreign_personal_trigger(
+    db: DbSession, principal: CurrentPrincipal, trigger: m.Trigger
+) -> None:
+    """A trigger is part of its agent: in a personal department only the
+    owner changes it (`api.deps.refuse_personal_agent_write`)."""
+    agent = await db.get(m.Agent, trigger.agent_id)
+    await refuse_personal_agent_write(
+        db,
+        principal,
+        agent.department_id if agent is not None else None,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found"),
+    )
+
+
 @router.post(
     "/agents/{agent_id}/triggers",
     response_model=TriggerDTO,
@@ -295,8 +314,10 @@ async def create_agent_trigger(
     agent_id: uuid.UUID, body: CreateTriggerRequest, db: DbSession, principal: CurrentPrincipal
 ) -> TriggerDTO:
     agent = await db.get(m.Agent, agent_id)
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     if agent is None or agent.deleted_at is not None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+        raise not_found
+    await refuse_personal_agent_write(db, principal, agent.department_id, not_found=not_found)
     caller = await _caller_member_id(db, principal)
     named = (
         body.event_target_credential_id is not None
@@ -366,6 +387,7 @@ async def update_agent_trigger(
     trigger = await get_trigger(db, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
+    await _refuse_foreign_personal_trigger(db, principal, trigger)
     if body.enabled is True:
         # Like creating one: an archived agent gets no live trigger (the next
         # fire would only turn it off again). Restoring the agent comes first.
@@ -446,4 +468,5 @@ async def delete_agent_trigger(
     trigger = await get_trigger(db, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
+    await _refuse_foreign_personal_trigger(db, principal, trigger)
     await delete_trigger(db, trigger)

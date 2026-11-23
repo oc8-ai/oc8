@@ -26,13 +26,14 @@ from oc8.auth import get_identity_provider
 from oc8.authz.pdp import effective_tool_policies
 from oc8.authz.scope import subject_uuid_for
 from oc8.capas.lifecycle import enable_plugin
-from oc8.capas.service import install_plugin
+from oc8.capas.service import install_plugin, instantiate_agent
 from oc8.copilot.profile import offboard_member
 from oc8.departments.personal import (
     ENABLED_KEY,
     FRAME_KEY,
     MAX_AGENTS_KEY,
     PersonalAgentLimit,
+    PersonalOwnerLeft,
     ensure_personal_capacity,
     get_or_create_personal_department,
     personal_frame,
@@ -44,12 +45,15 @@ from tests.conftest import AppSessionFactory
 pytestmark = pytest.mark.asyncio
 
 _SUBJECT = "ada"
+#: Somebody else in the tenant: an administrator or a department manager who
+#: holds no seat in Ada's personal department.
+_OTHER = "root"
 _IN_FRAME = {"mail_read": {"enabled": True, "read": True}}
 _OUT_OF_FRAME = {"shell_exec": {"enabled": True, "read": True, "modify": True}}
 
 
-def _headers(tenant: uuid.UUID, role: str = "member") -> dict[str, str]:
-    token = get_identity_provider().mint(tenant_id=tenant, subject=_SUBJECT, role=role)
+def _headers(tenant: uuid.UUID, role: str = "member", subject: str = _SUBJECT) -> dict[str, str]:
+    token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role=role)
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -194,7 +198,11 @@ async def test_restore_at_the_cap_is_a_409(app_session: AppSessionFactory) -> No
     assert r.json()["detail"] == {"error": "personal_agent_limit"}
 
 
-async def test_restore_after_the_owner_left_is_a_409(app_session: AppSessionFactory) -> None:
+async def test_restore_after_the_owner_left_is_refused(app_session: AppSessionFactory) -> None:
+    """Nobody restores an agent of a departed owner: the owner's seat went with
+    them, and an administrator never writes agents in a personal department
+    (final review I2). The service's own `owner_left` refusal stays behind
+    that as defence in depth (`tests/departments/test_offboarding_owned.py`)."""
     tenant, dept_id = await _personal(app_session)
     async with _http() as http:
         made = await http.post("/api/v1/agents", json=_body(dept_id), headers=_headers(tenant))
@@ -216,10 +224,13 @@ async def test_restore_after_the_owner_left_is_a_409(app_session: AppSessionFact
             agent.deleted_at = datetime.now(UTC)
             owner.deleted_at = datetime.now(UTC)
         r = await http.post(
-            f"/api/v1/agents/{agent_id}/restore", headers=_headers(tenant, "org_admin")
+            f"/api/v1/agents/{agent_id}/restore",
+            headers=_headers(tenant, "org_admin", _OTHER),
         )
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"] == {"error": "owner_left"}
+    assert r.status_code == 404, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None and agent.deleted_at is not None
 
 
 async def test_a_standard_department_keeps_its_behaviour(app_session: AppSessionFactory) -> None:
@@ -478,6 +489,8 @@ async def test_rollback_to_a_version_outside_the_frame_is_refused(
         )
         agent_id = made.json()["id"]
         await _tighten_frame(app_session, tenant, dept_id)
+        # Ada herself, holding the admin role: a plain `member` lacks
+        # `agent_version:publish`, which a rollback needs (see the report).
         r = await http.post(
             f"/api/v1/agents/{agent_id}/versions/1/rollback",
             json={},
@@ -487,7 +500,7 @@ async def test_rollback_to_a_version_outside_the_frame_is_refused(
     assert r.json()["detail"] == {"error": "narrowing_exceeds_frame"}
 
 
-async def test_the_admin_instantiate_route_answers_409_at_the_cap(
+async def test_the_admin_instantiate_route_refuses_a_personal_department(
     app_session: AppSessionFactory,
 ) -> None:
     tenant, dept_id = await _personal(app_session, max_agents=1)
@@ -520,10 +533,12 @@ async def test_the_admin_instantiate_route_answers_409_at_the_cap(
         r = await http.post(
             f"/api/v1/capas/{capa_id}/instantiate",
             json={"departmentId": str(dept_id)},
-            headers=_headers(tenant, role="org_admin"),
+            headers=_headers(tenant, "org_admin", _OTHER),
         )
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"] == {"error": "personal_agent_limit"}
+    # Final review I2: only the owner's own hire route reaches a personal
+    # department -- not even at the cap does the admin route get that far.
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "department not found"
 
 
 async def _owner_left(
@@ -540,20 +555,20 @@ async def _owner_left(
         owner.deleted_at = datetime.now(UTC)
 
 
-async def test_creating_an_agent_in_a_departed_owners_department_is_a_409(
+async def test_creating_an_agent_in_a_departed_owners_department_is_refused(
     app_session: AppSessionFactory,
 ) -> None:
     tenant, dept_id = await _personal(app_session)
     await _owner_left(app_session, tenant, dept_id)
     async with _http() as http:
         r = await http.post(
-            "/api/v1/agents", json=_body(dept_id), headers=_headers(tenant, "org_admin")
+            "/api/v1/agents", json=_body(dept_id), headers=_headers(tenant, "org_admin", _OTHER)
         )
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"] == {"error": "owner_left"}
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "unknown department"
 
 
-async def test_a_template_install_into_a_departed_owners_department_is_a_409(
+async def test_a_template_hire_into_a_departed_owners_department_is_refused(
     app_session: AppSessionFactory,
 ) -> None:
     tenant, dept_id = await _personal(app_session)
@@ -571,16 +586,23 @@ async def test_a_template_install_into_a_departed_owners_department_is_a_409(
             },
         )
         await enable_plugin(db, tenant_id=tenant, capa_id=version.capa_id, granted_permissions=[])
-        capa_id = version.capa_id
+        version_id = version.id
     await _owner_left(app_session, tenant, dept_id)
-    async with _http() as http:
-        r = await http.post(
-            f"/api/v1/capas/{capa_id}/instantiate",
-            json={"departmentId": str(dept_id)},
-            headers=_headers(tenant, role="org_admin"),
-        )
-    assert r.status_code == 409, r.text
-    assert r.json()["detail"] == {"error": "owner_left"}
+    # The owner's own hire is the only path into the department (final review
+    # I2), and a departed owner can no longer call it; the service refuses it
+    # all the same.
+    async with app_session(tenant) as db:
+        enabled = await db.get(m.CapaVersion, version_id)
+        assert enabled is not None
+        with pytest.raises(PersonalOwnerLeft):
+            await instantiate_agent(
+                db,
+                tenant_id=tenant,
+                version=enabled,
+                department_id=dept_id,
+                hire_gate=False,
+                owner_hire=True,
+            )
 
 
 async def test_restoring_a_personal_department_whose_owner_left_is_a_409(
@@ -594,10 +616,176 @@ async def test_restoring_a_personal_department_whose_owner_left_is_a_409(
         dept.deleted_at = datetime.now(UTC)
     async with _http() as http:
         r = await http.post(
-            f"/api/v1/departments/{dept_id}/restore", headers=_headers(tenant, "org_admin")
+            f"/api/v1/departments/{dept_id}/restore",
+            headers=_headers(tenant, "org_admin", _OTHER),
         )
     assert r.status_code == 409, r.text
     assert r.json()["detail"] == {"error": "owner_left"}
     async with app_session(tenant) as db:
         dept = await db.get(m.Department, dept_id)
         assert dept is not None and dept.deleted_at is not None
+
+
+# --- Final review I2: agent writes in a personal department are the owner's ---
+
+
+async def _owners_agent(
+    app_session: AppSessionFactory,
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID]:
+    """Ada's personal department with one agent she made, and its v1."""
+    tenant, dept_id = await _personal(app_session)
+    async with _http() as http:
+        made = await http.post(
+            "/api/v1/agents", json=_body(dept_id, narrowing=_IN_FRAME), headers=_headers(tenant)
+        )
+        assert made.status_code == 201, made.text
+    return tenant, dept_id, uuid.UUID(made.json()["id"])
+
+
+@pytest.mark.parametrize("role", ["org_admin", "dept_manager"])
+async def test_somebody_else_cannot_create_an_agent_in_a_personal_department(
+    app_session: AppSessionFactory, role: str
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    async with _http() as http:
+        r = await http.post(
+            "/api/v1/agents", json=_body(dept_id), headers=_headers(tenant, role, _OTHER)
+        )
+    # The create route's own not-found answer: the same as for an unknown id.
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "unknown department"
+    async with app_session(tenant) as db:
+        rows = await db.execute(select(m.Agent).where(m.Agent.department_id == dept_id))
+        assert rows.scalars().all() == []
+
+
+@pytest.mark.parametrize("role", ["org_admin", "dept_manager"])
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("PATCH", "instructions", {"instructions": "do something else"}),
+        ("POST", "lifecycle", {"action": "start"}),
+        ("POST", "versions/1/rollback", {}),
+    ],
+    ids=["instructions", "lifecycle start", "rollback"],
+)
+async def test_somebody_else_cannot_write_a_personal_agent(
+    app_session: AppSessionFactory, role: str, method: str, path: str, body: dict[str, Any]
+) -> None:
+    tenant, _dept_id, agent_id = await _owners_agent(app_session)
+    async with app_session(tenant) as db:
+        before = await db.get(m.Agent, agent_id)
+        assert before is not None
+        status_before, instructions_before = before.status, before.mission
+    async with _http() as http:
+        r = await http.request(
+            method,
+            f"/api/v1/agents/{agent_id}/{path}",
+            json=body,
+            headers=_headers(tenant, role, _OTHER),
+        )
+    assert r.status_code in (403, 404), r.text
+    if role == "org_admin":
+        # Holds every door permission: refused at the department, as not found.
+        assert r.status_code == 404, r.text
+    async with app_session(tenant) as db:
+        after = await db.get(m.Agent, agent_id)
+        assert after is not None
+        assert (after.status, after.mission) == (status_before, instructions_before)
+        versions = await db.execute(
+            select(m.AgentVersion).where(m.AgentVersion.agent_id == agent_id)
+        )
+        assert len(versions.scalars().all()) == 1
+
+
+async def test_the_owner_still_writes_her_own_agent(app_session: AppSessionFactory) -> None:
+    tenant, _dept_id, agent_id = await _owners_agent(app_session)
+    async with _http() as http:
+        r = await http.patch(
+            f"/api/v1/agents/{agent_id}/instructions",
+            json={"instructions": "mine"},
+            headers=_headers(tenant),
+        )
+        assert r.status_code == 200, r.text
+        r = await http.post(
+            f"/api/v1/agents/{agent_id}/lifecycle",
+            json={"action": "start"},
+            headers=_headers(tenant),
+        )
+        assert r.status_code == 200, r.text
+
+
+@pytest.mark.parametrize("role", ["org_admin", "dept_manager"])
+async def test_somebody_else_cannot_instantiate_into_a_personal_department(
+    app_session: AppSessionFactory, role: str
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    async with app_session(tenant) as db:
+        version = await install_plugin(
+            db,
+            tenant_id=tenant,
+            manifest_data={
+                "name": "mail_helper",
+                "version": "1.0.0",
+                "type": "agent_template",
+                "trust": "first_party",
+                "summary": "s",
+                "agent_template": {"name": "Mia", "mission": "m", "scope": "personal"},
+            },
+        )
+        await enable_plugin(db, tenant_id=tenant, capa_id=version.capa_id, granted_permissions=[])
+        capa_id = version.capa_id
+    async with _http() as http:
+        r = await http.post(
+            f"/api/v1/capas/{capa_id}/instantiate",
+            json={"departmentId": str(dept_id)},
+            headers=_headers(tenant, role, _OTHER),
+        )
+    assert r.status_code in (400, 403), r.text
+    async with app_session(tenant) as db:
+        rows = await db.execute(select(m.Agent).where(m.Agent.department_id == dept_id))
+        assert rows.scalars().all() == []
+
+
+async def test_an_administrator_cannot_touch_a_personal_agents_triggers_or_skills(
+    app_session: AppSessionFactory,
+) -> None:
+    """The routes that write an agent behind a plain permission, outside
+    `authorize_agent_write`, keep to the same owner-only rule."""
+    tenant, _dept_id, agent_id = await _owners_agent(app_session)
+    async with app_session(tenant) as db:
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent_id,
+            kind="cron",
+            task_text="t",
+            cron_expression="0 9 * * *",
+            enabled=False,
+        )
+        db.add(trigger)
+        await db.flush()
+        trigger_id = trigger.id
+    admin = _headers(tenant, "org_admin", _OTHER)
+    async with _http() as http:
+        made = await http.post(
+            f"/api/v1/agents/{agent_id}/triggers",
+            json={"kind": "cron", "taskText": "go", "cronExpression": "0 9 * * *"},
+            headers=admin,
+        )
+        assert made.status_code == 404, made.text
+        patched = await http.patch(
+            f"/api/v1/triggers/{trigger_id}", json={"taskText": "other"}, headers=admin
+        )
+        assert patched.status_code == 404, patched.text
+        deleted = await http.delete(f"/api/v1/triggers/{trigger_id}", headers=admin)
+        assert deleted.status_code == 404, deleted.text
+        unassigned = await http.delete(
+            f"/api/v1/agents/{agent_id}/skills/{uuid.uuid4()}", headers=admin
+        )
+        assert unassigned.status_code == 404, unassigned.text
+        assert unassigned.json()["detail"] == "agent not found"
+    async with app_session(tenant) as db:
+        kept = await db.get(m.Trigger, trigger_id)
+        assert kept is not None and kept.task_text == "t"
+        rows = await db.execute(select(m.Trigger).where(m.Trigger.agent_id == agent_id))
+        assert len(rows.scalars().all()) == 1

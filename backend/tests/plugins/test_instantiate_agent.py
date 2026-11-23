@@ -364,7 +364,9 @@ async def test_department_template_refuses_a_personal_department(
             s, tenant_id=tenant, manifest_data=_agent_template_manifest()
         )
         with pytest.raises(PluginError, match="personal department"):
-            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+            await instantiate_agent(
+                s, tenant_id=tenant, version=version, department_id=dept.id, owner_hire=True
+            )
         assert await _agent_count(s, tenant) == 0
 
 
@@ -377,7 +379,9 @@ async def test_personal_template_hires_into_a_personal_department(
         version = await install_plugin(
             s, tenant_id=tenant, manifest_data=_agent_template_manifest(scope="personal")
         )
-        agent = await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        agent = await instantiate_agent(
+            s, tenant_id=tenant, version=version, department_id=dept.id, owner_hire=True
+        )
         assert agent.department_id == dept.id
 
 
@@ -445,7 +449,9 @@ async def test_a_personal_template_outside_the_frame_is_refused(
             manifest_data=_agent_template_manifest(scope="personal", narrowing=narrowing),
         )
         with pytest.raises(PluginError, match=f"^{_OUT_OF_FRAME}$"):
-            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+            await instantiate_agent(
+                s, tenant_id=tenant, version=version, department_id=dept.id, owner_hire=True
+            )
         assert await _agent_count(s, tenant) == 0
 
 
@@ -465,5 +471,23 @@ async def test_a_personal_template_within_the_frame_is_hired(
             tenant_id=tenant,
             manifest_data=_agent_template_manifest(scope="personal", narrowing=narrowing),
         )
-        agent = await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        agent = await instantiate_agent(
+            s, tenant_id=tenant, version=version, department_id=dept.id, owner_hire=True
+        )
         assert agent.narrowing == narrowing
+
+
+async def test_a_personal_department_takes_no_hire_but_its_owners(
+    app_session: AppSessionFactory,
+) -> None:
+    """Final review I2: only the member's own hire route passes `owner_hire`;
+    any other caller (the admin capa route) finds no personal department."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = await _dept(s, tenant, DEPARTMENT_KIND_PERSONAL)
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest(scope="personal")
+        )
+        with pytest.raises(PluginError, match=r"^department not found$"):
+            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        assert await _agent_count(s, tenant) == 0
