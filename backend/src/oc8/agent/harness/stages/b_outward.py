@@ -14,7 +14,13 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.agent.outward import REFUSAL, already_delivered, outward_target, remember_delivery
+from oc8.agent.outward import (
+    already_delivered,
+    is_unparsable,
+    outward_target,
+    refusal_for,
+    remember_delivery,
+)
 from oc8.modelrouter import ToolCall
 
 
@@ -41,13 +47,17 @@ async def check_outward(
     """`approved`: a person approved this very call through its card. That is
     the person's decision, and the guard -- which stops unattended repeats --
     does not refuse it; the delivery is still remembered (E2E N1)."""
-    target = outward_target(
-        tc.name, tc.arguments, focus_spec, outward_tools, skip_spec=skip_spec
-    )
-    if target is None or task_id is None or approved:
+    target = outward_target(tc.name, tc.arguments, focus_spec, outward_tools, skip_spec=skip_spec)
+    if target is None or approved:
+        return OutwardCheck(target=target, refusal=None)
+    if is_unparsable(target):
+        # Unattended, to recipients nobody could read: refused even without
+        # a task, and on the first send (security scan, fail closed).
+        return OutwardCheck(target=target, refusal=refusal_for(target))
+    if task_id is None:
         return OutwardCheck(target=target, refusal=None)
     if await already_delivered(db, tenant_id=tenant_id, task_id=task_id, target=target):
-        return OutwardCheck(target=target, refusal=REFUSAL.format(target=target))
+        return OutwardCheck(target=target, refusal=refusal_for(target))
     return OutwardCheck(target=target, refusal=None)
 
 

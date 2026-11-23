@@ -19,11 +19,14 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
+from oc8.agent.harness.stages.b_outward import check_outward
 from oc8.agent.outward import (
     already_delivered,
+    is_unparsable,
     outward_target,
     remember_delivery,
 )
+from oc8.modelrouter import ToolCall
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -240,9 +243,36 @@ def test_a_display_name_with_a_comma_is_one_person() -> None:
     assert _send(to=['"Doe, Ann" <ANN@X.COM>']) == _send(to=["ann@x.com"])
 
 
-def test_only_valid_addresses_count() -> None:
-    assert _send(to=["not an address", "ann@x.com", ""]) == _send(to=["ann@x.com"])
-    assert _send(to=["nobody"]) == "post_message#"
+def test_a_malformed_recipient_next_to_a_valid_one_fails_closed() -> None:
+    """Security scan: dropping what does not parse let one bad item shrink
+    the key -- or empty it -- while the mailer may still deliver to it. A
+    recipient the guard cannot read makes the call unreadable as a whole."""
+    target = _send(to=["not an address", "ann@x.com"])
+    assert target is not None and is_unparsable(target)
+    assert is_unparsable(_send(to="ann@x.com, garbage") or "")
+    assert is_unparsable(_send(to="Doe, Ann <ann@x.com>") or "")
+
+
+def test_an_unparsable_string_fails_closed() -> None:
+    for raw in ("nobody", "ann@x.com <<<", "@", "ann@"):
+        target = _send(to=raw)
+        assert target is not None and is_unparsable(target), raw
+
+
+def test_a_nested_list_or_a_non_string_fails_closed() -> None:
+    for value in ([["ann@x.com"]], [42], [{"address": "ann@x.com"}], 42):
+        target = _send(to=value)
+        assert target is not None and is_unparsable(target), value
+
+
+def test_empty_or_blank_recipients_fall_back_to_once_per_task() -> None:
+    for value in ("", "   ", [], ["", "  "], None):
+        assert _send(to=value) == "post_message#", value
+    assert _send(to=["", "ann@x.com"]) == _send(to=["ann@x.com"])
+
+
+def test_a_trailing_dot_domain_is_the_same_domain() -> None:
+    assert _send(to=["ann@x.com."]) == _send(to=["ann@x.com"])
 
 
 def test_plus_addressing_is_another_mailbox() -> None:
@@ -279,3 +309,25 @@ async def test_a_send_reaching_anybody_already_reached_is_a_repeat(
         assert await _reached(db, tenant, task, to='"Doe, Ann" <Ann@X.com>')
         assert not await _reached(db, tenant, task, to=["bob@x.com"])
         assert not await _reached(db, tenant, task, to=["ann+other@x.com"])
+
+
+async def test_an_unattended_send_to_an_unreadable_recipient_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """Refused even on its first send, and with no task: nobody can tell who
+    it reaches. A person who approved it saw the raw value, so theirs runs."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        task = await _task(db, tenant)
+        tc = ToolCall(id="c1", name="post_message", arguments={"to": ["x", "ann@x.com"]})
+        for task_id in (task.id, None):
+            check = await check_outward(
+                db, tenant_id=tenant, task_id=task_id, tc=tc,
+                focus_spec=SEND_SPEC, outward_tools=SENDS,
+            )
+            assert check.refusal is not None and "could not be read" in check.refusal
+        approved = await check_outward(
+            db, tenant_id=tenant, task_id=task.id, tc=tc,
+            focus_spec=SEND_SPEC, outward_tools=SENDS, approved=True,
+        )
+        assert approved.refusal is None

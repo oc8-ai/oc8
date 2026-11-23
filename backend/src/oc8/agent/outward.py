@@ -108,8 +108,15 @@ def outward_target(
     # the target, never the wording. A reworded subject to the same person is
     # exactly the repeat this guard is for (E2E N1, security review).
     recipients = _declared_recipients(tool_name, arguments, spec)
+    if recipients is None:
+        return UNPARSABLE + tool_name
     if recipients:
         return RECIPIENTS + ",".join(recipients)
+    if _declares_recipients(tool_name, spec):
+        # Declared, but nobody named: once per task for the tool, never
+        # "no key" -- and never a record's key, which a second send to an
+        # unnamed recipient would not share.
+        return f"{tool_name}#"
     # Both declared shapes, not just `entity_field`: software with one endpoint
     # per KIND of thing (`calendar_create_event`) names the entity in the tool,
     # never in an argument, so reading only the argument left every such call
@@ -127,50 +134,97 @@ def outward_target(
 
 #: The prefix of a target keyed by the people a call reaches.
 RECIPIENTS = "recipients#"
+#: The prefix of a call whose declared recipients the guard cannot read.
+UNPARSABLE = "unparsable-recipients#"
+
+UNPARSABLE_REFUSAL = (
+    "ERROR: the recipients of this message could not be read ({target}), so "
+    "it is not sent without a person approving it. Name each recipient as a "
+    "plain email address and try again."
+)
+
+
+def is_unparsable(target: str) -> bool:
+    return target.startswith(UNPARSABLE)
+
+
+def refusal_for(target: str) -> str:
+    """What the model is told when the guard refuses a call to `target`."""
+    if is_unparsable(target):
+        return UNPARSABLE_REFUSAL.format(target=target[len(UNPARSABLE) :])
+    return REFUSAL.format(target=target)
 
 
 def _normalised_address(raw: str) -> str | None:
-    """One mailbox, comparably: trimmed and lowercased, the domain in its
-    IDNA (ASCII) form, plus-addressing kept -- `ann+x@` is another mailbox.
-    None for anything that is not an address."""
+    """One mailbox, comparably -- the way the mail bridges compare them:
+    trimmed and lowercased, the domain in its IDNA (ASCII) form without a
+    trailing dot, plus-addressing kept (`ann+x@` is another mailbox). None
+    for anything that is not an address."""
     address = raw.strip().lower()
     local, at, domain = address.rpartition("@")
+    domain = domain.rstrip(".")
     if not at or not local or not domain or any(c.isspace() for c in address):
         return None
     try:
         domain = domain.encode("idna").decode("ascii")
     except UnicodeError:
         return None
-    if "." not in domain.strip("."):
+    if "." not in domain:
         return None
     return f"{local}@{domain}"
 
 
+def _parsed_item(item: str) -> list[str] | None:
+    """The addresses one recipient item names -- every one of them, or None
+    when any part of it does not parse. Parsed on its own, so a bad item
+    cannot change how its neighbours parse."""
+    pairs = getaddresses([item])
+    found: list[str] = []
+    for _name, address in pairs:
+        normalised = _normalised_address(address)
+        if normalised is None:
+            return None
+        found.append(normalised)
+    return found
+
+
 def _declared_recipients(
     tool_name: str, arguments: dict[str, Any], spec: dict[str, Any]
-) -> list[str]:
+) -> list[str] | None:
     """The people a call reaches, from the arguments its connection declares
     for that (`focus_spec.outward_fields`: tool -> argument names), as one
-    set: parsed as address headers (`"Doe, Ann" <ann@x.com>` is one person),
-    only valid addresses, normalised (`_normalised_address`), deduplicated
-    and sorted, whichever field (to/cc/bcc) names them. Empty when nothing
-    is declared or named -- then the caller fails closed to the coarser
-    keys."""
+    set: each field and each list item parsed on its own as an address
+    header (`"Doe, Ann" <ann@x.com>` is one person), normalised
+    (`_normalised_address`), deduplicated and sorted, whichever field
+    (to/cc/bcc) names them.
+
+    Fails closed: None when any non-empty item does not parse fully into
+    addresses -- a nested list, a non-string, a malformed address -- since
+    the mailer may still deliver to what the guard could not read. Empty
+    when nothing is declared or nobody is named."""
     declared = spec.get("outward_fields")
     fields = declared.get(tool_name) if isinstance(declared, dict) else None
     if not isinstance(fields, list):
         return []
-    headers: list[str] = []
+    found: set[str] = set()
     for field in fields:
         value = arguments.get(str(field))
         items = value if isinstance(value, list) else [value]
-        headers.extend(item for item in items if isinstance(item, str))
-    found = {
-        normalised
-        for _name, address in getaddresses(headers)
-        if (normalised := _normalised_address(address)) is not None
-    }
+        for item in items:
+            if item is None or (isinstance(item, str) and not item.strip()):
+                continue
+            if not isinstance(item, str):
+                return None
+            parsed = _parsed_item(item)
+            if parsed is None:
+                return None
+            found.update(parsed)
     return sorted(found)
+
+
+def _declares_recipients(tool_name: str, spec: dict[str, Any]) -> bool:
+    declared = spec.get("outward_fields")
+    return isinstance(declared, dict) and isinstance(declared.get(tool_name), list)
 
 
 def _people(target: str) -> list[str]:
@@ -189,7 +243,10 @@ async def already_delivered(
     db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID, target: str
 ) -> bool:
     """Whether this target -- for a recipients target: ANY of its people --
-    was reached in the task. `[a]` then `[a, b]` reaches a twice."""
+    was reached in the task. `[a]` then `[a, b]` reaches a twice. An
+    unreadable target always counts: nobody can tell whom it reaches."""
+    if is_unparsable(target):
+        return True
     for one in _people(target):
         if (
             await replayed_result(

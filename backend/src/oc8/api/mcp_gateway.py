@@ -59,9 +59,10 @@ from oc8.agent.mcp_client import resolve_auth_header
 from oc8.agent.mcp_pool import never_reached_the_tool
 from oc8.agent.mcp_requirements import wrap_with_requirements
 from oc8.agent.outward import (
-    REFUSAL,
     already_delivered,
+    is_unparsable,
     outward_target,
+    refusal_for,
     remember_delivery,
 )
 from oc8.agent.provenance import fence, shorten_long_strings
@@ -1299,9 +1300,14 @@ async def _call_tool(
     )
     # A call a person approved through its card is the person's decision: the
     # guard stops unattended repeats, never a human's "yes" (E2E N1).
-    if target is not None and run.task_id is not None and not approved_call:
-        if await already_delivered(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target):
-            return _tool_result(REFUSAL.format(target=target), is_error=True)
+    if target is not None and not approved_call:
+        if is_unparsable(target) or (
+            run.task_id is not None
+            and await already_delivered(
+                db, tenant_id=run.tenant_id, task_id=run.task_id, target=target
+            )
+        ):
+            return _tool_result(refusal_for(target), is_error=True)
 
     # Usage limits, last before the call: anything refused above never used up
     # the agent's budget. Settled below -- given back only for a call that
