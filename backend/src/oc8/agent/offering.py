@@ -11,10 +11,25 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+#: How `ConnectionRequired` reasons begin (connections/access.py): the
+#: connection has no usable login for this run.
+_NOT_CONNECTED = "connection_required:"
+
 
 def unavailable_sentence(name: str, reason: str) -> str:
     """One line the model can read. No stack, no second system hidden."""
     line = " ".join(reason.split())
+    if line.startswith(_NOT_CONNECTED):
+        # The reason is written for a call that asked for the connection
+        # ("this task needs ..."). Nothing has asked yet: read as is, it told
+        # the model the task depends on a connection the agent merely has, and
+        # the model gave up on a task another connection could do (E2E F11).
+        return (
+            f"Connection {name} is not available in this run: it is not connected "
+            "for this agent, so its tools are not offered. If the task can be done "
+            "with your other tools, use your other tools; mention the missing "
+            "connection only if none can. Do not reach it through the shell."
+        )
     if len(line) > 200:
         line = line[:200].rstrip()
     return (

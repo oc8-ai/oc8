@@ -29,6 +29,21 @@ def test_unavailable_sentence_names_the_connection_and_drops_the_stack() -> None
     assert "Do not reach it through the shell." in sentence
 
 
+def test_a_connection_without_a_usable_login_does_not_claim_the_task_needs_it() -> None:
+    """E2E F11: an inherited connection nobody had signed in to told the model
+    "this task needs <it>", and the model gave up on sending a mail it could
+    have sent with another connection's tools."""
+    sentence = unavailable_sentence(
+        "suite",
+        "connection_required: this task needs a Suite account, which is not connected. Connect it.",
+    )
+    assert "connected but offered no tools" not in sentence
+    assert "this task needs" not in sentence
+    assert sentence.startswith("Connection suite is not available in this run")
+    assert "not connected" in sentence
+    assert "use your other tools" in sentence
+
+
 def test_find_tools_repeats_the_dead_connection_when_the_query_names_it() -> None:
     state = HarnessState(
         unavailable_connections=[{"name": "jira", "reason": "connection refused"}]
