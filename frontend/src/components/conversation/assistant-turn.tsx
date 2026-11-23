@@ -133,7 +133,11 @@ export function AssistantTurn({
   const partRenderers = useChatSlot("messageParts");
   const editionSources = partRenderers.some((r) => r.type === "sources");
   const components = message ? message.renderedComponents : (run?.components ?? []);
-  const noAnswer = isEmptyReply(message) && !run?.connectionRequired && !run?.toolDenied;
+  const noAnswer =
+    isEmptyReply(message) &&
+    !run?.connectionRequired &&
+    !run?.toolDenied &&
+    run?.state !== "interrupted";
 
   function copy() {
     if (!message) return;
@@ -200,6 +204,16 @@ export function AssistantTurn({
           {t(
             "The assistant returned no answer. Try again or rephrase.",
             "Der Assistent hat keine Antwort geliefert. Versuch es nochmal oder formuliere anders.",
+          )}
+        </p>
+      )}
+      {/* Stopped by a person (or the run's owner went away): say so, rather
+          than leave a turn that just ends (E2E N7). */}
+      {run?.state === "interrupted" && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {t(
+            "Stopped. Nothing more was done in this turn.",
+            "Gestoppt. Danach wurde nichts mehr ausgeführt.",
           )}
         </p>
       )}

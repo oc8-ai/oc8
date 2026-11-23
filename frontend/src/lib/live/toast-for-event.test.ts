@@ -48,3 +48,26 @@ describe("toastForEvent and finished runs (E2E D)", () => {
     });
   });
 });
+
+describe("toastForEvent and decided approvals (E2E N7)", () => {
+  const decided = (status: string): RealtimeEvent =>
+    ({
+      id: `d${(seq += 1)}`,
+      type: "approval.decided",
+      data: { approval_id: "ap", status },
+    }) as never;
+
+  it("calls an approval that expired expired, not rejected", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-23T10:00:00Z"));
+    toastForEvent(decided("expired"));
+    expect(toast).toHaveBeenLastCalledWith("Approval expired", {
+      description: "Nobody decided it before the run ended.",
+    });
+    vi.setSystemTime(new Date("2026-11-23T10:01:00Z"));
+    toastForEvent(decided("rejected"));
+    expect(toast).toHaveBeenLastCalledWith("Approval rejected", {
+      description: "A decision was made.",
+    });
+  });
+});

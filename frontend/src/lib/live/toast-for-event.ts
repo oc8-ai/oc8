@@ -89,6 +89,16 @@ export function toastForEvent(e: RealtimeEvent, t: Translate = english): void {
   if (e.type === "approval.decided") {
     if (!cooled(e.type)) return;
     const status = e.data.status as string | undefined;
+    if (status === "expired") {
+      // Nobody decided it (E2E N7: after Stop it read "rejected").
+      toast(t("Approval expired", "Freigabe abgelaufen"), {
+        description: t(
+          "Nobody decided it before the run ended.",
+          "Niemand hat entschieden, bevor der Lauf endete.",
+        ),
+      });
+      return;
+    }
     toast(
       status === "approved"
         ? t("Approval granted", "Freigabe erteilt")
