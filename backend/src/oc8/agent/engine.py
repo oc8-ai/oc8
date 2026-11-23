@@ -1446,6 +1446,7 @@ async def run_agent(
                                     "arguments": arguments,
                                     "justification": "",
                                     "preview": why,
+                                    **({"run_id": str(run_id)} if run_id is not None else {}),
                                     **(
                                         {
                                             "read_before_write_ok": True,
@@ -2876,6 +2877,10 @@ async def run_agent(
                                         "tool": tc.name,
                                         "arguments": tc.arguments,
                                         "justification": justification,
+                                        # Every turn of a chat shares one task:
+                                        # only the run id says which turn's run
+                                        # the decision resumes.
+                                        **({"run_id": str(run_id)} if run_id is not None else {}),
                                         "preview": (
                                             gate_verdict.preview if gate_verdict is not None else ""
                                         ),

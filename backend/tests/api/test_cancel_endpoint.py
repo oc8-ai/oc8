@@ -164,16 +164,20 @@ async def test_cancel_unknown_run_404s(app_session: AppSessionFactory) -> None:
             assert r.status_code == 404
 
 
-async def test_cancel_waiting_run_records_but_stays_suspended(
-    app_session: AppSessionFactory,
+async def test_cancel_wakes_a_run_parked_on_an_approval(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A suspended (waiting_for_approval) run is not looping, so its cancel is
-    recorded and honored only on resume -- NOT applied synchronously. The
-    endpoint accepts it (200) but the response reports the run's CURRENT state
-    (still waiting), and the run_cancellation row is recorded for the eventual
-    resume to honor. This pins the documented cooperative limitation for the
-    waiting states (see cancel_run's docstring and the spec Non-Goals); a caller
-    must not read the 200 as 'already stopped'."""
+    """A run parked on an approval is not looping and no executor holds it, so
+    the cancel re-queues it into the before-start check instead of leaving it
+    parked until somebody decides a card nobody needs any more. Its own cards
+    are expired: tests/runtime/test_stop_parked_run.py."""
+    enqueued: list[uuid.UUID] = []
+
+    class _Queue:
+        async def enqueue(self, *, run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
+            enqueued.append(run_id)
+
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", _Queue)
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     run_id, _agent_id = await _queued_run(app_session, tenant)
     async with app_session(tenant) as s:
@@ -188,15 +192,13 @@ async def test_cancel_waiting_run_records_but_stays_suspended(
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as client:
             r = await client.post(f"/api/v1/runs/{run_id}/cancel", headers=_headers(tenant))
             assert r.status_code == 200
-            # Honest: the response reflects reality -- the run is still suspended.
-            assert r.json()["state"] == "waiting_for_approval"
+            assert r.json()["state"] == "queued"
 
+    assert enqueued == [run_id]
     async with app_session(tenant) as s:
         cancel = (
             await s.execute(
                 select(m.RunCancellation).where(m.RunCancellation.run_id == run_id)
             )
         ).scalar_one_or_none()
-        assert cancel is not None  # recorded, to be honored on resume
-        run = await s.get(m.AgentRun, run_id)
-        assert run is not None and run.state == RunState.WAITING_FOR_APPROVAL.value
+        assert cancel is not None

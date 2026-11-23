@@ -536,14 +536,15 @@ async def cancel_run(
 
     - queued  -> skipped before start on the worker's next pickup (agent freed then).
     - running -> stopped at the next step boundary, before the next LLM call.
-    - waiting_for_input / waiting_for_approval -> a suspended run is not looping,
-      so the cancel is recorded and honored only when the run is next resumed
-      (via /answer or approval), which re-queues it into the before-start check.
-      Until then the run stays suspended and its agent stays occupied. Callers
-      must therefore inspect the returned `state` (and poll) rather than assume a
-      200 means the run has already stopped. Immediately interrupting a suspended
-      run is out of scope for this slice (queued + running); see the design spec's
-      Non-Goals.
+    - waiting_for_approval -> the cards it waits on are expired and the run is
+      re-queued, so it is skipped before start like a queued one.
+    - waiting_for_input -> a suspended run is not looping, so the cancel is
+      recorded and honored only when the run is next resumed (via /answer),
+      which re-queues it into the before-start check. Until then the run stays
+      suspended and its agent stays occupied.
+
+    Callers must therefore inspect the returned `state` (and poll) rather than
+    assume a 200 means the run has already stopped.
 
     409 if the run is already terminal; 404 if missing, cross-tenant (RLS), or
     a run of an agent the caller may not see.
@@ -560,5 +561,9 @@ async def cancel_run(
     # The same unlocked run_cancellation row the chat's Stop writes; see
     # oc8.runtime.cancellation.
     await record_operator_cancel(db, run=run_row, principal=principal, actor_id=None)
+    # A parked run was re-queued by the cancel: report that state, read back
+    # while the tenant binding of this transaction still holds.
+    await db.refresh(run_row)
+    dto = run_to_dto(run_row)
     await db.commit()
-    return run_to_dto(run_row)
+    return dto

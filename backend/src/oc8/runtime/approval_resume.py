@@ -27,6 +27,32 @@ def call_signature(tool: str, arguments: dict[str, Any]) -> str:
     return tool + "\n" + json.dumps(arguments, sort_keys=True, default=str)
 
 
+async def run_of_approval(db: AsyncSession, approval: ApprovalRequest) -> AgentRun | None:
+    """The run that raised `approval`, or None.
+
+    Every turn of an agent chat or a Copilot conversation runs on ONE task, so
+    "the run of this task" is ambiguous from the second turn on: every raiser
+    names its run in the payload, and that run must be of this task. A card
+    raised before raisers did so (still pending across an upgrade) falls back
+    to the task's latest run started before the card -- turns of one task run
+    one after another, so that is the one that raised it."""
+    if approval.task_id is None:
+        return None
+    raw_run = (approval.payload or {}).get("run_id")
+    if raw_run:
+        try:
+            run = await db.get(AgentRun, uuid.UUID(str(raw_run)))
+        except ValueError:
+            return None
+        return run if run is not None and run.task_id == approval.task_id else None
+    query = select(AgentRun).where(AgentRun.task_id == approval.task_id)
+    if approval.created_at is not None:
+        query = query.where(AgentRun.created_at <= approval.created_at)
+    return (
+        await db.execute(query.order_by(AgentRun.created_at.desc()).limit(1))
+    ).scalar_one_or_none()
+
+
 async def resolve_tool_approval(
     db: AsyncSession, *, approval: ApprovalRequest, decision: str
 ) -> AgentRun | None:
@@ -42,22 +68,7 @@ async def resolve_tool_approval(
         # never the call's approval: the department's card that it raises
         # (decide_approval) is the one that resumes the run (spec §1).
         return None
-    # A Copilot conversation runs every turn on ONE task, so "the run of this
-    # task" is ambiguous there (MultipleResultsFound from the second turn on):
-    # a raiser that knows its run says which, and it must be of this task.
-    raw_run = (approval.payload or {}).get("run_id")
-    run: AgentRun | None
-    if raw_run:
-        try:
-            run = await db.get(AgentRun, uuid.UUID(str(raw_run)))
-        except ValueError:
-            run = None
-        if run is not None and run.task_id != approval.task_id:
-            run = None
-    else:
-        run = (
-            await db.execute(select(AgentRun).where(AgentRun.task_id == approval.task_id))
-        ).scalar_one_or_none()
+    run = await run_of_approval(db, approval)
     if run is None:
         return None
 

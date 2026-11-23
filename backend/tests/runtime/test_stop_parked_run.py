@@ -1,0 +1,168 @@
+"""Stopping a run that is parked on an approval (E2E F6).
+
+A parked run is not looping, so a cancel row alone was only honoured when
+somebody decided the card -- and a chat's second-turn card could not be
+decided at all. Stop now closes the run's open card and wakes the run, so the
+worker's before-start check ends it."""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import pytest
+from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+from oc8 import models as m
+from oc8.auth import get_identity_provider
+from oc8.main import create_app
+from oc8.runtime.executor import execute_run
+from oc8.runtime.queue import RunMessage
+from oc8.runtime.states import RunState
+from tests.conftest import AppSessionFactory
+
+pytestmark = pytest.mark.asyncio
+
+
+class _RecordingQueue:
+    def __init__(self) -> None:
+        self.enqueued: list[uuid.UUID] = []
+
+    async def enqueue(self, *, run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
+        self.enqueued.append(run_id)
+
+
+def _h(tenant: uuid.UUID, subject: str) -> dict[str, str]:
+    token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role="org_admin")
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _parked_second_turn(
+    app_session: AppSessionFactory, tenant: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID, uuid.UUID]:
+    """(turn-2 run, its approval, an older turn's still-pending card, agent, task)."""
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="A", status="waiting_for_approval"
+        )
+        db.add(agent)
+        await db.flush()
+        task = m.Task(
+            tenant_id=tenant,
+            department_id=dept.id,
+            assigned_agent_id=agent.id,
+            title="chat",
+            state="waiting_for_approval",
+        )
+        db.add(task)
+        await db.flush()
+        ctx = {"originating_operator": "alice"}
+        turn1 = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            task_id=task.id,
+            source="chat",
+            state=RunState.DONE.value,
+            context=ctx,
+        )
+        db.add(turn1)
+        await db.flush()
+        turn2 = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            task_id=task.id,
+            source="chat",
+            state=RunState.WAITING_FOR_APPROVAL.value,
+            context=ctx,
+        )
+        db.add(turn2)
+        await db.flush()
+        approval = m.ApprovalRequest(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            department_id=dept.id,
+            task_id=task.id,
+            action_type="tool_send",
+            status="pending",
+            title="A wants to call mail_send",
+            payload={"tool": "mail_send", "arguments": {}, "run_id": str(turn2.id)},
+        )
+        # Another run's card on the same task is not this stop's to close.
+        other = m.ApprovalRequest(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            department_id=dept.id,
+            task_id=task.id,
+            action_type="tool_send",
+            status="pending",
+            title="A wants to call mail_send",
+            payload={"tool": "mail_send", "arguments": {}, "run_id": str(turn1.id)},
+        )
+        db.add_all([approval, other])
+        await db.flush()
+        return turn2.id, approval.id, other.id, agent.id, task.id
+
+
+async def _drive_worker(run_id: uuid.UUID, tenant: uuid.UUID) -> None:
+    class _MustNotRun:
+        async def execute(self, db: Any, **kw: Any) -> Any:
+            raise AssertionError("a stopped parked run must not execute")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_MustNotRun(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("door", "expected_status"),
+    [("/stop", 202), ("/cancel", 200)],
+)
+async def test_stop_ends_a_run_parked_on_an_approval(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    door: str,
+    expected_status: int,
+) -> None:
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id, approval_id, other_id, agent_id, task_id = await _parked_second_turn(
+        app_session, tenant
+    )
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.post(f"/api/v1/runs/{run_id}{door}", headers=_h(tenant, "alice"))
+            assert r.status_code == expected_status, r.text
+
+    async with app_session(tenant) as db:
+        approval = await db.get(m.ApprovalRequest, approval_id)
+        other = await db.get(m.ApprovalRequest, other_id)
+        run = await db.get(m.AgentRun, run_id)
+        assert approval is not None and approval.status == "expired"
+        assert other is not None and other.status == "pending"
+        assert run is not None and run.state == RunState.QUEUED.value
+    assert queue.enqueued == [run_id]
+
+    await _drive_worker(run_id, tenant)
+
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        agent = await db.get(m.Agent, agent_id)
+        task = await db.get(m.Task, task_id)
+        assert run is not None and run.state == RunState.INTERRUPTED.value
+        assert agent is not None and agent.status == "idle"
+        assert task is not None and task.state != "waiting_for_approval"
+        cancels = (
+            (await db.execute(select(m.RunCancellation).where(m.RunCancellation.run_id == run_id)))
+            .scalars()
+            .all()
+        )
+        assert len(cancels) == 1

@@ -57,7 +57,11 @@ async def record_operator_cancel(
     running run at its next step boundary. Idempotent: a second cancel adds no
     row, and the first cancel keeps its kind. `cancellation_kind` names who
     asked when it was not an operator stopping this one run (`AGENT_ARCHIVED`).
-    The caller has already refused a terminal run and commits."""
+    The caller has already refused a terminal run and commits.
+
+    A run parked on an approval is the exception: no executor holds it and
+    nothing would ever loop it to a step boundary, so it is woken here (see
+    `_wake_parked_run`) -- the before-start check then ends it."""
     existing = (
         await db.execute(select(m.RunCancellation).where(m.RunCancellation.run_id == run.id))
     ).scalar_one_or_none()
@@ -82,6 +86,61 @@ async def record_operator_cancel(
         decision="allow",
         principal=principal,
     )
+    await _wake_parked_run(db, run)
+
+
+#: The holds a run parks on and is resumed from. A `decision` card carries a
+#: run id too, but its run never waited for it.
+_PARKING_ACTIONS: Final = ("tool_send", "direct_access")
+
+
+async def _wake_parked_run(db: AsyncSession, run: m.AgentRun) -> None:
+    """Close the cards a parked run waits on and re-queue it, so the worker's
+    before-start check honours the cancel just recorded. Left parked, the run
+    waited for a decision nobody had a reason to make any more -- and in a
+    chat's second turn, one nobody could make (E2E F6)."""
+    # Deferred: the approvals service and the run queue reach the engine,
+    # which reaches this module.
+    from oc8.approvals.service import expire_approval
+    from oc8.realtime.emit import publish_after_commit
+    from oc8.runtime.approval_resume import run_of_approval
+    from oc8.runtime.intake import publish_run
+    from oc8.runtime.repository import RunRepository
+    from oc8.runtime.states import RunState
+
+    # Re-read: the executor's own park may have committed since the caller
+    # loaded the row.
+    fresh = await db.get(m.AgentRun, run.id, populate_existing=True)
+    if fresh is None or fresh.state != RunState.WAITING_FOR_APPROVAL.value:
+        return
+    if fresh.task_id is not None:
+        pending = (
+            (
+                await db.execute(
+                    select(m.ApprovalRequest)
+                    .where(
+                        m.ApprovalRequest.task_id == fresh.task_id,
+                        m.ApprovalRequest.status == "pending",
+                        m.ApprovalRequest.action_type.in_(_PARKING_ACTIONS),
+                    )
+                    .with_for_update()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for approval in pending:
+            raiser = await run_of_approval(db, approval)
+            if raiser is not None and raiser.id == fresh.id:
+                await expire_approval(db, approval)
+    await RunRepository(db).transition(fresh, RunState.QUEUED)
+    await db.flush()
+    run_id, tenant_id = fresh.id, fresh.tenant_id
+
+    async def _publish() -> None:
+        await publish_run(run_id=run_id, tenant_id=tenant_id)
+
+    publish_after_commit(db, _publish)
 
 
 #: What an operator's cancel tells the run (and the model, through the gateway).
