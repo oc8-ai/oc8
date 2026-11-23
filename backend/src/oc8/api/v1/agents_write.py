@@ -250,9 +250,26 @@ async def enforce_narrowing_logins(
             # Compared as the EFFECTIVE policy (frame ∩ this value), not the
             # stored value (E2E N6): a threshold the value can leave out because
             # the frame's applies anyway -- a connection with no amount to
-            # compare -- is no divergence. A login pick (`connection_id`) is
-            # not one either: it chooses an account, not what may be done.
+            # compare -- is no divergence. A login (`connection_id`) other than
+            # the department's default IS one: the cascade must never rewrite
+            # that key and swap the agent's account (security review).
             if key not in frame_tools:
+                overridden.add(key)
+                continue
+            frame_raw = frame_tools.get(key)
+            submitted = effective_tool_policies({"tools": {key: frame_raw}}, {"tools": {key: raw}})[
+                key
+            ]
+            current_frame = ToolPolicy.from_json(frame_raw)
+            frame_login = (
+                frame_raw.get("default_connection_id") or frame_raw.get("connection_id")
+                if isinstance(frame_raw, dict)
+                else None
+            )
+            own_login = submitted.connection_id
+            if replace(submitted, connection_id=None) != replace(
+                current_frame, connection_id=None
+            ) or (own_login and str(own_login) != str(frame_login or "")):
                 overridden.add(key)
                 continue
             submitted = effective_tool_policies(

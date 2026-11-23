@@ -706,3 +706,68 @@ async def test_hiring_with_a_new_tighter_threshold_nothing_can_enforce_is_refuse
     status_code, text = await _hire_under_a_frame_threshold(app_session, 50)
     assert status_code == 422, text
     assert "value_spec_not_supported" in text
+
+
+async def _pin_login(
+    app_session: AppSessionFactory, *, frame_login: str | None, own_login: str
+) -> list[str]:
+    """An agent saves Odoo exactly as its department grants it, except for
+    the login it pins; returns the keys recorded as overridden."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    frame_policy: dict[str, object] = {"enabled": True, "read": True, "modify": True}
+    if frame_login is not None:
+        frame_policy["default_connection_id"] = frame_login
+    async with app_session(tenant) as db:
+        department = m.Department(
+            tenant_id=tenant, name=f"D-{uuid.uuid4().hex}", frame={"tools": {"Odoo": frame_policy}}
+        )
+        db.add(department)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=department.id, name="Probe")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.put(
+                f"/api/v1/agents/{agent_id}/narrowing",
+                json={
+                    "narrowing": {
+                        "tools": {
+                            "Odoo": {
+                                "enabled": True,
+                                "read": True,
+                                "modify": True,
+                                "connection_id": own_login,
+                            }
+                        }
+                    }
+                },
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+            assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        return list(agent.narrowing_overridden_keys or [])
+
+
+async def test_pinning_another_login_than_the_department_is_an_override(
+    app_session: AppSessionFactory,
+) -> None:
+    """Security review of N6: a login is the agent's own choice. Not marked
+    overridden, a department change would rewrite the key and swap the
+    account the agent acts through."""
+    login = str(uuid.uuid4())
+    assert await _pin_login(app_session, frame_login=None, own_login=login) == ["Odoo"]
+    other = str(uuid.uuid4())
+    assert await _pin_login(app_session, frame_login=other, own_login=login) == ["Odoo"]
+
+
+async def test_the_department_default_login_is_no_override(
+    app_session: AppSessionFactory,
+) -> None:
+    login = str(uuid.uuid4())
+    assert await _pin_login(app_session, frame_login=login, own_login=login) == []

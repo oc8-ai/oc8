@@ -526,3 +526,43 @@ async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_va
         copied = agent.narrowing["tools"]["microsoft365"]
     assert copied["enabled"] is True
     assert copied.get("approval_eur") == cascaded
+
+
+async def test_a_cascade_keeps_the_login_an_agent_pinned(
+    app_session: AppSessionFactory,
+) -> None:
+    """Security review of N6: a department change rewrites what an untouched
+    agent may do with a tool, never whose account it uses."""
+    tenant = uuid.uuid4()
+    login = str(uuid.uuid4())
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant, name="Sales", frame={"tools": {"Odoo": {"enabled": False}}}
+        )
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Nora",
+            narrowing={"tools": {"Odoo": {"enabled": False, "connection_id": login}}},
+        )
+        db.add(agent)
+        await db.flush()
+        dept_id, agent_id = dept.id, agent.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.put(
+                f"/api/v1/departments/{dept_id}/tools",
+                json={"tools": {"Odoo": {"enabled": True, "read": True}}},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+        reloaded = await db.get(m.Agent, agent_id)
+        assert reloaded is not None
+        assert reloaded.narrowing["tools"]["Odoo"]["enabled"] is True
+        assert reloaded.narrowing["tools"]["Odoo"]["connection_id"] == login

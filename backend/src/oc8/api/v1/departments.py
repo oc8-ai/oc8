@@ -363,7 +363,12 @@ async def _cascade_department_tools_change(
                 continue  # a genuine, deliberate operator override -- never touch it
             narrowing = dict(agent.narrowing or {})
             agent_tools = dict(narrowing.get("tools", {}))
+            previous = agent_tools.get(key)
             agent_tools[key] = dict(new_policy)
+            # The agent's login stays its own: a department change is about
+            # what may be done, never whose account does it.
+            if isinstance(previous, dict) and previous.get("connection_id"):
+                agent_tools[key]["connection_id"] = previous["connection_id"]
             narrowing["tools"] = agent_tools
             agent.narrowing = narrowing
     await db.flush()
