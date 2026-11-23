@@ -331,6 +331,9 @@ export function NewAgentDialog({
           await setNarrowing.mutateAsync({
             agentId: agent.id,
             narrowing: { tools: { ...inherited, ...agentOnly } },
+            // Part of the hire: published with it, so the new agent starts
+            // with no unpublished changes (E2E N9).
+            publishOn: agent.currentVersionNo ?? null,
           });
         } catch (err) {
           toast.error(

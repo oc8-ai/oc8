@@ -76,6 +76,8 @@ export interface AgentDetail extends Agent {
   effectiveTools: Record<string, ToolPolicy>;
   departmentFrameTools: Record<string, ToolPolicy>;
   missionTranslations?: Record<string, string>;
+  /** The published version a run executes; v1 from the hire on. */
+  currentVersionNo?: number | null;
 }
 
 export interface ApprovalOption {

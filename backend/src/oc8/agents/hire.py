@@ -61,15 +61,15 @@ async def create_hire_request(db: AsyncSession, *, agent: m.Agent) -> m.Approval
 async def resolve_hire_agent(
     db: AsyncSession, *, approval_request: m.ApprovalRequest, decision: str
 ) -> None:
-    """approve => activate the agent (pending_approval -> stopped, the normal
-    post-creation state the operator then starts). reject => soft-delete it. The
+    """approve => activate the agent (pending_approval -> idle, ready for work
+    like any fresh hire). reject => soft-delete it. The
     agent may be gone already (a concurrent delete) -- then it is a no-op."""
     agent = await db.get(m.Agent, approval_request.agent_id)
     if agent is None:
         return
     if decision == "approve":
         if agent.status == "pending_approval":
-            agent.status = "stopped"
+            agent.status = "idle"
     else:  # reject
         agent.status = "stopped"
         agent.deleted_at = dt.datetime.now(tz=dt.UTC)

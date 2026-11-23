@@ -343,7 +343,9 @@ async def create_agent(
         model_config_id=body.model_config_id,
         narrowing={},
         is_team_lead=body.is_team_lead,
-        status="pending_approval" if gated else "stopped",
+        # Ready for work: "stopped" reads as "paused", and nobody paused a
+        # fresh hire (E2E N9). Only a deliberate pause or stop shows as one.
+        status="pending_approval" if gated else "idle",
         trust_level="first_party",
         definition={"oc8_agent": 1, "name": body.name, "mission": body.mission},
         presentation=body.presentation,

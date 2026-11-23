@@ -35,7 +35,7 @@ const connections = [
   },
 ];
 
-const createAgentMock = vi.fn().mockResolvedValue({ id: "new-agent-id" });
+const createAgentMock = vi.fn().mockResolvedValue({ id: "new-agent-id", currentVersionNo: 1 });
 const createTriggerMock = vi.fn().mockResolvedValue({});
 const credentialTypesMock = vi.fn().mockReturnValue({ data: [] });
 const credentialsMock = vi.fn().mockReturnValue({ data: [] });
@@ -196,6 +196,9 @@ describe("NewAgentDialog: inline credential picker", () => {
           Odoo: expect.objectContaining({ enabled: true, read: true, modify: false }),
         },
       },
+      // Part of the hire, so published with it: a new agent starts with no
+      // unpublished changes (E2E N9).
+      publishOn: 1,
     });
     // The login is fixed first, so the grant finds it.
     expect(createLoginMock.mock.invocationCallOrder[0]).toBeLessThan(

@@ -57,7 +57,9 @@ def _create_body(dept_id: uuid.UUID) -> dict[str, str]:
     return {"name": "Rep", "departmentId": str(dept_id)}
 
 
-async def test_gate_off_creates_stopped_no_incident(app_session: AppSessionFactory) -> None:
+async def test_gate_off_creates_a_ready_agent_no_incident(app_session: AppSessionFactory) -> None:
+    """E2E N9: a fresh hire showed "paused" -- nobody paused it. It is ready
+    for work; only a deliberate pause or stop shows as one."""
     tenant = uuid.uuid4()
     dept_id = await _dept(app_session, tenant)
     app = create_app()
@@ -67,12 +69,13 @@ async def test_gate_off_creates_stopped_no_incident(app_session: AppSessionFacto
                 "/api/v1/agents", json=_create_body(dept_id), headers=_headers(tenant)
             )
             assert r.status_code == 201
+            assert r.json()["status"] == "waiting_for_task"
             agent_id = r.json()["id"]
     async with app_session(tenant) as s:
         # r.json()["status"] is the UI-facing 4-state mapping (agent_to_dto /
         # AGENT_STATUS_TO_UI), not the raw lifecycle status -- assert on the row.
         agent_row = await s.get(m.Agent, uuid.UUID(agent_id))
-        assert agent_row is not None and agent_row.status == "stopped"
+        assert agent_row is not None and agent_row.status == "idle"
         incidents = (await s.execute(
             select(m.ApprovalRequest).where(m.ApprovalRequest.action_type == "hire_agent")
         )).scalars().all()
