@@ -160,8 +160,8 @@ async def test_the_hook_also_covers_an_archived_owned_department(
         )
         db.add(old)
         await db.flush()
-        a1, t1, _ = await _agent_with_gear(db, tenant, live.id, "A")
-        a2, t2, _ = await _agent_with_gear(db, tenant, old.id, "B")
+        _, t1, _ = await _agent_with_gear(db, tenant, live.id, "A")
+        _, t2, _ = await _agent_with_gear(db, tenant, old.id, "B")
         ids = (owner.id, t1.id, t2.id)
 
         stopped = await stop_departments_owned_by(db, tenant_id=tenant, member_id=owner.id)
