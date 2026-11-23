@@ -464,3 +464,52 @@ async def test_a_disabled_plugin_is_refused_on_every_launch_path(
         with pytest.raises(ConnectionRequired):
             await run_mcp_env(db, run=run, conn=conn, tool="mail_send")
     assert minted == []
+
+
+async def test_a_session_opened_at_startup_asks_for_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    """E2E N3: the in-process engine opens a session for every connection the
+    agent has, before the model picks a tool. An account missing for one the
+    run never uses must not put "Connect now" on an email-only run: the
+    startup open raises without recording a call to action."""
+    from oc8.agent import engine
+
+    tenant, _anna, conn_id, run_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired):
+            await engine._open_mcp_session(
+                db, tenant_id=tenant, mcp_conn=conn, run=run, record=False
+            )
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert not (run.context or {}).get("connection_required")
+
+
+async def test_startup_records_the_call_to_action_only_when_nothing_opened(
+    app_session: AppSessionFactory,
+) -> None:
+    """When no connection of the run could be opened, the agent has nothing to
+    work with: then the first missing account is asked for, as before."""
+    from oc8.agent import engine
+
+    tenant, _anna, conn_id, run_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired) as missing:
+            await engine._open_mcp_session(
+                db, tenant_id=tenant, mcp_conn=conn, run=run, record=False
+            )
+        await engine._ask_for_startup_accounts(db, run, [missing.value], opened_any=True)
+        assert not (run.context or {}).get("connection_required")
+        await engine._ask_for_startup_accounts(db, run, [missing.value], opened_any=False)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["connection_required"]["reason"] == "not_connected"

@@ -214,7 +214,11 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
-from oc8.runtime.run_context import append_tool_call, append_waived_read_before_write
+from oc8.runtime.run_context import (
+    append_tool_call,
+    append_waived_read_before_write,
+    merge_context,
+)
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
@@ -501,6 +505,7 @@ async def _open_mcp_session(
     tenant_id: uuid.UUID,
     mcp_conn: m.McpConnection,
     run: m.AgentRun | None = None,
+    record: bool = True,
 ) -> Any:
     cfg = mcp_conn.config if isinstance(mcp_conn.config, dict) else {}
     # With a run, the run decides whose account the bridge gets
@@ -509,7 +514,11 @@ async def _open_mcp_session(
     # every call of the run, so it is audited once, for all tools ("*").
     if run is None:
         await require_enabled(db, mcp_conn)
-    launch = await run_mcp_env(db, run=run, conn=mcp_conn, tool="*") if run is not None else None
+    launch = (
+        await run_mcp_env(db, run=run, conn=mcp_conn, tool="*", record=record)
+        if run is not None
+        else None
+    )
     env = (
         launch.env
         if launch is not None
@@ -520,6 +529,23 @@ async def _open_mcp_session(
         # departments grant no modify): the session refuses every other call.
         return ReadOnlyBridge(await _open_tool_session_for(mcp_conn, cfg, env), mcp_conn)
     return await _open_tool_session_for(mcp_conn, cfg, env)
+
+
+async def _ask_for_startup_accounts(
+    db: AsyncSession,
+    run: m.AgentRun | None,
+    missing: list[ConnectionRequired],
+    *,
+    opened_any: bool,
+) -> None:
+    """Sessions are opened at the start of a run, before the model picks a
+    tool, without asking for a missing account (E2E N3: an email-only run of
+    an agent whose department also grants Microsoft 365 said "Connect now").
+    Only a run left with nothing to work with asks, for the first account it
+    lacks."""
+    if run is None or opened_any or not missing:
+        return
+    await merge_context(db, run, {"connection_required": missing[0].as_context()})
 
 
 async def _open_tool_session_for(
@@ -3777,6 +3803,8 @@ async def run_agent(
                     ]
                     return await loop(coding, toolset)
 
+                startup_missing: list[ConnectionRequired] = []
+
                 def _note_unavailable(conn: m.McpConnection, exc: BaseException) -> None:
                     reason = " ".join(str(exc).split())[:200] or type(exc).__name__
                     startup_unavailable.append({"name": conn.name, "reason": reason})
@@ -3786,6 +3814,17 @@ async def run_agent(
                             content=unavailable_sentence(conn.name, reason),
                         )
                     )
+                    if isinstance(exc, ConnectionRequired):
+                        # Expected: an account this run lacks. One line, not
+                        # a traceback per run (E2E N3).
+                        startup_missing.append(exc)
+                        logger.info(
+                            "connection %s (%s) not available to this run: %s",
+                            conn.name,
+                            conn.id,
+                            reason,
+                        )
+                        return
                     logger.warning(
                         "connection %s (%s) offers no tools right now; the rest stay available",
                         conn.name,
@@ -3800,7 +3839,7 @@ async def run_agent(
                     cfg = only.config if isinstance(only.config, dict) else {}
                     try:
                         tool_session = await _open_mcp_session(
-                            db, tenant_id=tenant_id, mcp_conn=only, run=run_row
+                            db, tenant_id=tenant_id, mcp_conn=only, run=run_row, record=False
                         )
                         async with tool_session as server:
                             noted = _offerable(apply_tool_notes(server.tools, cfg), only)
@@ -3819,6 +3858,9 @@ async def run_agent(
                             return await loop(noted, server)
                     except Exception as exc:
                         _note_unavailable(only, exc)
+                        await _ask_for_startup_accounts(
+                            db, run_row, startup_missing, opened_any=False
+                        )
                         return await loop([], None)
                 async with AsyncExitStack() as stack:
                     sessions: dict[str, Any] = {}
@@ -3828,7 +3870,7 @@ async def run_agent(
                         cfg = conn.config if isinstance(conn.config, dict) else {}
                         try:
                             opened = await _open_mcp_session(
-                                db, tenant_id=tenant_id, mcp_conn=conn, run=run_row
+                                db, tenant_id=tenant_id, mcp_conn=conn, run=run_row, record=False
                             )
                             session = await stack.enter_async_context(opened)
                         except Exception as exc:
@@ -3839,6 +3881,9 @@ async def run_agent(
                             apply_tool_notes(session.tools, cfg), conn
                         )
                         auth_by_connection[conn.name] = _mcp_auth(conn)
+                    await _ask_for_startup_accounts(
+                        db, run_row, startup_missing, opened_any=bool(sessions)
+                    )
                     if not sessions:
                         return await loop([], None)
                     routed = RoutedToolset(
