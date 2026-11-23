@@ -35,6 +35,7 @@ from oc8.connections.usable import needs_department
 from oc8.credentials.errors import CredentialCheckFailed
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
+    CredentialFieldNotSet,
     CredentialNotFound,
     IncompleteCredential,
     get_credential,
@@ -619,6 +620,8 @@ async def _login_check_failure(
         await test_credential(
             db, tenant_id=tenant_id, credential_id=credential_id, owner="organisation"
         )
+    except CredentialFieldNotSet as exc:
+        return f"The login has no value for {exc.field_key!r}. Complete it first."
     except CredentialCheckFailed as exc:
         if exc.detail:
             return exc.detail[:300]

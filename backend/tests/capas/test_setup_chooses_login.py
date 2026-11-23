@@ -439,6 +439,33 @@ async def test_save_and_test_runs_the_login_check_connections_runs(
         assert cred.last_test_ok is False
 
 
+async def test_save_and_test_names_a_login_field_without_a_value(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of F8: a required field whose stored value is gone (its secret
+    deleted) made the login check raise past the test into a 500."""
+    from oc8.credentials.service import CredentialFieldNotSet
+
+    async def _field_gone(*_a: Any, **_k: Any) -> None:
+        raise CredentialFieldNotSet("Company system", "token")
+
+    monkeypatch.setattr("oc8.api.v1.mcp.test_credential", _field_gone)
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    login = await _login(app_session, tenant, name="Company system")
+    async with api() as c:
+        await install(c, admin, PLUGIN)
+        (row,) = await _tool_rows(app_session, tenant)
+        tested = await c.post(
+            f"/api/v1/mcp/connections/{row.id}/test",
+            params={"credentialId": str(login)},
+            headers=admin,
+        )
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["connected"] is False
+    assert "token" in tested.json()["health"]["error"]
+
+
 async def test_binding_a_new_login_to_an_agent_needs_the_right_to_edit_that_agent(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
