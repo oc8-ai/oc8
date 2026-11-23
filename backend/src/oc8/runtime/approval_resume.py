@@ -121,7 +121,7 @@ async def resolve_tool_approval(
             "arguments": arguments,
             "decision": decision,
             # Names the approval, so the call that uses it up can say which
-            # one it used (`consume_approval`).
+            # one it used (`claim_approval`).
             "approval_id": str(approval.id),
             # Only a raiser that saw the call pass read-before-write sets it.
             **(
@@ -199,12 +199,13 @@ class Decisions:
     security review): read from `resolved_tool_approvals` minus what
     `consumed_tool_approvals` already used up, so an identical repeat in the
     same run is a new call -- asked again, or guarded when it runs
-    unattended. A rejection stays: it is never used up.
+    unattended. Two approvals of the same call cover two executions. A
+    rejection stays: it is never used up.
 
     Every path that honours a decision reads it through here -- the engine,
     the MCP gateway, the isolated runtime's /tool and /tools, its local-tool
-    pre-verdict and a held call's re-run -- and the call that runs on an
-    approval uses it up through `consume_approval`. Behaves as the
+    pre-verdict and a held call's re-run -- and claims the approval BEFORE
+    the call runs, through `claim_approval`. Behaves as the
     `signature -> verdict` mapping those paths used before.
     """
 
@@ -213,13 +214,16 @@ class Decisions:
         entries = [e for e in ctx.get("resolved_tool_approvals") or [] if isinstance(e, dict)]
         latest = pre_decided_map(entries)
         self.decided = bool(latest)
-        used = {
-            str(c.get("key"))
-            for c in ctx.get("consumed_tool_approvals") or []
-            if isinstance(c, dict)
+        consumed = [c for c in ctx.get("consumed_tool_approvals") or [] if isinstance(c, dict)]
+        used = {str(c.get("key")) for c in consumed}
+        #: call id -> the approval claimed for it before it ran.
+        self.claimed_calls: dict[str, str] = {
+            str(c["call_id"]): str(c.get("key")) for c in consumed if c.get("call_id")
         }
-        #: signature -> the key of the first approval not yet used up.
-        self.open: dict[str, str] = {}
+        #: approval key -> its entry, for what the approval carries.
+        self.entries: dict[str, dict[str, Any]] = {}
+        #: signature -> the keys of its approvals not yet used up, in order.
+        self.open: dict[str, list[str]] = {}
         seen: dict[str, int] = {}
         for e in entries:
             sig = e.get("sig")
@@ -227,12 +231,13 @@ class Decisions:
                 continue
             seen[sig] = seen.get(sig, 0) + 1
             key = str(e.get("approval_id") or f"{sig}#{seen[sig]}")
-            if key not in used and sig not in self.open:
-                self.open[sig] = key
+            self.entries[key] = e
+            if key not in used:
+                self.open.setdefault(sig, []).append(key)
         self.verdicts: dict[str, str] = {
             sig: verdict
             for sig, verdict in latest.items()
-            if verdict == "reject" or sig in self.open
+            if verdict == "reject" or self.open.get(sig)
         }
 
     @classmethod
@@ -255,11 +260,34 @@ class Decisions:
     def approved(self, sig: str) -> bool:
         return self.verdicts.get(sig) == "approve"
 
+    def available(self, sig: str) -> int:
+        """How many executions of this call the open approvals still cover."""
+        return len(self.open.get(sig) or []) if self.approved(sig) else 0
+
+    def discard(self, sig: str, key: str) -> None:
+        """Forget one approval found used up elsewhere."""
+        keys = self.open.get(sig) or []
+        if key in keys:
+            keys.remove(key)
+        if not keys:
+            self.open.pop(sig, None)
+            if self.verdicts.get(sig) == "approve":
+                self.verdicts.pop(sig, None)
+
+    def claimed_call(self, call_id: str) -> str | None:
+        """The approval claimed for this very call before it ran, if any."""
+        return self.claimed_calls.get(call_id)
+
     def drop(self, sig: str) -> str | None:
-        """Forget an approval this process just used up; its key."""
-        key = self.open.pop(sig, None)
-        if self.verdicts.get(sig) == "approve":
-            self.verdicts.pop(sig, None)
+        """Forget the next open approval of this call; its key."""
+        keys = self.open.get(sig)
+        if not keys:
+            return None
+        key = keys.pop(0)
+        if not keys:
+            self.open.pop(sig, None)
+            if self.verdicts.get(sig) == "approve":
+                self.verdicts.pop(sig, None)
         return key
 
 
@@ -279,39 +307,63 @@ async def live_decisions(
         return decisions
     from oc8.agent.outward import already_delivered
 
-    for sig, key in list(decisions.open.items()):
-        if await already_delivered(
-            db, tenant_id=tenant_id, task_id=task_id, target=APPROVAL_MARKER + key
-        ):
-            decisions.drop(sig)
+    for sig, keys in list(decisions.open.items()):
+        for key in list(keys):
+            if await already_delivered(
+                db, tenant_id=tenant_id, task_id=task_id, target=APPROVAL_MARKER + key
+            ):
+                decisions.discard(sig, key)
     return decisions
 
 
-async def consume_approval(
+async def claim_approval(
     db: AsyncSession,
     run: AgentRun | None,
     decisions: Decisions,
     sig: str,
     *,
+    call_id: str | None = None,
     ctx: dict[str, Any] | None = None,
-) -> None:
-    """Use up the approval a call ran on: in the run context and as a delivery
-    marker, in the caller's transaction -- the one that records the call's own
-    delivery. Nothing when the call ran without an approval. `ctx`: a copy
-    of the context the caller writes back whole, kept in step."""
-    if not decisions.approved(sig):
-        return
-    key = decisions.drop(sig)
-    if key is None or run is None:
-        return
-    entry = {"sig": sig, "key": key}
-    await append_consumed_approval(db, run, entry)
-    if ctx is not None:
-        # A caller holding its own copy of the context, to write back whole.
-        ctx["consumed_tool_approvals"] = [*(ctx.get("consumed_tool_approvals") or []), entry]
-    if run.task_id is not None:
-        from oc8.agent.outward import remember_delivery
+) -> str | None:
+    """Claim one unused approval of this call BEFORE the call runs; its key,
+    or None when none is left -- then the call is asked again (or refused
+    when the run is unattended), never run on a used approval.
 
-        await remember_delivery(
+    The claim is the approval's delivery marker, inserted
+    `ON CONFLICT DO NOTHING RETURNING` (`claim_delivery`): of two requests
+    racing on one approval exactly one wins, the other waits for its
+    transaction and moves on to the next open approval, if any. The use is
+    also appended to the run context (`consumed_tool_approvals`, with the
+    `call_id` it was claimed for). A claim is kept when the call then fails:
+    the far system may have acted first.
+
+    At-least-once at the edge: the claim commits with the caller's
+    transaction. A crash after the call reached the far system but before
+    that commit loses the claim, and the redelivered request runs the call
+    again -- the window every send-then-record system has; the outward and
+    replay records narrow it, nothing here closes it.
+
+    `ctx`: a copy of the context the caller writes back whole, kept in step.
+    Without a run (an in-process call with no row) the approval is only
+    forgotten in this process."""
+    from oc8.agent.outward import claim_delivery
+
+    while decisions.approved(sig):
+        key = decisions.drop(sig)
+        if key is None:
+            return None
+        if run is None:
+            return key
+        if run.task_id is not None and not await claim_delivery(
             db, tenant_id=run.tenant_id, task_id=run.task_id, target=APPROVAL_MARKER + key
-        )
+        ):
+            continue  # another request used this one; try the next
+        entry: dict[str, Any] = {"sig": sig, "key": key}
+        if call_id is not None:
+            entry["call_id"] = call_id
+            decisions.claimed_calls[call_id] = key
+        await append_consumed_approval(db, run, entry)
+        if ctx is not None:
+            ctx["consumed_tool_approvals"] = [*(ctx.get("consumed_tool_approvals") or []), entry]
+        return key
+    return None

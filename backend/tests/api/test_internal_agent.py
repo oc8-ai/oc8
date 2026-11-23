@@ -441,6 +441,7 @@ async def _post_tool(
     tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID,
     name: str, arguments: dict[str, Any],
     local_result: dict[str, Any] | None = None,
+    call_id: str = "c1",
 ) -> tuple[int, dict[str, Any]]:
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
@@ -448,7 +449,7 @@ async def _post_tool(
     from oc8.main import create_app
 
     token = _agent_token(tenant, agent_id, run_id)
-    body: dict[str, Any] = {"id": "c1", "name": name, "arguments": arguments}
+    body: dict[str, Any] = {"id": call_id, "name": name, "arguments": arguments}
     if local_result is not None:
         body["local_result"] = local_result
     app = create_app()
@@ -2503,6 +2504,7 @@ async def _step_with_scripted_turns(
         if definition is not None:
             lead.definition = definition
         lead_id, run_id = lead.id, run.id
+    _LAST_STEP["world"] = (tenant, lead_id, run_id)
 
     script = list(turns)
     completions = {"n": 0}
@@ -2536,6 +2538,8 @@ async def _step_with_scripted_turns(
 
 
 _LS = ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})
+#: The world `_step_with_scripted_turns` built, for a test that posts on.
+_LAST_STEP: dict[str, Any] = {}
 
 
 @pytest.mark.asyncio
@@ -2614,6 +2618,56 @@ async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
     )
     assert body["local_allowed"] == expected
     assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("approvals", "allowed"), [(1, ["c1"]), (2, ["c1", "c2"])])
+async def test_two_identical_local_calls_on_one_approval_let_only_one_run(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, approvals: int, allowed: list[str]
+) -> None:
+    """Review of round 6: the pre-verdict let a tool run whenever ITS call
+    had an approval, so two identical run_shell calls both ran on one. Each
+    call now claims an approval before the shell runs it."""
+    from oc8.runtime.approval_resume import call_signature
+
+    sig = call_signature("run_shell", {"command": "ls"})
+    context: dict[str, Any] = {
+        "resolved_tool_approvals": [
+            {
+                "sig": sig,
+                "tool": "run_shell",
+                "arguments": {"command": "ls"},
+                "decision": "approve",
+                "approval_id": f"a{n}",
+            }
+            for n in range(1, approvals + 1)
+        ]
+    }
+    twice = [_LS, ToolCall(id="c2", name="run_shell", arguments={"command": "ls"})]
+    body, _n, ctx = await _step_with_scripted_turns(
+        app_session, monkeypatch, [twice], context=context,
+        definition={"autonomy": "conservative"},
+    )
+    assert body["local_allowed_calls"] == allowed
+    # An older shell matches on the name: it is listed only when every call
+    # of it may run.
+    assert body["local_allowed"] == (["run_shell"] if approvals == 2 else [])
+    assert [c.get("call_id") for c in ctx["consumed_tool_approvals"]] == allowed
+
+    # /tool: the call the shell ran on its claimed approval is approved;
+    # a second one posted with a result anyway is not.
+    tenant, agent_id, run_id = _LAST_STEP["world"]
+    ran = {"stdout": "x", "stderr": "", "exit_code": 0}
+    code, first = await _post_tool(
+        tenant, agent_id, run_id, "run_shell", {"command": "ls"}, local_result=ran
+    )
+    assert (code, first["status"]) == (200, "ok"), first
+    if approvals == 1:
+        _code, second = await _post_tool(
+            tenant, agent_id, run_id, "run_shell", {"command": "ls"},
+            local_result=ran, call_id="c2",
+        )
+        assert second["status"] == "waiting_for_approval", second
 
 
 # --------------------------------------------------- parallel reads under caps

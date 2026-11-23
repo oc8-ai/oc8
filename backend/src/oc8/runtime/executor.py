@@ -1158,7 +1158,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
             if approvals:
                 # Each approval covers one run of its call: what earlier legs
-                # used up is no longer a decision (`consume_approval`).
+                # used up is no longer a decision (`claim_approval`).
                 pre_decided = await live_decisions(
                     db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
                 )

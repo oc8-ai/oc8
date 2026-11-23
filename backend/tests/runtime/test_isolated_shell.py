@@ -694,3 +694,27 @@ def test_main_runs_nothing_locally_that_the_control_plane_did_not_allow(
     posted = [call for body in tools_bodies for call in body["calls"]]  # type: ignore[attr-defined]
     assert [c["name"] for c in posted] == ["run_shell", "run_program"]
     assert all("local_result" not in c for c in posted)
+
+
+def test_main_runs_only_the_calls_the_control_plane_allowed_by_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review of round 6: one approval for two identical calls lets one of
+    them run. Where /step names calls by id, the shell follows the ids --
+    not the tool names, which can only allow both or neither."""
+    executed: list[str] = []
+
+    def _record(source: str, **_: object) -> dict[str, object]:
+        executed.append(source)
+        return {}
+
+    monkeypatch.setattr("oc8.isolated_shell._run_shell_locally", _record)
+    monkeypatch.setattr("oc8.isolated_shell._run_program_locally", _record)
+    tools_bodies: list[dict[str, object]] = []
+    step_extra = {"local_allowed": ["run_shell", "run_program"], "local_allowed_calls": ["call_1"]}
+
+    assert _run_main(monkeypatch, _shell_step_handler(step_extra, tools_bodies)) == 0
+
+    assert executed == ["echo hi"]
+    posted = [call for body in tools_bodies for call in body["calls"]]  # type: ignore[attr-defined]
+    assert ["local_result" in c for c in posted] == [True, False]

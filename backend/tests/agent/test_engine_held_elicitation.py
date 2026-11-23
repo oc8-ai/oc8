@@ -407,8 +407,10 @@ async def test_a_proven_approval_waives_read_before_write_on_the_held_rerun(
     )
     assert _Server.ran == [("x", "write_a", {**HELD, "id": 115})]
     assert result.status == "done"
-    assert ctx["waived_read_before_write"] == [
-        "things\n" + call_sig(ToolCall(id="x", name="write_a", arguments={**HELD, "id": 115}))
+    # Used up by the run it covered (claimed before it ran), so a later leg
+    # cannot spend it again.
+    assert [c["sig"] for c in ctx["consumed_tool_approvals"]] == [
+        call_sig(ToolCall(id="x", name="write_a", arguments={**HELD, "id": 115}))
     ]
 
 
@@ -426,6 +428,7 @@ async def test_an_unproven_approval_does_not_waive_read_before_write_on_the_held
     )
     assert _Server.ran == []
     assert "waived_read_before_write" not in ctx
+    assert not ctx.get("consumed_tool_approvals")
 
 
 async def test_an_answered_call_over_the_usage_limit_is_refused(

@@ -227,6 +227,10 @@ def main() -> int:
                 # DENY would come too late. Absent (an older backend) means
                 # none: fail closed.
                 local_allowed = set(step.get("local_allowed") or ())
+                # Per call, where the backend sends it: one approval of two
+                # identical calls lets exactly one of them run.
+                allowed_calls = step.get("local_allowed_calls")
+                local_allowed_ids = set(allowed_calls) if isinstance(allowed_calls, list) else None
                 # Code-mode SDK: write once from /step's sdk_py when the file
                 # is not already on disk. Programs import oc8_tools from cwd.
                 sdk_py = step.get("sdk_py") or ""
@@ -301,7 +305,11 @@ def main() -> int:
                             "name": name,
                             "arguments": tc.get("arguments", {}),
                         }
-                        if name not in local_allowed:
+                        if (
+                            name not in local_allowed
+                            if local_allowed_ids is None
+                            else tc["id"] not in local_allowed_ids
+                        ):
                             # Posted without a result: the control plane answers
                             # "was not executed locally" (or the mode's refusal),
                             # so the model hears why instead of nothing.

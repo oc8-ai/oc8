@@ -214,10 +214,9 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
-from oc8.runtime.approval_resume import Decisions, consume_approval
+from oc8.runtime.approval_resume import Decisions, claim_approval
 from oc8.runtime.run_context import (
     append_tool_call,
-    append_waived_read_before_write,
     merge_context,
 )
 from oc8.runtime.step_record import call_state_for, step_timing_dto
@@ -590,7 +589,7 @@ async def run_agent(
     originating_operator: str | None = None,
     task_images_raw: list[dict[str, str]] | None = None,
 ) -> RunResult:
-    # Each approval covers one run of its call (`consume_approval`).
+    # Each approval covers one run of its call, claimed before it runs (`claim_approval`).
     decided = Decisions.of(pre_decided)
 
     async def _run() -> RunResult:
@@ -729,29 +728,43 @@ async def run_agent(
         # Writes a person approved that had PASSED the read-before-write gate
         # before they were parked (the raiser marks the approval, see
         # resolve_tool_approval). A resumed leg starts with a fresh ledger, so
-        # only these are waived, once each; an approval without the mark never
-        # is -- it may have been raised before that gate ever ran.
-        async def _consume_waiver(connection: str | None, sig: str) -> bool:
-            """Use up one approval's proof, durably: the count of proofs for
-            this (connection, call) minus those already used in ANY leg of the
-            run (`waived_read_before_write`, appended atomically in the
-            dispatching transaction). False when none is left."""
-            if run_row is None:
+        # such an approval waives the gate for the one call it covers; an
+        # approval without the mark never does -- it may have been raised
+        # before that gate ever ran. Only an UNUSED approval counts: one a
+        # call already claimed (`claim_approval`) proves nothing any more.
+        def _open_proof(connection: str | None, sig: str, call_id: str) -> bool:
+            """Whether an approval this call may run on carries the proof:
+            the one already claimed for this very call, or an unused one."""
+            # The run's own record of its approvals, as it stands now: what
+            # carries the proof, and what a claim has used up.
+            unused = Decisions(run_row.context) if run_row is not None else decided
+            if unused is None:
                 return False
-            ctx = run_row.context or {}
-            key = f"{connection or 'oc8'}\n{sig}"
-            proofs = sum(
-                1
-                for e in ctx.get("resolved_tool_approvals") or []
-                if isinstance(e, dict)
-                and e.get("decision") == "approve"
-                and e.get("read_before_write_ok") is True
-                and f"{e.get('gate_connection') or 'oc8'}\n{e.get('sig')}" == key
+            mine = claimed.get(call_id)
+            # A decision handed in as a plain map has no approval ids; its
+            # claim then names no entry here, and the run's open ones count.
+            keys = [mine] if mine in unused.entries else unused.open.get(sig) or []
+            return any(
+                (entry := unused.entries.get(key)) is not None
+                and entry.get("read_before_write_ok") is True
+                and (entry.get("gate_connection") or "oc8") == (connection or "oc8")
+                for key in keys
             )
-            used = sum(1 for k in ctx.get("waived_read_before_write") or [] if k == key)
-            if proofs <= used:
+
+        #: tool call id -> the approval claimed for it, before it ran.
+        claimed: dict[str, str] = {}
+
+        async def _claim(call_id: str, sig: str) -> bool:
+            """Claim one unused approval of this call before it runs (once per
+            call id); False when none is left -- the call is asked again."""
+            if call_id in claimed:
+                return True
+            if decided is None or not decided.approved(sig):
                 return False
-            await append_waived_read_before_write(db, run_row, key)
+            key = await claim_approval(db, run_row, decided, sig, call_id=call_id)
+            if key is None:
+                return False
+            claimed[call_id] = key
             return True
 
         async def _direct_right_check(
@@ -1345,21 +1358,22 @@ async def run_agent(
                     advertised=advertised,
                     direct=call_key is not None and call_key in direct_view.granted,
                 )
-                if (
+                waived = (
                     gate.effect == "deny"
                     and gate.rule == "read_before_write"
                     and verdict == "approve"
-                    and await _consume_waiver(call_key, _call_sig(held))
-                ):
-                    pass
-                elif gate.effect == "deny":
+                    and _open_proof(call_key, _call_sig(held), "held")
+                )
+                if gate.effect == "deny" and not waived:
                     return "refuse", gate.reason or "denied", decision, False
                 if gate.effect == "ask" and verdict != "approve":
                     return "park", gate.preview or "", decision, True
-                if gate.effect == "ask":
-                    # The approved write runs: its proof is spent, whether or
-                    # not read-before-write needed waiving this leg.
-                    await _consume_waiver(call_key, _call_sig(held))
+                if (
+                    decision.effect is Effect.REQUIRE_APPROVAL or gate.effect == "ask" or waived
+                ) and not await _claim("held", _call_sig(held)):
+                    # Claimed before it runs; none left -- a racing request
+                    # used it -- so a person is asked again.
+                    return "park", decision.reason or gate.preview or "", decision, True
                 return "run", "", decision, False
 
             steps = 0
@@ -1640,15 +1654,6 @@ async def run_agent(
                             if held_hold is not None:
                                 # Reached the tool: counts, even if it failed.
                                 await held_hold.settle(succeeded=held_reached)
-                            if decided is not None:
-                                # Ran, so the approval it ran on is used up.
-                                await consume_approval(
-                                    db,
-                                    parked,
-                                    decided,
-                                    _call_sig(held_tc),
-                                    ctx=parked_ctx,
-                                )
                             if held_direct and run_row is not None:
                                 # Ran through the grant: audited and counted
                                 # like the step loop's direct calls.
@@ -2437,10 +2442,8 @@ async def run_agent(
                         stripped, justification = strip_justification(_pre_tc.arguments)
                         _pre_tc.arguments = stripped
                         call_justifications[_pre_tc.id] = justification
-                        if pre_decision.effect is Effect.REQUIRE_APPROVAL and decided:
-                            verdict = decided.get(_call_sig(_pre_tc))
-                            if verdict == "approve":
-                                pre_decision = Decision(Effect.ALLOW, "operator approved")
+                        # An approved call is never prefetched: its approval
+                        # is claimed before it runs, in the step loop below.
                         if pre_decision.effect is not Effect.ALLOW:
                             break
                         if (
@@ -2640,7 +2643,8 @@ async def run_agent(
                     # the model sees and moves past.
                     if decision.effect is Effect.REQUIRE_APPROVAL and decided:
                         verdict = decided.get(_call_sig(tc))
-                        if verdict == "approve":
+                        if verdict == "approve" and await _claim(tc.id, _call_sig(tc)):
+                            # Claimed before it runs: one approval, one call.
                             decision = Decision(Effect.ALLOW, "operator approved")
                         elif verdict == "reject":
                             decision = Decision(Effect.DENY, "operator rejected this action")
@@ -2765,12 +2769,9 @@ async def run_agent(
                             )
                             if gate_verdict.effect == "ask":
                                 verdict = decided.get(_call_sig(tc)) if decided else None
-                                if verdict == "approve":
-                                    # The approved write runs: spend its proof
-                                    # (if it carries one) even though this leg
-                                    # needed no waiver, so a later leg cannot
-                                    # spend it on a second execution.
-                                    await _consume_waiver(call_key, _call_sig(tc))
+                                if tc.id in claimed or (
+                                    verdict == "approve" and await _claim(tc.id, _call_sig(tc))
+                                ):
                                     decision = Decision(Effect.ALLOW, "operator approved")
                                 elif verdict == "reject":
                                     decision = Decision(
@@ -2784,8 +2785,9 @@ async def run_agent(
                                 gate_verdict.effect == "deny"
                                 and gate_verdict.rule == "read_before_write"
                                 and decided
-                                and decided.get(_call_sig(tc)) == "approve"
-                                and await _consume_waiver(call_key, _call_sig(tc))
+                                and (tc.id in claimed or decided.get(_call_sig(tc)) == "approve")
+                                and _open_proof(call_key, _call_sig(tc), tc.id)
+                                and await _claim(tc.id, _call_sig(tc))
                             ):
                                 # A resumed leg starts with a fresh ledger, but
                                 # a held write passed this very gate (the read
@@ -3349,7 +3351,7 @@ async def run_agent(
                                 ),
                                 # A person approved this very call: their
                                 # decision, not a repeat to refuse (E2E N1).
-                                approved=(decided is not None and decided.approved(_call_sig(tc))),
+                                approved=tc.id in claimed,
                             )
                         ).refusal is not None:
                             # Before the call, not after: the point is that the
@@ -3504,10 +3506,6 @@ async def run_agent(
                                     target=outward.target,
                                     output=output,
                                 )
-                                if decided is not None:
-                                    # Used up with the delivery: one approval,
-                                    # one call -- a repeat is asked again.
-                                    await consume_approval(db, run_row, decided, _call_sig(tc))
                                 await record_for(
                                     db,
                                     tenant_id=tenant_id,

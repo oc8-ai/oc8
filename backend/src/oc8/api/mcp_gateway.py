@@ -111,7 +111,7 @@ from oc8.realtime.emit import note_focus, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import consume_approval, live_decisions
+from oc8.runtime.approval_resume import claim_approval, live_decisions
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
 from oc8.skills.runtime import (
@@ -1082,8 +1082,15 @@ async def _call_tool(
     if decision.effect is Effect.REQUIRE_APPROVAL:
         verdict = decisions.get(_call_sig(tc))
         if verdict == "approve":
-            approved_call = True
-            decision = Decision(Effect.ALLOW, "operator approved")
+            # Claimed BEFORE the call, and committed at once: of two identical
+            # requests racing on one approval exactly one wins it; the other
+            # is asked again. Kept when the call then fails -- the far system
+            # may have acted first (`claim_approval`).
+            if await claim_approval(db, run, decisions, _call_sig(tc)) is not None:
+                await db.commit()
+                await _rebind_tenant(db, run.tenant_id)
+                approved_call = True
+                decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
     if (
@@ -1393,10 +1400,6 @@ async def _call_tool(
         # the far system may have acted first. Only a session that never
         # opened gives the count back.
         await usage_hold.settle(succeeded=not never_reached_the_tool(exc))
-        if approved_call:
-            # Ran, so used up: the far system may have acted first.
-            await consume_approval(db, run, decisions, _call_sig(tc))
-            await db.commit()
         return _tool_result(f"ERROR: {exc}", is_error=True)
     # Reached the tool: counts, even if the tool reported an error.
     await usage_hold.settle(succeeded=True)
@@ -1421,9 +1424,6 @@ async def _call_tool(
 
     if target is not None and run.task_id is not None:
         await remember_delivery(db, tenant_id=run.tenant_id, task_id=run.task_id, target=target)
-    if approved_call:
-        # Used up with the delivery, in its transaction: one approval, one call.
-        await consume_approval(db, run, decisions, _call_sig(tc))
     if writes and run.task_id is not None:
         # Only a SUCCESSFUL side effect is worth replaying; recording a failure
         # would answer a legitimate retry with the old error forever.

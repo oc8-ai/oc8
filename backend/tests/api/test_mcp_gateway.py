@@ -1130,6 +1130,7 @@ async def _a_message_already_sent(
     *,
     amount: int,
     approved: bool,
+    call: bool = True,
 ) -> dict[str, Any]:
     """E2E N1: a `send_email` to bob was already delivered in this task, and
     the model sends bob another one -- `amount` decides whether it needs an
@@ -1176,6 +1177,8 @@ async def _a_message_already_sent(
 
     _LAST_CALL["world"] = (tenant, agent_id, run_id)
     _LAST_CALL["arguments"] = arguments
+    if not call:
+        return {}
     code, body = await _rpc(
         _token(tenant, agent_id, run_id),
         "tools/call",
@@ -1242,6 +1245,28 @@ async def test_one_approval_covers_exactly_one_delivery(
     again = await _rpc_again(app_session)
     assert "approval" in again["content"][0]["text"].lower()
     assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+
+
+async def test_two_concurrent_identical_calls_on_one_approval_run_once(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of round 6: both requests read the approval as unused before
+    either had run, and both ran. The approval is claimed before the call;
+    the loser is asked again."""
+    import asyncio
+
+    await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True, call=False)
+    real_call = _FakeMcp.call
+
+    async def slow_call(self: _FakeMcp, name: str, arguments: dict[str, Any]) -> str:
+        await asyncio.sleep(0.3)  # the window both requests used to fit into
+        return await real_call(self, name, arguments)
+
+    monkeypatch.setattr(_FakeMcp, "call", slow_call)
+    results = await asyncio.gather(_rpc_again(app_session), _rpc_again(app_session))
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+    texts = sorted(r["content"][0]["text"].lower() for r in results)
+    assert sum("approval" in t for t in texts) == 1, texts
 
 
 async def test_a_redelivered_call_does_not_send_twice(

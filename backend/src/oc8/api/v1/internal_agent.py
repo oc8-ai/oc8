@@ -168,7 +168,7 @@ from oc8.records.links import (
     related_links,
 )
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import Decisions, consume_approval, live_decisions
+from oc8.runtime.approval_resume import Decisions, claim_approval, live_decisions
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call, write_back_context
@@ -441,7 +441,9 @@ def _local_refusal(tools: Sequence[NeutralTool], mode: ChatMode | None, name: st
     return None
 
 
-def _local_allowed(
+async def _local_allowed(
+    db: DbSession,
+    run: m.AgentRun,
     tools: Sequence[NeutralTool],
     mode: ChatMode | None,
     *,
@@ -450,9 +452,10 @@ def _local_allowed(
     conn: m.McpConnection | None,
     pinned: Mapping[str, Any],
     active_skills: Sequence[LoadedSkill],
-    ctx: Mapping[str, Any],
-) -> list[str]:
-    """Which local-execution tools the shell may run for this step.
+    ctx: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    """Which local-execution calls the shell may run for this step: by tool
+    name (what an older shell matches on) and by call id.
 
     The shell runs them BEFORE /tools decides, so this is /tools' verdict given
     up front, on the very calls the shell is handed:
@@ -460,23 +463,28 @@ def _local_allowed(
     * offered this leg, and not withheld by the run's mode -- the frame has no
       say, neither tool belongs to a connection (see `authorize`);
     * and the B gate (`_b_gate`, the same computation /tools makes) allows
-      every call of that tool in this step -- or asks, and an operator already
-      approved that exact call. A gate that denies, or asks without an
-      approval, keeps the tool out: the shell posts the call unexecuted and
-      /tools refuses it or raises the approval before anything runs.
+      the call -- or asks, and an operator approved that exact call. Since
+      the call runs here, its approval is CLAIMED here, before it runs, one
+      approval per call (`claim_approval`, recorded with the call id /tools
+      then recognises): two identical calls on one approval let one run. A
+      gate that denies, or asks without an approval left, keeps the call out:
+      the shell posts it unexecuted and /tools refuses it or raises the
+      approval before anything runs.
 
-    Keyed by tool name, because that is what the shell matches on -- so one
-    call of a tool that may not run keeps every call of it from running.
+    A tool name is listed only when EVERY call of it in the step may run, so
+    an older shell, which matches on names, never runs one that may not.
+    `ctx`: the context this /step writes back whole, kept in step.
     """
-    decided = Decisions(ctx)
-    allowed: list[str] = []
+    decisions = await live_decisions(db, context=ctx, tenant_id=run.tenant_id, task_id=run.task_id)
+    names: list[str] = []
+    ids: list[str] = []
     for name in _LOCAL_TOOLS:
         if _local_refusal(tools, mode, name) is not None:
             continue
         mine = [c for c in calls if c.name == name]
         if not mine:
             continue
-        ok = True
+        every = True
         for c in mine:
             sent = ToolCall(id=c.id, name=c.name, arguments=strip_justification(c.arguments)[0])
             verdict = _b_gate(
@@ -490,13 +498,20 @@ def _local_allowed(
                 schemas=ctx.get("tool_schemas", []),
             )
             if verdict.effect == "allow":
+                ids.append(c.id)
                 continue
-            if verdict.effect == "ask" and decided.get(_call_sig(sent)) == "approve":
+            if (
+                verdict.effect == "ask"
+                and decisions.get(_call_sig(sent)) == "approve"
+                and await claim_approval(db, run, decisions, _call_sig(sent), call_id=c.id, ctx=ctx)
+                is not None
+            ):
+                ids.append(c.id)
                 continue
-            ok = False
-        if ok:
-            allowed.append(name)
-    return allowed
+            every = False
+        if every:
+            names.append(name)
+    return names, ids
 
 
 async def _answer_withheld_local_calls(
@@ -855,8 +870,11 @@ def _held_call_verdict(
     active_skills: Sequence[LoadedSkill],
     stored: Mapping[str, Any] | None = None,
     decisions: Decisions | None = None,
-) -> tuple[str, str]:
-    """What happens to a held connection call now: ("run" | "refuse" | "park", why).
+) -> tuple[str, str, bool]:
+    """What happens to a held connection call now: ("run" | "refuse" | "park",
+    why, whether it runs on an approval). A call that runs on one has it
+    claimed by the caller BEFORE it runs, and parks when none is left -- `why`
+    is then the reason to ask again.
 
     An answered elicitation re-runs the call on a later /step. It runs NOW, so
     it is decided now, as /tools would decide it, on exactly the `arguments`
@@ -897,11 +915,11 @@ def _held_call_verdict(
     )
     verdict = (decisions if decisions is not None else Decisions(ctx)).get(_call_sig(held))
     if decision.effect is Effect.DENY:
-        return "refuse", decision.reason or "denied"
+        return "refuse", decision.reason or "denied", False
     if verdict == "reject":
-        return "refuse", "operator rejected this action"
+        return "refuse", "operator rejected this action", False
     if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
-        return "park", decision.reason or ""
+        return "park", decision.reason or "", False
     gate = _b_gate(
         Harness.from_run_context(dict(ctx)),
         held,
@@ -913,10 +931,12 @@ def _held_call_verdict(
         schemas=ctx.get("tool_schemas", []),
     )
     if gate.effect == "deny":
-        return "refuse", gate.reason or "denied"
+        return "refuse", gate.reason or "denied", False
     if gate.effect == "ask" and verdict != "approve":
-        return "park", gate.preview or ""
-    return "run", ""
+        return "park", gate.preview or "", False
+    if decision.effect is Effect.REQUIRE_APPROVAL or gate.effect == "ask":
+        return "run", decision.reason or gate.preview or "", True
+    return "run", "", False
 
 
 async def _park_held_call(
@@ -1013,12 +1033,13 @@ async def _finish_elicitation(
         (item for item in await _connections(db, run, dept) if item.name == connection_name),
         None,
     )
-    # An approval covers one run of the call it approved (`consume_approval`).
+    # An approval covers one run of the call it approved, claimed before it
+    # runs (`claim_approval`).
     decisions = await live_decisions(
         db, context=dict(ctx), tenant_id=run.tenant_id, task_id=run.task_id
     )
     held_sig = _call_sig(ToolCall(id="held", name=tool, arguments=arguments))
-    effect, why = (
+    effect, why, on_approval = (
         _held_call_verdict(
             agent=agent,
             dept=dept,
@@ -1034,8 +1055,14 @@ async def _finish_elicitation(
             decisions=decisions,
         )
         if conn is not None and tool
-        else ("refuse", "")
+        else ("refuse", "", False)
     )
+    if effect == "run" and on_approval:
+        if await claim_approval(db, run, decisions, held_sig, ctx=ctx) is None:
+            # A racing request used the approval: a person is asked again.
+            effect = "park"
+        else:
+            why = ""
     if conn is not None and tool:
         # Audited like any call: the held re-run is a new one.
         await append_event(
@@ -1190,9 +1217,6 @@ async def _finish_elicitation(
             if held_hold is not None:
                 # Reached the tool: counts, even if it failed.
                 await held_hold.settle(succeeded=held_reached)
-            # Ran, so the approval it ran on is used up; `ctx` is written back
-            # whole, so it learns it too.
-            await consume_approval(db, run, decisions, held_sig, ctx=ctx)
         if not output.startswith("ERROR:"):
             # Linked like any tool result (the replay record above stays raw),
             # so the answered call's records carry oc8_url too.
@@ -1271,6 +1295,10 @@ class StepResult(BaseModel):
     #: not naming the tool means "do not run it"; the shell then posts the call
     #: without a result and gets the "was not executed locally" refusal.
     local_allowed: list[str] = []
+    #: The same go-ahead per call id, for a shell that reads it: a step with
+    #: two identical calls and one approval lets exactly one of them run,
+    #: where the name list above can only allow both or neither.
+    local_allowed_calls: list[str] = []
 
 
 @router.post(
@@ -1985,6 +2013,20 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
 
     harness.store(ctx)
     ctx["transcript"] = transcript
+    # Before the commit: a local call's approval is claimed here, in the
+    # transaction that writes `ctx` back (`_local_allowed`).
+    local_names, local_ids = await _local_allowed(
+        db,
+        run,
+        tools,
+        mode_from_context(ctx),
+        calls=[t for t in result.tool_calls if t.id not in handed],
+        harness=harness,
+        conn=conn,
+        pinned=pinned,
+        active_skills=active_skills,
+        ctx=ctx,
+    )
     run.context = ctx
     await db.commit()
     if consumed_inputs:
@@ -2109,16 +2151,8 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         status_override="failed" if truncated_empty or refused else None,
         parallel_tool_calls=caps.parallel_tool_calls,
         sdk_py=str(ctx.get("oc8_tools_py") or ""),
-        local_allowed=_local_allowed(
-            tools,
-            mode_from_context(ctx),
-            calls=[t for t in result.tool_calls if t.id not in handed],
-            harness=harness,
-            conn=conn,
-            pinned=pinned,
-            active_skills=active_skills,
-            ctx=ctx,
-        ),
+        local_allowed=local_names,
+        local_allowed_calls=local_ids,
     )
 
 
@@ -2517,12 +2551,25 @@ async def _dispatch_one_tool(
         db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
     )
     approved_call = False
+    is_local = tc.name in _LOCAL_TOOLS
+
+    async def _approve() -> bool:
+        """An approval for THIS call, claimed before it runs (one approval,
+        one call). A local tool already ran in the shell, on the approval
+        /step claimed for its call id (`_local_allowed`) -- never on one
+        claimed here, after the fact."""
+        if is_local:
+            return body.local_result is not None and decisions.claimed_call(tc.id) is not None
+        if decisions.get(_call_sig(tc)) != "approve":
+            return False
+        key = await claim_approval(db, run, decisions, _call_sig(tc), call_id=tc.id, ctx=ctx)
+        return key is not None
+
     if decision.effect is Effect.REQUIRE_APPROVAL:
-        verdict = decisions.get(_call_sig(tc))
-        if verdict == "approve":
+        if await _approve():
             approved_call = True
             decision = Decision(Effect.ALLOW, "operator approved")
-        elif verdict == "reject":
+        elif decisions.get(_call_sig(tc)) == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
 
     tool_schema = next(
@@ -2556,11 +2603,10 @@ async def _dispatch_one_tool(
         )
         tier = gate_verdict.tier
         if gate_verdict.effect == "ask":
-            verdict = decisions.get(_call_sig(tc))
-            if verdict == "approve":
+            if approved_call or await _approve():
                 approved_call = True
                 decision = Decision(Effect.ALLOW, "operator approved")
-            elif verdict == "reject":
+            elif decisions.get(_call_sig(tc)) == "reject":
                 decision = Decision(Effect.DENY, "operator rejected this action")
             else:
                 decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
@@ -3135,10 +3181,6 @@ async def _dispatch_one_tool(
                     target=outward.target,
                     output=output,
                 )
-                if approved_call:
-                    # Used up with the delivery: one approval, one call.
-                    # `ctx` is written back whole, so it learns it too.
-                    await consume_approval(db, run, decisions, _call_sig(tc), ctx=ctx)
                 await record_for(
                     db,
                     tenant_id=run.tenant_id,
