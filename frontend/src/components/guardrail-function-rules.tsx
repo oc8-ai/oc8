@@ -1,3 +1,5 @@
+import { fill } from "@/components/connections/texts";
+import { frameConflicts, type FrameConflict } from "@/lib/guardrail-frame";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Check, Info, Maximize2, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
@@ -559,6 +561,7 @@ export function GuardrailFunctionRules({
   onChange,
   presets = [],
   guardrailLibrary = null,
+  ceiling = null,
 }: {
   agentId: string;
   connectionName: string;
@@ -579,6 +582,9 @@ export function GuardrailFunctionRules({
   onChange: (next: GuardrailValue) => void;
   presets?: GuardrailPreset[];
   guardrailLibrary?: GuardrailLibraryEntry[] | null;
+  /** The department frame for this tool: a preset looser than it is flagged
+   *  before it is saved (the server refuses it). */
+  ceiling?: GuardrailValue | null;
 }) {
   const t = useT();
   const { lang } = useLang();
@@ -607,10 +613,55 @@ export function GuardrailFunctionRules({
   const presetEntries = presetEntriesOf(presets, guardrailLibrary, lang);
   const [appliedPresetKey, setAppliedPresetKey] = useState("");
   const appliedPreset = presetEntries.find((entry) => entry.key === appliedPresetKey);
+  const presetConflicts = appliedPreset ? frameConflicts(appliedPreset.policy, ceiling) : [];
 
   // The whole preset at once -- rights, approvals, `only` AND its usage
   // limits -- replacing this tool's draft, as picking it on the department
   // does. Row-level state from before no longer describes the draft.
+  function conflictText(conflict: FrameConflict): string {
+    switch (conflict.kind) {
+      case "read":
+        return t(
+          "It reads, which the department does not allow.",
+          "Sie liest, was die Abteilung nicht erlaubt.",
+        );
+      case "modify":
+        return t(
+          "It changes things, which the department does not allow.",
+          "Sie verändert etwas, was die Abteilung nicht erlaubt.",
+        );
+      case "approval":
+        return fill(
+          t(
+            "It asks no approval for {names}, which the department requires.",
+            "Sie fragt bei {names} nicht nach Freigabe, die die Abteilung verlangt.",
+          ),
+          { names: conflict.names.join(", ") },
+        );
+      case "threshold":
+        return fill(
+          t(
+            "Its approval threshold is above the department's {amount} €.",
+            "Ihre Freigabeschwelle liegt über den {amount} € der Abteilung.",
+          ),
+          { amount: String(conflict.frame) },
+        );
+      case "only":
+        return conflict.names.length > 0
+          ? fill(
+              t(
+                "It reaches functions the department does not offer: {names}.",
+                "Sie erreicht Funktionen, die die Abteilung nicht anbietet: {names}.",
+              ),
+              { names: conflict.names.join(", ") },
+            )
+          : t(
+              "It reaches all functions, including functions the department does not offer.",
+              "Sie erreicht alle Funktionen, auch solche, die die Abteilung nicht anbietet.",
+            );
+    }
+  }
+
   function applyPreset(key: string) {
     setAppliedPresetKey(key);
     const entry = presetEntries.find((candidate) => candidate.key === key);
@@ -909,6 +960,24 @@ export function GuardrailFunctionRules({
                 "In den Entwurf unten übernommen, mit Limits. Speichere, um sie zu behalten.",
               )}
             </p>
+          )}
+          {presetConflicts.length > 0 && (
+            <div
+              role="alert"
+              className="mt-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs"
+            >
+              <p>
+                {t(
+                  "This preset is looser than the department allows. Saving it will be refused until you change:",
+                  "Diese Vorlage ist lockerer, als die Abteilung erlaubt. Speichern wird abgelehnt, bis du Folgendes änderst:",
+                )}
+              </p>
+              <ul className="mt-1 list-disc pl-4">
+                {presetConflicts.map((conflict) => (
+                  <li key={conflict.kind}>{conflictText(conflict)}</li>
+                ))}
+              </ul>
+            </div>
           )}
         </div>
       )}

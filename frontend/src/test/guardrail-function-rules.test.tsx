@@ -394,6 +394,75 @@ describe("GuardrailFunctionRules", () => {
     );
   });
 
+  it("warns which rules of a preset the department does not allow (review of F4)", () => {
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_get", "mail_send", "mail_delete"]}
+        value={baseValue()}
+        onChange={vi.fn()}
+        ceiling={baseValue({ approvalActions: ["mail_send"], only: ["mail_get", "mail_send"] })}
+        presets={[
+          {
+            key: "everything_unasked",
+            label: "Everything, unasked",
+            labelTranslations: {},
+            summary: "No approvals.",
+            summaryTranslations: {},
+            recommended: false,
+            read: true,
+            modify: true,
+            approvalActions: [],
+            approvalEur: null,
+            only: [],
+            limits: [],
+          },
+        ]}
+      />,
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: /apply a preset/i }), {
+      target: { value: "everything_unasked" },
+    });
+    const warning = screen.getByRole("alert");
+    expect(warning).toHaveTextContent(/looser than the department allows/i);
+    expect(warning).toHaveTextContent(/mail_send/);
+    expect(warning).toHaveTextContent(/functions the department does not offer/i);
+  });
+
+  it("does not warn when the preset stays within the department", () => {
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_get", "mail_send"]}
+        value={baseValue()}
+        onChange={vi.fn()}
+        ceiling={baseValue()}
+        presets={[
+          {
+            key: "send_with_approval",
+            label: "Send with approval",
+            labelTranslations: {},
+            summary: "Every mail waits for approval.",
+            summaryTranslations: {},
+            recommended: true,
+            read: true,
+            modify: true,
+            approvalActions: ["mail_send"],
+            approvalEur: null,
+            only: [],
+            limits: [],
+          },
+        ]}
+      />,
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: /apply a preset/i }), {
+      target: { value: "send_with_approval" },
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("dismisses a suggested row without touching the shared value", () => {
     const onChange = vi.fn();
     render(

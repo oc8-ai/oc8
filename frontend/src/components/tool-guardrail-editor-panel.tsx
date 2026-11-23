@@ -110,6 +110,7 @@ export function ToolGuardrailEditorPanel({
         connection && (
           <GuardrailFunctionRules
             agentId={agentId}
+            ceiling={ceiling}
             connectionName={connection.name}
             toolCatalog={toolCatalog}
             readTools={readTools}
