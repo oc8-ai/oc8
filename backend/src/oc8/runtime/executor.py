@@ -197,7 +197,9 @@ def _chat_channel_sender_of(run: m.AgentRun) -> tuple[str, str] | None:
     return str(channel), str(external_id)
 
 
-def _merge_leg_calls(raw: Any, decided: dict[str, str], leg_calls: list[Any]) -> list[Any]:
+def _merge_leg_calls(
+    raw: Any, decided: dict[str, str], leg_calls: list[Any], *, leg_from: int | None = None
+) -> list[Any]:
     """A run's tool calls after a resumed leg: the earlier legs' calls, then
     this leg's, numbered on from the earlier steps (each leg counts its own
     steps from 1).
@@ -205,15 +207,17 @@ def _merge_leg_calls(raw: Any, decided: dict[str, str], leg_calls: list[Any]) ->
     A call held for a person is settled by its decision: an approved call
     this leg carried out is listed once, as this leg's; one it did not is kept
     as `approved`; a rejected one never ran and stays, `denied`. An entry this
-    leg recorded again (a redelivered leg finds its own partial calls in the
-    context) is listed once.
+    leg recorded again is listed once.
 
-    Those repeats are the END of the stored list -- the first delivery
-    appended them as it went -- and they repeat the START of this leg, step
-    for step. So exactly the longest such tail is dropped, compared by step,
-    call and state and never by timing (a rerun takes its own time). The
-    same call made twice is two entries, and an earlier leg's call that
-    happens to match one of this leg's is not a repeat."""
+    Only an unfinished earlier attempt of THIS leg can have stored such
+    repeats (a runtime that commits as it goes leaves them behind), and only
+    from `leg_from` on: the stored list's length when this leg first began,
+    which the executor marks (`legCallsFrom`). Without that marker nothing is
+    a repeat -- an earlier leg's read and this leg's same read are two reads.
+    Within the marked part, the repeats are the longest tail that repeats
+    the START of this leg, step for step, compared by step, call and state
+    and never by timing (a rerun takes its own time). The same call made
+    twice is two entries."""
     from oc8.runtime.approval_resume import call_signature
 
     def signature(call: dict[str, Any]) -> str:
@@ -229,8 +233,9 @@ def _merge_leg_calls(raw: Any, decided: dict[str, str], leg_calls: list[Any]) ->
 
     leg = list(leg_calls)
     stored = list(raw) if isinstance(raw, list) else []
+    own = len(stored) - leg_from if leg_from is not None and 0 <= leg_from <= len(stored) else 0
     repeated = 0
-    for size in range(min(len(stored), len(leg)), 0, -1):
+    for size in range(min(own, len(leg)), 0, -1):
         tail, head = stored[-size:], leg[:size]
         if all(identity(a) == identity(b) for a, b in zip(tail, head, strict=True)):
             repeated = size
@@ -1160,6 +1165,26 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 approvals or clarifications or run.context.get("resolved_direct_access")
             )
             earlier_calls = run.context.get("toolCalls") if resumed_leg else None
+            # Where this leg's own calls begin in the stored list. Set when
+            # the leg first starts and cleared by its final write, so a mark
+            # found here was left by an attempt of this leg that never
+            # finished: its calls, stored as it went, may come again in this
+            # leg's result (`_merge_leg_calls`).
+            leg_from: int | None = None
+            if resumed_leg:
+                marked = run.context.get("legCallsFrom")
+                if isinstance(marked, int) and not isinstance(marked, bool):
+                    leg_from = marked
+                else:
+                    await merge_context(
+                        db,
+                        run,
+                        {
+                            "legCallsFrom": len(earlier_calls)
+                            if isinstance(earlier_calls, list)
+                            else 0
+                        },
+                    )
             # The resume text tells only the answer that woke this leg. Both
             # lists accumulate over the run, so an unconsumed offer answer is
             # the waker: the run carries on with the request (a held write's
@@ -1387,10 +1412,16 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         {
                             "output": result.output,
                             "toolCalls": (
-                                _merge_leg_calls(earlier_calls, pre_decided, result.tool_calls)
+                                _merge_leg_calls(
+                                    earlier_calls,
+                                    pre_decided,
+                                    result.tool_calls,
+                                    leg_from=leg_from,
+                                )
                                 if resumed_leg
                                 else result.tool_calls
                             ),
+                            **({"legCallsFrom": None} if resumed_leg else {}),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "pending_question": result.output,
@@ -1529,10 +1560,16 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         {
                             "output": result.output,
                             "toolCalls": (
-                                _merge_leg_calls(earlier_calls, pre_decided, result.tool_calls)
+                                _merge_leg_calls(
+                                    earlier_calls,
+                                    pre_decided,
+                                    result.tool_calls,
+                                    leg_from=leg_from,
+                                )
                                 if resumed_leg
                                 else result.tool_calls
                             ),
+                            **({"legCallsFrom": None} if resumed_leg else {}),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "rendered_components": result.rendered_components,
