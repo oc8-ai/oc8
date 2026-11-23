@@ -142,6 +142,8 @@ async def visible_agent(
     tenant_wide: bool,
     agent_id: uuid.UUID,
     include_tenant_assistant: bool = False,
+    member_id: uuid.UUID | None = None,
+    manage_all: bool = False,
 ) -> Agent | None:
     """One agent, or `None` for BOTH "no such row" and "exists outside scope".
 
@@ -164,14 +166,33 @@ async def visible_agent(
     tenant's Assistant. It is a parameter and not a second function
     so the sweep in `tests/agents/test_reads_go_through_the_scoped_repository.py`
     keeps covering the one door that can see it.
+
+    An agent in a `personal` department follows the same allowlist as
+    `departments.repo.visible_department` (S1/S2): it is returned only to a
+    caller seated there (`scope.viewable`, the owner's seat), to the owner
+    (`member_id`), or to a holder of tenant-wide `department:manage`
+    (`manage_all`). Tenant-wide READ alone never reaches it, and both
+    parameters default to "no", so a caller that passes neither fails closed.
     """
-    stmt = select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
+    stmt = (
+        select(Agent, Department.kind, Department.owner_member_id)
+        .join(Department, Department.id == Agent.department_id, isouter=True)
+        .where(Agent.id == agent_id, Agent.deleted_at.is_(None))
+    )
     if not include_tenant_assistant:
         stmt = stmt.where(Agent.is_tenant_assistant.is_(False))
-    row = (await db.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()
-    if row is None:
+    found = (await db.execute(stmt.execution_options(populate_existing=True))).one_or_none()
+    if found is None:
         return None
-    if tenant_wide or row.department_id in scope.viewable:
+    row: Agent = found[0]
+    kind: str | None = found[1]
+    owner_member_id: uuid.UUID | None = found[2]
+    if row.department_id in scope.viewable:
+        return row
+    if kind == DEPARTMENT_KIND_PERSONAL:
+        mine = member_id is not None and owner_member_id == member_id
+        return row if mine or manage_all else None
+    if tenant_wide:
         return row
     return None
 

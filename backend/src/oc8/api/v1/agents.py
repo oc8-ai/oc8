@@ -45,7 +45,7 @@ from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto, agent_ve
 from oc8.api.v1.files import _attachment_dto
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ToolPolicy, effective_tool_policies, tool_policy_source
-from oc8.authz.permissions import AGENT, AGENT_VERSION, VIEW, perm
+from oc8.authz.permissions import AGENT, AGENT_VERSION, DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.runtime.states import TERMINAL
 from oc8.schemas.dto import (
@@ -117,7 +117,14 @@ async def get_agent(
 ) -> AgentDetailDTO:
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     return await _agent_detail_dto(db, agent)
@@ -141,7 +148,14 @@ async def get_agent_tool_usage(
     counted against yet has no row: the browser shows it as 0 used."""
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     usage = await current_usage(db, tenant_id=agent.tenant_id, agent_id=agent.id)
@@ -171,7 +185,14 @@ async def get_agent_instruction_history(
 ) -> AgentInstructionHistoryDTO:
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     limit = max(1, min(limit, _HISTORY_MAX_LIMIT))
@@ -229,7 +250,14 @@ async def list_instruction_files(
     file by id must not get a 403 for merely listing them."""
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     rows = (
@@ -262,7 +290,14 @@ async def _visible_agent_or_404(
     """
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT_VERSION, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     return agent

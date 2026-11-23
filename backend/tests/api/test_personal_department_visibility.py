@@ -238,15 +238,50 @@ async def test_the_tenant_kpi_breakdowns_have_no_personal_rows(
             assert str(absent) not in keys
 
 
-@pytest.mark.xfail(strict=True, reason="A4 content privacy lands in PR 3")
-async def test_an_operator_cannot_read_a_personal_agent_by_id(
+@pytest.mark.parametrize(
+    ("subject", "role", "status"),
+    [
+        ("owner", "member", 200),
+        ("admin", "org_admin", 200),
+        ("manager", "dept_manager", 200),
+        ("operator", "operator", 404),
+        ("auditor", "auditor", 404),
+        ("colleague", "member", 404),
+    ],
+)
+async def test_a_personal_agent_is_readable_by_id_only_like_its_department(
+    app_session: AppSessionFactory, subject: str, role: str, status: int
+) -> None:
+    """S2: `visible_agent(id)` applies S1 to an agent in a personal department.
+    `operator` and `auditor` read every agent tenant-wide, and still get a 404."""
+    t = await _setup(app_session)
+    h = _headers(t.id, subject, role)
+    async with _http() as http:
+        paths = [f"/api/v1/agents/{t.pia}", f"/api/v1/agents/{t.pia}/kpis"]
+        if role != "member":
+            # A `member` seat carries no `agent_version:view`; that gate's 403
+            # comes before any row is read, so only the built-ins reach it.
+            paths.append(f"/api/v1/agents/{t.pia}/versions")
+        for path in paths:
+            r = await http.get(path, headers=h)
+            assert r.status_code == status, (path, r.text)
+
+
+@pytest.mark.xfail(
+    strict=True, raises=AssertionError, reason="A4 content privacy: run_reach lands in PR 3"
+)
+async def test_an_operator_cannot_read_a_personal_agents_run_by_id(
     app_session: AppSessionFactory,
 ) -> None:
-    """The plan's "Known gap": `operator` holds `agent:view` tenant-wide, so
-    `visible_agent(id)` still returns a personal agent to it. PR 3 flips this."""
+    """The plan's "Known gap", narrowed by S2 to run content: `operator` holds
+    `run:view` tenant-wide, so `run_reach(...).every_agent` still reaches a
+    personal agent's run. PR 3 flips this."""
     t = await _setup(app_session)
+    async with app_session(t.id) as db:
+        run = m.AgentRun(tenant_id=t.id, agent_id=t.pia, state="done", context={})
+        db.add(run)
+        await db.flush()
+        run_id = run.id
     async with _http() as http:
-        r = await http.get(
-            f"/api/v1/agents/{t.pia}", headers=_headers(t.id, "operator", "operator")
-        )
+        r = await http.get(f"/api/v1/runs/{run_id}", headers=_headers(t.id, "operator", "operator"))
     assert r.status_code == 404, r.text

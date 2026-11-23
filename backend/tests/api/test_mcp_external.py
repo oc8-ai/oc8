@@ -1200,7 +1200,7 @@ async def _personal_office(
     async with app_session(tenant) as db:
         roles = {
             name: m.Role(tenant_id=tenant, name=name, builtin=True)
-            for name in ("operator", "dept_manager", "org_admin")
+            for name in ("operator", "dept_manager", "org_admin", "auditor")
         }
         db.add_all(roles.values())
         await db.flush()
@@ -1210,6 +1210,7 @@ async def _personal_office(
             ("operator", "operator"),
             ("manager", "dept_manager"),
             ("admin", "org_admin"),
+            ("auditor", "auditor"),
         ):
             member = m.OrgMember(
                 tenant_id=tenant,
@@ -1317,3 +1318,31 @@ async def test_copilot_get_department_follows_s1_for_a_personal_department(
     else:
         assert result["isError"] is True
         assert result["content"][0]["text"] == "department not found"
+
+
+@pytest.mark.parametrize(
+    ("subject", "visible"),
+    [
+        ("owner", True),
+        ("admin", True),
+        ("manager", True),
+        ("operator", False),
+        ("auditor", False),
+    ],
+)
+async def test_copilot_get_agent_follows_s2_for_a_personal_agent(
+    app_session: AppSessionFactory, subject: str, visible: bool
+) -> None:
+    tokens, ids = await _personal_office(app_session)
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            result = await _call_tool(
+                c, tokens[subject], "copilot_get_agent", {"agentId": ids["pia"]}
+            )
+    if visible:
+        assert result["isError"] is False, result
+        assert json.loads(result["content"][0]["text"])["id"] == ids["pia"]
+    else:
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == "agent not found"

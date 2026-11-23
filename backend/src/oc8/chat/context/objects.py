@@ -126,6 +126,8 @@ class AgentResolver(_Summarized):
             scope=viewer.scope,
             tenant_wide=tenant_wide_read(viewer.authority, perm(AGENT, VIEW)),
             agent_id=obj.id,
+            member_id=viewer.member.id,
+            manage_all=tenant_wide_read(viewer.authority, perm(DEPARTMENT, MANAGE)),
         )
         if row is None or row.tenant_id != viewer.member.tenant_id:
             return False

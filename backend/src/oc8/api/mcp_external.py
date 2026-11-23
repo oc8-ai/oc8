@@ -485,10 +485,17 @@ async def _call_tool(
         agent_id = _parse_uuid(arguments.get("agentId"))
         if agent_id is None:
             return _tool_result("agentId is required", is_error=True)
-        scope, tenant_wide, _member_id, _manage_all = await _reach(
+        scope, tenant_wide, member_id, manage_all = await _reach(
             request, db, principal, perm(AGENT, VIEW)
         )
-        agent = await visible_agent(db, scope=scope, tenant_wide=tenant_wide, agent_id=agent_id)
+        agent = await visible_agent(
+            db,
+            scope=scope,
+            tenant_wide=tenant_wide,
+            agent_id=agent_id,
+            member_id=member_id,
+            manage_all=manage_all,
+        )
         if agent is None:
             return _tool_result("agent not found", is_error=True)
         payload = agent_to_dto(agent).model_dump(mode="json", by_alias=True)

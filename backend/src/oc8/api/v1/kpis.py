@@ -242,7 +242,14 @@ async def agent_kpis(
     parsed_to = _parse_bound(date_to, field="dateTo", end_of_day=True)
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     result = await compute_kpis(
