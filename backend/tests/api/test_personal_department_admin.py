@@ -571,3 +571,75 @@ async def test_defaults_reader_ignores_a_stored_soft_above_hard(
     async with app_session(w.tenant) as db:
         defaults = await personal_defaults(db, tenant_id=w.tenant)
     assert defaults.soft_limit_tokens is None and defaults.hard_limit_tokens is None
+
+
+async def test_follow_default_on_a_department_whose_owner_left_is_a_404(
+    app_session: AppSessionFactory,
+) -> None:
+    """The re-sync scope (`_following_departments`) skips an owner who has left;
+    follow-default must agree rather than re-apply to such a department."""
+    w = await _world(app_session)
+    before = await _dept(app_session, w, w.orphaned)
+    async with _http() as c:
+        r = await c.post(
+            f"/api/v1/personal-departments/{w.orphaned}/follow-default",
+            headers=_headers(w.tenant),
+        )
+    assert r.status_code == 404, r.text
+    assert (await _dept(app_session, w, w.orphaned)).frame == before.frame
+
+
+async def test_the_owner_name_never_falls_back_to_the_idp_subject(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        owner = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.display_name == "Ada"))
+        ).scalar_one()
+        owner.display_name = ""
+        subject = owner.subject
+    async with _http() as c:
+        r = await c.get("/api/v1/personal-departments", headers=_headers(w.tenant))
+    assert r.status_code == 200, r.text
+    row = next(x for x in r.json() if x["id"] == str(w.following))
+    assert row["ownerName"] == ""
+    assert subject not in r.text
+
+
+async def test_resync_publishes_neither_a_pending_approval_nor_a_dirty_agent(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        pending = m.Agent(
+            tenant_id=w.tenant,
+            department_id=w.following,
+            name="Pending",
+            status="pending_approval",
+            narrowing={"tools": {"x": {"enabled": True}, "y": {"enabled": False}}},
+        )
+        dirty = m.Agent(
+            tenant_id=w.tenant,
+            department_id=w.following,
+            name="Dirty",
+            narrowing={"tools": {"x": {"enabled": True}, "y": {"enabled": False}}},
+        )
+        db.add_all([pending, dirty])
+        await db.flush()
+        for agent in (pending, dirty):
+            await publish_version(db, agent, note="v1")
+        dirty.mission = "an unpublished edit"  # a pending draft
+        pending_id, dirty_id = pending.id, dirty.id
+    async with _http() as c:
+        r = await c.put(
+            "/api/v1/personal-departments/default-frame",
+            json={"tools": {"x": {"enabled": False}, "y": {"enabled": True}}},
+            headers=_headers(w.tenant),
+        )
+        assert r.status_code == 200, r.text
+    assert await _versions(app_session, w, pending_id) == 1
+    assert await _versions(app_session, w, dirty_id) == 1
+    # The cascade still reached their working copies.
+    assert (await _agent(app_session, w, dirty_id)).narrowing["tools"]["x"]["enabled"] is False
+    assert (await _agent(app_session, w, pending_id)).narrowing["tools"]["x"]["enabled"] is False

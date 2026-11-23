@@ -347,7 +347,7 @@ async def personal_department_summaries(
         .subquery()
     )
     stmt = (
-        select(m.Department, m.OrgMember.display_name, m.OrgMember.subject, agents.c.n)
+        select(m.Department, m.OrgMember.display_name, agents.c.n)
         .outerjoin(
             m.OrgMember,
             (m.OrgMember.id == m.Department.owner_member_id)
@@ -364,13 +364,13 @@ async def personal_department_summaries(
     if department_id is not None:
         stmt = stmt.where(m.Department.id == department_id)
     out: list[PersonalDepartmentSummary] = []
-    for dept, display_name, subject, n in (await db.execute(stmt)).all():
+    for dept, display_name, n in (await db.execute(stmt)).all():
         assert dept.owner_member_id is not None  # ck: personal <=> owner
         out.append(
             PersonalDepartmentSummary(
                 id=dept.id,
                 owner_member_id=dept.owner_member_id,
-                owner_name=display_name or subject or "",
+                owner_name=display_name or "",
                 agent_count=int(n or 0),
                 follows_default_frame=dept.frame_overridden_at is None,
                 follows_default_budget=dept.budget_overridden_at is None,
@@ -522,14 +522,22 @@ async def follow_default(
 ) -> m.Department | None:
     """Clear both override stamps of a live personal department and re-apply
     the tenant's current default frame and budget to it. `None` when no live
-    personal department has this id. Flushes only."""
+    personal department has this id, or its owner has left (the scope of the
+    re-syncs, `_following_departments`). Flushes only."""
     dept = (
         await db.execute(
-            select(m.Department).where(
+            select(m.Department)
+            .join(
+                m.OrgMember,
+                (m.OrgMember.id == m.Department.owner_member_id)
+                & (m.OrgMember.tenant_id == m.Department.tenant_id),
+            )
+            .where(
                 m.Department.tenant_id == tenant_id,
                 m.Department.id == department_id,
                 m.Department.kind == DEPARTMENT_KIND_PERSONAL,
                 m.Department.deleted_at.is_(None),
+                m.OrgMember.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()

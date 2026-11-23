@@ -132,7 +132,13 @@ async def cascade_department_tools_change(
             agent for agent in agents if agent.id in clipped_ids and agent not in touched
         ]
     # Read BEFORE the write below, which would make every one of them dirty.
-    publishable = {agent.id for agent in touched if not (await draft_status(db, agent)).dirty}
+    # An agent still awaiting its hire approval is not live: its change joins
+    # the working copy like a draft, and approval is what makes it run.
+    publishable = {
+        agent.id
+        for agent in touched
+        if agent.status != "pending_approval" and not (await draft_status(db, agent)).dirty
+    }
     for key in changed_keys:
         new_policy = dict(new_tools.get(key, {}))
         eur = new_policy.get("approval_eur")
