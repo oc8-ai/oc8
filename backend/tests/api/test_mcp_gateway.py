@@ -1269,6 +1269,42 @@ async def test_two_concurrent_identical_calls_on_one_approval_run_once(
     assert sum("approval" in t for t in texts) == 1, texts
 
 
+async def test_an_approved_call_refused_before_dispatch_keeps_its_approval(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of round 7: the approval was claimed at decision time, so a
+    call then refused before it ran -- here its account needs connecting --
+    spent the person's "yes" on nothing. It is claimed just before dispatch;
+    the retry, once connected, runs on it."""
+    from oc8.api import mcp_gateway as gateway
+    from oc8.connections.access import ConnectionRequired
+
+    class _NeedsLogin(ConnectionRequired):
+        def __init__(self) -> None:
+            Exception.__init__(self, "connection_required: connect the mailbox first")
+
+    await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True, call=False)
+    real_env = gateway._env
+
+    async def needs_login(*_a: Any, **_k: Any) -> Any:
+        raise _NeedsLogin()
+
+    monkeypatch.setattr(gateway, "_env", needs_login)
+    refused = await _rpc_again(app_session)
+    assert refused["isError"] is True
+    assert "connection_required" in refused["content"][0]["text"]
+    tenant, _agent, run_id = _LAST_CALL["world"]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert not run.context.get("consumed_tool_approvals")
+
+    monkeypatch.setattr(gateway, "_env", real_env)
+    ran = await _rpc_again(app_session)
+    assert ran.get("isError") is not True, ran
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+
+
 async def test_a_redelivered_call_does_not_send_twice(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

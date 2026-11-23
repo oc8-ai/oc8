@@ -378,6 +378,65 @@ async def test_a_reused_call_id_does_not_ride_on_an_approval(
     assert [args["id"] for _name, args in recorder.calls] == [7]
 
 
+async def test_an_approved_call_refused_before_dispatch_keeps_its_approval(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of round 7: the approval was claimed at decision time, so a
+    call then refused before it ran -- here by the usage limit -- spent the
+    person's "yes" on nothing. It is claimed just before dispatch."""
+    from oc8.runtime.approval_resume import Decisions
+
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _session_factory(recorder, ["delete_a"]))
+    call = ToolCall(id="c1", name="delete_a", arguments={"id": 7, "justification": "x"})
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream([_turn("", call), _turn("All done.")]),
+    )
+
+    async def _full(**_: Any) -> Any:
+        async def _settle(**_: Any) -> None:
+            return None
+
+        return SimpleNamespace(refusal="ERROR: usage limit reached", settle=_settle)
+
+    monkeypatch.setattr("oc8.agent.engine.reserve_usage", _full)
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": [], "modify": ["delete_a"]},
+            destructive_tools=["delete_a"],
+            approval_templates={"delete_a": "Allow deleting record {id}?"},
+        )
+        sig = call_sig(ToolCall(id="r", name="delete_a", arguments={"id": 7}))
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            state="running",
+            context={
+                "resolved_tool_approvals": [
+                    {"sig": sig, "decision": "approve", "approval_id": "a1"}
+                ]
+            },
+        )
+        db.add(run)
+        await db.flush()
+        await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            run_id=run.id,
+            mcp_conn=conn,
+            pre_decided=Decisions(run.context),
+        )
+        await db.refresh(run)
+        assert recorder.calls == []
+        assert not run.context.get("consumed_tool_approvals")
+
+
 async def test_a_call_id_an_earlier_leg_used_is_renamed(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

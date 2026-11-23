@@ -322,6 +322,21 @@ async def live_decisions(
     return decisions
 
 
+async def drop_used(db: AsyncSession, run: AgentRun | None, decisions: Decisions, sig: str) -> None:
+    """Forget the open approvals of this call whose delivery marker says a
+    call already used them -- what `claim_approval` would skip -- so a caller
+    deciding now, and claiming only at dispatch, counts what is truly left."""
+    if run is None or run.task_id is None:
+        return
+    from oc8.agent.outward import already_delivered
+
+    for key in list(decisions.open.get(sig) or []):
+        if await already_delivered(
+            db, tenant_id=run.tenant_id, task_id=run.task_id, target=APPROVAL_MARKER + key
+        ):
+            decisions.discard(sig, key)
+
+
 async def claim_approval(
     db: AsyncSession,
     run: AgentRun | None,

@@ -215,7 +215,7 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
-from oc8.runtime.approval_resume import Decisions, claim_approval
+from oc8.runtime.approval_resume import Decisions, claim_approval, drop_used
 from oc8.runtime.run_context import (
     append_tool_call,
     merge_context,
@@ -292,6 +292,13 @@ def _max_steps(definition: dict[str, Any] | None) -> int:
 CancelCheck = Callable[[], Awaitable[bool]]
 # Returns operator messages addressed to a running agent since the last poll.
 InboxCheck = Callable[[], Awaitable[list[str]]]
+
+
+#: What a call whose approval another request used meanwhile is told.
+_APPROVAL_USED = (
+    "the approval for this call was used by another request meanwhile; "
+    "it did not run. Do not retry it."
+)
 
 
 @dataclass
@@ -826,14 +833,50 @@ async def run_agent(
             mine = claimed.get(call_id)
             return mine[1] if mine is not None and mine[0] == sig else None
 
-        async def _claim(call_id: str, sig: str) -> bool:
+        #: call id -> signature: an approval this call may run on, decided but
+        #: not yet claimed. The claim waits for dispatch (`_claim_at_dispatch`):
+        #: a call refused before it runs -- the usage limit, a guard -- must
+        #: not spend a person's "yes".
+        reserved: dict[str, str] = {}
+
+        async def _reserve(call_id: str, sig: str) -> bool:
+            """Whether an unused approval covers this call, set aside for it
+            (claimed only at dispatch). Counts the ones other calls of this
+            leg set aside, so one approval never covers two calls."""
+            if _claimed(call_id, sig) is not None or reserved.get(call_id) == sig:
+                return True
+            if call_id in claimed or call_id in reserved or decided is None:
+                return False
+            await drop_used(db, run_row, decided, sig)
+            others = sum(1 for s in reserved.values() if s == sig)
+            if decided.available(sig) - others <= 0:
+                return False
+            reserved[call_id] = sig
+            return True
+
+        def _approved(call_id: str, sig: str) -> bool:
+            """A person's approval covers this very call (claimed or set aside)."""
+            return _claimed(call_id, sig) is not None or reserved.get(call_id) == sig
+
+        async def _claim_at_dispatch(
+            call_id: str, sig: str, ctx: dict[str, Any] | None = None
+        ) -> bool:
+            """Claim the approval set aside for this call, just before it runs;
+            True when there is none to claim. False: a racing request used it
+            -- the call must not run."""
+            if reserved.get(call_id) != sig:
+                return True
+            del reserved[call_id]
+            return await _claim(call_id, sig, ctx)
+
+        async def _claim(call_id: str, sig: str, ctx: dict[str, Any] | None = None) -> bool:
             """Claim one unused approval of this call before it runs (once per
             call); False when none is left -- the call is asked again."""
             if _claimed(call_id, sig) is not None:
                 return True
             if call_id in claimed or decided is None or not decided.approved(sig):
                 return False
-            key = await claim_approval(db, run_row, decided, sig, call_id=call_id)
+            key = await claim_approval(db, run_row, decided, sig, call_id=call_id, ctx=ctx)
             if key is None:
                 return False
             claimed[call_id] = (sig, key)
@@ -1442,9 +1485,9 @@ async def run_agent(
                     return "park", gate.preview or "", decision, True
                 if (
                     decision.effect is Effect.REQUIRE_APPROVAL or gate.effect == "ask" or waived
-                ) and not await _claim("held", _call_sig(held)):
-                    # Claimed before it runs; none left -- a racing request
-                    # used it -- so a person is asked again.
+                ) and not await _reserve("held", _call_sig(held)):
+                    # None left -- a racing request used it -- so a person is
+                    # asked again. Claimed at dispatch, below.
                     return "park", decision.reason or gate.preview or "", decision, True
                 return "run", "", decision, False
 
@@ -1673,6 +1716,15 @@ async def run_agent(
                                 originating_operator=originating_operator,
                             )
                             finished = held_hold.refusal
+                        elif not await _claim_at_dispatch(
+                            "held", reserved.get("held") or "", parked_ctx
+                        ):
+                            # Claimed just before it runs, after everything
+                            # that may still refuse it; lost to a racing
+                            # request, it does not run.
+                            if held_hold is not None:
+                                await held_hold.settle(succeeded=False)
+                            finished = f"ERROR: {_APPROVAL_USED}"
                         else:
                             held_reached = True
                             try:
@@ -2718,8 +2770,9 @@ async def run_agent(
                     # the model sees and moves past.
                     if decision.effect is Effect.REQUIRE_APPROVAL and decided:
                         verdict = decided.get(_call_sig(tc))
-                        if verdict == "approve" and await _claim(tc.id, _call_sig(tc)):
-                            # Claimed before it runs: one approval, one call.
+                        if verdict == "approve" and await _reserve(tc.id, _call_sig(tc)):
+                            # Set aside; claimed just before it runs: one
+                            # approval, one call.
                             decision = Decision(Effect.ALLOW, "operator approved")
                         elif verdict == "reject":
                             decision = Decision(Effect.DENY, "operator rejected this action")
@@ -2848,8 +2901,8 @@ async def run_agent(
                             )
                             if gate_verdict.effect == "ask":
                                 verdict = decided.get(_call_sig(tc)) if decided else None
-                                if _claimed(tc.id, _call_sig(tc)) is not None or (
-                                    verdict == "approve" and await _claim(tc.id, _call_sig(tc))
+                                if _approved(tc.id, _call_sig(tc)) or (
+                                    verdict == "approve" and await _reserve(tc.id, _call_sig(tc))
                                 ):
                                     decision = Decision(Effect.ALLOW, "operator approved")
                                 elif verdict == "reject":
@@ -2865,11 +2918,11 @@ async def run_agent(
                                 and gate_verdict.rule == "read_before_write"
                                 and decided
                                 and (
-                                    _claimed(tc.id, _call_sig(tc)) is not None
+                                    _approved(tc.id, _call_sig(tc))
                                     or decided.get(_call_sig(tc)) == "approve"
                                 )
                                 and _open_proof(call_key, _call_sig(tc), tc.id)
-                                and await _claim(tc.id, _call_sig(tc))
+                                and await _reserve(tc.id, _call_sig(tc))
                             ):
                                 # A resumed leg starts with a fresh ledger, but
                                 # a held write passed this very gate (the read
@@ -3435,7 +3488,7 @@ async def run_agent(
                                 ),
                                 # A person approved this very call: their
                                 # decision, not a repeat to refuse (E2E N1).
-                                approved=_claimed(tc.id, _call_sig(tc)) is not None,
+                                approved=_approved(tc.id, _call_sig(tc)),
                             )
                         ).refusal is not None:
                             # Before the call, not after: the point is that the
@@ -3525,6 +3578,16 @@ async def run_agent(
                                 # The first result again, not a new call (and
                                 # counted nothing: see the reservation above).
                                 output = replay
+                            elif not await _claim_at_dispatch(tc.id, _call_sig(tc)):
+                                # The approval is claimed here, just before the
+                                # call, after everything that may still refuse
+                                # it -- a refused call keeps it. Lost to a
+                                # racing request, the call does not run.
+                                await usage_hold.settle(succeeded=False)
+                                output = f"ERROR: {_APPROVAL_USED}"
+                                source = "oc8"
+                                tool_error = ToolError(kind="deny", message=_APPROVAL_USED)
+                                _tool_call_dispatched = False
                             else:
                                 # Whether the call reached the tool: only one
                                 # that never did gives its count back.

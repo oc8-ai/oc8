@@ -1079,18 +1079,15 @@ async def _call_tool(
         db, context=run.context, tenant_id=run.tenant_id, task_id=run.task_id
     )
     approved_call = False
+    #: What the call would need were its approval gone by dispatch: claimed
+    #: only then (see `_claim_or_ask` below), so a call refused before it
+    #: runs never spends a person's "yes".
+    held_decision = decision
     if decision.effect is Effect.REQUIRE_APPROVAL:
         verdict = decisions.get(_call_sig(tc))
-        if verdict == "approve":
-            # Claimed BEFORE the call, and committed at once: of two identical
-            # requests racing on one approval exactly one wins it; the other
-            # is asked again. Kept when the call then fails -- the far system
-            # may have acted first (`claim_approval`).
-            if await claim_approval(db, run, decisions, _call_sig(tc)) is not None:
-                await db.commit()
-                await _rebind_tenant(db, run.tenant_id)
-                approved_call = True
-                decision = Decision(Effect.ALLOW, "operator approved")
+        if verdict == "approve" and decisions.available(_call_sig(tc)):
+            approved_call = True
+            decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
             decision = Decision(Effect.DENY, "operator rejected this action")
     if (
@@ -1123,7 +1120,8 @@ async def _call_tool(
         originating_operator=run.context.get("originating_operator"),
     )
 
-    if decision.effect is Effect.REQUIRE_APPROVAL:
+    async def _ask(decision: Decision) -> dict[str, Any]:
+        """Park the run on a new approval for this call."""
         # Which record this call is about, resolved from the SAME pure helper
         # the blast-radius and claim machinery below already uses -- so the
         # link on the approval and the record the run is reaching for can
@@ -1197,6 +1195,9 @@ async def _call_tool(
             "Do not retry and do not work around it.",
             is_error=True,
         )
+
+    if decision.effect is Effect.REQUIRE_APPROVAL:
+        return await _ask(decision)
 
     if decision.effect is Effect.DENY:
         denied = tool_denied(decision, frame=frame, agent=agent, conn=conn)
@@ -1357,6 +1358,18 @@ async def _call_tool(
     except Exception as exc:  # surface to the model, not as a broken server
         await usage_hold.settle(succeeded=False)
         return _tool_result(f"ERROR: {exc}", is_error=True)
+    # The approval is claimed here, just before dispatch -- after every check
+    # that may still refuse the call (usage, the account, the guards above), so
+    # a refused call keeps it -- and committed at once: of two identical
+    # requests racing on one approval exactly one wins it; the other is asked
+    # again. Kept when the call then fails -- the far system may have acted
+    # first (`claim_approval`).
+    if approved_call:
+        if await claim_approval(db, run, decisions, _call_sig(tc)) is None:
+            await usage_hold.settle(succeeded=False)
+            return await _ask(held_decision)
+        await db.commit()
+        await _rebind_tenant(db, run.tenant_id)
     link_ctx = link_context(conn, env)
     record_url = (
         link_for(link_ctx, entity=ident[0], ref=ident[1], args=tc.arguments)
