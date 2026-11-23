@@ -54,8 +54,7 @@ beforeEach(() => {
   postMock.mockResolvedValue({ agentId: "a9", departmentId: "d1" });
 });
 
-function renderPanel() {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPanel(qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
   return render(
     <QueryClientProvider client={qc}>
       <PersonalAssistantsPanel />
@@ -72,6 +71,14 @@ describe("PersonalAssistantsPanel", () => {
       expect(postMock).toHaveBeenCalledWith("/personal-department/agents", { capaId: "c1" }),
     );
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+  });
+
+  it("refreshes the admin's personal-department list after a hire", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    renderPanel(qc);
+    fireEvent.click(await screen.findByRole("button", { name: /hire/i }));
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ["personal-departments"] }));
   });
 
   it("lists my personal agents linking to their pages", async () => {

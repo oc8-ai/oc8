@@ -1071,6 +1071,8 @@ export function useHirePersonalTemplate() {
     onSuccess: async (data) => {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["personal-department"] }),
+        // The admin's list counts each personal department's agents.
+        qc.invalidateQueries({ queryKey: ["personal-departments"] }),
         qc.invalidateQueries({ queryKey: keys.agents }),
         qc.invalidateQueries({ queryKey: ["departments", data.departmentId, "agents"] }),
       ]);
