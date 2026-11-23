@@ -34,7 +34,7 @@ from oc8.authz.permissions import (
     VIEW,
     perm,
 )
-from oc8.models.core import Agent
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Agent, Department
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import Request
@@ -82,6 +82,10 @@ async def visible_agents(
     invited to try. Filtered here rather than on each screen because this
     function is the single funnel every one of those screens goes through
     (`tests/agents/test_reads_go_through_the_scoped_repository.py`).
+
+    An agent in a `personal` department is listed only when that department is
+    in `scope.viewable` -- its owner's seat -- and never merely because the
+    caller reads every department tenant-wide.
     """
     if not tenant_wide and not scope.viewable:
         return [], 0
@@ -94,6 +98,16 @@ async def visible_agents(
     from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
 
     stmt = select(Agent).where(Agent.is_tenant_assistant.is_(False))
+    # Personal departments the caller holds no seat in. Applied always -- a
+    # tenant-wide read does not reach into somebody's personal department -- and
+    # before pagination, so `total_count` stays true. Fails closed: an empty
+    # `scope.viewable` renders `NOT IN` as always-true, which excludes EVERY
+    # personal department rather than none.
+    foreign_personal = select(Department.id).where(
+        Department.kind == DEPARTMENT_KIND_PERSONAL,
+        Department.id.not_in(scope.viewable),
+    )
+    stmt = stmt.where(Agent.department_id.not_in(foreign_personal))
     if not include_archived:
         stmt = stmt.where(Agent.deleted_at.is_(None))
     if not tenant_wide:

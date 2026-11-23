@@ -1,11 +1,20 @@
-"""S1: a personal department is visible by id to its owner and to a caller who
-holds tenant-wide `department:manage`; tenant-wide read alone is not enough."""
+"""What colleagues can see of a personal department.
+
+By id (ruling S1): a personal department is visible to its owner and to a
+caller who holds tenant-wide `department:manage`; tenant-wide read alone is not
+enough.
+
+In lists (ruling 8): a personal department is never listed, and its agents are
+listed only to a caller seated there -- its owner -- even when the caller reads
+every department tenant-wide or holds `all_departments`.
+"""
 
 from __future__ import annotations
 
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -13,11 +22,22 @@ from httpx import ASGITransport, AsyncClient
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
-from oc8.authz.permissions import SEAT_VIEWER
+from oc8.authz.permissions import SEAT_APPROVER, SEAT_VIEWER
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
+
+_SEATED_IN_SHARED = ("colleague", "ceo", "operator", "auditor", "manager", "admin")
+
+
+@dataclass(frozen=True)
+class _Tenant:
+    id: uuid.UUID
+    shared: uuid.UUID
+    personal: uuid.UUID
+    nora: uuid.UUID
+    pia: uuid.UUID
 
 
 def _subject_uuid(subject: str) -> uuid.UUID:
@@ -37,15 +57,24 @@ async def _http() -> AsyncIterator[AsyncClient]:
             yield c
 
 
-async def _setup(app_session: AppSessionFactory) -> tuple[uuid.UUID, uuid.UUID]:
+async def _setup(app_session: AppSessionFactory) -> _Tenant:
+    """A standard "Vertrieb" with agent Nora, and `owner`'s personal department
+    with agent Pia. `owner` sits only in the personal one, as `dept_approver`
+    with `agent_manage`; every other subject sits in Vertrieb as a viewer.
+    `ceo` also holds `all_departments`; its Vertrieb seat is what puts rows in
+    its lists at all (`all_departments` widens approvals, not agent reads), so
+    an empty list cannot pass the exclusion tests by accident."""
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         shared = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
         db.add(shared)
         members = {}
-        for subject in ("owner", "colleague", "operator", "auditor", "manager", "admin"):
+        for subject in ("owner", *_SEATED_IN_SHARED):
             member = m.OrgMember(
-                tenant_id=tenant, subject=subject, subject_uuid=_subject_uuid(subject)
+                tenant_id=tenant,
+                subject=subject,
+                subject_uuid=_subject_uuid(subject),
+                all_departments=subject == "ceo",
             )
             db.add(member)
             members[subject] = member
@@ -59,17 +88,29 @@ async def _setup(app_session: AppSessionFactory) -> tuple[uuid.UUID, uuid.UUID]:
         )
         db.add(personal)
         await db.flush()
-        for subject in ("owner", "colleague", "operator", "auditor", "manager", "admin"):
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=members["owner"].id,
+                department_id=personal.id,
+                seat_role=SEAT_APPROVER,
+                agent_manage=True,
+            )
+        )
+        for subject in _SEATED_IN_SHARED:
             db.add(
                 m.OrgMemberDepartment(
                     tenant_id=tenant,
                     member_id=members[subject].id,
-                    department_id=personal.id if subject == "owner" else shared.id,
+                    department_id=shared.id,
                     seat_role=SEAT_VIEWER,
                 )
             )
+        nora = m.Agent(tenant_id=tenant, department_id=shared.id, name="Nora")
+        pia = m.Agent(tenant_id=tenant, department_id=personal.id, name="Pia")
+        db.add_all([nora, pia])
         await db.flush()
-        return tenant, personal.id
+        return _Tenant(id=tenant, shared=shared.id, personal=personal.id, nora=nora.id, pia=pia.id)
 
 
 @pytest.mark.parametrize(
@@ -86,9 +127,118 @@ async def _setup(app_session: AppSessionFactory) -> tuple[uuid.UUID, uuid.UUID]:
 async def test_a_personal_department_is_visible_by_id_only_to_owner_and_manager(
     app_session: AppSessionFactory, subject: str, role: str, status: int
 ) -> None:
-    tenant, personal = await _setup(app_session)
+    t = await _setup(app_session)
     async with _http() as http:
         r = await http.get(
-            f"/api/v1/departments/{personal}", headers=_headers(tenant, subject, role)
+            f"/api/v1/departments/{t.personal}", headers=_headers(t.id, subject, role)
         )
     assert r.status_code == status, r.text
+
+
+async def test_a_member_colleague_never_sees_it(app_session: AppSessionFactory) -> None:
+    t = await _setup(app_session)
+    h = _headers(t.id, "colleague", "member")
+    async with _http() as http:
+        depts = await http.get("/api/v1/departments", headers=h)
+        assert depts.status_code == 200, depts.text
+        assert [d["name"] for d in depts.json()["items"]] == ["Vertrieb"]
+
+        agents = await http.get("/api/v1/agents", headers=h)
+        assert agents.status_code == 200, agents.text
+        assert [a["name"] for a in agents.json()["items"]] == ["Nora"]
+
+        for path in (
+            f"/api/v1/departments/{t.personal}",
+            f"/api/v1/agents/{t.pia}",
+            f"/api/v1/departments/{t.personal}/agents",
+        ):
+            r = await http.get(path, headers=h)
+            assert r.status_code == 404, (path, r.text)
+
+
+async def test_the_owner_lists_their_own_agents_but_not_the_department(
+    app_session: AppSessionFactory,
+) -> None:
+    t = await _setup(app_session)
+    h = _headers(t.id, "owner", "member")
+    async with _http() as http:
+        agents = await http.get("/api/v1/agents", headers=h)
+        assert agents.status_code == 200, agents.text
+        assert str(t.pia) in [a["id"] for a in agents.json()["items"]]
+
+        depts = await http.get("/api/v1/departments", headers=h)
+        assert depts.status_code == 200, depts.text
+        assert str(t.personal) not in [d["id"] for d in depts.json()["items"]]
+
+        own = await http.get(f"/api/v1/departments/{t.personal}", headers=h)
+        assert own.status_code == 200, own.text
+        assert own.json()["kind"] == "personal"
+
+        shared = await http.get(
+            f"/api/v1/departments/{t.shared}", headers=_headers(t.id, "colleague", "member")
+        )
+        assert shared.status_code == 200, shared.text
+        assert shared.json()["kind"] == "standard"
+
+
+@pytest.mark.parametrize(
+    ("subject", "role"),
+    [("admin", "org_admin"), ("ceo", "member"), ("manager", "dept_manager")],
+)
+async def test_tenant_wide_and_all_departments_lists_exclude_it(
+    app_session: AppSessionFactory, subject: str, role: str
+) -> None:
+    t = await _setup(app_session)
+    h = _headers(t.id, subject, role)
+    async with _http() as http:
+        depts = await http.get("/api/v1/departments", headers=h)
+        assert depts.status_code == 200, depts.text
+        dept_ids = [d["id"] for d in depts.json()["items"]]
+        assert str(t.shared) in dept_ids, "the standard department must still be listed"
+        assert str(t.personal) not in dept_ids
+
+        agents = await http.get("/api/v1/agents", headers=h)
+        assert agents.status_code == 200, agents.text
+        assert agents.json()["totalCount"] == len(agents.json()["items"]), "counts stay true"
+        agent_ids = [a["id"] for a in agents.json()["items"]]
+        assert str(t.nora) in agent_ids, "the standard agent must still be listed"
+        assert str(t.pia) not in agent_ids
+
+        by_dept = await http.get(
+            "/api/v1/agents", params={"departmentId": str(t.personal)}, headers=h
+        )
+        assert by_dept.status_code == 200, by_dept.text
+        assert by_dept.json()["items"] == []
+
+
+async def test_the_tenant_kpi_breakdowns_have_no_personal_rows(
+    app_session: AppSessionFactory,
+) -> None:
+    t = await _setup(app_session)
+    h = _headers(t.id, "admin", "org_admin")
+    async with _http() as http:
+        by_dept = await http.get("/api/v1/kpis", params={"groupBy": "department"}, headers=h)
+        assert by_dept.status_code == 200, by_dept.text
+        dept_keys = [row["groupKey"] for row in by_dept.json()["rows"]]
+        assert str(t.shared) in dept_keys
+        assert str(t.personal) not in dept_keys
+
+        by_agent = await http.get("/api/v1/kpis", params={"groupBy": "agent"}, headers=h)
+        assert by_agent.status_code == 200, by_agent.text
+        agent_keys = [row["groupKey"] for row in by_agent.json()["rows"]]
+        assert str(t.nora) in agent_keys
+        assert str(t.pia) not in agent_keys
+
+
+@pytest.mark.xfail(strict=True, reason="A4 content privacy lands in PR 3")
+async def test_an_operator_cannot_read_a_personal_agent_by_id(
+    app_session: AppSessionFactory,
+) -> None:
+    """The plan's "Known gap": `operator` holds `agent:view` tenant-wide, so
+    `visible_agent(id)` still returns a personal agent to it. PR 3 flips this."""
+    t = await _setup(app_session)
+    async with _http() as http:
+        r = await http.get(
+            f"/api/v1/agents/{t.pia}", headers=_headers(t.id, "operator", "operator")
+        )
+    assert r.status_code == 404, r.text

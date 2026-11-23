@@ -54,6 +54,9 @@ async def visible_departments(
     `visible_agents` never lists the Assistant itself: it is auto-provisioned to
     give that agent somewhere to stand, holds nothing anybody configures, and on
     the Office floor it reads as a department somebody forgot to fill in.
+
+    A `personal` department is never listed either, not even to its owner or a
+    tenant-wide reader: it is reached by id, and its agents through `visible_agents`.
     """
     if not tenant_wide and not scope.viewable:
         return [], 0
@@ -135,7 +138,8 @@ async def member_departments(db: AsyncSession, *, member: OrgMember) -> list[Dep
     """The departments one member BELONGS to -- a live seat, or every department
     for `all_departments` -- ordered by name. Never the Assistant's own, never an
     archived one, and never another department of the tenant: a member with no
-    seat gets nothing (fail closed).
+    seat gets nothing (fail closed). Never a `personal` department, not even the
+    member's own: belonging to a team is what this answers, and that is not one.
 
     `populate_existing`: a frame edited since this session loaded the row (it
     keeps rows across commits) must be seen on the very next call."""

@@ -58,6 +58,8 @@ class DepartmentDTO(CamelModel):
     activity: int
     accent: str
     prompt_caching_enabled: bool
+    #: `standard`, `assistant` or `personal` (`DEPARTMENT_KIND_*`).
+    kind: str = "standard"
     deleted_at: str | None = None
     name_translations: dict[str, str] = {}
     goal_translations: dict[str, str] = {}

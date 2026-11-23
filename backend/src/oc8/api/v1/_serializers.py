@@ -146,6 +146,7 @@ def department_to_dto(d: m.Department) -> DepartmentDTO:
         activity=p.get("activity", 0),
         accent=p.get("accent", ""),
         prompt_caching_enabled=d.prompt_caching_enabled,
+        kind=d.kind,
         deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
         name_translations=_i18n_str(i18n, "name"),
         goal_translations=_i18n_str(i18n, "goal"),

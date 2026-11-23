@@ -172,6 +172,11 @@ def _group_id_query(
             m.Agent.tenant_id == tenant_id,
             m.Agent.deleted_at.is_(None),
             m.Agent.is_tenant_assistant.is_(False),
+            # Only agents of a `standard` department, matching the department
+            # breakdown below: a personal department's agents get no row here.
+            m.Agent.department_id.in_(
+                select(m.Department.id).where(m.Department.kind == DEPARTMENT_KIND_STANDARD)
+            ),
         )
         if agent_id is not None:
             stmt = stmt.where(m.Agent.id == agent_id)
