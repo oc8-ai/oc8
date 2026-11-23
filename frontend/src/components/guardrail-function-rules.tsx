@@ -1045,8 +1045,13 @@ export function GuardrailFunctionRules({
                   ? modeFromDecision(pendingResult.result.decision)
                   : modeOf(value, row.name, guardrailAttributes);
             const right = rightOf(row.name);
-            const checked = mode !== "deny";
             const isSuggestion = row.kind === "suggestion";
+            // What applies now. A suggestion is only a proposal (E2E N5: a
+            // preset withholding sending showed "Not allowed" on an agent
+            // whose stored policy allows it), so its checkbox and a "Now"
+            // line show the live rule, and its label says it is a proposal.
+            const liveMode = modeOf(value, row.name, guardrailAttributes);
+            const checked = (isSuggestion ? liveMode : mode) !== "deny";
             const isPending = Boolean(pendingResult);
             const rowConditions =
               !isGateRow && mode === "with_limits"
@@ -1174,7 +1179,21 @@ export function GuardrailFunctionRules({
                       {humanizeName(row.name)}
                     </span>
                   )}
-                  {!isGateRow && mode !== "allow" && (
+                  {!isGateRow && isSuggestion && (
+                    <>
+                      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {fill(t("Suggestion: {decision}", "Vorschlag: {decision}"), {
+                          decision: decisionLabel(t, mode),
+                        })}
+                      </div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground/80">
+                        {fill(t("Now: {decision}", "Jetzt: {decision}"), {
+                          decision: decisionLabel(t, liveMode),
+                        })}
+                      </div>
+                    </>
+                  )}
+                  {!isGateRow && !isSuggestion && mode !== "allow" && (
                     <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
                       {decisionLabel(t, mode)}
                     </div>

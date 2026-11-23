@@ -342,6 +342,41 @@ describe("GuardrailFunctionRules", () => {
     expect(screen.getByDisplayValue("delete_record is never available.")).toBeInTheDocument();
   });
 
+  it("shows a suggestion as a proposal, never as the rule in force (E2E N5)", () => {
+    // The agent runs a preset that allows sending; another preset of the capa
+    // withholds it. That other preset is a suggestion only: the row must not
+    // read "Not allowed" as if it were the stored policy.
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_send", "mail_get"]}
+        value={baseValue({ only: ["mail_send", "mail_get"] })}
+        onChange={vi.fn()}
+        presets={[
+          {
+            key: "read_only",
+            label: "Read only",
+            labelTranslations: {},
+            summary: "Reads mail, sends nothing.",
+            summaryTranslations: {},
+            recommended: false,
+            read: true,
+            modify: true,
+            approvalActions: [],
+            approvalEur: null,
+            only: ["mail_get"],
+            limits: [],
+          },
+        ]}
+      />,
+    );
+    const row = screen.getByText("Mail Send").closest("tr")!;
+    expect(within(row).getByText("Suggestion: Not allowed")).toBeInTheDocument();
+    expect(within(row).getByText("Now: Self-sufficient")).toBeInTheDocument();
+    expect(within(row).getByRole("checkbox", { name: /modify/i })).toBeChecked();
+  });
+
   it("applies a whole preset, its usage limit included (E2E F4)", () => {
     const onChange = vi.fn();
     render(
