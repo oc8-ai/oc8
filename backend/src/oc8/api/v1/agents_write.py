@@ -16,6 +16,7 @@ calls without re-reading it.
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
@@ -48,7 +49,7 @@ from oc8.api.v1.agents import _agent_detail_dto
 from oc8.api.v1.files import _attachment_dto, _store_upload
 from oc8.audit import append_event
 from oc8.authz.authority import authority_for_principal
-from oc8.authz.pdp import ToolPolicy, missing_skill_requirements
+from oc8.authz.pdp import ToolPolicy, effective_tool_policies, missing_skill_requirements
 from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import resolve_tool_pack_connection
@@ -245,9 +246,20 @@ async def enforce_narrowing_logins(
             # `effective_tool_policies`/`narrowing_within_frame` already
             # apply to these two dicts; comparing through it is what makes
             # this an actual value comparison instead of a shape comparison.
-            submitted = ToolPolicy.from_json(raw if isinstance(raw, dict) else None)
+            #
+            # Compared as the EFFECTIVE policy (frame ∩ this value), not the
+            # stored value (E2E N6): a threshold the value can leave out because
+            # the frame's applies anyway -- a connection with no amount to
+            # compare -- is no divergence. A login pick (`connection_id`) is
+            # not one either: it chooses an account, not what may be done.
+            if key not in frame_tools:
+                overridden.add(key)
+                continue
+            submitted = effective_tool_policies(
+                {"tools": {key: frame_tools.get(key)}}, {"tools": {key: raw}}
+            )[key]
             current_frame = ToolPolicy.from_json(frame_tools.get(key))
-            if submitted != current_frame:
+            if replace(submitted, connection_id=None) != replace(current_frame, connection_id=None):
                 overridden.add(key)
         agent.narrowing_overridden_keys = sorted(overridden)
 

@@ -517,6 +517,25 @@ async def test_leaving_out_an_inherited_frame_threshold_is_accepted(
     assert '"approvalEur":200' in text.replace(" ", "")
 
 
+@pytest.mark.parametrize("inherited_eur", [200, None])
+async def test_an_unchanged_inherited_tool_is_not_marked_narrowed(
+    app_session: AppSessionFactory, inherited_eur: float | None
+) -> None:
+    """E2E N6: saving another tool's guardrail stored microsoft365 without the
+    department's €200 (nothing there can compare an amount), and the badge
+    then said "Narrowed". What the agent may do there is exactly the
+    department's: compared as the effective policy, nothing diverged."""
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+        app_session, inherited_eur
+    )
+    assert status_code == 200, text
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        assert "microsoft365" not in (agent.narrowing_overridden_keys or [])
+
+
 async def test_loosening_an_inherited_frame_threshold_is_still_rejected(
     app_session: AppSessionFactory,
 ) -> None:
