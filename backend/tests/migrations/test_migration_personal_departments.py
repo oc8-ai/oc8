@@ -39,7 +39,11 @@ def _columns(dsn: str) -> set[str]:
 
 
 def _insert(
-    conn: psycopg.Connection, tenant: uuid.UUID, sql_extra: str, *values: object
+    conn: psycopg.Connection,
+    tenant: uuid.UUID,
+    sql_extra: str,
+    *values: object,
+    frame: str = '{"closed": true}',
 ) -> uuid.UUID:
     dept_id = uuid.uuid4()
     cols, marks = ("", "")
@@ -49,10 +53,23 @@ def _insert(
     conn.execute(
         "INSERT INTO department (id, tenant_id, name, frame, presentation, "
         f"prompt_caching_enabled, created_at, updated_at{cols}) "
-        f"VALUES (%s, %s, 'D', '{{\"closed\": true}}', '{{}}', true, now(), now(){marks})",
-        (dept_id, tenant, *values),
+        f"VALUES (%s, %s, 'D', %s, '{{}}', true, now(), now(){marks})",
+        (dept_id, tenant, frame, *values),
     )
     return dept_id
+
+
+def _agent(conn: psycopg.Connection, tenant: uuid.UUID, department: uuid.UUID) -> uuid.UUID:
+    agent_id = uuid.uuid4()
+    conn.execute(
+        "INSERT INTO agent (id, tenant_id, department_id, name, role_title, mission, status, "
+        "narrowing, narrowing_overridden_keys, definition, presentation, is_team_lead, "
+        "is_tenant_assistant, trust_level, created_at, updated_at) "
+        "VALUES (%s, %s, %s, 'A', '', '', 'stopped', '{}', '[]', '{}', '{}', false, false, "
+        "'first_party', now(), now())",
+        (agent_id, tenant, department),
+    )
+    return agent_id
 
 
 def test_upgrade_folds_the_flag_and_downgrade_restores_it(pg_url: str) -> None:
@@ -85,9 +102,18 @@ def test_upgrade_folds_the_flag_and_downgrade_restores_it(pg_url: str) -> None:
             _insert(conn, tenant, "kind", "personal")
         with pytest.raises(psycopg.errors.CheckViolation):
             _insert(conn, tenant, "kind, owner_member_id", "standard", owner)
+        # Final review M8: a personal frame must carry the closed marker.
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert(conn, tenant, "kind, owner_member_id", "personal", owner, frame='{"tools": {}}')
+        with pytest.raises(psycopg.errors.CheckViolation):
+            _insert(
+                conn, tenant, "kind, owner_member_id", "personal", owner, frame='{"closed": false}'
+            )
         personal = _insert(conn, tenant, "kind, owner_member_id", "personal", owner)
         with pytest.raises(psycopg.errors.UniqueViolation):
             _insert(conn, tenant, "kind, owner_member_id", "personal", owner)
+        personal_agent = _agent(conn, tenant, personal)
+        ordinary_agent = _agent(conn, tenant, ordinary)
 
     command.downgrade(cfg, down_revision)
     try:
@@ -101,9 +127,17 @@ def test_upgrade_folds_the_flag_and_downgrade_restores_it(pg_url: str) -> None:
             deleted = conn.execute(
                 "SELECT deleted_at FROM department WHERE id = %s", (personal,)
             ).fetchone()
+            agents: dict[object, bool] = dict(
+                conn.execute(
+                    "SELECT id, deleted_at IS NOT NULL FROM agent WHERE id IN (%s, %s)",
+                    (personal_agent, ordinary_agent),
+                ).fetchall()
+            )
         assert flag is not None and flag[0] is True
         assert ordinary_flag is not None and ordinary_flag[0] is False
         assert deleted is not None and deleted[0] is not None
+        # Final review M4: the personal department's agents are archived with it.
+        assert agents == {personal_agent: True, ordinary_agent: False}
         assert not _NEW & _columns(dsn)
     finally:
         command.upgrade(cfg, "head")

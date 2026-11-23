@@ -12,8 +12,9 @@ defaults skips that part.
 
 Everything is idempotent: `0001` runs `create_all` from the live models, so a
 fresh database already has these columns, constraints and index. Downgrade
-soft-deletes personal departments before dropping the columns, so a downgraded
-database never turns a private department into an ordinary visible one.
+soft-deletes personal departments and their agents before dropping the
+columns, so a downgraded database never turns a private department, or an
+agent of one, into an ordinary visible or runnable one.
 
 This is ruling 1 of the personal-departments plan: the flag is folded into
 `kind`, and this file is the only one that carries the id 0133 (a rebase
@@ -85,6 +86,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
+    # The agents first: an agent left live in an archived department would still
+    # run, and after the downgrade nothing marks it as anybody's personal agent.
+    op.execute(
+        "UPDATE agent SET deleted_at = now() WHERE deleted_at IS NULL AND department_id IN "
+        "(SELECT id FROM department WHERE kind = 'personal')"
+    )
     op.execute(
         "UPDATE department SET deleted_at = now() WHERE kind = 'personal' AND deleted_at IS NULL"
     )
