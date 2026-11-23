@@ -362,6 +362,9 @@ msgstr ""
 msgid "Agent deleted"
 msgstr ""
 
+msgid "Agent hired, but its tools could not be granted"
+msgstr ""
+
 msgid "agent identity"
 msgstr ""
 
@@ -560,7 +563,13 @@ msgstr ""
 msgid "App"
 msgstr ""
 
+msgid "Applied to the draft below, limits included. Save to keep it."
+msgstr ""
+
 msgid "Apply"
+msgstr ""
+
+msgid "Apply a preset"
 msgstr ""
 
 msgid "Apply this change"
@@ -668,6 +677,9 @@ msgstr ""
 msgid "Ask anything …"
 msgstr ""
 
+msgid "Ask before every change"
+msgstr ""
+
 msgid "Ask your admin to install it under Capas."
 msgstr ""
 
@@ -696,6 +708,9 @@ msgid "Assign"
 msgstr ""
 
 msgid "Assign knowledge base"
+msgstr ""
+
+msgid "Assign knowledge bases to this department. Agents inherit these and can only tighten access, never expand it."
 msgstr ""
 
 msgid "Assign skill"
@@ -783,6 +798,15 @@ msgid "Auto router updated"
 msgstr ""
 
 msgid "Automatic discovery isn't available for this provider — enter the model tag manually."
+msgstr ""
+
+msgid "Autonomous"
+msgstr ""
+
+msgid "Autonomy"
+msgstr ""
+
+msgid "Autonomy saved"
 msgstr ""
 
 msgid "Available"
@@ -1007,6 +1031,9 @@ msgstr ""
 msgid "Changed"
 msgstr ""
 
+msgid "Changes inside your systems run on their own. Anything that reaches people outside, deletes something or can't be undone waits for a person."
+msgstr ""
+
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
 msgstr ""
 
@@ -1085,6 +1112,9 @@ msgstr ""
 msgid "Choose a department."
 msgstr ""
 
+msgid "Choose a preset…"
+msgstr ""
+
 msgid "Choose a starting layout"
 msgstr ""
 
@@ -1092,6 +1122,9 @@ msgid "Choose an agent…"
 msgstr ""
 
 msgid "Choose at least one endpoint."
+msgstr ""
+
+msgid "Choose Autonomous first. Until then every message to the outside waits for a person."
 msgstr ""
 
 msgid "Choose from a data source"
@@ -1197,6 +1230,9 @@ msgid "Complexity router — picks among the tier models you configure (fast / b
 msgstr ""
 
 msgid "Condense this conversation into a decision record."
+msgstr ""
+
+msgid "Confidential"
 msgstr ""
 
 msgid "Configuration"
@@ -1670,6 +1706,9 @@ msgstr ""
 msgid "Couldn't delete the file"
 msgstr ""
 
+msgid "Couldn't grant access"
+msgstr ""
+
 msgid "Couldn't load attached files."
 msgstr ""
 
@@ -1713,6 +1752,9 @@ msgid "Couldn't revoke"
 msgstr ""
 
 msgid "Couldn't roll back"
+msgstr ""
+
+msgid "Couldn't save autonomy"
 msgstr ""
 
 msgid "Couldn't save guardrails"
@@ -2045,6 +2087,9 @@ msgstr ""
 msgid "Deleted"
 msgstr ""
 
+msgid "Deleting and other irreversible actions also run without asking, unless a guardrail requires approval. Reaching people outside still asks unless you allow it below."
+msgstr ""
+
 msgid "Deleting…"
 msgstr ""
 
@@ -2052,6 +2097,9 @@ msgid "Delta"
 msgstr ""
 
 msgid "Department"
+msgstr ""
+
+msgid "Department = inherited · Agent = additional"
 msgstr ""
 
 msgid "Department allows (ceiling)"
@@ -2136,6 +2184,9 @@ msgid "Disable"
 msgstr ""
 
 msgid "Disabled"
+msgstr ""
+
+msgid "Disabled — read-only"
 msgstr ""
 
 msgid "Discard"
@@ -2324,13 +2375,13 @@ msgstr ""
 msgid "Enable a vector-index capa (Qdrant, pgvector) first."
 msgstr ""
 
+msgid "Enable knowledge base"
+msgstr ""
+
 msgid "Enabled"
 msgstr ""
 
-msgid "Enabled for {count} department(s)"
-msgstr ""
-
-msgid "Enabled for all departments"
+msgid "Enabled — read-only"
 msgstr ""
 
 msgid "Enabling…"
@@ -2418,6 +2469,9 @@ msgid "Event to handoff"
 msgstr ""
 
 msgid "Every action, every timestamp."
+msgstr ""
+
+msgid "Every change and every message waits for a person to approve it."
 msgstr ""
 
 msgid "Every day at {time}"
@@ -2783,6 +2837,9 @@ msgstr ""
 msgid "How do you describe the endpoints?"
 msgstr ""
 
+msgid "how far it acts before asking"
+msgstr ""
+
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr ""
 
@@ -2867,6 +2924,15 @@ msgstr ""
 msgid "Inherited"
 msgstr ""
 
+msgid "inherited from dept"
+msgstr ""
+
+msgid "Inherited from the department"
+msgstr ""
+
+msgid "Inherited from the department — manage it there"
+msgstr ""
+
 msgid "Input"
 msgstr ""
 
@@ -2906,6 +2972,9 @@ msgstr ""
 msgid "Instructions saved"
 msgstr ""
 
+msgid "Internal"
+msgstr ""
+
 msgid "interrupted"
 msgstr ""
 
@@ -2922,6 +2991,9 @@ msgid "It has not worked yet."
 msgstr ""
 
 msgid "It listens on the mailbox the agent uses for its tools. "
+msgstr ""
+
+msgid "It takes effect when you publish this version."
 msgstr ""
 
 msgid "its model configuration"
@@ -3164,6 +3236,9 @@ msgstr ""
 msgid "Local library"
 msgstr ""
 
+msgid "local model"
+msgstr ""
+
 msgid "Locality"
 msgstr ""
 
@@ -3177,6 +3252,15 @@ msgid "Login"
 msgstr ""
 
 msgid "Login failed"
+msgstr ""
+
+msgid "Login not usable in any department yet"
+msgstr ""
+
+msgid "Login usable in {count} department(s)"
+msgstr ""
+
+msgid "Login usable in all departments"
 msgstr ""
 
 msgid "Look"
@@ -3270,6 +3354,9 @@ msgid "Max. active follow-ups per person"
 msgstr ""
 
 msgid "Maximum calls"
+msgstr ""
+
+msgid "May reach people outside without asking"
 msgstr ""
 
 msgid "MCP Connections"
@@ -3854,9 +3941,6 @@ msgstr ""
 msgid "Not enabled"
 msgstr ""
 
-msgid "Not enabled for any department yet"
-msgstr ""
-
 msgid "not for people"
 msgstr ""
 
@@ -3992,7 +4076,13 @@ msgstr ""
 msgid "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it."
 msgstr ""
 
+msgid "Only for an autonomous agent: sends, replies and forwards go out without anyone approving each message."
+msgstr ""
+
 msgid "Only for me"
+msgstr ""
+
+msgid "Only for this agent: the department doesn't offer this tool, so it is granted to this agent alone."
 msgstr ""
 
 msgid "Only members who set up a second factor will be asked for it; the others will no longer be asked to set one up."
@@ -4035,6 +4125,9 @@ msgid "Open responsibilities and follow-ups"
 msgstr ""
 
 msgid "Open the agent"
+msgstr ""
+
+msgid "Open the autonomy setting"
 msgstr ""
 
 msgid "Open the record"
@@ -4334,6 +4427,9 @@ msgstr ""
 msgid "Provider-reported cost"
 msgstr ""
 
+msgid "Public"
+msgstr ""
+
 msgid "Publish"
 msgstr ""
 
@@ -4404,6 +4500,9 @@ msgid "Read the new email and take care of it."
 msgstr ""
 
 msgid "Read the text before importing"
+msgstr ""
+
+msgid "Read-only"
 msgstr ""
 
 msgid "Read, sort and send your e-mail in Outlook"
@@ -4571,6 +4670,9 @@ msgstr ""
 msgid "Removed account, please choose again"
 msgstr ""
 
+msgid "Removing a grant is not yet supported"
+msgstr ""
+
 msgid "Rename"
 msgstr ""
 
@@ -4656,6 +4758,9 @@ msgid "Restore failed."
 msgstr ""
 
 msgid "Restoring…"
+msgstr ""
+
+msgid "Restricted"
 msgstr ""
 
 msgid "Results"
@@ -5240,6 +5345,9 @@ msgstr ""
 msgid "Soft-delete this person. They leave the users list and cannot sign in."
 msgstr ""
 
+msgid "Some tools are turned off for this department"
+msgstr ""
+
 msgid "Somebody already decided this."
 msgstr ""
 
@@ -5274,6 +5382,9 @@ msgid "staff"
 msgstr ""
 
 msgid "Standalone agents"
+msgstr ""
+
+msgid "Standard"
 msgstr ""
 
 msgid "standing system prompt"
@@ -5394,6 +5505,9 @@ msgid "System"
 msgstr ""
 
 msgid "Table"
+msgstr ""
+
+msgid "Takes effect when you publish this version."
 msgstr ""
 
 msgid "Tamper-evident record of every decision."
@@ -5804,6 +5918,9 @@ msgstr ""
 msgid "These functions are counted separately: today's count starts again at 0."
 msgstr ""
 
+msgid "These guardrails let this agent reach people outside without approval, but it will still ask before each one until you make it autonomous and allow it to reach people outside."
+msgstr ""
+
 msgid "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail."
 msgstr ""
 
@@ -6207,6 +6324,9 @@ msgid "Turn off"
 msgstr ""
 
 msgid "Turn on"
+msgstr ""
+
+msgid "Turned off for this department: the agent can use it once the department turns it on."
 msgstr ""
 
 msgid "Two-factor authentication"

@@ -1,3 +1,4 @@
+import { LoginFieldInput } from "@/components/connections/login-field-input";
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
 import { toast } from "sonner";
@@ -126,15 +127,13 @@ export function CredentialPicker({
                 {label}
                 {field.required && <RequiredMark />}
               </span>
-              <input
-                type={
-                  field.kind === "password" ? "password" : field.kind === "url" ? "url" : "text"
-                }
+              <LoginFieldInput
+                field={field}
                 required={field.required}
                 aria-invalid={invalid || undefined}
                 value={fieldValues[field.key] ?? ""}
-                onChange={(e) => {
-                  setFieldValues((cur) => ({ ...cur, [field.key]: e.target.value }));
+                onChange={(next) => {
+                  setFieldValues((cur) => ({ ...cur, [field.key]: next }));
                   setRefused((cur) => cur.filter((k) => k !== field.key));
                 }}
                 placeholder={placeholder}

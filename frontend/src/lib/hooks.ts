@@ -3069,11 +3069,13 @@ export function useUnassignSkill() {
 export interface CredentialTypeFieldDTO {
   key: string;
   label: string;
-  kind: "text" | "url" | "password" | "department" | "credential";
+  kind: "text" | "url" | "password" | "department" | "credential" | "select";
   required: boolean;
   default: string;
   placeholder: string;
   help: string;
+  /** The fixed choices of a `select` field, in order. */
+  options?: string[];
   // Each field is passed through from the owning capa's manifest as a raw
   // dict (see CredentialTypeDTO.fields on the backend), not through a
   // CamelModel -- so, like PluginSetupField's snake_case passthrough above,

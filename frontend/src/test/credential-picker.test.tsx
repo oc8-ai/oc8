@@ -119,6 +119,49 @@ describe("CredentialPicker", () => {
     }
   });
 
+  it("renders a select field as a select of its choices (E2E F15)", async () => {
+    // A mailbox's protocol and encryption were free-text boxes, so "IMAP"
+    // or "tls" could be typed where only `imap`/`pop3`, `ssl`/`starttls` work.
+    credentialTypesMock.mockReturnValue({
+      data: [
+        {
+          name: "mail_account",
+          displayName: "Mailbox",
+          fields: [
+            {
+              key: "incoming_security",
+              label: "Incoming encryption",
+              kind: "select",
+              options: ["ssl", "starttls"],
+              required: true,
+              default: "ssl",
+              placeholder: "",
+              help: "",
+            },
+          ],
+        },
+      ],
+    });
+    credentialsMock.mockReturnValue({ data: [] });
+    createCredentialMock.mockResolvedValue({ id: "new-id" });
+    renderPicker({ credentialType: "mail_account" });
+    fireEvent.click(screen.getByRole("button", { name: /create new/i }));
+    const security = screen.getByLabelText(/incoming encryption/i) as HTMLSelectElement;
+    expect(security.tagName).toBe("SELECT");
+    expect(Array.from(security.options).map((o) => o.value)).toEqual(["ssl", "starttls"]);
+    expect(security.value).toBe("ssl");
+    fireEvent.change(security, { target: { value: "starttls" } });
+    fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "Inbox" } });
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(createCredentialMock).toHaveBeenCalledWith({
+        name: "Inbox",
+        credentialType: "mail_account",
+        fieldValues: { incoming_security: "starttls" },
+      }),
+    );
+  });
+
   describe("a login with a required URL", () => {
     const LOGIN_TYPE = {
       name: "svc_login",

@@ -1,3 +1,4 @@
+import { LoginFieldInput } from "@/components/connections/login-field-input";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -144,18 +145,18 @@ function CredentialForm({
               {loginFieldLabel(field, lang)}
               {required && <RequiredMark className="ml-0.5" />}
             </label>
-            <input
+            <LoginFieldInput
               id={id}
+              field={field}
               className={`${INPUT} placeholder:italic placeholder:text-muted-foreground/60 ${
                 invalid ? "border-amber-500/70" : ""
               }`}
-              type={field.kind === "password" ? "password" : field.kind === "url" ? "url" : "text"}
               autoComplete="off"
               required={required}
               aria-invalid={invalid || undefined}
               value={values[field.key] ?? ""}
               placeholder={loginFieldPlaceholder(field, lang)}
-              onChange={(event) => setValue(field.key, event.target.value)}
+              onChange={(next) => setValue(field.key, next)}
             />
             {editCredentialId && field.kind === "password" && (
               <p className="text-xs text-muted-foreground">
