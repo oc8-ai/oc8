@@ -101,23 +101,14 @@ _PARKING_ACTIONS: Final = ("tool_send", "direct_access")
 async def _parking_cards(
     db: AsyncSession, run: m.AgentRun, *, skip_locked: bool = False
 ) -> list[m.ApprovalRequest]:
-    """The task's open parking cards, locked."""
+    """The task's open parking cards, locked (read where approvals are read
+    for a run, with no person in it: `approval_resume`)."""
+    from oc8.runtime.approval_resume import open_parking_cards
+
     if run.task_id is None:
         return []
-    return list(
-        (
-            await db.execute(
-                select(m.ApprovalRequest)
-                .where(
-                    m.ApprovalRequest.task_id == run.task_id,
-                    m.ApprovalRequest.status == "pending",
-                    m.ApprovalRequest.action_type.in_(_PARKING_ACTIONS),
-                )
-                .with_for_update(skip_locked=skip_locked)
-            )
-        )
-        .scalars()
-        .all()
+    return await open_parking_cards(
+        db, task_id=run.task_id, actions=_PARKING_ACTIONS, skip_locked=skip_locked
     )
 
 

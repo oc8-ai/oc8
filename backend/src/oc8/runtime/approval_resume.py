@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import select
@@ -25,6 +26,33 @@ def call_signature(tool: str, arguments: dict[str, Any]) -> str:
     """Same signature the engine computes, so a decision made here matches the
     call when the run replays it."""
     return tool + "\n" + json.dumps(arguments, sort_keys=True, default=str)
+
+
+async def open_parking_cards(
+    db: AsyncSession,
+    *,
+    task_id: uuid.UUID,
+    actions: Sequence[str],
+    skip_locked: bool = False,
+) -> list[ApprovalRequest]:
+    """The task's pending cards of `actions`, locked FOR UPDATE: what a run of
+    the task may be parked on. For a cancel waking the run (cancellation.py);
+    no person reads these, so the department scope does not apply."""
+    return list(
+        (
+            await db.execute(
+                select(ApprovalRequest)
+                .where(
+                    ApprovalRequest.task_id == task_id,
+                    ApprovalRequest.status == "pending",
+                    ApprovalRequest.action_type.in_(list(actions)),
+                )
+                .with_for_update(skip_locked=skip_locked)
+            )
+        )
+        .scalars()
+        .all()
+    )
 
 
 async def run_of_approval(db: AsyncSession, approval: ApprovalRequest) -> AgentRun | None:
