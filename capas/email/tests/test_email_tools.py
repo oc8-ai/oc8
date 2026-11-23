@@ -953,7 +953,9 @@ async def test_a_reply_to_on_the_senders_domain_is_followed(
     greenmail.append(make_mail(headers={"Reply-To": "Bob <bob@example.com>"}))
     [hit] = await call(tools, "mail_search")
     result = await call(tools, "mail_reply", id=hit["id"], body="Answer.")
-    assert "Reply-To" not in result.get("note", "")
+    # The Reply-To was followed, so the only note is the one about the copy
+    # (this mailbox has no Sent folder).
+    assert result["note"] == ("No Sent folder found; no copy kept. Set sent_folder on the login.")
     assert greenmail.messages(user={"login": "alice", "password": "alice-pw-123"}) == []
     [raw] = greenmail.messages(user={"login": "bob", "password": "bob-pw-123"})
     assert parsed(raw)["To"] == "Bob <bob@example.com>"
