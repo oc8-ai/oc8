@@ -570,10 +570,13 @@ async def disable_off_target_triggers(
 
 def skip_text(skipped: list[str]) -> str | None:
     """What the cursor row keeps of a poll's skipped events: the last reason,
-    on one line and cut short; None when nothing was skipped."""
+    on one line, without characters that are not printable (a NUL would fail
+    the write and stall the trigger), cut short; None when nothing was
+    skipped."""
     if not skipped:
         return None
-    return " ".join(str(skipped[-1]).split())[:_SKIP_LIMIT]
+    printable = "".join(c if c.isprintable() else " " if c.isspace() else "" for c in skipped[-1])
+    return " ".join(printable.split())[:_SKIP_LIMIT] or None
 
 
 def backoff_seconds(failures: int) -> int:

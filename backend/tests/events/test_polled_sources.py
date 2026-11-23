@@ -797,6 +797,8 @@ async def test_an_event_the_source_left_out_shows_on_the_cursor_until_a_new_base
 
 def test_a_skip_reason_is_cut_short() -> None:
     assert len(sources.skip_text(["x" * 1000, "y"])) <= 200
+    assert sources.skip_text(["auto\x00re\x1bply\u202e"]) == "autoreply"
+    assert sources.skip_text(["\x00"]) is None
     assert sources.skip_text([]) is None
     assert sources.skip_text(["a", "b"]) == "b"
 
@@ -879,3 +881,25 @@ async def test_a_new_password_or_the_same_values_keep_the_position(
 
     after = await _cursor(app_session, polled, trigger_id)
     assert after.cursor == {"pos": 5} and after.baseline_id == before.baseline_id
+
+
+async def test_a_nul_in_a_skip_reason_is_kept_without_it(app_session: AppSessionFactory) -> None:
+    """Text a source took from outside may hold a NUL, which the database
+    refuses: the poll still lands and the trigger moves on."""
+
+    def respond(
+        _login: dict[str, str], _config: dict[str, Any], cursor: dict[str, Any] | None
+    ) -> PollResult:
+        if cursor is None:
+            return PollResult(next_cursor={"pos": 5})
+        return PollResult(next_cursor={"pos": 6}, skipped=["loop\x00 guard"])
+
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(respond))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    row = await _cursor(app_session, polled, trigger_id)
+    assert row.last_skipped == "loop guard" and row.cursor == {"pos": 6}
+    assert row.failures == 0
