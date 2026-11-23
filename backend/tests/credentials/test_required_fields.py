@@ -16,6 +16,7 @@ from oc8.credentials.enablement import enabled_credentials, set_departments
 from oc8.credentials.service import (
     CredentialInUse,
     IncompleteCredential,
+    UrlWithoutScheme,
     create_credential,
     delete_credential,
     missing_required,
@@ -263,3 +264,45 @@ async def test_force_never_deletes_a_login_a_data_source_still_names(
             assert exc.value.references == ["data source 'Archive'"]
             assert exc.value.forceable is False
         assert await db.get(m.Credential, cred.id) is not None
+
+
+@pytest.mark.parametrize("typed", ["api.opaas.ai", "api.opaas.ai/v1", "ftp://api.opaas.ai"])
+async def test_an_address_without_its_scheme_is_refused(
+    app_session: AppSessionFactory, typed: str
+) -> None:
+    """E2E N4: `api.opaas.ai` was saved as a provider's address, and the model
+    check then failed with nothing saying why. An address starts with
+    https:// (or http://) -- said when it is saved."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        with pytest.raises(UrlWithoutScheme) as exc:
+            await create_credential(
+                db,
+                tenant_id=tenant,
+                name="Tool",
+                credential_type=_TYPE,
+                field_values={**_FULL, "url": typed},
+            )
+    assert exc.value.fields == ["url"]
+
+
+async def test_an_edit_is_refused_only_for_the_address_it_changes(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cred = await _login(db, tenant)
+        with pytest.raises(UrlWithoutScheme):
+            await update_credential(
+                db, tenant_id=tenant, credential_id=cred.id, field_values={"url": "tool.test"}
+            )
+        cred.field_values = {**cred.field_values, "url": "legacy.test"}
+        await update_credential(
+            db, tenant_id=tenant, credential_id=cred.id, field_values={"username": "ben"}
+        )
+        await update_credential(
+            db,
+            tenant_id=tenant,
+            credential_id=cred.id,
+            field_values={"url": " http://tool.internal "},
+        )

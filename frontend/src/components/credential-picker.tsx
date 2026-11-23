@@ -11,10 +11,16 @@ import {
   type CredentialDTO,
   type CredentialTypeFieldDTO,
 } from "@/lib/hooks";
-import { fill, incompleteText, usedByAgentsText } from "@/components/connections/texts";
+import {
+  fill,
+  incompleteText,
+  noSchemeText,
+  usedByAgentsText,
+} from "@/components/connections/texts";
 import {
   URL_PLACEHOLDER,
   emptyRequiredFields,
+  urlFieldsWithoutScheme,
   initialLoginValues,
   loginFieldLabel,
   loginFieldPlaceholder,
@@ -64,6 +70,7 @@ export function CredentialPicker({
   };
   const isEmpty = (field: CredentialTypeFieldDTO) => !(fieldValues[field.key] ?? "").trim();
   const emptyRequired = emptyRequiredFields(fields, fieldValues);
+  const noScheme = urlFieldsWithoutScheme(fields, fieldValues);
 
   const startCreating = () => {
     setFieldValues(initialLoginValues(fields));
@@ -72,7 +79,7 @@ export function CredentialPicker({
   };
 
   const submit = async () => {
-    if (!name.trim() || emptyRequired.length > 0) return;
+    if (!name.trim() || emptyRequired.length > 0 || noScheme.length > 0) return;
     try {
       const created = await createCredential.mutateAsync({
         name: name.trim(),
@@ -119,7 +126,10 @@ export function CredentialPicker({
           const label = loginFieldLabel(field, lang);
           const placeholder = loginFieldPlaceholder(field, lang);
           const help = resolveTranslation(field.help, field.help_translations, lang);
-          const invalid = (isEmpty(field) && field.required) || refused.includes(field.key);
+          const invalid =
+            (isEmpty(field) && field.required) ||
+            refused.includes(field.key) ||
+            noScheme.includes(field);
           return (
             <label key={field.key} className="block text-xs text-muted-foreground">
               <span className="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -147,6 +157,11 @@ export function CredentialPicker({
             </label>
           );
         })}
+        {noScheme.map((field) => (
+          <p key={field.key} role="alert" className="text-xs text-amber-600 dark:text-amber-400">
+            {noSchemeText(t, loginFieldLabel(field, lang))}
+          </p>
+        ))}
         {refused.length > 0 && (
           <p role="alert" className="text-xs text-amber-600 dark:text-amber-400">
             {incompleteText(t, name.trim() || typeDisplayName, refused.map(labelOf))}
@@ -167,7 +182,12 @@ export function CredentialPicker({
           </button>
           <button
             type="button"
-            disabled={!name.trim() || emptyRequired.length > 0 || createCredential.isPending}
+            disabled={
+              !name.trim() ||
+              emptyRequired.length > 0 ||
+              noScheme.length > 0 ||
+              createCredential.isPending
+            }
             onClick={submit}
             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >

@@ -229,6 +229,26 @@ describe("CredentialPicker", () => {
       );
     });
 
+    it("says an address needs https:// before saving it (E2E N4)", async () => {
+      createCredentialMock.mockResolvedValue({ id: "new-id" });
+      renderPicker({ credentialType: "svc_login" });
+      fireEvent.click(screen.getByRole("button", { name: /create new/i }));
+      fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "Prod" } });
+      const url = screen.getByLabelText(/address/i) as HTMLInputElement;
+      fireEvent.change(url, { target: { value: "api.opaas.ai" } });
+
+      expect(url).toHaveAttribute("aria-invalid", "true");
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "Address must start with https:// (for example https://api.example.com/v1).",
+      );
+      const save = screen.getByRole("button", { name: /^save$/i });
+      expect(save).toBeDisabled();
+
+      fireEvent.change(url, { target: { value: "https://api.opaas.ai/v1" } });
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(save).toBeEnabled();
+    });
+
     it("marks the fields the server names as missing", async () => {
       createCredentialMock.mockRejectedValue(
         new ApiError("incomplete", 422, {
@@ -239,7 +259,7 @@ describe("CredentialPicker", () => {
       renderPicker({ credentialType: "svc_login", onChange });
       fireEvent.click(screen.getByRole("button", { name: /create new/i }));
       fireEvent.change(screen.getByLabelText(/^name/i), { target: { value: "Prod" } });
-      fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "   x" } });
+      fireEvent.change(screen.getByLabelText(/address/i), { target: { value: "https://x" } });
       fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
       expect(await screen.findByRole("alert")).toHaveTextContent(
         "Prod is incomplete: Address missing",

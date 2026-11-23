@@ -52,3 +52,16 @@ export function emptyRequiredFields(
     (f) => f.required && !(keepSecrets && f.kind === "password") && !(values[f.key] ?? "").trim(),
   );
 }
+
+/** The `url` fields filled with something that is no http(s) address -- the
+ *  server refuses them too (422 `credential_url_scheme`). E2E N4: a provider
+ *  saved as `api.opaas.ai` failed every model check later, unexplained. */
+export function urlFieldsWithoutScheme(
+  fields: readonly LoginField[],
+  values: Readonly<Record<string, string>>,
+): LoginField[] {
+  return fields.filter((f) => {
+    const value = (values[f.key] ?? "").trim();
+    return f.kind === "url" && value !== "" && !/^https?:\/\/[^/\s]+/i.test(value);
+  });
+}

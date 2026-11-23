@@ -13,9 +13,14 @@ import {
   useUpdateOrganisationCredential,
 } from "@/lib/connections";
 import { resolveTranslation, useLang, useT } from "@/lib/i18n";
-import { emptyRequiredFields, loginFieldLabel, loginFieldPlaceholder } from "./login-fields";
+import {
+  emptyRequiredFields,
+  loginFieldLabel,
+  loginFieldPlaceholder,
+  urlFieldsWithoutScheme,
+} from "./login-fields";
 import { RequiredMark } from "./required-mark";
-import { checkErrorText, incompleteText, saveErrorText } from "./texts";
+import { checkErrorText, incompleteText, noSchemeText, saveErrorText } from "./texts";
 import { whereToFind } from "./where-to-find";
 
 const INPUT =
@@ -82,6 +87,7 @@ function CredentialForm({
   const fields = integration.credentialFields;
   // Editing keeps a stored secret when its field stays empty.
   const emptyRequired = emptyRequiredFields(fields, values, { keepSecrets: !!editCredentialId });
+  const noScheme = urlFieldsWithoutScheme(fields, values);
   const labelOf = (key: string) => {
     const field = fields.find((f) => f.key === key);
     return field ? loginFieldLabel(field, lang) : key;
@@ -108,7 +114,7 @@ function CredentialForm({
   };
 
   const save = async () => {
-    if (emptyRequired.length > 0) return;
+    if (emptyRequired.length > 0 || noScheme.length > 0) return;
     setRefused([]);
     try {
       if (editCredentialId) await update.mutateAsync({ id: editCredentialId, fieldValues: values });
@@ -138,7 +144,8 @@ function CredentialForm({
         const hint = whereToFind(integration.credentialType, field.key);
         const empty = !(values[field.key] ?? "").trim();
         const required = !!field.required && !(editCredentialId && field.kind === "password");
-        const invalid = (empty && required) || refused.includes(field.key);
+        const invalid =
+          (empty && required) || refused.includes(field.key) || noScheme.includes(field);
         return (
           <div key={field.key} className="space-y-1">
             <label htmlFor={id} className="block text-sm font-medium">
@@ -177,6 +184,11 @@ function CredentialForm({
           </div>
         );
       })}
+      {noScheme.map((field) => (
+        <p key={field.key} role="alert" className="text-sm text-amber-600 dark:text-amber-400">
+          {noSchemeText(t, loginFieldLabel(field, lang))}
+        </p>
+      ))}
       {refused.length > 0 && (
         <p role="alert" className="text-sm text-amber-600 dark:text-amber-400">
           {incompleteText(t, integration.label, refused.map(labelOf))}
@@ -198,7 +210,11 @@ function CredentialForm({
         <button type="button" onClick={runCheck} disabled={busy} className={SECONDARY}>
           {t("Check connection", "Verbindung prüfen")}
         </button>
-        <button type="submit" disabled={busy || emptyRequired.length > 0} className={PRIMARY}>
+        <button
+          type="submit"
+          disabled={busy || emptyRequired.length > 0 || noScheme.length > 0}
+          className={PRIMARY}
+        >
           {t("Save", "Speichern")}
         </button>
       </div>
