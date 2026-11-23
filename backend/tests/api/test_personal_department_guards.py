@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
@@ -273,3 +274,154 @@ async def test_the_copilot_cannot_delete_restore_or_hire_into_a_personal_departm
         archived.deleted_at = dt.datetime.now(dt.UTC)
     await refused(restore)
     assert (await _dept(app_session, w, w.personal)).deleted_at is not None
+
+
+_SPEC: dict[str, Any] = {
+    "datasets": [
+        {
+            "key": "sales",
+            "label": "Sales",
+            "grain": "day",
+            "fields": [{"key": "amount", "label": "Amount", "type": "money", "currency": "EUR"}],
+        }
+    ],
+    "blocks": [{"type": "kpi", "dataset": "sales", "field": "amount"}],
+}
+
+
+async def _agent_in(
+    app_session: AppSessionFactory, w: _World, dept_id: uuid.UUID, *, archived: bool = False
+) -> uuid.UUID:
+    async with app_session(w.tenant) as db:
+        agent = m.Agent(
+            tenant_id=w.tenant,
+            department_id=dept_id,
+            name="Helper",
+            mission="m0",
+            status="stopped",
+            definition={},
+            deleted_at=dt.datetime.now(dt.UTC) if archived else None,
+        )
+        db.add(agent)
+        await db.flush()
+        return agent.id
+
+
+def _agent_ops(agent_id: uuid.UUID) -> dict[str, dict[str, Any]]:
+    a = str(agent_id)
+    return {
+        "rename": {"type": "agent.rename", "agentId": a, "name": "Renamed"},
+        "lifecycle": {"type": "agent.lifecycle.set", "agentId": a, "action": "start"},
+        "delete": {"type": "agent.delete", "agentId": a},
+        "mission": {"type": "agent.mission.set", "agentId": a, "mission": "new mission"},
+        "narrowing": {"type": "agent.narrowing.set", "agentId": a, "narrowing": {}},
+        "trigger": {
+            "type": "trigger.create",
+            "agentId": a,
+            "kind": "cron",
+            "taskText": "t",
+            "cronExpression": "0 9 * * *",
+        },
+        "board": {"type": "board.create", "agentId": a, "title": "B", "spec": _SPEC},
+    }
+
+
+@pytest.mark.parametrize(
+    "name", ["rename", "lifecycle", "delete", "mission", "narrowing", "trigger", "board"]
+)
+async def test_the_copilot_cannot_edit_a_personal_agent(
+    app_session: AppSessionFactory, name: str
+) -> None:
+    from oc8.copilot.capabilities import InvalidOperation, apply_operation
+
+    w = await _world(app_session)
+    agent_id = await _agent_in(app_session, w, w.personal)
+    async with app_session(w.tenant) as db:
+        with pytest.raises(InvalidOperation) as caught:
+            await apply_operation(db, tenant_id=w.tenant, data=_agent_ops(agent_id)[name])
+    assert caught.value.reason == "a personal agent cannot be edited"
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        assert (agent.name, agent.mission, agent.status) == ("Helper", "m0", "stopped")
+        assert agent.deleted_at is None
+        boards = (await db.execute(select(m.DataBoard))).scalars().all()
+        assert boards == []
+
+
+async def test_the_copilot_cannot_restore_an_archived_personal_agent(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.capabilities import InvalidOperation, apply_operation
+
+    w = await _world(app_session)
+    agent_id = await _agent_in(app_session, w, w.personal, archived=True)
+    async with app_session(w.tenant) as db:
+        with pytest.raises(InvalidOperation) as caught:
+            await apply_operation(
+                db,
+                tenant_id=w.tenant,
+                data={"type": "agent.restore", "agentId": str(agent_id)},
+            )
+    assert caught.value.reason == "a personal agent cannot be edited"
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None and agent.deleted_at is not None
+
+
+async def test_the_copilot_cannot_move_a_board_of_a_personal_agent(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.capabilities import InvalidOperation, apply_operation
+
+    w = await _world(app_session)
+    agent_id = await _agent_in(app_session, w, w.personal)
+    async with app_session(w.tenant) as db:
+        board = m.DataBoard(
+            tenant_id=w.tenant,
+            department_id=w.personal,
+            agent_id=agent_id,
+            title="B",
+            description="",
+            spec={},
+        )
+        db.add(board)
+        await db.flush()
+        board_id = board.id
+    async with app_session(w.tenant) as db:
+        with pytest.raises(InvalidOperation) as caught:
+            await apply_operation(
+                db,
+                tenant_id=w.tenant,
+                data={"type": "board.update", "boardId": str(board_id), "title": "T"},
+            )
+    assert caught.value.reason == "a personal agent cannot be edited"
+
+
+async def test_the_copilot_still_edits_a_standard_agent(app_session: AppSessionFactory) -> None:
+    from oc8.copilot.capabilities import apply_operation
+
+    w = await _world(app_session)
+    agent_id = await _agent_in(app_session, w, w.standard)
+    async with app_session(w.tenant) as db:
+        await apply_operation(
+            db, tenant_id=w.tenant, data=_agent_ops(agent_id)["rename"], publish=False
+        )
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None and agent.name == "Renamed"
+
+
+async def test_target_revision_refuses_a_personal_agent(app_session: AppSessionFactory) -> None:
+    from oc8.copilot.capabilities import InvalidOperation, parse_operations, target_revision
+
+    w = await _world(app_session)
+    personal = await _agent_in(app_session, w, w.personal)
+    standard = await _agent_in(app_session, w, w.standard)
+    async with app_session(w.tenant) as db:
+        op = parse_operations([_agent_ops(personal)["rename"]])[0]
+        with pytest.raises(InvalidOperation) as caught:
+            await target_revision(db, op)
+        assert caught.value.reason == "a personal agent cannot be edited"
+        ok = parse_operations([_agent_ops(standard)["rename"]])[0]
+        assert await target_revision(db, ok) is not None

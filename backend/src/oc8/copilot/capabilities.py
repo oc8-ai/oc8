@@ -498,6 +498,39 @@ def operation_references(data: dict[str, Any]) -> dict[str, str]:
     return refs
 
 
+#: The fields an operation names an agent by.
+_AGENT_FIELDS = ("agentId",)
+
+
+async def refuse_personal_agent(db: AsyncSession, operation: Operation) -> None:
+    """Fail closed: no operation may reach an agent of a personal department
+    (archived ones included, so a restore is covered), nor hand a board to one.
+    A board is reached through its own agent. One explicit select; RLS binds the
+    tenant on the session."""
+    agent_ids: set[uuid.UUID] = {
+        value
+        for field in _AGENT_FIELDS
+        if isinstance(value := getattr(operation, field, None), uuid.UUID)
+    }
+    board_id = getattr(operation, "boardId", None)
+    if isinstance(board_id, uuid.UUID):
+        board_agent = await db.scalar(
+            select(m.DataBoard.agent_id).where(m.DataBoard.id == board_id)
+        )
+        if board_agent is not None:
+            agent_ids.add(board_agent)
+    if not agent_ids:
+        return
+    personal = await db.scalar(
+        select(m.Department.id)
+        .join(m.Agent, m.Agent.department_id == m.Department.id)
+        .where(m.Agent.id.in_(agent_ids), m.Department.kind == DEPARTMENT_KIND_PERSONAL)
+        .limit(1)
+    )
+    if personal is not None:
+        raise InvalidOperation("a personal agent cannot be edited")
+
+
 async def target_revision(
     db: AsyncSession, operation: Operation, *, lock_for_apply: bool = False
 ) -> str | None:
@@ -513,6 +546,7 @@ async def target_revision(
     `AgentCreate.departmentId` exists at apply time, which is the one thing
     that actually could have changed underneath it.
     """
+    await refuse_personal_agent(db, operation)
     if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall, BoardCreate)):
         return None
     if isinstance(operation, BoardUpdate):
@@ -705,6 +739,7 @@ async def apply_operation(
     after its last step (`apply_builder_proposal`: the person's "Create" is
     one decision, so the new agent's first version holds all of it)."""
     operation = parse_operations([data])[0]
+    await refuse_personal_agent(db, operation)
     if isinstance(operation, MissionSet):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
