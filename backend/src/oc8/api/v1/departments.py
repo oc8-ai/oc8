@@ -39,6 +39,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 from oc8 import models as m
 from oc8.agents.repo import visible_agents
@@ -60,6 +61,7 @@ from oc8.departments.personal import (
     PersonalOwnerLeft,
     ensure_owner_present,
     mark_frame_overridden,
+    owned_personal_department,
 )
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
@@ -433,7 +435,23 @@ async def restore_department(
         await ensure_owner_present(db, dept)
     except PersonalOwnerLeft as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
-    dept.deleted_at = None
+    # One live personal department per owner (`uq_department_personal_owner`):
+    # the owner may have been given a new one since this one was archived.
+    # Checked first for a clear answer; the savepoint catches a concurrent
+    # creation the check could not see.
+    exists = HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_department_exists"})
+    if dept.kind == DEPARTMENT_KIND_PERSONAL and dept.owner_member_id is not None:
+        live = await owned_personal_department(
+            db, tenant_id=dept.tenant_id, member_id=dept.owner_member_id
+        )
+        if live is not None:
+            raise exists
+    try:
+        async with db.begin_nested():
+            dept.deleted_at = None
+            await db.flush()
+    except IntegrityError as exc:
+        raise exists from exc
     await restore_department_boards(db, department_id=dept_id)
     await db.flush()
     # `department_to_dto` is a pure in-memory serialization of the already-

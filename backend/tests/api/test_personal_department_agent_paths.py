@@ -789,3 +789,31 @@ async def test_an_administrator_cannot_touch_a_personal_agents_triggers_or_skill
         assert kept is not None and kept.task_text == "t"
         rows = await db.execute(select(m.Trigger).where(m.Trigger.agent_id == agent_id))
         assert len(rows.scalars().all()) == 1
+
+
+async def test_restoring_an_old_personal_department_beside_a_live_one_is_a_409(
+    app_session: AppSessionFactory,
+) -> None:
+    """Final review M1: the owner has had a new personal department since the
+    old one was archived. Restoring the old one would break the one-live-
+    personal-department-per-owner index (a 500); it is a 409 instead."""
+    tenant, old_id = await _personal(app_session)
+    async with app_session(tenant) as db:
+        old = await db.get(m.Department, old_id)
+        assert old is not None and old.owner_member_id is not None
+        old.deleted_at = datetime.now(UTC)
+        await db.flush()
+        owner = await db.get(m.OrgMember, old.owner_member_id)
+        assert owner is not None
+        new = await get_or_create_personal_department(db, member=owner)
+        assert new.id != old_id
+    async with _http() as http:
+        r = await http.post(
+            f"/api/v1/departments/{old_id}/restore",
+            headers=_headers(tenant, "org_admin", _OTHER),
+        )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "personal_department_exists"}
+    async with app_session(tenant) as db:
+        old = await db.get(m.Department, old_id)
+        assert old is not None and old.deleted_at is not None
