@@ -302,50 +302,96 @@ describe("GuardrailFunctionRules", () => {
     expect(onChange).toHaveBeenCalledWith(baseValue({ modify: false }));
   });
 
-  it("shows every predefined guardrail restricting the same function as its own row, not just the first", () => {
+  it("suggests each function once, however many presets restrict it (E2E F4)", () => {
+    const entry = (key: string, label: string, summary: string, only: string[]) => ({
+      key,
+      label,
+      labelTranslations: {},
+      summary,
+      summaryTranslations: {},
+      useCase: "cross_cutting",
+      read: true,
+      modify: true,
+      approvalEur: null,
+      approvalActions: [],
+      only,
+      adjustable: [],
+    });
     render(
       <GuardrailFunctionRules
         agentId="a1"
         connectionName="odoo"
-        toolCatalog={["post_message", "delete_record"]}
+        toolCatalog={["post_message", "delete_record", "move_record"]}
         value={baseValue()}
         onChange={vi.fn()}
         guardrailLibrary={[
+          entry("cross_never_deletes", "Never delete", "delete_record is never available.", [
+            "post_message",
+            "move_record",
+          ]),
+          entry("finance_no_deletions", "Finance", "Withheld for the audit trail.", [
+            "post_message",
+          ]),
+          entry("support", "Support", "Only replies.", ["post_message"]),
+        ]}
+      />,
+    );
+    expect(screen.getAllByText("Delete Record")).toHaveLength(1);
+    expect(screen.getAllByText("Move Record")).toHaveLength(1);
+    // The first preset that proposes it speaks for the row.
+    expect(screen.getByDisplayValue("delete_record is never available.")).toBeInTheDocument();
+  });
+
+  it("applies a whole preset, its usage limit included (E2E F4)", () => {
+    const onChange = vi.fn();
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_get", "mail_send", "mail_delete"]}
+        value={baseValue()}
+        onChange={onChange}
+        presets={[
           {
-            key: "cross_never_deletes",
-            label: "Never delete",
+            key: "send_with_approval",
+            label: "Send with approval",
             labelTranslations: {},
-            summary: "delete_record is never available.",
+            summary: "Every mail waits for approval.",
             summaryTranslations: {},
-            useCase: "cross_cutting",
+            recommended: true,
             read: true,
             modify: true,
+            approvalActions: ["mail_send"],
             approvalEur: null,
-            approvalActions: [],
-            only: ["post_message"],
-            adjustable: [],
+            only: [],
+            limits: [],
           },
           {
-            key: "finance_no_deletions",
-            label: "Work finance, never delete",
-            labelTranslations: {},
-            summary: "delete_record is withheld for the audit trail.",
+            key: "autonomous_with_limit",
+            label: "Autonomous, max 50 mails a day",
+            labelTranslations: { de: "Selbstständig, max. 50 Mails am Tag" },
+            summary: "Works on its own, up to 50 mails a day.",
             summaryTranslations: {},
-            useCase: "finance",
+            recommended: false,
             read: true,
             modify: true,
-            approvalEur: null,
             approvalActions: [],
-            only: ["post_message"],
-            adjustable: [],
+            approvalEur: null,
+            only: ["mail_get", "mail_send"],
+            limits: [{ tools: ["mail_send"], max: 50, per: "day" }],
           },
         ]}
       />,
     );
-    expect(screen.getByDisplayValue("delete_record is never available.")).toBeInTheDocument();
-    expect(
-      screen.getByDisplayValue("delete_record is withheld for the audit trail."),
-    ).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: /apply a preset/i }), {
+      target: { value: "autonomous_with_limit" },
+    });
+    expect(onChange).toHaveBeenCalledWith(
+      baseValue({
+        only: ["mail_get", "mail_send"],
+        limits: [{ tools: ["mail_send"], max: 50, per: "day" }],
+      }),
+    );
   });
 
   it("dismisses a suggested row without touching the shared value", () => {
