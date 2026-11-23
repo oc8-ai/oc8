@@ -244,7 +244,15 @@ async def update_credential(
         missing = missing_required(cred_type, {**merged, **new_secrets}, dict(cred.secret_refs))
         if missing:
             raise IncompleteCredential(missing)
+        account_changed = merged != cred.field_values
         cred.field_values = merged
+        if account_changed:
+            # Any non-secret field may name the account (a host, a user, a
+            # tenant): the login may now reach another one, so whatever
+            # listens on it starts afresh. A new secret alone does not.
+            from oc8.events.sources import LoginTarget, reset_cursors_on_login
+
+            await reset_cursors_on_login(db, LoginTarget("credential", cred.id))
         secret_refs = dict(cred.secret_refs)
         for key in secret_keys:
             value = field_values.get(key)

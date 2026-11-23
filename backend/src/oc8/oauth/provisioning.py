@@ -111,6 +111,12 @@ async def _provision_microsoft(
 
     if existing is not None:
         conn = existing
+        if conn.azure_tenant_id != azure_tenant_id:
+            # The same app id in another directory reaches another organisation:
+            # whatever listens on this login starts afresh there.
+            from oc8.events.sources import LoginTarget, reset_cursors_on_login
+
+            await reset_cursors_on_login(db, LoginTarget("oauth", conn.id))
         conn.azure_tenant_id = azure_tenant_id
         conn.grant_type = "client_credentials"
         conn.status = "active"

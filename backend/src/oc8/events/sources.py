@@ -516,6 +516,21 @@ async def reset_cursor(db: AsyncSession, trigger: m.Trigger) -> None:
     await db.flush()
 
 
+async def reset_cursors_on_login(db: AsyncSession, target: LoginTarget) -> None:
+    """Every polled trigger listening on `target` takes a fresh baseline: the
+    login row now reaches another account (edited in place), whose ids mean
+    nothing next to the old one's and whose backlog is not news."""
+    column = (
+        m.Trigger.event_target_credential_id
+        if target.kind == "credential"
+        else m.Trigger.event_target_oauth_connection_id
+    )
+    triggers = (await db.execute(select(m.Trigger).where(column == target.id))).scalars().all()
+    for trigger in triggers:
+        await reset_cursor(db, trigger)
+        logger.info("polled trigger %s takes a fresh baseline: its login changed", trigger.id)
+
+
 async def disable_off_target_triggers(
     db: AsyncSession, *, agent_id: uuid.UUID, tool_key: str
 ) -> None:

@@ -799,3 +799,83 @@ def test_a_skip_reason_is_cut_short() -> None:
     assert len(sources.skip_text(["x" * 1000, "y"])) <= 200
     assert sources.skip_text([]) is None
     assert sources.skip_text(["a", "b"]) == "b"
+
+
+@pytest.fixture
+def login_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The test login's type, so it can be edited like any other."""
+    from oc8.capas.manifest import CredentialTypeSpec, SetupFieldSpec
+    from oc8.credentials import registry
+    from tests.events.polled import CREDENTIAL_TYPE
+
+    monkeypatch.setitem(
+        registry.CORE_CREDENTIAL_TYPES,
+        CREDENTIAL_TYPE,
+        CredentialTypeSpec(
+            name=CREDENTIAL_TYPE,
+            display_name="Test login",
+            fields=[
+                SetupFieldSpec(key="host", label="Host", kind="text"),
+                SetupFieldSpec(key="username", label="User", kind="text"),
+                SetupFieldSpec(key="password", label="Password", kind="password"),
+            ],
+        ),
+    )
+
+
+async def _edit_login(
+    app_session: AppSessionFactory, polled: Polled, values: dict[str, str]
+) -> None:
+    from oc8.credentials.service import update_credential
+
+    async with app_session(polled.tenant) as db:
+        await update_credential(
+            db, tenant_id=polled.tenant, credential_id=polled.credential_id, field_values=values
+        )
+
+
+@pytest.mark.usefixtures("login_type")
+async def test_editing_the_logins_account_in_place_takes_a_fresh_baseline(
+    app_session: AppSessionFactory,
+) -> None:
+    """The same login row now reaching another account (another server or
+    user) is a new source: its ids are new, and its backlog is not news."""
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(baseline_then(lambda _c: [event(1)])))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    assert len(await _runs(app_session, polled)) == 1
+    before = (await _cursor(app_session, polled, trigger_id)).baseline_id
+
+    await _edit_login(app_session, polled, {"username": "bert"})
+
+    row = await _cursor(app_session, polled, trigger_id)
+    assert row.cursor is None
+    await poll_tick()  # the baseline on the new account
+    assert (await _cursor(app_session, polled, trigger_id)).baseline_id != before
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    assert len(await _runs(app_session, polled)) == 2
+
+
+@pytest.mark.usefixtures("login_type")
+@pytest.mark.parametrize(
+    "values",
+    [{"password": "a-new-secret"}, {"host": "in.example.test", "username": "anna"}],
+    ids=["password only", "same values"],
+)
+async def test_a_new_password_or_the_same_values_keep_the_position(
+    app_session: AppSessionFactory, values: dict[str, str]
+) -> None:
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(baseline_then(lambda _c: [])))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()
+    before = await _cursor(app_session, polled, trigger_id)
+
+    await _edit_login(app_session, polled, values)
+
+    after = await _cursor(app_session, polled, trigger_id)
+    assert after.cursor == {"pos": 5} and after.baseline_id == before.baseline_id
