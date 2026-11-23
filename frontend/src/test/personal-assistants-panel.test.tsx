@@ -95,9 +95,10 @@ describe("PersonalAssistantsPanel", () => {
   it("renders nothing without department:own", async () => {
     granted.current = new Set();
     const { container } = renderPanel();
-    await new Promise((r) => setTimeout(r, 20));
-    expect(container).toBeEmptyDOMElement();
-    expect(getMock).not.toHaveBeenCalled();
+    await waitFor(() => {
+      expect(container).toBeEmptyDOMElement();
+      expect(getMock).not.toHaveBeenCalled();
+    });
   });
 
   it("disables the button while hiring", async () => {

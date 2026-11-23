@@ -60,7 +60,7 @@ export function PersonalAssistantsPanel() {
   const may = useMay();
   const allowed = may("department:own");
   const mine = useMyPersonalDepartment(allowed);
-  const templates = usePersonalTemplates(allowed);
+  const templates = usePersonalTemplates(allowed && !!mine.data?.enabled);
   const hire = useHirePersonalTemplate();
 
   if (!allowed || !mine.data) return null;

@@ -1066,7 +1066,7 @@ export function usePersonalTemplates(enabled = true) {
 export function useHirePersonalTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { capaId: string; name?: string }) =>
+    mutationFn: (body: { capaId: string }) =>
       api.post<{ agentId: string; departmentId: string }>("/personal-department/agents", body),
     onSuccess: async (data) => {
       await Promise.all([
