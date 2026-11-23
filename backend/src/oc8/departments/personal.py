@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.authz.pdp import narrowing_within_frame
 from oc8.departments.frames import cascade_department_tools_change
-from oc8.departments.repo import live_department
+from oc8.departments.repo import live_department, lock_departments_owned_by
 from oc8.metering.budget import get_budget, resume_budget_scope, set_budget
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 
@@ -97,11 +97,22 @@ def enforce_personal_narrowing(dept: m.Department, narrowing: dict[str, Any] | N
 
 async def ensure_owner_present(db: AsyncSession, dept: m.Department) -> None:
     """Raise `PersonalOwnerLeft` for a department whose owner member is gone
-    (soft-deleted or missing). Departments without an owner pass."""
+    (soft-deleted or missing). Departments without an owner pass.
+
+    Reads the row from the database, not the session's identity map: a caller
+    that loaded the member earlier (the hire route does) would otherwise keep
+    seeing it alive after an offboarding committed in between."""
     if dept.owner_member_id is None:
         return
-    owner = await db.get(m.OrgMember, dept.owner_member_id)
-    if owner is None or owner.deleted_at is not None:
+    row = (
+        await db.execute(
+            select(m.OrgMember.id, m.OrgMember.deleted_at).where(
+                m.OrgMember.id == dept.owner_member_id,
+                m.OrgMember.tenant_id == dept.tenant_id,
+            )
+        )
+    ).first()
+    if row is None or row.deleted_at is not None:
         raise PersonalOwnerLeft
 
 
@@ -111,11 +122,14 @@ async def ensure_personal_capacity(db: AsyncSession, dept: m.Department) -> None
     live agents. Other kinds of department have neither."""
     if dept.kind != DEPARTMENT_KIND_PERSONAL:
         return
-    await ensure_owner_present(db, dept)
-    # Lock the department row before counting: two hires at cap-1 would both
-    # count cap-1 and both insert. The second waits here for the first's
-    # commit, then counts it. The lock lasts until the transaction ends.
+    # Lock the department row first, before the owner check and the count:
+    # two hires at cap-1 would both count cap-1 and both insert, and a hire
+    # checking the owner before an offboarding's commit would add an agent the
+    # sweep never sees. The second of each pair waits here for the first's
+    # commit (`stop_departments_owned_by` takes the same lock), then checks and
+    # counts what it committed. The lock lasts until the transaction ends.
     await live_department(db, tenant_id=dept.tenant_id, department_id=dept.id, for_update=True)
+    await ensure_owner_present(db, dept)
     defaults = await personal_defaults(db, tenant_id=dept.tenant_id)
     held = await live_agent_count(db, tenant_id=dept.tenant_id, department_id=dept.id)
     if held >= defaults.max_agents:
@@ -604,9 +618,12 @@ async def stop_departments_owned_by(
     from oc8.audit.chain import append_event
     from oc8.runtime.cancellation import AGENT_ARCHIVED
 
-    owned = select(m.Department.id).where(
-        m.Department.tenant_id == tenant_id, m.Department.owner_member_id == member_id
-    )
+    # Lock the departments before reading their agents: a concurrent hire
+    # (`ensure_personal_capacity`, same lock) either commits first, and its
+    # agent is selected and archived below, or waits and then sees the owner
+    # gone. Without the lock a hire committing after this select would leave
+    # a live agent behind.
+    owned = await lock_departments_owned_by(db, tenant_id=tenant_id, member_id=member_id)
     agent_ids = list(
         (
             await db.execute(

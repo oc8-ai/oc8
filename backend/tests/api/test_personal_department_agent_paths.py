@@ -284,6 +284,79 @@ async def test_two_concurrent_hires_at_the_cap_admit_exactly_one(
     assert sorted(results) == [False, True]
 
 
+@pytest.mark.parametrize("first", ["hire", "offboarding"])
+async def test_an_offboarding_racing_a_hire_leaves_no_live_agent(
+    app_session: AppSessionFactory, first: str
+) -> None:
+    """Final review I1: the hire checked the owner, then locked; the sweep
+    selected the agents without the department lock. A hire committing just
+    after the sweep's select left a live agent with nobody to answer for it.
+    Both now take the department row lock first: whichever goes second waits
+    for the other's commit, and then either refuses the hire (owner gone) or
+    archives the agent it now sees. The hire session holds the member in its
+    identity map, as the route does (`_caller_member`)."""
+    tenant, dept_id = await _personal(app_session)
+    first_is_in = asyncio.Event()
+
+    async def _hire() -> None:
+        if first != "hire":
+            await first_is_in.wait()
+        async with app_session(tenant) as db:
+            member = (
+                await db.execute(select(m.OrgMember).where(m.OrgMember.subject == _SUBJECT))
+            ).scalar_one()
+            assert member.deleted_at is None
+            dept = await live_department(db, tenant_id=tenant, department_id=dept_id)
+            assert dept is not None
+            try:
+                await ensure_personal_capacity(db, dept)
+            except PersonalAgentLimit:  # PersonalOwnerLeft
+                return
+            db.add(
+                m.Agent(
+                    tenant_id=tenant,
+                    department_id=dept_id,
+                    name="x",
+                    status="stopped",
+                    narrowing={},
+                    definition={},
+                )
+            )
+            await db.flush()
+            if first == "hire":
+                first_is_in.set()
+                await asyncio.sleep(0.3)
+
+    async def _offboard() -> None:
+        if first != "offboarding":
+            await first_is_in.wait()
+        async with app_session(tenant) as db:
+            member = (
+                await db.execute(select(m.OrgMember).where(m.OrgMember.subject == _SUBJECT))
+            ).scalar_one()
+            member.deleted_at = datetime.now(UTC)
+            await db.flush()
+            await offboard_member(db, tenant_id=tenant, member_id=member.id)
+            if first == "offboarding":
+                first_is_in.set()
+                await asyncio.sleep(0.3)
+
+    await asyncio.wait_for(asyncio.gather(_hire(), _offboard()), timeout=30)
+    async with app_session(tenant) as db:
+        live = (
+            (
+                await db.execute(
+                    select(m.Agent).where(
+                        m.Agent.department_id == dept_id, m.Agent.deleted_at.is_(None)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert live == []
+
+
 async def test_concurrent_http_hires_at_the_cap_give_one_201_and_one_409(
     app_session: AppSessionFactory,
 ) -> None:

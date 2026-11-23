@@ -115,6 +115,25 @@ async def live_department(
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
+async def lock_departments_owned_by(
+    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
+) -> list[uuid.UUID]:
+    """Row-lock (`SELECT ... FOR UPDATE`) every department a member owns, any
+    `kind` and archived ones too, and return their ids. Without the caller's
+    scope: only for the offboarding sweep
+    (`departments.personal.stop_departments_owned_by`), which must serialise
+    with a concurrent hire (`ensure_personal_capacity` takes the same lock)
+    before it reads the departments' agents. Ordered by id, so two sweeps lock
+    in the same order. Held until the transaction ends."""
+    stmt = (
+        select(Department.id)
+        .where(Department.tenant_id == tenant_id, Department.owner_member_id == member_id)
+        .order_by(Department.id)
+        .with_for_update()
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
 async def visible_department(
     db: AsyncSession,
     *,
