@@ -1857,6 +1857,7 @@ async def run_agent(
                             messages.append(
                                 NeutralMessage(role="user", content=_direct.DIRECT_ACTION_NUDGE)
                             )
+                        reserved.pop("held", None)  # claimed if it ran; free again if not
                         tool_trace.append(
                             {
                                 "tool": tool_name,
@@ -2921,6 +2922,9 @@ async def run_agent(
                                 ),
                                 tool_name=tc.name,
                             )
+                            reserved.pop(
+                                tc.id, None
+                            )  # never dispatched: the approval is free again
                             continue
                         gate_verdict = None
                         if decision.effect is Effect.ALLOW:
@@ -3879,6 +3883,10 @@ async def run_agent(
                             _tool_call_entry["reason"] = denial_record_reason or (
                                 tool_error.message if tool_error is not None else None
                             )
+                        # Not dispatched (a refusal, a replay, a deny) -> the approval it
+                        # set aside is free again for an identical call; dispatched, it
+                        # was claimed already.
+                        reserved.pop(tc.id, None)
                         tool_trace.append(_tool_call_entry)
                         await _live_tool_call(tool_trace[-1])
                         messages.append(

@@ -437,6 +437,74 @@ async def test_an_approved_call_refused_before_dispatch_keeps_its_approval(
         assert not run.context.get("consumed_tool_approvals")
 
 
+async def test_a_call_refused_before_dispatch_frees_its_approval_for_the_next(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of round 8: a call that set an approval aside and was then
+    refused before dispatch kept it set aside, so an identical call later in
+    the same leg found none left. Whatever does not dispatch frees it."""
+    from oc8.runtime.approval_resume import Decisions
+
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _session_factory(recorder, ["delete_a"]))
+    first = ToolCall(id="c1", name="delete_a", arguments={"id": 7, "justification": "x"})
+    again = ToolCall(id="c2", name="delete_a", arguments={"id": 7, "justification": "x"})
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream([_turn("", first), _turn("", again), _turn("All done.")]),
+    )
+    from oc8.agent import engine as engine_module
+
+    real_reserve = engine_module.reserve_usage
+    refused: list[bool] = []
+
+    async def _full_once(**kwargs: Any) -> Any:
+        if not refused:
+            refused.append(True)
+
+            async def _settle(**_: Any) -> None:
+                return None
+
+            return SimpleNamespace(refusal="ERROR: usage limit reached", settle=_settle)
+        return await real_reserve(**kwargs)
+
+    monkeypatch.setattr("oc8.agent.engine.reserve_usage", _full_once)
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db,
+            tenant,
+            tool_scopes={"read": [], "modify": ["delete_a"]},
+            destructive_tools=["delete_a"],
+            approval_templates={"delete_a": "Allow deleting record {id}?"},
+        )
+        sig = call_sig(ToolCall(id="r", name="delete_a", arguments={"id": 7}))
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            state="running",
+            context={
+                "resolved_tool_approvals": [
+                    {"sig": sig, "decision": "approve", "approval_id": "a1"}
+                ]
+            },
+        )
+        db.add(run)
+        await db.flush()
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            run_id=run.id,
+            mcp_conn=conn,
+            pre_decided=Decisions(run.context),
+        )
+
+    assert result.status == "done", result
+    assert [args["id"] for _name, args in recorder.calls] == [7]
+
+
 async def test_a_call_id_an_earlier_leg_used_is_renamed(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
