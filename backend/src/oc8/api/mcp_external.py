@@ -33,12 +33,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.repo import visible_agent, visible_agents
 from oc8.api.v1._serializers import agent_to_dto, department_to_dto, integration_to_dto
 from oc8.api.v1.catalog import _agent_slug_to_id
 from oc8.apikeys.service import API_KEY_PREFIX, find_enabled_by_token, touch_last_used
 from oc8.auth import Principal
-from oc8.authz.authority import authority_for_principal
-from oc8.authz.permissions import COPILOT, MANAGE, MEMBER_ROLE, VIEW, perm
+from oc8.authz.authority import authority_for_principal, tenant_wide_read
+from oc8.authz.permissions import (
+    AGENT,
+    COPILOT,
+    DEPARTMENT,
+    MANAGE,
+    MEMBER_ROLE,
+    VIEW,
+    perm,
+)
+from oc8.authz.scope import DepartmentScope, scope_for_principal
 from oc8.connections.tool_connection import not_retired
 from oc8.copilot.capabilities import InvalidOperation, _connection_tool_names, operation_references
 from oc8.copilot.models import CopilotOperation, CopilotProposal
@@ -50,6 +60,7 @@ from oc8.copilot.proposals import (
     reject_proposal,
 )
 from oc8.db.session import tenant_session
+from oc8.departments.repo import visible_department, visible_departments
 from oc8.tenants.provision import get_singleton_organization
 
 logger = logging.getLogger(__name__)
@@ -136,6 +147,23 @@ async def _require(
     authority = await authority_for_principal(request, db, principal)
     if permission not in authority.tenant_wide:
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"missing permission: {permission}")
+
+
+async def _reach(
+    request: Request, db: AsyncSession, principal: Principal, permission: str
+) -> tuple[DepartmentScope, bool, uuid.UUID | None, bool]:
+    """Where the key's owner stands, for a department or agent read: the same
+    four terms the `/api/v1` routes hand the scoped repository -- scope (their
+    seats), tenant-wide READ of `permission`, their member id, and tenant-wide
+    `department:manage` (ruling S1 for a personal department by id)."""
+    authority = await authority_for_principal(request, db, principal)
+    member, scope = await scope_for_principal(db, principal)
+    return (
+        scope,
+        tenant_wide_read(authority, permission),
+        member.id if member is not None else None,
+        tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
 
 
 # ------------------------------------------------------------------ JSON-RPC
@@ -407,16 +435,11 @@ async def _call_tool(
 
     if name == "copilot_list_departments":
         await _require(request, db, principal, perm(COPILOT, VIEW))
-        rows = (
-            (
-                await db.execute(
-                    select(m.Department).where(m.Department.tenant_id == principal.tenant_id)
-                )
-            )
-            .scalars()
-            .all()
+        scope, tenant_wide, _member_id, _manage_all = await _reach(
+            request, db, principal, perm(DEPARTMENT, VIEW)
         )
-        payload = [department_to_dto(d).model_dump(mode="json", by_alias=True) for d in rows]
+        departments, _total = await visible_departments(db, scope=scope, tenant_wide=tenant_wide)
+        payload = [department_to_dto(d).model_dump(mode="json", by_alias=True) for d in departments]
         return _tool_result(json.dumps(payload))
 
     if name == "copilot_get_department":
@@ -424,23 +447,37 @@ async def _call_tool(
         department_id = _parse_uuid(arguments.get("departmentId"))
         if department_id is None:
             return _tool_result("departmentId is required", is_error=True)
-        department = await db.get(m.Department, department_id)
-        if department is None or department.tenant_id != principal.tenant_id:
+        scope, tenant_wide, member_id, manage_all = await _reach(
+            request, db, principal, perm(DEPARTMENT, VIEW)
+        )
+        department = await visible_department(
+            db,
+            scope=scope,
+            tenant_wide=tenant_wide,
+            department_id=department_id,
+            member_id=member_id,
+            manage_all=manage_all,
+        )
+        if department is None:
             return _tool_result("department not found", is_error=True)
         payload = department_to_dto(department).model_dump(mode="json", by_alias=True)
         return _tool_result(json.dumps(payload))
 
     if name == "copilot_list_agents":
         await _require(request, db, principal, perm(COPILOT, VIEW))
-        statement = select(m.Agent).where(m.Agent.tenant_id == principal.tenant_id)
+        filter_department_id: uuid.UUID | None = None
         raw_department_id = arguments.get("departmentId")
         if raw_department_id:
-            department_id = _parse_uuid(raw_department_id)
-            if department_id is None:
+            filter_department_id = _parse_uuid(raw_department_id)
+            if filter_department_id is None:
                 return _tool_result("departmentId is invalid", is_error=True)
-            statement = statement.where(m.Agent.department_id == department_id)
-        rows = (await db.execute(statement)).scalars().all()
-        payload = [agent_to_dto(a).model_dump(mode="json", by_alias=True) for a in rows]
+        scope, tenant_wide, _member_id, _manage_all = await _reach(
+            request, db, principal, perm(AGENT, VIEW)
+        )
+        agents, _total = await visible_agents(
+            db, scope=scope, tenant_wide=tenant_wide, department_id=filter_department_id
+        )
+        payload = [agent_to_dto(a).model_dump(mode="json", by_alias=True) for a in agents]
         return _tool_result(json.dumps(payload))
 
     if name == "copilot_get_agent":
@@ -448,8 +485,11 @@ async def _call_tool(
         agent_id = _parse_uuid(arguments.get("agentId"))
         if agent_id is None:
             return _tool_result("agentId is required", is_error=True)
-        agent = await db.get(m.Agent, agent_id)
-        if agent is None or agent.tenant_id != principal.tenant_id:
+        scope, tenant_wide, _member_id, _manage_all = await _reach(
+            request, db, principal, perm(AGENT, VIEW)
+        )
+        agent = await visible_agent(db, scope=scope, tenant_wide=tenant_wide, agent_id=agent_id)
+        if agent is None:
             return _tool_result("agent not found", is_error=True)
         payload = agent_to_dto(agent).model_dump(mode="json", by_alias=True)
         return _tool_result(json.dumps(payload))

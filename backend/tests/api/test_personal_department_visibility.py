@@ -211,23 +211,31 @@ async def test_tenant_wide_and_all_departments_lists_exclude_it(
         assert by_dept.json()["items"] == []
 
 
+@pytest.mark.parametrize(
+    ("subject", "role", "status"),
+    [("admin", "org_admin", 200), ("manager", "dept_manager", 403)],
+)
 async def test_the_tenant_kpi_breakdowns_have_no_personal_rows(
-    app_session: AppSessionFactory,
+    app_session: AppSessionFactory, subject: str, role: str, status: int
 ) -> None:
+    """`dept_manager` holds `department:manage` (so it reads a personal
+    department by id, S1) but not `statistics:view`: the tenant breakdown is
+    closed to it entirely, which is pinned here so granting it later has to
+    come back through this test."""
     t = await _setup(app_session)
-    h = _headers(t.id, "admin", "org_admin")
+    h = _headers(t.id, subject, role)
     async with _http() as http:
-        by_dept = await http.get("/api/v1/kpis", params={"groupBy": "department"}, headers=h)
-        assert by_dept.status_code == 200, by_dept.text
-        dept_keys = [row["groupKey"] for row in by_dept.json()["rows"]]
-        assert str(t.shared) in dept_keys
-        assert str(t.personal) not in dept_keys
-
-        by_agent = await http.get("/api/v1/kpis", params={"groupBy": "agent"}, headers=h)
-        assert by_agent.status_code == 200, by_agent.text
-        agent_keys = [row["groupKey"] for row in by_agent.json()["rows"]]
-        assert str(t.nora) in agent_keys
-        assert str(t.pia) not in agent_keys
+        for group_by, present, absent in (
+            ("department", t.shared, t.personal),
+            ("agent", t.nora, t.pia),
+        ):
+            r = await http.get("/api/v1/kpis", params={"groupBy": group_by}, headers=h)
+            assert r.status_code == status, r.text
+            if status != 200:
+                continue
+            keys = [row["groupKey"] for row in r.json()["rows"]]
+            assert str(present) in keys
+            assert str(absent) not in keys
 
 
 @pytest.mark.xfail(strict=True, reason="A4 content privacy lands in PR 3")

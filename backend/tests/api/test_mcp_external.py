@@ -545,9 +545,7 @@ async def test_missing_bearer_token_is_401(app_session: AppSessionFactory) -> No
     app = create_app()
     async with LifespanManager(app):
         async with _client(app) as c:
-            r = await c.post(
-                "/mcp/external", json={"jsonrpc": "2.0", "id": 1, "method": "ping"}
-            )
+            r = await c.post("/mcp/external", json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
     assert r.status_code == 401
 
 
@@ -697,9 +695,7 @@ async def test_propose_then_apply_executes_the_operation(
 ) -> None:
     tenant, token = await _admin_setup(app_session)
     async with app_session(tenant) as db:
-        agent = m.Agent(
-            tenant_id=tenant, department_id=uuid.uuid4(), name="Target", mission="old"
-        )
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Target", mission="old")
         db.add(agent)
         await db.flush()
         agent_id = agent.id
@@ -771,7 +767,6 @@ async def test_reject_transitions_the_proposal_without_applying_it(
     app = create_app()
     async with LifespanManager(app):
         async with _client(app) as c:
-
             propose = await c.post(
                 "/mcp/external",
                 json={
@@ -831,7 +826,6 @@ async def test_list_proposals_defaults_to_draft_and_review_reads_one_by_id(
     app = create_app()
     async with LifespanManager(app):
         async with _client(app) as c:
-
             propose = await c.post(
                 "/mcp/external",
                 json={
@@ -1039,13 +1033,10 @@ async def test_disabling_the_owning_member_disables_every_key_they_hold(
     must invalidate the key even though the key row itself is still enabled."""
     tenant, token = await _admin_setup(app_session, subject="soon-gone@example.com")
 
-
     async with app_session(tenant) as db:
         member = (
             await db.execute(
-                m.OrgMember.__table__.select().where(
-                    m.OrgMember.subject == "soon-gone@example.com"
-                )
+                m.OrgMember.__table__.select().where(m.OrgMember.subject == "soon-gone@example.com")
             )
         ).fetchone()
         await db.execute(
@@ -1189,3 +1180,140 @@ async def test_apply_and_reject_proposal_refuse_a_builder_proposal(
 
         proposal = await db.get(CopilotProposal, uuid.UUID(builder_id))
         assert proposal is not None and proposal.status == "draft"
+
+
+# ------------------------------------------- personal departments (PR 1, Task 2)
+
+
+async def _personal_office(
+    app_session: AppSessionFactory,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """A sole-Organization tenant with a standard "Vertrieb" (agent Nora) and
+    `owner`'s personal department (agent Pia, owner seated as approver).
+
+    Returns `(tokens, ids)`. Tokens per subject, each backed by an assigned
+    built-in role: `owner` and `operator` are `operator` (copilot:view and
+    tenant-wide read, no department:manage); `manager` is `dept_manager`;
+    `admin` is `org_admin`."""
+    tenant = uuid.uuid4()
+    await _sole_organization(app_session, tenant)
+    async with app_session(tenant) as db:
+        roles = {
+            name: m.Role(tenant_id=tenant, name=name, builtin=True)
+            for name in ("operator", "dept_manager", "org_admin")
+        }
+        db.add_all(roles.values())
+        await db.flush()
+        members = {}
+        for subject, role in (
+            ("owner", "operator"),
+            ("operator", "operator"),
+            ("manager", "dept_manager"),
+            ("admin", "org_admin"),
+        ):
+            member = m.OrgMember(
+                tenant_id=tenant,
+                subject=subject,
+                subject_uuid=uuid.uuid5(uuid.NAMESPACE_URL, f"oc8:local:{subject}"),
+                role_id=roles[role].id,
+            )
+            db.add(member)
+            members[subject] = member
+        shared = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
+        db.add(shared)
+        await db.flush()
+        personal = m.Department(
+            tenant_id=tenant,
+            name="Owner",
+            frame={},
+            kind="personal",
+            owner_member_id=members["owner"].id,
+        )
+        db.add(personal)
+        await db.flush()
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=members["owner"].id,
+                department_id=personal.id,
+                seat_role="dept_approver",
+                agent_manage=True,
+            )
+        )
+        nora = m.Agent(tenant_id=tenant, department_id=shared.id, name="Nora")
+        pia = m.Agent(tenant_id=tenant, department_id=personal.id, name="Pia")
+        db.add_all([nora, pia])
+        await db.flush()
+        ids = {
+            "shared": str(shared.id),
+            "personal": str(personal.id),
+            "nora": str(nora.id),
+            "pia": str(pia.id),
+        }
+        member_ids = {subject: member.id for subject, member in members.items()}
+    tokens = {
+        subject: await _api_key_token(app_session, tenant, member_id)
+        for subject, member_id in member_ids.items()
+    }
+    return tokens, ids
+
+
+def _ids(result: dict[str, Any]) -> list[str]:
+    assert result["isError"] is False, result
+    return [row["id"] for row in json.loads(result["content"][0]["text"])]
+
+
+@pytest.mark.parametrize("subject", ["admin", "manager", "operator"])
+async def test_copilot_lists_leave_personal_departments_and_their_agents_out(
+    app_session: AppSessionFactory, subject: str
+) -> None:
+    tokens, ids = await _personal_office(app_session)
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            token = tokens[subject]
+            departments = _ids(await _call_tool(c, token, "copilot_list_departments", {}))
+            agents = _ids(await _call_tool(c, token, "copilot_list_agents", {}))
+            in_personal = _ids(
+                await _call_tool(c, token, "copilot_list_agents", {"departmentId": ids["personal"]})
+            )
+    assert departments == [ids["shared"]]
+    assert agents == [ids["nora"]]
+    assert in_personal == []
+
+
+async def test_copilot_list_agents_shows_the_owner_their_own_personal_agent(
+    app_session: AppSessionFactory,
+) -> None:
+    tokens, ids = await _personal_office(app_session)
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            agents = _ids(await _call_tool(c, tokens["owner"], "copilot_list_agents", {}))
+            departments = _ids(await _call_tool(c, tokens["owner"], "copilot_list_departments", {}))
+    assert ids["pia"] in agents
+    assert ids["personal"] not in departments
+
+
+@pytest.mark.parametrize(
+    ("subject", "visible"),
+    [("owner", True), ("admin", True), ("manager", True), ("operator", False)],
+)
+async def test_copilot_get_department_follows_s1_for_a_personal_department(
+    app_session: AppSessionFactory, subject: str, visible: bool
+) -> None:
+    tokens, ids = await _personal_office(app_session)
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            result = await _call_tool(
+                c, tokens[subject], "copilot_get_department", {"departmentId": ids["personal"]}
+            )
+    if visible:
+        assert result["isError"] is False, result
+        body = json.loads(result["content"][0]["text"])
+        assert body["id"] == ids["personal"]
+        assert body["kind"] == "personal"
+    else:
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == "department not found"
