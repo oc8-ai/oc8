@@ -800,6 +800,9 @@ msgstr ""
 msgid "Assignment cleared — that person’s token decides again."
 msgstr ""
 
+msgid "Assistant hired"
+msgstr ""
+
 msgid "At least 8 characters"
 msgstr ""
 
@@ -867,6 +870,9 @@ msgid "Autonomy saved"
 msgstr ""
 
 msgid "Available"
+msgstr ""
+
+msgid "Available assistants"
 msgstr ""
 
 msgid "Available in chat"
@@ -942,6 +948,9 @@ msgid "Between 0 and 30. How long a member may still sign in without a second fa
 msgstr ""
 
 msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
+msgstr ""
+
+msgid "Between 1 and 1000. Lowering it keeps existing agents but blocks new ones above the limit."
 msgstr ""
 
 msgid "Binding revoked"
@@ -1484,6 +1493,9 @@ msgstr ""
 msgid "Could not add source."
 msgstr ""
 
+msgid "Could not apply the default."
+msgstr ""
+
 msgid "Could not archive the flow"
 msgstr ""
 
@@ -1595,6 +1607,12 @@ msgstr ""
 msgid "Could not load the audit log."
 msgstr ""
 
+msgid "Could not load the default frame."
+msgstr ""
+
+msgid "Could not load the personal departments."
+msgstr ""
+
 msgid "Could not load this department's existing tools, so it isn't safe to continue -- saving now could delete tools it already has."
 msgstr ""
 
@@ -1688,6 +1706,9 @@ msgstr ""
 msgid "Could not save settings."
 msgstr ""
 
+msgid "Could not save the default budget."
+msgstr ""
+
 msgid "Could not save the endpoints."
 msgstr ""
 
@@ -1748,6 +1769,9 @@ msgstr ""
 msgid "Could not update the mail server."
 msgstr ""
 
+msgid "Could not update the personal departments setting."
+msgstr ""
+
 msgid "Could not update your name."
 msgstr ""
 
@@ -1776,6 +1800,9 @@ msgid "Couldn't delete the file"
 msgstr ""
 
 msgid "Couldn't grant access"
+msgstr ""
+
+msgid "Couldn't hire the assistant"
 msgstr ""
 
 msgid "Couldn't load attached files."
@@ -2049,6 +2076,15 @@ msgid "default"
 msgstr ""
 
 msgid "Default"
+msgstr ""
+
+msgid "Default budget"
+msgstr ""
+
+msgid "Default budget saved"
+msgstr ""
+
+msgid "Default frame"
 msgstr ""
 
 msgid "Default: in the user's context"
@@ -2375,6 +2411,9 @@ msgstr ""
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
 msgstr ""
 
+msgid "Each member can get a private department of their own. Admins see only who owns one and how many agents it holds, never its content."
+msgstr ""
+
 msgid "Each person changes their email and password in their own account."
 msgstr ""
 
@@ -2585,6 +2624,9 @@ msgstr ""
 msgid "execution environment"
 msgstr ""
 
+msgid "Existing personal departments"
+msgstr ""
+
 msgid "Expand sidebar"
 msgstr ""
 
@@ -2708,6 +2750,9 @@ msgstr ""
 msgid "Folders"
 msgstr ""
 
+msgid "Follow default"
+msgstr ""
+
 msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
 msgstr ""
 
@@ -2729,7 +2774,13 @@ msgstr ""
 msgid "Forgot password?"
 msgstr ""
 
+msgid "Former or unnamed member"
+msgstr ""
+
 msgid "Forwarded verbatim to the provider after every named field above -- for knobs oc8 has no dedicated field for (e.g. OpenRouter's provider/top_p). Not validated here; the provider decides what it accepts."
+msgstr ""
+
+msgid "Frame"
 msgstr ""
 
 msgid "Framework default"
@@ -2879,6 +2930,9 @@ msgstr ""
 msgid "hard"
 msgstr ""
 
+msgid "Hard limit (tokens)"
+msgstr ""
+
 msgid "Hard limit exceeded"
 msgstr ""
 
@@ -2901,6 +2955,9 @@ msgid "Hide the text"
 msgstr ""
 
 msgid "Hide work panel"
+msgstr ""
+
+msgid "Hire"
 msgstr ""
 
 msgid "Hire a new agent"
@@ -3191,6 +3248,9 @@ msgstr ""
 msgid "Lead → Team"
 msgstr ""
 
+msgid "Leave a field empty for no limit. Applies to every personal department that follows the default."
+msgstr ""
+
 msgid "Leave agent mode"
 msgstr ""
 
@@ -3213,6 +3273,9 @@ msgid "Leave unassigned"
 msgstr ""
 
 msgid "Legend"
+msgstr ""
+
+msgid "Let members have a personal department"
 msgstr ""
 
 msgid "Let the copilot draft this from a rough description"
@@ -3440,6 +3503,9 @@ msgstr ""
 msgid "Max output tokens (optional)"
 msgstr ""
 
+msgid "Max personal agents per person"
+msgstr ""
+
 msgid "Max steps must be a positive whole number"
 msgstr ""
 
@@ -3581,6 +3647,9 @@ msgstr ""
 msgid "My Copilot"
 msgstr ""
 
+msgid "My personal assistants"
+msgstr ""
+
 msgid "My work"
 msgstr ""
 
@@ -3684,6 +3753,9 @@ msgid "New guardrail"
 msgstr ""
 
 msgid "New hire"
+msgstr ""
+
+msgid "New hires are turned off by your organisation."
 msgstr ""
 
 msgid "New key"
@@ -3932,6 +4004,12 @@ msgstr ""
 msgid "No organisation access yet."
 msgstr ""
 
+msgid "No personal assistants are available yet."
+msgstr ""
+
+msgid "No personal departments yet."
+msgstr ""
+
 msgid "No providers configured yet. Start with the wizard."
 msgstr ""
 
@@ -4154,6 +4232,9 @@ msgstr ""
 msgid "Notify — alert only"
 msgstr ""
 
+msgid "Now follows the default"
+msgstr ""
+
 msgid "Now: {decision}"
 msgstr ""
 
@@ -4343,6 +4424,15 @@ msgstr ""
 msgid "Overview"
 msgstr ""
 
+msgid "Own budget"
+msgstr ""
+
+msgid "Own frame"
+msgstr ""
+
+msgid "Owner"
+msgstr ""
+
 msgid "Page "
 msgstr ""
 
@@ -4416,6 +4506,15 @@ msgid "Person"
 msgstr ""
 
 msgid "Personal · manual only"
+msgstr ""
+
+msgid "Personal assistants are turned off"
+msgstr ""
+
+msgid "Personal departments"
+msgstr ""
+
+msgid "Personal departments updated"
 msgstr ""
 
 msgid "phase"
@@ -5504,6 +5603,9 @@ msgstr ""
 msgid "soft"
 msgstr ""
 
+msgid "Soft limit (tokens)"
+msgstr ""
+
 msgid "Soft-delete this person. They leave the users list and cannot sign in."
 msgstr ""
 
@@ -6155,6 +6257,12 @@ msgstr ""
 msgid "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched."
 msgstr ""
 
+msgid "This assistant is not available"
+msgstr ""
+
+msgid "This assistant isn't allowed by your organisation's rules"
+msgstr ""
+
 msgid "This base already has ingested content, so its embedding model can't change -- old and new chunks would no longer be comparable. Delete and recreate the base to use a different model."
 msgstr ""
 
@@ -6246,6 +6354,9 @@ msgid "This function is read-only in the plugin's manifest; it has no modify act
 msgstr ""
 
 msgid "This integration is not available yet."
+msgstr ""
+
+msgid "This is no longer a personal department, or its owner has left."
 msgstr ""
 
 msgid "This is where this agent works. Ask it something, or wait for its next run."
@@ -7049,6 +7160,9 @@ msgstr ""
 msgid "You have no access to this dashboard"
 msgstr ""
 
+msgid "You have no personal assistants yet."
+msgstr ""
+
 msgid "You hold no seat in any department."
 msgstr ""
 
@@ -7070,7 +7184,13 @@ msgstr ""
 msgid "You need access to knowledge to browse sources."
 msgstr ""
 
+msgid "You've reached the maximum number of personal assistants"
+msgstr ""
+
 msgid "Your access"
+msgstr ""
+
+msgid "Your account can no longer hire assistants"
 msgstr ""
 
 msgid "Your account in this organisation no longer exists."
