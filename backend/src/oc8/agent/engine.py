@@ -804,9 +804,22 @@ async def run_agent(
         #: it ran). Bound to the signature: a call id is the model's, and a
         #: different call reusing it must never ride on this claim.
         claimed: dict[str, tuple[str, str]] = {}
-        #: Every call id of this leg, so a reused one is renamed on arrival
-        #: (`unique_call_ids`); "held" is the held re-run's own.
+        #: Every call id the run used, so a reused one is renamed on arrival
+        #: (`unique_call_ids`): this leg's, earlier legs' recorded calls and
+        #: the calls an approval was claimed for -- as /step does. "held" is
+        #: the held re-run's own.
         seen_call_ids: set[str] = {"held"}
+        if run_row is not None:
+            seen_call_ids.update(
+                str(c["id"])
+                for c in run_row.context.get("toolCalls") or []
+                if isinstance(c, dict) and c.get("id")
+            )
+            seen_call_ids.update(
+                str(c["call_id"])
+                for c in run_row.context.get("consumed_tool_approvals") or []
+                if isinstance(c, dict) and c.get("call_id")
+            )
 
         def _claimed(call_id: str, sig: str) -> str | None:
             """The approval claimed for THIS call -- same id, same signature."""
@@ -2762,6 +2775,7 @@ async def run_agent(
                             tool_trace.append(
                                 {
                                     "tool": tc.name,
+                                    "id": tc.id,
                                     "arguments": tc.arguments,
                                     "result": output[:300],
                                     "step": steps,
@@ -3041,6 +3055,7 @@ async def run_agent(
                             tool_trace.append(
                                 {
                                     "tool": tc.name,
+                                    "id": tc.id,
                                     "arguments": tc.arguments,
                                     # `decision` stays: approval_resume.py's
                                     # sibling list uses the same word, and
@@ -3321,6 +3336,7 @@ async def run_agent(
                                 tool_trace.append(
                                     {
                                         "tool": tc.name,
+                                        "id": tc.id,
                                         "arguments": tc.arguments,
                                         "result": control.output[:300],
                                         "decision": "require_approval",
@@ -3736,6 +3752,7 @@ async def run_agent(
                                 model = model_config.model
                                 model_locality = model_config.locality
                         _tool_call_entry: dict[str, Any] = {
+                            "id": tc.id,
                             "tool": tc.name,
                             "arguments": tc.arguments,
                             "result": output[:300],

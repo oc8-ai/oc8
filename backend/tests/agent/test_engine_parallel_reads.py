@@ -208,9 +208,7 @@ async def test_destructive_gate_parks_with_preview_and_stripped_justification(
             destructive_tools=["delete_a"],
             approval_templates={"delete_a": "Allow deleting record {id}?"},
         )
-        result = await run_agent(
-            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
-        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
         approval = (
             await db.execute(
                 select(m.ApprovalRequest).where(m.ApprovalRequest.task_id == result.task_id)
@@ -352,11 +350,7 @@ async def test_a_reused_call_id_does_not_ride_on_an_approval(
     )
     approved = ToolCall(id="c1", name="delete_a", arguments={"id": 7, "justification": "dup"})
     other = ToolCall(id="c1", name="delete_a", arguments={"id": 8, "justification": "dup"})
-    turns = (
-        [_turn("", approved, other)]
-        if same_turn
-        else [_turn("", approved), _turn("", other)]
-    )
+    turns = [_turn("", approved, other)] if same_turn else [_turn("", approved), _turn("", other)]
     monkeypatch.setattr(
         "oc8.agent.engine.stream_completion_with_fallback",
         _ScriptedStream([*turns, _turn("All done.")]),
@@ -382,6 +376,63 @@ async def test_a_reused_call_id_does_not_ride_on_an_approval(
 
     assert result.status == "waiting_for_approval", result
     assert [args["id"] for _name, args in recorder.calls] == [7]
+
+
+async def test_a_call_id_an_earlier_leg_used_is_renamed(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of round 7: the engine renamed duplicate ids only within one
+    leg. Like /step, it now also treats the ids earlier legs used -- their
+    recorded calls, and the calls an approval was claimed for -- as taken."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer()
+    monkeypatch.setattr(
+        "oc8.agent.mcp_client.McpSession",
+        _session_factory(recorder, ["read_a", "read_b", "read_c"]),
+    )
+    monkeypatch.setattr(
+        "oc8.agent.engine.stream_completion_with_fallback",
+        _ScriptedStream(
+            [
+                _turn(
+                    "",
+                    ToolCall(id="c1", name="read_a", arguments={}),
+                    ToolCall(id="c2", name="read_b", arguments={}),
+                    ToolCall(id="c3", name="read_c", arguments={}),
+                ),
+                _turn("All done."),
+            ]
+        ),
+    )
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(
+            db, tenant, tool_scopes={"read": ["read_a", "read_b", "read_c"]}
+        )
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            state="running",
+            context={
+                "toolCalls": [
+                    {
+                        "id": "c2",
+                        "tool": "read_b",
+                        "arguments": {},
+                        "step": 1,
+                        "connection": "x",
+                        "state": "done",
+                    }
+                ],
+                "consumed_tool_approvals": [{"sig": "s", "key": "k", "call_id": "c1"}],
+            },
+        )
+        db.add(run)
+        await db.flush()
+        result = await run_agent(
+            db, agent=agent, task_text="go", tenant_id=tenant, run_id=run.id, mcp_conn=conn
+        )
+
+    assert [c.get("id") for c in result.tool_calls] == ["c1_dup1", "c2_dup1", "c3"]
 
 
 async def test_leading_read_batch_dispatches_concurrently(
@@ -415,9 +466,7 @@ async def test_leading_read_batch_dispatches_concurrently(
             tenant,
             tool_scopes={"read": ["read_a", "read_b", "read_c"], "modify": []},
         )
-        result = await run_agent(
-            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
-        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
     assert result.status == "done", result
     assert recorder.overlapping_pairs() > 0
@@ -516,9 +565,7 @@ async def test_precomputed_read_failure_is_shaped_and_invalidates_cache(
             tenant,
             tool_scopes={"read": ["read_a", "read_b"], "modify": []},
         )
-        result = await run_agent(
-            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
-        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
     assert result.status == "done", result
     assert recorder.overlapping_pairs() == 1
@@ -562,9 +609,7 @@ async def test_write_call_breaks_the_batch(
             tenant,
             tool_scopes={"read": ["read_a", "read_b", "read_c"], "modify": ["write_a"]},
         )
-        result = await run_agent(
-            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
-        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
     assert result.status == "done", result
     # Only read_a/read_b (the leading run) overlap; write_a and read_c never
@@ -612,9 +657,7 @@ async def test_outward_call_breaks_the_batch(
             outward_tools=["send_reply"],
             agent_definition={"autonomy": "autonomous", "b5_grants": ["outward"]},
         )
-        result = await run_agent(
-            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
-        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
     assert result.status == "done", result
     # Only read_a/read_b (the leading run) overlap; send_reply is declared
@@ -655,9 +698,7 @@ async def test_approval_required_call_breaks_the_batch(
             tool_scopes={"read": ["read_needs_approval", "read_ok"], "modify": []},
             approval_actions=["read_needs_approval"],
         )
-        result = await run_agent(
-            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
-        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
     assert result.status == "waiting_for_approval", result
     # The call that needs approval never dispatches at all -- not batched,
@@ -705,9 +746,7 @@ async def test_control_tool_never_batched(
                 "modify": [],
             },
         )
-        result = await run_agent(
-            db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn
-        )
+        result = await run_agent(db, agent=agent, task_text="go", tenant_id=tenant, mcp_conn=conn)
 
     assert result.status == "done", result
     # read_a/read_b overlap (the leading batch); todo_write never touches the
