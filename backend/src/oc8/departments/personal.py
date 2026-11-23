@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -556,3 +556,92 @@ async def follow_default(
     )
     await db.flush()
     return dept
+
+
+async def stop_departments_owned_by(
+    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
+) -> int:
+    """Stop everything the departments a leaving member owns still run, and
+    return how many agents were stopped.
+
+    Keys on `owner_member_id` alone -- no kind and no `deleted_at` predicate --
+    so an archived department is covered too, and so is any kind that later
+    gains an owner. Agents become `stopped` (the departments stay, as
+    metadata); their triggers are disabled, their tool bindings revoked, and
+    their in-flight work is ended through `agents.retire.retire_agent`: open
+    approvals expire, unfinished runs get the `agent_archived` cancellation
+    (a queued run is skipped at pickup, a running one stops at its next step
+    boundary, a parked one is woken and ended). add/flush only: the caller owns
+    the commit.
+    """
+    from oc8.agents.retire import retire_agent
+    from oc8.audit.chain import append_event
+
+    owned = select(m.Department.id).where(
+        m.Department.tenant_id == tenant_id, m.Department.owner_member_id == member_id
+    )
+    agent_ids = list(
+        (
+            await db.execute(
+                select(m.Agent.id).where(
+                    m.Agent.tenant_id == tenant_id,
+                    m.Agent.department_id.in_(owned),
+                    m.Agent.deleted_at.is_(None),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    # Every agent of the departments, archived ones included: a trigger or a
+    # binding left on any of them would outlive the owner.
+    all_agents = select(m.Agent.id).where(
+        m.Agent.tenant_id == tenant_id, m.Agent.department_id.in_(owned)
+    )
+    # Triggers first (see `retire_agent`): the lock keeps a scheduler from
+    # starting a run between here and the commit.
+    await db.execute(
+        update(m.Trigger)
+        .where(m.Trigger.tenant_id == tenant_id, m.Trigger.agent_id.in_(all_agents))
+        .values(enabled=False, last_skip_reason=None)
+    )
+    await db.execute(
+        update(m.Agent)
+        .where(
+            m.Agent.tenant_id == tenant_id,
+            m.Agent.id.in_(agent_ids),
+        )
+        .values(status="stopped")
+    )
+    await db.execute(
+        delete(m.AgentToolAccess).where(
+            m.AgentToolAccess.tenant_id == tenant_id, m.AgentToolAccess.agent_id.in_(all_agents)
+        )
+    )
+    for agent_id in agent_ids:
+        await retire_agent(
+            db,
+            agent_id=agent_id,
+            hard_delete=False,
+            principal=None,
+            resource_extra={"member_id": str(member_id), "offboarded": True},
+        )
+    # `retire_agent` records its own skip reason on the triggers; an offboarded
+    # owner's triggers carry none.
+    await db.execute(
+        update(m.Trigger)
+        .where(m.Trigger.tenant_id == tenant_id, m.Trigger.agent_id.in_(all_agents))
+        .values(last_skip_reason=None)
+    )
+    await append_event(
+        db,
+        tenant_id=tenant_id,
+        actor_type="system",
+        actor_id=None,
+        category="department",
+        action="department.owner_offboarded",
+        resource={"member_id": str(member_id), "agents_stopped": len(agent_ids)},
+        decision="allow",
+    )
+    await db.flush()
+    return len(agent_ids)

@@ -175,6 +175,10 @@ async def computed_status(
 
 async def offboard_member(db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID) -> None:
     """Same transaction as the member's soft delete: nothing of theirs wakes again."""
+    from oc8.departments.personal import stop_departments_owned_by
+
+    # First, so nothing the member's departments run wakes before the rest goes.
+    await stop_departments_owned_by(db, tenant_id=tenant_id, member_id=member_id)
     now = dt.datetime.now(tz=dt.UTC)
     owned = select(m.Responsibility.id).where(
         m.Responsibility.tenant_id == tenant_id, m.Responsibility.member_id == member_id
