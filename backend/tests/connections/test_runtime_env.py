@@ -607,47 +607,55 @@ async def test_a_run_that_never_needs_the_account_stays_quiet(
     assert await _asked(app_session, tenant, run_id) is None
 
 
+_OK = {"tool": "imap.send", "connection": "imap", "state": "done"}
+_FAILED = {"tool": "imap.send", "connection": "imap", "state": "failed"}
+_DENIED = {"tool": "imap.delete", "connection": "imap", "state": "denied"}
+_CORE = {"tool": "update_todos", "connection": None, "state": "done"}
+_FIND = {"tool": "find_tools", "connection": None, "state": "done"}
+
+
 @pytest.mark.parametrize(
-    ("status", "calls", "asked"),
+    ("status", "calls", "output", "asked"),
     [
-        pytest.param("done", [], True, id="no tool used at all"),
+        pytest.param("done", [], "You're welcome!", False, id="a tool-less chat turn"),
+        pytest.param("done", [_CORE], "Here is the summary.", False, id="core tools only"),
+        pytest.param("done", [_OK, _FAILED], "Sent.", False, id="succeeded with another tool"),
+        pytest.param("done", [_FAILED, _DENIED], "It did not work.", True, id="every call failed"),
+        pytest.param("done", [_FIND], "I found nothing for that.", True, id="searched for tools"),
         pytest.param(
             "done",
-            [{"tool": "imap.send", "connection": "imap", "state": "failed"}],
+            [],
+            "Microsoft 365 is not available to me right now.",
             True,
-            id="only a failed call",
+            id="the answer names the connection",
         ),
-        pytest.param(
-            "done",
-            [{"tool": "find_tools", "connection": None, "state": "done"}],
-            True,
-            id="only a core tool",
-        ),
-        pytest.param(
-            "done",
-            [{"tool": "imap.send", "connection": "imap", "state": "done"}],
-            False,
-            id="succeeded with another tool",
-        ),
-        pytest.param("waiting_for_approval", [], False, id="not ended yet"),
+        pytest.param("waiting_for_approval", [_FAILED], "", False, id="not ended yet"),
+        pytest.param("failed", [_FAILED], "boom", False, id="a failed run"),
+        pytest.param("interrupted", [_FIND], "", False, id="an interrupted run"),
     ],
 )
-async def test_a_run_that_ends_without_using_a_tool_asks_for_the_missing_account(
-    app_session: AppSessionFactory, status: str, calls: list[dict[str, Any]], asked: bool
+async def test_a_run_that_tried_and_got_nowhere_asks_for_the_missing_account(
+    app_session: AppSessionFactory,
+    status: str,
+    calls: list[dict[str, Any]],
+    output: str,
+    asked: bool,
 ) -> None:
-    """Review of round 7: quiet at startup, the prompt stayed hidden when the
-    model never reached for the connection and the run then got nowhere --
-    perhaps BECAUSE the account was missing. A run that ends having used none
-    of its offered tools asks for it; one that got its work done with the
-    tools it had stays quiet."""
+    """Review of rounds 7 and 8: quiet at startup, the prompt stayed hidden
+    when the run then got nowhere -- but asking at the end of EVERY run that
+    used no connection brought back the original complaint ("Connect now" on
+    a "thanks"). A finished run asks only when it tried and got nowhere:
+    every call failed or was refused, it searched for tools, or its answer
+    names the missing connection."""
     from oc8.agent import engine
 
     tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry("microsoft365", missing)]
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         await engine._ask_for_startup_accounts(db, run, [missing], opened_any=True)
         await engine._ask_after_idle_run(
-            db, run, [missing], status=status, calls=calls, offered={"imap.send"}
+            db, run, unavailable, status=status, calls=calls, output=output
         )
     result = await _asked(app_session, tenant, run_id)
     assert (result is not None) is asked

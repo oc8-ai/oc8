@@ -563,24 +563,35 @@ async def _ask_for_startup_accounts(
 async def _ask_after_idle_run(
     db: AsyncSession,
     run: m.AgentRun | None,
-    missing: Sequence[ConnectionRequired],
+    unavailable: Sequence[Mapping[str, Any]],
     *,
     status: str,
     calls: Sequence[Mapping[str, Any]],
-    offered: set[str],
+    output: str,
 ) -> None:
-    """A run that ENDED without getting anything done through the tools it
-    was offered -- perhaps because an account was missing -- asks for that
-    account after all (review of round 7). One that got its work done with
-    the tools it had stays quiet, as does a run that is only waiting."""
-    if run is None or not missing or (run.context or {}).get("connection_required"):
+    """A finished run that TRIED and got nowhere asks for the missing
+    account after all (review of rounds 7 and 8): every call it made failed
+    or was refused, it searched for tools, or its answer names the missing
+    connection. A plain chat turn, a run that got by on core tools, and a
+    failed or interrupted run stay quiet -- "Connect now" on a "thanks" was
+    the original complaint (E2E N3)."""
+    from oc8.agent.offering import named_by_find
+
+    if run is None or status != "done" or (run.context or {}).get("connection_required"):
         return
-    if status in ("waiting_for_approval", "waiting_for_input"):
+    needed = [e for e in unavailable if isinstance(e.get("connection_required"), dict)]
+    if not needed:
         return
-    # By tool name: a call record's `connection` is the leg's, not the call's.
-    if any(c.get("state") == "done" and c.get("tool") in offered for c in calls):
-        return
-    await merge_context(db, run, {"connection_required": missing[0].as_context()})
+    # "Microsoft 365" in prose names the connection "microsoft365".
+    named = named_by_find(needed, output, None) or named_by_find(
+        needed, output.replace(" ", ""), None
+    )
+    tried = any(c.get("tool") == FIND_TOOLS.name for c in calls) or (
+        bool(calls) and all(c.get("state") in ("failed", "denied") for c in calls)
+    )
+    pick = named[0] if named else needed[0] if tried else None
+    if pick is not None:
+        await merge_context(db, run, {"connection_required": pick["connection_required"]})
 
 
 def _startup_entry(name: str, exc: BaseException) -> dict[str, Any]:
@@ -4083,10 +4094,10 @@ async def run_agent(
                     await _ask_after_idle_run(
                         db,
                         run_row,
-                        startup_missing,
+                        startup_unavailable,
                         status=ended.status,
                         calls=ended.tool_calls,
-                        offered={t.name for t in routed.tools},
+                        output=ended.output or "",
                     )
                     return ended
             finally:
