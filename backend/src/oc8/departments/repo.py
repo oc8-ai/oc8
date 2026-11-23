@@ -88,6 +88,26 @@ async def visible_departments(
     return await paginate(db, stmt, limit=limit, offset=offset)
 
 
+async def live_department(
+    db: AsyncSession, *, tenant_id: uuid.UUID, department_id: uuid.UUID
+) -> Department | None:
+    """One live (not soft-deleted) department by id, any `kind`, WITHOUT the
+    caller's scope. Only for paths that have already decided the caller may act
+    on this department -- e.g. `capas.service.instantiate_agent`, reached from
+    the admin route behind tenant-wide `plugin:manage`, or from the member's
+    hire with the department the member owns. Never for a human's browse:
+    that is `visible_department`."""
+    return (
+        await db.execute(
+            select(Department).where(
+                Department.id == department_id,
+                Department.tenant_id == tenant_id,
+                Department.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def visible_department(
     db: AsyncSession,
     *,

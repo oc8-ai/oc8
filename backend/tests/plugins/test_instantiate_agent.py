@@ -406,3 +406,62 @@ async def test_a_deleted_department_is_not_found(app_session: AppSessionFactory)
         with pytest.raises(PluginError, match=r"^department not found$"):
             await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
         assert await _agent_count(s, tenant) == 0
+
+
+_OUT_OF_FRAME = "the template grants tools the personal department does not allow"
+
+
+async def _personal_with_frame(
+    s: AsyncSession, tenant: uuid.UUID, tools: dict[str, object]
+) -> m.Department:
+    dept = await _dept(s, tenant, DEPARTMENT_KIND_PERSONAL)
+    dept.frame = {**(dept.frame or {}), "tools": tools}
+    await s.flush()
+    return dept
+
+
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        # A tool the personal frame does not name at all.
+        {"tools": {"crm.write": {"enabled": True, "read": True}}},
+        # A right the frame withholds.
+        {"tools": {"docs.files": {"enabled": True, "read": True, "modify": True}}},
+        # A looser approval threshold than the frame's.
+        {"tools": {"docs.files": {"enabled": True, "read": True, "approval_eur": 500}}},
+    ],
+)
+async def test_a_personal_template_outside_the_frame_is_refused(
+    app_session: AppSessionFactory, narrowing: dict[str, object]
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = await _personal_with_frame(
+            s, tenant, {"docs.files": {"enabled": True, "read": True, "approval_eur": 100}}
+        )
+        version = await install_plugin(
+            s,
+            tenant_id=tenant,
+            manifest_data=_agent_template_manifest(scope="personal", narrowing=narrowing),
+        )
+        with pytest.raises(PluginError, match=f"^{_OUT_OF_FRAME}$"):
+            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        assert await _agent_count(s, tenant) == 0
+
+
+async def test_a_personal_template_within_the_frame_is_hired(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        dept = await _personal_with_frame(
+            s, tenant, {"docs.files": {"enabled": True, "read": True, "approval_eur": 100}}
+        )
+        narrowing = {"tools": {"docs.files": {"enabled": True, "read": True, "approval_eur": 50}}}
+        version = await install_plugin(
+            s,
+            tenant_id=tenant,
+            manifest_data=_agent_template_manifest(scope="personal", narrowing=narrowing),
+        )
+        agent = await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)
+        assert agent.narrowing == narrowing

@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +29,11 @@ from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 ENABLED_KEY = "personal_departments_enabled"
 FRAME_KEY = "personal_frame_tools"
 BUDGET_KEY = "personal_budget"
+MAX_AGENTS_KEY = "personal_max_agents"
+
+#: How many live agents a member may hire into their personal department when
+#: the tenant sets nothing (or nothing valid) under `MAX_AGENTS_KEY`.
+DEFAULT_MAX_AGENTS = 10
 
 #: The seat the owner holds in their own department.
 _OWNER_SEAT_ROLE = "dept_approver"
@@ -62,6 +67,13 @@ class PersonalDefaults:
     frame_tools: dict[str, Any]
     soft_limit_tokens: int | None
     hard_limit_tokens: int | None
+    max_agents: int = DEFAULT_MAX_AGENTS
+
+
+def _max_agents(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+        return value
+    return DEFAULT_MAX_AGENTS
 
 
 def _limit(value: Any) -> int | None:
@@ -89,6 +101,7 @@ async def personal_defaults(db: AsyncSession, *, tenant_id: uuid.UUID) -> Person
         frame_tools=copy.deepcopy(tools) if isinstance(tools, dict) else {},
         soft_limit_tokens=_limit(budget.get("soft_limit_tokens")),
         hard_limit_tokens=_limit(budget.get("hard_limit_tokens")),
+        max_agents=_max_agents(settings.get(MAX_AGENTS_KEY)),
     )
 
 
@@ -115,6 +128,26 @@ async def stamp_budget_override(
     ).scalar_one_or_none()
     if dept is not None:
         mark_budget_overridden(dept)
+
+
+async def live_agent_count(
+    db: AsyncSession, *, tenant_id: uuid.UUID, department_id: uuid.UUID
+) -> int:
+    """How many live (not soft-deleted) agents the department holds -- what the
+    tenant's `MAX_AGENTS_KEY` cap counts."""
+    return int(
+        (
+            await db.execute(
+                select(func.count())
+                .select_from(m.Agent)
+                .where(
+                    m.Agent.tenant_id == tenant_id,
+                    m.Agent.department_id == department_id,
+                    m.Agent.deleted_at.is_(None),
+                )
+            )
+        ).scalar_one()
+    )
 
 
 async def owned_personal_department(

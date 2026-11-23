@@ -29,6 +29,7 @@ from oc8.capas.service import PluginError, instantiate_agent, template_scope
 from oc8.departments.personal import (
     PersonalDepartmentsDisabled,
     get_or_create_personal_department,
+    live_agent_count,
     owned_personal_department,
     personal_defaults,
 )
@@ -128,7 +129,9 @@ async def list_personal_templates(
                 (m.CapaInstallation.capa_id == m.Capa.id)
                 & (m.CapaInstallation.tenant_id == m.Capa.tenant_id),
             )
-            .join(m.CapaVersion, m.CapaVersion.id == m.Capa.current_version_id)
+            # The version the admin ENABLED, never a newer one only installed
+            # since (`Capa.current_version_id`).
+            .join(m.CapaVersion, m.CapaVersion.id == m.CapaInstallation.version_id)
             .where(
                 m.Capa.tenant_id == principal.tenant_id,
                 m.CapaInstallation.status == "enabled",
@@ -162,8 +165,8 @@ async def hire_personal_agent(
     body: HirePersonalRequest, db: DbSession, principal: CurrentPrincipal
 ) -> HirePersonalResponse:
     capa = await db.get(m.Capa, body.capa_id)
-    if capa is None or capa.current_version_id is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin or version not found")
+    if capa is None or capa.tenant_id != principal.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin not found")
     installation = (
         await db.execute(
             select(m.CapaInstallation).where(
@@ -174,7 +177,11 @@ async def hire_personal_agent(
     ).scalar_one_or_none()
     if installation is None or installation.status != "enabled":
         raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin not enabled")
-    version = await db.get(m.CapaVersion, capa.current_version_id)
+    # The version the admin enabled -- not `Capa.current_version_id`, which a
+    # later install moves without anybody enabling it.
+    if installation.version_id is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin or version not found")
+    version = await db.get(m.CapaVersion, installation.version_id)
     if version is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "plugin or version not found")
     mf = version.manifest or {}
@@ -196,6 +203,9 @@ async def hire_personal_agent(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, {"error": "personal_departments_disabled"}
         ) from exc
+    held = await live_agent_count(db, tenant_id=principal.tenant_id, department_id=dept.id)
+    if held >= defaults.max_agents:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"})
 
     try:
         # Plan ruling 4: a personal hire is exempt from the tenant's

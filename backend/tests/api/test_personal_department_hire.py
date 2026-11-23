@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.agents.hire import set_require_hire_approval
@@ -25,7 +25,7 @@ from oc8.authz.permissions import COPILOT_USE
 from oc8.authz.scope import subject_uuid_for
 from oc8.capas.lifecycle import enable_plugin
 from oc8.capas.service import install_plugin
-from oc8.departments.personal import ENABLED_KEY
+from oc8.departments.personal import ENABLED_KEY, MAX_AGENTS_KEY
 from oc8.main import create_app
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from tests.conftest import AppSessionFactory
@@ -48,13 +48,15 @@ async def _http() -> AsyncIterator[AsyncClient]:
             yield c
 
 
-def _template(name: str, *, scope: str | None = "personal", **extra: Any) -> dict[str, Any]:
+def _template(
+    name: str, *, scope: str | None = "personal", version: str = "1.0.0", **extra: Any
+) -> dict[str, Any]:
     spec: dict[str, Any] = {"name": "Mia", "mission": "Keep the owner's day in order."}
     if scope is not None:
         spec["scope"] = scope
     return {
         "name": name,
-        "version": "1.0.0",
+        "version": version,
         "type": "agent_template",
         "trust": "first_party",
         "summary": f"{name} summary",
@@ -64,7 +66,11 @@ def _template(name: str, *, scope: str | None = "personal", **extra: Any) -> dic
 
 
 async def _tenant(
-    app_session: AppSessionFactory, *, enabled: bool = True, hire_approval: bool = False
+    app_session: AppSessionFactory,
+    *,
+    enabled: bool = True,
+    hire_approval: bool = False,
+    settings: dict[str, Any] | None = None,
 ) -> uuid.UUID:
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -75,7 +81,7 @@ async def _tenant(
                 name="T",
                 tier="standard",
                 region="eu",
-                settings={ENABLED_KEY: enabled},
+                settings={ENABLED_KEY: enabled, **(settings or {})},
             )
         )
         await db.flush()
@@ -122,7 +128,12 @@ async def _personal_departments(
 async def test_a_bare_member_hires_a_personal_template(app_session: AppSessionFactory) -> None:
     """Ruling 4: a personal hire is exempt from `require_hire_approval` -- the
     admin enabling the capa is the approval. The flag is on here, and the agent
-    is still a plain stopped agent with no hire request behind it."""
+    is still a plain stopped agent with no hire request behind it.
+
+    On this branch `instantiate_agent` has no hire gate at all, so the
+    exemption half of this test passes trivially. It is here to pin the
+    exemption once the gate arrives on rebase: the route passes
+    `hire_gate=False`, and this test must keep passing then."""
     tenant = await _tenant(app_session, hire_approval=True)
     cid = await _capa(app_session, tenant, _template("mail_helper"))
 
@@ -373,3 +384,119 @@ async def test_a_role_without_department_own_is_refused(app_session: AppSessionF
             r = await http.request(method, path, json=body, headers=_headers(tenant))
             assert r.status_code == 403, (path, r.text)
     assert await _personal_departments(app_session, tenant) == []
+
+
+async def _hire(
+    http: AsyncClient, tenant: uuid.UUID, cid: uuid.UUID, subject: str = _SUBJECT
+) -> Any:
+    return await http.post(
+        "/api/v1/personal-department/agents",
+        json={"capaId": str(cid)},
+        headers=_headers(tenant, subject),
+    )
+
+
+async def test_only_the_enabled_version_counts_not_a_newer_installed_one(
+    app_session: AppSessionFactory,
+) -> None:
+    """v1 (department scope) is enabled; v2 (personal) is only installed, so
+    it is `Capa.current_version_id` but not what the admin enabled."""
+    tenant = await _tenant(app_session)
+    cid = await _capa(app_session, tenant, _template("helper", scope=None))
+    await _capa(app_session, tenant, _template("helper", version="2.0.0"), enable=False)
+
+    async with _http() as http:
+        listed = await http.get("/api/v1/personal-department/templates", headers=_headers(tenant))
+        assert listed.status_code == 200, listed.text
+        assert listed.json() == []
+        r = await _hire(http, tenant, cid)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"error": "template_not_personal"}
+    assert await _personal_departments(app_session, tenant) == []
+
+
+async def test_the_enabled_personal_version_stays_hireable_under_a_newer_install(
+    app_session: AppSessionFactory,
+) -> None:
+    """The reverse: v1 is personal and enabled, v2 is not personal and only
+    installed. The member still gets v1."""
+    tenant = await _tenant(app_session)
+    cid = await _capa(app_session, tenant, _template("helper"))
+    await _capa(app_session, tenant, _template("helper", scope=None, version="2.0.0"), enable=False)
+
+    async with _http() as http:
+        listed = await http.get("/api/v1/personal-department/templates", headers=_headers(tenant))
+        assert [t["capaId"] for t in listed.json()] == [str(cid)]
+        r = await _hire(http, tenant, cid)
+    assert r.status_code == 201, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, uuid.UUID(r.json()["agentId"]))
+        assert agent is not None and agent.definition["version"] == "1.0.0"
+
+
+async def test_a_member_hires_at_most_the_tenant_cap(app_session: AppSessionFactory) -> None:
+    tenant = await _tenant(app_session, settings={MAX_AGENTS_KEY: 2})
+    cid = await _capa(app_session, tenant, _template("helper"))
+
+    async with _http() as http:
+        assert (await _hire(http, tenant, cid)).status_code == 201
+        second = await _hire(http, tenant, cid)
+        assert second.status_code == 201, second.text
+        third = await _hire(http, tenant, cid)
+        assert third.status_code == 409, third.text
+        assert third.json()["detail"] == {"error": "personal_agent_limit"}
+
+    async with app_session(tenant) as db:
+        # A deleted agent frees its place.
+        agent = await db.get(m.Agent, uuid.UUID(second.json()["agentId"]))
+        assert agent is not None
+        agent.deleted_at = func.now()
+
+    async with _http() as http:
+        assert (await _hire(http, tenant, cid)).status_code == 201
+
+
+async def test_two_members_each_get_their_own_department(app_session: AppSessionFactory) -> None:
+    tenant = await _tenant(app_session)
+    cid = await _capa(app_session, tenant, _template("helper"))
+
+    async with _http() as http:
+        a = await _hire(http, tenant, cid, "ada")
+        b = await _hire(http, tenant, cid, "bob")
+        assert a.status_code == 201, a.text
+        assert b.status_code == 201, b.text
+        assert a.json()["departmentId"] != b.json()["departmentId"]
+
+        mine_a = await http.get("/api/v1/personal-department", headers=_headers(tenant, "ada"))
+        mine_b = await http.get("/api/v1/personal-department", headers=_headers(tenant, "bob"))
+        assert mine_a.json()["department"]["id"] == a.json()["departmentId"]
+        assert mine_b.json()["department"]["id"] == b.json()["departmentId"]
+
+        listed_a = await http.get(
+            f"/api/v1/agents?departmentId={a.json()['departmentId']}",
+            headers=_headers(tenant, "ada"),
+        )
+        assert [x["id"] for x in listed_a.json()["items"]] == [a.json()["agentId"]]
+
+    async with app_session(tenant) as db:
+        agent_a = await db.get(m.Agent, uuid.UUID(a.json()["agentId"]))
+        agent_b = await db.get(m.Agent, uuid.UUID(b.json()["agentId"]))
+        assert agent_a is not None and str(agent_a.department_id) == a.json()["departmentId"]
+        assert agent_b is not None and str(agent_b.department_id) == b.json()["departmentId"]
+
+
+async def test_a_template_outside_the_personal_frame_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = await _tenant(app_session)
+    manifest = _template("helper")
+    manifest["agent_template"]["narrowing"] = {"tools": {"crm.write": {"enabled": True}}}
+    cid = await _capa(app_session, tenant, manifest)
+
+    async with _http() as http:
+        r = await _hire(http, tenant, cid)
+    assert r.status_code == 400, r.text
+    assert r.json()["detail"] == "the template grants tools the personal department does not allow"
+    async with app_session(tenant) as db:
+        agents = (await db.execute(select(m.Agent).where(m.Agent.tenant_id == tenant))).all()
+        assert agents == []
