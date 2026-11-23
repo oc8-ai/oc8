@@ -493,7 +493,7 @@ async def grant_seat(
         and department.kind == DEPARTMENT_KIND_PERSONAL
         and member_id != department.owner_member_id
     ):
-        raise PersonalDepartmentSeatRefused
+        raise PersonalDepartmentSeatRefused("personal departments take no extra seats")
     live = (
         (
             await db.execute(

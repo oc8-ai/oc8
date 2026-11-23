@@ -175,3 +175,54 @@ async def test_an_ambiguous_department_name_refuses_rather_than_guesses(
         == 2
     )
     assert await _seats(owner_session, tenant_id) == []
+
+
+async def _personal_department(owner_session: OwnerSessionFactory, tenant_id: uuid.UUID) -> None:
+    from oc8.models.core import DEPARTMENT_KIND_PERSONAL
+
+    async with owner_session() as db:
+        owner = m.OrgMember(tenant_id=tenant_id, subject="owner", subject_uuid=uuid.uuid4())
+        db.add(owner)
+        await db.flush()
+        db.add(
+            m.Department(
+                tenant_id=tenant_id,
+                name="Persoenlich",
+                goal="",
+                frame={},
+                kind=DEPARTMENT_KIND_PERSONAL,
+                owner_member_id=owner.id,
+            )
+        )
+
+
+async def test_a_personal_department_takes_no_seat_from_the_cli(
+    owner_session: OwnerSessionFactory,
+) -> None:
+    slug, tenant_id = await _tenant(owner_session)
+    await _personal_department(owner_session, tenant_id)
+
+    assert (
+        await tcli.cmd_member_grant(
+            slug=slug, subject="hos", department="Persoenlich", role=SEAT_VIEWER
+        )
+        == 2
+    )
+    assert await _seats(owner_session, tenant_id) == []
+
+
+async def test_a_bulk_row_naming_a_personal_department_fails_as_a_row(
+    owner_session: OwnerSessionFactory, tmp_path: Any
+) -> None:
+    slug, tenant_id = await _tenant(owner_session)
+    await _personal_department(owner_session, tenant_id)
+    path = tmp_path / "m.csv"
+    path.write_text(
+        "subject,display_name,role,department,seat_role\n"
+        "anna,Anna,,Persoenlich,dept_viewer\n"
+        "ben,Ben,,Vertrieb,dept_viewer\n"
+    )
+
+    assert await tcli.cmd_member_import(slug=slug, path=str(path)) == 2
+    seats = await _seats(owner_session, tenant_id)
+    assert len(seats) == 1  # ben's row landed, anna's did not

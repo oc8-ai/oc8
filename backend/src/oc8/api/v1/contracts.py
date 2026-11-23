@@ -204,6 +204,8 @@ async def set_contracts(
         }
         for it in body.intakes
     ]
+    # `emits`/`intakes` are not tool-default overrides, so this edit is not
+    # stamped with `mark_frame_overridden`.
     dept.frame = frame  # reassign so SQLAlchemy flags the JSONB column dirty
     await db.flush()
     return _contracts_dto(frame)

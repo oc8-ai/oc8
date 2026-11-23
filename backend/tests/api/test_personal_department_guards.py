@@ -211,3 +211,27 @@ async def test_resetting_a_tool_marks_the_frame_overridden(
         )
         assert resp.status_code == 200, resp.text
     assert (await _dept(app_session, w, w.personal)).frame_overridden_at is not None
+
+
+async def test_the_copilot_cannot_update_a_personal_department(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.copilot.capabilities import InvalidOperation, apply_operation
+
+    w = await _world(app_session)
+    for fields in ({"name": "X"}, {"icon": "star"}, {"goal": "g"}):
+        async with app_session(w.tenant) as db:
+            with pytest.raises(InvalidOperation) as caught:
+                await apply_operation(
+                    db,
+                    tenant_id=w.tenant,
+                    data={"type": "department.update", "departmentId": str(w.personal), **fields},
+                )
+        assert caught.value.reason == "a personal department cannot be edited"
+    assert (await _dept(app_session, w, w.personal)).name == "Ada"
+    async with app_session(w.tenant) as db:
+        await apply_operation(
+            db,
+            tenant_id=w.tenant,
+            data={"type": "department.update", "departmentId": str(w.standard), "name": "Z"},
+        )

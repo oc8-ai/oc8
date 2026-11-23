@@ -77,6 +77,7 @@ from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
 )
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.notifications.events import on_board_created
 from oc8.runtime.registry import (
     RuntimeCapabilityError,
@@ -842,6 +843,10 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
             raise InvalidOperation()
+        if dept.kind == DEPARTMENT_KIND_PERSONAL:
+            # Not the Copilot's to edit (name, goal or icon) before it owns that
+            # surface; fail closed rather than pick fields to allow.
+            raise InvalidOperation("a personal department cannot be edited")
         if operation.name is not None:
             dept.name = operation.name
         if operation.goal is not None:

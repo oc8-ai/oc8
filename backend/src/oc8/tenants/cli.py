@@ -21,6 +21,7 @@ from oc8 import models as m
 from oc8.audit import append_event
 from oc8.authz.permissions import SEAT_PERMISSIONS
 from oc8.db.session import owner_session, tenant_session
+from oc8.departments.personal import PersonalDepartmentSeatRefused
 from oc8.roles.service import (
     RoleRefused,
     assign_role,
@@ -148,6 +149,9 @@ async def cmd_member_grant(
                 granted_by=None,
             )
         except UnknownSeatRole as exc:  # pragma: no cover - guarded above
+            _err(f"error: {exc}")
+            return EXIT_BAD_INPUT
+        except PersonalDepartmentSeatRefused as exc:
             _err(f"error: {exc}")
             return EXIT_BAD_INPUT
         if changed:
@@ -584,7 +588,7 @@ async def cmd_member_import(*, slug: str, path: str) -> int:
             async with tenant_session(tenant_id) as db:
                 await _import_one(db, tenant_id, row)
             applied += 1
-        except (RoleRefused, UnknownSeatRole, ValueError) as exc:
+        except (RoleRefused, UnknownSeatRole, PersonalDepartmentSeatRefused, ValueError) as exc:
             failures.append(f"line {line} ({row.get('subject')}): {exc}")
 
     for failure in failures:
