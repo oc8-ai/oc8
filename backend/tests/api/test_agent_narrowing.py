@@ -433,11 +433,22 @@ async def test_echoing_an_inherited_frame_threshold_is_accepted(
     assert status_code == 200, text
 
 
-async def test_tightening_an_inherited_frame_threshold_is_accepted(
+async def test_tightening_a_threshold_nothing_can_enforce_is_rejected(
     app_session: AppSessionFactory,
 ) -> None:
+    """Review of F3: the connection has no value to compare a threshold
+    against, so a tighter one would be shown as a guardrail that never
+    holds. Only the department's own value is let through."""
     status_code, text = await _put_narrowing_under_a_frame_threshold(app_session, 50)
-    assert status_code == 200, text
+    assert status_code == 422, text
+    assert "value_spec_not_supported" in text
+
+
+async def test_removing_an_inherited_frame_threshold_is_rejected(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text = await _put_narrowing_under_a_frame_threshold(app_session, None)
+    assert status_code == 422, text
 
 
 async def test_loosening_an_inherited_frame_threshold_is_still_rejected(
