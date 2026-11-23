@@ -76,7 +76,8 @@ def test_upgrade_folds_the_flag_and_downgrade_restores_it(pg_url: str) -> None:
     assert _NEW <= columns
     assert "is_assistant_department" not in columns
     with psycopg.connect(dsn, autocommit=True) as conn:
-        kinds = dict(conn.execute("SELECT id, kind FROM department").fetchall())
+        rows = conn.execute("SELECT id, kind FROM department").fetchall()
+        kinds: dict[object, str] = dict(rows)
         assert kinds[assistant] == "assistant"
         assert kinds[ordinary] == "standard"
 
