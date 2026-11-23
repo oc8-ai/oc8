@@ -94,7 +94,7 @@ describe("CapaSetupDialog", () => {
       target: { value: "c1" },
     });
     expect(
-      screen.getByText("Für 1 Abteilung(en) freigegeben · von 3 Agenten genutzt"),
+      screen.getByText("Login in 1 Abteilung(en) nutzbar · von 3 Agenten genutzt"),
     ).toBeInTheDocument();
   });
 
