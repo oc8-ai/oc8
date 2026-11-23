@@ -1249,7 +1249,7 @@ export function AssignedModelPanel({
     const trimmedTemp = temperature.trim();
     const parsedTemp = trimmedTemp ? Number(trimmedTemp) : null;
     if (parsedTemp !== null && !Number.isFinite(parsedTemp)) {
-      toast.error(t("Temperature must be a number", "Temperature muss eine Zahl sein"));
+      toast.error(t("Temperature must be a number", "Temperatur muss eine Zahl sein"));
       return;
     }
     const trimmedTokens = maxTokens.trim();
@@ -1374,7 +1374,7 @@ export function AssignedModelPanel({
           <div className="mt-3 grid grid-cols-2 gap-3">
             <label className="block">
               <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                {t("Temperature", "Temperature")}
+                {t("Temperature", "Temperatur")}
               </span>
               <input
                 type="text"
@@ -1406,7 +1406,7 @@ export function AssignedModelPanel({
                   htmlFor="agent-effort"
                   className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground"
                 >
-                  {t("Effort", "Effort")}
+                  {t("Effort", "Denkaufwand")}
                 </label>
                 <EffortField
                   id="agent-effort"

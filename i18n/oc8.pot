@@ -47,6 +47,9 @@ msgstr ""
 msgid "{field} is required."
 msgstr ""
 
+msgid "{field} must start with https:// (for example https://api.example.com/v1)."
+msgstr ""
+
 msgid "{from}–{to} of {total}"
 msgstr ""
 
@@ -635,10 +638,16 @@ msgstr ""
 msgid "Approval channels"
 msgstr ""
 
+msgid "Approval expired"
+msgstr ""
+
 msgid "approval for"
 msgstr ""
 
 msgid "Approval for:"
+msgstr ""
+
+msgid "Approval from €5,000"
 msgstr ""
 
 msgid "Approval granted"
@@ -4010,6 +4019,9 @@ msgstr ""
 msgid "no version"
 msgstr ""
 
+msgid "Nobody decided it before the run ended."
+msgstr ""
+
 msgid "Nobody has signed in to this company yet — use quick access below."
 msgstr ""
 
@@ -4140,6 +4152,9 @@ msgid "Notify"
 msgstr ""
 
 msgid "Notify — alert only"
+msgstr ""
+
+msgid "Now: {decision}"
 msgstr ""
 
 msgid "OAuth2 client credentials"
@@ -5582,6 +5597,9 @@ msgstr ""
 msgid "Stop this run"
 msgstr ""
 
+msgid "Stopped. Nothing more was done in this turn."
+msgstr ""
+
 msgid "Stopping work does not undo actions already taken."
 msgstr ""
 
@@ -5601,6 +5619,9 @@ msgid "Suggest from instructions"
 msgstr ""
 
 msgid "Suggested replies"
+msgstr ""
+
+msgid "Suggestion: {decision}"
 msgstr ""
 
 msgid "Summarise this"

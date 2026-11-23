@@ -6,6 +6,27 @@ type Props = Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | 
   onChange: (value: string) => void;
 };
 
+/** Protocol and encryption names a login type lists as raw values. */
+const KNOWN_OPTIONS: Record<string, string> = {
+  imap: "IMAP",
+  pop3: "POP3",
+  smtp: "SMTP",
+  ssl: "SSL/TLS",
+  tls: "TLS",
+  starttls: "STARTTLS",
+  none: "None",
+};
+
+/** A select choice as the person reads it: a known protocol name, else the
+ *  raw value humanised (`read_only` -> "Read only"). The value submitted
+ *  stays the raw one (E2E N10). */
+export function optionLabel(option: string): string {
+  const known = KNOWN_OPTIONS[option.toLowerCase()];
+  if (known) return known;
+  const words = option.replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : option;
+}
+
 /** One login field's control: a `select` field (a login type's fixed
  *  choices, e.g. a mailbox's protocol) as a select, everything else as an
  *  input of its kind. Every form that edits a login renders its fields
@@ -37,10 +58,10 @@ export function LoginFieldInput({ field, value, onChange, placeholder, ...rest }
         value={current}
         onChange={(event) => onChange(event.target.value)}
       >
-        {!options.includes(current) && <option value={current}>{current}</option>}
+        {!options.includes(current) && <option value={current}>{optionLabel(current)}</option>}
         {options.map((option) => (
           <option key={option} value={option}>
-            {option}
+            {optionLabel(option)}
           </option>
         ))}
       </select>

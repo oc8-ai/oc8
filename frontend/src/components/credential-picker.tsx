@@ -226,8 +226,10 @@ export function CredentialPicker({
           // <option>'s intrinsic width -- that forced the whole row (and the
           // "Create new" button with it) past a narrow parent's edge instead
           // of fitting inside it (live user report: half outside the Hire
-          // dialog's tool tile).
-          className={`min-w-0 flex-1 rounded-md border bg-background/40 px-3 py-2 text-sm text-foreground ${
+          // dialog's tool tile). The 12rem basis is the other half: on a
+          // narrow tile the button wraps below instead of squeezing the
+          // select down to "Anmel…" (E2E N10).
+          className={`min-w-0 flex-[1_1_12rem] rounded-md border bg-background/40 px-3 py-2 text-sm text-foreground ${
             chosenMissing.length > 0 ? "border-amber-500/70" : "border-border"
           }`}
         >

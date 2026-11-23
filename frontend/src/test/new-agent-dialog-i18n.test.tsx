@@ -94,4 +94,20 @@ describe("NewAgentDialog in German", () => {
       expect(screen.queryByText(english)).not.toBeInTheDocument();
     }
   });
+
+  it("labels the default guardrail in German (E2E N10)", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <NewAgentDialog open onOpenChange={() => {}} />
+      </QueryClientProvider>,
+    );
+    fireEvent.change(screen.getByPlaceholderText(/Nova, Atlas, Miro/i), {
+      target: { value: "Nora" },
+    });
+    fireEvent.change(screen.getAllByRole("textbox")[1], { target: { value: "Vertrieb" } });
+    for (let i = 0; i < 3; i++) fireEvent.click(screen.getByRole("button", { name: /Weiter/ }));
+    expect(screen.getByDisplayValue("Freigabe ab 5.000 €")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Approval from €5,000")).not.toBeInTheDocument();
+  });
 });

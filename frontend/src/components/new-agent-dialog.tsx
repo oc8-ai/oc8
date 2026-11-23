@@ -136,7 +136,9 @@ export function NewAgentDialog({
   const orgTimezone = useOrgTimezone();
   const [pickedZone, setPickedZone] = useState<string | null>(null);
   const timezone = pickedZone ?? orgTimezone;
-  const [guardrail, setGuardrail] = useState("Approval from €5,000");
+  const [guardrail, setGuardrail] = useState(() =>
+    t("Approval from €5,000", "Freigabe ab 5.000 €"),
+  );
 
   // Per-tool login choice + approval cap, keyed like `tools` -- the same
   // by-name convention NarrowingEditor uses (agents.$id.tsx): the tool key IS
