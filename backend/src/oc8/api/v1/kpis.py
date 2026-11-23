@@ -36,6 +36,7 @@ from oc8.authz.permissions import AGENT, DEPARTMENT, STATISTICS, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.departments.repo import visible_department
 from oc8.kpis.aggregate import KPIResult, compute_kpis
+from oc8.models.core import DEPARTMENT_KIND_STANDARD
 from oc8.schemas.kpi import KPIDTO, KPIGroupRowDTO
 
 router = APIRouter()
@@ -180,7 +181,7 @@ def _group_id_query(
     dept_stmt = select(m.Department.id).where(
         m.Department.tenant_id == tenant_id,
         m.Department.deleted_at.is_(None),
-        m.Department.is_assistant_department.is_(False),
+        m.Department.kind == DEPARTMENT_KIND_STANDARD,
     )
     if department_id is not None:
         dept_stmt = dept_stmt.where(m.Department.id == department_id)

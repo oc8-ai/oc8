@@ -87,7 +87,7 @@ async def test_the_assistant_and_its_department_are_absent_from_both_lists(
         assert assistant is not None, "still provisioned, just not listed"
         dept = await db.get(m.Department, assistant.department_id)
         assert dept is not None
-        assert dept.is_assistant_department is True
+        assert dept.kind == "assistant"
         assert dept.id != ordinary_dept
 
 

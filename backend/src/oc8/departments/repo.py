@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 
-from oc8.models.core import Department
+from oc8.models.core import (
+    DEPARTMENT_KIND_ASSISTANT,
+    DEPARTMENT_KIND_STANDARD,
+    Department,
+)
 from oc8.models.identity import OrgMember, OrgMemberDepartment
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -61,7 +65,7 @@ async def visible_departments(
     # tools). Resolved once, at first call.
     from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
 
-    stmt = select(Department).where(Department.is_assistant_department.is_(False))
+    stmt = select(Department).where(Department.kind == DEPARTMENT_KIND_STANDARD)
     if not include_archived:
         stmt = stmt.where(Department.deleted_at.is_(None))
     if not tenant_wide:
@@ -103,7 +107,7 @@ async def visible_department(
             .where(
                 Department.id == department_id,
                 Department.deleted_at.is_(None),
-                Department.is_assistant_department.is_(False),
+                Department.kind != DEPARTMENT_KIND_ASSISTANT,
             )
             .execution_options(populate_existing=True)
         )
@@ -129,7 +133,7 @@ async def member_departments(db: AsyncSession, *, member: OrgMember) -> list[Dep
         .where(
             Department.tenant_id == member.tenant_id,
             Department.deleted_at.is_(None),
-            Department.is_assistant_department.is_(False),
+            Department.kind == DEPARTMENT_KIND_STANDARD,
         )
         .order_by(Department.name, Department.id)
     )
