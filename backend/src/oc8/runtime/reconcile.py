@@ -159,9 +159,12 @@ async def close_abandoned_runs(
     return closed
 
 
-#: How many cancelled parked runs one tick wakes per tenant. Each wake may wait
-#: up to the wake's own lock timeout on a held row, so the batch bounds the tick.
-_CANCELLED_PARKED_BATCH = 50
+#: How many cancelled parked runs one tick wakes, across every tenant, and for
+#: how long it tries. Each wake may wait out the wake's own lock timeout on a
+#: held row, so without a bound a few held rows would hold up every sweep
+#: after this one on the worker's timer. What is left is the next tick's.
+_CANCELLED_PARKED_PER_TICK = 20
+_CANCELLED_PARKED_BUDGET_SECONDS = 10.0
 
 
 async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
@@ -177,7 +180,8 @@ async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
     skipped and tried again on the next tick: the candidates are read without a
     lock, and each wake runs in its own transaction under the wake's lock
     timeout, so one held row neither blocks the sweep nor rolls back another
-    run's wake.
+    run's wake. One tick tries at most `_CANCELLED_PARKED_PER_TICK` runs and
+    stops after `_CANCELLED_PARKED_BUDGET_SECONDS`; the rest wait a tick.
 
     Never raises: it runs on the worker's own timer.
     """
@@ -185,8 +189,13 @@ async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
     # approvals service, which reach the engine.
     from oc8.runtime.cancellation import _wake_parked_run
 
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _CANCELLED_PARKED_BUDGET_SECONDS
+    attempts = 0
     woken: list[uuid.UUID] = []
     for tenant_id in await list_active_tenant_ids():
+        if attempts >= _CANCELLED_PARKED_PER_TICK or loop.time() >= deadline:
+            break
         try:
             async with tenant_session(tenant_id) as db:
                 candidates = (
@@ -196,7 +205,7 @@ async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
                             .join(m.RunCancellation, m.RunCancellation.run_id == m.AgentRun.id)
                             .where(m.AgentRun.state == RunState.WAITING_FOR_APPROVAL.value)
                             .order_by(m.AgentRun.updated_at)
-                            .limit(_CANCELLED_PARKED_BATCH)
+                            .limit(_CANCELLED_PARKED_PER_TICK - attempts)
                         )
                     )
                     .scalars()
@@ -206,6 +215,9 @@ async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
             logger.exception("cancelled-parked sweep failed for tenant %s", tenant_id)
             continue
         for run_id in candidates:
+            if attempts >= _CANCELLED_PARKED_PER_TICK or loop.time() >= deadline:
+                break
+            attempts += 1
             try:
                 async with tenant_session(tenant_id) as db:
                     run = await db.get(m.AgentRun, run_id)

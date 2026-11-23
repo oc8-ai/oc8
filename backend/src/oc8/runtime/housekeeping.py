@@ -64,11 +64,13 @@ async def run_worker_housekeeping() -> None:
     """One tick of the run worker's timer. Order matters:
 
     1. close runs whose executor stopped beating, freeing their agents;
-    2. wake runs parked on an approval whose stop could not wake them, so
-       they end instead of waiting on a decision nobody will make;
-    3. free agents shown "running" whose run's process died before its commit;
-    4. republish queued runs nothing will start -- after 1, so a run whose
+    2. free agents shown "running" whose run's process died before its commit;
+    3. republish queued runs nothing will start -- after 1, so a run whose
        agent this tick freed is already a candidate;
+    4. wake runs parked on an approval whose stop could not wake them, so
+       they end instead of waiting on a decision nobody will make -- after
+       the cheap sweeps above, since a wake may wait on a held row (bounded
+       per tick);
     5. reap containers of finished runs;
     6. archive evidence (inert unless OC8_EVIDENCE_SWEEP_ENABLED) -- after the
        close, so a run closed this tick is archived on the next one;
@@ -83,9 +85,9 @@ async def run_worker_housekeeping() -> None:
     /workspace/output while the leg runs, so there is no output sweep here.
     """
     await _run("close_abandoned_runs", close_abandoned_runs)
-    await _run("wake_cancelled_parked_runs", wake_cancelled_parked_runs)
     await _run("release_stale_running_agents", release_stale_running_agents)
     await _run("recover_stranded_runs", recover_stranded_runs)
+    await _run("wake_cancelled_parked_runs", wake_cancelled_parked_runs)
     await _run("reap_orphans", _reap_orphans)
     await _run("sweep_evidence", sweep_evidence)
     await _run("sweep_knowledge_deletions", sweep_knowledge_deletions)

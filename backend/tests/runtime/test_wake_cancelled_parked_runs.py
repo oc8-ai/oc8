@@ -99,9 +99,7 @@ async def test_a_locked_parked_run_is_skipped_and_woken_on_the_next_sweep(
     run_id, approval_id = await _parked_with_a_cancel(app_session, tenant)
 
     async with app_session(tenant) as holder:
-        await holder.execute(
-            select(m.AgentRun).where(m.AgentRun.id == run_id).with_for_update()
-        )
+        await holder.execute(select(m.AgentRun).where(m.AgentRun.id == run_id).with_for_update())
         assert run_id not in await wake_cancelled_parked_runs()
 
     async with app_session(tenant) as db:
@@ -113,3 +111,50 @@ async def test_a_locked_parked_run_is_skipped_and_woken_on_the_next_sweep(
 
     assert run_id in await wake_cancelled_parked_runs()
     assert queue.enqueued == [run_id]
+
+
+async def test_one_tick_wakes_at_most_its_cap(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each wake may wait out a lock timeout, so one tick takes a bounded
+    number; the rest are next tick's."""
+    monkeypatch.setattr("oc8.runtime.reconcile._CANCELLED_PARKED_PER_TICK", 2)
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    first, _ = await _parked_with_a_cancel(app_session, tenant)
+    ours = [first]
+    for _ in range(2):
+        run_id, *_rest = await _parked_second_turn(app_session, tenant)
+        async with app_session(tenant) as db:
+            db.add(
+                m.RunCancellation(
+                    tenant_id=tenant,
+                    run_id=run_id,
+                    requested_at=dt.datetime.now(tz=dt.UTC),
+                    cancellation_kind="operator_interrupted",
+                )
+            )
+        ours.append(run_id)
+
+    woken = await wake_cancelled_parked_runs()
+
+    assert len(woken) <= 2
+    async with app_session(tenant) as db:
+        states = [(await db.get(m.AgentRun, r)).state for r in ours]  # type: ignore[union-attr]
+    assert states.count(RunState.WAITING_FOR_APPROVAL.value) >= 1
+
+
+async def test_a_tick_stops_when_its_time_is_up(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("oc8.runtime.reconcile._CANCELLED_PARKED_BUDGET_SECONDS", 0.0)
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    tenant = uuid.uuid4()
+    run_id, _card = await _parked_with_a_cancel(app_session, tenant)
+
+    assert await wake_cancelled_parked_runs() == []
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None and run.state == RunState.WAITING_FOR_APPROVAL.value
