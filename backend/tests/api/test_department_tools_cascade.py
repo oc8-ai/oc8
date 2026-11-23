@@ -502,7 +502,7 @@ async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_va
     threshold on a connection that reports no amount never fires, and copied
     it goes stale when the department changes its value -- the frame's own
     applies anyway (`connections.value_spec`). €0 is enforced and copied."""
-    from oc8.api.v1.departments import _cascade_department_tools_change
+    from oc8.api.v1.departments import cascade_department_tools_change
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -520,7 +520,7 @@ async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_va
         db.add_all([agent, conn])
         await db.flush()
         policy = {"enabled": True, "read": True, "modify": True, "approval_eur": frame_eur}
-        await _cascade_department_tools_change(
+        await cascade_department_tools_change(
             db, old_tools={}, new_tools={"microsoft365": policy}, agents=[agent]
         )
         copied = agent.narrowing["tools"]["microsoft365"]

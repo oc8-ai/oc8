@@ -40,6 +40,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.publish_hooks import PublishHookFailed
@@ -307,7 +308,7 @@ def _deviation_counts(tools: dict[str, Any], agents: Sequence[m.Agent]) -> dict[
     return counts
 
 
-async def _cascade_department_tools_change(
+async def cascade_department_tools_change(
     db: DbSession,
     *,
     old_tools: dict[str, Any],
@@ -624,23 +625,16 @@ async def get_department_tools(
     )
 
 
-@router.put(
-    "/departments/{dept_id}/tools",
-    response_model=DepartmentToolsDTO,
-    dependencies=[Depends(require_permission(perm(DEPARTMENT, MANAGE)))],
-)
-async def set_department_tools(
-    dept_id: uuid.UUID,
-    body: DepartmentToolsWriteRequest,
-    db: DbSession,
-    _p: CurrentPrincipal,
-) -> DepartmentToolsDTO:
-    dept = await _get_department(db, dept_id)
-    frame = dict(dept.frame or {})
-    old_tools = dict(frame.get("tools", {}))
+async def validate_frame_tools(
+    db: AsyncSession, *, tenant_id: uuid.UUID, body: DepartmentToolsWriteRequest
+) -> dict[str, Any]:
+    """The checks a department frame's tools must pass before they are stored,
+    shared by `PUT /departments/{id}/tools` and the personal departments'
+    default frame. Returns the tools as the frame stores them; raises 422
+    (`limit_names_unknown_tools`, `value_spec_not_supported`) otherwise."""
     new_tools = {k: v.model_dump() for k, v in body.tools.items()}
 
-    unknown = await unknown_limit_tools(db, tenant_id=_p.tenant_id, tools=new_tools)
+    unknown = await unknown_limit_tools(db, tenant_id=tenant_id, tools=new_tools)
     if unknown:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -678,7 +672,7 @@ async def set_department_tools(
             await db.execute(
                 select(m.McpConnection)
                 .where(
-                    m.McpConnection.tenant_id == _p.tenant_id,
+                    m.McpConnection.tenant_id == tenant_id,
                     m.McpConnection.name == key,
                     m.McpConnection.credential_id.is_(None),
                     not_retired(),
@@ -698,6 +692,25 @@ async def set_department_tools(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             {"error": "value_spec_not_supported", "violations": value_spec_violations},
         )
+
+    return new_tools
+
+
+@router.put(
+    "/departments/{dept_id}/tools",
+    response_model=DepartmentToolsDTO,
+    dependencies=[Depends(require_permission(perm(DEPARTMENT, MANAGE)))],
+)
+async def set_department_tools(
+    dept_id: uuid.UUID,
+    body: DepartmentToolsWriteRequest,
+    db: DbSession,
+    _p: CurrentPrincipal,
+) -> DepartmentToolsDTO:
+    dept = await _get_department(db, dept_id)
+    frame = dict(dept.frame or {})
+    old_tools = dict(frame.get("tools", {}))
+    new_tools = await validate_frame_tools(db, tenant_id=_p.tenant_id, body=body)
 
     frame["tools"] = new_tools
     dept.frame = frame
@@ -751,7 +764,7 @@ async def set_department_tools(
         .scalars()
         .all()
     )
-    await _cascade_department_tools_change(
+    await cascade_department_tools_change(
         db, old_tools=old_tools, new_tools=frame["tools"], agents=agents
     )
 
@@ -785,7 +798,7 @@ async def reset_department_tool(
     silently kept as this operator's own prior edit under a different name.
 
     Cascades exactly like `set_department_tools`, via the same shared
-    `_cascade_department_tools_change` helper, so an agent that never
+    `cascade_department_tools_change` helper, so an agent that never
     deliberately overrode this key sees the restored value too.
     """
     dept = await _get_department(db, dept_id)
@@ -815,7 +828,7 @@ async def reset_department_tool(
         .scalars()
         .all()
     )
-    await _cascade_department_tools_change(
+    await cascade_department_tools_change(
         db, old_tools=old_tools, new_tools=new_tools, agents=agents
     )
 

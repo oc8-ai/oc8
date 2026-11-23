@@ -1,37 +1,69 @@
-"""Personal departments: the member's own routes.
+"""Personal departments: the member's own routes, then the administrator's.
 
-Every route here is gated by `department:own` (tenant-wide, like
+Every member route is gated by `department:own` (tenant-wide, like
 `connection:own`) and acts on the CALLER's own personal department only -- there
 is no department id in any path, so nobody can name someone else's. The member
 is resolved with `scope_for_principal(..., upsert=True)`; every department read
 goes through `departments/personal.py`, which looks a personal department up by
 its owner, never by an id the caller supplies.
+
+The admin routes (the on/off switch, the default frame and budget, the
+"Personal" list and follow-default) sit behind tenant-wide `settings:*`,
+`department:manage` and `budget:*`. They see a personal department's metadata
+only, and every department or agent they touch is loaded by
+`departments/personal.py`.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import StringConstraints
+from pydantic import Field, StringConstraints, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.api.v1._serializers import department_to_dto
+from oc8.api.v1.departments import (
+    DepartmentToolsDTO,
+    DepartmentToolsWriteRequest,
+    _deviation_counts,
+    validate_frame_tools,
+)
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
-from oc8.authz.permissions import DEPARTMENT_OWN
+from oc8.authz.permissions import (
+    BUDGET,
+    DEPARTMENT,
+    DEPARTMENT_OWN,
+    MANAGE,
+    SETTINGS,
+    VIEW,
+    perm,
+)
 from oc8.authz.scope import scope_for_principal
 from oc8.capas.service import PluginError, instantiate_agent, template_scope
 from oc8.departments.personal import (
+    BUDGET_KEY,
+    ENABLED_KEY,
+    FRAME_KEY,
+    MAX_AGENTS_KEY,
     PersonalDepartmentsDisabled,
+    PersonalDepartmentSummary,
+    default_frame_agents,
+    follow_default,
     get_or_create_personal_department,
     live_agent_count,
     owned_personal_department,
     personal_defaults,
+    personal_department_summaries,
+    resync_budgets,
+    resync_frames,
+    update_personal_settings,
 )
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import DepartmentDTO
@@ -235,3 +267,239 @@ async def hire_personal_agent(
         principal=principal,
     )
     return HirePersonalResponse(agent_id=str(agent.id), department_id=str(dept.id))
+
+
+# --- Administration -----------------------------------------------------------
+
+
+class PersonalDepartmentsSetting(CamelModel):
+    enabled: bool
+    #: How many live agents a member may hire into their personal department.
+    max_agents: int
+
+
+class PersonalDepartmentsSettingWrite(CamelModel):
+    enabled: bool
+    #: Optional; left out, the stored cap is kept.
+    max_agents: Annotated[int, Field(strict=True, ge=1, le=1000)] | None = None
+
+
+class PersonalBudgetDefaults(CamelModel):
+    soft_limit_tokens: Annotated[int, Field(ge=0)] | None = None
+    hard_limit_tokens: Annotated[int, Field(ge=0)] | None = None
+
+    @model_validator(mode="after")
+    def _soft_not_above_hard(self) -> PersonalBudgetDefaults:
+        soft, hard = self.soft_limit_tokens, self.hard_limit_tokens
+        if soft is not None and hard is not None and soft > hard:
+            raise ValueError("softLimitTokens must not exceed hardLimitTokens")
+        return self
+
+
+class PersonalDepartmentAdminDTO(CamelModel):
+    """A personal department as an administrator sees it: metadata only."""
+
+    id: str
+    owner_member_id: str
+    owner_name: str
+    agent_count: int
+    follows_default_frame: bool
+    follows_default_budget: bool
+    created_at: dt.datetime
+
+
+def _admin_dto(row: PersonalDepartmentSummary) -> PersonalDepartmentAdminDTO:
+    return PersonalDepartmentAdminDTO(
+        id=str(row.id),
+        owner_member_id=str(row.owner_member_id),
+        owner_name=row.owner_name,
+        agent_count=row.agent_count,
+        follows_default_frame=row.follows_default_frame,
+        follows_default_budget=row.follows_default_budget,
+        created_at=row.created_at,
+    )
+
+
+async def _default_frame_dto(db: AsyncSession, tenant_id: uuid.UUID) -> DepartmentToolsDTO:
+    tools = (await personal_defaults(db, tenant_id=tenant_id)).frame_tools
+    agents = await default_frame_agents(db, tenant_id=tenant_id)
+    return DepartmentToolsDTO(
+        tools=tools,
+        deviation_counts=_deviation_counts(tools, agents),
+        agent_count=len(agents),
+    )
+
+
+async def _write_settings(
+    db: AsyncSession,
+    principal: Principal,
+    updates: dict[str, Any],
+    resource: dict[str, Any],
+) -> None:
+    organization = await update_personal_settings(
+        db, tenant_id=principal.tenant_id, updates=updates
+    )
+    if organization is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "organization not found")
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="organization.settings.updated",
+        resource={"organization_id": str(organization.id), "by": principal.subject, **resource},
+        principal=principal,
+    )
+
+
+@router.get(
+    "/settings/personal-departments",
+    response_model=PersonalDepartmentsSetting,
+    dependencies=[Depends(require_permission(perm(SETTINGS, VIEW)))],
+)
+async def get_personal_departments_setting(
+    db: DbSession, principal: CurrentPrincipal
+) -> PersonalDepartmentsSetting:
+    defaults = await personal_defaults(db, tenant_id=principal.tenant_id)
+    return PersonalDepartmentsSetting(enabled=defaults.enabled, max_agents=defaults.max_agents)
+
+
+@router.put(
+    "/settings/personal-departments",
+    response_model=PersonalDepartmentsSetting,
+    dependencies=[Depends(require_permission(perm(SETTINGS, MANAGE)))],
+)
+async def put_personal_departments_setting(
+    body: PersonalDepartmentsSettingWrite, db: DbSession, principal: CurrentPrincipal
+) -> PersonalDepartmentsSetting:
+    # Left out, `maxAgents` keeps the cap in force -- which is what gets audited.
+    max_agents = (
+        body.max_agents
+        if body.max_agents is not None
+        else (await personal_defaults(db, tenant_id=principal.tenant_id)).max_agents
+    )
+    updates: dict[str, Any] = {ENABLED_KEY: body.enabled}
+    if body.max_agents is not None:
+        updates[MAX_AGENTS_KEY] = body.max_agents
+    await _write_settings(
+        db,
+        principal,
+        updates,
+        {"setting": ENABLED_KEY, "enabled": body.enabled, "max_agents": max_agents},
+    )
+    return PersonalDepartmentsSetting(enabled=body.enabled, max_agents=max_agents)
+
+
+@router.get(
+    "/personal-departments/default-frame",
+    response_model=DepartmentToolsDTO,
+    dependencies=[Depends(require_permission(perm(DEPARTMENT, MANAGE)))],
+)
+async def get_personal_default_frame(
+    db: DbSession, principal: CurrentPrincipal
+) -> DepartmentToolsDTO:
+    """The tools every personal department starts with. `agentCount` counts the
+    agents of the personal departments that follow this default."""
+    return await _default_frame_dto(db, principal.tenant_id)
+
+
+@router.put(
+    "/personal-departments/default-frame",
+    response_model=DepartmentToolsDTO,
+    dependencies=[Depends(require_permission(perm(DEPARTMENT, MANAGE)))],
+)
+async def put_personal_default_frame(
+    body: DepartmentToolsWriteRequest, db: DbSession, principal: CurrentPrincipal
+) -> DepartmentToolsDTO:
+    new_tools = await validate_frame_tools(db, tenant_id=principal.tenant_id, body=body)
+    resynced = await resync_frames(db, tenant_id=principal.tenant_id, new_tools=new_tools)
+    await _write_settings(
+        db, principal, {FRAME_KEY: new_tools}, {"setting": FRAME_KEY, "resynced": resynced}
+    )
+    return await _default_frame_dto(db, principal.tenant_id)
+
+
+@router.get(
+    "/personal-departments/default-budget",
+    response_model=PersonalBudgetDefaults,
+    dependencies=[Depends(require_permission(perm(BUDGET, VIEW)))],
+)
+async def get_personal_default_budget(
+    db: DbSession, principal: CurrentPrincipal
+) -> PersonalBudgetDefaults:
+    defaults = await personal_defaults(db, tenant_id=principal.tenant_id)
+    return PersonalBudgetDefaults(
+        soft_limit_tokens=defaults.soft_limit_tokens,
+        hard_limit_tokens=defaults.hard_limit_tokens,
+    )
+
+
+@router.put(
+    "/personal-departments/default-budget",
+    response_model=PersonalBudgetDefaults,
+    dependencies=[Depends(require_permission(perm(BUDGET, MANAGE)))],
+)
+async def put_personal_default_budget(
+    body: PersonalBudgetDefaults, db: DbSession, principal: CurrentPrincipal
+) -> PersonalBudgetDefaults:
+    soft, hard = body.soft_limit_tokens, body.hard_limit_tokens
+    resynced = await resync_budgets(
+        db, tenant_id=principal.tenant_id, soft_limit_tokens=soft, hard_limit_tokens=hard
+    )
+    await _write_settings(
+        db,
+        principal,
+        {BUDGET_KEY: {"soft_limit_tokens": soft, "hard_limit_tokens": hard}},
+        {
+            "setting": BUDGET_KEY,
+            "soft_limit_tokens": soft,
+            "hard_limit_tokens": hard,
+            "resynced": resynced,
+        },
+    )
+    return body
+
+
+@router.get(
+    "/personal-departments",
+    response_model=list[PersonalDepartmentAdminDTO],
+    dependencies=[Depends(require_permission(perm(DEPARTMENT, MANAGE)))],
+)
+async def list_personal_departments(
+    db: DbSession, principal: CurrentPrincipal
+) -> list[PersonalDepartmentAdminDTO]:
+    rows = await personal_department_summaries(db, tenant_id=principal.tenant_id)
+    return [_admin_dto(row) for row in rows]
+
+
+@router.post(
+    "/personal-departments/{dept_id}/follow-default",
+    response_model=PersonalDepartmentAdminDTO,
+    dependencies=[
+        Depends(require_permission(perm(DEPARTMENT, MANAGE))),
+        Depends(require_permission(perm(BUDGET, MANAGE))),
+    ],
+)
+async def follow_personal_default(
+    dept_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+) -> PersonalDepartmentAdminDTO:
+    """Drop both overrides of one personal department and re-apply the tenant's
+    current default frame and budget to it."""
+    dept = await follow_default(db, tenant_id=principal.tenant_id, department_id=dept_id)
+    if dept is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "personal department not found")
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="department.personal.follow_default",
+        resource={"department_id": str(dept_id), "by": principal.subject},
+        principal=principal,
+    )
+    rows = await personal_department_summaries(
+        db, tenant_id=principal.tenant_id, department_id=dept_id
+    )
+    return _admin_dto(rows[0])
