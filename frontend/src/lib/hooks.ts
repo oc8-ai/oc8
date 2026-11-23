@@ -937,6 +937,104 @@ export function useUpdateCopilotSettings() {
   });
 }
 
+// ---- Personal departments (admin) ----
+export interface PersonalDepartmentsSettingDTO {
+  enabled: boolean;
+  maxAgents: number;
+}
+
+export interface PersonalBudgetDefaultsDTO {
+  softLimitTokens: number | null;
+  hardLimitTokens: number | null;
+}
+
+/** Metadata only: never the agents, chats or files inside a personal department. */
+export interface PersonalDepartmentAdminDTO {
+  id: string;
+  ownerMemberId: string;
+  /** May be "" for a member with no display name. */
+  ownerName: string;
+  agentCount: number;
+  followsDefaultFrame: boolean;
+  followsDefaultBudget: boolean;
+  createdAt: string;
+}
+
+const PERSONAL_KEY = ["personal-departments"] as const;
+
+export function usePersonalDepartmentsSetting(enabled = true) {
+  return useQuery({
+    queryKey: ["settings", "personal-departments"],
+    queryFn: () => api.get<PersonalDepartmentsSettingDTO>("/settings/personal-departments"),
+    enabled,
+  });
+}
+
+export function useUpdatePersonalDepartmentsSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { enabled: boolean; maxAgents?: number }) =>
+      api.put<PersonalDepartmentsSettingDTO>("/settings/personal-departments", body),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["settings", "personal-departments"] });
+      await qc.invalidateQueries({ queryKey: PERSONAL_KEY });
+    },
+  });
+}
+
+export function usePersonalDefaultFrame(enabled = true) {
+  return useQuery({
+    queryKey: [...PERSONAL_KEY, "default-frame"],
+    queryFn: () => api.get<DepartmentToolsDTO>("/personal-departments/default-frame"),
+    enabled,
+  });
+}
+
+export function useSetPersonalDefaultFrame() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tools: Record<string, Record<string, unknown>>) =>
+      api.put<DepartmentToolsDTO>("/personal-departments/default-frame", { tools }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: PERSONAL_KEY }),
+  });
+}
+
+export function usePersonalDefaultBudget(enabled = true) {
+  return useQuery({
+    queryKey: [...PERSONAL_KEY, "default-budget"],
+    queryFn: () => api.get<PersonalBudgetDefaultsDTO>("/personal-departments/default-budget"),
+    enabled,
+  });
+}
+
+export function useSetPersonalDefaultBudget() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PersonalBudgetDefaultsDTO) =>
+      api.put<PersonalBudgetDefaultsDTO>("/personal-departments/default-budget", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: PERSONAL_KEY }),
+  });
+}
+
+export function usePersonalDepartments(enabled = true) {
+  return useQuery({
+    queryKey: PERSONAL_KEY,
+    queryFn: () => api.get<PersonalDepartmentAdminDTO[]>("/personal-departments"),
+    enabled,
+  });
+}
+
+export function useFollowPersonalDefault(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<PersonalDepartmentAdminDTO>(
+        `/personal-departments/${encodeURIComponent(id)}/follow-default`,
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: PERSONAL_KEY }),
+  });
+}
+
 /** The organisation's two-factor policy (`organization.settings.two_factor`). */
 export interface TwoFactorPolicyDTO {
   requirement: "off" | "optional" | "admins" | "everyone";
