@@ -7,6 +7,7 @@ import base64
 import email
 import email.policy
 import json
+import re
 import uuid
 from collections.abc import Callable, Iterator
 from email.message import EmailMessage
@@ -237,7 +238,8 @@ async def test_send_with_an_attachment(
     assert msg["From"] == "Agent Smith <agent@example.com>"
     assert msg["To"] == "alice@example.com"
     assert msg["Cc"] == "Bob <bob@example.com>"
-    assert msg["Auto-Submitted"] == "auto-replied"
+    # A new mail is generated, not a reply (RFC 3834).
+    assert msg["Auto-Submitted"] == "auto-generated"
     assert msg["Message-ID"] == result["message_id"]
     body = msg.get_body(preferencelist=("plain",))
     assert body is not None and body.get_content().strip() == "Here it is."
@@ -276,6 +278,7 @@ async def test_reply_keeps_the_thread_and_marks_itself_automatic(
     assert body is not None
     text = body.get_content()
     assert text.startswith("Answer.")
+    assert "On Fri, 20 Nov 2026 10:00:00 +0000, Alice <alice@example.com> wrote:" in text
     assert "> please have a look." in text
 
 
@@ -291,10 +294,53 @@ async def test_forward_attaches_the_original(
     [raw] = greenmail.messages(user={"login": "bob", "password": "bob-pw-123"})
     msg = parsed(raw)
     assert msg["Subject"] == "Fwd: FYI"
-    assert msg["Auto-Submitted"] == "auto-replied"
+    assert msg["Auto-Submitted"] == "auto-generated"
     [original] = [p for p in msg.iter_attachments() if p.get_content_type() == "message/rfc822"]
     inner = original.get_content()
     assert inner["Subject"] == "FYI"
+
+
+@pytest.mark.parametrize("date", [None, "not a date"])
+async def test_a_reply_to_a_mail_without_a_usable_date_quotes_only_the_sender(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+    date: str | None,
+) -> None:
+    raw = re.sub(rb"(?m)^Date: .*\r?\n", b"", make_mail(subject="Question"))
+    if date is not None:
+        raw = f"Date: {date}\n".encode() + raw
+    greenmail.append(raw)
+    [hit] = await call(tools, "mail_search")
+    await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    [sent] = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    body = parsed(sent).get_body(preferencelist=("plain",))
+    assert body is not None
+    text = body.get_content().replace("\r\n", "\n")
+    assert "\n\nAlice <alice@example.com> wrote:\n> Hi agent," in text
+    assert "On " not in text
+
+
+async def test_what_this_capa_sends_is_never_news_to_another_listener(
+    tools: ModuleType,
+    mailbox: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+) -> None:
+    """A new mail, a reply and a forward are all marked automatic, so a
+    second agent's mailbox (or ours) does not start a run for them."""
+    greenmail.append(make_mail())
+    [hit] = await call(tools, "mail_search")
+    await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    await call(tools, "mail_forward", id=hit["id"], to=["alice@example.com"])
+    received = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    assert len(received) == 3
+    alice = {"login": "alice", "password": "alice-pw-123", "address": "alice@example.com"}
+    other = mailbox.Account.from_fields(greenmail.fields(user=alice))
+    assert [mailbox.skip_reason(parsed(raw), other) for raw in received] == ["auto-submitted"] * 3
 
 
 def _run_file(name: str, mime: str, data: bytes) -> dict[str, Any]:
@@ -470,7 +516,8 @@ async def test_without_a_sent_folder_the_mail_is_only_sent(
 ) -> None:
     result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
     assert result["status"] == "sent"
-    assert "sent_folder" not in result and "note" not in result
+    assert "sent_folder" not in result
+    assert result["note"] == ("No Sent folder found; no copy kept. Set sent_folder on the login.")
     assert len(greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})) == 1
 
 
@@ -906,7 +953,7 @@ async def test_a_reply_to_on_the_senders_domain_is_followed(
     greenmail.append(make_mail(headers={"Reply-To": "Bob <bob@example.com>"}))
     [hit] = await call(tools, "mail_search")
     result = await call(tools, "mail_reply", id=hit["id"], body="Answer.")
-    assert "note" not in result
+    assert "Reply-To" not in result.get("note", "")
     assert greenmail.messages(user={"login": "alice", "password": "alice-pw-123"}) == []
     [raw] = greenmail.messages(user={"login": "bob", "password": "bob-pw-123"})
     assert parsed(raw)["To"] == "Bob <bob@example.com>"

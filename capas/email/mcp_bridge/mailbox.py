@@ -68,6 +68,7 @@ from email.utils import (
     getaddresses,
     make_msgid,
     parseaddr,
+    parsedate_to_datetime,
 )
 from html.parser import HTMLParser
 from typing import Any
@@ -95,8 +96,10 @@ POP3_SEEN_CAP = 5_000
 PROTOCOLS = ("imap", "pop3")
 SECURITY = ("ssl", "starttls")
 #: Marks everything this capa sends, so other systems' loop protection (and
-#: ours) recognises it.
-AUTO_SUBMITTED = "auto-replied"
+#: ours) recognises it (RFC 3834): a reply answers a mail, a new mail or a
+#: forward is generated.
+AUTO_REPLIED = "auto-replied"
+AUTO_GENERATED = "auto-generated"
 #: The bridge's allowlist for mail servers on internal addresses: networks
 #: (CIDR) and exact host names, comma-separated. Core passes `OC8_MCP_*`
 #: variables to the bridge; deriving this from core's own
@@ -1927,6 +1930,7 @@ def _new_message(
     *,
     in_reply_to: str = "",
     references: str = "",
+    auto_submitted: str = AUTO_GENERATED,
 ) -> EmailMessage:
     if "\r" in subject or "\n" in subject:
         raise MailError("The subject contains a line break.")
@@ -1947,7 +1951,7 @@ def _new_message(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
-    msg["Auto-Submitted"] = AUTO_SUBMITTED
+    msg["Auto-Submitted"] = auto_submitted
     msg.set_content(body or "")
     return msg
 
@@ -1978,6 +1982,8 @@ def _deliver(
 
 #: `sent_folder` set to this keeps no copy at all.
 NO_SENT_COPY = "-"
+#: The note on a sent mail when the mailbox has no folder for its copy.
+NO_SENT_FOLDER_NOTE = "No Sent folder found; no copy kept. Set sent_folder on the login."
 #: SMTP hosts whose provider files every mail it sends in Sent itself
 #: (Gmail, Microsoft 365, Outlook.com): a copy of ours would be a second one.
 AUTO_SAVING_SMTP_HOSTS = frozenset(
@@ -1993,9 +1999,9 @@ def _keep_sent(
 ) -> tuple[str | None, str]:
     """Put a sent mail in the Sent folder, marked read, as a mail program
     does: SMTP alone keeps no copy. `(folder, "")` when it was kept, `(None,
-    "")` when there is nowhere to keep it (POP3, no Sent folder, the copy
-    turned off, a provider that keeps one itself), `(None, note)` when keeping
-    it failed. Never raises: the mail is already sent.
+    "")` when there is nowhere to keep it (POP3, the copy turned off, a
+    provider that keeps one itself), `(None, note)` when the mailbox has no
+    Sent folder or keeping it failed. Never raises: the mail is already sent.
 
     The copy names the Bcc recipients, as a mail program's does; the mail
     that went out never carries them."""
@@ -2013,7 +2019,7 @@ def _keep_sent(
             conn.sock.settimeout(SENT_COPY_TIMEOUT_SECONDS)
             folder = folder or sent_folder_of(_folders(conn))
             if folder is None:
-                return None, ""
+                return None, NO_SENT_FOLDER_NOTE
             typ, _ = conn.append(
                 _folder_arg(folder),
                 "(\\Seen)",
@@ -2065,6 +2071,13 @@ def _references(previous: str, message_id: str) -> str:
     return " ".join(ids)
 
 
+def _parses_as_date(value: str) -> bool:
+    try:
+        return bool(value) and parsedate_to_datetime(value) is not None
+    except (TypeError, ValueError, IndexError):
+        return False
+
+
 def _prefixed(prefix: str, subject: str) -> str:
     return subject if subject.lower().startswith(prefix.lower()) else f"{prefix} {subject}".strip()
 
@@ -2108,7 +2121,9 @@ def reply(
     references = _references(_header(original, "References", limit=20_000), message_id)
     quoted, _ = truncate(body_text(original))
     quote_lines = "\n".join(f"> {line}" if line else ">" for line in quoted.splitlines())
-    header = f"On {_header(original, 'Date')}, {_header(original, 'From')} wrote:"
+    header = f"{_header(original, 'From')} wrote:"
+    if _parses_as_date(_header(original, "Date")):
+        header = f"On {_header(original, 'Date')}, {header}"
     msg = _new_message(
         account,
         recipients,
@@ -2116,6 +2131,7 @@ def reply(
         f"{body}\n\n{header}\n{quote_lines}\n",
         in_reply_to=message_id,
         references=references,
+        auto_submitted=AUTO_REPLIED,
     )
     _attach(msg, _attachment_data(attachments))
     result = _deliver(account, guard, msg, recipients)
