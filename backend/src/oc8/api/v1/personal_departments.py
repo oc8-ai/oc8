@@ -255,7 +255,7 @@ async def hire_personal_agent(
             name=body.name or None,
             hire_gate=False,
         )
-    except PersonalAgentLimit as exc:  # pragma: no cover - checked above
+    except PersonalAgentLimit as exc:  # a concurrent hire took the last place
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": "personal_agent_limit"}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc

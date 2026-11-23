@@ -208,6 +208,10 @@ def personal_frame(tools: dict[str, Any]) -> dict[str, Any]:
     """A personal department's frame: the tenant's default tools, no knowledge
     bases, and the department's own memory only (no company memory)."""
     return {
+        # Closed: a tool the frame lacks cannot be granted by an agent's own
+        # narrowing (`authz.pdp.effective_tool_policies`). Every writer of a
+        # personal frame keeps it: they copy the dict or call this function.
+        "closed": True,
         "tools": copy.deepcopy(tools),
         "kbs": [],
         "memory": {"department": ["read", "write"]},

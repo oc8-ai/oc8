@@ -19,10 +19,14 @@ from typing import Any
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.auth import get_identity_provider
+from oc8.authz.pdp import effective_tool_policies
 from oc8.authz.scope import subject_uuid_for
+from oc8.capas.lifecycle import enable_plugin
+from oc8.capas.service import install_plugin
 from oc8.departments.personal import (
     ENABLED_KEY,
     FRAME_KEY,
@@ -30,6 +34,7 @@ from oc8.departments.personal import (
     PersonalAgentLimit,
     ensure_personal_capacity,
     get_or_create_personal_department,
+    personal_frame,
 )
 from oc8.departments.repo import live_department
 from oc8.main import create_app
@@ -263,3 +268,157 @@ async def test_concurrent_http_hires_at_the_cap_give_one_201_and_one_409(
             timeout=60,
         )
     assert sorted([a.status_code, b.status_code]) == [201, 409], (a.text, b.text)
+
+
+# --- Round 2: the PDP, restore clipping, rollback, admin instantiate ---
+
+
+def test_a_personal_frame_is_closed_so_an_absent_key_grants_nothing() -> None:
+    narrowing = {"tools": {"shell_exec": {"enabled": True, "read": True, "modify": True}}}
+    closed = effective_tool_policies(personal_frame(_IN_FRAME), narrowing)
+    assert "shell_exec" not in closed
+    # The frame's own tool still resolves.
+    assert closed["mail_read"].enabled is True
+
+
+def test_a_standard_frame_still_allows_an_agent_exclusive_grant() -> None:
+    narrowing = {"tools": {"shell_exec": {"enabled": True, "read": True}}}
+    effective = effective_tool_policies({"tools": _IN_FRAME}, narrowing)
+    assert effective["shell_exec"].enabled is True
+
+
+async def _tighten_frame(
+    app_session: AppSessionFactory, tenant: uuid.UUID, dept_id: uuid.UUID
+) -> None:
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, dept_id)
+        assert dept is not None
+        dept.frame = personal_frame({})
+
+
+async def _archive(app_session: AppSessionFactory, tenant: uuid.UUID, agent_id: uuid.UUID) -> None:
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        agent.deleted_at = datetime.now(UTC)
+
+
+async def test_restore_clips_a_stale_narrowing_and_publishes_it(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    async with _http() as http:
+        made = await http.post(
+            "/api/v1/agents",
+            json=_body(dept_id, narrowing=_IN_FRAME),
+            headers=_headers(tenant),
+        )
+        assert made.status_code == 201, made.text
+        agent_id = uuid.UUID(made.json()["id"])
+        await _archive(app_session, tenant, agent_id)
+        await _tighten_frame(app_session, tenant, dept_id)
+        r = await http.post(f"/api/v1/agents/{agent_id}/restore", headers=_headers(tenant))
+        assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None and agent.deleted_at is None
+        assert (agent.narrowing or {}).get("tools") == {}
+        versions = (
+            (await db.execute(select(m.AgentVersion).where(m.AgentVersion.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert len(versions) == 2
+        assert max(versions, key=lambda v: v.version_no).payload["narrowing"]["tools"] == {}
+
+
+async def test_restore_joins_a_pending_draft_instead_of_publishing(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    async with _http() as http:
+        made = await http.post(
+            "/api/v1/agents",
+            json=_body(dept_id, narrowing=_IN_FRAME),
+            headers=_headers(tenant),
+        )
+        agent_id = uuid.UUID(made.json()["id"])
+        renamed = await http.patch(
+            f"/api/v1/agents/{agent_id}/instructions",
+            json={"mission": "a draft"},
+            headers=_headers(tenant),
+        )
+        assert renamed.status_code == 200, renamed.text
+        await _archive(app_session, tenant, agent_id)
+        await _tighten_frame(app_session, tenant, dept_id)
+        r = await http.post(f"/api/v1/agents/{agent_id}/restore", headers=_headers(tenant))
+        assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None and (agent.narrowing or {}).get("tools") == {}
+        versions = (
+            (await db.execute(select(m.AgentVersion).where(m.AgentVersion.agent_id == agent_id)))
+            .scalars()
+            .all()
+        )
+        assert len(versions) == 1
+
+
+async def test_rollback_to_a_version_outside_the_frame_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id = await _personal(app_session)
+    async with _http() as http:
+        made = await http.post(
+            "/api/v1/agents",
+            json=_body(dept_id, narrowing=_IN_FRAME),
+            headers=_headers(tenant),
+        )
+        agent_id = made.json()["id"]
+        await _tighten_frame(app_session, tenant, dept_id)
+        r = await http.post(
+            f"/api/v1/agents/{agent_id}/versions/1/rollback",
+            json={},
+            headers=_headers(tenant, role="org_admin"),
+        )
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"error": "narrowing_exceeds_frame"}
+
+
+async def test_the_admin_instantiate_route_answers_409_at_the_cap(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, dept_id = await _personal(app_session, max_agents=1)
+    async with app_session(tenant) as db:
+        db.add(
+            m.Agent(
+                tenant_id=tenant,
+                department_id=dept_id,
+                name="x",
+                status="stopped",
+                narrowing={},
+                definition={},
+            )
+        )
+        version = await install_plugin(
+            db,
+            tenant_id=tenant,
+            manifest_data={
+                "name": "mail_helper",
+                "version": "1.0.0",
+                "type": "agent_template",
+                "trust": "first_party",
+                "summary": "s",
+                "agent_template": {"name": "Mia", "mission": "m", "scope": "personal"},
+            },
+        )
+        await enable_plugin(db, tenant_id=tenant, capa_id=version.capa_id, granted_permissions=[])
+        capa_id = version.capa_id
+    async with _http() as http:
+        r = await http.post(
+            f"/api/v1/capas/{capa_id}/instantiate",
+            json={"departmentId": str(dept_id)},
+            headers=_headers(tenant, role="org_admin"),
+        )
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "personal_agent_limit"}

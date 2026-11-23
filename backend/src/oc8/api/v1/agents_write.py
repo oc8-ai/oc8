@@ -68,6 +68,7 @@ from oc8.copilot.guardrail_interpret import (
 from oc8.departments.personal import (
     PersonalAgentLimit,
     PersonalFrameViolation,
+    clip_narrowing_to_frame,
     enforce_personal_narrowing,
     ensure_personal_capacity,
 )
@@ -75,6 +76,7 @@ from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
 )
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.runtime.registry import (
     RuntimeCapabilityError,
     RuntimeNotExecutableError,
@@ -121,15 +123,46 @@ def _refuse_personal_narrowing(dept: m.Department | None, narrowing: Any) -> Non
     except PersonalFrameViolation as exc:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
-            {
-                "error": "narrowing_exceeds_frame",
-                "violations": [
-                    {
-                        "tool_key": "",
-                        "reason": "the personal department's frame does not allow this",
-                    }
-                ],
-            },
+            # No `violations`: the frontend explains a refusal from that list,
+            # and there is no single tool the frame objects to here.
+            {"error": "narrowing_exceeds_frame"},
+        ) from exc
+
+
+async def _clip_restored_narrowing(
+    db: DbSession, agent: m.Agent, dept: m.Department, actor: HumanActor
+) -> None:
+    """Restoring an agent into a personal department drops the tools its
+    narrowing holds that the frame no longer allows (the frame cascade skips
+    archived agents). Published like the cascade does: only a clean agent, so
+    an operator's pending draft is never pushed live -- the clip joins it."""
+    if dept.kind != DEPARTMENT_KIND_PERSONAL:
+        return
+    frame_tools = (dept.frame or {}).get("tools") or {}
+    clipped = clip_narrowing_to_frame(frame_tools, agent.narrowing)
+    if clipped is None:
+        return
+    clean = not (await draft_status(db, agent)).dirty
+    agent.narrowing = clipped
+    agent.narrowing_overridden_keys = sorted(
+        set(agent.narrowing_overridden_keys or []) & set(clipped.get("tools", {}))
+    )
+    await db.flush()
+    if not clean:
+        return
+    try:
+        await publish_version(
+            db,
+            agent,
+            note="restored within the personal department's frame",
+            published_by=actor.member.id,
+        )
+    except NoChangesToPublish:
+        return
+    except PublishHookFailed as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"error": "publish_hook_rejected", "hook": exc.hook_name, "reason": str(exc.cause)},
         ) from exc
 
 
@@ -1697,8 +1730,8 @@ async def restore_agent(
     if dept is not None:
         # An archived agent is skipped by the department's frame cascade, so its
         # narrowing may predate a tighter frame; and it takes a place again.
-        _refuse_personal_narrowing(dept, agent.narrowing)
         await _ensure_personal_capacity(db, dept)
+        await _clip_restored_narrowing(db, agent, dept, actor)
     principal = actor.principal
     agent.deleted_at = None
     await db.flush()

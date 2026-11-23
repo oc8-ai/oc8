@@ -404,8 +404,12 @@ def effective_tool_policies(
     # the policy outright. `narrowing_within_frame` is what allows this key to
     # reach here in the first place (its `key not in frame_tools` branch no
     # longer flags it); this loop is where that grant actually takes effect.
+    # A CLOSED frame (a personal department's, `departments.personal.
+    # personal_frame`) has no such grants: a key it lacks grants nothing, so a
+    # pinned or drafted narrowing written before the frame tightened is inert.
+    closed = bool(frame and frame.get("closed") is True)
     for key, raw in narrow_tools.items():
-        if key in frame_tools:
+        if key in frame_tools or closed:
             continue
         exclusive = ToolPolicy.from_json(raw)
         out[key] = ToolPolicy(

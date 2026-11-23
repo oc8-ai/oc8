@@ -151,8 +151,11 @@ def frame_enables(frame: dict[str, Any] | None, key: str) -> bool:
 
 def frame_switches_off(frame: dict[str, Any] | None, key: str) -> bool:
     """The frame lists `key` and does not enable it -- the only frame state
-    that blocks an integration (an absent key is an agent-exclusive grant)."""
+    that blocks an integration (an absent key is an agent-exclusive grant,
+    unless the frame is closed, as a personal department's is)."""
     tools = _frame_tools(frame)
+    if key not in tools and (frame or {}).get("closed") is True:
+        return True  # a closed frame has no agent-exclusive grants
     return key in tools and not frame_enables(frame, key)
 
 

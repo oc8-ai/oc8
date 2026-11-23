@@ -149,7 +149,12 @@ async def test_stored_values_are_read(app_session: AppSessionFactory) -> None:
 async def test_personal_frame_shape() -> None:
     tools = {"x": {"enabled": True}}
     frame = personal_frame(tools)
-    assert frame == {"tools": tools, "kbs": [], "memory": {"department": ["read", "write"]}}
+    assert frame == {
+        "closed": True,
+        "tools": tools,
+        "kbs": [],
+        "memory": {"department": ["read", "write"]},
+    }
     # A copy, so editing a department's frame never edits the tenant default.
     frame["tools"]["x"]["enabled"] = False
     assert tools == {"x": {"enabled": True}}
@@ -175,6 +180,7 @@ async def test_first_use_creates_department_seat_frame_and_budget(
         assert dept.presentation == {"icon": "user"}
         assert dept.frame == {
             "tools": {"x": {"enabled": True, "read": True}},
+            "closed": True,
             "kbs": [],
             "memory": {"department": ["read", "write"]},
         }
