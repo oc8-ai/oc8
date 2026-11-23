@@ -2508,6 +2508,9 @@ export interface TriggerPollStatus {
   lastOkAt: string | null;
   lastError: string | null;
   lastErrorAt: string | null;
+  //: Why the source last left an event out (its loop protection, say), and when.
+  lastSkipped?: string | null;
+  lastSkippedAt?: string | null;
 }
 
 /** The skip reason of a polled trigger the agent's login changed under. */

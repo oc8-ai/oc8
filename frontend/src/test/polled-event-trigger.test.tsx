@@ -302,6 +302,40 @@ describe("polled event trigger", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("shows why the source last left an event out, and when", () => {
+    panel({
+      ...TRIGGER,
+      pollStatus: {
+        lastPolledAt: "2026-11-20T11:00:00+00:00",
+        lastOkAt: "2026-11-20T11:00:00+00:00",
+        lastError: null,
+        lastErrorAt: null,
+        lastSkipped: "automatic mail (Auto-Submitted)",
+        lastSkippedAt: "2026-11-20T10:58:00+00:00",
+      },
+    });
+
+    expect(
+      screen.getByText(
+        `Last skipped ${when("2026-11-20T10:58:00Z")}: automatic mail (Auto-Submitted)`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing about skips when there were none", () => {
+    panel({
+      ...TRIGGER,
+      pollStatus: {
+        lastPolledAt: "2026-11-20T11:00:00+00:00",
+        lastOkAt: "2026-11-20T11:00:00+00:00",
+        lastError: null,
+        lastErrorAt: null,
+      },
+    });
+
+    expect(screen.queryByText(/Last skipped/)).toBeNull();
+  });
+
   it("says when it was switched off because the mailbox changed", () => {
     panel({ ...TRIGGER, enabled: false, lastSkipReason: "event_target_changed" });
 

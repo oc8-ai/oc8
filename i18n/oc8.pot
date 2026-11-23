@@ -3002,6 +3002,9 @@ msgstr ""
 msgid "Last run"
 msgstr ""
 
+msgid "Last skipped {time}: {reason}"
+msgstr ""
+
 msgid "Last success {time}."
 msgstr ""
 

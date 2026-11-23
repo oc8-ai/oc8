@@ -152,5 +152,8 @@ class EventSourceCursor(Base, PkMixin, TenantMixin, TimestampMixin):
     #: key (`oc8.events.sources.event_key`). NULL for a baseline taken before
     #: it existed.
     baseline_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: Why the source last left an event out (`PollResult.skipped`), and when.
+    last_skipped: Mapped[str | None] = mapped_column(Text)
+    last_skipped_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (UniqueConstraint("trigger_id", name="uq_event_source_cursor_trigger"),)

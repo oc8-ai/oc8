@@ -27,6 +27,9 @@ session:
   at most `MAX_EVENTS_PER_TICK` per tick. The
   cursor only moves on once every event it returned has fired, so the rest come
   again on the next tick and the ones already fired are skipped by their key;
+* an event the source left out on purpose (`PollResult.skipped`, its own
+  loop protection, say) fires nothing; the last reason and its time are kept
+  on the cursor row and shown on the trigger;
 * a failure is recorded on the cursor row (exception class and message, with
   the login's secrets removed) and backs the trigger off exponentially;
 * a trigger that is skipped for a reason that is not the source's failure --
@@ -88,6 +91,8 @@ MAX_BACKOFF_SECONDS: Final = 900
 MIN_POLL_SECONDS: Final = 30
 #: Longest error text kept on the cursor row.
 _ERROR_LIMIT: Final = 300
+#: Longest skip reason kept on the cursor row.
+_SKIP_LIMIT: Final = 200
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,10 @@ class PolledEvent:
 class PollResult:
     next_cursor: dict[str, Any]
     events: list[PolledEvent] = field(default_factory=list)
+    #: Why the source left out things it saw (its own loop protection, say),
+    #: one short plain-text reason each, oldest first. Nothing fires for them;
+    #: the last one shows on the trigger (`skip_text`).
+    skipped: list[str] = field(default_factory=list)
 
 
 #: `(login_fields, event_config, cursor) -> PollResult`. A poller must never
@@ -502,6 +511,8 @@ async def reset_cursor(db: AsyncSession, trigger: m.Trigger) -> None:
         row.last_ok_at = None
         row.last_error = None
         row.last_error_at = None
+        row.last_skipped = None
+        row.last_skipped_at = None
     await db.flush()
 
 
@@ -540,6 +551,14 @@ async def disable_off_target_triggers(
         trigger.last_skip_reason = EVENT_TARGET_CHANGED
         logger.info("polled trigger %s switched off: its login changed", trigger.id)
     await db.flush()
+
+
+def skip_text(skipped: list[str]) -> str | None:
+    """What the cursor row keeps of a poll's skipped events: the last reason,
+    on one line and cut short; None when nothing was skipped."""
+    if not skipped:
+        return None
+    return " ".join(str(skipped[-1]).split())[:_SKIP_LIMIT]
 
 
 def backoff_seconds(failures: int) -> int:
@@ -894,6 +913,10 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             )
             return 0
         finished = datetime.now(tz=UTC)
+        skipped = skip_text(result.skipped) if cursor_row.cursor is not None else None
+        if skipped is not None:
+            cursor_row.last_skipped = skipped
+            cursor_row.last_skipped_at = finished
         if done:
             cursor_row.cursor = result.next_cursor
             # Due again just before the next tick, so it is polled once a

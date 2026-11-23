@@ -947,6 +947,15 @@ def parse_headers(raw: bytes) -> EmailMessage:
     return msg
 
 
+#: `skip_reason` -> what the trigger shows for it (`PollResult.skipped`).
+SKIP_TEXT: dict[str, str] = {
+    "own address": "mail sent from this mailbox",
+    "auto-submitted": "automatic mail (Auto-Submitted)",
+    "bulk": "bulk or list mail",
+    "delivery report": "delivery report",
+}
+
+
 def skip_reason(msg: EmailMessage, account: Account) -> str | None:
     """Why the poller must not start the agent for this mail (loop
     protection), or None. Mail from the mailbox itself, automatic mail
@@ -2237,6 +2246,7 @@ def poll(
     cursor: Mapping[str, Any] | None,
     limit: int,
     guard: Guard | None = None,
+    skipped: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """`(next_cursor, events)` for the new mail, at most `limit`, oldest
     first; each event is `{delivery_id, payload, summary}` (`mail_event`). A
@@ -2257,9 +2267,9 @@ def poll(
     # last one ran out of time before its first mail (see `_out_of_time`).
     starved = isinstance(cursor, Mapping) and cursor.get("starved") is True
     if account.incoming_protocol == "pop3":
-        return _poll_pop3(account, cursor, limit, guard, deadline, starved)
+        return _poll_pop3(account, cursor, limit, guard, deadline, starved, skipped)
     folder = canonical_folder(folder or "INBOX")
-    return _poll_imap(account, folder, cursor, limit, guard, deadline, starved)
+    return _poll_imap(account, folder, cursor, limit, guard, deadline, starved, skipped)
 
 
 def _out_of_time(deadline: float, done: int, starved: bool) -> bool:
@@ -2285,6 +2295,7 @@ def _poll_imap(
     guard: Guard | None,
     deadline: float,
     starved: bool,
+    skipped: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with imap_session(account, guard) as conn:
         uidvalidity = _select(conn, folder)
@@ -2308,7 +2319,7 @@ def _poll_imap(
             if _out_of_time(deadline, count, starved):
                 break
             fetched = _imap_event_mail(conn, ImapId(folder, uidvalidity, uid))
-            if fetched is not None and (event := _safe_event(fetched, account)) is not None:
+            if fetched is not None and (event := _safe_event(fetched, account, skipped)):
                 events.append(event)
             done, count = uid, count + 1
         next_cursor: dict[str, Any] = {
@@ -2407,6 +2418,7 @@ def _poll_pop3(
     guard: Guard | None,
     deadline: float,
     starved: bool,
+    skipped: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with pop3_session(account, guard) as conn:
         listing = _pop3_listing(conn)
@@ -2424,7 +2436,7 @@ def _poll_pop3(
             complete = size <= MAX_EVENT_FETCH_BYTES
             raw = _pop3_raw(conn, number, headers_only=not complete)
             fetched = Fetched(uidl, None, raw, size, complete=complete)
-            if (event := _safe_event(fetched, account)) is not None:
+            if (event := _safe_event(fetched, account, skipped)) is not None:
                 events.append(event)
             done += 1
         if done < len(new):
@@ -2437,12 +2449,15 @@ def _poll_pop3(
 # --- the event ------------------------------------------------------------------
 
 
-def _safe_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+def _safe_event(
+    fetched: Fetched, account: Account, skipped: list[str] | None = None
+) -> dict[str, Any] | None:
     """`mail_event`, and when that fails for any reason, an event from the
     headers alone; when even those cannot be read, none. Never raises, so
-    one bad mail cannot hold up the mail after it."""
+    one bad mail cannot hold up the mail after it. A mail loop protection
+    skips adds why to `skipped`."""
     try:
-        return mail_event(fetched, account)
+        return mail_event(fetched, account, skipped)
     except Exception as exc:
         # The class name and our id only: the error text may quote the mail.
         logger.warning(
@@ -2451,15 +2466,18 @@ def _safe_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
             type(exc).__name__,
         )
     try:
-        return _header_event(fetched, account)
+        return _header_event(fetched, account, skipped)
     except Exception:
         return None
 
 
-def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+def mail_event(
+    fetched: Fetched, account: Account, skipped: list[str] | None = None
+) -> dict[str, Any] | None:
     """`{delivery_id, payload, summary}` for a new mail, or None when loop
-    protection skips it. The delivery id is the mailbox's own id for the
-    mail, never its Message-ID, which the sender chooses."""
+    protection skips it (and why is added to `skipped`). The delivery id is
+    the mailbox's own id for the mail, never its Message-ID, which the sender
+    chooses."""
     if fetched.complete:
         msg = parse(fetched.raw)
         text = body_text(msg)
@@ -2479,7 +2497,7 @@ def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
                 f"(This mail is {_size(fetched.size)}; only the start of its text was read, "
                 "and the attachment sizes are estimates. Open it with mail_get.)"
             ]
-    if skip_reason(msg, account):
+    if _skipped(msg, account, skipped):
         return None
     payload = _payload(fetched, msg, listed)
     return {
@@ -2489,9 +2507,18 @@ def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
     }
 
 
-def _header_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+def _skipped(msg: EmailMessage, account: Account, skipped: list[str] | None) -> bool:
+    reason = skip_reason(msg, account)
+    if reason is not None and skipped is not None:
+        skipped.append(SKIP_TEXT.get(reason, reason))
+    return reason is not None
+
+
+def _header_event(
+    fetched: Fetched, account: Account, skipped: list[str] | None = None
+) -> dict[str, Any] | None:
     msg = parse_headers(fetched.raw)
-    if skip_reason(msg, account):
+    if _skipped(msg, account, skipped):
         return None
     payload = _payload(fetched, msg, [])
     note = (

@@ -126,6 +126,8 @@ def _poll_status(
         last_ok_at=_iso(row.last_ok_at),
         last_error=row.last_error,
         last_error_at=_iso(row.last_error_at),
+        last_skipped=row.last_skipped,
+        last_skipped_at=_iso(row.last_skipped_at),
     )
 
 

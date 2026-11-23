@@ -276,7 +276,8 @@ export function PolledEventTriggerPanel({
   );
 }
 
-/** When polling last ran and worked, and the error that is still current. */
+/** When polling last ran and worked, the error that is still current, and
+ *  why the source last left an event out. */
 function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
   const t = useT();
   const { lang } = useLang();
@@ -315,6 +316,13 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
                 formatWhen(status.lastOkAt, lang),
               )
             : t("It has not worked yet.", "Es hat noch nicht funktioniert.")}
+        </p>
+      )}
+      {status?.lastSkipped && status.lastSkippedAt && (
+        <p>
+          {t("Last skipped {time}: {reason}", "Zuletzt übersprungen {time}: {reason}")
+            .replace("{time}", formatWhen(status.lastSkippedAt, lang))
+            .replace("{reason}", status.lastSkipped)}
         </p>
       )}
     </div>

@@ -1718,6 +1718,9 @@ class TriggerPollStatusDTO(CamelModel):
     last_ok_at: str | None = None
     last_error: str | None = None
     last_error_at: str | None = None
+    #: Why the source last left an event out, and when (`PollResult.skipped`).
+    last_skipped: str | None = None
+    last_skipped_at: str | None = None
 
 
 class TriggerEventConfigFieldDTO(CamelModel):

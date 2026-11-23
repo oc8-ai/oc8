@@ -758,3 +758,44 @@ def test_a_baseline_from_before_baseline_ids_keeps_the_old_key() -> None:
     assert sources.event_key("src", "d-1", trigger_id, target, baseline) == (
         f"src:d-1:{trigger_id}:credential:{target.id}:{baseline}"
     )
+
+
+async def test_an_event_the_source_left_out_shows_on_the_cursor_until_a_new_baseline(
+    app_session: AppSessionFactory,
+) -> None:
+    """A source may leave an event out (its own loop protection): it says why,
+    and the trigger shows the last such reason, so a skip is not silent."""
+
+    def respond(
+        _login: dict[str, str], _config: dict[str, Any], cursor: dict[str, Any] | None
+    ) -> PollResult:
+        if cursor is None:
+            return PollResult(next_cursor={"pos": 5}, skipped=["at baseline"])
+        return PollResult(next_cursor={"pos": 7}, events=[event(1)], skipped=["auto-reply"])
+
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(respond))
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()
+    row = await _cursor(app_session, polled, trigger_id)
+    assert row.last_skipped is None and row.last_skipped_at is None
+
+    await _make_due(app_session, polled, trigger_id)
+    await poll_tick()
+    row = await _cursor(app_session, polled, trigger_id)
+    assert row.last_skipped == "auto-reply" and row.last_skipped_at is not None
+    assert len(await _runs(app_session, polled)) == 1
+
+    for enabled in (False, True):
+        async with app_session(polled.tenant) as db:
+            trigger = await db.get(m.Trigger, trigger_id)
+            assert trigger is not None
+            await update_trigger(db, trigger, enabled=enabled)
+    row = await _cursor(app_session, polled, trigger_id)
+    assert row.last_skipped is None and row.last_skipped_at is None
+
+
+def test_a_skip_reason_is_cut_short() -> None:
+    assert len(sources.skip_text(["x" * 1000, "y"])) <= 200
+    assert sources.skip_text([]) is None
+    assert sources.skip_text(["a", "b"]) == "b"

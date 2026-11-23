@@ -8,7 +8,7 @@ import psycopg
 from alembic import command
 from alembic.config import Config
 
-_COLUMNS = {"baseline_id"}
+_COLUMNS = {"baseline_id", "last_skipped", "last_skipped_at"}
 
 
 def _cfg() -> Config:
