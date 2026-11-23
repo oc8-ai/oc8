@@ -16,12 +16,15 @@
 # follow OC8_OUTBOUND_ALLOWED_PRIVATE by itself is a follow-up.
 #
 # Mail servers with a certificate from a private CA. Certificates are always
-# verified; there is no way to skip that. Either set SSL_CERT_FILE (or
-# SSL_CERT_DIR) to a bundle holding the CA on the backend, worker and
-# scheduler -- core passes both on to the bridge, so the poller, the
-# connection test and the tools all trust it -- or paste the CA's certificate
+# verified; there is no way to skip that. Either paste the CA's certificate
 # (PEM) into the login's `ca_certificate` field, which needs no change to the
-# containers.
+# containers and is trusted for this login only; or set SSL_CERT_FILE (or
+# SSL_CERT_DIR) on the backend, worker and scheduler. SSL_CERT_FILE REPLACES
+# the system trust store, and core passes it to every tool server, not only
+# this one: point it at the system CA bundle WITH your CA appended (e.g. a
+# copy of /etc/ssl/certs/ca-certificates.crt plus your PEM), never at your CA
+# alone, or every other tool server stops trusting public certificates. See
+# docs/DEPLOY.md, "Trusting a private certificate authority".
 #
 # Attachments travel as files of the run, not through the model:
 # mail_get_attachment returns MCP binary content that core keeps as a run

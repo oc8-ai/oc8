@@ -71,7 +71,8 @@ except Exception:  # pragma: no cover - a missing dist would break the import an
 # environment is deliberately NOT passed so provider keys and DB credentials never
 # leak into a (possibly third-party) tool server. `SSL_CERT_FILE`/`SSL_CERT_DIR`
 # are paths, not secrets: the trust store an operator points core at (a private
-# CA) is the tools' trust store too.
+# CA) is the tools' trust store too -- for every tool server, so it must be
+# the system bundle plus that CA, never the CA alone (docs/DEPLOY.md).
 _SAFE_ENV_KEYS = (
     "PATH",
     "HOME",
@@ -100,7 +101,9 @@ _SITECUSTOMIZE_DIR = str(Path(__file__).resolve().parent / "_mcp_sitecustomize")
 
 
 def _safe_env(overrides: dict[str, str] | None) -> dict[str, str]:
-    env = {k: os.environ[k] for k in _SAFE_ENV_KEYS if k in os.environ}
+    # An empty value is left out: an empty SSL_CERT_FILE would make OpenSSL
+    # load no file at all instead of the system store.
+    env = {k: os.environ[k] for k in _SAFE_ENV_KEYS if os.environ.get(k)}
     # Workspace/config for the demo servers, but never secrets.
     env.update({k: v for k, v in os.environ.items() if k.startswith("OC8_MCP_")})
     env.update(overrides or {})
