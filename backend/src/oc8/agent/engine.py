@@ -560,6 +560,29 @@ async def _ask_for_startup_accounts(
         await merge_context(db, run, {"connection_required": ask.as_context()})
 
 
+async def _ask_after_idle_run(
+    db: AsyncSession,
+    run: m.AgentRun | None,
+    missing: Sequence[ConnectionRequired],
+    *,
+    status: str,
+    calls: Sequence[Mapping[str, Any]],
+    offered: set[str],
+) -> None:
+    """A run that ENDED without getting anything done through the tools it
+    was offered -- perhaps because an account was missing -- asks for that
+    account after all (review of round 7). One that got its work done with
+    the tools it had stays quiet, as does a run that is only waiting."""
+    if run is None or not missing or (run.context or {}).get("connection_required"):
+        return
+    if status in ("waiting_for_approval", "waiting_for_input"):
+        return
+    # By tool name: a call record's `connection` is the leg's, not the call's.
+    if any(c.get("state") == "done" and c.get("tool") in offered for c in calls):
+        return
+    await merge_context(db, run, {"connection_required": missing[0].as_context()})
+
+
 def _startup_entry(name: str, exc: BaseException) -> dict[str, Any]:
     """One connection that offered no tools at startup, as the run keeps it:
     with the call to action to record should the model reach for it."""
@@ -4056,7 +4079,16 @@ async def run_agent(
                         auth_by_connection=auth_by_connection,
                         reserved=CONTROL_TOOL_NAMES,
                     )
-                    return await loop(routed.tools, routed)
+                    ended = await loop(routed.tools, routed)
+                    await _ask_after_idle_run(
+                        db,
+                        run_row,
+                        startup_missing,
+                        status=ended.status,
+                        calls=ended.tool_calls,
+                        offered={t.name for t in routed.tools},
+                    )
+                    return ended
             finally:
                 if session_state["started"]:
                     await dispatch_claude_event(tenant_id, "SessionEnd", _hook_ctx())

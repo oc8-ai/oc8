@@ -605,3 +605,49 @@ async def test_a_run_that_never_needs_the_account_stays_quiet(
         ):
             await engine._ask_when_reached(db, run, unavailable, call)
     assert await _asked(app_session, tenant, run_id) is None
+
+
+@pytest.mark.parametrize(
+    ("status", "calls", "asked"),
+    [
+        pytest.param("done", [], True, id="no tool used at all"),
+        pytest.param(
+            "done",
+            [{"tool": "imap.send", "connection": "imap", "state": "failed"}],
+            True,
+            id="only a failed call",
+        ),
+        pytest.param(
+            "done",
+            [{"tool": "find_tools", "connection": None, "state": "done"}],
+            True,
+            id="only a core tool",
+        ),
+        pytest.param(
+            "done",
+            [{"tool": "imap.send", "connection": "imap", "state": "done"}],
+            False,
+            id="succeeded with another tool",
+        ),
+        pytest.param("waiting_for_approval", [], False, id="not ended yet"),
+    ],
+)
+async def test_a_run_that_ends_without_using_a_tool_asks_for_the_missing_account(
+    app_session: AppSessionFactory, status: str, calls: list[dict[str, Any]], asked: bool
+) -> None:
+    """Review of round 7: quiet at startup, the prompt stayed hidden when the
+    model never reached for the connection and the run then got nowhere --
+    perhaps BECAUSE the account was missing. A run that ends having used none
+    of its offered tools asks for it; one that got its work done with the
+    tools it had stays quiet."""
+    from oc8.agent import engine
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [missing], opened_any=True)
+        await engine._ask_after_idle_run(
+            db, run, [missing], status=status, calls=calls, offered={"imap.send"}
+        )
+    result = await _asked(app_session, tenant, run_id)
+    assert (result is not None) is asked
