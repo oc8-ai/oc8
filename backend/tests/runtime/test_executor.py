@@ -1787,4 +1787,30 @@ async def test_a_resumed_leg_keeps_the_calls_of_the_leg_before_the_approval(
         run = await s.get(m.AgentRun, run_id)
         assert run is not None
         calls = run.context["toolCalls"]
-    assert calls == [read, {**refused, "state": "denied"}, replayed]
+    # The resumed leg's step 1 follows the earlier leg's last step.
+    assert calls == [read, {**refused, "state": "denied"}, {**replayed, "step": 2}]
+
+
+async def test_merging_legs_keeps_an_unreplayed_approval_numbers_steps_on_and_drops_repeats() -> (
+    None
+):
+    """Review of F10. An approved call the resumed leg did not carry out
+    stays, marked approved; a call recorded again by a redelivered leg is
+    listed once; the resumed leg's steps continue after the earlier ones."""
+    from oc8.runtime.approval_resume import call_signature
+    from oc8.runtime.executor import _merge_leg_calls
+
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    partial = {"tool": "mail_list", "arguments": {}, "state": "done", "step": 1, "startedAt": "x"}
+    decided = {call_signature("mail_reply", {"uid": 1}): "approve"}
+    leg = [partial, {"tool": "mail_send", "arguments": {"to": "a"}, "state": "done", "step": 2}]
+
+    merged = _merge_leg_calls([read, held, partial], decided, leg)
+
+    assert merged == [
+        read,
+        {**held, "state": "approved"},
+        {**partial, "step": 3},
+        {"tool": "mail_send", "arguments": {"to": "a"}, "state": "done", "step": 4},
+    ]
