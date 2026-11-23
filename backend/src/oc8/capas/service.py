@@ -13,6 +13,7 @@ from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.agents.hire import HIRED_STATUS
 from oc8.agents.versioning import publish_version
 from oc8.capas.discovery import DiscoveredPlugin, find_plugin
 from oc8.capas.manifest import (
@@ -451,6 +452,39 @@ async def _create_trigger_if_present(
         raise PluginError(f"invalid trigger in template: {exc}") from exc
 
 
+async def _checked_template_narrowing(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    frame: dict[str, Any],
+    narrowing: dict[str, Any],
+    agent_name: str,
+) -> dict[str, Any]:
+    """A template agent's narrowing, through the one check every writer of
+    an agent's narrowing goes through (`check_agent_narrowing`): refused
+    when it goes beyond the department or sets a threshold that would never
+    hold."""
+    from oc8.connections.value_spec import check_agent_narrowing
+
+    try:
+        checked = await check_agent_narrowing(
+            db, tenant_id=tenant_id, frame=frame, narrowing=narrowing, stored=None
+        )
+    except ValueError as exc:
+        raise PluginError(f"invalid narrowing for {agent_name!r}: {exc}") from exc
+    if checked.violations:
+        raise PluginError(
+            f"the narrowing of {agent_name!r} goes beyond its department: "
+            + "; ".join(str(v.__dict__) for v in checked.violations)
+        )
+    if checked.unenforceable:
+        raise PluginError(
+            f"the narrowing of {agent_name!r} sets an amount limit that would never hold on "
+            + ", ".join(checked.unenforceable)
+        )
+    return checked.narrowing
+
+
 async def instantiate_agent(
     db: AsyncSession,
     *,
@@ -474,14 +508,22 @@ async def instantiate_agent(
     }
     if spec.get("max_steps"):
         definition["max_steps"] = int(spec["max_steps"])
+    target = await db.get(Department, department_id)
+    narrowing = await _checked_template_narrowing(
+        db,
+        tenant_id=tenant_id,
+        frame=dict(target.frame or {}) if target is not None else {},
+        narrowing=dict(spec.get("narrowing") or {}),
+        agent_name=str(spec.get("name") or mf.get("name", "Agent")),
+    )
     agent = Agent(
         tenant_id=tenant_id,
         department_id=department_id,
         name=name or str(spec.get("name") or mf.get("name", "Agent")),
         role_title=_substitute_template_values(str(spec.get("role_title") or ""), config),
         mission=_substitute_template_values(str(spec.get("mission") or ""), config),
-        status="stopped",
-        narrowing=dict(spec.get("narrowing") or {}),
+        status=HIRED_STATUS,
+        narrowing=narrowing,
         definition=definition,
         # `presentation` is the DISPLAY side of an agent (agent_to_dto reads it);
         # `definition` is the behavioural side. A prompt starter is a UI
@@ -548,6 +590,13 @@ async def instantiate_department(
 
     lead_id: uuid.UUID | None = None
     for a in agent_defs:
+        narrowing = await _checked_template_narrowing(
+            db,
+            tenant_id=tenant_id,
+            frame=dict(dept.frame or {}),
+            narrowing=dict(a.get("narrowing", {})),
+            agent_name=str(a["name"]),
+        )
         agent = Agent(
             tenant_id=tenant_id,
             department_id=dept.id,
@@ -555,8 +604,8 @@ async def instantiate_department(
             role_title=_substitute_template_values(str(a.get("role_title", "")), config),
             mission=_substitute_template_values(str(a.get("mission", "")), config),
             is_team_lead=bool(a.get("is_team_lead", False)),
-            status="stopped",
-            narrowing=dict(a.get("narrowing", {})),
+            status=HIRED_STATUS,
+            narrowing=narrowing,
             definition={
                 "plugin": mf.get("name", ""),
                 "version": version.semver,

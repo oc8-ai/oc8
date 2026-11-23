@@ -62,7 +62,7 @@ async def test_instantiate_agent_fills_mission_persona_and_memory(
         assert agent.name == "Dana"
         assert agent.role_title == "Bookkeeper & Controller"
         assert agent.mission == "Keep the books accurate."
-        assert agent.status == "stopped"
+        assert agent.status == "idle"
         assert agent.definition["persona"] == "# Dana\nPrecise and calm."
         assert agent.definition["skills"] == ["Month-end close"]
         assert agent.definition["max_steps"] == 24
@@ -271,3 +271,33 @@ async def test_instantiate_agent_substitutes_template_values_from_installation_c
             await s.execute(select(m.Trigger).where(m.Trigger.agent_id == agent.id))
         ).scalar_one()
         assert trigger.task_text == "Reconcile cash-eur"
+
+
+@pytest.mark.parametrize(
+    "narrowing",
+    [
+        # More than the department grants.
+        {"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
+        # A positive threshold on a connection without a value spec: a
+        # guardrail that would never hold.
+        {"tools": {"odoo": {"enabled": True, "read": True, "approval_eur": 500}}},
+    ],
+    ids=["beyond the frame", "unenforceable threshold"],
+)
+async def test_instantiate_agent_checks_the_templates_narrowing(
+    app_session: AppSessionFactory, narrowing: dict[str, object]
+) -> None:
+    """Review of round 6: the template installer wrote its narrowing as is,
+    past the check every other writer of an agent's narrowing goes through
+    (`check_agent_narrowing`)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        frame = {"tools": {"odoo": {"enabled": True, "read": True, "modify": False}}}
+        dept = m.Department(tenant_id=tenant, name="Finance", frame=frame)
+        s.add(dept)
+        await s.flush()
+        version = await install_plugin(
+            s, tenant_id=tenant, manifest_data=_agent_template_manifest(narrowing=narrowing)
+        )
+        with pytest.raises(PluginError, match="narrowing"):
+            await instantiate_agent(s, tenant_id=tenant, version=version, department_id=dept.id)

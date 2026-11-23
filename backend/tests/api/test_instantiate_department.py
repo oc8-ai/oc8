@@ -64,7 +64,7 @@ async def test_instantiate_department_endpoint(app_session: AppSessionFactory) -
             .scalars()
             .all()
         )
-        assert len(agents) == 2 and all(a.status == "stopped" for a in agents)
+        assert len(agents) == 2 and all(a.status == "idle" for a in agents)
 
 
 async def test_instantiate_department_wrong_type_400(app_session: AppSessionFactory) -> None:
