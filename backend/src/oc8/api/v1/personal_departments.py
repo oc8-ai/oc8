@@ -56,7 +56,6 @@ from oc8.departments.personal import (
     PersonalDepartmentsDisabled,
     PersonalDepartmentSummary,
     default_frame_agents,
-    ensure_personal_capacity,
     follow_default,
     get_or_create_personal_department,
     owned_personal_department,
@@ -237,11 +236,6 @@ async def hire_personal_agent(
             status.HTTP_403_FORBIDDEN, {"error": "personal_departments_disabled"}
         ) from exc
     try:
-        await ensure_personal_capacity(db, dept)
-    except PersonalDepartmentRefused as exc:
-        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
-
-    try:
         # Plan ruling 4: a personal hire is exempt from the tenant's
         # `require_hire_approval`. The administrator who enabled this
         # personal template's capa has already approved it; gating it again
@@ -256,7 +250,7 @@ async def hire_personal_agent(
             hire_gate=False,
             owner_hire=True,
         )
-    except PersonalDepartmentRefused as exc:  # a concurrent hire took the last place
+    except PersonalDepartmentRefused as exc:  # the cap, or the owner left (`instantiate_agent`)
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
