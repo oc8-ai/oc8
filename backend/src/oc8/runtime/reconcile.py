@@ -165,6 +165,11 @@ async def close_abandoned_runs(
 #: after this one on the worker's timer. What is left is the next tick's.
 _CANCELLED_PARKED_PER_TICK = 20
 _CANCELLED_PARKED_BUDGET_SECONDS = 10.0
+#: Where the next tick starts in the tenant list. Each tick starts one tenant
+#: further on, so a tenant whose runs fill the cap and never wake (rows held
+#: for longer than a tick) cannot keep every other tenant's stopped runs
+#: parked. Per process; several workers each rotate on their own.
+_cancelled_parked_rotation = 0
 
 
 async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
@@ -181,7 +186,8 @@ async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
     lock, and each wake runs in its own transaction under the wake's lock
     timeout, so one held row neither blocks the sweep nor rolls back another
     run's wake. One tick tries at most `_CANCELLED_PARKED_PER_TICK` runs and
-    stops after `_CANCELLED_PARKED_BUDGET_SECONDS`; the rest wait a tick.
+    stops after `_CANCELLED_PARKED_BUDGET_SECONDS`; the rest wait a tick, and
+    the next tick starts at the next tenant.
 
     Never raises: it runs on the worker's own timer.
     """
@@ -189,11 +195,17 @@ async def wake_cancelled_parked_runs() -> list[uuid.UUID]:
     # approvals service, which reach the engine.
     from oc8.runtime.cancellation import _wake_parked_run
 
+    global _cancelled_parked_rotation
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _CANCELLED_PARKED_BUDGET_SECONDS
     attempts = 0
     woken: list[uuid.UUID] = []
-    for tenant_id in await list_active_tenant_ids():
+    tenant_ids = list(await list_active_tenant_ids())
+    if tenant_ids:
+        start = _cancelled_parked_rotation % len(tenant_ids)
+        tenant_ids = tenant_ids[start:] + tenant_ids[:start]
+        _cancelled_parked_rotation += 1
+    for tenant_id in tenant_ids:
         if attempts >= _CANCELLED_PARKED_PER_TICK or loop.time() >= deadline:
             break
         try:

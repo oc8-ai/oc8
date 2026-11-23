@@ -158,3 +158,48 @@ async def test_a_tick_stops_when_its_time_is_up(
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, run_id)
         assert run is not None and run.state == RunState.WAITING_FOR_APPROVAL.value
+
+
+async def test_a_tenant_with_stuck_runs_does_not_starve_the_next_one(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tenant whose parked runs fill the per-tick cap and never wake (rows
+    held, say) must not keep every other tenant's stopped runs parked: the
+    tick starts at the next tenant each time."""
+    from oc8.runtime import cancellation
+
+    monkeypatch.setattr("oc8.runtime.reconcile._CANCELLED_PARKED_PER_TICK", 2)
+    queue = _RecordingQueue()
+    monkeypatch.setattr("oc8.runtime.intake.get_run_queue", lambda: queue)
+    stuck_tenant, other_tenant = uuid.uuid4(), uuid.uuid4()
+    stuck = [(await _parked_with_a_cancel(app_session, stuck_tenant))[0]]
+    run_id, *_rest = await _parked_second_turn(app_session, stuck_tenant)
+    async with app_session(stuck_tenant) as db:
+        db.add(
+            m.RunCancellation(
+                tenant_id=stuck_tenant,
+                run_id=run_id,
+                requested_at=dt.datetime.now(tz=dt.UTC),
+                cancellation_kind="operator_interrupted",
+            )
+        )
+    stuck.append(run_id)
+    waiting, _card = await _parked_with_a_cancel(app_session, other_tenant)
+
+    real_wake = cancellation._wake_parked_run
+
+    async def _wake(db: object, run: m.AgentRun) -> None:
+        if run.id in stuck:
+            return  # the row stays held: the wake gives up, every tick
+        await real_wake(db, run)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cancellation, "_wake_parked_run", _wake)
+
+    async def _tenants() -> list[uuid.UUID]:
+        return [stuck_tenant, other_tenant]
+
+    monkeypatch.setattr("oc8.runtime.reconcile.list_active_tenant_ids", _tenants)
+
+    woken = [*await wake_cancelled_parked_runs(), *await wake_cancelled_parked_runs()]
+
+    assert waiting in woken
