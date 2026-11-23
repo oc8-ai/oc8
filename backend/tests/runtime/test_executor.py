@@ -1803,14 +1803,61 @@ async def test_merging_legs_keeps_an_unreplayed_approval_numbers_steps_on_and_dr
     read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
     held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
     partial = {"tool": "mail_list", "arguments": {}, "state": "done", "step": 1, "startedAt": "x"}
+    # The redelivered leg runs the same call again, at another time.
+    again = {**partial, "startedAt": "y", "durationMs": 12}
     decided = {call_signature("mail_reply", {"uid": 1}): "approve"}
-    leg = [partial, {"tool": "mail_send", "arguments": {"to": "a"}, "state": "done", "step": 2}]
+    leg = [again, {"tool": "mail_send", "arguments": {"to": "a"}, "state": "done", "step": 2}]
 
     merged = _merge_leg_calls([read, held, partial], decided, leg)
 
     assert merged == [
         read,
         {**held, "state": "approved"},
-        {**partial, "step": 3},
+        {**again, "step": 3},
         {"tool": "mail_send", "arguments": {"to": "a"}, "state": "done", "step": 4},
+    ]
+
+
+def test_merging_legs_keeps_an_earlier_legs_identical_call() -> None:
+    """An earlier leg's read and this leg's same read at the same step number
+    are two calls, not one recorded twice: only this leg's own partial calls,
+    at the end of the stored list, are repeats."""
+    from oc8.runtime.approval_resume import call_signature
+    from oc8.runtime.executor import _merge_leg_calls
+
+    first = {"tool": "mail_list", "arguments": {}, "state": "done", "step": 1, "startedAt": "x"}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    decided = {call_signature("mail_reply", {"uid": 1}): "approve"}
+    reread = {**first, "startedAt": "y"}
+    replied = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "done", "step": 2}
+
+    merged = _merge_leg_calls([first, held], decided, [reread, replied])
+
+    assert merged == [first, {**reread, "step": 2}, {**replied, "step": 3}]
+
+
+def test_merging_legs_keeps_two_identical_calls_of_one_leg() -> None:
+    """The same call made twice in a leg is listed twice, also when a
+    redelivery recorded only the first of them before."""
+    from oc8.runtime.executor import _merge_leg_calls
+
+    read = {"tool": "mail_get", "arguments": {"uid": 1}, "state": "done", "step": 1}
+    held = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "awaiting_approval", "step": 2}
+    rejected = {"tool": "mail_reply", "arguments": {"uid": 1}, "state": "denied", "step": 2}
+    poll = {"tool": "mail_list", "arguments": {}, "state": "done", "step": 1, "startedAt": "x"}
+    leg = [
+        {**poll, "startedAt": "y"},
+        {**poll, "step": 2, "startedAt": "z"},
+    ]
+    from oc8.runtime.approval_resume import call_signature
+
+    decided = {call_signature("mail_reply", {"uid": 1}): "reject"}
+
+    merged = _merge_leg_calls([read, held, poll], decided, leg)
+
+    assert merged == [
+        read,
+        rejected,
+        {**poll, "startedAt": "y", "step": 3},
+        {**poll, "step": 4, "startedAt": "z"},
     ]

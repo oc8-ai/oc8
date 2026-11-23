@@ -206,7 +206,14 @@ def _merge_leg_calls(raw: Any, decided: dict[str, str], leg_calls: list[Any]) ->
     this leg carried out is listed once, as this leg's; one it did not is kept
     as `approved`; a rejected one never ran and stays, `denied`. An entry this
     leg recorded again (a redelivered leg finds its own partial calls in the
-    context) is listed once."""
+    context) is listed once.
+
+    Those repeats are the END of the stored list -- the first delivery
+    appended them as it went -- and they repeat the START of this leg, step
+    for step. So exactly the longest such tail is dropped, compared by step,
+    call and state and never by timing (a rerun takes its own time). The
+    same call made twice is two entries, and an earlier leg's call that
+    happens to match one of this leg's is not a repeat."""
     from oc8.runtime.approval_resume import call_signature
 
     def signature(call: dict[str, Any]) -> str:
@@ -215,12 +222,23 @@ def _merge_leg_calls(raw: Any, decided: dict[str, str], leg_calls: list[Any]) ->
             str(call.get("tool", "")), arguments if isinstance(arguments, dict) else {}
         )
 
+    def identity(call: Any) -> Any:
+        if not isinstance(call, dict):
+            return call
+        return (call.get("step"), signature(call), call.get("state"))
+
     leg = list(leg_calls)
+    stored = list(raw) if isinstance(raw, list) else []
+    repeated = 0
+    for size in range(min(len(stored), len(leg)), 0, -1):
+        tail, head = stored[-size:], leg[:size]
+        if all(identity(a) == identity(b) for a, b in zip(tail, head, strict=True)):
+            repeated = size
+            break
+    stored = stored[: len(stored) - repeated]
     replayed = {signature(c) for c in leg if isinstance(c, dict)}
     calls: list[Any] = []
-    for call in raw if isinstance(raw, list) else []:
-        if call in leg:
-            continue
+    for call in stored:
         if isinstance(call, dict) and call.get("state") == "awaiting_approval":
             sig = signature(call)
             verdict = decided.get(sig)
