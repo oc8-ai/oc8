@@ -129,8 +129,8 @@ async def test_a_bare_member_hires_a_personal_template(app_session: AppSessionFa
     """Ruling 4: a personal hire is exempt from `require_hire_approval` -- the
     admin enabling the capa is the approval. The flag is on here, and the agent
     still starts ready (`HIRED_STATUS`, like any ungated template hire), never
-    `pending_approval`, with no hire request behind it: the route passes
-    `hire_gate=False`."""
+    `pending_approval`, with no hire request behind it: a personal
+    department is never gated (`agents.hire.hire_is_gated`)."""
     tenant = await _tenant(app_session, hire_approval=True)
     cid = await _capa(app_session, tenant, _template("mail_helper"))
 

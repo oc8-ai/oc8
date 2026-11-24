@@ -247,7 +247,6 @@ async def hire_personal_agent(
             version=version,
             department_id=dept.id,
             name=body.name or None,
-            hire_gate=False,
             owner_hire=True,
         )
     except PersonalDepartmentRefused as exc:  # the cap, or the owner left (`instantiate_agent`)

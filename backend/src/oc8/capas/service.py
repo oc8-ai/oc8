@@ -13,7 +13,12 @@ from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.agents.hire import create_hire_request, initial_status, require_hire_approval
+from oc8.agents.hire import (
+    create_hire_request,
+    hire_is_gated,
+    initial_status,
+    require_hire_approval,
+)
 from oc8.agents.versioning import publish_version
 from oc8.capas.discovery import DiscoveredPlugin, find_plugin
 from oc8.capas.manifest import (
@@ -504,7 +509,6 @@ async def instantiate_agent(
     version: CapaVersion,
     department_id: uuid.UUID,
     name: str | None = None,
-    hire_gate: bool = True,
     owner_hire: bool = False,
 ) -> Agent:
     """Hire one agent from an agent_template version into a live
@@ -516,8 +520,8 @@ async def instantiate_agent(
     not found" for one, since a personal department's agents answer to its
     owner alone (the same rule as `api.deps.authorize_agent_write`).
 
-    `hire_gate=False` exempts this hire from the tenant's
-    `require_hire_approval` (plan ruling 4): a member's personal hire, where the
+    A hire into a personal department is exempt from the tenant's
+    `require_hire_approval` (plan ruling 4, `agents.hire.hire_is_gated`): the
     administrator enabling the template's capa is the approval. Such a hire
     raises no hire request and never starts `pending_approval`; otherwise the
     owner, approver in their own department, would approve their own hire.
@@ -559,8 +563,8 @@ async def instantiate_agent(
     if spec.get("max_steps"):
         definition["max_steps"] = int(spec["max_steps"])
     # The tenant's hire gate holds a template's agents like any hire -- except
-    # an exempt one (`hire_gate=False`, see the docstring).
-    gated = hire_gate and await require_hire_approval(db, tenant_id=tenant_id)
+    # in a personal department (see the docstring).
+    gated = await hire_is_gated(db, tenant_id=tenant_id, department=dept)
     narrowing = await _checked_template_narrowing(
         db,
         tenant_id=tenant_id,

@@ -22,6 +22,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from oc8 import models as m
+from oc8.agents.hire import HIRED_STATUS, set_require_hire_approval
 from oc8.auth import get_identity_provider
 from oc8.authz.pdp import effective_tool_policies
 from oc8.authz.scope import subject_uuid_for
@@ -600,7 +601,6 @@ async def test_a_template_hire_into_a_departed_owners_department_is_refused(
                 tenant_id=tenant,
                 version=enabled,
                 department_id=dept_id,
-                hire_gate=False,
                 owner_hire=True,
             )
 
@@ -817,3 +817,51 @@ async def test_restoring_an_old_personal_department_beside_a_live_one_is_a_409(
     async with app_session(tenant) as db:
         old = await db.get(m.Department, old_id)
         assert old is not None and old.deleted_at is not None
+
+
+async def _hire_requests(app_session: AppSessionFactory, tenant: uuid.UUID) -> int:
+    async with app_session(tenant) as db:
+        rows = await db.execute(
+            select(m.ApprovalRequest).where(m.ApprovalRequest.action_type == "hire_agent")
+        )
+        return len(rows.scalars().all())
+
+
+async def test_the_owners_own_create_is_exempt_from_the_hire_gate(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling: the owner's seat plus the personal frame and cap are the
+    approval, as for the personal template hire. With `require_hire_approval`
+    on, the owner's `POST /agents` into their personal department makes a
+    ready agent and raises no hire request (whose payload would carry the
+    mission to the approvers)."""
+    tenant, dept_id = await _personal(app_session)
+    async with app_session(tenant) as db:
+        await set_require_hire_approval(db, tenant_id=tenant, enabled=True)
+    async with _http() as http:
+        r = await http.post("/api/v1/agents", json=_body(dept_id), headers=_headers(tenant))
+    assert r.status_code == 201, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, uuid.UUID(r.json()["id"]))
+        assert agent is not None and agent.status == HIRED_STATUS
+    assert await _hire_requests(app_session, tenant) == 0
+
+
+async def test_a_standard_create_still_waits_for_hire_approval(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant, _personal_id = await _personal(app_session)
+    dept_id = await _standard(app_session, tenant)
+    async with app_session(tenant) as db:
+        await set_require_hire_approval(db, tenant_id=tenant, enabled=True)
+    async with _http() as http:
+        r = await http.post(
+            "/api/v1/agents",
+            json=_body(dept_id),
+            headers=_headers(tenant, role="org_admin", subject=_OTHER),
+        )
+    assert r.status_code == 201, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, uuid.UUID(r.json()["id"]))
+        assert agent is not None and agent.status == "pending_approval"
+    assert await _hire_requests(app_session, tenant) == 1

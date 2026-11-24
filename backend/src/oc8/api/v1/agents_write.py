@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.hire import create_hire_request, initial_status, require_hire_approval
+from oc8.agents.hire import create_hire_request, hire_is_gated, initial_status
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
@@ -397,7 +397,7 @@ async def create_agent(
         narrowing = checked.narrowing
 
     principal = actor.principal
-    gated = await require_hire_approval(db, tenant_id=principal.tenant_id)
+    gated = await hire_is_gated(db, tenant_id=principal.tenant_id, department=dept)
     agent = m.Agent(
         id=uuid.uuid4(),
         tenant_id=principal.tenant_id,
