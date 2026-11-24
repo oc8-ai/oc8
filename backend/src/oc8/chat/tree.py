@@ -30,7 +30,12 @@ needs, but never one listed earlier after one listed later:
 
 Knowledge rows a chat transaction touches (deleting a session drops its
 chat's own knowledge base, `chat.files_kb.drop_chat_kb`) come before step 4,
-in `knowledge.tombstone`'s own order (kb_chunk, data_source, knowledge_base).
+in `knowledge.tombstone`'s own order (kb_chunk, data_source, knowledge_base),
+with one addition: a chat's own `chat_upload` source row is locked first of
+all, ahead of kb_chunk -- it is the mutex between that chat's file ingest and
+its removal (`chat.files_kb`'s docstring says why that cannot invert). File
+rows (`file_attachment`: an edit copying a large file, the ingest setting its
+result) come after the knowledge rows and before step 4.
 
 The hazard this guards against: a transaction holding a row from a later
 step while it waits for an earlier one -- most often the audit lock, which

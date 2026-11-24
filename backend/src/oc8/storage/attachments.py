@@ -5,6 +5,13 @@ in `runtime/executor.py`) both funnel through `store_attachment_bytes` so
 neither has to duplicate the size cap, content-type allowlist, or the
 extraction/truncation rules. The agent layer must not import the API layer,
 so this lives in `storage`, not `api/v1/files.py`.
+
+A chat file (`owner_type == "chat_message"`) whose extracted text is longer
+than `INLINE_ATTACHMENT_CHARS` is marked `index_status = 'queued'` and its
+FULL text is stored beside the file (`full_text_key`), for the background
+ingest into the chat's own knowledge base (`oc8.chat.files_kb`, spec §5.4).
+The row's `extracted_text` stays capped at `MAX_DOCUMENT_LENGTH`: it is what
+the turn falls back to when indexing fails.
 """
 
 from __future__ import annotations
@@ -14,13 +21,21 @@ import mimetypes
 import posixpath
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.config import get_settings
 from oc8.knowledge.ingest import MAX_DOCUMENT_LENGTH, IngestionError, extract_text
 from oc8.storage import s3
 
 MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+#: A chat file up to this many extracted characters goes to the model whole;
+#: a longer one is indexed in the chat's own knowledge base (spec §5.4).
+INLINE_ATTACHMENT_CHARS = 20_000
+#: The `index_status` values under which a chat file's full text is stored
+#: beside it and the turn gets a note instead of the text.
+INDEXED_STATUSES = ("queued", "indexed")
 ALLOWED_CONTENT_TYPES = {
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -97,6 +112,30 @@ def content_type_for(filename: str) -> str:
     return mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
 
+def full_text_key(row: m.FileAttachment) -> str:
+    """Where a large chat file's full extracted text is stored, beside it."""
+    return f"{row.bucket_key}.text"
+
+
+def _chat_file_status(extracted_text: str | None) -> str | None:
+    if extracted_text is None:
+        return None
+    if len(extracted_text) <= INLINE_ATTACHMENT_CHARS:
+        return "inline"
+    if len(extracted_text) > get_settings().chat_file_max_chars:
+        # Above the chat-file ceiling: never indexed, handed over truncated.
+        return "failed"
+    return "queued"
+
+
+async def delete_attachment_blobs(row: m.FileAttachment) -> None:
+    """Delete what a row owns in the object store: the file, and the full text
+    stored beside a large chat file."""
+    await s3.delete_object(row.bucket_key)
+    if row.index_status is not None and row.index_status != "inline":
+        await s3.delete_object(full_text_key(row))
+
+
 class AttachmentRejected(Exception):
     """Base for the two rejection reasons callers must distinguish (413 vs 422
     at the API layer; a plain tool error for the agent layer)."""
@@ -127,6 +166,7 @@ async def store_attachment_bytes(
 
     is_image = content_type in IMAGE_CONTENT_TYPES
     extracted_text: str | None = None
+    full_text: str | None = None
     if not is_image:
         payload = (
             base64.b64encode(raw).decode()
@@ -141,6 +181,7 @@ async def store_attachment_bytes(
             )
         except IngestionError:
             extracted_text = None  # storage still succeeds -- see files.py's Global Constraints
+        full_text = extracted_text
         if extracted_text is not None and len(extracted_text) > MAX_DOCUMENT_LENGTH:
             # Truncate, never refuse -- the same 200,000-char cap the
             # knowledge-base ingest path uses, applied here because
@@ -153,6 +194,7 @@ async def store_attachment_bytes(
             # keeps the newest message even when it alone blows the budget.
             extracted_text = extracted_text[:MAX_DOCUMENT_LENGTH]
 
+    index_status = _chat_file_status(full_text) if owner_type == "chat_message" else None
     bucket_key = f"{tenant_id}/{owner_type}/{uuid.uuid4()}-{filename}"
     await s3.put_object(bucket_key, raw, content_type)
 
@@ -166,7 +208,10 @@ async def store_attachment_bytes(
         size_bytes=len(raw),
         extracted_text=extracted_text,
         is_image=is_image,
+        index_status=index_status,
     )
+    if index_status == "queued" and full_text is not None:
+        await s3.put_object(full_text_key(row), full_text.encode(), "text/plain; charset=utf-8")
     db.add(row)
     await db.flush()
     return row
@@ -177,7 +222,29 @@ async def copy_attachment(
 ) -> m.FileAttachment:
     """A copy of `row`, file included, for another owner of the same type --
     an edited chat turn gets its own copy of the original turn's files, so
-    each row keeps owning (and on deletion removing) exactly one stored blob."""
+    each row keeps owning (and on deletion removing) exactly one stored blob.
+
+    A large chat file's copy is not ingested again: it shares the index of the
+    file it was copied from (`indexed_from_id`, the original) and takes its
+    status. To read that status reliably the original's row is locked first:
+    the ingest worker sets the status of the original and of every copy naming
+    it under the same lock (`chat.files_kb.finish_chat_file`), so a copy made
+    while the original is still queued is either seen by it or sees its result.
+    Its full text is copied too, so the copy stays readable page by page."""
+    index_status = row.index_status
+    indexed_from_id: uuid.UUID | None = None
+    if index_status in INDEXED_STATUSES:
+        indexed_from_id = row.indexed_from_id or row.id
+        root = (
+            await db.execute(
+                select(m.FileAttachment)
+                .where(m.FileAttachment.id == indexed_from_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        if root is not None and root.index_status is not None:
+            index_status = root.index_status
     bucket_key = f"{row.tenant_id}/{row.owner_type}/{uuid.uuid4()}-{row.filename}"
     await s3.put_object(bucket_key, await s3.get_object(row.bucket_key), row.content_type)
     copy = m.FileAttachment(
@@ -190,7 +257,17 @@ async def copy_attachment(
         size_bytes=row.size_bytes,
         extracted_text=row.extracted_text,
         is_image=row.is_image,
+        index_status=index_status,
+        indexed_from_id=indexed_from_id if index_status in INDEXED_STATUSES else None,
     )
+    if copy.index_status in INDEXED_STATUSES:
+        try:
+            full_text = await s3.get_object(full_text_key(row))
+        except s3.ObjectNotFound:
+            # Nothing to read page by page: the copy is handed over inline.
+            copy.index_status, copy.indexed_from_id = "failed", None
+        else:
+            await s3.put_object(full_text_key(copy), full_text, "text/plain; charset=utf-8")
     db.add(copy)
     await db.flush()
     return copy

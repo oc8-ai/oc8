@@ -1235,8 +1235,12 @@ async def get_ingestion_job(
     if job is None or job.tenant_id != principal.tenant_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "ingestion job not found")
     kb = await db.get(m.KnowledgeBase, job.kb_id) if job.kb_id is not None else None
-    if kb is not None and kb.kind != KB_KIND_SHARED:
-        # A job filling a chat's own base is that chat's business.
+    source = await db.get(m.DataSource, job.data_source_id)
+    if (kb is not None and kb.kind != KB_KIND_SHARED) or (
+        source is not None and source.connector_type == CHAT_UPLOAD_CONNECTOR
+    ):
+        # A job filling a chat's own base is that chat's business -- told by
+        # its source too, so a job whose base is gone stays hidden as well.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "ingestion job not found")
     return ingestion_job_to_dto(job)
 

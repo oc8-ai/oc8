@@ -46,7 +46,7 @@ from oc8.chat.context.manifest import (
     manifest_text,
 )
 from oc8.chat.context.registry import RESOLVERS
-from oc8.chat.files_kb import drop_chat_kb
+from oc8.chat.files_kb import attachment_turn_text, drop_chat_kb
 from oc8.chat.modes import (
     ACT,
     ASSISTANT_ONLY_REFUSAL,
@@ -80,8 +80,7 @@ from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.intake import enqueue_run
 from oc8.runtime.person import FOR_PERSON
 from oc8.runtime.states import TERMINAL, RunState
-from oc8.storage import s3
-from oc8.storage.attachments import copy_attachment
+from oc8.storage.attachments import copy_attachment, delete_attachment_blobs
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +255,7 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     )
     for attachment in attachments:
         try:
-            await s3.delete_object(attachment.bucket_key)
+            await delete_attachment_blobs(attachment)
         except Exception:  # best-effort by design -- see the docstring
             logger.warning(
                 "could not delete attachment blob %s for chat session %s",
@@ -986,11 +985,7 @@ async def send_message(
     for att in attachments:
         if att.is_image:
             continue
-        label = f"\n\n[Attached file: {att.filename}]\n"
-        label += (
-            att.extracted_text if att.extracted_text else "(could not read this file's content)"
-        )
-        task_text += label
+        task_text += attachment_turn_text(att)
 
     acting = await _acting_person(
         db,
@@ -1266,10 +1261,7 @@ async def regenerate_reply(
     for att in attachments:
         if att.is_image:
             continue
-        task_text += f"\n\n[Attached file: {att.filename}]\n"
-        task_text += (
-            att.extracted_text if att.extracted_text else "(could not read this file's content)"
-        )
+        task_text += attachment_turn_text(att)
     acting = await _acting_person(
         db,
         session=session,

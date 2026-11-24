@@ -25,10 +25,22 @@ class FileAttachment(Base, PkMixin, TenantMixin, TimestampMixin):
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     extracted_text: Mapped[str | None] = mapped_column(Text)
     is_image: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    #: A chat file's indexing (spec §5.4, migration 0132): None (not a chat
+    #: file, or older than this), 'inline' (small enough to hand over whole),
+    #: 'queued', 'indexed' (searchable in the chat's own knowledge base) or
+    #: 'failed' (handed over inline and truncated instead).
+    index_status: Mapped[str | None] = mapped_column(Text)
+    #: The attachment whose indexed text this row shares -- an edited turn's
+    #: copy of a file is not ingested again. None for the original itself.
+    indexed_from_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
 
     __table_args__ = (
         CheckConstraint(
             "owner_type IN ('chat_message','agent_instructions','agent_run')",
             name="ck_file_attachment_owner_type",
+        ),
+        CheckConstraint(
+            "index_status IS NULL OR index_status IN ('queued','indexed','failed','inline')",
+            name="ck_file_attachment_index_status",
         ),
     )

@@ -153,6 +153,7 @@ EXEMPT: dict[str, str] = {
     "file_attachment.content_type": "MIME type string (e.g. 'application/pdf'), structural/identifier, not customer free text, design spec §6c",
     "file_attachment.filename": "content column to encrypt as-is, not yet migrated -- the user-supplied original filename, design spec §6a",
     "file_attachment.extracted_text": "content column to encrypt as-is, not yet migrated -- text extracted from an uploaded document, design spec §6a",
+    "file_attachment.index_status": "structural enum-like column, CHECK-constrained to 'queued'/'indexed'/'failed'/'inline' (ck_file_attachment_index_status), not content",
     "flow.name": "dispatch-matched identifier, not customer content, design spec §6c",
     "flow_run.status": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
     "flow_run.current_stages": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",

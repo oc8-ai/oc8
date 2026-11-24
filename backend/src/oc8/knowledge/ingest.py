@@ -212,6 +212,8 @@ async def ingest_raw_document(
     data_source: m.DataSource,
     kb_id: uuid.UUID,
     raw: RawDocument,
+    max_chars: int | None = None,
+    require_embeddings: bool = False,
 ) -> int:
     """Connector-agnostic ingestion tail: extract -> chunk -> embed -> store.
 
@@ -229,8 +231,17 @@ async def ingest_raw_document(
     previous generation is touched. That ordering is the safety property: a
     document whose upstream version became unreadable must leave its old chunks
     exactly where they were.
+
+    `max_chars` refuses a document whose extracted text is longer (a chat file's
+    own ceiling, `chat_file_max_chars`). `require_embeddings` refuses the
+    document when any chunk gets no vector -- the model is down or the embedding
+    policy keeps the text off it -- instead of storing it unembedded for a later
+    re-embed: a chat file that cannot be searched now is handed to the model
+    inline instead. Both refuse with `IngestionError`, before anything is written.
     """
     extracted = extract_text(content=raw.content, content_type=raw.content_type)
+    if max_chars is not None and len(extracted) > max_chars:
+        raise IngestionError(f"document exceeds {max_chars} characters")
     chunks = chunk_text(extracted)
     router = get_model_router()
     metadata = dict(raw.metadata)
@@ -266,6 +277,8 @@ async def ingest_raw_document(
                 )
             )
         except EmbeddingUnavailable as exc:
+            if require_embeddings:
+                raise IngestionError(f"no embedding for this document: {exc}") from exc
             unavailable = unavailable or str(exc)
             embeddings.append(None)
     if unavailable is not None:
