@@ -1034,6 +1034,14 @@ async def run_agent(
                 chat_mode=chat_mode,
             )
 
+            # Once per leg: the chat's base exists from the first large upload,
+            # before the turn is sent.
+            from oc8.chat.files_kb import chat_has_files
+
+            has_chat_files = await chat_has_files(
+                db, run_row.context if run_row is not None else None
+            )
+
             def _mark_restricted() -> None:
                 # One-way: restricted text is in the transcript from here on, so
                 # every later completion says so and the router refuses a cloud
@@ -1060,6 +1068,7 @@ async def run_agent(
                     has_context=has_readable_context(
                         run_row.context if run_row is not None else None
                     ),
+                    has_chat_files=has_chat_files,
                     # The in-process engine is the one runtime with no
                     # /workspace mount of its own -- see offered_tools' docstring.
                     offer_write_output_file=True,

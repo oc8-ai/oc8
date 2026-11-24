@@ -12,6 +12,7 @@ import datetime as dt
 import logging
 import math
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -138,12 +139,15 @@ async def _search_internal(
     tenant_id: uuid.UUID,
     kb: m.KnowledgeBase,
     query_embedding: list[float],
+    only_sources: Mapping[str, str] | None = None,
 ) -> list[_Hit]:
-    stmt = (
-        live_chunks()
-        .where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id == kb.id)
-        .order_by(m.KbChunk.embedding.cosine_distance(query_embedding))
-        .limit(_CANDIDATE_LIMIT)
+    stmt = live_chunks().where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id == kb.id)
+    if only_sources is not None:
+        # In the query, so other documents cannot crowd these out of the
+        # candidate limit.
+        stmt = stmt.where(m.KbChunk.source_uri.in_(sorted(only_sources)))
+    stmt = stmt.order_by(m.KbChunk.embedding.cosine_distance(query_embedding)).limit(
+        _CANDIDATE_LIMIT
     )
     chunks = list((await db.execute(stmt)).scalars().all())
     # A chunk's own label may be looser than its source's or its base's: chunks
@@ -244,6 +248,7 @@ async def retrieve_kb_context(
     only_kb_ids: frozenset[uuid.UUID] | None = None,
     released_kb_ids: frozenset[uuid.UUID] | None = None,
     skipped_local: list[str] | None = None,
+    only_sources: Mapping[str, str] | None = None,
 ) -> tuple[str, bool]:
     """Returns (context, contains_restricted). `contains_restricted` is true
     when any returned text is restricted or from a local-only base: text that
@@ -277,7 +282,12 @@ async def retrieve_kb_context(
     caller names it in `only_kb_ids` (`search_chat_files`). Not through a
     grant, not through `released_kb_ids` alone: nothing that feeds those sets
     for an agent's normal search may ever reach a chat's files, so even a
-    stray grant or pin on one is ignored here."""
+    stray grant or pin on one is ignored here.
+
+    `only_sources`, when given, maps the `source_uri`s that may be returned
+    to the name each is shown under: every other document is left out, and a
+    hit's source is shown by that name (`search_chat_files`: the files on
+    the branch a run answers, named by the file the model can read)."""
     kb_ids = await granted_kb_ids(db, agent=agent)
     if only_kb_ids is not None:
         # Intersection, never replacement. A `#` reference cannot reach a base
@@ -327,7 +337,11 @@ async def retrieve_kb_context(
         if index_type == INTERNAL_INDEX_TYPE:
             all_hits.extend(
                 await _search_internal(
-                    db, tenant_id=tenant_id, kb=kb, query_embedding=query_embedding
+                    db,
+                    tenant_id=tenant_id,
+                    kb=kb,
+                    query_embedding=query_embedding,
+                    only_sources=only_sources,
                 )
             )
         else:
@@ -341,6 +355,8 @@ async def retrieve_kb_context(
                 )
             )
 
+    if only_sources is not None:
+        all_hits = [h for h in all_hits if h.source_uri in only_sources]
     if not all_hits:
         return "", False
 
@@ -371,7 +387,10 @@ async def retrieve_kb_context(
     for kb_id, kb_hits in by_kb.items():
         kb = next((b for b in bases if b.id == kb_id), None)
         kb_name = kb.name if kb is not None else str(kb_id)
-        body = "\n".join(f"- {h.content} (source: {h.source_uri})" for h in kb_hits)
+        body = "\n".join(
+            f"- {h.content} (source: {(only_sources or {}).get(h.source_uri, h.source_uri)})"
+            for h in kb_hits
+        )
         sections.append(f"[Knowledge: {kb_name}]\n{body}")
 
     return "\n\n".join(sections), contains_restricted

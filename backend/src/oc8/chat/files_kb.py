@@ -39,6 +39,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from collections.abc import Mapping
+from typing import Any
 
 from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
@@ -46,6 +48,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.auth import Principal
+from oc8.chat.tree import path_to, visible_path
 from oc8.config import get_settings
 from oc8.knowledge.embedding_policy import LOCAL_AGENT_REASON, agent_runs_locally
 from oc8.knowledge.ingest import MAX_DOCUMENT_LENGTH
@@ -237,6 +240,56 @@ def attachment_turn_text(att: m.FileAttachment) -> str:
         "The full file is searchable with search_chat_files and readable page by page "
         f"with read_chat_file (file id {att.id})."
     )
+
+
+async def chat_has_files(db: AsyncSession, context: Mapping[str, Any] | None) -> bool:
+    """Whether a run's chat (`context["chat_session_id"]`) has a live base of
+    its own -- what makes `search_chat_files` and `read_chat_file` worth
+    offering. Who may use them is decided when they are called."""
+    raw = (context or {}).get("chat_session_id")
+    try:
+        session_id = uuid.UUID(str(raw))
+    except (ValueError, TypeError):
+        return False
+    session = await db.get(m.ChatSession, session_id)
+    return session is not None and await _live_chat_kb(db, session) is not None
+
+
+async def chat_files_on_path(
+    db: AsyncSession, *, session: m.ChatSession, anchor_id: uuid.UUID | None
+) -> list[m.FileAttachment]:
+    """The (non-image) files of the messages from the chat's root to
+    `anchor_id`, the turn a run answers (`chat.tree.path_to`); the person's
+    visible path when there is no anchor. A file on another branch, one not
+    sent yet, or one of another chat is not among them."""
+    path = (
+        await path_to(db, session=session, message_id=anchor_id)
+        if anchor_id is not None
+        else await visible_path(db, session=session)
+    )
+    message_ids = [msg.id for msg in path]
+    if not message_ids:
+        return []
+    return list(
+        (
+            await db.execute(
+                select(m.FileAttachment)
+                .where(
+                    m.FileAttachment.tenant_id == session.tenant_id,
+                    m.FileAttachment.owner_type == "chat_message",
+                    m.FileAttachment.owner_id.in_(message_ids),
+                    m.FileAttachment.is_image.is_(False),
+                )
+                .order_by(m.FileAttachment.id)
+            )
+        ).scalars()
+    )
+
+
+def chat_file_root(attachment: m.FileAttachment) -> uuid.UUID:
+    """The file whose index a chat file's chunks belong to: the original for an
+    edited turn's copy (`indexed_from_id`), else the file itself."""
+    return attachment.indexed_from_id or attachment.id
 
 
 async def load_chat_file_text(attachment: m.FileAttachment) -> str | None:

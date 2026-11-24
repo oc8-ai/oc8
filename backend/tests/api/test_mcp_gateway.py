@@ -370,6 +370,43 @@ async def test_tools_list_offers_read_context_to_a_turn_with_readable_pins(
     assert "read_context" in [t["name"] for t in body["result"]["tools"]]
 
 
+async def test_tools_list_offers_the_chat_file_tools_when_the_chat_has_a_base(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """offered_tools' has_chat_files, for an isolated runtime: the turn's chat
+    has a base for its large files."""
+    from oc8.chat.files_kb import chat_kb_for
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+        member = m.OrgMember(tenant_id=tenant, subject="op", subject_uuid=uuid.uuid4())
+        db.add(member)
+        await db.flush()
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent_id, member_id=member.id)
+        db.add(session)
+        await db.flush()
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {**run.context, "chat_session_id": str(session.id)}
+        await db.commit()
+
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    names = [t["name"] for t in body["result"]["tools"]]
+    assert "search_chat_files" not in names and "read_chat_file" not in names
+
+    async with app_session(tenant) as db:
+        session = await db.get(m.ChatSession, session.id)
+        await chat_kb_for(db, session=session, create=True)
+        await db.commit()
+    code, body = await _rpc(_token(tenant, agent_id, run_id), "tools/list")
+    assert code == 200, body
+    names = [t["name"] for t in body["result"]["tools"]]
+    assert "search_chat_files" in names and "read_chat_file" in names
+
+
 # ------------------------------------------------ a connection whose env expires
 #
 # A `secret_env` ref of the form `oauth:...` is minted per launch from the

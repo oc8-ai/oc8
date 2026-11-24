@@ -35,12 +35,15 @@ from oc8.agent.claims import claim_record, held_by_run
 from oc8.agent.claims import refusal as claim_refusal
 from oc8.agent.control_tools import (
     ASK_USER,
+    CHAT_FILE_TOOLS,
     CONTROL_TOOL_NAMES,
     DELEGATE_TASK,
     MEMORY_WRITE,
+    READ_CHAT_FILE,
     READ_CONTEXT,
     RENDER_COMPONENT,
     REQUEST_DECISION,
+    SEARCH_CHAT_FILES,
     SEARCH_KNOWLEDGE,
     SEARCH_MEMORY,
     SUGGEST_REPLIES,
@@ -83,6 +86,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.files_kb import chat_has_files
 from oc8.chat.modes import mode_from_context, mode_refusal
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import (
@@ -541,6 +545,10 @@ async def _list_tools(
     # turn's manifest lists something readable (offered_tools' has_context).
     if has_readable_context(run.context):
         core.append(READ_CONTEXT)
+    # The files of the turn's own chat, when it has a base for them
+    # (offered_tools' has_chat_files); who may use them is decided per call.
+    if await chat_has_files(db, run.context):
+        core.extend(CHAT_FILE_TOOLS)
     # Withheld from the tenant Assistant specifically, mirroring
     # control_tools.offered_tools' own reasoning: a park only WORKS if
     # something can answer it, and Telegram free text -- one of the
@@ -889,6 +897,8 @@ async def _call_tool(
         RENDER_COMPONENT.name,
         SUGGEST_REPLIES.name,
         READ_CONTEXT.name,
+        SEARCH_CHAT_FILES.name,
+        READ_CHAT_FILE.name,
     ):
         task = await _run_task(
             db, run, no_task="ERROR: this run has no task to attach a decision to"

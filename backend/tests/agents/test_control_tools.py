@@ -192,6 +192,8 @@ def test_control_tool_names_matches_the_schemas() -> None:
         "request_decision",
         "search_knowledge",
         "read_context",
+        "search_chat_files",
+        "read_chat_file",
         "search_memory",
         "render_component",
         "board_write",

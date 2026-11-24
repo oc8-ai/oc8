@@ -116,6 +116,7 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.files_kb import chat_has_files
 from oc8.chat.modes import ChatMode, mode_from_context, mode_refusal
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
@@ -1429,6 +1430,9 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         ctx["has_knowledge"] = preamble.has_knowledge
         ctx["produces_board"] = preamble.produces_board
         ctx["has_instruction_files"] = preamble.has_instruction_files
+        # Persisted like has_knowledge: the chat's base exists from the first
+        # large upload, before the turn is sent.
+        ctx["has_chat_files"] = await chat_has_files(db, ctx)
         ctx["copilot_permissions"] = sorted(preamble.copilot_permissions)
         ctx["copilot_has_member"] = preamble.copilot_has_member
         # C3 (a later package) reads this back from run.context so the step
@@ -1536,6 +1540,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         copilot_permissions=copilot_permissions,
         copilot_has_member=copilot_has_member,
         has_context=has_readable_context(ctx),
+        has_chat_files=bool(ctx.get("has_chat_files", False)),
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
