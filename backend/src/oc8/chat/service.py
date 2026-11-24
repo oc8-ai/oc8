@@ -589,24 +589,37 @@ async def fitting_agents_for_turn(
     acting_member: m.OrgMember | None,
     text: str,
     token_role: str | None,
+    chat_channel: str | None = None,
+    for_person: str | None = None,
 ) -> str:
     """The "agents that fit" block for one Copilot user turn, or "" -- for
     another agent's chat, no person, no match, or any failure: matching never
     blocks a turn.
 
-    Only for the chat owner's own turn (the rule of `_turn_manifest`): a
-    channel sender, a follow-up or someone else replying in this chat has no
-    block, so the ranking never reveals what the owner may run to anyone else.
-    `token_role` MUST be the role on that member's live request token."""
-    if acting_member is None or acting_member.id != session.member_id:
-        return ""
+    Only for the chat owner's own turn, so the ranking never reveals what the
+    owner may run to anyone else. Two doors: the web (`acting_member` is the
+    owner, the rule of `_turn_manifest`; `token_role` MUST be the role on that
+    member's live token), and a messenger (`chat_channel` set and `for_person`
+    is the owner's subject, Ruling 58; no token, so authority comes from the
+    member's stored role alone). A follow-up or notice passes neither."""
     try:
+        if acting_member is not None:
+            if acting_member.id != session.member_id:
+                return ""
+            owner_id = acting_member.id
+        elif chat_channel is not None and for_person is not None:
+            owner = await db.get(m.OrgMember, session.member_id)
+            if owner is None or owner.subject != for_person:
+                return ""
+            owner_id, token_role = owner.id, None
+        else:
+            return ""
         copilot = await db.get(m.Agent, session.agent_id)
         if copilot is None or not copilot.is_tenant_assistant:
             return ""
         matches = await matching_agents(
             db,
-            member_id=acting_member.id,
+            member_id=owner_id,
             tool_key=None,
             request=text[:_FIT_REQUEST_LIMIT],
             copilot=copilot,
@@ -911,6 +924,8 @@ async def send_message(
             acting_member=acting_member,
             text=body,
             token_role=operator_role,
+            chat_channel=chat_channel,
+            for_person=for_person,
         )
     for att in attachments:
         if att.is_image:

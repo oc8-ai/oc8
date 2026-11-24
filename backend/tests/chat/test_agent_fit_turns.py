@@ -168,6 +168,9 @@ async def test_no_fit_block_for_followup_and_non_assistant_sessions(
             tenant_id=tenant,
             message=REQUEST,
             originating_operator=None,
+            for_person="anna",
+            chat_channel="telegram",
+            chat_channel_external_id="42",
             role="followup",
         )
         assert run is not None
@@ -236,3 +239,45 @@ async def test_a_turn_by_someone_other_than_the_owner_gets_no_block(
             acting_member=boss,
         )
         assert BLOCK not in again.context["task"]
+
+
+async def test_messenger_turn_by_the_owner_gets_the_block(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    _route(monkeypatch, _fits())
+    async with app_session(tenant) as db:
+        session = await _office(db, tenant)
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator=None,
+            for_person="anna",
+            chat_channel="telegram",
+            chat_channel_external_id="42",
+        )
+        assert run is not None and BLOCK in run.context["task"]
+
+
+async def test_messenger_turn_for_another_subject_gets_no_block(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    router = _fits()
+    _route(monkeypatch, router)
+    async with app_session(tenant) as db:
+        session = await _office(db, tenant)
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator=None,
+            for_person="mallory",
+            chat_channel="telegram",
+            chat_channel_external_id="42",
+        )
+        assert run is not None and BLOCK not in run.context["task"]
+        assert router.calls == []
