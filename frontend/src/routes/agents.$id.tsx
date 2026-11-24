@@ -431,16 +431,12 @@ function AgentDetail() {
           <div className="flex shrink-0 items-center gap-2">
             <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
             <DeleteAgentButton agent={agent} mayManage={mayManage} />
-            <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
-            <button
-              type="button"
-              onClick={() => setRunPickerOpen(true)}
-              disabled={status === "running" || runAgent.isPending}
-              title={status === "running" ? t("Already running", "Läuft bereits") : undefined}
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Play className="h-4 w-4" /> {t("Run now", "Jetzt ausführen")}
-            </button>
+            <AgentStartActions
+              agent={agent}
+              running={status === "running"}
+              busy={runAgent.isPending}
+              onRunNow={() => setRunPickerOpen(true)}
+            />
           </div>
         </div>
       </Panel>
@@ -450,7 +446,7 @@ function AgentDetail() {
           lives inside a tab is a bar half the people who need it never see. */}
       <AgentPublishBar agentId={agent.id} mayManage={mayManage} />
 
-      {runPickerOpen && (
+      {runPickerOpen && !agent.contentHidden && (
         <div
           className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
           onClick={() => setRunPickerOpen(false)}
@@ -564,13 +560,7 @@ function AgentDetail() {
             runtimeRef={agent.runtimeRef}
             mayManage={mayManage}
           />
-          <Panel className="p-5">
-            <ConfigSectionHeader
-              hint={t("when this agent runs", "wann dieser Agent läuft")}
-              title={t("Schedule / trigger", "Zeitplan / Auslöser")}
-            />
-            <TriggerEditor initial={agent.schedule} agentName={agent.name} agentId={agent.id} />
-          </Panel>
+          <AgentTriggerPanel agent={agent} />
           <div className="md:col-span-2">
             <AgentKnowledgeSection
               agentId={agent.id}
@@ -596,6 +586,7 @@ function AgentDetail() {
 
       {tab === "guardrails" && agent.departmentId && (
         <>
+          {agent.contentHidden && <PrivateContentNotice />}
           <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
           <AgentToolAccessPanel
             agentId={agent.id}
@@ -636,15 +627,66 @@ function AgentDetail() {
 /** In place of a tab whose content belongs to a personal agent's owner alone:
  *  the API answers it with a 404, and an empty editor would read as "this
  *  agent has no instructions". */
-export function PrivateContentNotice() {
+export function PrivateContentNotice({ inline = false }: { inline?: boolean }) {
+  const t = useT();
+  const words = t(
+    "This is a personal agent. Only its owner sees its instructions, versions and files.",
+    "Das ist ein persönlicher Agent. Seine Anweisungen, Versionen und Dateien sieht nur sein Besitzer.",
+  );
+  // `inline` inside a panel that already frames it (a trigger, the last action).
+  if (inline) return <p className="mt-4 text-sm text-muted-foreground">{words}</p>;
+  return <Panel className="p-5 text-sm text-muted-foreground">{words}</Panel>;
+}
+
+/** The Config tab's schedule / trigger panel. A personal agent's triggers
+ *  (their task text) belong to its owner: anybody else gets the notice, never
+ *  an editor that would save into a 404. */
+export function AgentTriggerPanel({ agent }: { agent: AgentDetailData }) {
   const t = useT();
   return (
-    <Panel className="p-5 text-sm text-muted-foreground">
-      {t(
-        "This is a personal agent. Only its owner sees its instructions, versions and files.",
-        "Das ist ein persönlicher Agent. Seine Anweisungen, Versionen und Dateien sieht nur sein Besitzer.",
+    <Panel className="p-5">
+      <ConfigSectionHeader
+        hint={t("when this agent runs", "wann dieser Agent läuft")}
+        title={t("Schedule / trigger", "Zeitplan / Auslöser")}
+      />
+      {agent.contentHidden ? (
+        <PrivateContentNotice inline />
+      ) : (
+        <TriggerEditor initial={agent.schedule} agentName={agent.name} agentId={agent.id} />
       )}
     </Panel>
+  );
+}
+
+/** "Discuss with Copilot" and "Run now" in the page header. Only the owner
+ *  acts on a personal agent: for anybody else (`contentHidden`) the API
+ *  refuses both, so neither is offered. */
+export function AgentStartActions({
+  agent,
+  running,
+  busy,
+  onRunNow,
+}: {
+  agent: AgentDetailData;
+  running: boolean;
+  busy: boolean;
+  onRunNow: () => void;
+}) {
+  const t = useT();
+  if (agent.contentHidden) return null;
+  return (
+    <>
+      <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
+      <button
+        type="button"
+        onClick={onRunNow}
+        disabled={running || busy}
+        title={running ? t("Already running", "Läuft bereits") : undefined}
+        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <Play className="h-4 w-4" /> {t("Run now", "Jetzt ausführen")}
+      </button>
+    </>
   );
 }
 
@@ -763,8 +805,14 @@ export function OverviewTab({ agent }: { agent: AgentDetailData }) {
         <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">
           {t("Last action", "Letzte Aktion")}
         </div>
-        <p className="text-sm">{agent.lastAction}</p>
-        <div className="mt-3 text-xs text-muted-foreground">{agent.lastRun}</div>
+        {agent.contentHidden ? (
+          <PrivateContentNotice inline />
+        ) : (
+          <>
+            <p className="text-sm">{agent.lastAction}</p>
+            <div className="mt-3 text-xs text-muted-foreground">{agent.lastRun}</div>
+          </>
+        )}
       </Panel>
       <AgentBoardsSection agentId={agent.id} className="md:col-span-3" />
     </div>
