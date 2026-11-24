@@ -17,7 +17,7 @@ from oc8.auth import Principal, get_identity_provider
 from oc8.auth.provider import InvalidToken
 from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, ALL_PERMISSIONS, MANAGE, perm
-from oc8.authz.scope import HumanActor, scope_for_principal
+from oc8.authz.scope import DepartmentScope, HumanActor, holds_in_department, scope_for_principal
 from oc8.boards.repo import has_direct_share
 from oc8.db.session import tenant_session
 from oc8.departments.repo import department_kind, personal_content_hidden
@@ -491,6 +491,50 @@ async def authorize_agent_write(
         status_code=status.HTTP_403_FORBIDDEN,
         detail=f"requires {perm(AGENT, MANAGE)} in this department",
     )
+
+
+async def authorize_in_department(
+    request: Request,
+    db: AsyncSession,
+    principal: Principal,
+    permission: str,
+    department_id: uuid.UUID | None,
+    *,
+    not_found: HTTPException,
+    scope: DepartmentScope | None = None,
+) -> None:
+    """The per-resource narrow for a `require_departmental(permission)` door
+    that may have admitted the caller on the owner's seat of a personal
+    department (`DepartmentScope.holds_anywhere`): does the caller hold
+    `permission` for THIS resource's department (`holds_in_department`)?
+
+    Held tenant-wide: passes, exactly as the door alone answered before. Held
+    by the owner's seat in this personal department: passes. Otherwise refused
+    -- a 403 naming the permission where the caller may see the department,
+    and the route's own `not_found` where they may not, so an id never
+    confirms that something exists in a department the caller cannot see (the
+    same split `authorize_agent_write` makes).
+
+    Call it once the department is known and before anything of the resource
+    is read. `scope` is the caller's when the route already resolved one (a
+    `HumanActor`); otherwise it is resolved here.
+    """
+    authority = await _authority(request, db, principal)
+    if permission in authority.tenant_wide:
+        return
+    if scope is None:
+        try:
+            _member, scope = await scope_for_principal(db, principal)
+        except PermissionError:
+            raise not_found from None
+    if holds_in_department(authority, scope, permission, department_id):
+        return
+    if department_id is not None and department_id in scope.viewable:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"requires permission: {permission}",
+        )
+    raise not_found
 
 
 async def refuse_personal_agent_content(

@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.versioning import version_meta, version_payload
+from oc8.authz.permissions import PERSONAL_OWNER_PERMISSIONS
 from oc8.capas.i18n import translations_for
 from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
@@ -530,6 +531,7 @@ def seat_to_dto(seat: Seat) -> SeatDTO:
         department_name=seat.department_name,
         seat_role=seat.seat_role,
         agent_manage=seat.agent_manage,
+        owner_permissions=sorted(PERSONAL_OWNER_PERMISSIONS) if seat.personal_owner else [],
     )
 
 

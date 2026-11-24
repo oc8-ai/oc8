@@ -27,7 +27,9 @@ from oc8.api.deps import (
     CurrentPrincipal,
     DbSession,
     authorize_agent_write,
+    authorize_in_department,
     refuse_personal_agent_write,
+    require_departmental,
     require_permission,
 )
 from oc8.api.v1._serializers import skill_to_dto
@@ -819,14 +821,25 @@ async def _agent_or_404(db: DbSession, agent_id: uuid.UUID, tenant_id: uuid.UUID
 @router.get(
     "/agents/{agent_id}/skills",
     response_model=list[SkillAssignmentDTO],
-    dependencies=[Depends(require_permission(perm(SKILL, VIEW)))],
+    dependencies=[Depends(require_departmental(perm(SKILL, VIEW)))],
 )
 async def list_agent_skills(
     agent_id: uuid.UUID,
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> list[SkillAssignmentDTO]:
-    await _agent_or_404(db, agent_id, principal.tenant_id)
+    agent = await _agent_or_404(db, agent_id, principal.tenant_id)
+    # `skill:view` for this agent's department: tenant-wide, or the owner's
+    # seat in this personal department.
+    await authorize_in_department(
+        request,
+        db,
+        principal,
+        perm(SKILL, VIEW),
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
     rows = (
         await db.execute(
             select(m.SkillAssignment, m.SkillVersion, m.Skill)
@@ -856,21 +869,24 @@ async def list_agent_skills(
 @router.delete(
     "/agents/{agent_id}/skills/{assignment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission(perm(SKILL, MANAGE)))],
+    dependencies=[Depends(require_departmental(perm(SKILL, MANAGE)))],
 )
 async def unassign_skill(
     agent_id: uuid.UUID,
     assignment_id: uuid.UUID,
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> Response:
     agent = await _agent_or_404(db, agent_id, principal.tenant_id)
-    await refuse_personal_agent_write(
-        db,
-        principal,
-        agent.department_id,
-        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    # `skill:manage` for this agent's department (tenant-wide, or the owner's
+    # seat in this personal department), and in a personal department only
+    # the owner.
+    await authorize_in_department(
+        request, db, principal, perm(SKILL, MANAGE), agent.department_id, not_found=not_found
     )
+    await refuse_personal_agent_write(db, principal, agent.department_id, not_found=not_found)
     assignment = await db.get(m.SkillAssignment, assignment_id)
     if (
         assignment is None

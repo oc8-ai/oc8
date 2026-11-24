@@ -42,8 +42,9 @@ from oc8.agents.versioning import (
 from oc8.api.deps import (
     DbSession,
     authorize_agent_write,
+    authorize_in_department,
     require_agent_write,
-    require_permission,
+    require_departmental,
 )
 from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto
 from oc8.api.v1.agents import _agent_detail_dto
@@ -1372,16 +1373,39 @@ async def _current_version_no(db: DbSession, agent: m.Agent) -> int | None:
     return current.version_no if current is not None else None
 
 
+async def _authorize_publish(
+    request: Request, db: DbSession, actor: HumanActor, agent: m.Agent
+) -> None:
+    """Publish and rollback's per-agent narrow, in one place: write authority
+    over the agent (`authorize_agent_write`), then `agent_version:publish` for
+    ITS department -- tenant-wide, or the owner's seat in this personal
+    department (`authorize_in_department`). The door admits the owner on the
+    seat alone; this is what keeps that seat out of every other department."""
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    await authorize_agent_write(request, db, actor, agent.department_id, not_found=not_found)
+    await authorize_in_department(
+        request,
+        db,
+        actor.principal,
+        AGENT_VERSION_PUBLISH,
+        agent.department_id,
+        not_found=not_found,
+        scope=actor.scope,
+    )
+
+
 @router.post(
     "/agents/{agent_id}/versions",
     response_model=AgentVersionDTO,
     status_code=status.HTTP_201_CREATED,
-    # TWO gates, and both are needed. This one is the tenant-wide
-    # `agent_version:publish` -- the governed act (spec §6): an editor may change
-    # a draft with `agent:manage` and still not be able to put it into
-    # production. `require_agent_write` below is the department door, and
+    # TWO gates, and both are needed. This one is `agent_version:publish` --
+    # the governed act (spec §6): an editor may change a draft with
+    # `agent:manage` and still not be able to put it into production. Held
+    # tenant-wide, or by the owner's seat in a personal department, which
+    # `_authorize_publish` narrows to the agent's own department.
+    # `require_agent_write` below is the department door, and
     # `authorize_agent_write` in the body is the per-agent narrow.
-    dependencies=[Depends(require_permission(AGENT_VERSION_PUBLISH))],
+    dependencies=[Depends(require_departmental(AGENT_VERSION_PUBLISH))],
 )
 async def publish_agent_version(
     agent_id: uuid.UUID,
@@ -1412,13 +1436,7 @@ async def publish_agent_version(
     # reads `agent.narrowing` -- exactly the frame-derived shape a wrong-
     # department caller must not learn from a response. Same ordering rule as
     # every other route in this module; see the module docstring.
-    await authorize_agent_write(
-        request,
-        db,
-        actor,
-        agent.department_id,
-        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
-    )
+    await _authorize_publish(request, db, actor, agent)
 
     current_no = await _current_version_no(db, agent)
     if body.expected_current_version_no != current_no:
@@ -1452,7 +1470,7 @@ async def publish_agent_version(
     # `agent_version:publish`, not a permission of its own: a rollback IS a
     # publish (spec §2.7, §6). Two names for one authority would mean the first
     # tenant to grant one without the other discovers they are the same thing.
-    dependencies=[Depends(require_permission(AGENT_VERSION_PUBLISH))],
+    dependencies=[Depends(require_departmental(AGENT_VERSION_PUBLISH))],
 )
 async def rollback_agent_version(
     agent_id: uuid.UUID,
@@ -1512,13 +1530,7 @@ async def rollback_agent_version(
     agent = await _load_agent(db, agent_id)
     # Before the target is even loaded, and long before `dept.frame` is read:
     # the 422 below carries violations derived from that frame.
-    await authorize_agent_write(
-        request,
-        db,
-        actor,
-        agent.department_id,
-        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
-    )
+    await _authorize_publish(request, db, actor, agent)
     principal = actor.principal
 
     target = (

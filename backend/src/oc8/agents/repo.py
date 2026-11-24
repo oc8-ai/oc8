@@ -271,12 +271,20 @@ def run_reach(*, authority: Authority, scope: DepartmentScope, permission: str) 
     may see their department), the tenant Assistant never (`visible_agent`
     never shows it to a departmental caller either).
 
+    The owner's seat: a personal department's owner reaches their own agents'
+    runs with any run permission (`PERSONAL_OWNER_PERMISSIONS`) whether or not
+    their role holds it -- added to the departmental set, never widening it
+    past `scope.personal_owned`.
+
     Neither: nothing. Same fail-closed shape as `visible_agents`' early return.
     """
     if reads_every_run(authority, permission):
         return RunReach(every_agent=True, departments=frozenset())
     held = permission in authority.tenant_wide
-    return RunReach(every_agent=False, departments=scope.viewable if held else frozenset())
+    departments = scope.viewable if held else frozenset()
+    return RunReach(
+        every_agent=False, departments=departments | scope.owner_departments_for(permission)
+    )
 
 
 async def start_reach(

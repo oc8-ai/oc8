@@ -370,6 +370,11 @@ class SeatDTO(CamelModel):
     #: seat_role. Never a resource:action string -- see
     #: `OrgMemberDepartment.agent_manage`.
     agent_manage: bool
+    #: What this seat carries beyond its `seat_role`, in this department alone:
+    #: `PERSONAL_OWNER_PERMISSIONS` for the owner's seat in their personal
+    #: department, empty for every other seat. The screen gates Run now and
+    #: Publish per department on it, the way it reads `agent_manage`.
+    owner_permissions: list[str] = []
 
 
 class MemberDTO(CamelModel):

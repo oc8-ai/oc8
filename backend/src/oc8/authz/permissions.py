@@ -784,6 +784,36 @@ DEPARTMENT_SCOPABLE: Final[frozenset[str]] = frozenset(
 )
 
 
+#: What the OWNER's seat carries in their own personal department, on top of
+#: what its seat role carries -- and nowhere else.
+#:
+#: A personal department's owner is usually a plain `member`, who holds none of
+#: these tenant-wide, and without them the owner's own agent page answers 403 on
+#: Run now, History, Versions and Publish. Widening `member` would hand every
+#: employee these rights over every agent they can see; the seat is the term in
+#: which "their own department, and not the whole company's" can be said.
+#:
+#: Kept apart from `SEAT_PERMISSIONS` on purpose: those are what ANY seat of a
+#: role carries in ANY department, and a `dept_approver` in Sales must not start
+#: Sales' agents because a personal department's seat shares its role name. They
+#: apply in `DepartmentScope.personal_owned` alone, and only a route that
+#: narrows to the target's department may admit on them: the run reach
+#: (`agents.repo.run_reach`) and `api.deps.authorize_in_department`.
+PERSONAL_OWNER_PERMISSIONS: Final[frozenset[str]] = frozenset(
+    {
+        perm(RUN, VIEW),
+        RUN_START,
+        RUN_CONTROL,
+        perm(AGENT_VERSION, VIEW),
+        AGENT_VERSION_PUBLISH,
+        perm(TRIGGER, VIEW),
+        perm(TRIGGER, MANAGE),
+        perm(SKILL, VIEW),
+        perm(SKILL, MANAGE),
+    }
+)
+
+
 def seat_permissions_for(seat_role: str) -> frozenset[str]:
     """What this seat carries. An unknown seat role carries nothing.
 

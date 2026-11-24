@@ -40,7 +40,7 @@ from oc8.agents.versioning import (
     snapshot_agent,
     version_payload,
 )
-from oc8.api.deps import DbSession, require_departmental
+from oc8.api.deps import DbSession, authorize_in_department, require_departmental
 from oc8.api.v1._serializers import (
     agent_to_dto,
     agent_version_to_dto,
@@ -319,6 +319,11 @@ async def _visible_agent_or_404(
     A version payload is the agent's content, so a personal agent read by
     anybody but its owner's seat is a 404 too. `content=False` is for
     draft-status alone: a count of changed field names, no content.
+
+    The door admits a personal department's owner on their seat alone, so
+    `agent_version:view` is asked again for THIS agent's department
+    (`authorize_in_department`): the owner's seat reaches their own agents'
+    versions, never those of a department they merely see.
     """
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT_VERSION, VIEW))
@@ -332,6 +337,15 @@ async def _visible_agent_or_404(
     )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    await authorize_in_department(
+        request,
+        db,
+        actor.principal,
+        perm(AGENT_VERSION, VIEW),
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+        scope=actor.scope,
+    )
     if content:
         await _refuse_personal_content(db, actor, agent)
     return agent

@@ -64,6 +64,10 @@ class Seat:
     #: `seat_role`, never a permission string. See `OrgMemberDepartment.
     #: agent_manage` and `authz/scope.py::DepartmentScope._agent_manage`.
     agent_manage: bool = False
+    #: The seat of a personal department's OWNER, in that department -- which
+    #: carries `PERSONAL_OWNER_PERMISSIONS` there (`authz/scope.py::
+    #: DepartmentScope.personal_owned` reads the same two columns).
+    personal_owner: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,6 +156,8 @@ async def seats_for_many(
             OrgMemberDepartment.seat_role,
             OrgMemberDepartment.agent_manage,
             Department.name,
+            Department.kind,
+            Department.owner_member_id,
         )
         # LEFT, so a renamed-away department does not make a live seat disappear
         # from the screen that has to revoke it. The same choice
@@ -175,13 +181,14 @@ async def seats_for_many(
     rows = (await db.execute(stmt)).all()
 
     out: dict[uuid.UUID, list[Seat]] = {}
-    for member_id, department_id, seat_role, agent_manage, department_name in rows:
+    for member_id, department_id, seat_role, agent_manage, department_name, kind, owner in rows:
         out.setdefault(member_id, []).append(
             Seat(
                 department_id=department_id,
                 department_name=department_name or "",
                 seat_role=seat_role,
                 agent_manage=agent_manage,
+                personal_owner=kind == DEPARTMENT_KIND_PERSONAL and owner == member_id,
             )
         )
     return out
