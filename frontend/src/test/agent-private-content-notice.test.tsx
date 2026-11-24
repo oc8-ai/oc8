@@ -18,7 +18,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 
 vi.mock("@/lib/governance-hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/governance-hooks")>();
-  return { ...actual, useMay: () => () => true };
+  return { ...actual, useMay: () => () => true, useMayInDepartment: () => () => true };
 });
 
 vi.mock("@/lib/hooks", async (importOriginal) => {

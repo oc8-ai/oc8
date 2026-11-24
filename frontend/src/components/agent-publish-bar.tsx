@@ -14,7 +14,7 @@ import { useState } from "react";
 import { AlertCircle, GitCompare, Loader2, Rocket, X } from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
-import { useMay } from "@/lib/governance-hooks";
+import { useMayInDepartment } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import {
   useAgentDraftStatus,
@@ -188,17 +188,21 @@ export function describePublishError(err: unknown, t: (en: string, de: string) =
 
 export function AgentPublishBar({
   agentId,
+  departmentId,
   mayManage,
   contentHidden = false,
 }: {
   agentId: string;
+  /** The agent's department: `agent_version:publish` may be held there alone
+   *  (the owner's seat in a personal department). */
+  departmentId?: string | null;
   mayManage: boolean;
   /** A personal agent read by anybody but its owner: only the owner acts on
    *  it, so there is no draft to review or publish here. */
   contentHidden?: boolean;
 }) {
   const t = useT();
-  const may = useMay();
+  const mayIn = useMayInDepartment();
   const { data: status } = useAgentDraftStatus(agentId, { enabled: !contentHidden });
   const publish = usePublishAgentVersion(agentId);
   const [reviewOpen, setReviewOpen] = useState(false);
@@ -210,11 +214,12 @@ export function AgentPublishBar({
   // never open.
   const diff = useAgentVersionDiff(agentId, reviewOpen ? currentVersionNo : null);
 
-  // BOTH gates, matching the backend: `agent_version:publish` is tenant-wide
-  // (`require_permission`) and `mayManage` is the department narrow
-  // (`authorize_agent_write`). A button that is live and then 403s is worse
-  // than one that is absent.
-  const mayPublish = mayManage && may("agent_version:publish");
+  // BOTH gates, matching the backend: `agent_version:publish` held for this
+  // agent's department -- tenant-wide, or by the owner's seat in a personal
+  // department (`authorize_in_department`) -- and `mayManage`, the write
+  // narrow (`authorize_agent_write`). A button that is live and then 403s is
+  // worse than one that is absent.
+  const mayPublish = mayManage && mayIn("agent_version:publish", departmentId);
 
   if (contentHidden || !status?.dirty) return null;
 

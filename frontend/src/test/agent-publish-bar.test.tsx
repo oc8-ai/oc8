@@ -21,7 +21,7 @@ vi.mock("sonner", () => ({
   toast: { success: toastSuccess, error: toastError },
 }));
 vi.mock("@/lib/governance-hooks", () => ({
-  useMay: () => mayMock,
+  useMayInDepartment: () => mayMock,
 }));
 
 import { AgentPublishBar } from "@/components/agent-publish-bar";

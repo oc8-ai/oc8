@@ -222,6 +222,11 @@ export interface Seat {
    *  never folded into a permission string: it never appears in
    *  `callerPermissions`. See `useMayManageAgent` (governance-hooks.ts). */
   agentManage: boolean;
+  /** What this seat carries beyond its `seatRole`, in THIS department only:
+   *  the owner's seat in their personal department lists the run, version,
+   *  trigger and skill permissions it holds there; every other seat lists
+   *  nothing. Never in `callerPermissions`. See `useMayInDepartment`. */
+  ownerPermissions?: string[];
 }
 
 export interface McpConnection {

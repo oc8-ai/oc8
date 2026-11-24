@@ -146,7 +146,7 @@ import { StatCard } from "@/components/stat-card";
 import { formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useLang, useT } from "@/lib/i18n";
-import { useMayManageAgent } from "@/lib/governance-hooks";
+import { useMayInDepartment, useMayManageAgent } from "@/lib/governance-hooks";
 import { thresholdField, valueSpecByName } from "@/lib/value-spec";
 import { useConfirm } from "@/hooks/use-confirm";
 import { AgentAutonomyPanel } from "@/components/agent-autonomy-panel";
@@ -446,6 +446,7 @@ function AgentDetail() {
           lives inside a tab is a bar half the people who need it never see. */}
       <AgentPublishBar
         agentId={agent.id}
+        departmentId={agent.departmentId}
         mayManage={mayManage}
         contentHidden={agent.contentHidden ?? false}
       />
@@ -622,7 +623,11 @@ function AgentDetail() {
 
       {tab === "versions" && agent.contentHidden && <PrivateContentNotice />}
       {tab === "versions" && !agent.contentHidden && (
-        <AgentVersionsTab agentId={agent.id} mayManage={mayManage} />
+        <AgentVersionsTab
+          agentId={agent.id}
+          departmentId={agent.departmentId}
+          mayManage={mayManage}
+        />
       )}
     </div>
   );
@@ -677,19 +682,24 @@ export function AgentStartActions({
   onRunNow: () => void;
 }) {
   const t = useT();
+  // `run:start` for THIS agent's department: tenant-wide, or the owner's seat
+  // in a personal department -- the question `POST /agents/{id}/run` asks.
+  const mayRun = useMayInDepartment()("run:start", agent.departmentId);
   if (agent.contentHidden) return null;
   return (
     <>
       <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
-      <button
-        type="button"
-        onClick={onRunNow}
-        disabled={running || busy}
-        title={running ? t("Already running", "Läuft bereits") : undefined}
-        className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        <Play className="h-4 w-4" /> {t("Run now", "Jetzt ausführen")}
-      </button>
+      {mayRun && (
+        <button
+          type="button"
+          onClick={onRunNow}
+          disabled={running || busy}
+          title={running ? t("Already running", "Läuft bereits") : undefined}
+          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Play className="h-4 w-4" /> {t("Run now", "Jetzt ausführen")}
+        </button>
+      )}
     </>
   );
 }
