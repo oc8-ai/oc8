@@ -1416,6 +1416,9 @@ class ChatSessionDTO(CamelModel):
     mode: str | None = None
     #: The reasoning level kept on this chat, or None for the default.
     effort: ReasoningLevel | None = None
+    #: The last message of the branch the person reads (spec §5.3); None for
+    #: a chat without a tree.
+    current_leaf_id: str | None = None
 
 
 class BuilderChoiceDTO(CamelModel):

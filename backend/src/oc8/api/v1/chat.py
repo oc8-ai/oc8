@@ -38,6 +38,7 @@ from oc8.chat.service import (
     answer_parked_question,
     create_session,
     delete_session,
+    edit_message,
     get_session,
     list_messages,
     list_sessions,
@@ -45,7 +46,7 @@ from oc8.chat.service import (
     rename_session,
     send_message,
 )
-from oc8.chat.tree import lock_session
+from oc8.chat.tree import lock_session, switch_leaf
 from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
 from oc8.schemas.base import CamelModel
@@ -62,12 +63,14 @@ from oc8.schemas.dto import (
 from oc8.schemas.requests import (
     ChatAnswerRequest,
     CreateChatSessionRequest,
+    EditChatMessageRequest,
     MessageFeedbackRequest,
     RenameChatSessionRequest,
     SendChatMessageRequest,
     SetChatEffortRequest,
     SetChatModelRequest,
     SetChatModeRequest,
+    SetLeafRequest,
 )
 
 router = APIRouter()
@@ -722,6 +725,81 @@ async def regenerate_message(
         acting_member=actor.member,
     )
     return ActiveRunDTO(run_id=str(run.id), reply_to_id=str(msg.id), state=run.state)
+
+
+def _require_tree(session: m.ChatSession) -> None:
+    """Branches exist only in an ordinary chat (spec §5.3); a Live timeline
+    stays linear."""
+    if session.kind != "chat":
+        raise HTTPException(status.HTTP_409_CONFLICT, "this chat has no branches")
+
+
+@router.post(
+    "/chat/sessions/{session_id}/messages/{message_id}/edit",
+    response_model=ChatMessageDTO,
+    status_code=status.HTTP_201_CREATED,
+)
+async def edit_chat_message(
+    request: Request,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: EditChatMessageRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatMessageDTO:
+    """Rewrite a sent turn as a new branch; the old one stays (spec §5.3).
+    Only a person's own turn: anything else is a 409, someone else's words a
+    403 -- an overseer reaching this chat may not put words in its owner's
+    mouth. A turn with no recorded author counts as the owner's."""
+    session = await _owned_session(request, session_id, db, actor)
+    _require_tree(session)
+    original = await _session_message(db, session=session, message_id=message_id)
+    if original.role != "user":
+        raise HTTPException(status.HTTP_409_CONFLICT, "only a person's turn can be edited")
+    if (original.author_member_id or session.member_id) != actor.member.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "only its author can edit this turn")
+    authority = await authority_for_principal(request, db, actor.principal)
+    is_assistant = await _assistant_visible(
+        db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=session.agent_id
+    )
+    # The same gate as sending: an edit starts a run.
+    if not is_assistant and RUN_START not in authority.tenant_wide:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires permission: {RUN_START}")
+    user_message, run = await edit_message(
+        db,
+        session=session,
+        tenant_id=actor.principal.tenant_id,
+        original=original,
+        content=body.content,
+        originating_operator=actor.principal.subject,
+        operator_role=actor.principal.role,
+        acting_member=actor.member,
+    )
+    dto = await _message_dto(user_message, db, actor.principal.tenant_id)
+    if run is not None:
+        # Same-response only, as for a sent turn (`post_message`).
+        dto = dto.model_copy(update={"run_id": str(run.id)})
+    return dto
+
+
+@router.put("/chat/sessions/{session_id}/leaf", response_model=ChatSessionDTO)
+async def set_chat_leaf(
+    session_id: uuid.UUID,
+    body: SetLeafRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatSessionDTO:
+    """Show another branch: the chat continues from the newest message below
+    the one picked (spec §5.3 "Switch variant"). Owner-only like every other
+    rearrangement of a chat -- it changes what the owner reads and where their
+    next turn goes."""
+    session = await session_owned_by_caller(session_id, db, actor)
+    _require_tree(session)
+    picked = await _session_message(db, session=session, message_id=body.message_id)
+    await switch_leaf(db, session=session, message_id=picked.id)
+    dto = await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
+    await db.commit()
+    return dto
 
 
 @router.post(

@@ -98,6 +98,16 @@ class RenameChatSessionRequest(CamelModel):
     title: str = Field(min_length=1, max_length=200)
 
 
+class EditChatMessageRequest(CamelModel):
+    #: The rewritten turn; same bounds as a sent one.
+    content: str = Field(min_length=1, max_length=20_000)
+
+
+class SetLeafRequest(CamelModel):
+    #: Any message of the chat; the server continues to the newest one below.
+    message_id: uuid.UUID
+
+
 class MessageFeedbackRequest(CamelModel):
     rating: Literal["up", "down"]
     note: str = Field(default="", max_length=500)

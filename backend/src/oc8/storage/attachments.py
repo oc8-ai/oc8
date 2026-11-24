@@ -170,3 +170,27 @@ async def store_attachment_bytes(
     db.add(row)
     await db.flush()
     return row
+
+
+async def copy_attachment(
+    db: AsyncSession, row: m.FileAttachment, *, owner_id: uuid.UUID
+) -> m.FileAttachment:
+    """A copy of `row`, file included, for another owner of the same type --
+    an edited chat turn gets its own copy of the original turn's files, so
+    each row keeps owning (and on deletion removing) exactly one stored blob."""
+    bucket_key = f"{row.tenant_id}/{row.owner_type}/{uuid.uuid4()}-{row.filename}"
+    await s3.put_object(bucket_key, await s3.get_object(row.bucket_key), row.content_type)
+    copy = m.FileAttachment(
+        tenant_id=row.tenant_id,
+        owner_type=row.owner_type,
+        owner_id=owner_id,
+        bucket_key=bucket_key,
+        filename=row.filename,
+        content_type=row.content_type,
+        size_bytes=row.size_bytes,
+        extracted_text=row.extracted_text,
+        is_image=row.is_image,
+    )
+    db.add(copy)
+    await db.flush()
+    return copy

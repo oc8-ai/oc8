@@ -36,8 +36,9 @@ lock and waiting on the session row, against a transaction holding that row
 and waiting for the audit lock at its commit, is a deadlock.
 
 So every chat writer takes `lock_session` before it locks or changes the
-session row: `send_message`, `record_assistant_reply`, `record_answer_turn`,
-a carried-over turn, the regenerate door (`api/v1/chat.py`), and the chat
+session row: `send_message` (an edit included), `record_assistant_reply`,
+`record_answer_turn`, a carried-over turn, the regenerate door
+(`api/v1/chat.py`), a branch switch (`switch_leaf`), and the chat
 mode a run entered (`chat.service.apply_entered_mode`); a direct-access
 decision takes the steps above in order. A run never locks the session row
 during its leg -- that would hold it while the model is called: the
@@ -270,6 +271,36 @@ async def add_regenerated_reply(
     await _place(db, message=message, parent=first_variant_parent_id)
     if leaf is None or anchor_id is None or anchor_id in _ancestry(parents, leaf):
         await _set_leaf(db, session=session, leaf=message.id)
+
+
+async def add_edited_message(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    message: m.ChatMessage,
+    original: m.ChatMessage,
+) -> None:
+    """An edited user turn: a sibling of the turn it rewrites (same parent),
+    and the new leaf -- the person goes on from what they just wrote, while
+    the old branch stays as it was. Adds and flushes `message`."""
+    if not _has_tree(session):
+        await _place(db, message=message, parent=None)
+        return
+    await lock_session(db, session=session)
+    await _place(db, message=message, parent=original.parent_id)
+    await _set_leaf(db, session=session, leaf=message.id)
+
+
+async def switch_leaf(
+    db: AsyncSession, *, session: m.ChatSession, message_id: uuid.UUID
+) -> uuid.UUID:
+    """Move the person to the branch through `message_id`: the leaf becomes
+    the newest message below it. Announced like every leaf change; returns
+    the new leaf. The caller checks that `message_id` is in this session."""
+    await lock_session(db, session=session)
+    leaf = _newest_leaf(await _parents(db, session=session), message_id)
+    await _set_leaf(db, session=session, leaf=leaf)
+    return leaf
 
 
 async def newest_leaf_below(

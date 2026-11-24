@@ -79,6 +79,7 @@ from oc8.runtime.intake import enqueue_run
 from oc8.runtime.person import FOR_PERSON
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.storage import s3
+from oc8.storage.attachments import copy_attachment
 
 logger = logging.getLogger(__name__)
 
@@ -714,8 +715,14 @@ async def send_message(
     author_member_id: uuid.UUID | None = None,
     acting_member: m.OrgMember | None = None,
     notice: Mapping[str, object] | None = None,
+    edit_of: m.ChatMessage | None = None,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
+
+    `edit_of` makes the turn an edit of that earlier user turn (see
+    `edit_message`): it goes beside it in the tree, its transcript is the path
+    up to it, and it keeps that turn's mode and files instead of parsing a
+    command or taking pending uploads.
 
     `operator_role` is the acting token's `role` claim, recorded on the run so
     that code running LATER -- inside the run, with no request and no token --
@@ -777,7 +784,13 @@ async def send_message(
     # Read without the session lock, taken only at placement below (see
     # `chat.tree` on lock order): a reply landing in between is missing from
     # this turn's transcript, though the turn itself is placed after it.
-    history = await tree.visible_path(db, session=session)
+    # An edit is told what came before the turn it rewrites, not the branch
+    # the person was looking at.
+    history = (
+        await tree.path_before(db, session=session, message=edit_of)
+        if edit_of is not None
+        else await tree.visible_path(db, session=session)
+    )
     # Applied to the session only once it is locked (`_place_turn`).
     sticky_mode: str | None = None
     # One parser for every door (web composer, Telegram free text, anything
@@ -785,7 +798,11 @@ async def send_message(
     # actually said -- an unknown command, a path, or a bare "/ask" comes back
     # unchanged with no mode, so a message that legitimately starts with a
     # slash is still sendable.
-    if role == "followup" and notice is not None:
+    if edit_of is not None:
+        # The rewritten turn's mode carries over, whatever the new text says:
+        # it was parsed (and allowed) when the turn was first sent.
+        mode, body = MODES.get(edit_of.mode or ""), message
+    elif role == "followup" and notice is not None:
         # An oc8 notice is ours too, but about what the person is doing in
         # this chat right now: it runs in the chat's sticky mode (Agent mode,
         # for a refused agent card), so the Copilot can propose again.
@@ -855,7 +872,25 @@ async def send_message(
     await db.flush()
 
     attachments: list[m.FileAttachment] = []
-    if attachment_ids:
+    if edit_of is not None:
+        # Copied, not moved: the old branch keeps its turn's files.
+        originals = list(
+            (
+                await db.execute(
+                    select(m.FileAttachment)
+                    .where(
+                        m.FileAttachment.tenant_id == tenant_id,
+                        m.FileAttachment.owner_type == "chat_message",
+                        m.FileAttachment.owner_id == edit_of.id,
+                    )
+                    .order_by(m.FileAttachment.id.asc())
+                )
+            ).scalars()
+        )
+        attachments = [
+            await copy_attachment(db, original, owner_id=user_message.id) for original in originals
+        ]
+    elif attachment_ids:
         # Scoped to THIS session's own pending uploads (`owner_id ==
         # session.id`), not just to the tenant: tenant + RLS alone would let
         # any id in the tenant be re-pointed onto this caller's message,
@@ -898,7 +933,9 @@ async def send_message(
         # this, the credential the Assistant just refused would still land in
         # the transcript verbatim.
         user_message.content = redact_text(message)
-        await _place_turn(db, session=session, message=user_message, sticky_mode=sticky_mode)
+        await _place_turn(
+            db, session=session, message=user_message, sticky_mode=sticky_mode, edit_of=edit_of
+        )
         refusal = m.ChatMessage(
             tenant_id=tenant_id,
             session_id=session.id,
@@ -979,7 +1016,9 @@ async def send_message(
     )
     task_text = str(context["task"])
     _apply_acting_person(context, acting)
-    await _place_turn(db, session=session, message=user_message, sticky_mode=sticky_mode)
+    await _place_turn(
+        db, session=session, message=user_message, sticky_mode=sticky_mode, edit_of=edit_of
+    )
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.
@@ -1060,15 +1099,65 @@ async def send_message(
 
 
 async def _place_turn(
-    db: AsyncSession, *, session: m.ChatSession, message: m.ChatMessage, sticky_mode: str | None
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    message: m.ChatMessage,
+    sticky_mode: str | None,
+    edit_of: m.ChatMessage | None = None,
 ) -> None:
-    """Place a sent turn in the tree -- which takes the audit lock, then the
-    session row (`chat.tree`) -- and only then change the session row."""
+    """Place a sent turn in the tree -- appended to the leaf, or beside the
+    turn it edits -- which takes the audit lock, then the session row
+    (`chat.tree`), and only then change the session row."""
     await tree.lock_session(db, session=session)
-    await tree.append_person_write(db, session=session, message=message)
+    if edit_of is not None:
+        await tree.add_edited_message(db, session=session, message=message, original=edit_of)
+    else:
+        await tree.append_person_write(db, session=session, message=message)
     if sticky_mode is not None:
         session.mode = sticky_mode
         await db.flush()
+
+
+async def edit_message(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    tenant_id: uuid.UUID,
+    original: m.ChatMessage,
+    content: str,
+    originating_operator: str | None,
+    operator_role: str | None,
+    acting_member: m.OrgMember | None,
+) -> tuple[m.ChatMessage, m.AgentRun | None]:
+    """Rewrite a sent user turn (spec §5.3 "Edit"): a new turn with `content`
+    beside `original` in the tree, which becomes the branch the person reads;
+    the old branch is kept. The turn's mode, `#` references and files carry
+    over, and it is answered exactly like `send_message` answers a turn -- the
+    same manifest, fit block, acting person and secret gate. The caller has
+    checked that `original` is a person's turn and the caller wrote it.
+
+    COMMITS `db` and re-binds the RLS tenant, like `send_message`; the run is
+    None when the Copilot refuses the new text outright."""
+    refs = [
+        {"kind": str(r.get("kind")), "id": str(r.get("id"))}
+        for r in (original.context_refs or [])
+        if isinstance(r, dict)
+    ]
+    return await send_message(
+        db,
+        session=session,
+        tenant_id=tenant_id,
+        message=content,
+        context_refs=refs,
+        originating_operator=originating_operator,
+        operator_role=operator_role,
+        author_member_id=(
+            acting_member.id if acting_member is not None else original.author_member_id
+        ),
+        acting_member=acting_member,
+        edit_of=original,
+    )
 
 
 async def regenerate_reply(
