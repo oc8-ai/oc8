@@ -11,8 +11,10 @@ payload: an identity binding takes effect, and is revoked, at once.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import Boolean, CheckConstraint, Text, UniqueConstraint, Uuid
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -36,6 +38,9 @@ class AgentToolAccess(Base, PkMixin, TenantMixin, TimestampMixin):
     #: What the confirming person saw (agent version, skills, department frame
     #: and setup); a personal target is only used while it is unchanged.
     binding_fingerprint: Mapped[str | None] = mapped_column(Text)
+    #: The policy snapshot the confirming person saw when this binding acts
+    #: through more than one account; NULL when it does not split.
+    binding_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     __table_args__ = (
         UniqueConstraint("agent_id", "tool_key", name="uq_agent_tool_access"),
