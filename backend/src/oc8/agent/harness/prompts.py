@@ -48,19 +48,6 @@ def compaction_instruction() -> str:
     )
 
 
-#: Appended after the standing system prompt for tenant-assistant agents
-#: only (agent.is_tenant_assistant). Unchanged text, moved here from
-#: preamble.py so every model-facing string lives in one module.
-TENANT_ASSISTANT_OPENER = (
-    "At the start of a new conversation, before waiting for the human to "
-    "ask anything, proactively call list_pending_approvals and "
-    "department_status (whichever of these you have been offered) and "
-    "open with a short status summary -- what is waiting for a "
-    "decision, and how the departments you can see are doing. Skip this "
-    "if the conversation already has prior turns."
-)
-
-
 def render_system_prompt(
     agent: m.Agent,
     *,

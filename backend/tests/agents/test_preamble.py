@@ -698,7 +698,7 @@ async def test_build_run_preamble_grants_permissions_the_human_behind_the_chat_h
     assert f"- Acting for: {member.subject}" in joined
 
 
-def test_system_prompt_tells_the_assistant_to_open_with_status() -> None:
+def test_system_prompt_has_no_status_opener_for_the_assistant() -> None:
     assistant = m.Agent(
         tenant_id=uuid.uuid4(),
         department_id=uuid.uuid4(),
@@ -717,12 +717,10 @@ def test_system_prompt_tells_the_assistant_to_open_with_status() -> None:
         presentation={},
         is_tenant_assistant=False,
     )
-    assert "list_pending_approvals" in system_prompt(
-        assistant, caps=ModelCaps(), tenant_name="Acme"
-    )
-    assert "list_pending_approvals" not in system_prompt(
-        ordinary, caps=ModelCaps(), tenant_name="Acme"
-    )
+    for agent in (assistant, ordinary):
+        prompt = system_prompt(agent, caps=ModelCaps(), tenant_name="Acme")
+        assert "At the start of a new conversation" not in prompt
+        assert "list_pending_approvals" not in prompt
 
 
 @pytest.mark.parametrize(

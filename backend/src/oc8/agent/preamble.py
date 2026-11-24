@@ -31,7 +31,6 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import (
-    TENANT_ASSISTANT_OPENER,
     render_system_prompt,
     resolve_timezone,
     run_context_block,
@@ -108,10 +107,7 @@ def system_prompt(
     mid-run edit never rewrites the instructions a run is working to. `name`
     and `presentation` (guardrails) are identity/operational state, not
     versioned -- see `render_system_prompt`'s own docstring."""
-    prompt = render_system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned)
-    if agent.is_tenant_assistant:
-        prompt = f"{prompt}\n\n{TENANT_ASSISTANT_OPENER}"
-    return prompt
+    return render_system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned)
 
 
 @dataclass
