@@ -21,6 +21,9 @@ export interface ChatSessionDTO {
   // `mostRecentSession` (lib/chat-sessions.ts), not the list's first entry.
   pinned?: boolean;
   projectId?: string | null;
+  // The newest message of the branch the chat shows. Null for a chat without a
+  // message tree (live chats, older rows): the transcript is then linear.
+  currentLeafId?: string | null;
 }
 
 export interface ChatContextRefDTO {
@@ -48,6 +51,9 @@ export interface ChatMessageDTO {
   authorName: string | null;
   // For an assistant turn: the user turn it answers. Regenerated answers share it.
   replyToId: string | null;
+  // The message this one follows in the tree; siblings are edits or
+  // regenerated answers. Absent or null in a linear chat.
+  parentId?: string | null;
   // C2: one-click replies the model offered with suggest_replies.
   suggestions?: string[];
   // Typed parts an edition tool returned (spec §6.2), e.g.
@@ -138,16 +144,18 @@ function inListOrder(sessions: ChatSessionDTO[]): ChatSessionDTO[] {
 /** A write's reply (the session as the server now has it) written into every
  *  cached session list and the session itself: no refetch of the whole list. */
 export function writeSessionToCache(qc: QueryClient, session: ChatSessionDTO) {
-  const { id, title, lastMessageAt, pinned, projectId } = session;
+  const { id, title, lastMessageAt, pinned, projectId, currentLeafId } = session;
   qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
     prev?.some((s) => s.id === id)
       ? inListOrder(
-          prev.map((s) => (s.id === id ? { ...s, title, lastMessageAt, pinned, projectId } : s)),
+          prev.map((s) =>
+            s.id === id ? { ...s, title, lastMessageAt, pinned, projectId, currentLeafId } : s,
+          ),
         )
       : prev,
   );
   qc.setQueryData<ChatSessionDTO>(["chat", "session", id], (prev) =>
-    prev ? { ...prev, title, lastMessageAt, pinned, projectId } : prev,
+    prev ? { ...prev, title, lastMessageAt, pinned, projectId, currentLeafId } : prev,
   );
 }
 

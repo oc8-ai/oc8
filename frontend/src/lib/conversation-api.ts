@@ -162,6 +162,48 @@ export function useRegenerate(sessionId: string | null) {
   });
 }
 
+/** Edit a turn: the server adds the new text as a sibling of the original,
+ *  makes it the visible branch and starts a run. */
+export function useEditMessage(sessionId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ messageId, content }: { messageId: string; content: string }) =>
+      api.post<ChatMessageDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages/${encodeURIComponent(messageId)}/edit`,
+        { content },
+      ),
+    onSuccess: (message) => {
+      if (!sessionId) return;
+      // The edit is the new leaf; show it now, the refetch fills in the rest
+      // (the run that answers it).
+      qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
+        prev && !prev.some((m) => m.id === message.id) ? [...prev, message] : prev,
+      );
+      qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
+        prev ? { ...prev, currentLeafId: message.id } : prev,
+      );
+      void qc.invalidateQueries({ queryKey: conversationKeys.session(sessionId) });
+      void qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+    },
+  });
+}
+
+/** Switch the visible branch: the server continues from `messageId` to the
+ *  newest message below it and returns the chat with its new leaf. */
+export function useSetLeaf(sessionId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      api.put<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/leaf`, {
+        messageId,
+      }),
+    onSuccess: (session) =>
+      qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(session.id), (prev) =>
+        prev ? { ...prev, currentLeafId: session.currentLeafId ?? null } : prev,
+      ),
+  });
+}
+
 export function useMessageFeedback(sessionId: string | null) {
   return useMutation({
     mutationFn: ({

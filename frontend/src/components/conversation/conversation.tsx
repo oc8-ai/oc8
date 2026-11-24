@@ -13,7 +13,9 @@ import {
   MAX_PINS,
   pinErrorText,
   useAnswerQuestion,
+  useEditMessage,
   useRegenerate,
+  useSetLeaf,
   useRunSteering,
   useSendRunInput,
   useSetChatMode,
@@ -374,6 +376,8 @@ function ConversationBody(props: ConversationProps) {
   const createSession = useCreateChatSession();
   const sendMessage = useSendChatMessage(props.sessionId ?? "");
   const regenerate = useRegenerate(props.sessionId);
+  const editMessage = useEditMessage(props.sessionId);
+  const setLeaf = useSetLeaf(props.sessionId);
   const stopRun = useStopRun();
   // Any new row re-checks the bottom; an older page landing on top moves
   // only a reader already there (the anchoring below keeps everyone else).
@@ -971,13 +975,45 @@ function ConversationBody(props: ConversationProps) {
     if (key === "budget") setShowBudget(true);
   }
 
+  /** Show another branch; a failure leaves the view where it was. */
+  function onSwitchBranch(messageId: string) {
+    setSendError(null);
+    setLeaf.mutate(messageId, {
+      onError: () =>
+        setSendError({
+          text: t(
+            "The other version was not opened. Try again.",
+            "Die andere Version wurde nicht geöffnet. Versuch es noch einmal.",
+          ),
+        }),
+    });
+  }
+
   function renderTurn(turn: TurnModel) {
+    // A chat with a message tree edits in place and keeps every version; a
+    // linear chat (no leaf) keeps "edit and resend" through the composer.
+    const inTree = !!conv.session?.currentLeafId;
+    const viewerId = me?.memberId ?? null;
     return turn.kind === "user" ? (
       <UserTurn
         turn={turn}
-        viewerMemberId={me?.memberId ?? null}
-        canEdit={!readOnly && turn === lastUser && !busy}
+        viewerMemberId={viewerId}
+        canEdit={
+          inTree
+            ? !readOnly &&
+              !busy &&
+              turn.message.role === "user" &&
+              !!viewerId &&
+              turn.message.authorMemberId === viewerId
+            : !readOnly && turn === lastUser && !busy
+        }
         onEdit={(text) => setDraft(text)}
+        onSave={
+          inTree
+            ? (content) => editMessage.mutateAsync({ messageId: turn.message.id, content })
+            : undefined
+        }
+        onSwitch={inTree ? onSwitchBranch : undefined}
       />
     ) : (
       <AssistantTurn
@@ -985,6 +1021,7 @@ function ConversationBody(props: ConversationProps) {
         turn={turn}
         readOnly={readOnly}
         onRegenerate={busy ? undefined : onRegenerate}
+        onSelectVariant={conv.session?.currentLeafId ? onSwitchBranch : undefined}
         {...assistantExtras(turn)}
       />
     );

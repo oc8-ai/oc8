@@ -78,6 +78,7 @@ export function AssistantTurn({
   readOnly = false,
   labelsOnly = false,
   onRegenerate,
+  onSelectVariant,
 }: {
   sessionId: string | null;
   turn: AssistantTurnModel;
@@ -89,6 +90,8 @@ export function AssistantTurn({
   /** A colleague's run: steps as labels only (see StepList). */
   labelsOnly?: boolean;
   onRegenerate?: (replyToId: string) => void;
+  /** In a message tree: make this variant the visible branch (PUT …/leaf). */
+  onSelectVariant?: (messageId: string) => void;
 }) {
   const t = useT();
   const total = turn.variants.length + (turn.liveRunId ? 1 : 0);
@@ -97,8 +100,17 @@ export function AssistantTurn({
   // asked for: show it, even if they had paged back to an older one.
   useEffect(() => {
     setPicked(null);
-  }, [total, turn.liveRunId]);
-  const index = picked === null ? total - 1 : Math.min(picked, total - 1);
+  }, [total, turn.liveRunId, turn.selectedId]);
+  // In a tree the visible branch decides which variant shows; a run still
+  // writing a new one is shown until it lands.
+  const treeIndex = turn.selectedId ? turn.variants.findIndex((v) => v.id === turn.selectedId) : -1;
+  const defaultIndex = treeIndex >= 0 && !turn.liveRunId ? treeIndex : total - 1;
+  const index = picked === null ? defaultIndex : Math.min(picked, total - 1);
+  function pick(next: number) {
+    setPicked(next);
+    const variant = turn.variants[next];
+    if (variant && onSelectVariant && turn.selectedId) onSelectVariant(variant.id);
+  }
   const showingLive = !!turn.pending || (turn.liveRunId !== null && index === turn.variants.length);
   const message = showingLive ? null : (turn.variants[index] ?? null);
   const runId = showingLive ? turn.liveRunId : (message?.runId ?? null);
@@ -226,7 +238,7 @@ export function AssistantTurn({
             <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground">
               <ActionButton
                 label={t("Previous answer", "Vorherige Antwort")}
-                onClick={() => setPicked(Math.max(0, index - 1))}
+                onClick={() => pick(Math.max(0, index - 1))}
               >
                 <ChevronLeft className="size-4" />
               </ActionButton>
@@ -235,7 +247,7 @@ export function AssistantTurn({
               </span>
               <ActionButton
                 label={t("Next answer", "Nächste Antwort")}
-                onClick={() => setPicked(Math.min(total - 1, index + 1))}
+                onClick={() => pick(Math.min(total - 1, index + 1))}
               >
                 <ChevronRight className="size-4" />
               </ActionButton>
