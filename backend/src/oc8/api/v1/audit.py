@@ -85,6 +85,18 @@ _PERSONAL_CONTENT_KEYS: frozenset[str] = frozenset(
     }
 )
 
+#: Events whose `before`/`after` hold metadata an admin already reads on the
+#: agent itself -- its name, its autonomy level -- not content. Every other
+#: personal-agent event keeps them stripped (a mission before and after).
+_METADATA_CHANGE_ACTIONS: frozenset[str] = frozenset({"agent.renamed", "agent.autonomy.updated"})
+
+
+def _content_keys(action: str) -> frozenset[str]:
+    if action in _METADATA_CHANGE_ACTIONS:
+        return _PERSONAL_CONTENT_KEYS - {"before", "after"}
+    return _PERSONAL_CONTENT_KEYS
+
+
 #: Is this personal department's content hidden from the reader?
 _HidesDepartment = Callable[[uuid.UUID], bool]
 
@@ -160,9 +172,8 @@ async def _events_to_dtos(
         owners |= departments & personal_departments
         dto = _event_to_dto(ev)
         if any(hides(d) for d in owners) and isinstance(dto.resource, dict):
-            dto.resource = {
-                k: v for k, v in dto.resource.items() if k not in _PERSONAL_CONTENT_KEYS
-            }
+            stripped = _content_keys(ev.action)
+            dto.resource = {k: v for k, v in dto.resource.items() if k not in stripped}
         out.append(dto)
     return out
 

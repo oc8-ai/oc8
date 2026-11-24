@@ -139,3 +139,32 @@ async def test_a_personal_agents_tool_call_keeps_its_arguments_from_an_admin(
     by_actor = {e["actorId"]: e["resource"] for e in r.json()["events"]}
     assert by_actor[str(w.personal_agent)] == {"tool": "mail_send"}
     assert by_actor[str(w.standard_agent)]["arguments"] == {"to": "landlord@example.org"}
+
+
+async def test_a_personal_agents_rename_and_autonomy_keep_their_metadata(
+    app_session: AppSessionFactory,
+) -> None:
+    """The name and the autonomy level are metadata an admin already reads on
+    the agent itself: those events keep `before`/`after`. Only the content
+    events (instructions, memory, tool calls) are stripped."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        for action, before, after in (
+            ("agent.renamed", "Pia", "Pia II"),
+            ("agent.autonomy.updated", {"autonomy": None}, {"autonomy": "autonomous"}),
+        ):
+            await append_event(
+                db,
+                tenant_id=w.tenant,
+                actor_type="operator",
+                actor_id=None,
+                category="admin",
+                action=action,
+                resource={"agent_id": str(w.personal_agent), "before": before, "after": after},
+            )
+    async with _http() as http:
+        r = await http.get("/api/v1/audit", headers=_headers(w.tenant, "admin", "org_admin"))
+    assert r.status_code == 200, r.text
+    by_action = {e["action"]: e["resource"] for e in r.json()["events"]}
+    assert by_action["agent.renamed"]["after"] == "Pia II"
+    assert by_action["agent.autonomy.updated"]["after"] == {"autonomy": "autonomous"}
