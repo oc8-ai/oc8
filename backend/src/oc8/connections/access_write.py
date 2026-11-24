@@ -3,7 +3,8 @@
 Every door that binds an agent to an account goes through `write_tool_access`:
 `PUT /agents/{id}/tool-access/{key}` and `POST /mcp/logins` after their own
 authorization checks, and the consolidation of old per-department setups as a
-system change. It writes the row, stamps the binding fingerprint, switches off
+system change. It writes the row, stamps the binding fingerprint and its split
+(`connections.confirmation.stamp_binding`), switches off
 a polled trigger whose login the change takes away, and records the audit
 event. Flushes, never commits -- the caller owns the transaction.
 """
@@ -19,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.audit import append_event
 from oc8.auth import Principal
-from oc8.connections.access import binding_fingerprint
+from oc8.connections.confirmation import stamp_binding
 
 
 async def write_tool_access(
@@ -66,9 +67,7 @@ async def write_tool_access(
     # Flushed first: the fingerprint reads the agent's access rows, this one
     # included, and the session does not autoflush.
     await db.flush()
-    row.binding_fingerprint = await binding_fingerprint(
-        db, agent, tool_key, version_id=agent.current_version_id
-    )
+    await stamp_binding(db, row, agent)
     await db.flush()
     # A trigger polling the login this tool was fixed to stops when the agent's
     # login for it changes, rather than listening on an account the agent's

@@ -23,7 +23,7 @@ from oc8.authz.scope import scope_for_principal
 from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
-from oc8.connections.access import trigger_fingerprint
+from oc8.connections.confirmation import stamp_trigger, trigger_confirmed
 from oc8.events.sources import LoginTarget
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
@@ -83,8 +83,7 @@ async def _needs_confirmation(
             continue
         if t.kind in ("webhook", "event") and not t.acts_for_creator:
             continue
-        current = await trigger_fingerprint(db, t)
-        if t.access_fingerprint is None or t.access_fingerprint != current:
+        if not await trigger_confirmed(db, t):
             out.add(t.id)
     return out
 
@@ -475,7 +474,7 @@ async def update_agent_trigger(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     if caller is not None and updated.created_by_member_id == caller:
         # Its creator saved it: they confirm the agent as it is now.
-        updated.access_fingerprint = await trigger_fingerprint(db, updated)
+        await stamp_trigger(db, updated)
         await db.flush()
     # The guard only matters when this update is turning the trigger ON
     # (`body.enabled is True`, whether that flips a disabled row or

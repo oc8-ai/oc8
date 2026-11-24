@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.connections.access import trigger_fingerprint
+from oc8.connections.confirmation import stamp_trigger
 from oc8.modelrouter.subscription_guard import assert_manual_only_compatible
 from oc8.models.core import Agent
 from oc8.models.credentials import Credential
@@ -353,7 +353,7 @@ async def create_trigger(
     if created_by_member_id is not None:
         # Its creator saves it: their own account may serve it while the
         # agent stays as they see it now (connections.access.schedule_confirmed).
-        trigger.access_fingerprint = await trigger_fingerprint(db, trigger)
+        await stamp_trigger(db, trigger)
     # The manual-trigger-only check for ChatGPT-subscription-backed models
     # (`oc8.modelrouter.subscription_guard`) lives HERE, not in the HTTP route,
     # because this function is the one funnel every trigger creation goes

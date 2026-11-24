@@ -56,6 +56,12 @@ from oc8.connections.access import (
     trigger_fingerprint,
 )
 from oc8.connections.access_write import write_tool_access
+from oc8.connections.confirmation import (
+    confirmation_holds,
+    stamp_binding,
+    stamp_trigger,
+    trigger_confirmed,
+)
 from oc8.connections.credential_env import credential_env_targets
 from oc8.connections.integrations import Integration, integration_for_connection
 from oc8.connections.login import enabled_anywhere
@@ -301,10 +307,11 @@ class _Stamps:
         agents: dict[uuid.UUID, m.Agent],
         legacy_departments: set[uuid.UUID],
     ) -> None:
-        """A confirmation is valid when it equals the current digest; the
-        digest as stored before consolidated tools were part of it (legacy)
-        is accepted only for agents whose department's rows this pass folds
-        -- the one pass that changes what their digest covers."""
+        """A confirmation is valid when it holds (`confirmation_holds`: the
+        current digest, or a split that only tightened); the digest as
+        stored before consolidated tools were part of it (legacy) is
+        accepted only for agents whose department's rows this pass folds --
+        the one pass that changes what their digest covers."""
         for trigger in (
             await db.execute(select(m.Trigger).where(m.Trigger.access_fingerprint.is_not(None)))
         ).scalars():
@@ -318,7 +325,7 @@ class _Stamps:
                         db, agent, None, version_id=agent.current_version_id, legacy=True
                     )
                 )
-            if trigger.access_fingerprint in accepted:
+            if trigger.access_fingerprint in accepted or await trigger_confirmed(db, trigger):
                 self.triggers.append(trigger)
         for row in (
             await db.execute(
@@ -335,7 +342,14 @@ class _Stamps:
                 )
                 for legacy in legacy_too
             }
-            if row.binding_fingerprint in accepted:
+            if row.binding_fingerprint in accepted or await confirmation_holds(
+                db,
+                agent,
+                row.tool_key,
+                version_id=agent.current_version_id,
+                digest=row.binding_fingerprint,
+                split=row.binding_split,
+            ):
                 self.bindings.append(row)
 
     async def restamp(
@@ -345,9 +359,12 @@ class _Stamps:
         wrote) again; each change is audited (system, ids only)."""
         count = 0
         for trigger in self.triggers:
-            current = await trigger_fingerprint(db, trigger)
-            if current is not None and current != trigger.access_fingerprint:
-                trigger.access_fingerprint = current
+            agent = await db.get(m.Agent, trigger.agent_id)
+            if agent is None or agent.tenant_id != trigger.tenant_id:
+                continue  # its agent is gone: leave the stamp as it was
+            before = trigger.access_fingerprint
+            await stamp_trigger(db, trigger)
+            if trigger.access_fingerprint != before:
                 count += 1
                 await _audit_restamp(
                     db,
@@ -358,11 +375,9 @@ class _Stamps:
             agent = await db.get(m.Agent, row.agent_id)
             if agent is None:
                 continue
-            current = await binding_fingerprint(
-                db, agent, row.tool_key, version_id=agent.current_version_id
-            )
-            if current != row.binding_fingerprint:
-                row.binding_fingerprint = current
+            before = row.binding_fingerprint
+            await stamp_binding(db, row, agent)
+            if row.binding_fingerprint != before:
                 count += 1
                 await _audit_restamp(
                     db,
