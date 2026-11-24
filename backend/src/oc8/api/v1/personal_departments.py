@@ -51,6 +51,7 @@ from oc8.capas.service import PluginError, instantiate_agent, template_scope
 from oc8.departments.frames import FrameChangeRefused, deviation_counts, validate_frame_tools
 from oc8.departments.owner_confirmation import (
     ConfirmationChanged,
+    NotTheOwner,
     PendingConfirmation,
     confirm_pending,
     pending_confirmation,
@@ -451,13 +452,51 @@ async def hire_personal_agent(
     return HirePersonalResponse(agent_id=str(agent.id), department_id=str(dept.id))
 
 
+class ConfirmationToolDTO(CamelModel):
+    """A frame tool an administrator loosened: both policies in full, as the
+    runtime reads them (`enabled`, `read`, `modify`, `only`, `limits`,
+    `approval_eur`, `approval_actions`, `conditions`, `connection_id`)."""
+
+    key: str
+    #: What applies now; None when the department grants nothing for it.
+    applied: dict[str, Any] | None
+    #: What applies once the owner confirms.
+    pending: dict[str, Any] | None
+
+
+class ConfirmationSkillDTO(CamelModel):
+    """A skill held back from the agents, as the model would read it."""
+
+    name: str
+    description: str | None
+    #: "new" (never confirmed) or "changed" (version, overrides or text).
+    status: str
+
+
 class ConfirmationAgentDTO(CamelModel):
+    """An agent whose earlier confirmation no longer holds."""
+
     agent_id: str
     name: str
+    #: What changed: "core" (its version, a setup, or the department's goal),
+    #: "frame" (the department's frame but its tools), "tools", "skills",
+    #: "threshold" (its own approval threshold).
+    changes: list[str]
+    #: Its own approval threshold now (EUR), or None.
+    approval_threshold: Any
+
+
+class ConfirmationDepartmentDTO(CamelModel):
+    """The department as the owner would confirm it."""
+
+    goal: str
+    #: Every frame key but the tools.
+    frame: dict[str, Any]
 
 
 class PersonalConfirmationDTO(CamelModel):
-    """What waits for the owner's confirmation in their personal department.
+    """What waits for the owner's confirmation in their personal department,
+    shown as it is now in full (Ruling T9-I2).
 
     Each part shows what waits now, not a history: an administrator's later
     write that only tightens the frame replaces an earlier held loosening, so
@@ -469,11 +508,14 @@ class PersonalConfirmationDTO(CamelModel):
     #: anything it would accept changed since, listed here or not.
     token: str
     #: The frame tools an administrator loosened; they apply once confirmed.
-    tools: list[str]
+    tools: list[ConfirmationToolDTO]
     #: The skills held back from the agents until the owner confirms them.
-    skills: list[str]
-    #: The agents whose earlier confirmation no longer holds (changed since).
+    skills: list[ConfirmationSkillDTO]
+    #: The agents whose earlier confirmation no longer holds.
     agents: list[ConfirmationAgentDTO]
+    #: Set when an agent's change may come from the department ("core",
+    #: "frame"): its goal and frame as they are now.
+    department: ConfirmationDepartmentDTO | None
 
 
 class PersonalConfirmRequest(CamelModel):
@@ -487,12 +529,28 @@ def _confirmation_dto(summary: PendingConfirmation) -> PersonalConfirmationDTO:
     return PersonalConfirmationDTO(
         needed=summary.needed,
         token=summary.token,
-        tools=summary.tools,
-        skills=summary.skills,
-        agents=[
-            ConfirmationAgentDTO(agent_id=str(agent_id), name=name)
-            for agent_id, name in summary.agents
+        tools=[
+            ConfirmationToolDTO(key=t.key, applied=t.applied, pending=t.pending)
+            for t in summary.tools
         ],
+        skills=[
+            ConfirmationSkillDTO(name=s.name, description=s.description, status=s.status)
+            for s in summary.skills
+        ],
+        agents=[
+            ConfirmationAgentDTO(
+                agent_id=str(a.agent_id),
+                name=a.name,
+                changes=a.changes,
+                approval_threshold=a.approval_threshold,
+            )
+            for a in summary.agents
+        ],
+        department=(
+            ConfirmationDepartmentDTO(goal=summary.department.goal, frame=summary.department.frame)
+            if summary.department is not None
+            else None
+        ),
     )
 
 
@@ -537,8 +595,10 @@ async def confirm_personal_department(
         summary = await confirm_pending(db, dept, member=member, token=body.token)
     except ConfirmationChanged as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": "confirmation_changed"}) from exc
+    except NotTheOwner as exc:  # pragma: no cover - `_own_department` is the owner's
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no personal department") from exc
     except FrameChangeRefused as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.detail) from exc
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.detail) from exc
     return _confirmation_dto(summary)
 
 

@@ -104,7 +104,7 @@ def _is_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
 
-def _agent_threshold(agent: m.Agent) -> Any:
+def agent_threshold(agent: m.Agent) -> Any:
     raw = _dict(agent.presentation).get("approval_value_eur")
     if raw is None or _is_number(raw):
         return raw
@@ -370,13 +370,25 @@ async def split_fingerprint(
     grant = {
         # Every tool, also for a binding (Ruling T3-C1); `setup` and
         # `shared` above stay scoped to `tool_key`.
-        "tools": _grant_tools(frame, narrowing, _agent_threshold(agent)),
+        "tools": _grant_tools(frame, narrowing, agent_threshold(agent)),
         "frame": {k: v for k, v in frame.items() if k != "tools"},
         "skills": skills,
     }
     # Stored as JSONB: round-trip now, so a stored grant and a fresh one
     # compare in the same shape.
     return SplitFingerprint(core, json.loads(json.dumps(grant, default=str)))
+
+
+async def grant_tools_at(
+    db: AsyncSession, agent: m.Agent, *, version_id: uuid.UUID | None, threshold: Any
+) -> dict[str, Any]:
+    """`grant.tools` as `split_fingerprint` builds it, with `threshold` in
+    place of the agent's own approval threshold (None: no threshold), so a
+    caller can tell a loosening of the policies from one of the threshold."""
+    dept = await db.get(m.Department, agent.department_id)
+    payload, _which = await _version_view(db, agent, version_id)
+    frame = _dict(dept.frame) if dept is not None else {}
+    return _grant_tools(frame, _dict(payload.get("narrowing")), threshold)
 
 
 def stored_split(split: Mapping[str, Any] | None) -> SplitFingerprint | None:

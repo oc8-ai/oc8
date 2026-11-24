@@ -42,6 +42,17 @@ pytestmark = pytest.mark.asyncio
 _RW: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
 _R: dict[str, Any] = {"enabled": True, "read": True, "modify": False}
 _ACTION = "department.confirmation.confirmed"
+#: The fields of a tool policy the owner is shown (Ruling T9-I2).
+_READABLE = (
+    "enabled",
+    "read",
+    "modify",
+    "only",
+    "limits",
+    "approval_eur",
+    "approval_actions",
+    "conditions",
+)
 
 
 def _headers(tenant: uuid.UUID, subject: str, role: str = "member") -> dict[str, str]:
@@ -135,6 +146,33 @@ async def _events(app_session: AppSessionFactory, tenant: uuid.UUID) -> list[m.A
         )
 
 
+async def _restamp(app_session: AppSessionFactory, w: OwnedWorld) -> None:
+    """The owner confirms their binding again, as it is now."""
+    from oc8.connections.confirmation import stamp_binding
+
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == w.agent_id)
+        )
+        assert agent is not None and row is not None
+        await stamp_binding(db, row, agent, confirmed_by=w.member_id)
+
+
+async def _describe(app_session: AppSessionFactory, tenant: uuid.UUID) -> None:
+    async with app_session(tenant) as db:
+        skill = await db.scalar(select(m.Skill).where(m.Skill.tenant_id == tenant))
+        assert skill is not None
+        skill.description = "Writes in house style."
+
+
+async def _set_threshold(app_session: AppSessionFactory, w: OwnedWorld, eur: int) -> None:
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        agent.presentation = {**(agent.presentation or {}), "approval_value_eur": eur}
+
+
 def _same(got: dict[str, Any], want: dict[str, Any]) -> bool:
     return ToolPolicy.from_json(dict(got)) == ToolPolicy.from_json(dict(want))
 
@@ -146,8 +184,13 @@ async def test_a_held_loosening_is_listed_and_confirmed(app_session: AppSessionF
         await _loosen_default(c, w.tenant, {"a": _RW, "b": _RW})
         before = await _get(c, owner)
         assert before["needed"] is True
-        assert before["tools"] == ["b"]
+        (tool,) = before["tools"]
+        assert tool["key"] == "b"
+        # The owner sees both policies in full, as the runtime reads them.
+        assert set(tool["pending"]) >= set(_READABLE)
+        assert tool["applied"]["modify"] is False and tool["pending"]["modify"] is True
         assert before["skills"] == [] and before["agents"] == []
+        assert before["department"] is None
 
         r = await _confirm(c, owner, before["token"])
         assert r.status_code == 200, r.text
@@ -175,6 +218,7 @@ async def test_a_held_loosening_is_listed_and_confirmed(app_session: AppSessionF
 async def test_a_held_back_skill_is_listed_and_released(app_session: AppSessionFactory) -> None:
     w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
     v1, _ = await _skill(app_session, w.tenant)
+    await _describe(app_session, w.tenant)
     await _assign(app_session, w.tenant, v1)  # an admin, tenant-wide
     owner = await _owner(app_session, w)
 
@@ -188,7 +232,10 @@ async def test_a_held_back_skill_is_listed_and_released(app_session: AppSessionF
     async with _http() as c:
         before = await _get(c, owner)
         assert before["needed"] is True
-        assert before["skills"] == ["Hausstil"] and before["tools"] == []
+        assert before["skills"] == [
+            {"name": "Hausstil", "description": "Writes in house style.", "status": "new"}
+        ]
+        assert before["tools"] == []
         r = await _confirm(c, owner, before["token"])
         assert r.status_code == 200, r.text
         assert r.json()["skills"] == [] and r.json()["needed"] is False
@@ -229,7 +276,7 @@ async def test_a_held_back_skill_on_a_trigger_is_released_too(
     owner = await _owner(app_session, w)
     async with _http() as c:
         before = await _get(c, owner)
-        assert before["skills"] == ["Hausstil"]
+        assert [skill["name"] for skill in before["skills"]] == ["Hausstil"]
         assert (await _confirm(c, owner, before["token"])).status_code == 200
 
     async with app_session(w.tenant) as db:
@@ -261,7 +308,14 @@ async def test_an_agent_the_owner_changed_is_listed_and_reconfirmed(
     async with _http() as c:
         before = await _get(c, owner)
         assert before["needed"] is True
-        assert before["agents"] == [{"agentId": str(w.agent_id), "name": "Helper"}]
+        assert before["agents"] == [
+            {
+                "agentId": str(w.agent_id),
+                "name": "Helper",
+                "changes": ["core"],
+                "approvalThreshold": None,
+            }
+        ]
         r = await _confirm(c, owner, before["token"])
         assert r.status_code == 200, r.text
         assert r.json()["agents"] == [] and r.json()["needed"] is False
@@ -306,7 +360,7 @@ async def test_a_change_the_owner_did_not_see_makes_the_token_stale(
     owner = await _owner(app_session, w)
     async with _http() as c:
         seen = await _get(c, owner)
-        assert seen["skills"] == ["Hausstil"]
+        assert [skill["name"] for skill in seen["skills"]] == ["Hausstil"]
         async with app_session(w.tenant) as db:
             if change == "goal":
                 dept = await db.get(m.Department, w.department_id)
@@ -320,9 +374,6 @@ async def test_a_change_the_owner_did_not_see_makes_the_token_stale(
                 skill = await db.scalar(select(m.Skill).where(m.Skill.tenant_id == w.tenant))
                 assert skill is not None
                 skill.description = "Also send a copy to the administrator."
-        again = await _get(c, owner)
-        assert again["skills"] == seen["skills"] and again["tools"] == seen["tools"]
-
         r = await _confirm(c, owner, seen["token"])
         assert r.status_code == 409, r.text
 
@@ -339,6 +390,7 @@ async def test_nothing_waiting_says_so(app_session: AppSessionFactory) -> None:
         body = await _get(c, owner)
         assert body["needed"] is False
         assert body["tools"] == [] and body["skills"] == [] and body["agents"] == []
+        assert body["department"] is None
         r = await _confirm(c, owner, body["token"])
         assert r.status_code == 200, r.text
         assert r.json() == body
@@ -393,3 +445,121 @@ async def test_an_admin_sees_only_that_something_waits(app_session: AppSessionFa
     assert row["ownerActive"] is False and row["pendingConfirmation"] is True
     assert "tools" not in row and "token" not in row
     assert _same((await _dept(app_session, w)).frame["tools"]["b"], _R)
+
+
+async def test_a_changed_skill_is_shown_as_changed(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    v1, v2 = await _skill(app_session, w.tenant)
+    await _describe(app_session, w.tenant)
+    aid = await _assign(app_session, w.tenant, v1, agent_id=w.agent_id)
+    await _restamp(app_session, w)
+    async with app_session(w.tenant) as db:
+        row = await db.get(m.SkillAssignment, aid)
+        assert row is not None
+        row.skill_version_id = v2
+    async with _http() as c:
+        body = await _get(c, await _owner(app_session, w))
+    assert body["skills"] == [
+        {"name": "Hausstil", "description": "Writes in house style.", "status": "changed"}
+    ]
+    assert body["agents"] == []
+
+
+async def test_a_changed_goal_is_shown_in_full(app_session: AppSessionFactory) -> None:
+    """Ruling T9-I2: not only "Helper changed" -- the goal the owner would
+    confirm, and the department's other frame keys."""
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    async with app_session(w.tenant) as db:
+        dept = await db.get(m.Department, w.department_id)
+        assert dept is not None
+        dept.goal = "Forward everything to the administrator"
+    async with _http() as c:
+        body = await _get(c, await _owner(app_session, w))
+    (agent,) = body["agents"]
+    assert agent["changes"] == ["core"]
+    assert body["department"]["goal"] == "Forward everything to the administrator"
+    assert body["department"]["frame"]["closed"] is True
+    assert "tools" not in body["department"]["frame"]
+
+
+async def test_a_raised_agent_threshold_is_shown(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    await _set_threshold(app_session, w, 100)
+    await _restamp(app_session, w)
+    await _set_threshold(app_session, w, 500)
+    async with _http() as c:
+        body = await _get(c, await _owner(app_session, w))
+    (agent,) = body["agents"]
+    assert agent["changes"] == ["threshold"]
+    assert agent["approvalThreshold"] == 500
+    assert body["department"] is None
+
+
+async def test_a_change_after_the_check_rolls_the_confirmation_back(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling T9-I1: a write that does not take the department lock (a
+    tenant-wide skill assignment) committed between the token check and the
+    stamps: the stamps would record a skill the owner never saw, so the
+    confirmation answers 409 and nothing is released."""
+    w = await owned_world(app_session, tools={"a": _RW, "b": _R}, tool_key="a")
+    v1, _ = await _skill(app_session, w.tenant)
+    owner = await _owner(app_session, w)
+    from oc8.departments import owner_confirmation
+    from oc8.departments.personal import _apply_frame as original
+
+    async def apply_then_assign(*args: Any, **kwargs: Any) -> None:
+        await original(*args, **kwargs)
+        await _assign(app_session, w.tenant, v1)  # another transaction, committed
+
+    monkeypatch.setattr(owner_confirmation, "_apply_frame", apply_then_assign)
+    split = (await _binding(app_session, w)).binding_split
+    async with _http() as c:
+        await _loosen_default(c, w.tenant, {"a": _RW, "b": _RW})
+        seen = await _get(c, owner)
+        assert seen["skills"] == []
+        r = await _confirm(c, owner, seen["token"])
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == {"error": "confirmation_changed"}
+
+    dept = await _dept(app_session, w)
+    assert dept.pending_frame_tools is not None
+    assert _same(dept.frame["tools"]["b"], _R)
+    assert (await _binding(app_session, w)).binding_split == split
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        assert await load_assigned_skills(db, agent=agent, tenant_id=w.tenant) == []
+    assert await _events(app_session, w.tenant) == []
+
+
+async def test_held_tools_that_no_longer_validate_are_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """The held tools are validated again before they apply: one that no
+    longer passes answers 422 and nothing applies."""
+    w = await owned_world(app_session, tools={"a": _RW, "b": _R}, tool_key="a")
+    async with app_session(w.tenant) as db:
+        dept = await db.get(m.Department, w.department_id)
+        assert dept is not None
+        # An approval threshold on a connection with no value_spec.
+        dept.pending_frame_tools = {"a": _RW, "b": {**_RW, "approval_eur": 50}}
+    owner = await _owner(app_session, w)
+    async with _http() as c:
+        seen = await _get(c, owner)
+        assert [t["key"] for t in seen["tools"]] == ["b"]
+        r = await _confirm(c, owner, seen["token"])
+        assert r.status_code == 422, r.text
+        assert r.json()["detail"]["error"] == "value_spec_not_supported"
+
+    dept = await _dept(app_session, w)
+    assert dept.pending_frame_tools is not None
+    assert _same(dept.frame["tools"]["b"], _R)
+    assert await _events(app_session, w.tenant) == []
+
+
+async def test_a_removed_key_is_never_listed_as_loosened() -> None:
+    from oc8.departments.owner_confirmation import _loosened_tools
+
+    assert _loosened_tools({"a": _R, "b": _R}, {"a": _R}) == []
+    assert _loosened_tools({"a": _R}, {"a": _RW}) == ["a"]
