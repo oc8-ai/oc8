@@ -178,6 +178,11 @@ ALLOWED: dict[str, str] = {
     "agents/hire.py": "hire_agent effect resolution acts on the approval's own bound agent",
     "api/llm_gateway.py": "agent-token-authenticated path, scoped to the token's own run",
     "api/mcp_gateway.py": "agent-token-authenticated path, scoped to the token's own run",
+    "api/v1/audit.py": (
+        "gated by audit:view (tenant-wide, the auditor's grant); reads only which agents "
+        "and departments of one page of events are personal, to strip their content -- "
+        "it narrows what the trail shows, it never lists an agent or department"
+    ),
     "api/v1/capas.py": "a different permission (plugin install), department-existence check only",
     "api/v1/internal_agent.py": "agent-token-authenticated path, scoped to the token's own run",
     "api/v1/mcp.py": (
@@ -189,7 +194,8 @@ ALLOWED: dict[str, str] = {
         "already uses for capa install/enable, not a narrower departmental seat. An "
         "operator packaging a Department/Agent/Skill they already administer into a "
         "portable capa is the same 'admin already sees every department' shape as "
-        "copilot/capabilities.py below, just reading full content instead of an id"
+        "copilot/capabilities.py below, just reading full content instead of an id; a "
+        "personal department or agent, its owner's alone, is refused as not found"
     ),
     "approvals/service.py": "approval-effect resolution acting on the approval's own bound agent",
     "copilot/capabilities.py": (
