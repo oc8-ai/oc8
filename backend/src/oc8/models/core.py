@@ -361,6 +361,11 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # a pre-migration row (backfilled to v1 by 0099) or a row from a partially
     # failed create can be null in production.
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    # The skill assignments the owner of this agent's department last
+    # confirmed (`connections.confirmation.held_skill_entries`): they keep
+    # waiting for the owner when every confirmation is gone. None: never
+    # confirmed by an owner.
+    confirmed_skills: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
     __table_args__ = (
         CheckConstraint(

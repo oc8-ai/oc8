@@ -83,8 +83,9 @@ async def load_assigned_skills(
 ) -> list[LoadedSkill]:
     """The agent's enabled skills, narrowest assignment first. An agent in a
     department with an owner runs on the skills the owner confirmed
-    (`connections.confirmation.held_skill_entries`): a newer assignment or
-    version waits for them, a removal applies at once."""
+    (`connections.confirmation.held_skill_entries`), with the name and
+    description they confirmed: a newer assignment, version or text waits
+    for them, a removal applies at once."""
     # Deferred: confirmation reaches the agent package, which imports this module.
     from oc8.connections.confirmation import held_skill_entries
 
@@ -153,7 +154,15 @@ async def load_assigned_skills(
         except SkillDefinitionError as exc:
             logger.warning("skipping skill %s (version %s): %s", skill.id, version.id, exc)
             continue
-        base = f"{SKILL_TOOL_PREFIX}{_slugify(definition.slug or skill.name)}"
+        # What the model reads of the skill: as the owner confirmed it, for
+        # an agent whose skills are held (`held_skill_entries`).
+        name, description = skill.name, skill.description
+        if entries is not None:
+            name, description = entries[str(assignment.id)][2:4]
+            if name is None:
+                logger.warning("skipping assignment %s: confirmed without a name", assignment.id)
+                continue
+        base = f"{SKILL_TOOL_PREFIX}{_slugify(definition.slug or name)}"
         tool_name = base
         suffix = 2
         while tool_name in used:
@@ -165,8 +174,8 @@ async def load_assigned_skills(
             LoadedSkill(
                 skill_id=skill.id,
                 skill_version_id=version.id,
-                name=skill.name,
-                description=skill.description or skill.name,
+                name=name,
+                description=description or name,
                 tool_name=tool_name,
                 definition=definition,
                 creator_id=skill.owner_user_id,

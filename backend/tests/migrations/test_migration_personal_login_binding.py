@@ -1,4 +1,4 @@
-"""0134: columns for split confirmations and a held department frame."""
+"""0134: columns for split confirmations, a held department frame and confirmed skills."""
 
 from __future__ import annotations
 
@@ -62,9 +62,11 @@ def test_upgrade_adds_the_columns_and_downgrade_drops_them(pg_url: str) -> None:
     command.downgrade(cfg, down_revision)
     try:
         assert "pending_frame_tools" not in _columns(dsn, "department")
+        assert "confirmed_skills" not in _columns(dsn, "agent")
     finally:
         command.upgrade(cfg, "head")
 
+    assert "confirmed_skills" in _columns(dsn, "agent")
     assert "binding_split" in _columns(dsn, "agent_tool_access")
     assert "access_split" in _columns(dsn, "trigger")
     assert "pending_frame_tools" in _columns(dsn, "department")
@@ -83,5 +85,6 @@ def test_upgrade_adds_the_columns_and_downgrade_drops_them(pg_url: str) -> None:
         assert "pending_frame_tools" not in _columns(dsn, "department")
         assert "binding_split" not in _columns(dsn, "agent_tool_access")
         assert "access_split" not in _columns(dsn, "trigger")
+        assert "confirmed_skills" not in _columns(dsn, "agent")
     finally:
         command.upgrade(cfg, "head")

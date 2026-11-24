@@ -240,6 +240,7 @@ EXEMPT: dict[str, str] = {
     "agent_tool_access.binding_fingerprint": "a SHA-256 digest (connections.access.binding_fingerprint), not content -- see design spec §6",
     "agent_tool_access.binding_split": "a policy snapshot (what the confirming person saw), not content -- same shape/rationale as department.frame, design spec §6",
     "trigger.access_split": "a policy snapshot (what the creator confirmed), not content -- same shape/rationale as department.frame, design spec §6",
+    "agent.confirmed_skills": "the skill assignments (ids, versions, overrides, the skill's name/description as confirmed) the department owner last confirmed, a policy snapshot like trigger.access_split -- structural, not customer free text, design spec §6",
     "department.pending_frame_tools": "tool policies held for the owner to confirm, same shape/rationale as department.frame -- structural/config, not customer free text, design spec §6",
     "trigger.access_fingerprint": "a SHA-256 digest (connections.access.trigger_fingerprint), not content -- see design spec §6",
     "oauth_connection.provider_metadata": "content column to encrypt as-is, not yet migrated -- generic non-secret per-connection facts a provider's own flow needs (e.g. chatgpt_account_id), same shape/rationale as credential.field_values above, design spec §6a",

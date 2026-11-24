@@ -8,20 +8,27 @@ loads every assigned skill as before, and a change breaks the binding."""
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
+from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 # Loaded first: importing `oc8.skills.runtime` on its own runs into the
 # `oc8.agent` package's import cycle.
 import oc8.agent  # noqa: F401
 from oc8 import models as m
+from oc8.auth import get_identity_provider
 from oc8.connections.access import unconfirmed_reason
 from oc8.connections.confirmation import held_skill_entries, stamp_binding, stamp_trigger
 from oc8.connections.consolidate import _Stamps
-from oc8.skills.runtime import load_assigned_skills
+from oc8.main import create_app
+from oc8.skills.runtime import catalog_block, load_assigned_skills, skill_tool_schemas
 from tests.conftest import AppSessionFactory
+from tests.connections.helpers import member
 from tests.connections.test_split_confirmation import _bound
 from tests.connections.test_split_confirmation import _reason as _standard_reason
 from tests.departments.owned import OwnedWorld, owned_world
@@ -288,3 +295,118 @@ async def test_the_consolidation_restamp_does_not_confirm_a_waiting_skill(
         await stamps.restamp(db, w.tenant, [])
     assert await _loaded(app_session, w.tenant, w.agent_id) == []
     assert await _reason(app_session, w) is None
+
+
+# --- Fix round 1: a confirmation that goes away keeps the hold (T5-I1) -------
+
+
+async def test_a_deleted_trigger_keeps_the_skill_held(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW})
+    trigger_id = await _owner_trigger(app_session, w, creator=w.member_id)
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    async with app_session(w.tenant) as db:
+        trigger = await db.get(m.Trigger, trigger_id)
+        await db.delete(trigger)
+    assert await _loaded(app_session, w.tenant, w.agent_id) == []
+
+
+async def test_a_binding_switched_to_user_mode_keeps_the_skill_held(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    async with app_session(w.tenant) as db:
+        row = await _row(db, w)
+        row.mode, row.credential_id = "user", None
+    assert await _loaded(app_session, w.tenant, w.agent_id) == []
+
+
+async def test_a_deleted_login_keeps_the_skill_held(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    async with app_session(w.tenant) as db:
+        await db.delete(await db.get(m.Credential, w.credential_id))
+    assert await _loaded(app_session, w.tenant, w.agent_id) == []
+
+
+async def test_a_binding_someone_else_set_does_not_confirm(app_session: AppSessionFactory) -> None:
+    """A fixed row on the owner's login that another member set is not the
+    owner's confirmation: its stamp neither counts nor records a set."""
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    other = await member(app_session, w.tenant, "bo@acme.test", name="Bo")
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        row = await _row(db, w)
+        assert agent is not None
+        row.set_by_member_id = other
+        await stamp_binding(db, row, agent)
+    assert await _loaded(app_session, w.tenant, w.agent_id) == []
+
+
+async def test_the_owner_stamp_records_the_confirmed_set(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    v1, _ = await _skill(app_session, w.tenant)
+    aid = await _assign(app_session, w.tenant, v1, agent_id=w.agent_id)
+    await _confirm(app_session, w)
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        assert list(agent.confirmed_skills or {}) == [str(aid)]
+
+
+# --- Fix round 1: the confirmed name and description reach the model (T5-I2) --
+
+
+@asynccontextmanager
+async def _http() -> AsyncIterator[AsyncClient]:
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            yield c
+
+
+async def _catalog(app_session: AppSessionFactory, tenant: uuid.UUID, agent_id: Any) -> str:
+    skills = await _loaded(app_session, tenant, agent_id)
+    schemas = " ".join(t.description for t in skill_tool_schemas(skills))
+    return catalog_block(skills) + "\n" + schemas
+
+
+async def test_a_renamed_skill_keeps_its_confirmed_text(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    await _confirm(app_session, w)
+    async with app_session(w.tenant) as db:
+        dept = m.Department(tenant_id=w.tenant, name="Standard", frame={})
+        db.add(dept)
+        await db.flush()
+        standard = m.Agent(tenant_id=w.tenant, department_id=dept.id, name="S", mission="m")
+        db.add(standard)
+        await db.flush()
+        standard_id = standard.id
+        skill_id = (await db.get(m.SkillVersion, v1)).skill_id  # type: ignore[union-attr]
+    before = await _catalog(app_session, w.tenant, w.agent_id)
+    assert "Hausstil" in before
+
+    token = get_identity_provider().mint(tenant_id=w.tenant, subject="admin", role="org_admin")
+    async with _http() as c:
+        r = await c.patch(
+            f"/api/v1/skills/{skill_id}",
+            json={"name": "Neuer Stil", "description": "Ganz anders."},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+
+    assert await _catalog(app_session, w.tenant, w.agent_id) == before
+    assert await _reason(app_session, w) is None
+    after = await _catalog(app_session, w.tenant, standard_id)
+    assert "Neuer Stil" in after and "Ganz anders." in after
+
+    # Once the owner confirms again, the new text reaches their agent too.
+    await _confirm(app_session, w)
+    assert "Ganz anders." in await _catalog(app_session, w.tenant, w.agent_id)

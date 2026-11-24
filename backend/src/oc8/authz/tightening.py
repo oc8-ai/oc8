@@ -5,7 +5,8 @@ admin change that only tightens; anything else asks them to confirm again.
 These pure functions are the exact, per-field definition of "tightening".
 A confirmation snapshot (`grant`) has three parts: `tools` (one grant entry per
 enabled tool key, see `grant_tool_entry`), `frame` (the department frame without
-`tools`) and `skills` (`{assignment id: [skill_version_id, overrides]}`).
+`tools`) and `skills` (`{assignment id: [skill_version_id, overrides, name,
+description]}`, the name and description being the text the model reads).
 
 Each rule: what keeps the confirmation (tightening or equal). Anything else
 is a loosening.
@@ -44,7 +45,9 @@ is a loosening.
 - `frame.<any other key>` (`emits`, `intakes`, a stray `tools`, unknown
   keys): equal.
 - `skills`: current ids a subset of confirmed ids, each entry equal. Added,
-  new version or changed overrides: loosens.
+  new version, changed overrides or a changed name or description: loosens.
+  Removed: tightens (a skill's guardrails apply only once the model
+  activates it, so removing one opens nothing).
 - any other grant part: equal.
 
 Missing fields read as `ToolPolicy.from_json` reads them, so a stored policy

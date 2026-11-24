@@ -15,7 +15,8 @@ Next to it a stamp now stores a split (`agent_tool_access.binding_split`,
   holds one entry per enabled tool key of the effective policies -- every
   one, for a binding too (a new tool next to the bound one is an addition
   the member confirms) -- `frame` the frame without `tools`,
-  `skills` `{assignment id: [skill_version_id, overrides]}`.
+  `skills` `{assignment id: [skill_version_id, overrides, name, description]}`
+  (the name and description as the model reads them in the catalogue).
 
 The agent's own approval threshold (`presentation["approval_value_eur"]`,
 which the live gate adds as an extra threshold) is folded into each tool
@@ -168,10 +169,15 @@ def _grant_tools(
 
 
 async def _grant_skills(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
-    """The assignments `binding_fingerprint` reads, enabled ones only."""
-    assignments = (
+    """The assignments `binding_fingerprint` reads, enabled ones only, each
+    with the text the model reads of its skill (name, description: None when
+    the version or skill is gone), so a change to that text loosens too."""
+    rows = (
         await db.execute(
-            select(m.SkillAssignment).where(
+            select(m.SkillAssignment, m.Skill.name, m.Skill.description)
+            .outerjoin(m.SkillVersion, m.SkillVersion.id == m.SkillAssignment.skill_version_id)
+            .outerjoin(m.Skill, m.Skill.id == m.SkillVersion.skill_id)
+            .where(
                 m.SkillAssignment.deleted_at.is_(None),
                 (m.SkillAssignment.agent_id == agent.id)
                 | (m.SkillAssignment.department_id == agent.department_id)
@@ -180,16 +186,21 @@ async def _grant_skills(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
                 ),
             )
         )
-    ).scalars()
+    ).tuples()
     return {
-        str(a.id): [str(a.skill_version_id), a.overrides] for a in assignments if bool(a.enabled)
+        str(a.id): [str(a.skill_version_id), a.overrides, name, description]
+        for a, name, description in rows
+        if bool(a.enabled)
     }
 
 
 def _skill_entry(entry: Any) -> list[Any] | None:
     """A stored `grant.skills` entry read strictly: `[skill_version_id,
-    overrides]` with a version id that parses. None for anything else."""
-    if not isinstance(entry, list) or len(entry) != 2 or not isinstance(entry[0], str):
+    overrides, name, description]` with a version id that parses and a name
+    and description that are text or None. None for anything else."""
+    if not isinstance(entry, list) or len(entry) != 4 or not isinstance(entry[0], str):
+        return None
+    if not all(part is None or isinstance(part, str) for part in entry[2:]):
         return None
     try:
         uuid.UUID(entry[0])
@@ -198,12 +209,42 @@ def _skill_entry(entry: Any) -> list[Any] | None:
     return entry
 
 
+def _skill_entries(raw: Any) -> dict[str, list[Any]]:
+    """A stored skill set read strictly; a malformed one holds nothing."""
+    entries: dict[str, list[Any]] = {}
+    if isinstance(raw, Mapping):
+        for aid, entry in raw.items():
+            read = _skill_entry(entry)
+            if isinstance(aid, str) and read is not None:
+                entries[aid] = read
+    return entries
+
+
+async def _department_owner(db: AsyncSession, agent: m.Agent) -> uuid.UUID | None:
+    dept = await db.get(m.Department, agent.department_id)
+    return dept.owner_member_id if dept is not None else None
+
+
+async def _owner_binding(db: AsyncSession, row: m.AgentToolAccess, owner: uuid.UUID) -> bool:
+    """Whether `row` is the owner's own confirmation: fixed to a login or
+    connection of the owner, and set by the owner (or by nobody named)."""
+    if row.mode != "fixed" or row.set_by_member_id not in (owner, None):
+        return False
+    target: m.Credential | m.OAuthConnection | None = None
+    if row.credential_id is not None:
+        target = await db.get(m.Credential, row.credential_id)
+    elif row.oauth_connection_id is not None:
+        target = await db.get(m.OAuthConnection, row.oauth_connection_id)
+    return target is not None and target.owner_member_id == owner
+
+
 async def _owner_splits(
     db: AsyncSession, agent: m.Agent, owner: uuid.UUID
 ) -> list[SplitFingerprint]:
     """The stored splits of the owner's own confirmations of `agent`: its
-    fixed rows bound to a login or connection of the owner, and the triggers
-    the owner created. Rows stamped before the split are not among them."""
+    fixed rows the owner bound to their own login or connection
+    (`_owner_binding`), and the triggers the owner created. Rows stamped
+    before the split are not among them."""
     splits: list[SplitFingerprint] = []
     rows = (
         await db.execute(
@@ -215,13 +256,8 @@ async def _owner_splits(
         )
     ).scalars()
     for row in rows:
-        target: m.Credential | m.OAuthConnection | None = None
-        if row.credential_id is not None:
-            target = await db.get(m.Credential, row.credential_id)
-        elif row.oauth_connection_id is not None:
-            target = await db.get(m.OAuthConnection, row.oauth_connection_id)
         split = stored_split(row.binding_split)
-        if target is not None and target.owner_member_id == owner and split is not None:
+        if split is not None and await _owner_binding(db, row, owner):
             splits.append(split)
     triggers = (
         await db.execute(
@@ -242,35 +278,33 @@ async def _owner_splits(
 async def held_skill_entries(db: AsyncSession, agent: m.Agent) -> dict[str, list[Any]] | None:
     """The skill assignments an agent in a department with an owner runs on
     while the owner has not confirmed newer ones: `{assignment id:
-    [skill_version_id, overrides]}` as every split confirmation of the owner
-    holds it identically. None (every enabled assignment runs, as stamped
-    live) for a department without an owner, or when no confirmation of the
-    owner carries a split.
+    [skill_version_id, overrides, name, description]}` as every split
+    confirmation of the owner holds it identically; with none left (a
+    trigger deleted, a binding switched to `user`, its login deleted), the
+    set the owner last confirmed (`agent.confirmed_skills`). None (every
+    enabled assignment runs, as stored live) only for a department without
+    an owner, or an agent its owner never confirmed with a split.
 
-    A skill added since, a moved version or changed overrides would loosen
-    the owner's confirmation (`authz.tightening`), from whichever path made
-    the change (an admin's tenant-wide assignment, a publish that moves
-    assignments, the shipped-skill sync, a capa install): it waits here
-    until the owner confirms again, and the confirmation keeps holding
-    meanwhile (`split_fingerprint(held_back=True)`). A removal or disable
-    is a tightening and applies at once. Stored entries are read strictly:
-    a malformed set or entry holds nothing."""
-    dept = await db.get(m.Department, agent.department_id)
-    owner = dept.owner_member_id if dept is not None else None
+    A skill added since, a moved version, changed overrides or a changed
+    name or description would loosen the owner's confirmation
+    (`authz.tightening`), from whichever path made the change (an admin's
+    tenant-wide assignment, a publish that moves assignments, a skill
+    edit, a capa install): it waits here until the owner confirms again,
+    and the confirmation keeps holding meanwhile
+    (`split_fingerprint(held_back=True)`). A removal or disable is a
+    tightening and applies at once. Stored entries are read strictly: a
+    malformed set or entry holds nothing."""
+    owner = await _department_owner(db, agent)
     if owner is None:
         return None
     splits = await _owner_splits(db, agent, owner)
     if not splits:
-        return None
+        if agent.confirmed_skills is None:
+            return None
+        return _skill_entries(agent.confirmed_skills)
     held: dict[str, list[Any]] | None = None
     for split in splits:
-        raw = split.grant.get("skills")
-        entries: dict[str, list[Any]] = {}
-        if isinstance(raw, Mapping):
-            for aid, entry in raw.items():
-                read = _skill_entry(entry)
-                if isinstance(aid, str) and read is not None:
-                    entries[aid] = read
+        entries = _skill_entries(split.grant.get("skills"))
         held = (
             entries
             if held is None
@@ -363,6 +397,14 @@ async def confirmation_holds(
     return stored.core == current.core and not grant_loosenings(stored.grant, current.grant)
 
 
+def _record_confirmed(agent: m.Agent, split: SplitFingerprint) -> None:
+    """Keep the skills of the owner's newest confirmation on the agent, for
+    when every confirmation is gone (`held_skill_entries`). A held-back
+    stamp records the held set, so it never records a waiting skill."""
+    skills = split.grant.get("skills")
+    agent.confirmed_skills = dict(skills) if isinstance(skills, Mapping) else {}
+
+
 async def stamp_binding(
     db: AsyncSession, row: m.AgentToolAccess, agent: m.Agent, *, held_back: bool = False
 ) -> None:
@@ -378,6 +420,9 @@ async def stamp_binding(
         db, agent, row.tool_key, version_id=version_id, held_back=held_back
     )
     row.binding_split = split.to_json()
+    owner = await _department_owner(db, agent)
+    if owner is not None and await _owner_binding(db, row, owner):
+        _record_confirmed(agent, split)
 
 
 async def _trigger_agent(db: AsyncSession, trigger: m.Trigger) -> m.Agent | None:
@@ -397,9 +442,11 @@ async def stamp_trigger(db: AsyncSession, trigger: m.Trigger, *, held_back: bool
         return
     version_id = agent.current_version_id
     trigger.access_fingerprint = await binding_fingerprint(db, agent, None, version_id=version_id)
-    trigger.access_split = (
-        await split_fingerprint(db, agent, None, version_id=version_id, held_back=held_back)
-    ).to_json()
+    split = await split_fingerprint(db, agent, None, version_id=version_id, held_back=held_back)
+    trigger.access_split = split.to_json()
+    owner = await _department_owner(db, agent)
+    if owner is not None and trigger.created_by_member_id == owner:
+        _record_confirmed(agent, split)
 
 
 async def trigger_confirmed(
