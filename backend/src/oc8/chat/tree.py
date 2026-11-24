@@ -15,20 +15,33 @@ Each write that reads the leaf locks the session row first (`lock_session`),
 so two runs finishing at once, or a send racing a reply, cannot both build on
 the same stale leaf; the lock is held until the caller commits.
 
-Lock order: `lock_session` takes the tenant's audit lock BEFORE the session
-row. The hazard is any transaction that holds the session row and then takes
-the audit lock -- which every transaction that staged an audit event does at
-its commit, and a run's end does earlier still (`lock_run_inputs`): it waits
-on a writer holding the audit lock while that writer waits on the row. So
-every transaction that locks or changes a chat_session row and stages an
-audit event takes the audit lock first -- `lock_session`, or
-`lock_tenant_audit` right before its own row lock: `send_message`,
-`record_assistant_reply`, `record_answer_turn`, a carried-over turn, the
-regenerate door (`api/v1/chat.py`), a direct-access decision
-(`copilot/direct_access.py`), and the chat mode a run entered
-(`chat.service.apply_entered_mode`). A run never locks the row during its
-leg -- that would hold it while the model is called; the direct-access offer
-serialises on an advisory lock of its own instead, and a mode the run
+Lock order -- the one order for every transaction in this area, so no two
+of them can wait on each other in a circle. Each takes only the locks it
+needs, but never one listed earlier after one listed later:
+
+  1. an approval row (`decide_approval`)
+  2. an agent_run row (the executor's claim and every leg end; a decision
+     waking its parked run; an answer to a parked question)
+  3. a conversation's offer lock (`copilot.direct_access._lock_offers`)
+  4. the tenant's audit lock (`lock_tenant_audit`; at the latest at the
+     commit of any transaction that staged an audit event)
+  5. a run's input lock (`lock_run_inputs`, which takes 4 first)
+  6. the chat_session row (`lock_session`, which takes 4 first)
+
+The hazard this guards against: a transaction holding a row from a later
+step while it waits for an earlier one -- most often the audit lock, which
+every transaction that staged an audit event takes at its commit and a
+run's end takes earlier still (`lock_run_inputs`). A send holding the audit
+lock and waiting on the session row, against a transaction holding that row
+and waiting for the audit lock at its commit, is a deadlock.
+
+So every chat writer takes `lock_session` before it locks or changes the
+session row: `send_message`, `record_assistant_reply`, `record_answer_turn`,
+a carried-over turn, the regenerate door (`api/v1/chat.py`), and the chat
+mode a run entered (`chat.service.apply_entered_mode`); a direct-access
+decision takes the steps above in order. A run never locks the session row
+during its leg -- that would hold it while the model is called: the
+direct-access offer serialises on the offer lock instead, and a mode the run
 enters is written at the leg's end. Callers lock late, after their last
 model or network call and shortly before they commit, because the audit
 lock serialises the tenant's audited commits while held.

@@ -26,6 +26,7 @@ from oc8.approvals import (
     expire_approval,
 )
 from oc8.approvals.repo import load_for_actor, member_direct_access_cards, visible_approvals
+from oc8.audit.chain import lock_tenant_audit
 from oc8.auth.principal import Principal
 from oc8.authz.permissions import COPILOT_USE, MEMBER_ROLE, RUN_START, SEAT_APPROVER
 from oc8.authz.scope import (
@@ -785,3 +786,49 @@ async def test_approving_takes_the_audit_lock_before_the_conversation_row(
             await decide_approval(db, offer, decision="approve", tenant_id=tenant, actor=anna)
         assert len(await _grants(db)) == 1
     audit_lock_comes_first(seen, tenant)
+    _run_row_comes_before_the_audit_lock(seen, tenant, run_id=_run.id)
+
+
+def _run_row_comes_before_the_audit_lock(
+    seen: list[str], tenant: uuid.UUID, *, run_id: uuid.UUID
+) -> None:
+    """`chat.tree`'s order: the parked run's agent_run row (its executor holds
+    it while parking, then takes the audit lock) before the audit lock."""
+    from tests.chat.test_message_tree import is_audit_lock
+
+    def _locks_run(sql: str) -> bool:
+        return (
+            "agent_run" in sql
+            and str(run_id) in sql
+            and (" FOR UPDATE" in sql or sql.lstrip().startswith("UPDATE agent_run"))
+        )
+
+    run_row = next((i for i, sql in enumerate(seen) if _locks_run(sql)), None)
+    audit = next(i for i, sql in enumerate(seen) if is_audit_lock(sql, tenant))
+    assert run_row is not None and run_row < audit, seen[audit]
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_a_decision_locks_the_parked_run_before_the_audit_lock(
+    app_session: AppSessionFactory, decision: str
+) -> None:
+    """The executor parks holding the run row and takes the audit lock after;
+    a decision that took the audit lock first and then waited on that row
+    would close a cycle with it."""
+    from tests.chat.test_message_tree import statements
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, run = await _parked_offer(db, office)
+        anna = await _human(db, tenant, "anna", "member")
+        with statements() as seen:
+            result = await decide_approval(
+                db, offer, decision=decision, tenant_id=tenant, actor=anna
+            )
+            await db.flush()
+            # The reject path stages its audit event for the commit: take the
+            # lock the commit would, so the order up to it is visible.
+            await lock_tenant_audit(db, tenant)
+        assert result.resumed_run_id == run.id
+    _run_row_comes_before_the_audit_lock(seen, tenant, run_id=run.id)

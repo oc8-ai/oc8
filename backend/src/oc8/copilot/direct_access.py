@@ -531,11 +531,16 @@ async def resolve_direct_access_approval(
     as the offer serialises them (`_lock_offers`), and the partial unique
     index is the last word.
 
-    Locks, in the one order that cannot cycle: the offer lock, then the
-    tenant's audit lock, then the conversation row (`chat.tree`'s order; the
-    row lock keeps a concurrent delete of the conversation from slipping in
-    under the grant). Everything after them up to the caller's commit is
-    database work: no model or network call."""
+    Locks, in the one order that cannot cycle (`chat.tree` documents it):
+    after the approval row (`decide_approval`), the parked run's agent_run
+    row, then the offer lock, then the tenant's audit lock, then the
+    conversation row (which keeps a concurrent delete of the conversation
+    from slipping in under the grant). The run row comes first because its
+    executor holds it while it parks and takes the audit lock after, and an
+    offering run holds its own row before it asks for the offer lock -- on
+    both decisions, since the answer is written to that row either way.
+    Everything after them up to the caller's commit is database work: no
+    model or network call."""
     payload = approval.payload or {}
     raw_info = payload.get("direct_access")
     info: Mapping[str, Any] = raw_info if isinstance(raw_info, dict) else {}
@@ -543,6 +548,9 @@ async def resolve_direct_access_approval(
     member_id = uuid_or_none(info.get("member_id"))
     key = str(info.get("tool_key") or "")
     chosen: dict[str, str] | None = None
+    run_id = uuid_or_none(payload.get("run_id"))
+    if run_id is not None:
+        await db.execute(select(m.AgentRun.id).where(m.AgentRun.id == run_id).with_for_update())
     if decision == "approve":
         if session_id is not None:
             await _lock_offers(db, session_id=session_id)
@@ -591,7 +599,6 @@ async def resolve_direct_access_approval(
                     "tool_key": key,
                 },
             )
-    run_id = uuid_or_none(payload.get("run_id"))
     run = await db.get(m.AgentRun, run_id) if run_id else None
     if run is None or run.task_id != approval.task_id:
         return None
