@@ -48,6 +48,10 @@ ALLOWED: dict[str, str] = {
     "api/v1/catalog.py": "a different permission (catalog:view), id-only reads",
     "api/v1/skills_write.py": "loads the agent it is about to assign a skill to",
     "metering/budget.py": "raises and reads its own tenant-scope incident; no human here",
+    "connections/access.py": (
+        "the binding and trigger fingerprints of an agent its caller already "
+        "holds (its department, a trigger's agent); digests, never shown to a person"
+    ),
     "connections/confirmation.py": (
         "a confirmation fingerprint of an agent its caller already holds (its "
         "department, a trigger's agent); ids and digests, never shown to a person"

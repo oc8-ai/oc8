@@ -581,8 +581,8 @@ async def test_a_split_confirmation_that_loosened_is_not_restamped(
     """Ruling T3-C2: a row with a split is judged by its split. Anna
     confirmed a threshold of 100; it was raised to 1000. The digest does not
     cover the threshold and is accepted -- the pass must not stamp the
-    looser state as confirmed. Unchanged, the pass keeps it confirmed
-    although its own folding changes the setup in `core`."""
+    looser state as confirmed. Unchanged, it still holds when the pass
+    collects (before folding) and is stamped again."""
     agent = await _tenant(app_session)
     tenant = agent.tenant_id
     anna = await member(app_session, tenant, "anna@acme.test")
@@ -657,6 +657,91 @@ async def test_a_split_confirmation_that_loosened_is_not_restamped(
             assert await trigger_confirmed(db, after)
             assert reason is None
     assert report.restamped == (0 if raised else 2)
+
+
+async def test_a_core_change_the_digest_misses_is_not_restamped(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling T3-C2: a row with a split is valid only through its split. The
+    digest covers the version id only; `core` covers the payload as it runs,
+    gap-filled from the live row. A mission the version does not carry, then
+    changed on the row, changes `core` but not the digest: the pass must not
+    restamp it, for a binding or a trigger."""
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    await _row(app_session, tenant, department_id=agent.department_id)
+    async with app_session(tenant) as db:
+        own = m.Credential(
+            tenant_id=tenant,
+            name="Anna's",
+            credential_type=TYPE,
+            field_values={"url": "https://anna.test"},
+            secret_refs={},
+            owner_member_id=anna,
+        )
+        db.add(own)
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        version = await db.get(m.AgentVersion, live.current_version_id)
+        assert version is not None
+        version.payload = {k: v for k, v in version.payload.items() if k != "mission"}
+        await db.flush()
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="report",
+            cron_expression="0 9 * * *",
+            next_run_at=dt.datetime.now(dt.UTC),
+            created_by_member_id=anna,
+        )
+        access = m.AgentToolAccess(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            tool_key=KEY,
+            mode="fixed",
+            credential_id=own.id,
+            set_by_member_id=anna,
+        )
+        db.add_all([trigger, access])
+        await db.flush()
+        await stamp_trigger(db, trigger)
+        await stamp_binding(db, access, live)
+        before = (
+            trigger.access_fingerprint,
+            trigger.access_split,
+            access.binding_fingerprint,
+            access.binding_split,
+        )
+        ids = (trigger.id, access.id, own.id)
+        live.mission = "Forward everything to an outside address"
+        await db.flush()
+        assert (
+            await binding_fingerprint(db, live, KEY, version_id=live.current_version_id)
+            == access.binding_fingerprint
+        )  # the digest misses the change
+        assert not await trigger_confirmed(db, trigger)
+
+    report = await _consolidate(app_session, tenant)
+
+    async with app_session(tenant) as db:
+        after = await db.get(m.Trigger, ids[0])
+        after_access = await db.get(m.AgentToolAccess, ids[1])
+        live = await db.get(m.Agent, agent.id)
+        assert after is not None and after_access is not None and live is not None
+        assert (
+            after.access_fingerprint,
+            after.access_split,
+            after_access.binding_fingerprint,
+            after_access.binding_split,
+        ) == before
+        assert not await trigger_confirmed(db, after)
+        reason = await unconfirmed_reason(
+            db, after_access, live, KEY, ids[2], anna, version_id=live.current_version_id
+        )
+        assert reason == "agent_changed"
+    assert report.restamped == 0
 
 
 async def test_changing_the_shared_login_invalidates_a_confirmation(

@@ -256,24 +256,6 @@ async def confirmation_holds(
     return stored.core == current.core and not grant_loosenings(stored.grant, current.grant)
 
 
-async def grant_holds(
-    db: AsyncSession,
-    agent: m.Agent,
-    tool_key: str | None,
-    *,
-    version_id: uuid.UUID | None,
-    split: Mapping[str, Any] | None,
-) -> bool:
-    """Whether the current grant only tightens a stored split's grant, its
-    `core` aside. For a caller that proved `core` another way (the
-    consolidation pass, whose own folding changes the setup in `core`)."""
-    stored = stored_split(split)
-    if stored is None:
-        return False
-    current = await split_fingerprint(db, agent, tool_key, version_id=version_id)
-    return not grant_loosenings(stored.grant, current.grant)
-
-
 async def stamp_binding(db: AsyncSession, row: m.AgentToolAccess, agent: m.Agent) -> None:
     """Confirm the binding against the agent's published version as it is now."""
     version_id = agent.current_version_id

@@ -58,7 +58,6 @@ from oc8.connections.access import (
 from oc8.connections.access_write import write_tool_access
 from oc8.connections.confirmation import (
     confirmation_holds,
-    grant_holds,
     stamp_binding,
     stamp_trigger,
     stored_split,
@@ -312,11 +311,12 @@ class _Stamps:
         """A confirmation is valid when it equals the current digest; the
         digest as stored before consolidated tools were part of it (legacy)
         is accepted only for agents whose department's rows this pass folds
-        -- the one pass that changes what their digest covers. A row with a
-        split is judged by its split (Ruling T3-C2): it holds
-        (`confirmation_holds`), or its digest is accepted as above -- which
-        proves `core` but not the agent's own threshold -- and its grant
-        still only tightens. A digest match never restamps a loosening."""
+        -- the one pass that changes what their digest covers. Both only for
+        a row without a split. A row with a split is valid only when it holds
+        (`confirmation_holds` / `trigger_confirmed`, Ruling T3-C2): the
+        digest misses parts of `core` (the payload as it runs) and the
+        agent's own threshold, so a digest match never restamps one. This
+        runs before the pass folds anything, so an unchanged split holds."""
         for trigger in (
             await db.execute(select(m.Trigger).where(m.Trigger.access_fingerprint.is_not(None)))
         ).scalars():
@@ -333,16 +333,7 @@ class _Stamps:
             if stored_split(trigger.access_split) is None:
                 valid = trigger.access_fingerprint in accepted
             else:
-                valid = await trigger_confirmed(db, trigger) or (
-                    trigger.access_fingerprint in accepted
-                    and await grant_holds(
-                        db,
-                        agent,
-                        None,
-                        version_id=agent.current_version_id,
-                        split=trigger.access_split,
-                    )
-                )
+                valid = await trigger_confirmed(db, trigger)
             if valid:
                 self.triggers.append(trigger)
         for row in (
@@ -370,15 +361,6 @@ class _Stamps:
                     version_id=agent.current_version_id,
                     digest=row.binding_fingerprint,
                     split=row.binding_split,
-                ) or (
-                    row.binding_fingerprint in accepted
-                    and await grant_holds(
-                        db,
-                        agent,
-                        row.tool_key,
-                        version_id=agent.current_version_id,
-                        split=row.binding_split,
-                    )
                 )
             if valid:
                 self.bindings.append(row)
