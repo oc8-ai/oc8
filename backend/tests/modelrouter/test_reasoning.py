@@ -143,6 +143,63 @@ def test_openai_response_strips_inline_think_tags_and_reports_length() -> None:
     assert result.usage.reasoning_tokens is None
 
 
+def test_openai_response_drops_a_tool_call_cut_off_mid_json() -> None:
+    """`finish_reason: length` with an unterminated `arguments` string. Running
+    this call would act on arguments the model never wrote -- exactly the
+    `send_email` run that went out with no subject; live-observed 2026-11-24 as
+    a `null` argument in a production run's tool call."""
+    result = parse_response(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "Sure, sending it now.",
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {"name": "send_email", "arguments": '{"to": "a@b.c"},'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "length",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4000},
+        },
+        provider="openai_compatible",
+        model="m",
+    )
+    assert result.stop_reason == "length"
+    assert result.tool_calls == []
+    assert result.truncated_tool_calls is True
+
+
+def test_openai_response_keeps_a_complete_tool_call_after_the_answer() -> None:
+    result = parse_response(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "c1",
+                                "function": {"name": "send_email", "arguments": '{"to": "a@b.c"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 40},
+        },
+        provider="openai_compatible",
+        model="m",
+    )
+    assert result.tool_calls[0].arguments == {"to": "a@b.c"}
+    assert result.truncated_tool_calls is False
+
+
 def _sse(*lines: str) -> bytes:
     return "".join(f"data: {line}\n\n" for line in lines).encode()
 

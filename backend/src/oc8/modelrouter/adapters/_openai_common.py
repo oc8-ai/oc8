@@ -262,12 +262,18 @@ def parse_response(data: dict[str, Any], *, provider: str, model: str) -> Comple
     message = choice.get("message", {})
     raw_calls = message.get("tool_calls") or []
     tool_calls: list[ToolCall] = []
+    truncated_tool_calls = False
     for c in raw_calls:
         fn = c.get("function", {})
         try:
             args = json.loads(fn.get("arguments") or "{}")
         except (ValueError, TypeError):
-            args = {}
+            # An answer cut off by max_tokens ends mid-JSON. Executing such a
+            # call with empty arguments would act on arguments the model never
+            # wrote; drop it, like accumulate.py does for a streamed answer,
+            # and flag the result so the runtimes' length retry fires.
+            truncated_tool_calls = True
+            continue
         tool_calls.append(ToolCall(id=c.get("id", ""), name=fn.get("name", ""), arguments=args))
     usage_raw = data.get("usage") or {}
     usage = Usage(
@@ -296,6 +302,7 @@ def parse_response(data: dict[str, Any], *, provider: str, model: str) -> Comple
         provider=provider,
         model=model,
         reasoning=reasoning or None,
+        truncated_tool_calls=truncated_tool_calls,
     )
 
 

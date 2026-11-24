@@ -91,6 +91,11 @@ class CompletionResult:
     #: retry without it (`ModelRouter._retry_without_reasoning`). Recorded on
     #: the run step, where an admin sees it.
     reasoning_dropped: bool = False
+    #: A tool call's arguments were cut off mid-JSON by the answer budget. The
+    #: call is dropped rather than executed with half an argument list, and the
+    #: runtimes' length retry treats this like an answer with nothing in it --
+    #: the model was interrupted, not finished.
+    truncated_tool_calls: bool = False
 
 
 @dataclass
