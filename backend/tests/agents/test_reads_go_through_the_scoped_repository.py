@@ -195,6 +195,11 @@ ALLOWED: dict[str, str] = {
         "browse; that agent's visibility is already established by the caller "
         "(api/v1/chat.py's ownership/_assistant_visible check) before send_message runs"
     ),
+    "chat/files_kb.py": (
+        "chat_local_reason reads only the ChatSession's own session.agent_id, to "
+        "decide whether its files must be embedded locally -- not a departmental "
+        "browse; the caller already owns or reaches that chat"
+    ),
     "collab/emit.py": "handoff department-name resolution, same rationale as api/v1/handoffs.py",
     "collab/intake.py": "handoff department-name and team-lead resolution, no human in this path",
     "evidence/sweep.py": "background retention sweep on its own tenant scope; no human here",

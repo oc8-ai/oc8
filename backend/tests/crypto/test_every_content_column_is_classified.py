@@ -186,6 +186,7 @@ EXEMPT: dict[str, str] = {
     "knowledge_base.description": "content column to encrypt as-is, not yet migrated, design spec §6a",
     "knowledge_base.embedding_model": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",
     "knowledge_base.chunking_config": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",
+    "knowledge_base.kind": "structural enum-like column, CHECK-constrained to 'shared'/'chat' (ck_knowledge_base_kind), not content",
     "knowledge_base.classification": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
     "knowledge_base.freshness": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",
     "knowledge_base.source_ids": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",
