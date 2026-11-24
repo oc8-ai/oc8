@@ -244,41 +244,49 @@ async def _owner_binding(db: AsyncSession, row: m.AgentToolAccess, owner: uuid.U
     return target is not None and target.owner_member_id == owner
 
 
+async def owner_confirmations(
+    db: AsyncSession, agent: m.Agent, owner: uuid.UUID
+) -> tuple[list[m.AgentToolAccess], list[m.Trigger]]:
+    """The owner's own confirmations of `agent`: its fixed rows the owner
+    bound to their own login or connection (`_owner_binding`), and the
+    triggers the owner created. What `held_skill_entries` reads, and what
+    the owner's confirmation (`departments.owner_confirmation`) stamps."""
+    bindings = [
+        row
+        for row in (
+            await db.execute(
+                select(m.AgentToolAccess).where(
+                    m.AgentToolAccess.tenant_id == agent.tenant_id,
+                    m.AgentToolAccess.agent_id == agent.id,
+                    m.AgentToolAccess.mode == "fixed",
+                )
+            )
+        ).scalars()
+        if await _owner_binding(db, row, owner)
+    ]
+    triggers = list(
+        (
+            await db.execute(
+                select(m.Trigger).where(
+                    m.Trigger.tenant_id == agent.tenant_id,
+                    m.Trigger.agent_id == agent.id,
+                    m.Trigger.created_by_member_id == owner,
+                )
+            )
+        ).scalars()
+    )
+    return bindings, triggers
+
+
 async def _owner_splits(
     db: AsyncSession, agent: m.Agent, owner: uuid.UUID
 ) -> list[SplitFingerprint]:
-    """The stored splits of the owner's own confirmations of `agent`: its
-    fixed rows the owner bound to their own login or connection
-    (`_owner_binding`), and the triggers the owner created. Rows stamped
-    before the split are not among them."""
-    splits: list[SplitFingerprint] = []
-    rows = (
-        await db.execute(
-            select(m.AgentToolAccess).where(
-                m.AgentToolAccess.tenant_id == agent.tenant_id,
-                m.AgentToolAccess.agent_id == agent.id,
-                m.AgentToolAccess.mode == "fixed",
-            )
-        )
-    ).scalars()
-    for row in rows:
-        split = stored_split(row.binding_split)
-        if split is not None and await _owner_binding(db, row, owner):
-            splits.append(split)
-    triggers = (
-        await db.execute(
-            select(m.Trigger).where(
-                m.Trigger.tenant_id == agent.tenant_id,
-                m.Trigger.agent_id == agent.id,
-                m.Trigger.created_by_member_id == owner,
-            )
-        )
-    ).scalars()
-    for trigger in triggers:
-        split = stored_split(trigger.access_split)
-        if split is not None:
-            splits.append(split)
-    return splits
+    """The stored splits of the owner's own confirmations of `agent`
+    (`owner_confirmations`). Rows stamped before the split are not among
+    them."""
+    bindings, triggers = await owner_confirmations(db, agent, owner)
+    stored = [row.binding_split for row in bindings] + [t.access_split for t in triggers]
+    return [split for split in map(stored_split, stored) if split is not None]
 
 
 async def held_skill_entries(db: AsyncSession, agent: m.Agent) -> dict[str, list[Any]] | None:

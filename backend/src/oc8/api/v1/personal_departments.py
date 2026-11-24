@@ -49,6 +49,12 @@ from oc8.authz.scope import scope_for_principal
 from oc8.capas.manifest import TemplateAgent
 from oc8.capas.service import PluginError, instantiate_agent, template_scope
 from oc8.departments.frames import FrameChangeRefused, deviation_counts, validate_frame_tools
+from oc8.departments.owner_confirmation import (
+    ConfirmationChanged,
+    PendingConfirmation,
+    confirm_pending,
+    pending_confirmation,
+)
 from oc8.departments.personal import (
     BUDGET_KEY,
     ENABLED_KEY,
@@ -445,6 +451,97 @@ async def hire_personal_agent(
     return HirePersonalResponse(agent_id=str(agent.id), department_id=str(dept.id))
 
 
+class ConfirmationAgentDTO(CamelModel):
+    agent_id: str
+    name: str
+
+
+class PersonalConfirmationDTO(CamelModel):
+    """What waits for the owner's confirmation in their personal department.
+
+    Each part shows what waits now, not a history: an administrator's later
+    write that only tightens the frame replaces an earlier held loosening, so
+    a loosening listed before may be gone without the owner confirming it."""
+
+    #: Whether anything waits at all.
+    needed: bool
+    #: Pins this summary: the confirm answers 409 `confirmation_changed` when
+    #: anything it would accept changed since, listed here or not.
+    token: str
+    #: The frame tools an administrator loosened; they apply once confirmed.
+    tools: list[str]
+    #: The skills held back from the agents until the owner confirms them.
+    skills: list[str]
+    #: The agents whose earlier confirmation no longer holds (changed since).
+    agents: list[ConfirmationAgentDTO]
+
+
+class PersonalConfirmRequest(CamelModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The `token` of the summary as the owner was shown it.
+    token: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+def _confirmation_dto(summary: PendingConfirmation) -> PersonalConfirmationDTO:
+    return PersonalConfirmationDTO(
+        needed=summary.needed,
+        token=summary.token,
+        tools=summary.tools,
+        skills=summary.skills,
+        agents=[
+            ConfirmationAgentDTO(agent_id=str(agent_id), name=name)
+            for agent_id, name in summary.agents
+        ],
+    )
+
+
+async def _own_department(
+    db: AsyncSession, principal: Principal
+) -> tuple[m.OrgMember, m.Department]:
+    """The caller's own personal department, or 404: an administrator, a
+    colleague -- anybody without one of their own -- reaches nothing here."""
+    member = await _caller_member(db, principal)
+    dept = await owned_personal_department(db, tenant_id=principal.tenant_id, member_id=member.id)
+    if dept is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no personal department")
+    return member, dept
+
+
+@router.get(
+    "/personal-department/confirmation",
+    response_model=PersonalConfirmationDTO,
+    dependencies=_OWN,
+)
+async def get_personal_confirmation(
+    db: DbSession, principal: CurrentPrincipal
+) -> PersonalConfirmationDTO:
+    """What waits for the caller's confirmation in their own personal
+    department (`departments.owner_confirmation`)."""
+    _member, dept = await _own_department(db, principal)
+    return _confirmation_dto(await pending_confirmation(db, dept))
+
+
+@router.post(
+    "/personal-department/confirm",
+    response_model=PersonalConfirmationDTO,
+    dependencies=_OWN,
+)
+async def confirm_personal_department(
+    body: PersonalConfirmRequest, db: DbSession, principal: CurrentPrincipal
+) -> PersonalConfirmationDTO:
+    """The owner confirms everything the summary with `token` showed them;
+    409 `confirmation_changed` when it changed since, with nothing applied."""
+    member, dept = await _own_department(db, principal)
+    try:
+        summary = await confirm_pending(db, dept, member=member, token=body.token)
+    except ConfirmationChanged as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "confirmation_changed"}) from exc
+    except FrameChangeRefused as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, exc.detail) from exc
+    return _confirmation_dto(summary)
+
+
 # --- Administration -----------------------------------------------------------
 
 
@@ -486,7 +583,8 @@ class PersonalDepartmentAdminDTO(CamelModel):
     follows_default_budget: bool
     created_at: dt.datetime
     #: An administrator's loosening of the frame tools waits for the owner to
-    #: confirm it (`departments.personal.apply_held_tools`).
+    #: confirm it (`departments.personal.apply_held_tools`). Only that it
+    #: waits: what waits is the owner's (`GET /personal-department/confirmation`).
     pending_confirmation: bool
 
 

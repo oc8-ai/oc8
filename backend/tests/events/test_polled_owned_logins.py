@@ -293,6 +293,56 @@ async def test_an_unconfirmed_trigger_is_not_polled_and_keeps_its_cursor(
     assert after.cursor == {"pos": 30} and after.baseline_id == before.baseline_id
 
 
+async def test_the_owners_confirmation_lets_the_next_tick_fire(
+    app_session: AppSessionFactory,
+) -> None:
+    """Task 9: the owner confirms through `POST /personal-department/confirm`
+    and the next tick polls again and catches up what waited."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.auth import get_identity_provider
+    from oc8.main import create_app
+
+    owned = await owned_polled_setup(app_session)
+    pending = {"on": False}
+    owned.fake.respond = baseline_then(lambda _c: [event(1)] if pending["on"] else [])
+    t = await _create(app_session, owned)
+    await poll_tick()  # baseline
+    await _publish_new_mission(app_session, owned)
+    pending["on"] = True
+    await _make_due(app_session, owned.tenant, t.id)
+    await poll_tick()
+    assert (await _trigger(app_session, owned.tenant, t.id)).last_skip_reason == NEEDS_CONFIRMATION
+    assert await _runs(app_session, owned.tenant, owned.agent_id) == []
+
+    token = get_identity_provider().mint(
+        tenant_id=owned.tenant, subject=owned.subject, role="member"
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            r = await c.get("/api/v1/personal-department/confirmation", headers=headers)
+            assert r.status_code == 200, r.text
+            summary = r.json()
+            assert [a["agentId"] for a in summary["agents"]] == [str(owned.agent_id)]
+            r = await c.post(
+                "/api/v1/personal-department/confirm",
+                json={"token": summary["token"]},
+                headers=headers,
+            )
+            assert r.status_code == 200, r.text
+            assert r.json()["needed"] is False
+
+    await _make_due(app_session, owned.tenant, t.id)
+    await poll_tick()
+
+    (run,) = await _runs(app_session, owned.tenant, owned.agent_id)
+    assert run.context["trigger_id"] == str(t.id)
+    assert (await _trigger(app_session, owned.tenant, t.id)).last_skip_reason is None
+
+
 async def test_a_pending_confirmation_backs_off_and_never_switches_the_trigger_off(
     app_session: AppSessionFactory,
 ) -> None:

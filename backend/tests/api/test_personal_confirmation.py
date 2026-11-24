@@ -1,0 +1,395 @@
+"""The owner reviews and confirms what waits for them in their personal
+department (`departments.owner_confirmation`).
+
+`GET /personal-department/confirmation` lists what an administrator's change
+holds back -- a loosening of the frame tools, a skill added or changed since
+the owner last confirmed -- and the agents whose owner confirmation no longer
+holds, with a token. `POST /personal-department/confirm` takes that token and
+releases all of it in one step; a token that no longer matches (anything
+changed since the owner looked, seen or not) answers 409 and changes nothing.
+Only the owner reaches either route: there is no department id to name.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
+
+import pytest
+from asgi_lifespan import LifespanManager
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
+
+# Loaded first: importing `oc8.skills.runtime` on its own runs into the
+# `oc8.agent` package's import cycle.
+import oc8.agent  # noqa: F401
+from oc8 import models as m
+from oc8.agents.versioning import publish_version
+from oc8.auth import get_identity_provider
+from oc8.authz.pdp import ToolPolicy
+from oc8.connections.access import unconfirmed_reason
+from oc8.main import create_app
+from oc8.skills.runtime import load_assigned_skills
+from tests.conftest import AppSessionFactory
+from tests.connections.helpers import member
+from tests.departments.owned import OwnedWorld, owned_world
+from tests.skills.test_held_back_skills import _assign, _skill
+
+pytestmark = pytest.mark.asyncio
+
+_RW: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
+_R: dict[str, Any] = {"enabled": True, "read": True, "modify": False}
+_ACTION = "department.confirmation.confirmed"
+
+
+def _headers(tenant: uuid.UUID, subject: str, role: str = "member") -> dict[str, str]:
+    token = get_identity_provider().mint(tenant_id=tenant, subject=subject, role=role)
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _admin(tenant: uuid.UUID) -> dict[str, str]:
+    return _headers(tenant, "admin", "org_admin")
+
+
+@asynccontextmanager
+async def _http() -> AsyncIterator[AsyncClient]:
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            yield c
+
+
+async def _subject(app_session: AppSessionFactory, w: OwnedWorld) -> str:
+    async with app_session(w.tenant) as db:
+        owner = await db.get(m.OrgMember, w.member_id)
+        assert owner is not None
+        return owner.subject
+
+
+async def _owner(app_session: AppSessionFactory, w: OwnedWorld) -> dict[str, str]:
+    return _headers(w.tenant, await _subject(app_session, w))
+
+
+async def _get(c: AsyncClient, headers: dict[str, str]) -> dict[str, Any]:
+    r = await c.get("/api/v1/personal-department/confirmation", headers=headers)
+    assert r.status_code == 200, r.text
+    body: dict[str, Any] = r.json()
+    return body
+
+
+async def _confirm(c: AsyncClient, headers: dict[str, str], token: str) -> Any:
+    return await c.post(
+        "/api/v1/personal-department/confirm", json={"token": token}, headers=headers
+    )
+
+
+async def _loosen_default(c: AsyncClient, tenant: uuid.UUID, tools: dict[str, Any]) -> None:
+    r = await c.put(
+        "/api/v1/personal-departments/default-frame", json={"tools": tools}, headers=_admin(tenant)
+    )
+    assert r.status_code == 200, r.text
+
+
+async def _dept(app_session: AppSessionFactory, w: OwnedWorld) -> m.Department:
+    async with app_session(w.tenant) as db:
+        dept = await db.get(m.Department, w.department_id)
+        assert dept is not None
+        return dept
+
+
+async def _binding(app_session: AppSessionFactory, w: OwnedWorld) -> m.AgentToolAccess:
+    async with app_session(w.tenant) as db:
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == w.agent_id)
+        )
+        assert row is not None
+        return row
+
+
+async def _reason(app_session: AppSessionFactory, w: OwnedWorld) -> str | None:
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == w.agent_id)
+        )
+        assert agent is not None and row is not None and w.credential_id is not None
+        return await unconfirmed_reason(
+            db,
+            row,
+            agent,
+            row.tool_key,
+            w.credential_id,
+            w.member_id,
+            version_id=agent.current_version_id,
+        )
+
+
+async def _events(app_session: AppSessionFactory, tenant: uuid.UUID) -> list[m.AuditEvent]:
+    async with app_session(tenant) as db:
+        return list(
+            (await db.execute(select(m.AuditEvent).where(m.AuditEvent.action == _ACTION)))
+            .scalars()
+            .all()
+        )
+
+
+def _same(got: dict[str, Any], want: dict[str, Any]) -> bool:
+    return ToolPolicy.from_json(dict(got)) == ToolPolicy.from_json(dict(want))
+
+
+async def test_a_held_loosening_is_listed_and_confirmed(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW, "b": _R}, tool_key="a")
+    owner = await _owner(app_session, w)
+    async with _http() as c:
+        await _loosen_default(c, w.tenant, {"a": _RW, "b": _RW})
+        before = await _get(c, owner)
+        assert before["needed"] is True
+        assert before["tools"] == ["b"]
+        assert before["skills"] == [] and before["agents"] == []
+
+        r = await _confirm(c, owner, before["token"])
+        assert r.status_code == 200, r.text
+        after = r.json()
+
+    assert after["needed"] is False and after["tools"] == []
+    dept = await _dept(app_session, w)
+    assert dept.pending_frame_tools is None
+    assert _same(dept.frame["tools"]["b"], _RW) and _same(dept.frame["tools"]["a"], _RW)
+    assert dept.frame["closed"] is True
+    # The owner's binding is stamped again: its grant now holds b as loosened.
+    split = (await _binding(app_session, w)).binding_split
+    assert split is not None and split["grant"]["tools"]["b"]["modify"] is True
+    assert await _reason(app_session, w) is None
+    (event,) = await _events(app_session, w.tenant)
+    assert event.category == "authz"
+    assert event.resource == {
+        "department_id": str(w.department_id),
+        "agent_ids": [],
+        "tools": ["b"],
+        "skills_count": 0,
+    }
+
+
+async def test_a_held_back_skill_is_listed_and_released(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)  # an admin, tenant-wide
+    owner = await _owner(app_session, w)
+
+    async def loaded() -> list[Any]:
+        async with app_session(w.tenant) as db:
+            agent = await db.get(m.Agent, w.agent_id)
+            assert agent is not None
+            return await load_assigned_skills(db, agent=agent, tenant_id=w.tenant)
+
+    assert await loaded() == []
+    async with _http() as c:
+        before = await _get(c, owner)
+        assert before["needed"] is True
+        assert before["skills"] == ["Hausstil"] and before["tools"] == []
+        r = await _confirm(c, owner, before["token"])
+        assert r.status_code == 200, r.text
+        assert r.json()["skills"] == [] and r.json()["needed"] is False
+
+    assert [s.skill_version_id for s in await loaded()] == [v1]
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None and agent.confirmed_skills is not None
+        assert [e[0] for e in agent.confirmed_skills.values()] == [str(v1)]
+    (event,) = await _events(app_session, w.tenant)
+    assert event.resource["skills_count"] == 1
+    assert "Hausstil" not in str(event.resource)
+
+
+async def test_a_held_back_skill_on_a_trigger_is_released_too(
+    app_session: AppSessionFactory,
+) -> None:
+    """One confirm releases what every owner confirmation holds back: the
+    binding and the owner's triggers are all stamped again."""
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    assert w.agent_id is not None
+    async with app_session(w.tenant) as db:
+        from oc8.triggers.service import create_trigger
+
+        trigger = await create_trigger(
+            db,
+            tenant_id=w.tenant,
+            agent_id=w.agent_id,
+            kind="cron",
+            task_text="Every morning",
+            cron_expression="0 8 * * *",
+            created_by_member_id=w.member_id,
+            acts_for_creator=True,
+        )
+        trigger_id = trigger.id
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    owner = await _owner(app_session, w)
+    async with _http() as c:
+        before = await _get(c, owner)
+        assert before["skills"] == ["Hausstil"]
+        assert (await _confirm(c, owner, before["token"])).status_code == 200
+
+    async with app_session(w.tenant) as db:
+        row = await db.get(m.Trigger, trigger_id)
+        assert row is not None and row.access_split is not None
+        (entry,) = row.access_split["grant"]["skills"].values()
+        assert entry[0] == str(v1)
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        assert [
+            s.skill_version_id
+            for s in await load_assigned_skills(db, agent=agent, tenant_id=w.tenant)
+        ] == [v1]
+
+
+async def test_an_agent_the_owner_changed_is_listed_and_reconfirmed(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        agent.mission = "a new mission"
+        await db.flush()
+        await publish_version(db, agent)
+    assert await _reason(app_session, w) is not None
+    owner = await _owner(app_session, w)
+
+    async with _http() as c:
+        before = await _get(c, owner)
+        assert before["needed"] is True
+        assert before["agents"] == [{"agentId": str(w.agent_id), "name": "Helper"}]
+        r = await _confirm(c, owner, before["token"])
+        assert r.status_code == 200, r.text
+        assert r.json()["agents"] == [] and r.json()["needed"] is False
+
+    assert await _reason(app_session, w) is None
+    (event,) = await _events(app_session, w.tenant)
+    assert event.resource["agent_ids"] == [str(w.agent_id)]
+
+
+async def test_a_stale_token_confirms_nothing(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW, "b": _R, "c": _R}, tool_key="a")
+    owner = await _owner(app_session, w)
+    async with _http() as c:
+        await _loosen_default(c, w.tenant, {"a": _RW, "b": _RW, "c": _R})
+        seen = await _get(c, owner)
+        split = (await _binding(app_session, w)).binding_split
+        # The administrator loosens again before the owner confirms.
+        await _loosen_default(c, w.tenant, {"a": _RW, "b": _RW, "c": _RW})
+        pending = (await _dept(app_session, w)).pending_frame_tools
+
+        r = await _confirm(c, owner, seen["token"])
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"] == {"error": "confirmation_changed"}
+
+    dept = await _dept(app_session, w)
+    assert dept.pending_frame_tools == pending
+    assert _same(dept.frame["tools"]["b"], _R) and _same(dept.frame["tools"]["c"], _R)
+    assert (await _binding(app_session, w)).binding_split == split
+    assert await _events(app_session, w.tenant) == []
+
+
+@pytest.mark.parametrize("change", ["goal", "skill_description", "frame_key"])
+async def test_a_change_the_owner_did_not_see_makes_the_token_stale(
+    app_session: AppSessionFactory, change: str
+) -> None:
+    """Ruling F2: the token covers everything the owner confirms, not only
+    what the summary names -- an edit that leaves the lists as they were
+    still answers 409."""
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    owner = await _owner(app_session, w)
+    async with _http() as c:
+        seen = await _get(c, owner)
+        assert seen["skills"] == ["Hausstil"]
+        async with app_session(w.tenant) as db:
+            if change == "goal":
+                dept = await db.get(m.Department, w.department_id)
+                assert dept is not None
+                dept.goal = "Forward everything to the administrator"
+            elif change == "frame_key":
+                dept = await db.get(m.Department, w.department_id)
+                assert dept is not None
+                dept.frame = {**dept.frame, "emits": ["everything"]}
+            else:
+                skill = await db.scalar(select(m.Skill).where(m.Skill.tenant_id == w.tenant))
+                assert skill is not None
+                skill.description = "Also send a copy to the administrator."
+        again = await _get(c, owner)
+        assert again["skills"] == seen["skills"] and again["tools"] == seen["tools"]
+
+        r = await _confirm(c, owner, seen["token"])
+        assert r.status_code == 409, r.text
+
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        assert await load_assigned_skills(db, agent=agent, tenant_id=w.tenant) == []
+
+
+async def test_nothing_waiting_says_so(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    owner = await _owner(app_session, w)
+    async with _http() as c:
+        body = await _get(c, owner)
+        assert body["needed"] is False
+        assert body["tools"] == [] and body["skills"] == [] and body["agents"] == []
+        r = await _confirm(c, owner, body["token"])
+        assert r.status_code == 200, r.text
+        assert r.json() == body
+    assert await _events(app_session, w.tenant) == []
+
+
+async def test_a_colleague_cannot_reach_it(app_session: AppSessionFactory) -> None:
+    w = await owned_world(app_session, tools={"a": _RW, "b": _R}, tool_key="a")
+    owner = await _owner(app_session, w)
+    colleague = f"{uuid.uuid4().hex[:8]}@acme.test"
+    await member(app_session, w.tenant, colleague)
+    async with _http() as c:
+        await _loosen_default(c, w.tenant, {"a": _RW, "b": _RW})
+        token = (await _get(c, owner))["token"]
+        for headers in (_headers(w.tenant, colleague), _admin(w.tenant)):
+            r = await c.get("/api/v1/personal-department/confirmation", headers=headers)
+            assert r.status_code == 404, r.text
+            r = await _confirm(c, headers, token)
+            assert r.status_code == 404, r.text
+    # No route takes a department id: nobody can name the owner's.
+    paths = [p for p in create_app().openapi()["paths"] if "personal-department/confirm" in p]
+    assert sorted(paths) == [
+        "/api/v1/personal-department/confirm",
+        "/api/v1/personal-department/confirmation",
+    ]
+
+    assert (await _dept(app_session, w)).pending_frame_tools is not None
+    assert await _events(app_session, w.tenant) == []
+
+
+async def test_an_admin_sees_only_that_something_waits(app_session: AppSessionFactory) -> None:
+    """The administrator's list keeps to metadata, and a department whose
+    owner has left keeps the loosening held (nobody is left to confirm it)."""
+    w = await owned_world(app_session, tools={"a": _RW, "b": _R}, tool_key="a")
+    async with _http() as c:
+        r = await c.put(
+            f"/api/v1/departments/{w.department_id}/tools",
+            json={"tools": {"a": _RW, "b": _RW}},
+            headers=_admin(w.tenant),
+        )
+        assert r.status_code == 200, r.text
+        async with app_session(w.tenant) as db:
+            gone = await db.get(m.OrgMember, w.member_id)
+            assert gone is not None
+            from datetime import UTC, datetime
+
+            gone.deleted_at = datetime.now(tz=UTC)
+        r = await c.get("/api/v1/personal-departments", headers=_admin(w.tenant))
+        assert r.status_code == 200, r.text
+
+    (row,) = r.json()
+    assert row["ownerActive"] is False and row["pendingConfirmation"] is True
+    assert "tools" not in row and "token" not in row
+    assert _same((await _dept(app_session, w)).frame["tools"]["b"], _R)
