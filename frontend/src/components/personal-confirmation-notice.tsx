@@ -126,13 +126,14 @@ function ToolDiff({
   }));
   const diff = rows.filter((r) => r.changed);
   const rest = rows.filter((r) => !r.changed && !(isEmpty(r.before) && isEmpty(r.after)));
+  // A side with no policy grants nothing: "-", never an empty `only` read
+  // as "everything".
+  const shownAfter = (r: (typeof rows)[number]) => (pending == null ? "-" : show(t, r.f, r.after));
   const row = (r: (typeof rows)[number]) => (
     <tr key={r.f} className="align-top">
       <td className="py-0.5 pr-3 text-muted-foreground">{fieldLabel(t, r.f)}</td>
-      <td className="py-0.5 pr-3">{show(t, r.f, r.before)}</td>
-      <td className="py-0.5">
-        {r.changed ? <Changed>{show(t, r.f, r.after)}</Changed> : show(t, r.f, r.after)}
-      </td>
+      <td className="py-0.5 pr-3">{applied == null ? "-" : show(t, r.f, r.before)}</td>
+      <td className="py-0.5">{r.changed ? <Changed>{shownAfter(r)}</Changed> : shownAfter(r)}</td>
     </tr>
   );
   return (

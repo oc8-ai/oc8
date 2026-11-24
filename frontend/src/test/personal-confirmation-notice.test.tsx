@@ -133,6 +133,21 @@ describe("PersonalConfirmationNotice", () => {
     );
   });
 
+  it("never says a tool that grants nothing now allows every action", async () => {
+    current = summary({
+      tools: [{ key: "files", applied: null, pending: { ...POLICY, only: ["files_list"] } }],
+    });
+    renderNotice();
+    const tool = await screen.findByTestId("tool-files");
+    expect(within(tool).getByText("Nothing is granted for it now.")).toBeInTheDocument();
+    const only = within(tool).getByText("Only these actions").closest("tr");
+    expect(only).not.toBeNull();
+    const [, now, after] = Array.from(only!.querySelectorAll("td"));
+    expect(now).toHaveTextContent("-");
+    expect(now).not.toHaveTextContent(/everything/i);
+    expect(after).toHaveTextContent("files_list");
+  });
+
   it("renders nothing when nothing waits", async () => {
     current = summary({ needed: false, tools: [], skills: [], agents: [], department: null });
     const { container } = renderNotice();
