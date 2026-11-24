@@ -31,11 +31,13 @@ from oc8.api.deps import (
     require_permission,
 )
 from oc8.api.v1._serializers import skill_to_dto
+from oc8.authz.authority import authority_for_principal
 from oc8.authz.pdp import missing_skill_requirements
-from oc8.authz.permissions import MANAGE, SKILL, VIEW, perm
+from oc8.authz.permissions import AGENT, MANAGE, SKILL, VIEW, perm
 from oc8.authz.scope import HumanActor, scope_for_principal
 from oc8.db.base import uuid7
 from oc8.knowledge.connectors.base import ConnectorError
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.runtime.registry import check_runtime_capabilities, resolve_runtime_plugin
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SkillDTO
@@ -436,12 +438,24 @@ async def _move_assignments(
             allowed_cache[department_id] = ok
         return allowed_cache[department_id]
 
+    governs: list[bool] = []
+
+    async def may_govern_tenant_wide() -> bool:
+        # Moving a TENANT-WIDE assignment is tenant skill governance, not a
+        # write into any one agent: tenant-wide skills reach personal agents
+        # too. The caller who may do it is the one who may write every
+        # standard department's agents -- `agent:manage` held tenant-wide.
+        if not governs:
+            authority = await authority_for_principal(request, db, principal)
+            governs.append(perm(AGENT, MANAGE) in authority.tenant_wide)
+        return governs[0]
+
     requires = version.definition.get("requires", {})
     updated = skipped = not_allowed = 0
     seen_scopes: set[tuple[uuid.UUID | None, uuid.UUID | None]] = set()
     for assignment in rows:
         scope_key = (assignment.agent_id, assignment.department_id)
-        outcome = await _judge(db, assignment, requires, may_write)
+        outcome = await _judge(db, assignment, requires, may_write, may_govern_tenant_wide)
         if outcome == "not_allowed":
             not_allowed += 1
             continue
@@ -465,9 +479,16 @@ async def _judge(
     assignment: m.SkillAssignment,
     requires: dict[str, Any],
     may_write: Callable[[uuid.UUID], Awaitable[bool]],
+    may_govern_tenant_wide: Callable[[], Awaitable[bool]],
 ) -> str:
     """ "ok", "not_allowed" (caller may not change it) or "unmet" (requirement or
-    runtime check fails). Mirrors `assign_skill`, in the same order."""
+    runtime check fails). Mirrors `assign_skill`, in the same order.
+
+    A personal department refuses everybody but its owner at `may_write`
+    (`authorize_agent_write`). That holds for an assignment on one of its
+    agents, or on the department itself; a tenant-wide assignment reaches it
+    as tenant governance instead (`may_govern_tenant_wide`), still judged by
+    the requirements and runtime checks below."""
     agents: list[m.Agent] = []
     departments: list[m.Department] = []
     if assignment.agent_id is not None:
@@ -484,7 +505,12 @@ async def _judge(
         if assignment.department_id is not None:
             stmt = stmt.where(m.Department.id == assignment.department_id)
         departments = list((await db.execute(stmt)).scalars().all())
+        tenant_wide = assignment.department_id is None
         for reached in departments:
+            if tenant_wide and reached.kind == DEPARTMENT_KIND_PERSONAL:
+                if not await may_govern_tenant_wide():
+                    return "not_allowed"
+                continue
             if not await may_write(reached.id):
                 return "not_allowed"
         agents = list(
