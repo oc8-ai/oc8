@@ -1624,6 +1624,8 @@ class ChatMessageDTO(CamelModel):
     author_member_id: str | None = None
     author_name: str | None = None
     reply_to_id: str | None = None
+    #: The message this one follows in the tree; None for the first one.
+    parent_id: str | None = None
     #: Typed parts (e.g. `{"type": "answers", "questions": [...], "answers":
     #: {...}}` for an answered question card). Null for plain-text turns.
     parts: list[dict[str, Any]] | None = None

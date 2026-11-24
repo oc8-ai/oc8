@@ -50,6 +50,7 @@ def session_dto(
         pinned=bool(session.pinned),
         mode=session.mode,
         effort=as_level(session.effort),
+        current_leaf_id=str(session.current_leaf_id) if session.current_leaf_id else None,
     )
 
 

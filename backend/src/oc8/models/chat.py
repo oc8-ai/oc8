@@ -85,6 +85,8 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     #: that cannot think, so it applies again once it is back on one that can
     #: (`oc8.chat.model_choice.apply_effort_override`; migration 0116).
     effort: Mapped[str | None] = mapped_column(Text)
+    #: Tip of the branch the person is looking at; NULL on a linear chat.
+    current_leaf_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
 
 
 class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
@@ -117,6 +119,10 @@ class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
     #: Typed message parts (sources, answers, document refs). NULL for rows
     #: written before 0111, which render from `content`.
     parts: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB)
+    #: The message this one follows. An edited question or a regenerated answer
+    #: is a sibling (same parent). NULL for the first message and for chats of
+    #: other kinds than "chat", which stay linear (migration 0130).
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
 
     __table_args__ = (
         CheckConstraint("role IN ('user','assistant','followup')", name="ck_chat_message_role"),

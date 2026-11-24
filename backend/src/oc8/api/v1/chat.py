@@ -143,6 +143,7 @@ async def _message_dto(
         author_member_id=str(msg.author_member_id) if msg.author_member_id else None,
         author_name=author_name,
         reply_to_id=str(msg.reply_to_id) if msg.reply_to_id else None,
+        parent_id=str(msg.parent_id) if msg.parent_id else None,
         parts=msg.parts,
         suggestions=[
             str(o)
