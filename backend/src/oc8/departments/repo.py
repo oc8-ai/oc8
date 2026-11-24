@@ -37,6 +37,19 @@ def personal_reachable(
     return mine or manage_all
 
 
+def personal_content_hidden(
+    *, kind: str | None, department_id: uuid.UUID | None, scope: DepartmentScope
+) -> bool:
+    """Whether a caller who reached an agent sees its metadata only (spec
+    decision 3). True for an agent of a `personal` department read by anybody
+    but the owner's seat -- the one seat there, and the one that may write its
+    agents (`api.deps.authorize_agent_write` asks the same question). A
+    `department:manage` holder who got past `personal_reachable` sees name,
+    role, tools and status, never the mission, instructions or anything the
+    agent did. Any other department: always False."""
+    return kind == DEPARTMENT_KIND_PERSONAL and department_id not in scope.agent_manage_departments
+
+
 async def visible_departments(
     db: AsyncSession,
     *,

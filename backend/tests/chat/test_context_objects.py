@@ -188,6 +188,49 @@ async def test_agent_refs_go_through_the_scoped_repository(app_session: AppSessi
         assert await RESOLVERS["agent"].search(db, w.emp, "Len", 5) == []
 
 
+async def test_a_personal_agent_ref_is_metadata_only_for_a_manager(
+    app_session: AppSessionFactory,
+) -> None:
+    """Spec decision 3: an org_admin reaches a personal agent by id
+    (`department:manage`), but its summary carries no mission. Its owner's
+    seat still sees it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+        owner_row = m.OrgMember(tenant_id=tenant, subject="pia-owner", subject_uuid=uuid.uuid4())
+        db.add(owner_row)
+        await db.flush()
+        personal = m.Department(
+            tenant_id=tenant,
+            name="Mine",
+            frame={"closed": True},
+            kind="personal",
+            owner_member_id=owner_row.id,
+        )
+        db.add(personal)
+        await db.flush()
+        owner = await _member(
+            db, tenant, "pia-seat", token_role="member", seat_in=personal, manages=True
+        )
+        pia = m.Agent(
+            tenant_id=tenant,
+            department_id=personal.id,
+            name="Pia",
+            role_title="Mail assistant",
+            mission="Answer my private mail",
+            status="running",
+        )
+        db.add(pia)
+        await db.flush()
+
+        admin_view = await _summary(db, w.admin, "agent", str(pia.id))
+        assert "Pia" in admin_view and "Mail assistant" in admin_view
+        assert "private mail" not in admin_view
+        assert "private mail" in await _summary(db, owner, "agent", str(pia.id))
+        # A standard agent is unchanged for the same admin.
+        assert "Mission: Sell" in await _summary(db, w.admin, "agent", str(w.seller.id))
+
+
 async def test_a_member_without_the_door_is_refused_before_any_load(
     app_session: AppSessionFactory,
 ) -> None:

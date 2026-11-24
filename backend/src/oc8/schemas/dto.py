@@ -826,6 +826,10 @@ class ToolPolicyDTO(CamelModel):
 
 class AgentDetailDTO(AgentDTO):
     mission: str = ""
+    #: True when this reader sees a personal agent's metadata only (spec
+    #: decision 3): the content fields are blank because they are not theirs
+    #: to see, not because the agent has none.
+    content_hidden: bool = False
     department_name: str | None = None
     effective_tools: dict[str, ToolPolicyDTO] = {}
     department_frame_tools: dict[str, ToolPolicyDTO] = {}

@@ -469,7 +469,7 @@ async def create_agent(
         resource={"agent_id": str(agent.id), "name": agent.name, "by": principal.subject},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.post(
@@ -600,7 +600,7 @@ async def set_narrowing(
         resource={"agent_id": str(agent.id), "by": principal.subject},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.post(
@@ -666,7 +666,7 @@ async def reset_agent_narrowing(
         resource={"agent_id": str(agent.id), "key": key, "by": principal.subject},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 async def _connection_guardrail_attributes(
@@ -873,7 +873,7 @@ async def assign_agent_runtime(
             status.HTTP_422_UNPROCESSABLE_ENTITY, _violation_body(exc.violations)
         ) from exc
 
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.patch(
@@ -1026,7 +1026,7 @@ async def set_autonomy(
         },
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.patch(
@@ -1071,7 +1071,7 @@ async def update_instructions(
         },
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.patch(
@@ -1107,7 +1107,7 @@ async def rename_agent(
         resource={"agent_id": str(agent.id), "before": before, "after": agent.name},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.post(

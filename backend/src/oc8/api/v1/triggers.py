@@ -13,6 +13,7 @@ from oc8 import models as m
 from oc8.api.deps import (
     CurrentPrincipal,
     DbSession,
+    refuse_personal_agent_content,
     refuse_personal_agent_write,
     require_permission,
 )
@@ -369,6 +370,16 @@ async def create_agent_trigger(
 async def list_agent_triggers(
     agent_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
 ) -> list[TriggerDTO]:
+    # A trigger's task text is the agent's content: a personal agent's
+    # triggers are its owner's alone, and anybody else gets the 404 a missing
+    # agent would.
+    agent = await db.get(m.Agent, agent_id)
+    await refuse_personal_agent_content(
+        db,
+        principal,
+        agent.department_id if agent is not None else None,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
     rows = list(await list_triggers_for_agent(db, agent_id=agent_id))
     names = await _owner_names(db, rows)
     flagged = await _needs_confirmation(db, rows, await _caller_member_id(db, principal))

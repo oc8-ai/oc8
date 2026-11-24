@@ -358,6 +358,71 @@ async def test_copilot_get_agent_returns_the_agent_and_errors_for_an_unknown_id(
     assert "not found" in missing_result["content"][0]["text"]
 
 
+async def test_copilot_get_agent_hides_a_personal_agents_content_from_an_admin(
+    app_session: AppSessionFactory,
+) -> None:
+    """Spec decision 3, on the external MCP door: an org_admin key reaches a
+    personal agent by id (`department:manage`) and gets its metadata, never
+    its content -- the same answer `GET /agents/{id}` gives."""
+    tenant, token = await _admin_setup(app_session)
+    async with app_session(tenant) as db:
+        owner = m.OrgMember(tenant_id=tenant, subject="owner", subject_uuid=uuid.uuid4())
+        db.add(owner)
+        await db.flush()
+        personal = m.Department(
+            tenant_id=tenant,
+            name="Mine",
+            frame={"closed": True},
+            kind="personal",
+            owner_member_id=owner.id,
+        )
+        db.add(personal)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=personal.id,
+            name="Pia",
+            mission="Answer my private mail",
+            presentation={
+                "last_action": "Replied to the landlord",
+                "guardrails": ["Never mention the divorce"],
+                "prompt_starters": ["Summarise my inbox"],
+                "i18n": {"de": {"mission": "Private Post beantworten"}},
+            },
+        )
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            r = await c.post(
+                "/mcp/external",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "copilot_get_agent",
+                        "arguments": {"agentId": str(agent_id)},
+                    },
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    result = r.json()["result"]
+    assert result["isError"] is False, result
+    payload = json.loads(result["content"][0]["text"])
+    assert payload["id"] == str(agent_id)
+    assert payload["name"] == "Pia"
+    assert payload["lastAction"] == ""
+    assert payload["guardrails"] == []
+    assert payload["promptStarters"] == []
+    assert payload["missionTranslations"] == {}
+    text = result["content"][0]["text"]
+    assert "landlord" not in text and "divorce" not in text and "Private Post" not in text
+
+
 async def test_copilot_list_plugins_and_get_plugin(app_session: AppSessionFactory) -> None:
     tenant, token = await _admin_setup(app_session)
     async with app_session(tenant) as db:

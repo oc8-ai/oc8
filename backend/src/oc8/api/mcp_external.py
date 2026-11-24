@@ -34,7 +34,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
-from oc8.api.v1._serializers import agent_to_dto, department_to_dto, integration_to_dto
+from oc8.api.v1._serializers import (
+    agent_to_dto,
+    department_to_dto,
+    integration_to_dto,
+    without_agent_content,
+)
 from oc8.api.v1.catalog import _agent_slug_to_id
 from oc8.apikeys.service import API_KEY_PREFIX, find_enabled_by_token, touch_last_used
 from oc8.auth import Principal
@@ -60,7 +65,12 @@ from oc8.copilot.proposals import (
     reject_proposal,
 )
 from oc8.db.session import tenant_session
-from oc8.departments.repo import visible_department, visible_departments
+from oc8.departments.repo import (
+    department_kind,
+    personal_content_hidden,
+    visible_department,
+    visible_departments,
+)
 from oc8.tenants.provision import get_singleton_organization
 
 logger = logging.getLogger(__name__)
@@ -498,7 +508,19 @@ async def _call_tool(
         )
         if agent is None:
             return _tool_result("agent not found", is_error=True)
-        payload = agent_to_dto(agent).model_dump(mode="json", by_alias=True)
+        dto = agent_to_dto(agent)
+        # A personal agent reached as a `department:manage` holder: metadata
+        # only, exactly as `GET /agents/{id}` answers it.
+        kind = (
+            await department_kind(
+                db, tenant_id=principal.tenant_id, department_id=agent.department_id
+            )
+            if agent.department_id is not None
+            else None
+        )
+        if personal_content_hidden(kind=kind, department_id=agent.department_id, scope=scope):
+            dto = without_agent_content(dto)
+        payload = dto.model_dump(mode="json", by_alias=True)
         return _tool_result(json.dumps(payload))
 
     if name == "copilot_list_plugins":

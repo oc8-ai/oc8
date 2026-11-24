@@ -133,6 +133,32 @@ def agent_to_dto(a: m.Agent) -> AgentDTO:
     )
 
 
+#: What a reader who is not the owner's seat never sees of a personal agent
+#: (`departments.repo.personal_content_hidden`): its instructions and what it
+#: did. Everything else -- name, role, status, tools and policy, autonomy,
+#: version numbers, sampling knobs -- is metadata and stays.
+_AGENT_CONTENT_BLANKS: dict[str, object] = {
+    "last_action": "",
+    "last_action_translations": {},
+    "last_run": "",
+    "last_run_translations": {},
+    "prompt_starters": [],
+    "guardrails": [],
+    "guardrails_translations": {},
+    "mission_translations": {},
+}
+
+
+def without_agent_content[D: AgentDTO](dto: D) -> D:
+    """`dto` with the agent's content fields blank -- `mission` too, on the
+    detail DTO that carries it. The one blanking every reader of a personal
+    agent's metadata goes through."""
+    update = dict(_AGENT_CONTENT_BLANKS)
+    if "mission" in type(dto).model_fields:
+        update["mission"] = ""
+    return dto.model_copy(update=update)
+
+
 def department_to_dto(d: m.Department) -> DepartmentDTO:
     p: dict[str, Any] = d.presentation or {}
     i18n = p.get("i18n")

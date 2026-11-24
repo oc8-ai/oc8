@@ -261,7 +261,10 @@ async def test_a_personal_agent_is_readable_by_id_only_like_its_department(
         if role != "member":
             # A `member` seat carries no `agent_version:view`; that gate's 403
             # comes before any row is read, so only the built-ins reach it.
-            paths.append(f"/api/v1/agents/{t.pia}/versions")
+            # `draft-status` and not `versions`: a version is content, which a
+            # manager never reads (test_personal_agent_content.py); this pins
+            # the reach rule alone.
+            paths.append(f"/api/v1/agents/{t.pia}/draft-status")
         for path in paths:
             r = await http.get(path, headers=h)
             assert r.status_code == status, (path, r.text)
