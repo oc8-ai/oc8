@@ -12,8 +12,9 @@ Next to it a stamp now stores a split (`agent_tool_access.binding_split`,
   are judged in `grant`), plus the department's `goal` and
   `frame_capa_defaults` and its setup of the tool (`setup`, `shared`).
 - `grant` may only tighten (`authz.tightening.grant_loosenings`): `tools`
-  holds one entry per enabled tool key of the effective policies (`tool_key`
-  only, or every one for a trigger), `frame` the frame without `tools`,
+  holds one entry per enabled tool key of the effective policies -- every
+  one, for a binding too (a new tool next to the bound one is an addition
+  the member confirms) -- `frame` the frame without `tools`,
   `skills` `{assignment id: [skill_version_id, overrides]}`.
 
 The agent's own approval threshold (`presentation["approval_value_eur"]`,
@@ -40,13 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.versioning import (
-    _VERSIONED_COLUMNS,
-    META_KEY,
-    payload_hash,
-    snapshot_agent,
-    version_payload,
-)
+from oc8.agents.versioning import META_KEY, payload_hash, resolved_payload, snapshot_agent
 from oc8.authz.pdp import ToolPolicy, effective_tool_policies
 from oc8.authz.tightening import grant_loosenings, grant_tool_entry
 from oc8.connections.access import _setup_parts, binding_fingerprint
@@ -90,16 +85,12 @@ def _dict(value: Any) -> dict[str, Any]:
 async def _version_view(
     db: AsyncSession, agent: m.Agent, version_id: uuid.UUID | None
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The payload a run of `version_id` executes (as `resolve_version` reads
-    it) and the parts of `core` that say which one it is."""
+    """The payload a run of `version_id` executes (`resolved_payload`, as
+    `resolve_version` reads it) and the parts of `core` that say which one
+    it is."""
     if version_id is not None:
-        version = await db.get(m.AgentVersion, version_id)
-        if version is not None and version.agent_id == agent.id:
-            payload = version_payload(version)
-            for col in _VERSIONED_COLUMNS:
-                if col not in payload:
-                    val = getattr(agent, col)
-                    payload[col] = str(val) if isinstance(val, uuid.UUID) else val
+        payload = await resolved_payload(db, agent, version_id)
+        if payload is not None:
             return payload, {}
         # The runtime falls back to the live row; the id stays in `core`, so
         # a version that cannot be read is confirmed for itself only.
@@ -157,7 +148,7 @@ def _tool_entry(
 
 
 def _grant_tools(
-    frame: dict[str, Any], narrowing: dict[str, Any], tool_key: str | None, threshold: Any
+    frame: dict[str, Any], narrowing: dict[str, Any], threshold: Any
 ) -> dict[str, Any]:
     frame_tools, narrow_tools = _dict(frame.get("tools")), _dict(narrowing.get("tools"))
     try:
@@ -165,9 +156,8 @@ def _grant_tools(
     except (KeyError, TypeError, ValueError):
         raw = json.dumps([frame_tools, narrow_tools], sort_keys=True, default=str)
         return {"*": {"enabled": True, "unreadable": raw}}
-    keys = [tool_key] if tool_key is not None else sorted(effective)
     tools: dict[str, Any] = {}
-    for key in keys:
+    for key in sorted(effective):
         policy = effective.get(key)
         if policy is None or not policy.enabled:
             continue
@@ -200,7 +190,8 @@ async def split_fingerprint(
     db: AsyncSession, agent: m.Agent, tool_key: str | None, *, version_id: uuid.UUID | None
 ) -> SplitFingerprint:
     """What a person confirms, split into a strict `core` and a `grant` that
-    may only tighten (module docstring). `tool_key` None: every tool."""
+    may only tighten (module docstring). `tool_key` scopes the setup in
+    `core` (None: every tool's); `grant.tools` always covers every tool."""
     dept = await db.get(m.Department, agent.department_id)
     payload, which = await _version_view(db, agent, version_id)
     narrowing = _dict(payload.get("narrowing"))
@@ -220,7 +211,9 @@ async def split_fingerprint(
     ).hex()
     frame = _dict(dept.frame) if dept is not None else {}
     grant = {
-        "tools": _grant_tools(frame, narrowing, tool_key, _agent_threshold(agent)),
+        # Every tool, also for a binding (Ruling T3-C1); `setup` and
+        # `shared` above stay scoped to `tool_key`.
+        "tools": _grant_tools(frame, narrowing, _agent_threshold(agent)),
         "frame": {k: v for k, v in frame.items() if k != "tools"},
         "skills": await _grant_skills(db, agent),
     }
@@ -229,7 +222,8 @@ async def split_fingerprint(
     return SplitFingerprint(core, json.loads(json.dumps(grant, default=str)))
 
 
-def _stored(split: Mapping[str, Any] | None) -> SplitFingerprint | None:
+def stored_split(split: Mapping[str, Any] | None) -> SplitFingerprint | None:
+    """A stored split this code reads, or None (none, or another version)."""
     if not isinstance(split, Mapping) or split.get("v") != SPLIT_VERSION:
         return None
     core, grant = split.get("core"), split.get("grant")
@@ -255,11 +249,29 @@ async def confirmation_holds(
     (raising it must break the confirmation)."""
     if digest is None:
         return False
-    stored = _stored(split)
+    stored = stored_split(split)
     if stored is None:
         return digest == await binding_fingerprint(db, agent, tool_key, version_id=version_id)
     current = await split_fingerprint(db, agent, tool_key, version_id=version_id)
     return stored.core == current.core and not grant_loosenings(stored.grant, current.grant)
+
+
+async def grant_holds(
+    db: AsyncSession,
+    agent: m.Agent,
+    tool_key: str | None,
+    *,
+    version_id: uuid.UUID | None,
+    split: Mapping[str, Any] | None,
+) -> bool:
+    """Whether the current grant only tightens a stored split's grant, its
+    `core` aside. For a caller that proved `core` another way (the
+    consolidation pass, whose own folding changes the setup in `core`)."""
+    stored = stored_split(split)
+    if stored is None:
+        return False
+    current = await split_fingerprint(db, agent, tool_key, version_id=version_id)
+    return not grant_loosenings(stored.grant, current.grant)
 
 
 async def stamp_binding(db: AsyncSession, row: m.AgentToolAccess, agent: m.Agent) -> None:

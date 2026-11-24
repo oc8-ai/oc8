@@ -22,6 +22,7 @@ from oc8.connections.confirmation import (
     stamp_binding,
     trigger_confirmed,
 )
+from oc8.connections.consolidate import _Stamps
 from oc8.triggers.service import create_trigger
 from tests.conftest import AppSessionFactory
 from tests.connections.helpers import api, credential_row, headers, member
@@ -287,6 +288,29 @@ async def test_a_frame_cascade_publish_that_only_narrows_keeps_it(
     assert await _reason(app_session, b) is None
 
 
+async def test_a_tool_added_to_the_frame_breaks_a_binding_on_another_tool(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling T3-C1: a binding's grant covers every enabled tool, not only
+    its own: a new tool next to it is an addition the member confirms."""
+    b = await _bound(app_session)
+    await _set_frame_tools(app_session, b, {"t": dict(_READ_WRITE), "x": dict(_READ_WRITE)})
+    assert await _reason(app_session, b) == "agent_changed"
+
+
+async def test_a_tool_the_agent_narrowing_enables_breaks_a_binding_on_another_tool(
+    app_session: AppSessionFactory,
+) -> None:
+    b = await _bound(app_session)
+    async with app_session(b.tenant) as db:
+        live = await db.get(m.Agent, b.agent.id)
+        assert live is not None
+        live.narrowing = {"tools": {"x": dict(_READ_WRITE)}}  # an open frame: exclusive grant
+        await db.flush()
+        await publish_version(db, live)
+    assert await _reason(app_session, b) == "agent_changed"
+
+
 async def test_a_mission_change_needs_confirmation(app_session: AppSessionFactory) -> None:
     b = await _bound(app_session)
     async with app_session(b.tenant) as db:
@@ -479,7 +503,7 @@ async def test_every_stamp_site_writes_the_split(app_session: AppSessionFactory)
         assert _is_split(row.binding_split)  # write_tool_access
         split = await split_fingerprint(db, live, "t", version_id=live.current_version_id)
         assert row.binding_split == split.to_json()
-        assert set(split.grant["tools"]) == {"t"}
+        assert set(split.grant["tools"]) == {"t"}  # every enabled tool (T3-C1)
 
     trigger_id = await _cron(app_session, b)
     async with app_session(b.tenant) as db:
@@ -503,3 +527,17 @@ async def test_every_stamp_site_writes_the_split(app_session: AppSessionFactory)
     async with app_session(tenant) as db:
         followup = await db.get(m.Trigger, followup_id)
         assert followup is not None and _is_split(followup.access_split)  # Copilot follow-up
+
+    # The consolidation pass re-stamps what it collected (a binding and a
+    # trigger stamped before the split): both get a split.
+    async with app_session(b.tenant) as db:
+        row = await _access_row(db, b)
+        trigger = await db.get(m.Trigger, trigger_id)
+        assert trigger is not None
+        row.binding_split = None
+        trigger.access_split = None
+        stamps = _Stamps()
+        stamps.bindings.append(row)
+        stamps.triggers.append(trigger)
+        await stamps.restamp(db, b.tenant, [])
+        assert _is_split(row.binding_split) and _is_split(trigger.access_split)

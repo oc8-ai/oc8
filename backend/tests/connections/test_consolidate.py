@@ -19,7 +19,13 @@ from oc8 import models as m
 from oc8.agents.versioning import META_KEY, payload_hash
 from oc8.capas.discovery import invalidate_discovery_cache
 from oc8.capas.manifest import CredentialTypeSpec, SetupFieldSpec
-from oc8.connections.access import binding_fingerprint, resolve_tool_access, trigger_fingerprint
+from oc8.connections.access import (
+    binding_fingerprint,
+    resolve_tool_access,
+    trigger_fingerprint,
+    unconfirmed_reason,
+)
+from oc8.connections.confirmation import stamp_binding, stamp_trigger, trigger_confirmed
 from oc8.connections.consolidate import consolidate_tenant
 from oc8.credentials import registry
 from oc8.credentials.enablement import department_ids_by_credential, set_departments
@@ -566,6 +572,91 @@ async def test_consolidation_keeps_confirmed_schedules_valid(
         # A confirmation that was already invalid is not revived.
         assert after_stale.access_fingerprint == "stale"
     assert report.restamped == 2
+
+
+@pytest.mark.parametrize("raised", [True, False])
+async def test_a_split_confirmation_that_loosened_is_not_restamped(
+    app_session: AppSessionFactory, raised: bool
+) -> None:
+    """Ruling T3-C2: a row with a split is judged by its split. Anna
+    confirmed a threshold of 100; it was raised to 1000. The digest does not
+    cover the threshold and is accepted -- the pass must not stamp the
+    looser state as confirmed. Unchanged, the pass keeps it confirmed
+    although its own folding changes the setup in `core`."""
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    await _row(app_session, tenant, department_id=agent.department_id)
+    async with app_session(tenant) as db:
+        own = m.Credential(
+            tenant_id=tenant,
+            name="Anna's",
+            credential_type=TYPE,
+            field_values={"url": "https://anna.test"},
+            secret_refs={},
+            owner_member_id=anna,
+        )
+        db.add(own)
+        live = await db.get(m.Agent, agent.id)
+        assert live is not None
+        live.presentation = {**(live.presentation or {}), "approval_value_eur": 100}
+        await db.flush()
+        trigger = m.Trigger(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            kind="cron",
+            task_text="report",
+            cron_expression="0 9 * * *",
+            next_run_at=dt.datetime.now(dt.UTC),
+            created_by_member_id=anna,
+        )
+        access = m.AgentToolAccess(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            tool_key=KEY,
+            mode="fixed",
+            credential_id=own.id,
+            set_by_member_id=anna,
+        )
+        db.add_all([trigger, access])
+        await db.flush()
+        await stamp_trigger(db, trigger)
+        await stamp_binding(db, access, live)
+        before = (
+            trigger.access_fingerprint,
+            trigger.access_split,
+            access.binding_fingerprint,
+            access.binding_split,
+        )
+        ids = (trigger.id, access.id, own.id)
+        if raised:
+            live.presentation = {**live.presentation, "approval_value_eur": 1000}
+
+    report = await _consolidate(app_session, tenant)
+
+    async with app_session(tenant) as db:
+        after = await db.get(m.Trigger, ids[0])
+        after_access = await db.get(m.AgentToolAccess, ids[1])
+        live = await db.get(m.Agent, agent.id)
+        assert after is not None and after_access is not None and live is not None
+        stamps = (
+            after.access_fingerprint,
+            after.access_split,
+            after_access.binding_fingerprint,
+            after_access.binding_split,
+        )
+        reason = await unconfirmed_reason(
+            db, after_access, live, KEY, ids[2], anna, version_id=live.current_version_id
+        )
+        if raised:
+            assert stamps == before
+            assert not await trigger_confirmed(db, after)
+            assert reason == "agent_changed"
+        else:
+            assert stamps[0] != before[0] and stamps[2] != before[2]  # restamped
+            assert await trigger_confirmed(db, after)
+            assert reason is None
+    assert report.restamped == (0 if raised else 2)
 
 
 async def test_changing_the_shared_login_invalidates_a_confirmation(

@@ -403,6 +403,30 @@ async def publish_version(
     return version
 
 
+async def resolved_payload(
+    db: AsyncSession, agent: m.Agent, version_id: uuid.UUID | None
+) -> dict[str, Any] | None:
+    """The stored payload of `version_id` as a run of it reads it, or None
+    when there is no such version (callers then fall back to the live
+    snapshot). Shared by `resolve_version` and the confirmation fingerprint
+    (`connections.confirmation`), so what is confirmed is what runs."""
+    if version_id is None:
+        return None
+    version = await db.get(m.AgentVersion, version_id)
+    if version is None:
+        return None
+    payload = version_payload(version)
+    # A version published before a column joined `_VERSIONED_COLUMNS` does
+    # not carry it. Readers index the payload directly, so fill the gap from
+    # the row -- the only value that field has ever had for this agent, since
+    # it was never versioned before.
+    for col in _VERSIONED_COLUMNS:
+        if col not in payload:
+            val = getattr(agent, col)
+            payload[col] = str(val) if isinstance(val, uuid.UUID) else val
+    return payload
+
+
 async def resolve_version(
     db: AsyncSession, run: m.AgentRun | None, agent: m.Agent
 ) -> dict[str, Any]:
@@ -423,20 +447,7 @@ async def resolve_version(
     `run_agent` call in a test); that resolves exactly like an unpinned run.
     """
     pinned = run.agent_version_id if run is not None else None
-    version_id = pinned or agent.current_version_id
-    payload: dict[str, Any] | None = None
-    if version_id is not None:
-        version = await db.get(m.AgentVersion, version_id)
-        if version is not None:
-            payload = version_payload(version)
-            # A version published before a column joined `_VERSIONED_COLUMNS`
-            # does not carry it. Readers index the payload directly, so fill
-            # the gap from the row -- the only value that field has ever had
-            # for this agent, since it was never versioned before.
-            for col in _VERSIONED_COLUMNS:
-                if col not in payload:
-                    val = getattr(agent, col)
-                    payload[col] = str(val) if isinstance(val, uuid.UUID) else val
+    payload = await resolved_payload(db, agent, pinned or agent.current_version_id)
     if payload is None:
         payload = await snapshot_agent(db, agent)
     # Deferred: oc8.chat reaches the runtime, which imports this module.
