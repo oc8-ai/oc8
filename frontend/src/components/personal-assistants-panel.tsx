@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { PersonalConfirmationNotice } from "@/components/personal-confirmation-notice";
 import { PersonalHireDialog } from "@/components/personal-hire-dialog";
 import { useMay } from "@/lib/governance-hooks";
 import {
@@ -67,6 +68,7 @@ export function PersonalAssistantsPanel() {
       <h2 className="text-sm font-medium">
         {t("My personal assistants", "Meine persönlichen Assistenten")}
       </h2>
+      {department && <PersonalConfirmationNotice enabled />}
       {department && <MyAgents departmentId={department.id} />}
       {!enabled ? (
         <p className="mt-3 text-sm text-muted-foreground">

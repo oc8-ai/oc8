@@ -381,6 +381,21 @@ function PersonalRow({ row, canFollow }: { row: PersonalDepartmentAdminDTO; canF
             ? t("Former member", "Ehemaliges Mitglied")
             : row.ownerName || t("Member without a display name", "Mitglied ohne Anzeigenamen")}
         </Link>
+        {row.pendingConfirmation && (
+          <div className="mt-1">
+            <span className="rounded-full border border-amber-500/40 bg-amber-500/10 px-2 py-0.5 text-[10px] text-foreground">
+              {t("Waiting for the owner", "Wartet auf die Person")}
+            </span>
+            {!row.ownerActive && (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                {t(
+                  "The owner is no longer active, so the change stays held.",
+                  "Die Person ist nicht mehr aktiv, die Änderung bleibt daher zurückgehalten.",
+                )}
+              </p>
+            )}
+          </div>
+        )}
       </td>
       <td className="py-2 pr-3">{row.agentCount}</td>
       <td className="py-2 pr-3">

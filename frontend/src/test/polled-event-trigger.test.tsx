@@ -353,6 +353,12 @@ describe("polled event trigger", () => {
     expect(screen.queryByText(/Last skipped/)).toBeNull();
   });
 
+  it("says a poll waits for the owner's confirmation", () => {
+    panel({ ...TRIGGER, lastSkipReason: "needs_confirmation" });
+
+    expect(screen.getByText(/waiting for the owner's confirmation/i)).toBeInTheDocument();
+  });
+
   it("says when it was switched off because the mailbox changed", () => {
     panel({ ...TRIGGER, enabled: false, lastSkipReason: "event_target_changed" });
 

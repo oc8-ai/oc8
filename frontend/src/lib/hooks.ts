@@ -962,6 +962,8 @@ export interface PersonalDepartmentAdminDTO {
   ownerName: string;
   /** False once the owner has left the organisation. */
   ownerActive: boolean;
+  /** Something an administrator changed waits for the owner's confirmation. */
+  pendingConfirmation: boolean;
   agentCount: number;
   followsDefaultFrame: boolean;
   followsDefaultBudget: boolean;
@@ -1108,6 +1110,70 @@ export function usePersonalTemplates(enabled = true) {
     queryKey: ["personal-department", "templates"],
     queryFn: () => api.get<PersonalTemplateDTO[]>("/personal-department/templates"),
     enabled,
+  });
+}
+
+/** A stored tool policy as the runtime reads it (snake_case keys), plus the
+ *  fields it does not read, such as `default_connection_id`. */
+export type ConfirmationPolicy = Record<string, unknown>;
+
+export interface PersonalConfirmationSetupDTO {
+  tool: string;
+  serverUrl: string | null;
+  transport: string | null;
+  scopes: unknown;
+  /** Names only, never values. */
+  configKeys: string[];
+  logins: { name: string; ownedByOwner: boolean }[];
+}
+
+export interface PersonalConfirmationDTO {
+  needed: boolean;
+  /** Pins what the owner was shown: the confirm answers 409 when it moved. */
+  token: string;
+  tools: { key: string; applied: ConfirmationPolicy | null; pending: ConfirmationPolicy | null }[];
+  skills: { name: string; description: string | null; status: "new" | "changed" | string }[];
+  agents: {
+    agentId: string;
+    name: string;
+    /** Any of core, frame, tools, skills, threshold. */
+    changes: string[];
+    approvalThreshold: number | string | null;
+    tools?: Record<string, ConfirmationPolicy> | null;
+    setup?: PersonalConfirmationSetupDTO[] | null;
+  }[];
+  department: {
+    goal: string;
+    frame: Record<string, unknown>;
+    frameCapaDefaults: Record<string, unknown> | null;
+  } | null;
+}
+
+export function usePersonalConfirmation(enabled = true) {
+  return useQuery({
+    queryKey: ["personal-department", "confirmation"],
+    queryFn: () => api.get<PersonalConfirmationDTO>("/personal-department/confirmation"),
+    enabled,
+  });
+}
+
+/** The owner confirms what the summary with `token` showed them. */
+export function useConfirmPersonal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) =>
+      api.post<PersonalConfirmationDTO>("/personal-department/confirm", { token }),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["personal-department"] }),
+        // Confirmed tools and bindings change what each agent may use.
+        qc.invalidateQueries({
+          queryKey: ["agents"],
+          predicate: (q) => q.queryKey[2] === "tool-access",
+        }),
+        qc.invalidateQueries({ queryKey: ["personal-departments"] }),
+      ]);
+    },
   });
 }
 
@@ -2720,6 +2786,8 @@ export interface TriggerPollStatus {
 
 /** The skip reason of a polled trigger the agent's login changed under. */
 export const EVENT_TARGET_CHANGED = "event_target_changed";
+/** A polled trigger held until the department's owner confirms the change. */
+export const NEEDS_CONFIRMATION = "needs_confirmation";
 
 export interface TriggerEventConfigField {
   key: string;
