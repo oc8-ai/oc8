@@ -325,7 +325,7 @@ function AgentCard({ a }: { a: Agent }) {
   );
 }
 
-/** Owner's card in the profile: what an administrator changed in their
+/** Owner's card in the profile: what changed in their
  *  personal department and waits for their confirmation, in content. */
 export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boolean }) {
   const t = useT();
@@ -384,8 +384,8 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
       </h3>
       <p className="mt-1 text-xs text-muted-foreground">
         {t(
-          "An administrator changed your personal department. Nothing below applies until you confirm it.",
-          "Eine Administration hat deine persönliche Abteilung geändert. Nichts davon gilt, bis du es bestätigst.",
+          "Changes are waiting for your confirmation. Nothing below applies until you confirm it.",
+          "Änderungen warten auf deine Bestätigung. Nichts davon gilt, bis du es bestätigst.",
         )}
       </p>
 

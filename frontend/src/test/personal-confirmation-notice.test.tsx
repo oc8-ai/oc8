@@ -93,6 +93,17 @@ function renderNotice(qc = new QueryClient({ defaultOptions: { queries: { retry:
 }
 
 describe("PersonalConfirmationNotice", () => {
+  it("does not claim an administrator made the change (the owner's own publish waits too)", async () => {
+    renderNotice();
+    await screen.findByTestId("tool-mail");
+    expect(screen.queryByText(/administrator changed/i)).toBeNull();
+    expect(
+      screen.getByText(
+        "Changes are waiting for your confirmation. Nothing below applies until you confirm it.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("shows what waits, in content, and confirms it with the token", async () => {
     renderNotice();
     const tool = await screen.findByTestId("tool-mail");
