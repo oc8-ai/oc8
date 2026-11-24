@@ -56,6 +56,9 @@ msgstr ""
 msgid "{label} may write content to knowledge bases"
 msgstr ""
 
+msgid "{max} per {per}: {tools}"
+msgstr ""
+
 msgid "{n} selected"
 msgstr ""
 
@@ -248,6 +251,9 @@ msgstr ""
 msgid "Actions"
 msgstr ""
 
+msgid "Actions needing approval"
+msgstr ""
+
 msgid "Activation failed."
 msgstr ""
 
@@ -372,6 +378,9 @@ msgid "After a cheap answer, escalate once if a self-check looks uncertain."
 msgstr ""
 
 msgid "After publishing"
+msgstr ""
+
+msgid "After you confirm"
 msgstr ""
 
 msgid "agent"
@@ -674,6 +683,18 @@ msgstr ""
 msgid "Approval required"
 msgstr ""
 
+msgid "approval threshold"
+msgstr ""
+
+msgid "Approval threshold (agent, EUR)"
+msgstr ""
+
+msgid "Approval threshold (EUR)"
+msgstr ""
+
+msgid "Approval threshold: {value}"
+msgstr ""
+
 msgid "Approval wait"
 msgstr ""
 
@@ -801,6 +822,9 @@ msgid "Assignment cleared — that person’s token decides again."
 msgstr ""
 
 msgid "Assistant hired"
+msgstr ""
+
+msgid "Assistants"
 msgstr ""
 
 msgid "At least 8 characters"
@@ -1094,10 +1118,19 @@ msgstr ""
 msgid "Change runtime"
 msgstr ""
 
+msgid "changed"
+msgstr ""
+
 msgid "Changed"
 msgstr ""
 
 msgid "Changed something in {connection}"
+msgstr ""
+
+msgid "Changed: {what}"
+msgstr ""
+
+msgid "Changes are waiting for your confirmation. Nothing below applies until you confirm it."
 msgstr ""
 
 msgid "Changes inside your systems run on their own. Anything that reaches people outside, deletes something or can't be undone waits for a person."
@@ -1182,6 +1215,9 @@ msgid "Choose a department"
 msgstr ""
 
 msgid "Choose a department."
+msgstr ""
+
+msgid "Choose a login for this assistant."
 msgstr ""
 
 msgid "Choose a preset…"
@@ -1307,6 +1343,15 @@ msgstr ""
 msgid "Condense this conversation into a decision record."
 msgstr ""
 
+msgid "Conditions"
+msgstr ""
+
+msgid "Conditions (agent)"
+msgstr ""
+
+msgid "Conditions (department)"
+msgstr ""
+
 msgid "Confidential"
 msgstr ""
 
@@ -1338,6 +1383,9 @@ msgid "Confirming…"
 msgstr ""
 
 msgid "Connect"
+msgstr ""
+
+msgid "Connect a new one"
 msgstr ""
 
 msgid "Connect a provider"
@@ -2042,6 +2090,9 @@ msgstr ""
 msgid "Data sources (optional)"
 msgstr ""
 
+msgid "day"
+msgstr ""
+
 msgid "Day"
 msgstr ""
 
@@ -2085,6 +2136,9 @@ msgid "Default budget saved"
 msgstr ""
 
 msgid "Default frame"
+msgstr ""
+
+msgid "Default login"
 msgstr ""
 
 msgid "Default: in the user's context"
@@ -2217,6 +2271,12 @@ msgid "Department assigned"
 msgstr ""
 
 msgid "Department deleted"
+msgstr ""
+
+msgid "department frame"
+msgstr ""
+
+msgid "Department frame"
 msgstr ""
 
 msgid "Department knowledge"
@@ -2612,6 +2672,9 @@ msgstr ""
 msgid "Everyone"
 msgstr ""
 
+msgid "everything"
+msgstr ""
+
 msgid "Everything"
 msgstr ""
 
@@ -2972,6 +3035,9 @@ msgstr ""
 msgid "History"
 msgstr ""
 
+msgid "hour"
+msgstr ""
+
 msgid "How do you describe the endpoints?"
 msgstr ""
 
@@ -3284,6 +3350,9 @@ msgstr ""
 msgid "Let the copilot read this agent's instructions and suggest guardrails"
 msgstr ""
 
+msgid "Let this assistant use my account. It acts only for me."
+msgstr ""
+
 msgid "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions."
 msgstr ""
 
@@ -3426,6 +3495,9 @@ msgid "Login usable in {count} department(s)"
 msgstr ""
 
 msgid "Login usable in all departments"
+msgstr ""
+
+msgid "Logins"
 msgstr ""
 
 msgid "Look"
@@ -3623,6 +3695,12 @@ msgstr ""
 msgid "More runtimes appear here once installed as plugins."
 msgstr ""
 
+msgid "More settings (agent)"
+msgstr ""
+
+msgid "More settings (department)"
+msgstr ""
+
 msgid "More than 500 entries – pick a parent folder."
 msgstr ""
 
@@ -3722,6 +3800,9 @@ msgstr ""
 msgid "Never without approval"
 msgstr ""
 
+msgid "new"
+msgstr ""
+
 msgid "New"
 msgstr ""
 
@@ -3819,6 +3900,9 @@ msgid "Next run"
 msgstr ""
 
 msgid "Next step"
+msgstr ""
+
+msgid "no"
 msgstr ""
 
 msgid "No access"
@@ -4118,13 +4202,25 @@ msgstr ""
 msgid "Nobody will be asked for a second factor at sign-in. Set-ups are kept, and switching back on asks for them again at once."
 msgstr ""
 
+msgid "none"
+msgstr ""
+
+msgid "None"
+msgstr ""
+
 msgid "None (disable)"
+msgstr ""
+
+msgid "None of the logins this assistant needs is available in your organisation."
 msgstr ""
 
 msgid "not allowed"
 msgstr ""
 
 msgid "Not allowed"
+msgstr ""
+
+msgid "Not available"
 msgstr ""
 
 msgid "Not available: "
@@ -4199,6 +4295,9 @@ msgstr ""
 msgid "Nothing in progress right now."
 msgstr ""
 
+msgid "Nothing is granted for it now."
+msgstr ""
+
 msgid "Nothing is imported until you choose. The source is fetched, not trusted."
 msgstr ""
 
@@ -4235,6 +4334,9 @@ msgstr ""
 msgid "Notify — alert only"
 msgstr ""
 
+msgid "Now"
+msgstr ""
+
 msgid "Now follows the default"
 msgstr ""
 
@@ -4256,6 +4358,9 @@ msgstr ""
 msgid "of which from cache"
 msgstr ""
 
+msgid "off"
+msgstr ""
+
 msgid "Off"
 msgstr ""
 
@@ -4266,6 +4371,9 @@ msgid "OK"
 msgstr ""
 
 msgid "Older"
+msgstr ""
+
+msgid "on"
 msgstr ""
 
 msgid "On"
@@ -4308,6 +4416,9 @@ msgid "Only on-prem models are offered: this deployment routes every embedding t
 msgstr ""
 
 msgid "Only the beginning of the answer is shown."
+msgstr ""
+
+msgid "Only these actions"
 msgstr ""
 
 msgid "Only these surfaces (optional)"
@@ -4362,6 +4473,9 @@ msgid "Operator"
 msgstr ""
 
 msgid "Optional"
+msgstr ""
+
+msgid "Optional logins"
 msgstr ""
 
 msgid "optional, e.g. up to 100 units on its own, above that approval"
@@ -4569,6 +4683,9 @@ msgid "Plan appointments in your calendar"
 msgstr ""
 
 msgid "Please check your entries."
+msgstr ""
+
+msgid "Please confirm that the assistant may use your account."
 msgstr ""
 
 msgid "Please include it when you contact support."
@@ -5027,6 +5144,9 @@ msgstr ""
 msgid "Review"
 msgstr ""
 
+msgid "Review and confirm"
+msgstr ""
+
 msgid "Revoke"
 msgstr ""
 
@@ -5219,6 +5339,9 @@ msgstr ""
 msgid "Scope (optional)"
 msgstr ""
 
+msgid "Scopes"
+msgstr ""
+
 msgid "Search"
 msgstr ""
 
@@ -5384,6 +5507,9 @@ msgstr ""
 msgid "Sent as the answer – attachments only afterwards."
 msgstr ""
 
+msgid "Server"
+msgstr ""
+
 msgid "Set a new password so this person can sign in. There is no way to view their current password."
 msgstr ""
 
@@ -5427,6 +5553,9 @@ msgid "Settings"
 msgstr ""
 
 msgid "Setup failed"
+msgstr ""
+
+msgid "Setup it uses"
 msgstr ""
 
 msgid "Several logins are enabled — choose one for this agent"
@@ -5573,6 +5702,9 @@ msgstr ""
 msgid "Skill updated"
 msgstr ""
 
+msgid "skills"
+msgstr ""
+
 msgid "Skills"
 msgstr ""
 
@@ -5622,6 +5754,9 @@ msgid "Somebody holds this role. Choose where they go first."
 msgstr ""
 
 msgid "something"
+msgstr ""
+
+msgid "Something changed meanwhile. Please review again."
 msgstr ""
 
 msgid "Something went wrong"
@@ -5873,6 +6008,15 @@ msgstr ""
 msgid "That link did not name an object I can pin, so this is a new chat."
 msgstr ""
 
+msgid "That login can't be used. Choose one of your own logins."
+msgstr ""
+
+msgid "That login has expired. Connect it again or choose another."
+msgstr ""
+
+msgid "That login is missing details. Complete it or choose another."
+msgstr ""
+
 msgid "That model isn't available for this chat. Pick another one."
 msgstr ""
 
@@ -5880,6 +6024,9 @@ msgid "That name is already taken."
 msgstr ""
 
 msgid "That reasoning level isn't available. Pick another one."
+msgstr ""
+
+msgid "That service is not available in your organisation."
 msgstr ""
 
 msgid "The access could not be saved. Please try again."
@@ -6066,6 +6213,9 @@ msgid "The office floor is for administrators. What is waiting on you — decisi
 msgstr ""
 
 msgid "The org_admin role is not set up for this tenant."
+msgstr ""
+
+msgid "The owner is no longer active, so the change stays held."
 msgstr ""
 
 msgid "The parameter schema is not valid JSON."
@@ -6260,6 +6410,15 @@ msgstr ""
 msgid "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched."
 msgstr ""
 
+msgid "This assistant changed while you were looking at it. Please review it again."
+msgstr ""
+
+msgid "This assistant does not use any login."
+msgstr ""
+
+msgid "This assistant does not use that login."
+msgstr ""
+
 msgid "This assistant is not available"
 msgstr ""
 
@@ -6312,6 +6471,9 @@ msgid "This connection's base URL contains a login. Delete this connection and c
 msgstr ""
 
 msgid "This connector can't be allowed from here."
+msgstr ""
+
+msgid "This could not be confirmed: {reason}"
 msgstr ""
 
 msgid "This dashboard can't be shown."
@@ -6470,6 +6632,9 @@ msgstr ""
 msgid "This tool needs a login before it can be enabled."
 msgstr ""
 
+msgid "This tool's settings can't be read, so it stays blocked until an administrator fixes them: {raw}"
+msgstr ""
+
 msgid "This trigger has no owner."
 msgstr ""
 
@@ -6575,6 +6740,9 @@ msgstr ""
 msgid "tool access and guardrails"
 msgstr ""
 
+msgid "tools"
+msgstr ""
+
 msgid "Tools"
 msgstr ""
 
@@ -6593,6 +6761,12 @@ msgstr ""
 msgid "Tools & Guardrails"
 msgstr ""
 
+msgid "Tools it may use"
+msgstr ""
+
+msgid "Tools reset to"
+msgstr ""
+
 msgid "Top agents"
 msgstr ""
 
@@ -6606,6 +6780,9 @@ msgid "Total spend"
 msgstr ""
 
 msgid "Total tokens"
+msgstr ""
+
+msgid "Transport"
 msgstr ""
 
 msgid "Trigger"
@@ -6668,7 +6845,13 @@ msgstr ""
 msgid "unassigned agent"
 msgstr ""
 
+msgid "Unchanged settings"
+msgstr ""
+
 msgid "Unknown"
+msgstr ""
+
+msgid "unknown error"
 msgstr ""
 
 msgid "Unknown widget type"
@@ -6875,6 +7058,9 @@ msgstr ""
 msgid "Version loaded — click Save to restore it"
 msgstr ""
 
+msgid "version, setup or goal"
+msgstr ""
+
 msgid "Versions"
 msgstr ""
 
@@ -6929,10 +7115,19 @@ msgstr ""
 msgid "Waiting for the next step"
 msgstr ""
 
+msgid "Waiting for the owner"
+msgstr ""
+
+msgid "Waiting for the owner's confirmation before it listens again."
+msgstr ""
+
 msgid "Waiting for the passkey…"
 msgstr ""
 
 msgid "Waiting for you"
+msgstr ""
+
+msgid "Waiting for your confirmation"
 msgstr ""
 
 msgid "Waiting on your answer"
@@ -7022,6 +7217,9 @@ msgstr ""
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
 msgstr ""
 
+msgid "What this assistant gets"
+msgstr ""
+
 msgid "What this role is for"
 msgstr ""
 
@@ -7041,6 +7239,9 @@ msgid "Where the money goes"
 msgstr ""
 
 msgid "Where this person stands, and at which level."
+msgstr ""
+
+msgid "Which login should it use?"
 msgstr ""
 
 msgid "Which model should think?"
@@ -7104,6 +7305,9 @@ msgid "Wrote a file"
 msgstr ""
 
 msgid "Year to date"
+msgstr ""
+
+msgid "yes"
 msgstr ""
 
 msgid "Yes, approve"
@@ -7299,4 +7503,7 @@ msgid "Your seats"
 msgstr ""
 
 msgid "Your work is next door"
+msgstr ""
+
+msgid "yours"
 msgstr ""
