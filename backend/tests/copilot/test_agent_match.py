@@ -22,6 +22,7 @@ from oc8.copilot.agent_match import (
     MATCH_LIMIT,
     MATCH_THRESHOLD,
     AgentMatch,
+    agent_fit_text,
     matching_agents,
     member_may_run_agent,
 )
@@ -411,3 +412,56 @@ def test_boards_may_run_is_unchanged() -> None:
     assert agent_runnable_in(sales_only, live) is True
     assert agent_runnable_in(elsewhere, live) is False
     assert agent_runnable_in(everyone, None) is False
+
+
+async def test_match_without_tool_filter_returns_runnable_fitting_agent(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    _route(monkeypatch, _Router({_text("Sales agent", "Writes quotations"): 0.9}))
+    async with app_session(tenant) as db:
+        copilot = await _copilot(db, tenant)
+        bare = await _department(db, tenant, "Bare", tools={})
+        anna = await _person(db, tenant, "anna", seats=[bare])
+        agent = await _agent(db, tenant, bare, "Sales agent", "Writes quotations")
+
+        found = await matching_agents(
+            db, member_id=anna.id, tool_key=None, request=REQUEST, copilot=copilot
+        )
+
+        assert [match.agent_id for match in found] == [agent.id]
+
+
+async def test_match_without_tool_filter_skips_agent_person_may_not_run(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    _route(monkeypatch, _Router({_text("Sales agent", "Writes quotations"): 0.9}))
+    async with app_session(tenant) as db:
+        copilot = await _copilot(db, tenant)
+        sales = await _department(db, tenant, "Sales")
+        other = await _department(db, tenant, "Other")
+        anna = await _person(db, tenant, "anna", seats=[other])
+        await _agent(db, tenant, sales, "Sales agent", "Writes quotations")
+
+        found = await matching_agents(
+            db, member_id=anna.id, tool_key=None, request=REQUEST, copilot=copilot
+        )
+
+        assert found == []
+
+
+def test_agent_fit_text_is_empty_without_matches_and_lists_each_match() -> None:
+    assert agent_fit_text([]) == ""
+    match = AgentMatch(
+        agent_id=uuid.uuid4(),
+        name="Sales agent",
+        department_id=uuid.uuid4(),
+        department_name="Sales",
+        score=0.9123,
+    )
+    text = agent_fit_text([match])
+    assert text.startswith(
+        "\n\nAgents that fit this request and that this person may run (best first):"
+    )
+    assert "- Sales agent (Sales) — fit 0.91" in text

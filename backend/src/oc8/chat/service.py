@@ -65,6 +65,7 @@ from oc8.chat.questions import (
 )
 from oc8.chat.titles import schedule_auto_title
 from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
+from oc8.copilot.agent_match import agent_fit_text, matching_agents
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.knowledge.embedding_policy import strictest
@@ -578,6 +579,40 @@ async def _is_assistant(db: AsyncSession, session: m.ChatSession) -> bool:
     return agent is not None and agent.is_tenant_assistant
 
 
+_FIT_REQUEST_LIMIT = 2000
+
+
+async def fitting_agents_for_turn(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    member_id: uuid.UUID | None,
+    text: str,
+    token_role: str | None,
+) -> str:
+    """The "agents that fit" block for one Copilot user turn, or "" -- for
+    another agent's chat, no person, no match, or any failure: matching never
+    blocks a turn."""
+    if member_id is None:
+        return ""
+    try:
+        copilot = await db.get(m.Agent, session.agent_id)
+        if copilot is None or not copilot.is_tenant_assistant:
+            return ""
+        matches = await matching_agents(
+            db,
+            member_id=member_id,
+            tool_key=None,
+            request=text[:_FIT_REQUEST_LIMIT],
+            copilot=copilot,
+            token_role=token_role,
+        )
+        return agent_fit_text(matches)
+    except Exception:
+        logger.warning("agent match failed; the turn goes on without it", exc_info=True)
+        return ""
+
+
 async def _automatic_mode(
     db: AsyncSession,
     *,
@@ -864,6 +899,14 @@ async def send_message(
 
     task_text = _build_task_text(history, body, new_role=role)
     task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
+    if role == "user" and notice is None:
+        task_text += await fitting_agents_for_turn(
+            db,
+            session=session,
+            member_id=session.member_id,
+            text=body,
+            token_role=operator_role,
+        )
     for att in attachments:
         if att.is_image:
             continue
@@ -1037,6 +1080,13 @@ async def regenerate_reply(
         )
     task_text = _build_task_text(before, user_message.content, new_role="user")
     task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
+    task_text += await fitting_agents_for_turn(
+        db,
+        session=session,
+        member_id=session.member_id,
+        text=user_message.content,
+        token_role=operator_role,
+    )
     attachments = list(
         (
             await db.execute(
