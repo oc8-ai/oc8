@@ -151,6 +151,11 @@ import { thresholdField, valueSpecByName } from "@/lib/value-spec";
 import { useConfirm } from "@/hooks/use-confirm";
 import { AgentAutonomyPanel } from "@/components/agent-autonomy-panel";
 
+// One empty list for a reader who may not list knowledge bases (403): a
+// fresh `[]` per render would re-run the knowledge seeding effect below on
+// every render, for ever.
+const NO_BASES: KnowledgeBase[] = [];
+
 // Mirrors mapAgentStatus in src/lib/live/apply-event.ts (not exported there).
 // Handles BOTH vocabularies: the WS "agent.status" event carries the raw
 // backend column ("idle", "waiting_for_approval", ...), while the REST
@@ -256,7 +261,7 @@ function AgentDetail() {
   }, [id]);
   // KB-assignment picker for this agent, not a paginated list view.
   const { data: allBasesPage } = useKnowledgeBases({ pageSize: 200 });
-  const allBases = allBasesPage?.items ?? [];
+  const allBases = allBasesPage?.items ?? NO_BASES;
   const runAgent = useRunAgent();
   const { data: models = [] } = useModels();
   // WRITE authority for THIS agent — tenant-wide `agent:manage`, OR a live seat
