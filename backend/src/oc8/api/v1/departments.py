@@ -62,6 +62,8 @@ from oc8.departments.personal import (
     PersonalOwnerLeft,
     apply_held_tools,
     ensure_owner_present,
+    has_agents,
+    lock_owned_frame,
     mark_frame_overridden,
     owned_personal_department,
 )
@@ -554,6 +556,7 @@ async def set_department_tools(
     _p: CurrentPrincipal,
 ) -> DepartmentToolsDTO:
     dept = await _get_department(db, dept_id)
+    await lock_owned_frame(db, dept)
     frame = dict(dept.frame or {})
     old_tools = dict(frame.get("tools", {}))
     try:
@@ -614,7 +617,7 @@ async def set_department_tools(
     try:
         # A department with an owner holds a loosening for the owner and
         # applies the rest; the cascade follows what is applied.
-        frame["tools"] = apply_held_tools(dept, new_tools, live_agents=bool(agents))
+        frame["tools"] = apply_held_tools(dept, new_tools, live_agents=await has_agents(db, dept))
         dept.frame = frame
         mark_frame_overridden(dept)
         await cascade_department_tools_change(
@@ -661,6 +664,7 @@ async def reset_department_tool(
     deliberately overrode this key sees the restored value too.
     """
     dept = await _get_department(db, dept_id)
+    await lock_owned_frame(db, dept)
     frame = dict(dept.frame or {})
     old_tools = dict(frame.get("tools", {}))
     if key not in old_tools:
@@ -685,7 +689,7 @@ async def reset_department_tool(
         .all()
     )
     try:
-        new_tools = apply_held_tools(dept, new_tools, live_agents=bool(agents))
+        new_tools = apply_held_tools(dept, new_tools, live_agents=await has_agents(db, dept))
         frame["tools"] = new_tools
         dept.frame = frame
         mark_frame_overridden(dept)

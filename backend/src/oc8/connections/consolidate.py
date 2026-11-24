@@ -749,6 +749,14 @@ class _Pass:
             if count:
                 dept.frame = frame
                 self.report.pins_rewritten += count
+            # A change held for the owner too: confirming it later must not
+            # bring back a removed row.
+            held, count = _rewrite(
+                {"tools": dept.pending_frame_tools}, "default_connection_id", moved
+            )
+            if count:
+                dept.pending_frame_tools = held["tools"]
+                self.report.pins_rewritten += count
         await self.db.flush()
 
 

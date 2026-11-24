@@ -6,6 +6,7 @@ and a standard department, take every change directly."""
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -20,6 +21,7 @@ from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.authz.pdp import ToolPolicy
 from oc8.connections.access import unconfirmed_reason
+from oc8.departments.personal import _apply_frame, apply_held_tools
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 from tests.departments.owned import OwnedWorld, owned_world
@@ -211,24 +213,113 @@ async def test_a_change_the_policy_does_not_read_applies_and_breaks_the_confirma
     assert await _reason(app_session, w, "a") == "agent_changed"
 
 
-async def test_a_department_without_live_agents_takes_the_change_directly(
+async def test_a_department_without_agents_takes_the_change_directly(
     app_session: AppSessionFactory,
 ) -> None:
-    w = await owned_world(app_session, tools={"a": _R})
-    await _put_tools(w.tenant, w.department_id, {"a": _RW, "b": _RW})
-    dept = await _dept(app_session, w.tenant, w.department_id)
-    assert dept.pending_frame_tools is not None  # held while the agent lives
+    w = await owned_world(app_session, tools={"a": _R}, agent=False)
 
+    await _put_tools(w.tenant, w.department_id, {"a": _RW, "b": _RW})
+
+    dept = await _dept(app_session, w.tenant, w.department_id)
+    assert _same_tools(dept.frame["tools"], {"a": _RW, "b": _RW})
+    assert dept.pending_frame_tools is None
+
+
+async def test_archived_agents_still_hold_a_loosening(app_session: AppSessionFactory) -> None:
+    """A restore clips an agent only toward a tighter frame, so an archived
+    agent must not let a loosening through unconfirmed."""
+    w = await owned_world(app_session, tools={"a": _R})
     async with app_session(w.tenant) as db:
         agent = await db.get(m.Agent, w.agent_id)
         assert agent is not None
         agent.deleted_at = agent.created_at
+
     await _put_tools(w.tenant, w.department_id, {"a": _RW})
 
     dept = await _dept(app_session, w.tenant, w.department_id)
-    assert _same_tools(dept.frame["tools"], {"a": _RW})
-    # The earlier held loosening is gone with it: the newest write is what counts.
-    assert dept.pending_frame_tools is None
+    assert _same_tools(dept.frame["tools"], {"a": _R})
+    assert _same_tools(dept.pending_frame_tools, {"a": _RW})
+
+    # The newest write replaces what an earlier one left waiting.
+    await _put_tools(w.tenant, w.department_id, {"a": _R})
+    assert (await _dept(app_session, w.tenant, w.department_id)).pending_frame_tools is None
+
+
+async def test_an_unreadable_stored_entry_is_held_against() -> None:
+    """A stored entry that fails the strict read counts as absent: an enabled
+    request for that key waits for the owner instead of applying."""
+    malformed = {**_RW, "limits": [{"tools": [], "max": 1, "per": "day"}]}
+    dept = m.Department(
+        tenant_id=uuid.uuid4(),
+        name="Ada",
+        owner_member_id=uuid.uuid4(),
+        frame={"closed": True, "tools": {"a": malformed, "b": _R}},
+    )
+
+    now = apply_held_tools(dept, {"a": _R, "b": _R}, live_agents=True)
+
+    assert now == {"b": _R}
+    assert dept.pending_frame_tools == {"a": _R, "b": _R}
+
+
+async def test_a_second_save_is_computed_against_the_committed_frame(
+    app_session: AppSessionFactory,
+) -> None:
+    """T4-I1, two sessions: B read the frame before A's tightening committed.
+    B's write waits on A's row lock and is then split against A's frame, so
+    re-sending the old `a: rw` is held instead of silently undoing A."""
+    w = await owned_world(app_session, tools={"a": _RW})
+    a_locked = asyncio.Event()
+
+    async def _admin_a() -> None:
+        async with app_session(w.tenant) as db:
+            dept = await db.get(m.Department, w.department_id)
+            assert dept is not None
+            await _apply_frame(db, dept=dept, new_tools={"a": _R})
+            a_locked.set()
+            await asyncio.sleep(0.3)  # still uncommitted while B runs into it
+
+    async def _admin_b() -> None:
+        async with app_session(w.tenant) as db:
+            stale = await db.get(m.Department, w.department_id)
+            assert stale is not None and stale.frame["tools"] == {"a": _RW}
+            await a_locked.wait()
+            await _apply_frame(db, dept=stale, new_tools={"a": _RW})
+
+    await asyncio.wait_for(asyncio.gather(_admin_a(), _admin_b()), timeout=30)
+
+    dept = await _dept(app_session, w.tenant, w.department_id)
+    assert _same_tools(dept.frame["tools"], {"a": _R})
+    assert _same_tools(dept.pending_frame_tools, {"a": _RW})
+
+
+async def test_the_tool_routes_lock_an_owned_department(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T4-I1 for the routes: the tools PUT and the reset take the row lock
+    (`live_department(..., for_update=True)`) before reading the frame."""
+    from oc8.departments import personal
+    from oc8.departments.repo import live_department
+
+    w = await owned_world(app_session, tools={"a": _R}, frame_capa_defaults={"tools": {"a": _RW}})
+    locked: list[uuid.UUID] = []
+    real = live_department
+
+    async def _spy(db: Any, **kw: Any) -> Any:
+        if kw.get("for_update"):
+            locked.append(kw["department_id"])
+        return await real(db, **kw)
+
+    monkeypatch.setattr(personal, "live_department", _spy)
+
+    await _put_tools(w.tenant, w.department_id, {"a": _RW})
+    assert locked == [w.department_id]
+    async with _http() as c:
+        r = await c.post(
+            f"/api/v1/departments/{w.department_id}/tools/a/reset", headers=_headers(w.tenant)
+        )
+        assert r.status_code == 200, r.text
+    assert locked == [w.department_id, w.department_id]
 
 
 async def test_a_standard_department_is_never_held(app_session: AppSessionFactory) -> None:

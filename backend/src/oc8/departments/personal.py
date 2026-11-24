@@ -167,25 +167,51 @@ def _readable(policy: Any) -> bool:
     return True
 
 
+async def lock_owned_frame(db: AsyncSession, dept: m.Department) -> None:
+    """For a department with an owner, lock its row and re-read it before a
+    frame write: the held split must be computed against the frame as last
+    committed, or a save computed against an older frame would count undoing
+    a concurrent tightening as a tightening of its own. The lock lasts until
+    the transaction ends. Standard departments are left as they are."""
+    if dept.owner_member_id is not None:
+        # The re-read overwrites the loaded instance: flush first, so a change
+        # the caller made to it (follow-default clears its stamps) is kept.
+        await db.flush()
+        await live_department(db, tenant_id=dept.tenant_id, department_id=dept.id, for_update=True)
+
+
+async def has_agents(db: AsyncSession, dept: m.Department) -> bool:
+    """Whether the department holds any agent, archived ones included: what
+    `apply_held_tools` holds a loosening for. An archived agent counts, since a
+    restore only clips it toward a tighter frame, never asks the owner."""
+    found = await db.execute(
+        select(m.Agent.id)
+        .where(m.Agent.tenant_id == dept.tenant_id, m.Agent.department_id == dept.id)
+        .limit(1)
+    )
+    return found.first() is not None
+
+
 def apply_held_tools(
     dept: m.Department, requested: dict[str, Any], *, live_agents: bool
 ) -> dict[str, Any]:
     """The frame tools to write now for an administrator's `requested` write.
 
-    A department with an owner and live agents takes what only tightens at
-    once and holds what loosens (`authz.tightening.held_frame_tools`): the
+    `live_agents` is `has_agents` (archived agents count), and the caller
+    holds the row lock (`lock_owned_frame`). A department with an owner and
+    agents takes what only tightens at once and holds what loosens
+    (`authz.tightening.held_frame_tools`): the
     request then waits in `pending_frame_tools` until the owner confirms it,
     and the applied tools are returned. Anywhere else the request applies as
     it is and nothing waits. Either way the newest write replaces anything an
     earlier one left waiting.
 
     On a department with an owner every requested policy must pass the
-    strict read, or this raises
-    `FrameToolsInvalid` (`frame_tools_malformed`). A stored policy that does
-    not is treated as absent, so the requested one for that key is held when
-    it is enabled. Fields the policy does not read (`default_connection_id`)
-    are not judged: they apply at once, and the owner's confirmation then
-    asks again (`connections.confirmation`)."""
+    strict read, or this raises `FrameToolsInvalid` (`frame_tools_malformed`).
+    A stored policy that does not is treated as absent, so the requested one
+    for that key is held when it is enabled. Fields the policy does not read
+    (`default_connection_id`) are not judged: they apply at once, and the
+    owner's confirmation then asks again (`connections.confirmation`)."""
     if dept.owner_member_id is None:
         # A standard department: exactly as before, nothing is held.
         return copy.deepcopy(dict(requested))
@@ -518,6 +544,10 @@ async def _following_departments(
                     stamp.is_(None),
                 )
                 .order_by(m.Department.created_at, m.Department.id)
+                # Locked (and re-read) in one fixed order: each is then
+                # written against its frame as last committed.
+                .with_for_update(of=m.Department)
+                .execution_options(populate_existing=True)
             )
         )
         .scalars()
@@ -559,10 +589,11 @@ async def _apply_frame(
     agents. With `hold` (every administrator's write) a loosening waits for the
     owner (`apply_held_tools`); without it (the owner's own confirmation)
     `new_tools` applies as it is and nothing is left waiting."""
+    await lock_owned_frame(db, dept)
     old_tools = dict((dept.frame or {}).get("tools", {}))
     agents = await _live_agents(db, tenant_id=dept.tenant_id, department_ids=[dept.id])
     if hold:
-        applied = apply_held_tools(dept, new_tools, live_agents=bool(agents))
+        applied = apply_held_tools(dept, new_tools, live_agents=await has_agents(db, dept))
     else:
         applied = copy.deepcopy(new_tools)
         dept.pending_frame_tools = None
@@ -667,6 +698,8 @@ async def follow_default(
                 m.Department.deleted_at.is_(None),
                 m.OrgMember.deleted_at.is_(None),
             )
+            .with_for_update(of=m.Department)
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if dept is None:

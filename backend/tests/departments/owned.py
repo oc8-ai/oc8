@@ -25,7 +25,8 @@ class OwnedWorld:
     tenant: uuid.UUID
     member_id: uuid.UUID
     department_id: uuid.UUID
-    agent_id: uuid.UUID
+    #: None for a world built with `agent=False`.
+    agent_id: uuid.UUID | None
     #: The member's own login the agent's `tool_key` is fixed to, if any.
     credential_id: uuid.UUID | None = None
 
@@ -37,9 +38,12 @@ async def owned_world(
     tool_key: str | None = None,
     credential_type: str = "odoo_login",
     frame_capa_defaults: dict[str, Any] | None = None,
+    agent: bool = True,
 ) -> OwnedWorld:
     """`frame_capa_defaults` is set before the owner confirms: it is part of
-    what they confirm (`connections.confirmation`)."""
+    what they confirm (`connections.confirmation`). `agent=False`: a
+    department that never had an agent (no `tool_key` then)."""
+    assert agent or tool_key is None
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         db.add(
@@ -61,11 +65,14 @@ async def owned_world(
         await db.flush()
         dept = await get_or_create_personal_department(db, member=member)
         dept.frame_capa_defaults = frame_capa_defaults
-        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Helper", mission="m")
-        db.add(agent)
-        await db.flush()
-        await publish_version(db, agent)
-        member_id, dept_id, agent_id = member.id, dept.id, agent.id
+        member_id, dept_id = member.id, dept.id
+        agent_id: uuid.UUID | None = None
+        if agent:
+            row = m.Agent(tenant_id=tenant, department_id=dept.id, name="Helper", mission="m")
+            db.add(row)
+            await db.flush()
+            await publish_version(db, row)
+            agent_id = row.id
 
     credential_id: uuid.UUID | None = None
     if tool_key is not None:

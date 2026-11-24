@@ -372,6 +372,43 @@ async def test_deleting_a_login_never_deletes_a_secret_it_does_not_own(
 # ------------------------------------------------------------------ steps 2-3
 
 
+async def test_a_held_frame_default_follows_the_collapsed_row(
+    app_session: AppSessionFactory,
+) -> None:
+    """A loosening held for a department's owner (`pending_frame_tools`) names
+    the successor too: a later confirmation must not restore a deleted row."""
+    agent = await _tenant(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test", name="Anna")
+    keep = await _row(app_session, tenant, department_id=agent.department_id, age=10)
+    async with app_session(tenant) as db:
+        row = m.Department(
+            tenant_id=tenant,
+            name="Anna",
+            kind="personal",
+            owner_member_id=anna,
+            frame={"closed": True, **FRAME},
+        )
+        db.add(row)
+        await db.flush()
+        personal = row.id
+    gone = await _row(app_session, tenant, department_id=personal, age=5)
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, personal)
+        assert dept is not None
+        dept.pending_frame_tools = {
+            KEY: {**FRAME["tools"][KEY], "default_connection_id": str(gone)}
+        }
+
+    await _consolidate(app_session, tenant)
+
+    async with app_session(tenant) as db:
+        dept = await db.get(m.Department, personal)
+        assert dept is not None and dept.pending_frame_tools is not None
+        assert dept.pending_frame_tools[KEY]["default_connection_id"] == str(keep)
+        assert await db.get(m.McpConnection, gone) is None
+
+
 async def test_pins_follow_the_collapsed_row(app_session: AppSessionFactory) -> None:
     agent = await _tenant(app_session)
     tenant = agent.tenant_id
