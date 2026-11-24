@@ -34,6 +34,11 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
       { onError },
     );
 
+  // A trigger the owner's confirmation card holds (`needs_confirmation`) is
+  // confirmed there; a second, older way to do it here only confuses.
+  const askToSaveAgain =
+    trigger.needsConfirmation && isCreator && trigger.lastSkipReason !== "needs_confirmation";
+
   let hint: string | null = null;
   if (offersActing && !owner) {
     hint =
@@ -46,7 +51,7 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
 
   return (
     <div className="space-y-1.5 text-[11px] text-muted-foreground">
-      {trigger.needsConfirmation && isCreator && (
+      {askToSaveAgain && (
         <div
           role="status"
           className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground"

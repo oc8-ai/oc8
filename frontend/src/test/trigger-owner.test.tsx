@@ -136,4 +136,16 @@ describe("TriggerOwner", () => {
     expect(screen.getByLabelText(TOGGLE)).toBeDisabled();
     expect(screen.getByText("Dieser Webhook hat keinen Besitzer.")).toBeInTheDocument();
   });
+
+  it("leaves the owner's confirmation card to ask when the trigger waits for it", () => {
+    renderOwner({
+      kind: "event",
+      webhookUrl: null,
+      needsConfirmation: true,
+      lastSkipReason: "needs_confirmation",
+    });
+    expect(screen.queryByRole("button", { name: "Zeitplan erneut speichern" })).toBeNull();
+    expect(screen.queryByText(/Der Agent wurde geändert/)).toBeNull();
+    expect(screen.getByText("Angelegt von Anna")).toBeInTheDocument();
+  });
 });
