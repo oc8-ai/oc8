@@ -45,6 +45,7 @@ from oc8.chat.service import (
     rename_session,
     send_message,
 )
+from oc8.chat.tree import lock_session
 from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
 from oc8.schemas.base import CamelModel
@@ -697,9 +698,9 @@ async def regenerate_message(
         raise HTTPException(status.HTTP_409_CONFLICT, "only a member's turn can be answered again")
     # Serialise concurrent regenerates: the lock is held until `enqueue_run`
     # commits, so a second click waits and then sees the first one's run.
-    await db.execute(
-        select(m.ChatSession.id).where(m.ChatSession.id == session.id).with_for_update()
-    )
+    # Audit lock first, then the row -- the order every chat writer keeps
+    # (`chat.tree`).
+    await lock_session(db, session=session)
     running = await active_runs_for_session(
         db, tenant_id=actor.principal.tenant_id, session_id=session.id
     )

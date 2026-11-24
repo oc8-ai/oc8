@@ -3,13 +3,18 @@ run is given (spec §5.3): only the path the person is looking at."""
 
 from __future__ import annotations
 
+import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import Engine, event, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.assistant import get_or_create_assistant
 from oc8.chat.carry_over import _Door, _stage_turn
 from oc8.chat.service import (
     create_session,
@@ -24,13 +29,18 @@ from tests.conftest import AppSessionFactory
 pytestmark = pytest.mark.asyncio
 
 
-async def _session(db: object, tenant: uuid.UUID, *, kind: str = "chat") -> m.ChatSession:
-    dept = m.Department(tenant_id=tenant, name="Vertrieb")
-    db.add(dept)  # type: ignore[attr-defined]
-    await db.flush()  # type: ignore[attr-defined]
-    agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora", status="running")
-    db.add(agent)  # type: ignore[attr-defined]
-    await db.flush()  # type: ignore[attr-defined]
+async def _session(
+    db: object, tenant: uuid.UUID, *, kind: str = "chat", assistant: bool = False
+) -> m.ChatSession:
+    if assistant:
+        agent = await get_or_create_assistant(db, tenant_id=tenant)  # type: ignore[arg-type]
+    else:
+        dept = m.Department(tenant_id=tenant, name="Vertrieb")
+        db.add(dept)  # type: ignore[attr-defined]
+        await db.flush()  # type: ignore[attr-defined]
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Nora", status="running")
+        db.add(agent)  # type: ignore[attr-defined]
+        await db.flush()  # type: ignore[attr-defined]
     member = m.OrgMember(
         tenant_id=tenant, all_departments=True, subject="op", subject_uuid=uuid.uuid4()
     )
@@ -281,3 +291,228 @@ async def test_live_session_stays_linear(app_session: AppSessionFactory, redis_u
         assert await _leaf(db, session) is None
     task = str(run2.context["task"])
     assert "LIVE-ONE" in task and "LIVE-ANSWER" in task
+
+
+async def test_regenerate_after_switching_branch_does_not_move_leaf(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        _u1, run1 = await _send(db, session, "one")
+        r1 = await _reply(db, run1, "answer one")
+        u2, run2 = await _send(db, session, "two")
+        r2 = await _reply(db, run2, "answer two")
+        run_regen = await regenerate_reply(
+            db,
+            session=session,
+            tenant_id=tenant,
+            user_message=u2,
+            originating_operator="op",
+            operator_role=None,
+        )
+        # Meanwhile the person edits "two": a sibling of it becomes their branch.
+        edited = m.ChatMessage(
+            tenant_id=tenant,
+            session_id=session.id,
+            role="user",
+            content="two, edited",
+            parent_id=r1.id,
+        )
+        db.add(edited)
+        await db.flush()
+        session.current_leaf_id = edited.id
+        await _commit(db, tenant)
+        again = await _reply(db, run_regen, "answer two, again")
+        assert await _parent(db, again.id) == await _parent(db, r2.id) == u2.id
+        assert await _leaf(db, session) == edited.id, "the person stays on their branch"
+
+
+async def test_regenerate_transcript_ends_at_the_answered_question(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        u, run = await _send(db, session, "BOOK-A-ROOM")
+        answer = await record_answer_turn(
+            db,
+            run=run,
+            question="Which floor?",
+            pending=None,
+            structured=None,
+            text="THE-THIRD-FLOOR",
+            author_member_id=session.member_id,
+        )
+        assert answer is not None
+        await _commit(db, tenant)
+        first = await _reply(db, run, "FIRST-BOOKING")
+        assert await _parent(db, first.id) == answer.id
+        run_regen = await regenerate_reply(
+            db,
+            session=session,
+            tenant_id=tenant,
+            user_message=u,
+            originating_operator="op",
+            operator_role=None,
+        )
+        again = await _reply(db, run_regen, "SECOND-BOOKING")
+        assert await _parent(db, again.id) == answer.id
+    task = str(run_regen.context["task"])
+    assert "BOOK-A-ROOM" in task
+    assert task.index("BOOK-A-ROOM") < task.index("THE-THIRD-FLOOR")
+    assert "FIRST-BOOKING" not in task
+    assert task.splitlines()[0].startswith("User: BOOK-A-ROOM")
+    lines = task.splitlines()
+    assert lines[1].startswith("User: ") and lines[1].endswith("THE-THIRD-FLOOR"), (
+        "the answered question is the newest turn"
+    )
+
+
+async def test_secret_refusal_follows_the_redacted_turn(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant, assistant=True)
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message="my password is hunter2",
+            originating_operator="op",
+        )
+        assert run is None
+        refusal = (
+            await db.execute(
+                select(m.ChatMessage).where(
+                    m.ChatMessage.session_id == session.id, m.ChatMessage.role == "assistant"
+                )
+            )
+        ).scalar_one()
+        assert await _parent(db, msg.id) is None
+        assert await _parent(db, refusal.id) == msg.id
+        assert await _leaf(db, session) == refusal.id
+
+
+async def test_carried_over_turn_with_a_vanished_anchor_appends_to_the_leaf(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        _u1, run1 = await _send(db, session, "one")
+        r1 = await _reply(db, run1, "answer one")
+        agent = await db.get(m.Agent, session.agent_id)
+        assert agent is not None
+        await _stage_turn(
+            db,
+            session=session,
+            member_id=session.member_id,
+            agent=agent,
+            door=_Door(
+                originating_operator="op",
+                for_person=None,
+                chat_channel=None,
+                chat_channel_external_id=None,
+            ),
+            text="orphaned steer",
+            anchor_id=uuid.uuid4(),
+        )
+        await _commit(db, tenant)
+        staged = (
+            await db.execute(select(m.ChatMessage).where(m.ChatMessage.content == "orphaned steer"))
+        ).scalar_one()
+        assert await _parent(db, staged.id) == r1.id
+        assert await _leaf(db, session) == staged.id
+
+
+_AUDIT_LOCK = re.compile(r"pg_advisory_xact_lock")
+_SESSION_ROW = re.compile(r"(FROM chat_session\b.*FOR UPDATE|UPDATE chat_session\b)", re.S)
+
+
+@contextmanager
+def _statements() -> Iterator[list[str]]:
+    seen: list[str] = []
+
+    def _record(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
+        seen.append(statement)
+
+    event.listen(Engine, "before_cursor_execute", _record)
+    try:
+        yield seen
+    finally:
+        event.remove(Engine, "before_cursor_execute", _record)
+
+
+def _audit_lock_comes_first(seen: list[str]) -> None:
+    session_row = next(i for i, sql in enumerate(seen) if _SESSION_ROW.search(sql))
+    audit = next((i for i, sql in enumerate(seen) if _AUDIT_LOCK.search(sql)), None)
+    assert audit is not None and audit < session_row, seen[session_row]
+
+
+async def test_send_takes_the_audit_lock_before_the_session_row(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A first turn in a sticky mode changes the session row twice (its mode,
+    its task) -- after the audit lock, the order a run's end keeps."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant, assistant=True)
+        await _commit(db, tenant)
+        with _statements() as seen:
+            msg, _run = await _send(db, session, "/agent build me an invoice checker")
+        assert session.mode == "agent" and msg.mode == "agent"
+    _audit_lock_comes_first(seen)
+
+
+async def test_regenerate_door_takes_the_audit_lock_before_the_session_row(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    from unittest.mock import patch
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8.auth import get_identity_provider
+    from oc8.main import create_app
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="A")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+    token = get_identity_provider().mint(tenant_id=tenant, subject="op", role="org_admin")
+    headers = {"Authorization": f"Bearer {token}"}
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            sid = (
+                await c.post(
+                    "/api/v1/chat/sessions", json={"agentId": str(agent_id)}, headers=headers
+                )
+            ).json()["id"]
+            with patch("oc8.runtime.intake.publish_run"):
+                turn = (
+                    await c.post(
+                        f"/api/v1/chat/sessions/{sid}/messages",
+                        json={"message": "draft a reply"},
+                        headers=headers,
+                    )
+                ).json()
+            async with app_session(tenant) as db:
+                run = await db.get(m.AgentRun, uuid.UUID(turn["runId"]))
+                assert run is not None
+                run.state = "done"
+                await record_assistant_reply(db, run=run, output="first answer")
+            with _statements() as seen, patch("oc8.runtime.intake.publish_run"):
+                again = await c.post(
+                    f"/api/v1/chat/sessions/{sid}/messages/{turn['id']}/regenerate",
+                    headers=headers,
+                )
+            assert again.status_code == 201, again.text
+    _audit_lock_comes_first(seen)

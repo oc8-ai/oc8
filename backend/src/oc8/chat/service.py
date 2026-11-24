@@ -773,7 +773,12 @@ async def send_message(
     afterwards (e.g. `api/v1/chat.py`'s `_message_dto`, querying its
     attachments) does not have to know the trap exists.
     """
+    # Read without the session lock, taken only at placement below (see
+    # `chat.tree` on lock order): a reply landing in between is missing from
+    # this turn's transcript, though the turn itself is placed after it.
     history = await tree.visible_path(db, session=session)
+    # Applied to the session only once it is locked (`_place_turn`).
+    sticky_mode: str | None = None
     # One parser for every door (web composer, Telegram free text, anything
     # later): the command is recognised here, not in a UI. `body` is what was
     # actually said -- an unknown command, a path, or a bare "/ask" comes back
@@ -807,7 +812,7 @@ async def send_message(
         if chat_channel is None:
             if mode is not None and mode.sticky:
                 # `/agent ...` switches the chat, not just this turn.
-                session.mode = mode.key
+                sticky_mode = mode.key
             elif mode is None and session.mode:
                 # Unknown keys resolve to None: a mode this release does not
                 # know must not narrow anything (same fail-open as
@@ -892,7 +897,7 @@ async def send_message(
         # this, the credential the Assistant just refused would still land in
         # the transcript verbatim.
         user_message.content = redact_text(message)
-        await tree.append_person_write(db, session=session, message=user_message)
+        await _place_turn(db, session=session, message=user_message, sticky_mode=sticky_mode)
         refusal = m.ChatMessage(
             tenant_id=tenant_id,
             session_id=session.id,
@@ -973,6 +978,7 @@ async def send_message(
     )
     task_text = str(context["task"])
     _apply_acting_person(context, acting)
+    await _place_turn(db, session=session, message=user_message, sticky_mode=sticky_mode)
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.
@@ -1000,7 +1006,6 @@ async def send_message(
         session.task_id = task.id
         await db.flush()
 
-    await tree.append_person_write(db, session=session, message=user_message)
     # Read before `enqueue_run` commits: what the chat should be named after,
     # if it has no name yet -- its first message with any words in it.
     title_seed = _title_seed(session, history, body) if role == "user" else None
@@ -1053,6 +1058,18 @@ async def send_message(
     return user_message, run
 
 
+async def _place_turn(
+    db: AsyncSession, *, session: m.ChatSession, message: m.ChatMessage, sticky_mode: str | None
+) -> None:
+    """Place a sent turn in the tree -- which takes the audit lock, then the
+    session row (`chat.tree`) -- and only then change the session row."""
+    await tree.lock_session(db, session=session)
+    await tree.append_person_write(db, session=session, message=message)
+    if sticky_mode is not None:
+        session.mode = sticky_mode
+        await db.flush()
+
+
 async def regenerate_reply(
     db: AsyncSession,
     *,
@@ -1082,7 +1099,6 @@ async def regenerate_reply(
     COMMITS `db` (via `enqueue_run`) and re-binds the RLS tenant afterwards,
     like `send_message`.
     """
-    before = await tree.path_before(db, session=session, message=user_message)
     # The new answer is a sibling of the first one: same parent, whatever came
     # between the turn and that answer (an answered question) included.
     first_variant_parent = (
@@ -1098,6 +1114,14 @@ async def regenerate_reply(
             .limit(1)
         )
     ).scalar_one_or_none()
+    # Its transcript ends where it will hang: at that parent (the turn itself,
+    # or an answer given to the turn's question), told as the newest turn.
+    path = await tree.path_to(
+        db, session=session, message_id=first_variant_parent or user_message.id
+    )
+    if not path:
+        path = [*await tree.path_before(db, session=session, message=user_message), user_message]
+    before, last = path[:-1], path[-1]
     mode = MODES.get(user_message.mode or "")
     refs = [
         {"kind": str(r.get("kind")), "id": str(r.get("id"))}
@@ -1122,7 +1146,7 @@ async def regenerate_reply(
             acting_member=acting_member,
             token_role=operator_role,
         )
-    task_text = _build_task_text(before, user_message.content, new_role="user")
+    task_text = _build_task_text(before, last.content, new_role=last.role)
     task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
     task_text += await fitting_agents_for_turn(
         db,
@@ -1207,6 +1231,9 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     )
     if session is None:
         return
+    # Audit lock, then the session row, before anything below touches the
+    # row (`chat.tree` on lock order).
+    await tree.lock_session(db, session=session)
     # Redundant since `send_message` opens the task up front, and kept: a run
     # that reached here without one (a session row written before that change,
     # or a caller that enqueued a chat run some other way) still gets its
@@ -1293,7 +1320,11 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     regenerate_of = uuid_or_none(raw_regenerate_of) if raw_regenerate_of else None
     if regenerate_of is not None:
         await tree.add_regenerated_reply(
-            db, session=session, message=reply, first_variant_parent_id=regenerate_of
+            db,
+            session=session,
+            message=reply,
+            first_variant_parent_id=regenerate_of,
+            anchor_id=reply_to_id,
         )
     else:
         await tree.append_run_write(db, session=session, message=reply, anchor_id=reply_to_id)

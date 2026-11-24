@@ -11,15 +11,22 @@ Only sessions of kind "chat" have a tree. Every other kind (the Live
 timeline) stays linear: messages get no parent, the session no leaf, and the
 transcript is every message in order, as before.
 
-Each write that reads the leaf locks the session row first (the same
-`SELECT ... FOR UPDATE` the regenerate and direct-access doors take), so two
-runs finishing at once, or a send racing a reply, cannot both build on the
-same stale leaf; the lock is held until the caller commits. The tenant's
-audit lock is taken just before it: a run's end holds that one already
-(`lock_run_inputs`) when it records its answer here, so every writer takes
-the two in the same order -- audit, then session -- and a send waiting at its
-commit for the audit lock can never hold the session row a run's end waits
-for. Callers therefore place a message late, shortly before they commit.
+Each write that reads the leaf locks the session row first (`lock_session`),
+so two runs finishing at once, or a send racing a reply, cannot both build on
+the same stale leaf; the lock is held until the caller commits.
+
+Lock order: `lock_session` takes the tenant's audit lock BEFORE the session
+row. A run's end already holds the audit lock (`lock_run_inputs`) when it
+records its answer here, so a transaction that held the session row first
+and took the audit lock at its commit would deadlock against it. Every
+transaction that writes a message of a "chat" session -- `send_message`,
+`record_assistant_reply`, `record_answer_turn`, a carried-over turn -- and the
+regenerate door (`api/v1/chat.py`) therefore take `lock_session` before they
+lock or change the session row in any other way. (The direct-access offer
+and decision in `copilot/direct_access.py` still lock the row alone; they
+write no message.) Callers lock
+late, shortly before they commit, because the audit lock serialises the
+tenant's audited commits while held.
 """
 
 from __future__ import annotations
@@ -95,9 +102,10 @@ def _newest_leaf(parents: dict[uuid.UUID, uuid.UUID | None], top: uuid.UUID) -> 
     return max(leaves)
 
 
-async def _locked_leaf(db: AsyncSession, *, session: m.ChatSession) -> uuid.UUID | None:
-    """The session's leaf as the database has it, under the session row lock
-    (after the tenant's audit lock -- see the module docstring)."""
+async def lock_session(db: AsyncSession, *, session: m.ChatSession) -> uuid.UUID | None:
+    """Take the tenant's audit lock, then the session row lock, until commit
+    (see the module docstring for why in that order); both are reentrant.
+    Returns the session's leaf as the database has it."""
     await lock_tenant_audit(db, session.tenant_id)
     leaf = (
         await db.execute(
@@ -158,6 +166,19 @@ async def path_before(
     return [by_id[message_id] for message_id in reversed(chain)]
 
 
+async def path_to(
+    db: AsyncSession, *, session: m.ChatSession, message_id: uuid.UUID
+) -> list[m.ChatMessage]:
+    """Root to `message_id`, inclusive -- what a run answering at that point
+    of the tree is given. Every message up to it for a linear session."""
+    messages = await _all_messages(db, session=session)
+    if not _has_tree(session) or session.current_leaf_id is None:
+        return [msg for msg in messages if msg.id <= message_id]
+    by_id = {msg.id: msg for msg in messages}
+    chain = _ancestry({msg.id: msg.parent_id for msg in messages}, message_id)
+    return [by_id[i] for i in reversed(chain)]
+
+
 async def append_person_write(
     db: AsyncSession, *, session: m.ChatSession, message: m.ChatMessage
 ) -> None:
@@ -168,7 +189,7 @@ async def append_person_write(
     if not _has_tree(session):
         await _place(db, message=message, parent=None)
         return
-    leaf = await _locked_leaf(db, session=session)
+    leaf = await lock_session(db, session=session)
     await _place(db, message=message, parent=leaf)
     await _set_leaf(db, session=session, leaf=message.id)
 
@@ -192,7 +213,7 @@ async def append_run_write(
     if anchor_id is None:
         await append_person_write(db, session=session, message=message)
         return
-    leaf = await _locked_leaf(db, session=session)
+    leaf = await lock_session(db, session=session)
     parents = await _parents(db, session=session)
     parents.pop(message.id, None)
     if anchor_id not in parents:
@@ -212,20 +233,25 @@ async def add_regenerated_reply(
     session: m.ChatSession,
     message: m.ChatMessage,
     first_variant_parent_id: uuid.UUID,
+    anchor_id: uuid.UUID | None,
 ) -> None:
     """A regenerated answer: a sibling of the answer it regenerates (same
-    parent) and the new leaf. A parent that is gone meanwhile falls back to a
-    person's write. Adds and flushes `message`."""
+    parent). Like every run's write it becomes the leaf only while the leaf is
+    its anchor (the user turn it answers) or below it -- a person who moved to
+    another branch meanwhile stays there. A parent that is gone meanwhile
+    falls back to `append_run_write`. Adds and flushes `message`."""
     if not _has_tree(session):
         await _place(db, message=message, parent=None)
         return
-    await _locked_leaf(db, session=session)
+    leaf = await lock_session(db, session=session)
     parents = await _parents(db, session=session)
+    parents.pop(message.id, None)
     if first_variant_parent_id not in parents:
-        await append_person_write(db, session=session, message=message)
+        await append_run_write(db, session=session, message=message, anchor_id=anchor_id)
         return
     await _place(db, message=message, parent=first_variant_parent_id)
-    await _set_leaf(db, session=session, leaf=message.id)
+    if leaf is None or anchor_id is None or anchor_id in _ancestry(parents, leaf):
+        await _set_leaf(db, session=session, leaf=message.id)
 
 
 async def newest_leaf_below(
@@ -242,22 +268,30 @@ async def remove_message(
     """Delete one message without breaking the tree: its children move up to
     its parent, and when it was the leaf, the leaf moves to its parent."""
     if not _has_tree(session):
-        await db.execute(delete(m.ChatMessage).where(m.ChatMessage.id == message_id))
+        await db.execute(
+            delete(m.ChatMessage).where(
+                m.ChatMessage.tenant_id == session.tenant_id,
+                m.ChatMessage.session_id == session.id,
+                m.ChatMessage.id == message_id,
+            )
+        )
         return
-    leaf = await _locked_leaf(db, session=session)
+    leaf = await lock_session(db, session=session)
+    in_session = (
+        m.ChatMessage.tenant_id == session.tenant_id,
+        m.ChatMessage.session_id == session.id,
+    )
     parent = (
-        await db.execute(select(m.ChatMessage.parent_id).where(m.ChatMessage.id == message_id))
+        await db.execute(
+            select(m.ChatMessage.parent_id).where(*in_session, m.ChatMessage.id == message_id)
+        )
     ).scalar_one_or_none()
     await db.execute(
         update(m.ChatMessage)
-        .where(
-            m.ChatMessage.tenant_id == session.tenant_id,
-            m.ChatMessage.session_id == session.id,
-            m.ChatMessage.parent_id == message_id,
-        )
+        .where(*in_session, m.ChatMessage.parent_id == message_id)
         .values(parent_id=parent)
         .execution_options(synchronize_session="fetch")
     )
-    await db.execute(delete(m.ChatMessage).where(m.ChatMessage.id == message_id))
+    await db.execute(delete(m.ChatMessage).where(*in_session, m.ChatMessage.id == message_id))
     if leaf == message_id:
         await _set_leaf(db, session=session, leaf=parent)
