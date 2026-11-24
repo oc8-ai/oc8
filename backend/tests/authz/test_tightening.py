@@ -8,11 +8,12 @@ removed. Anything not classified is a loosening (fail closed).
 
 from __future__ import annotations
 
+import itertools
 from typing import Any
 
 import pytest
 
-from oc8.authz.pdp import Condition, Effect, ToolPolicy, UsageLimit
+from oc8.authz.pdp import Condition, Effect, ToolPolicy, UsageLimit, evaluate_conditions
 from oc8.authz.tightening import (
     grant_loosenings,
     grant_tool_entry,
@@ -37,6 +38,11 @@ RA2 = _cond("count", Effect.REQUIRE_APPROVAL, 5)
 DENY = _cond("target", Effect.DENY, 7)
 DENY2 = _cond("size", Effect.DENY, 9)
 ALLOW = _cond("trusted", Effect.ALLOW, 1)
+# One predicate (x >= 1) with each `then`, and a second attribute t.
+RA_X = _cond("x", Effect.REQUIRE_APPROVAL, 1)
+DENY_X = _cond("x", Effect.DENY, 1)
+ALLOW_X = _cond("x", Effect.ALLOW, 1)
+ALLOW_T = _cond("t", Effect.ALLOW, 1)
 
 
 def P(
@@ -236,12 +242,25 @@ POLICY_ROWS: list[tuple[Entry | None, Entry | None, list[str]]] = [
     (P(enabled=True, fc=[]), P(enabled=True, fc=[RA]), []),  # no agent deny
     (P(enabled=True, fc=[], ac=[RA2]), P(enabled=True, fc=[RA], ac=[RA2]), []),
     (P(enabled=True, fc=[], ac=[DENY]), P(enabled=True, fc=[DENY2], ac=[DENY]), []),
-    (
-        P(enabled=True, fc=[RA]),
-        P(enabled=True, fc=[DENY, RA]),
-        ["frame_conditions"],
-    ),  # not an append
-    (P(enabled=True, fc=[RA, DENY]), P(enabled=True, fc=[DENY, RA]), ["frame_conditions"]),
+    (P(enabled=True, fc=[RA]), P(enabled=True, fc=[DENY, RA]), []),  # a deny put first
+    (P(enabled=True, fc=[RA, DENY]), P(enabled=True, fc=[DENY, RA]), []),  # deny moved ahead
+    (P(enabled=True, fc=[DENY]), P(enabled=True, fc=[RA, DENY]), ["frame_conditions"]),
+    (P(enabled=True, fc=[DENY, RA]), P(enabled=True, fc=[RA, DENY]), ["frame_conditions"]),
+    # T2-I1: a stricter `then` on the same condition tightens, a milder one loosens
+    (P(enabled=True, fc=[RA_X]), P(enabled=True, fc=[DENY_X]), []),
+    (P(enabled=True, fc=[ALLOW_X]), P(enabled=True, fc=[RA_X]), []),
+    (P(enabled=True, fc=[ALLOW_X]), P(enabled=True, fc=[DENY_X]), []),
+    (P(enabled=True, fc=[DENY_X]), P(enabled=True, fc=[RA_X]), ["frame_conditions"]),
+    (P(enabled=True, fc=[RA_X]), P(enabled=True, fc=[ALLOW_X]), ["frame_conditions"]),
+    # T2-I1: removing an allow tightens; adding or moving one up loosens
+    (P(enabled=True, fc=[ALLOW]), P(enabled=True, fc=[]), []),
+    (P(enabled=True, fc=[ALLOW, DENY]), P(enabled=True, fc=[DENY]), []),
+    (P(enabled=True, fc=[DENY, ALLOW]), P(enabled=True, fc=[ALLOW, DENY]), ["frame_conditions"]),
+    (P(enabled=True, fc=[ALLOW]), P(enabled=True, fc=[ALLOW]), []),
+    (P(enabled=True, fc=[ALLOW_T, DENY_X]), P(enabled=True, fc=[DENY_X]), []),
+    # the effective list is frame then agent conditions
+    (P(enabled=True, fc=[], ac=[DENY]), P(enabled=True, fc=[DENY], ac=[]), []),
+    (P(enabled=True, fc=[ALLOW], ac=[DENY]), P(enabled=True, fc=[], ac=[DENY]), []),
     (
         P(enabled=True, fc=[RA]),
         P(enabled=True, fc=[_cond("amount", Effect.REQUIRE_APPROVAL, 900)]),
@@ -257,6 +276,9 @@ POLICY_ROWS: list[tuple[Entry | None, Entry | None, list[str]]] = [
     (P(enabled=True, ac=[DENY]), P(enabled=True, ac=[]), ["agent_conditions"]),
     (P(enabled=True, ac=[]), P(enabled=True, ac=[ALLOW]), ["agent_conditions"]),
     (P(enabled=True, ac=[DENY, RA]), P(enabled=True, ac=[RA, DENY]), ["agent_conditions"]),
+    (P(enabled=True, ac=[RA_X]), P(enabled=True, ac=[DENY_X]), []),
+    (P(enabled=True, ac=[ALLOW_X]), P(enabled=True, ac=[]), []),
+    (P(enabled=True, ac=[DENY_X]), P(enabled=True, ac=[ALLOW_X]), ["agent_conditions"]),
     (
         P(enabled=True, ac=[DENY]),
         P(enabled=True, ac=[_cond("target", Effect.REQUIRE_APPROVAL, 7)]),
@@ -374,11 +396,28 @@ FRAME_ROWS: list[tuple[dict[str, Any], dict[str, Any], list[str]]] = [
     ({"memory": {"department": ["read"]}}, {"memory": {"department": "read"}}, ["frame:memory"]),
 ]
 
+# cleared_classes (T2-M3): a subset of the confirmed set; absent is the
+# default (public, internal, confidential), as `pdp.effective_cleared_classes`.
+FRAME_ROWS += [
+    ({"cleared_classes": ["public", "internal"]}, {"cleared_classes": ["public"]}, []),
+    (
+        {"cleared_classes": ["public"]},
+        {"cleared_classes": ["public", "internal"]},
+        ["frame:cleared_classes"],
+    ),
+    ({"cleared_classes": ["public"]}, {"cleared_classes": ["public"]}, []),
+    ({"cleared_classes": ["internal", "public"]}, {"cleared_classes": ["public", "internal"]}, []),
+    ({}, {"cleared_classes": ["public", "internal"]}, []),  # added: narrower than the default
+    ({}, {"cleared_classes": ["restricted"]}, ["frame:cleared_classes"]),
+    ({"cleared_classes": ["public"]}, {}, ["frame:cleared_classes"]),  # removed: the default
+    ({"cleared_classes": ["public", "internal", "confidential"]}, {}, []),
+    ({"cleared_classes": ["public"]}, {"cleared_classes": "public"}, ["frame:cleared_classes"]),
+]
+
 # Keys with no finer rule: equal, or a loosening. Each gets the four cases.
 EQUAL_ONLY_KEYS: list[tuple[str, Any, Any]] = [
     ("emits", ["order.created"], ["order.created", "order.paid"]),
     ("intakes", [{"event": "order.created"}], [{"event": "order.paid"}]),
-    ("cleared_classes", ["public", "internal"], ["public"]),  # even a narrower set: fail closed
     ("tools", {"t": ON}, {"t": RW}),  # grant.frame carries no tools; if it does, strict
     ("surprise", 1, 2),
 ]
@@ -502,17 +541,50 @@ def _known_only(entry: Entry) -> bool:
     return set(entry) <= set(ON) and (eur is None or isinstance(eur, int))
 
 
+def _with(*conds: dict[str, Any]) -> ToolPolicy:
+    return ToolPolicy(enabled=True, conditions=tuple(Condition.from_json(c) for c in conds))
+
+
 MEET_PAIRS = [
     (_as_policy(c), _as_policy(r))
     for c, r, _ in POLICY_ROWS
     if c is not None and r is not None and _known_only(c) and _known_only(r)
 ] + [
     (ToolPolicy(enabled=True, connection_id="x"), ToolPolicy(enabled=True, connection_id="y")),
-    (
-        ToolPolicy(enabled=True, conditions=(Condition.from_json(ALLOW),)),
-        ToolPolicy(enabled=True, conditions=(Condition.from_json(DENY),)),
-    ),
+    (_with(ALLOW), _with(DENY)),
+    # The review's two repro cases (T2-I1), both ways round.
+    (_with(RA_X), _with(DENY_X)),
+    (_with(DENY_X), _with(RA_X)),
+    (_with(ALLOW_T), _with(DENY_X)),
+    (_with(DENY_X), _with(ALLOW_T)),
+    (_with(RA, DENY), _with(DENY2, RA2, ALLOW)),
+    (_with(ALLOW_X, RA), _with(RA_X, DENY_X)),
 ]
+
+_SEVERITY = {Effect.DENY: 2, Effect.REQUIRE_APPROVAL: 1, Effect.ALLOW: 0}
+
+
+def _severity(policy: ToolPolicy, attributes: dict[str, Any]) -> int:
+    """What the condition list decides: DENY > REQUIRE_APPROVAL > ALLOW or
+    fall-through (both 0), with the real first-match evaluator."""
+    decision = evaluate_conditions(policy.conditions, attributes)
+    return 0 if decision is None else _SEVERITY[decision.effect]
+
+
+def _samples(*policies: ToolPolicy) -> list[dict[str, Any]]:
+    """Every combination of each attribute the policies name being absent,
+    below, at or above every value a condition compares it with."""
+    values: dict[str, set[Any]] = {}
+    for policy in policies:
+        for cond in policy.conditions:
+            v = cond.value
+            values.setdefault(cond.attribute, set()).update({v - 1, v, v + 1})
+    names = sorted(values)
+    choices = [[None, *sorted(values[n])] for n in names]
+    return [
+        {n: v for n, v in zip(names, combo, strict=True) if v is not None}
+        for combo in itertools.product(*choices)
+    ]
 
 
 def _not_looser_than(meet: ToolPolicy, other: ToolPolicy) -> None:
@@ -530,9 +602,8 @@ def _not_looser_than(meet: ToolPolicy, other: ToolPolicy) -> None:
     windows = {(lim.key, lim.per): lim.max for lim in meet.limits}
     for lim in other.limits:
         assert (lim.key, lim.per) in windows and windows[(lim.key, lim.per)] <= lim.max
-    for cond in other.conditions:
-        if cond.then is not Effect.ALLOW:
-            assert cond in meet.conditions
+    for attributes in _samples(meet, other):
+        assert _severity(meet, attributes) >= _severity(other, attributes), attributes
 
 
 @pytest.mark.parametrize(("applied", "requested"), MEET_PAIRS)
@@ -542,20 +613,23 @@ def test_meet_is_never_looser_than_either_input(applied: ToolPolicy, requested: 
     # Against the applied policy: the full rule, conditions included.
     assert policy_loosenings(_as_frame_entry(applied), meet_entry) == []
     _not_looser_than(meet, applied)
-    # Against the requested policy: every field but the condition order (the
-    # applied conditions come first, so they are not an append to the
-    # requested list), and every requested non-allow condition is kept.
-    assert set(policy_loosenings(_as_frame_entry(requested), meet_entry)) <= {"frame_conditions"}
+    # Against the requested policy: the same, nothing exempt.
+    assert policy_loosenings(_as_frame_entry(requested), meet_entry) == []
     _not_looser_than(meet, requested)
+    # And what the conditions decide, sample by sample, against both at once.
+    for attributes in _samples(applied, requested):
+        assert _severity(meet, attributes) >= max(
+            _severity(applied, attributes), _severity(requested, attributes)
+        ), attributes
 
 
-def test_meet_appends_only_new_non_allow_conditions() -> None:
-    ra, deny, allow = (Condition.from_json(c) for c in (RA, DENY, ALLOW))
+def test_meet_puts_every_deny_first_then_every_approval_and_no_allow() -> None:
+    ra, ra2, deny, deny2, allow = (Condition.from_json(c) for c in (RA, RA2, DENY, DENY2, ALLOW))
     meet = meet_policy(
-        ToolPolicy(enabled=True, conditions=(ra,)),
-        ToolPolicy(enabled=True, conditions=(allow, deny, ra)),
+        ToolPolicy(enabled=True, conditions=(allow, ra, deny)),
+        ToolPolicy(enabled=True, conditions=(ra2, allow, deny2, ra)),
     )
-    assert meet.conditions == (ra, deny)
+    assert meet.conditions == (deny, deny2, ra, ra2)
 
 
 def test_meet_merges_limits_to_the_tighter_max() -> None:
@@ -598,6 +672,22 @@ def test_an_empty_effective_surface_is_recorded_as_off() -> None:
 
 on_rw = ToolPolicy(enabled=True, read=True, modify=True).to_json()
 on_r = ToolPolicy(enabled=True, read=True).to_json()
+
+
+def test_a_held_condition_tightening_is_enforced() -> None:
+    """The review's repro: an admin who turns approval into a refusal, or adds a
+    refusal next to a confirmed allow, gets the refusal for a call that hits it."""
+    for old, new, call in (
+        (RA_X, DENY_X, {"x": 5}),
+        (ALLOW_T, DENY_X, {"x": 5, "t": 1}),
+    ):
+        applied, _ = held_frame_tools(
+            {"k": {"enabled": True, "conditions": [old]}},
+            {"k": {"enabled": True, "conditions": [new]}},
+        )
+        written = ToolPolicy.from_json(applied["k"])
+        decision = evaluate_conditions(written.conditions, call)
+        assert decision is not None and decision.effect is Effect.DENY
 
 
 def test_held_frame_tools_applies_tightening_and_holds_loosening() -> None:

@@ -19,11 +19,18 @@ is a loosening.
 - `only` (None = every tool): confirmed None; or both set and now a subset of
   confirmed. set->None or a name added: loosens.
 - `connection_id`: equal.
-- `frame_conditions`, `agent_conditions` (stored apart, first match wins, frame
-  first): the confirmed list plus conditions appended at its end, none `allow`;
-  an appended frame `require_approval` only when the confirmed agent conditions
-  hold no `deny` (it would pre-empt that deny). Removed, reordered, changed, or
-  an appended `allow`: loosens.
+- `frame_conditions`, `agent_conditions` (stored apart; the runtime evaluates
+  frame then agent conditions, first match wins): judged on that effective
+  list, by severity DENY > REQUIRE_APPROVAL > ALLOW or no match. It tightens
+  when no call can get a milder outcome than before (`_conditions_tighten`):
+  every confirmed `deny`/`require_approval` is still there with the same or a
+  stricter `then`, nothing milder now runs ahead of it unless a condition that
+  already ran ahead of it in the confirmed list, and every `allow` now was an
+  `allow` before. So appending a `deny`/`require_approval`, removing an
+  `allow`, moving a `deny` ahead and allow->require_approval->deny tighten. A
+  condition removed or changed, an `allow` added or moved up, a milder `then`,
+  and a frame `require_approval` ahead of a confirmed agent `deny` loosen. A
+  loosening is reported against the list(s) that changed.
 - `limits`: every confirmed (sorted tools, per) window is still there with max
   <= confirmed; extra windows are fine. A changed per or tool set drops the old
   window.
@@ -32,8 +39,10 @@ is a loosening.
 - `frame.kbs` (absent = []): now a subset of confirmed, by canonical JSON.
 - `frame.memory` (absent = {}): each scope's rights a subset of the confirmed
   rights for that scope. A right or a scope added loosens.
-- `frame.<any other key>` (`emits`, `intakes`, `cleared_classes`, a stray
-  `tools`, unknown keys): equal.
+- `frame.cleared_classes` (absent = the default set of
+  `pdp.effective_cleared_classes`): now a subset of confirmed.
+- `frame.<any other key>` (`emits`, `intakes`, a stray `tools`, unknown
+  keys): equal.
 - `skills`: current ids a subset of confirmed ids, each entry equal. Added,
   new version or changed overrides: loosens.
 - any other grant part: equal.
@@ -54,6 +63,7 @@ from oc8.authz.pdp import (
     Condition,
     Effect,
     ToolPolicy,
+    effective_cleared_classes,
     merge_limits,
     min_threshold,
     narrower_surface,
@@ -143,48 +153,70 @@ def _limits_tighten(conf: ToolPolicy, cur: ToolPolicy) -> bool:
     return True
 
 
-def _appended_only(
-    confirmed: Sequence[Condition], current: Sequence[Condition], *, approval_ok: bool
-) -> bool:
-    """`current` is `confirmed` plus conditions at its end, none `allow`, and
-    no `require_approval` unless `approval_ok`."""
-    if list(current[: len(confirmed)]) != list(confirmed):
-        return False
-    for cond in current[len(confirmed) :]:
-        if cond.then is Effect.ALLOW:
+#: How severe an outcome is: no call may get a milder one after a tightening.
+#: A condition's `allow` counts as mild as no match at all.
+_SEVERITY: dict[Effect, int] = {Effect.ALLOW: 0, Effect.REQUIRE_APPROVAL: 1, Effect.DENY: 2}
+
+
+def _predicate(cond: Condition) -> tuple[Any, ...]:
+    """What a condition matches, without what it decides."""
+    return (cond.attribute, cond.datatype, cond.operator, cond.value)
+
+
+def _conditions_tighten(confirmed: Sequence[Condition], current: Sequence[Condition]) -> bool:
+    """No call gets a milder outcome from `current` than from `confirmed`
+    (both first-match lists). Sound, not complete: it reasons on identical
+    predicates only, so anything it cannot prove counts as a loosening.
+
+    A call whose first confirmed match is condition i with a `then` t > allow
+    still matches i's predicate in `current`; it needs the first current
+    condition with that predicate to decide at least t, and every milder
+    current condition ahead of it to be one the call cannot match: one whose
+    predicate ran ahead of i in `confirmed` (the call did not match it there).
+    A call no confirmed condition decided above allow can only get worse, as
+    long as every current `allow` was an identical confirmed `allow`."""
+    for cond in current:
+        if cond.then is Effect.ALLOW and cond not in confirmed:
             return False
-        if cond.then is Effect.REQUIRE_APPROVAL and not approval_ok:
+    for i, cond in enumerate(confirmed):
+        need = _SEVERITY[cond.then]
+        if need == 0:
+            continue
+        earlier = [_predicate(c) for c in confirmed[:i]]
+        pred = _predicate(cond)
+        at = next((k for k, c in enumerate(current) if _predicate(c) == pred), None)
+        if at is None or _SEVERITY[current[at].then] < need:
             return False
+        for ahead in current[:at]:
+            if _SEVERITY[ahead.then] < need and _predicate(ahead) not in earlier:
+                return False
     return True
 
 
-def _frame_conditions_tighten(confirmed: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
-    conf = _conditions(confirmed, "frame_conditions")
-    cur = _conditions(current, "frame_conditions")
-    conf_agent = _conditions(confirmed, "agent_conditions")
-    if conf is None or cur is None or conf_agent is None:
-        return (
-            _same(
-                confirmed.get("frame_conditions", _MISSING),
-                current.get("frame_conditions", _MISSING),
-            )
-            and conf_agent is not None
-        )
-    # Frame conditions are evaluated before the agent's (first match wins): an
-    # appended frame `require_approval` would pre-empt a confirmed agent `deny`.
-    approval_ok = not any(c.then is Effect.DENY for c in conf_agent)
-    return _appended_only(conf, cur, approval_ok=approval_ok)
+_CONDITION_FIELDS = ("frame_conditions", "agent_conditions")
 
 
-def _agent_conditions_tighten(confirmed: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
-    conf = _conditions(confirmed, "agent_conditions")
-    cur = _conditions(current, "agent_conditions")
-    if conf is None or cur is None:
-        return _same(
-            confirmed.get("agent_conditions", _MISSING), current.get("agent_conditions", _MISSING)
-        )
-    # Agent conditions come last: nothing after them can be pre-empted.
-    return _appended_only(conf, cur, approval_ok=True)
+def _conditions_loosenings(confirmed: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
+    """The condition lists to report: none when the effective list (frame
+    then agent conditions) tightens, else each list that changed."""
+    conf = [_conditions(confirmed, name) for name in _CONDITION_FIELDS]
+    cur = [_conditions(current, name) for name in _CONDITION_FIELDS]
+    if any(c is None for c in conf + cur):
+        # Unreadable: only "unchanged" keeps it.
+        return [
+            name
+            for name in _CONDITION_FIELDS
+            if not _same(confirmed.get(name, _MISSING), current.get(name, _MISSING))
+        ]
+    conf_lists = [c or [] for c in conf]
+    cur_lists = [c or [] for c in cur]
+    if _conditions_tighten(conf_lists[0] + conf_lists[1], cur_lists[0] + cur_lists[1]):
+        return []
+    return [
+        name
+        for name, was, now in zip(_CONDITION_FIELDS, conf_lists, cur_lists, strict=True)
+        if was != now
+    ]
 
 
 _PolicyRule = Callable[[ToolPolicy, ToolPolicy], bool]
@@ -199,13 +231,6 @@ _POLICY_RULES: dict[str, _PolicyRule] = {
     "only": _only_tightens,
     "connection_id": lambda conf, cur: _same(conf.connection_id, cur.connection_id),
     "limits": _limits_tighten,
-}
-
-_EntryRule = Callable[[Mapping[str, Any], Mapping[str, Any]], bool]
-
-_ENTRY_RULES: dict[str, _EntryRule] = {
-    "frame_conditions": _frame_conditions_tighten,
-    "agent_conditions": _agent_conditions_tighten,
 }
 
 
@@ -233,9 +258,7 @@ def policy_loosenings(
     if not conf.enabled:
         return ["enabled"]
     loosened = [name for name, rule in _POLICY_RULES.items() if not rule(conf, cur)]
-    loosened += [
-        name for name, entry_rule in _ENTRY_RULES.items() if not entry_rule(confirmed, current)
-    ]
+    loosened += _conditions_loosenings(confirmed, current)
     order = {name: i for i, name in enumerate(ENTRY_FIELDS)}
     loosened.sort(key=order.__getitem__)
     unknown = sorted((set(confirmed) | set(current)) - set(ENTRY_FIELDS))
@@ -286,6 +309,14 @@ def _memory_tightens(confirmed: Any, current: Any) -> bool:
     return all(_subset_of(conf.get(scope, []), rights) for scope, rights in cur.items())
 
 
+def _cleared_classes_tighten(confirmed: Any, current: Any) -> bool:
+    default = sorted(effective_cleared_classes({}))
+    return _subset_of(
+        default if confirmed is _MISSING else confirmed,
+        default if current is _MISSING else current,
+    )
+
+
 _FrameRule = Callable[[Any, Any], bool]
 
 #: Frame keys with a rule of their own; every other key must stay equal.
@@ -295,6 +326,7 @@ _FRAME_RULES: dict[str, _FrameRule] = {
     ),
     "kbs": _kbs_tighten,
     "memory": _memory_tightens,
+    "cleared_classes": _cleared_classes_tighten,
 }
 
 
@@ -371,7 +403,13 @@ def grant_tool_entry(
 ) -> dict[str, Any]:
     """The grant entry for one tool: the effective policy without its merged
     `conditions`, plus the frame's and the agent's conditions kept apart, so
-    an append to either list can be told from a change."""
+    a change to either list can be told apart.
+
+    Always store this entry, never a raw `effective.to_json()`: an empty
+    surface (`only=frozenset()`) would be stored as `[]` and read back as
+    every tool. The policies' conditions must already have been validated
+    (`ToolPolicy.from_json(..., strict=True)` on every write path), or this
+    raises KeyError/ValueError."""
     entry = effective.to_json()
     del entry["conditions"]
     if effective.only is not None and not effective.only:
@@ -385,14 +423,19 @@ def grant_tool_entry(
 
 def meet_policy(applied: ToolPolicy, requested: ToolPolicy) -> ToolPolicy:
     """The most `applied` and `requested` both allow: never looser than either.
-    Requested conditions that are not `allow` and not already applied are
-    appended; limits keep the tighter max per window. Two different logins,
+
+    Conditions are every `deny` of both, then every `require_approval` of both,
+    and no `allow` of either: a call that either side refuses is refused, one
+    that either side sends to a human goes to a human. (Keeping the applied
+    list first would let its milder match pre-empt a requested `deny`.) Limits
+    keep the tighter max per window. Two different logins,
     or two surfaces with no tool in common, have no common grant, so their
     meet is not enabled."""
-    conditions = list(applied.conditions)
-    for cond in requested.conditions:
-        if cond.then is not Effect.ALLOW and cond not in conditions:
-            conditions.append(cond)
+    conditions: list[Condition] = []
+    for then in (Effect.DENY, Effect.REQUIRE_APPROVAL):
+        for cond in applied.conditions + requested.conditions:
+            if cond.then is then and cond not in conditions:
+                conditions.append(cond)
     same_login = applied.connection_id == requested.connection_id
     only = narrower_surface(applied.only, requested.only)
     # Disjoint surfaces leave no tool; `only=[]` would read back as every tool.
@@ -423,7 +466,11 @@ def held_frame_tools(
     shape kept), else the meet of the two; removed, removed; added, applied
     when it is not enabled, else held. Returns the tools to write now and the
     pending tools: `requested` itself whenever anything differs from it, None
-    when nothing is held."""
+    when nothing is held.
+
+    Both sides must already be validated (`ToolPolicy.from_json(...,
+    strict=True)` on the requested write), or a malformed condition raises
+    KeyError/ValueError here."""
     now: dict[str, Any] = {}
     for key, raw in requested.items():
         if key in applied:
