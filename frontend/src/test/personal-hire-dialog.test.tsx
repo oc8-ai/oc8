@@ -21,6 +21,7 @@ vi.mock("@/components/connections/connect-dialog", () => ({
 }));
 
 import { ApiError } from "@/lib/api";
+import { errorCode } from "@/lib/hire-error";
 import { PersonalHireDialog } from "@/components/personal-hire-dialog";
 import type { PersonalTemplateDTO } from "@/lib/hooks";
 
@@ -219,6 +220,76 @@ describe("PersonalHireDialog", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/changed/i);
     expect(spy).toHaveBeenCalledWith({ queryKey: ["personal-department", "templates"] });
     expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it("shows the incomplete-login reason from a {code} body", async () => {
+    postMock.mockRejectedValue(
+      new ApiError("x", 422, { detail: { code: "credential_incomplete", missing: ["host"] } }),
+    );
+    renderDialog();
+    fireEvent.click(await screen.findByLabelText(/ada@x/));
+    fireEvent.click(screen.getByLabelText(CONSENT));
+    fireEvent.click(hireButton());
+    expect(await screen.findByRole("alert")).toHaveTextContent(/missing details/i);
+    expect(errorCode(new ApiError("x", 422, { detail: { code: "a" } }))).toBe("a");
+  });
+
+  it("does not hire an alternative that became unavailable", async () => {
+    const { rerender } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <PersonalHireDialog template={base} open onOpenChange={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(await screen.findByLabelText(/ada@x/));
+    fireEvent.click(screen.getByLabelText(CONSENT));
+    expect(hireButton()).toBeEnabled();
+    rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <PersonalHireDialog
+          template={{ ...base, connectionsAny: [{ ...EMAIL, available: false }] }}
+          open
+          onOpenChange={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(hireButton()).toBeDisabled();
+  });
+
+  it("resets consent for a new offer and sends the new token", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const ui = (tpl: PersonalTemplateDTO) => (
+      <QueryClientProvider client={client}>
+        <PersonalHireDialog template={tpl} open onOpenChange={vi.fn()} />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(ui(base));
+    fireEvent.click(await screen.findByLabelText(/ada@x/));
+    fireEvent.click(screen.getByLabelText(CONSENT));
+    rerender(ui({ ...base, hireToken: "tok2" }));
+    expect(screen.getByLabelText(CONSENT)).not.toBeChecked();
+    fireEvent.click(await screen.findByLabelText(/ada@x/));
+    fireEvent.click(screen.getByLabelText(CONSENT));
+    fireEvent.click(hireButton());
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith(
+        "/personal-department/agents",
+        expect.objectContaining({ hireToken: "tok2" }),
+      ),
+    );
+  });
+
+  it("asks consent without a login section for a template with grants only", async () => {
+    renderDialog({ ...base, connectionsAny: [] });
+    fireEvent.click(await screen.findByLabelText(CONSENT));
+    expect(screen.queryByRole("button", { name: /connect a new one/i })).toBeNull();
+    fireEvent.click(hireButton());
+    await waitFor(() =>
+      expect(postMock).toHaveBeenCalledWith("/personal-department/agents", {
+        capaId: "c1",
+        hireToken: "tok1",
+        confirmShare: true,
+      }),
+    );
   });
 
   it("closes after a successful hire", async () => {

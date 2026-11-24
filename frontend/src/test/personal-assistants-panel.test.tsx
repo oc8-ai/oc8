@@ -87,6 +87,41 @@ describe("PersonalAssistantsPanel", () => {
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
   });
 
+  it("refetches the templates when the one-click hire answers hire_changed", async () => {
+    postMock.mockRejectedValue(new ApiError("x", 409, { detail: { error: "hire_changed" } }));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    renderPanel(qc);
+    fireEvent.click(await screen.findByRole("button", { name: /hire/i }));
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith({ queryKey: ["personal-department", "templates"] }),
+    );
+  });
+
+  it("opens the dialog for a template that grants tools even with no login", async () => {
+    TEMPLATES.push({
+      capaId: "c3",
+      name: "g",
+      label: "Granting helper",
+      summary: "",
+      hireToken: "tok3",
+      grants: { tools: ["calendar"], skills: [] },
+      connectionsAny: [],
+      connectionsOptional: [],
+    });
+    try {
+      renderPanel();
+      await screen.findByText("Granting helper");
+      fireEvent.click(screen.getAllByRole("button", { name: /hire/i })[1]);
+      expect(
+        await screen.findByLabelText(/let this assistant use my account/i),
+      ).toBeInTheDocument();
+      expect(postMock).not.toHaveBeenCalled();
+    } finally {
+      TEMPLATES.pop();
+    }
+  });
+
   it("opens the hire dialog for a template that connects to a login", async () => {
     TEMPLATES.push({
       capaId: "c2",

@@ -1,6 +1,5 @@
-import { useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ConnectDialog } from "@/components/connections/connect-dialog";
 import {
@@ -19,7 +18,7 @@ import {
   useHirePersonalTemplate,
 } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
-import { errorCode, hireErrorText, usableLogins } from "@/lib/personal-hire";
+import { hireErrorText, usableLogins } from "@/lib/personal-hire";
 
 function toBody(integration: string, login: Connection): HireConnectionBody {
   return login.kind === "oauth"
@@ -44,7 +43,10 @@ function LoginChoice({
 }) {
   const t = useT();
   return (
-    <div className="mt-2 space-y-1 pl-6">
+    <fieldset className="mt-2 space-y-1 pl-6">
+      <legend className="sr-only">
+        {t(`Your ${conn.label} logins`, `Deine ${conn.label}-Zugänge`)}
+      </legend>
       {logins.length === 0 && (
         <p className="text-xs text-muted-foreground">
           {t(
@@ -67,28 +69,45 @@ function LoginChoice({
       <button
         type="button"
         onClick={onConnect}
+        aria-label={t(`Connect a new one: ${conn.label}`, `Neuen verbinden: ${conn.label}`)}
         className="text-xs font-medium text-primary hover:underline"
       >
         {t("Connect a new one", "Neuen verbinden")}
       </button>
-    </div>
+    </fieldset>
   );
 }
 
 /** Hiring a personal template that connects to a login: the member picks one
  *  of their own logins (or connects a new one), sees what the assistant
  *  gets, and consents to it using their account. */
-export function PersonalHireDialog({
-  template,
-  open,
-  onOpenChange,
-}: {
+export function PersonalHireDialog(props: {
   template: PersonalTemplateDTO;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const [error, setError] = useState<string | null>(null);
+  // What the member agreed to is the offer they saw: a new offer (new token)
+  // remounts the form, so consent and choices start over. The error stays.
+  return (
+    <HireDialogForm key={props.template.hireToken} {...props} error={error} setError={setError} />
+  );
+}
+
+function HireDialogForm({
+  template,
+  open,
+  onOpenChange,
+  error,
+  setError,
+}: {
+  template: PersonalTemplateDTO;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  error: string | null;
+  setError: (e: string | null) => void;
+}) {
   const t = useT();
-  const qc = useQueryClient();
   const hire = useHirePersonalTemplate();
   const mineQuery = useMyConnections();
   const mine = useMemo(
@@ -104,19 +123,17 @@ export function PersonalHireDialog({
   const [loginFor, setLoginFor] = useState<Record<string, string>>({});
   const [optIn, setOptIn] = useState<Record<string, boolean>>({});
   const [consent, setConsent] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
-
-  // What the member agreed to is the offer they saw: a new offer needs a new yes.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on the token only
-  useEffect(() => setConsent(false), [template.hireToken]);
 
   const chosenLogin = (integration: string) =>
     usableLogins(mine, integration).find((c) => c.id === loginFor[integration]);
 
   const optional = template.connectionsOptional.filter((o) => o.available && optIn[o.integration]);
-  const hasLogins = alternatives.length > 0 || optional.length > 0;
-  const altReady = alternatives.length === 0 || (alt !== null && !!chosenLogin(alt));
+  const altReady =
+    alternatives.length === 0 ||
+    (alt !== null &&
+      alternatives.some((a) => a.integration === alt && a.available) &&
+      !!chosenLogin(alt));
   const optReady = optional.every((o) => !!chosenLogin(o.integration));
   const canHire = altReady && optReady && consent && !hire.isPending;
 
@@ -125,29 +142,27 @@ export function PersonalHireDialog({
       capaId: template.capaId,
       hireToken: template.hireToken,
     };
-    if (hasLogins) {
-      if (alt !== null) {
-        const login = chosenLogin(alt);
-        if (login) body.connection = toBody(alt, login);
-      }
+    if (alt !== null) {
+      const login = chosenLogin(alt);
+      if (login) body.connection = toBody(alt, login);
+    }
+    if (alternatives.length > 0 || optional.length > 0) {
       body.optionalConnections = optional.flatMap((o) => {
         const login = chosenLogin(o.integration);
         return login ? [toBody(o.integration, login)] : [];
       });
-      body.confirmShare = true;
     }
+    // The consent is for every hire: the server only requires it with a login.
+    body.confirmShare = true;
     setError(null);
     hire.mutate(body, {
       onSuccess: () => {
         toast.success(t("Assistant hired", "Assistent eingestellt"));
         onOpenChange(false);
       },
-      onError: (err) => {
-        setError(hireErrorText(err, t));
-        // The offer changed: show the fresh one and keep this dialog open.
-        if (errorCode(err) === "hire_changed")
-          void qc.invalidateQueries({ queryKey: ["personal-department", "templates"] });
-      },
+      // A changed offer (`hire_changed`) is refetched by the hook; the dialog
+      // stays open on the fresh one.
+      onError: (err) => setError(hireErrorText(err, t)),
     });
   };
 

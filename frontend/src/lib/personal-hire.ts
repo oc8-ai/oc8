@@ -1,22 +1,10 @@
 import { ApiError } from "@/lib/api";
+import { errorCode } from "@/lib/hire-error";
 import type { Connection } from "@/lib/connections";
 import type { PersonalTemplateDTO } from "@/lib/hooks";
 import type { useT } from "@/lib/i18n";
 
 type T = ReturnType<typeof useT>;
-
-/** The machine code of a refused request. FastAPI wraps a dict `detail` as
- *  `{detail: {error}}`; `toError` in `lib/api.ts` keeps that body on the error. */
-export function errorCode(err: unknown): string | null {
-  if (!(err instanceof ApiError)) return null;
-  const body = err.body as { detail?: unknown; error?: unknown } | undefined;
-  const detail = body?.detail;
-  if (detail !== null && typeof detail === "object") {
-    const code = (detail as { error?: unknown }).error;
-    if (typeof code === "string") return code;
-  }
-  return typeof body?.error === "string" ? body.error : null;
-}
 
 /** A readable reason for a refused hire, by the server's machine code. */
 export function hireErrorText(err: unknown, t: T): string {
@@ -89,9 +77,16 @@ export function hireErrorText(err: unknown, t: T): string {
   return t("Couldn't hire the assistant", "Assistent konnte nicht eingestellt werden");
 }
 
-/** Whether the template needs a choice from the member at hire. */
+/** Whether the hire needs the dialog: the member consents to what the
+ *  assistant gets (any tool or skill) and chooses its logins. Only a template
+ *  that connects to nothing and grants nothing hires in one click. */
 export function needsHireDialog(tpl: PersonalTemplateDTO): boolean {
-  return tpl.connectionsAny.length > 0 || tpl.connectionsOptional.length > 0;
+  return (
+    tpl.connectionsAny.length > 0 ||
+    tpl.connectionsOptional.length > 0 ||
+    tpl.grants.tools.length > 0 ||
+    tpl.grants.skills.length > 0
+  );
 }
 
 /** The member's own logins of `integration` a hire may bind: OAuth that is

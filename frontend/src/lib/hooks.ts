@@ -1,6 +1,7 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
+import { errorCode } from "@/lib/hire-error";
 import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
 import {
   useInfiniteQuery,
@@ -1115,6 +1116,12 @@ export function useHirePersonalTemplate() {
   return useMutation({
     mutationFn: (body: HirePersonalBody) =>
       api.post<{ agentId: string; departmentId: string }>("/personal-department/agents", body),
+    // The offer changed under the member: refetch it so the next hire sends
+    // the fresh `hireToken` (the one-click button and the dialog share this).
+    onError: (err) => {
+      if (errorCode(err) === "hire_changed")
+        void qc.invalidateQueries({ queryKey: ["personal-department", "templates"] });
+    },
     onSuccess: async (data) => {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["personal-department"] }),
