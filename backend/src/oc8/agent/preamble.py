@@ -56,6 +56,7 @@ from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
 from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
 from oc8.modelrouter.types import ImagePart, TextPart
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
 
 _ORIGIN_LABELS: dict[str, str] = {
@@ -266,6 +267,11 @@ async def roster_block(
                 ),
             )
             rows = [(a, dept) for a, dept in rows if runnable_with(reach, a)]
+        else:
+            # Nobody behind the turn: `_delegate` crosses no department then
+            # (`_member_may_reach_department` fails closed), and a personal
+            # agent answers to its owner alone -- never name one.
+            rows = [(a, dept) for a, dept in rows if dept.kind != DEPARTMENT_KIND_PERSONAL]
         if not rows:
             return None
         narrowings = await _published_narrowings(db, [a for a, _ in rows])

@@ -21,7 +21,7 @@ from sqlalchemy import false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.repo import agent_runnable_in, run_reach
+from oc8.agents.repo import agent_runnable_in, start_reach
 from oc8.api.deps import (
     DbSession,
     authorize_agent_write,
@@ -30,7 +30,7 @@ from oc8.api.deps import (
 )
 from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
-from oc8.authz.permissions import AGENT, RUN_START, VIEW, perm
+from oc8.authz.permissions import AGENT, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.boards.lifecycle import (
     count_board_records,
@@ -91,7 +91,9 @@ async def _summaries(
         if agent_ids
         else {}
     )
-    reach = run_reach(authority=authority, scope=actor.scope, permission=RUN_START)
+    reach = await start_reach(
+        db, authority=authority, scope=actor.scope, tenant_id=actor.principal.tenant_id
+    )
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
     out: list[BoardSummaryDTO] = []
     for b in boards:

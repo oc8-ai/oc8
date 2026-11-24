@@ -15,16 +15,19 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agents.repo import (
     RunReach,
+    in_start_reach,
     resolve_run_reach,
+    resolve_start_reach,
     restrict_to_run_reach,
     run_reachable_agent,
 )
 from oc8.agents.versioning import pinned_version_no
-from oc8.api.deps import DbSession, refuse_personal_agent_content, require_departmental
+from oc8.api.deps import DbSession, require_departmental
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.questions import QuestionError
 from oc8.chat.service import record_answer_turn
+from oc8.departments.repo import personal_content_hidden
 from oc8.runtime.cancellation import record_operator_cancel
 from oc8.runtime.clarification import AnswerRefused, resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
@@ -71,15 +74,17 @@ async def _refuse_personal_run(db: DbSession, actor: HumanActor, run_row: m.Agen
     """Only the owner acts on a personal agent: resuming or steering one of its
     runs is refused to anybody else with the same 404 as no run at all. Reading
     it is run reach, a separate rule (PR 3)."""
-    department_id = await db.scalar(
-        select(m.Agent.department_id).where(m.Agent.id == run_row.agent_id)
-    )
-    await refuse_personal_agent_content(
-        db,
-        actor.principal,
-        department_id,
-        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "run not found"),
-    )
+    located = (
+        await db.execute(
+            select(m.Agent.department_id, m.Department.kind)
+            .join(m.Department, m.Department.id == m.Agent.department_id)
+            .where(m.Agent.id == run_row.agent_id)
+        )
+    ).one_or_none()
+    if located is not None and personal_content_hidden(
+        kind=located.kind, department_id=located.department_id, scope=actor.scope
+    ):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
 
 
 class AnswerRequest(BaseModel):
@@ -350,19 +355,15 @@ async def run(
     actor: _RunStarter,
 ) -> RunDTO:
     principal = actor.principal
-    reach = await resolve_run_reach(request, db, actor, RUN_START)
+    # The start reach (`agents.repo.start_reach`) is what the boards, the
+    # Copilot's roster, delegation and agent match ask too: never a personal
+    # agent the caller does not own, answered with the same 404 as no agent.
+    reach = await resolve_start_reach(request, db, actor)
     agent = await run_reachable_agent(
         db, reach=reach, tenant_id=actor.principal.tenant_id, agent_id=agent_id
     )
-    if agent is None or agent.deleted_at is not None:
+    if agent is None or agent.deleted_at is not None or not in_start_reach(reach, agent):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
-    # Only the owner acts on a personal agent; anybody else gets the same 404.
-    await refuse_personal_agent_content(
-        db,
-        principal,
-        agent.department_id,
-        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
-    )
     if agent.status == "pending_approval":
         raise HTTPException(status.HTTP_409_CONFLICT, "agent awaiting hire approval")
 

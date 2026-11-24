@@ -104,7 +104,7 @@ async def _parked_run(
             tenant_id=tenant,
             agent_id=agent,
             state=state.value,
-            context={"pending_questions": [{"question": "Which landlord?"}]},
+            context={},
         )
         db.add(run)
         await db.flush()
@@ -194,3 +194,42 @@ async def test_an_admin_cannot_put_a_task_on_a_personal_department(
     assert "has no team lead" in r.json()["detail"]
     assert fake_queue.enqueued == []
     assert await _run_count(app_session, w.tenant, w.personal_agent) == 0
+
+
+async def test_the_owner_still_steers_their_agents_run(
+    app_session: AppSessionFactory, fake_queue: _FakeQueue
+) -> None:
+    w = await _world(app_session)
+    run_id, _q = await _parked_run(app_session, w.tenant, w.personal_agent, RunState.RUNNING)
+    async with _http() as http:
+        r = await http.post(
+            f"/api/v1/runs/{run_id}/message",
+            json={"body": "Use the polite template"},
+            headers=_headers(w.tenant, "owner", "org_admin"),
+        )
+    assert r.status_code == 202, r.text
+    async with app_session(w.tenant) as db:
+        messages = await db.scalar(
+            select(func.count()).select_from(m.RunMessage).where(m.RunMessage.run_id == run_id)
+        )
+    assert messages == 1
+
+
+async def test_the_owner_still_answers_their_agents_question_from_the_queue(
+    app_session: AppSessionFactory, fake_queue: _FakeQueue
+) -> None:
+    w = await _world(app_session)
+    run_id, question_id = await _parked_run(
+        app_session, w.tenant, w.personal_agent, RunState.WAITING_FOR_INPUT
+    )
+    async with _http() as http:
+        r = await http.post(
+            f"/api/v1/clarifications/{question_id}/answer",
+            json={"answer": "Mr Meyer"},
+            headers=_headers(w.tenant, "owner", "org_admin"),
+        )
+    assert r.status_code == 200, r.text
+    assert fake_queue.enqueued == [run_id]
+    async with app_session(w.tenant) as db:
+        question = await db.get(m.Clarification, question_id)
+    assert question is not None and question.status == "answered"

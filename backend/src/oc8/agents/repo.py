@@ -19,7 +19,7 @@ every other gate in this codebase uses, never `role_has(...)`.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import ColumnElement, Select, and_, false, select
@@ -34,7 +34,7 @@ from oc8.authz.permissions import (
     VIEW,
     perm,
 )
-from oc8.departments.repo import personal_reachable
+from oc8.departments.repo import personal_content_hidden, personal_reachable
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Agent, Department
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -218,6 +218,12 @@ class RunReach:
 
     every_agent: bool
     departments: frozenset[uuid.UUID]
+    #: Only on a START reach (`start_reach`): the personal departments whose
+    #: agents this caller may not start -- every one but the caller's own,
+    #: since only the owner acts on a personal agent
+    #: (`departments.repo.personal_content_hidden`). None on a reach built to
+    #: read or control runs, which `agent_runnable_in` refuses to answer from.
+    personal_refused: frozenset[uuid.UUID] | None = None
 
 
 #: The permissions a run door asks for. None of them is a seat permission, and
@@ -273,20 +279,62 @@ def run_reach(*, authority: Authority, scope: DepartmentScope, permission: str) 
     return RunReach(every_agent=False, departments=scope.viewable if held else frozenset())
 
 
-def agent_runnable_in(reach: RunReach, agent: Agent | None) -> bool:
-    """What `POST /agents/{agent_id}/run` admits (`api/v1/run.py`): a live agent
-    not awaiting hire approval, inside the caller's `run:start` reach.
+async def start_reach(
+    db: AsyncSession,
+    *,
+    authority: Authority,
+    scope: DepartmentScope,
+    tenant_id: uuid.UUID,
+) -> RunReach:
+    """`run_reach` for `run:start`, plus the personal departments this caller
+    may not start agents in (`RunReach.personal_refused`): one query for the
+    tenant's personal departments, judged against the caller's own seats. The
+    only reach `agent_runnable_in` answers from."""
+    base = run_reach(authority=authority, scope=scope, permission=RUN_START)
+    personal = (
+        await db.execute(
+            select(Department.id).where(
+                Department.tenant_id == tenant_id, Department.kind == DEPARTMENT_KIND_PERSONAL
+            )
+        )
+    ).scalars()
+    refused = frozenset(
+        d
+        for d in personal
+        if personal_content_hidden(kind=DEPARTMENT_KIND_PERSONAL, department_id=d, scope=scope)
+    )
+    return replace(base, personal_refused=refused)
 
-    The one answer to "may this caller start this agent" for code that already
-    holds a `RunReach` -- the boards listing's `may_run` and the Copilot's
-    agent match (`copilot/agent_match.py`) both ask it, so the two cannot drift
-    from each other or from the run route.
-    """
-    if agent is None or agent.deleted_at is not None or agent.status == "pending_approval":
+
+def in_start_reach(reach: RunReach, agent: Agent) -> bool:
+    """Whether `agent` lies inside the caller's `run:start` reach, whatever its
+    state: never a personal agent the caller does not own, otherwise every
+    agent or those of `reach.departments`. The run route asks this alone to
+    tell "not yours" (404) from "awaiting hire approval" (409)."""
+    if reach.personal_refused is None:
+        raise ValueError("a start question needs a start reach (agents.repo.start_reach)")
+    if agent.department_id in reach.personal_refused:
         return False
     if reach.every_agent:
         return True
     return agent.department_id in reach.departments and not agent.is_tenant_assistant
+
+
+def agent_runnable_in(reach: RunReach, agent: Agent | None) -> bool:
+    """What `POST /agents/{agent_id}/run` admits (`api/v1/run.py`): a live agent
+    not awaiting hire approval, inside the caller's `run:start` reach -- which
+    never holds a personal agent of somebody else (only the owner acts on one).
+
+    The one answer to "may this caller start this agent" for code that already
+    holds a start reach (`start_reach`) -- the run route, the boards listing's
+    `may_run`, and the Copilot's roster, delegation and agent match
+    (`copilot/agent_match.py`) all ask it, so none can drift from the others.
+    """
+    if reach.personal_refused is None:
+        raise ValueError("a start question needs a start reach (agents.repo.start_reach)")
+    if agent is None or agent.deleted_at is not None or agent.status == "pending_approval":
+        return False
+    return in_start_reach(reach, agent)
 
 
 async def resolve_run_reach(
@@ -295,6 +343,14 @@ async def resolve_run_reach(
     """`run_reach` for an HTTP caller, with the request-memoised authority."""
     authority = await authority_for_principal(request, db, actor.principal)
     return run_reach(authority=authority, scope=actor.scope, permission=permission)
+
+
+async def resolve_start_reach(request: Request, db: AsyncSession, actor: HumanActor) -> RunReach:
+    """`start_reach` for an HTTP caller, with the request-memoised authority."""
+    authority = await authority_for_principal(request, db, actor.principal)
+    return await start_reach(
+        db, authority=authority, scope=actor.scope, tenant_id=actor.principal.tenant_id
+    )
 
 
 def restrict_to_run_reach[TP: tuple[Any, ...]](
