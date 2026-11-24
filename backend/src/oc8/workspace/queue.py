@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -162,7 +163,12 @@ async def open_clarifications(
 
 
 async def answer_clarification(
-    db: AsyncSession, *, actor: DecisionActor, clarification_id: uuid.UUID, answer: str
+    db: AsyncSession,
+    *,
+    actor: DecisionActor,
+    clarification_id: uuid.UUID,
+    answer: str,
+    answers: Mapping[str, Any] | None = None,
 ) -> AgentRun | None:
     """Answer one parked question and re-queue the run that asked it.
 
@@ -242,8 +248,20 @@ async def answer_clarification(
     # The one shared implementation, so the departmental door and the admin door
     # cannot fold the answer into `run.context` in two different shapes -- the
     # executor reads exactly one of them.
+    from oc8.chat.questions import PLAIN_ID, questions_from_json, render_answers_text
+
     pending = (run.context or {}).get("pending_questions")
-    structured = await resolve_clarification(db, run=run, answer=answer)
+    if not pending and answers is not None:
+        # A plain question carries no `pending_questions`: its only slot is the
+        # plain id, and the written value in it IS the answer (spec §4.1).
+        plain = answers.get(PLAIN_ID)
+        if isinstance(plain, str):
+            answer = plain
+    structured = await resolve_clarification(db, run=run, answer=answer, answers=answers)
+    if not answer.strip() and structured is not None:
+        # An `answers`-only request: what the person actually chose, one readable
+        # line per question, is the text every door writes into the chat.
+        answer = render_answers_text(questions_from_json(pending), structured) or PLAIN_ID
     # A chat run's question answered from the inbox still shows in its chat as
     # the answered card (spec §4.1) -- the same turn every door writes.
     from oc8.authz.scope import HumanActor

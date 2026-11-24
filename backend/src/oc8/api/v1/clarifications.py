@@ -84,7 +84,11 @@ async def answer(
     """
     try:
         run = await answer_clarification(
-            db, actor=actor, clarification_id=clarification_id, answer=body.answer
+            db,
+            actor=actor,
+            clarification_id=clarification_id,
+            answer=body.answer or "",
+            answers=body.answers,
         )
     except NotAnswerable as exc:
         # 409, never 404: this only escapes once the scope has already admitted
