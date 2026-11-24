@@ -8,6 +8,7 @@ import { Check, LayoutTemplate, Pencil, Save } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
+import { newId } from "@/lib/utils";
 import { BoardNotices } from "@/components/dashboard/board-notices";
 import { DashboardGrid } from "@/components/dashboard/dashboard-grid";
 import { SavePresetDialog } from "@/components/dashboard/save-preset-dialog";
@@ -153,7 +154,7 @@ export function WorkspacePage() {
       return [
         ...list,
         {
-          id: crypto.randomUUID(),
+          id: newId(),
           type,
           x: 0,
           // A real bottom-row y, not react-grid-layout's `Infinity`
