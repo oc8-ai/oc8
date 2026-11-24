@@ -312,26 +312,32 @@ async def finish_chat_file(db: AsyncSession, *, attachment_id: uuid.UUID, status
     The original's row is locked first -- the same lock a copy takes to read
     its status -- and the copies are then updated in a statement of their
     own, which sees every copy committed while this waited for the lock.
-    Returns whether the original still exists. Flush-only."""
-    root = (
+    Returns whether the original still exists. Flush-only.
+
+    Without autoflush: a caller that already changed its `IngestionJob` (the
+    worker's fail paths) must not have that row written -- and locked --
+    ahead of the file rows. The job comes after them, at the caller's next
+    flush, the order `forget_chat_file` takes them in (`chat.tree`)."""
+    with db.no_autoflush:
+        root = (
+            await db.execute(
+                select(m.FileAttachment.id)
+                .where(m.FileAttachment.id == attachment_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
         await db.execute(
-            select(m.FileAttachment.id)
-            .where(m.FileAttachment.id == attachment_id)
-            .with_for_update()
+            update(m.FileAttachment)
+            .where(
+                or_(
+                    m.FileAttachment.id == attachment_id,
+                    m.FileAttachment.indexed_from_id == attachment_id,
+                ),
+                m.FileAttachment.index_status == "queued",
+            )
+            .values(index_status=status)
+            .execution_options(synchronize_session=False)
         )
-    ).scalar_one_or_none()
-    await db.execute(
-        update(m.FileAttachment)
-        .where(
-            or_(
-                m.FileAttachment.id == attachment_id,
-                m.FileAttachment.indexed_from_id == attachment_id,
-            ),
-            m.FileAttachment.index_status == "queued",
-        )
-        .values(index_status=status)
-        .execution_options(synchronize_session=False)
-    )
     return root is not None
 
 

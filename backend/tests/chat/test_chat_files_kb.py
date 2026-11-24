@@ -285,3 +285,52 @@ async def test_drop_chat_kb_without_a_base_is_a_no_op_and_a_new_base_can_follow(
         assert await chat_kb_for(db, session=session, create=False) is None
         second = await chat_kb_for(db, session=session, create=True)
         assert second is not None and second.id != first.id
+
+
+async def test_a_failed_ingest_locks_the_file_row_before_the_job(
+    app_session: AppSessionFactory,
+) -> None:
+    """The worker's fail paths change the job before they settle the file:
+    the job row must still be written after the file's row lock, the order
+    `forget_chat_file` takes them in -- the other way round, the two wait on
+    each other."""
+    from oc8.chat.files_kb import CHAT_FILE_JOB, finish_chat_file
+    from tests.chat.test_message_tree import statements
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _member, session = await _chat(db, tenant)
+        kb = await chat_kb_for(db, session=session, create=True)
+        assert kb is not None
+        attachment = m.FileAttachment(
+            tenant_id=tenant,
+            owner_type="chat_message",
+            owner_id=session.id,
+            bucket_key=f"k/{uuid.uuid4()}",
+            filename="big.txt",
+            content_type="text/plain",
+            size_bytes=10,
+            index_status="queued",
+        )
+        db.add(attachment)
+        await db.flush()
+        job = m.IngestionJob(
+            tenant_id=tenant,
+            data_source_id=uuid.UUID(kb.source_ids[0]),
+            kb_id=kb.id,
+            status="running",
+            stats={"kind": CHAT_FILE_JOB, "attachment_id": str(attachment.id)},
+        )
+        db.add(job)
+        await db.flush()
+        job.status = "failed"
+        with statements() as seen:
+            assert await finish_chat_file(db, attachment_id=attachment.id, status="failed")
+            await db.flush()
+        await db.refresh(attachment, ["index_status"])
+        assert attachment.index_status == "failed"
+    file_lock = next(
+        i for i, sql in enumerate(seen) if "FROM file_attachment" in sql and "FOR UPDATE" in sql
+    )
+    job_write = next(i for i, sql in enumerate(seen) if "UPDATE ingestion_job" in sql)
+    assert file_lock < job_write, seen
