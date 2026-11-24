@@ -88,3 +88,68 @@ def test_one_live_chat_base_per_session(pg_url: str) -> None:
         with pytest.raises(psycopg.errors.UniqueViolation):
             conn.execute(insert, (uuid.uuid4(), tenant, session, None))
         conn.rollback()
+
+
+def test_downgrade_retires_chat_bases_instead_of_sharing_them(pg_url: str) -> None:
+    """Without `kind`, a chat's own base would read as the organisation's:
+    the downgrade soft-deletes it and its `chat_upload` source and drops its
+    chunks first, and leaves every shared base as it was."""
+    dsn = pg_url.replace("+psycopg", "")
+    cfg = _cfg()
+    tenant = uuid.uuid4()
+    chat_kb, shared_kb, chat_src, other_src = (uuid.uuid4() for _ in range(4))
+    kb_insert = (
+        "INSERT INTO knowledge_base (id, tenant_id, name, description, embedding_model, "
+        "chunking_config, classification, freshness, source_ids, status, local_only, "
+        "index_type, index_config, kind, chat_session_id, created_at, updated_at) VALUES "
+        "(%s, %s, %s, '', 'm', '{}', 'internal', '{}', %s, 'current', false, 'internal', "
+        "'{}', %s, %s, now(), now())"
+    )
+    src_insert = (
+        "INSERT INTO data_source (id, tenant_id, connector_type, name, config, cursor, "
+        "classification, connected, doc_count, created_at, updated_at) VALUES "
+        "(%s, %s, %s, 'src', '{}', '{}', 'internal', false, 0, now(), now())"
+    )
+    chunk_insert = (
+        "INSERT INTO kb_chunk (id, tenant_id, kb_id, content, source_uri, metadata, "
+        "classification, data_source_id, created_at, updated_at) VALUES "
+        "(%s, %s, %s, 'text', 'uri', '{}', 'internal', %s, now(), now())"
+    )
+    command.upgrade(cfg, "head")
+    with psycopg.connect(dsn) as conn:
+        conn.execute(src_insert, (chat_src, tenant, "chat_upload"))
+        conn.execute(src_insert, (other_src, tenant, "filesystem"))
+        conn.execute(
+            kb_insert,
+            (chat_kb, tenant, "Chat files", f'["{chat_src}"]', "chat", uuid.uuid4()),
+        )
+        conn.execute(kb_insert, (shared_kb, tenant, "Handbook", f'["{other_src}"]', "shared", None))
+        conn.execute(chunk_insert, (uuid.uuid4(), tenant, chat_kb, chat_src))
+        conn.execute(chunk_insert, (uuid.uuid4(), tenant, shared_kb, other_src))
+    try:
+        command.downgrade(cfg, "0130")
+        with psycopg.connect(dsn) as conn:
+            bases = dict(
+                conn.execute(
+                    "SELECT id, deleted_at IS NOT NULL FROM knowledge_base WHERE tenant_id = %s",
+                    (tenant,),
+                ).fetchall()
+            )
+            sources = dict(
+                conn.execute(
+                    "SELECT id, deleted_at IS NOT NULL FROM data_source WHERE tenant_id = %s",
+                    (tenant,),
+                ).fetchall()
+            )
+            chunks = conn.execute(
+                "SELECT kb_id FROM kb_chunk WHERE tenant_id = %s", (tenant,)
+            ).fetchall()
+        assert bases == {chat_kb: True, shared_kb: False}
+        assert sources == {chat_src: True, other_src: False}
+        assert chunks == [(shared_kb,)]
+    finally:
+        command.upgrade(cfg, "head")
+        with psycopg.connect(dsn) as conn:
+            conn.execute("DELETE FROM kb_chunk WHERE tenant_id = %s", (tenant,))
+            conn.execute("DELETE FROM knowledge_base WHERE tenant_id = %s", (tenant,))
+            conn.execute("DELETE FROM data_source WHERE tenant_id = %s", (tenant,))

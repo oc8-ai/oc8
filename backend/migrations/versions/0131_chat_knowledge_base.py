@@ -54,6 +54,32 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '5s'")
+    # Without `kind` a chat's own base would read as one the organisation
+    # manages -- listed, grantable, searchable. Retire every chat base first:
+    # its chunks go (they are the chat's files), its `chat_upload` source and
+    # the base itself are soft-deleted. Skipped once the column is gone.
+    op.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'knowledge_base' AND column_name = 'kind'
+            ) THEN
+                DELETE FROM kb_chunk
+                WHERE kb_id IN (SELECT id FROM knowledge_base WHERE kind = 'chat');
+                UPDATE data_source SET deleted_at = now(), updated_at = now()
+                WHERE connector_type = 'chat_upload'
+                  AND deleted_at IS NULL
+                  AND id::text IN (
+                      SELECT jsonb_array_elements_text(source_ids)
+                      FROM knowledge_base WHERE kind = 'chat'
+                  );
+                UPDATE knowledge_base SET deleted_at = now(), updated_at = now()
+                WHERE kind = 'chat' AND deleted_at IS NULL;
+            END IF;
+        END
+        $$
+    """)
     op.execute("DROP INDEX IF EXISTS ix_knowledge_base_chat_session_id")
     op.execute("DROP INDEX IF EXISTS uq_knowledge_base_chat_session")
     op.execute("ALTER TABLE knowledge_base DROP CONSTRAINT IF EXISTS ck_knowledge_base_kind")
