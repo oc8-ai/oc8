@@ -35,6 +35,7 @@ from oc8 import models as m
 from oc8.approvals import expire_approval
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
+from oc8.chat import tree
 from oc8.chat.audience import session_audience_or_nobody
 from oc8.chat.context.base import viewer_for_member
 from oc8.chat.context.manifest import (
@@ -772,7 +773,7 @@ async def send_message(
     afterwards (e.g. `api/v1/chat.py`'s `_message_dto`, querying its
     attachments) does not have to know the trap exists.
     """
-    history = await list_messages(db, tenant_id=tenant_id, session_id=session.id)
+    history = await tree.visible_path(db, session=session)
     # One parser for every door (web composer, Telegram free text, anything
     # later): the command is recognised here, not in a UI. `body` is what was
     # actually said -- an unknown command, a path, or a bare "/ask" comes back
@@ -842,6 +843,8 @@ async def send_message(
         context_refs=resolved_refs,
         author_member_id=author_member_id if role == "user" else None,
     )
+    # Flushed now for its id (the attachments below point at it); placed in
+    # the tree only shortly before the commit -- see `chat.tree`'s locks.
     db.add(user_message)
     await db.flush()
 
@@ -889,14 +892,14 @@ async def send_message(
         # this, the credential the Assistant just refused would still land in
         # the transcript verbatim.
         user_message.content = redact_text(message)
-        await db.flush()
+        await tree.append_person_write(db, session=session, message=user_message)
         refusal = m.ChatMessage(
             tenant_id=tenant_id,
             session_id=session.id,
             role="assistant",
             content=_SECRET_REFUSAL,
         )
-        db.add(refusal)
+        await tree.append_person_write(db, session=session, message=refusal)
         session.last_message_at = dt.datetime.now(tz=dt.UTC)
         await db.flush()
         for announced in (user_message, refusal):
@@ -997,6 +1000,7 @@ async def send_message(
         session.task_id = task.id
         await db.flush()
 
+    await tree.append_person_write(db, session=session, message=user_message)
     # Read before `enqueue_run` commits: what the chat should be named after,
     # if it has no name yet -- its first message with any words in it.
     title_seed = _title_seed(session, history, body) if role == "user" else None
@@ -1078,8 +1082,22 @@ async def regenerate_reply(
     COMMITS `db` (via `enqueue_run`) and re-binds the RLS tenant afterwards,
     like `send_message`.
     """
-    history = await list_messages(db, tenant_id=tenant_id, session_id=session.id)
-    before = [msg for msg in history if msg.id < user_message.id]
+    before = await tree.path_before(db, session=session, message=user_message)
+    # The new answer is a sibling of the first one: same parent, whatever came
+    # between the turn and that answer (an answered question) included.
+    first_variant_parent = (
+        await db.execute(
+            select(m.ChatMessage.parent_id)
+            .where(
+                m.ChatMessage.tenant_id == tenant_id,
+                m.ChatMessage.session_id == session.id,
+                m.ChatMessage.role == "assistant",
+                m.ChatMessage.reply_to_id == user_message.id,
+            )
+            .order_by(m.ChatMessage.id.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
     mode = MODES.get(user_message.mode or "")
     refs = [
         {"kind": str(r.get("kind")), "id": str(r.get("id"))}
@@ -1157,6 +1175,9 @@ async def regenerate_reply(
         extra_context={"regenerated": True},
         manifest=manifest,
     )
+    if first_variant_parent is not None:
+        # Set here, not through `extra_context`: its allow-list stays closed.
+        context["regenerate_of"] = str(first_variant_parent)
     _apply_acting_person(context, acting)
     run, _published = await enqueue_run(
         db,
@@ -1202,13 +1223,17 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             # work silently. last_update_at was already touched by the tool.
             # Its prompt goes too, or every quiet check would pile up an
             # unanswered "Follow-up for ..." line in the history.
-            await db.execute(
-                delete(m.ChatMessage).where(
-                    m.ChatMessage.session_id == session.id,
-                    m.ChatMessage.role == "followup",
-                    m.ChatMessage.run_id == run.id,
+            prompts = (
+                await db.execute(
+                    select(m.ChatMessage.id).where(
+                        m.ChatMessage.session_id == session.id,
+                        m.ChatMessage.role == "followup",
+                        m.ChatMessage.run_id == run.id,
+                    )
                 )
-            )
+            ).scalars()
+            for prompt_id in list(prompts):
+                await tree.remove_message(db, session=session, message_id=prompt_id)
             session.last_message_at = session.last_message_at or dt.datetime.now(tz=dt.UTC)
             return
     rendered_components = (run.context or {}).get("rendered_components", [])
@@ -1263,7 +1288,15 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
         rendered_components=rendered_components,
         reply_to_id=reply_to_id,
     )
-    db.add(reply)
+    # Set by `regenerate_reply`: the parent of the answer this one regenerates.
+    raw_regenerate_of = (run.context or {}).get("regenerate_of")
+    regenerate_of = uuid_or_none(raw_regenerate_of) if raw_regenerate_of else None
+    if regenerate_of is not None:
+        await tree.add_regenerated_reply(
+            db, session=session, message=reply, first_variant_parent_id=regenerate_of
+        )
+    else:
+        await tree.append_run_write(db, session=session, message=reply, anchor_id=reply_to_id)
     session.last_message_at = dt.datetime.now(tz=dt.UTC)
     await db.flush()
     await publish_chat_message_created(
@@ -1353,7 +1386,7 @@ async def record_answer_turn(
         author_member_id=author_member_id,
         parts=[{"type": "answers", "questions": questions_json, "answers": answer_map}],
     )
-    db.add(message)
+    await tree.append_person_write(db, session=session, message=message)
     session.last_message_at = dt.datetime.now(tz=dt.UTC)
     await db.flush()
     await publish_chat_message_created(

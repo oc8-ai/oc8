@@ -104,6 +104,7 @@ async def stage_carried_over_turn(db: AsyncSession, *, run: m.AgentRun) -> uuid.
         agent=agent,
         door=door,
         text="\n\n".join(row.text for row in rows),
+        anchor_id=_anchor(run),
     )
     now = dt.datetime.now(tz=dt.UTC)
     for row in rows:
@@ -111,6 +112,15 @@ async def stage_carried_over_turn(db: AsyncSession, *, run: m.AgentRun) -> uuid.
         row.consumed_step = CARRIED_OVER_STEP
     await db.flush()
     return run_id
+
+
+def _anchor(run: m.AgentRun) -> uuid.UUID | None:
+    """The user turn `run` answered, from its context."""
+    raw = (run.context or {}).get("reply_to_message_id")
+    try:
+        return uuid.UUID(str(raw)) if raw else None
+    except ValueError:
+        return None
 
 
 async def _refusal(
@@ -203,21 +213,25 @@ async def _stage_turn(
     agent: m.Agent,
     door: _Door,
     text: str,
+    anchor_id: uuid.UUID | None,
 ) -> uuid.UUID:
     """`send_message`'s turn, without its commit: the user message, the run
     answering it (queued, unpublished) and its announcement after commit. No
-    context manifest: that needs the member's live token role."""
+    context manifest: that needs the member's live token role.
+
+    Placed as the ended run's write (`chat.tree.append_run_write`), anchored on
+    the turn that run answered: it follows that run's answer, and moves the
+    leaf only while the person is still on that branch."""
+    from oc8.chat import tree
     from oc8.chat.modes import parse_command
     from oc8.chat.service import (
         _build_task_text,
         _build_turn_context,
         _kb_reference_text,
-        list_messages,
     )
     from oc8.realtime.emit import publish_chat_message_created
     from oc8.runtime.repository import RunRepository
 
-    history = await list_messages(db, tenant_id=session.tenant_id, session_id=session.id)
     mode, body = parse_command(text)
     message = m.ChatMessage(
         tenant_id=session.tenant_id,
@@ -228,8 +242,8 @@ async def _stage_turn(
         context_refs=[],
         author_member_id=member_id,
     )
-    db.add(message)
-    await db.flush()
+    await tree.append_run_write(db, session=session, message=message, anchor_id=anchor_id)
+    history = await tree.path_before(db, session=session, message=message)
     task_text = _build_task_text(history, body) + _kb_reference_text([], mode, None)
     context = _build_turn_context(
         session=session,
