@@ -381,7 +381,7 @@ def effective_tool_policies(
     The frame and the narrowing intersect: each can only tighten, never widen.
     A tool the frame withholds cannot be granted by the narrowing; a right the
     frame denies cannot be granted by the narrowing. The intersection is taken
-    rather than the union, for the same reason `_narrower_surface` gives.
+    rather than the union, for the same reason `narrower_surface` gives.
     """
     frame_tools = _tools(frame)
     narrow_tools = _tools(narrowing)
@@ -394,9 +394,9 @@ def effective_tool_policies(
             enabled=f.enabled and (no.enabled if no else True),
             read=f.read and (no.read if no else True),
             modify=f.modify and (no.modify if no else True),
-            approval_eur=_min_threshold(f.approval_eur, no.approval_eur if no else None),
+            approval_eur=min_threshold(f.approval_eur, no.approval_eur if no else None),
             approval_actions=f.approval_actions | (no.approval_actions if no else frozenset()),
-            only=_narrower_surface(f.only, no.only if no else None),
+            only=narrower_surface(f.only, no.only if no else None),
             # Narrowing-only, unlike every field above: a `connection_id` pin
             # is an AGENT-level login selection (Task 4/6, agent tool login
             # selection design) with no frame-level counterpart to intersect
@@ -439,7 +439,7 @@ def effective_tool_policies(
     return out
 
 
-def _narrower_surface(
+def narrower_surface(
     frame_only: frozenset[str] | None, narrow_only: frozenset[str] | None
 ) -> frozenset[str] | None:
     """An agent may only ever tighten the surface, never widen it.
@@ -455,13 +455,18 @@ def _narrower_surface(
     return frame_only & narrow_only
 
 
-def _min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
+def min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
     # A lower threshold is stricter; None means "no threshold" (least strict).
     if frame_eur is None:
         return narrow_eur
     if narrow_eur is None:
         return frame_eur
     return min(frame_eur, narrow_eur)
+
+
+# The old private names, kept for callers that still use them.
+_narrower_surface = narrower_surface
+_min_threshold = min_threshold
 
 
 #: Ordered narrowest-first. A future "company"/org-wide tier slots in
