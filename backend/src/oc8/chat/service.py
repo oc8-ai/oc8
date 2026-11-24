@@ -263,6 +263,11 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
                 session.id,
             )
         await db.delete(attachment)
+    # Audit lock, then the session row, before the transcript and the row go:
+    # after the knowledge and file rows above, as `chat.tree`'s lock order has
+    # it. Taken at commit instead, the audit lock would come after the row --
+    # the inverse of every reply, send and branch switch in this chat.
+    await tree.lock_session(db, session=session)
     await db.execute(
         delete(m.ChatMessage).where(
             m.ChatMessage.tenant_id == tenant_id, m.ChatMessage.session_id == session.id
@@ -1162,6 +1167,22 @@ async def edit_message(
     )
 
 
+async def lock_regenerate(db: AsyncSession, *, session_id: uuid.UUID) -> None:
+    """Serialise the regenerates of one chat, until commit: a second click
+    waits here, then sees the first one's run (`regenerate_reply` commits).
+
+    An advisory lock of its own, NOT the session row, for the reason
+    `copilot.direct_access._lock_offers` gives: a regenerate embeds the turn
+    and rebuilds its manifest before it places anything, and holding the row
+    (or the audit lock `tree.lock_session` takes first) across those calls
+    would serialise the tenant's audited commits behind the network. Taken
+    before the audit lock, step 3 of `chat.tree`'s order."""
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"regenerate:{session_id}"},
+    )
+
+
 async def regenerate_reply(
     db: AsyncSession,
     *,
@@ -1189,7 +1210,8 @@ async def regenerate_reply(
     fit block here is the web owner's (`acting_member`) alone.
 
     COMMITS `db` (via `enqueue_run`) and re-binds the RLS tenant afterwards,
-    like `send_message`.
+    like `send_message`. Takes the session lock itself, just before the
+    enqueue; a caller serialising regenerates holds `lock_regenerate`.
     """
     # The new answer is a sibling of the first one: same parent, whatever came
     # between the turn and that answer (an answered question) included.
@@ -1292,6 +1314,9 @@ async def regenerate_reply(
         # Set here, not through `extra_context`: its allow-list stays closed.
         context["regenerate_of"] = str(first_variant_parent)
     _apply_acting_person(context, acting)
+    # Lock late: after the fit block and the manifest (embeddings, network),
+    # shortly before the commit -- audit lock, then the row (`chat.tree`).
+    await tree.lock_session(db, session=session)
     run, _published = await enqueue_run(
         db,
         tenant_id=tenant_id,

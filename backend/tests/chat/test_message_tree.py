@@ -18,12 +18,13 @@ from oc8.agent.assistant import get_or_create_assistant
 from oc8.chat.carry_over import _Door, _stage_turn
 from oc8.chat.service import (
     create_session,
+    delete_session,
     record_answer_turn,
     record_assistant_reply,
     regenerate_reply,
     send_message,
 )
-from oc8.chat.tree import visible_path
+from oc8.chat.tree import MessageGone, add_edited_message, remove_message, visible_path
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -527,3 +528,183 @@ async def test_regenerate_door_takes_the_audit_lock_before_the_session_row(
                 )
             assert again.status_code == 201, again.text
     audit_lock_comes_first(seen, tenant)
+
+
+async def test_regenerate_door_calls_no_model_while_holding_the_audit_lock(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fit block embeds the turn (a network call) and the manifest is
+    rebuilt: both happen before the tenant's audit lock, which serialises
+    every audited commit of the tenant while it is held (`chat.tree`: lock
+    late, after the last model or network call)."""
+    from unittest.mock import patch
+
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    import oc8.chat.service as chat_service
+    from oc8.auth import get_identity_provider
+    from oc8.main import create_app
+
+    seen: list[str] = []
+    calls: list[int] = []
+    real_fit = chat_service.fitting_agents_for_turn
+    real_manifest = chat_service._turn_manifest
+
+    async def fit(*args: Any, **kwargs: Any) -> str:
+        calls.append(len(seen))
+        return await real_fit(*args, **kwargs)
+
+    async def manifest(*args: Any, **kwargs: Any) -> Any:
+        calls.append(len(seen))
+        return await real_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(chat_service, "fitting_agents_for_turn", fit)
+    monkeypatch.setattr(chat_service, "_turn_manifest", manifest)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="A")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+    token = get_identity_provider().mint(tenant_id=tenant, subject="op", role="org_admin")
+    headers = {"Authorization": f"Bearer {token}"}
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            sid = (
+                await c.post(
+                    "/api/v1/chat/sessions", json={"agentId": str(agent_id)}, headers=headers
+                )
+            ).json()["id"]
+            with patch("oc8.runtime.intake.publish_run"):
+                turn = (
+                    await c.post(
+                        f"/api/v1/chat/sessions/{sid}/messages",
+                        json={"message": "draft a reply"},
+                        headers=headers,
+                    )
+                ).json()
+            async with app_session(tenant) as db:
+                run = await db.get(m.AgentRun, uuid.UUID(turn["runId"]))
+                assert run is not None
+                run.state = "done"
+                await record_assistant_reply(db, run=run, output="first answer")
+            calls.clear()
+            with statements() as recorded, patch("oc8.runtime.intake.publish_run"):
+                seen = recorded
+                again = await c.post(
+                    f"/api/v1/chat/sessions/{sid}/messages/{turn['id']}/regenerate",
+                    headers=headers,
+                )
+            assert again.status_code == 201, again.text
+    assert len(calls) == 2, calls
+    audit = next((i for i, sql in enumerate(seen) if is_audit_lock(sql, tenant)), None)
+    assert audit is not None
+    assert all(at <= audit for at in calls), (calls, audit)
+    audit_lock_comes_first(seen, tenant)
+
+
+async def test_delete_session_takes_the_audit_lock_before_the_session_row(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Deleting a chat changes the session row (and its messages) only after
+    the audit lock, the order every other chat writer keeps -- otherwise it
+    holds the row while a reply holding the audit lock waits for it."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        _u1, run1 = await _send(db, session, "hello")
+        await _reply(db, run1, "hi")
+        with statements() as seen:
+            await delete_session(db, tenant_id=tenant, session=session)
+            await db.commit()
+        await db.execute(text("SELECT set_config('app.tenant_id', :t, true)"), {"t": str(tenant)})
+    touch = next(
+        i for i, sql in enumerate(seen) if re.search(r"DELETE FROM chat_(message|session)\b", sql)
+    )
+    audit = next((i for i, sql in enumerate(seen) if is_audit_lock(sql, tenant)), None)
+    assert audit is not None and audit < touch, seen[touch]
+
+
+async def test_edit_follows_a_parent_removed_after_the_turn_was_read(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The edit door reads the turn, then a quiet follow-up above it is
+    deleted (its children move up) before the edit takes the session lock:
+    the edit hangs beside the turn where it is now, not under the deleted row."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        _u1, run1 = await _send(db, session, "watch the invoices")
+        r1 = await _reply(db, run1, "I will")
+        followup = {"responsibility_id": str(uuid.uuid4())}
+        f1, run_f1 = await _send(db, session, "Follow-up one", role="followup", followup=followup)
+        u2, _run2 = await _send(db, session, "meanwhile")
+        assert await _parent(db, u2.id) == f1.id
+        sid, u2_id, r1_id, run_f1_id = session.id, u2.id, r1.id, run_f1.id
+    async with app_session(tenant) as door:
+        stale = await door.get(m.ChatSession, sid)
+        original = await door.get(m.ChatMessage, u2_id)
+        assert stale is not None and original is not None and original.parent_id == f1.id
+        async with app_session(tenant) as worker:
+            run = await worker.get(m.AgentRun, run_f1_id)
+            assert run is not None
+            run.state = "done"
+            await record_assistant_reply(worker, run=run, output="")
+        edited = m.ChatMessage(tenant_id=tenant, session_id=sid, role="user", content="edited")
+        await add_edited_message(door, session=stale, message=edited, original=original)
+        assert await _parent(door, edited.id) == r1_id
+        assert await _leaf(door, stale) == edited.id
+
+
+async def test_edit_of_a_turn_removed_meanwhile_is_refused(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        u1, run1 = await _send(db, session, "question")
+        await _reply(db, run1, "answer")
+        sid, u1_id = session.id, u1.id
+    async with app_session(tenant) as door:
+        stale = await door.get(m.ChatSession, sid)
+        original = await door.get(m.ChatMessage, u1_id)
+        assert stale is not None and original is not None
+        async with app_session(tenant) as other:
+            other_session = await other.get(m.ChatSession, sid)
+            assert other_session is not None
+            await remove_message(other, session=other_session, message_id=u1_id)
+        edited = m.ChatMessage(tenant_id=tenant, session_id=sid, role="user", content="edited")
+        with pytest.raises(MessageGone):
+            await add_edited_message(door, session=stale, message=edited, original=original)
+
+
+async def test_a_chat_reference_summarises_only_the_branch_on_screen(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A `#chat` reference tells the model what the chat's owner sees: the
+    newest messages of the visible path, never a hidden variant or branch."""
+    from oc8.chat.context.registry import RESOLVERS
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        u1, run1 = await _send(db, session, "question")
+        await _reply(db, run1, "OLD-VARIANT")
+        run_regen = await regenerate_reply(
+            db,
+            session=session,
+            tenant_id=tenant,
+            user_message=u1,
+            originating_operator="op",
+            operator_role=None,
+        )
+        await _reply(db, run_regen, "NEW-VARIANT")
+        summary = await RESOLVERS["chat_session"].summary(db, session)
+    assert "NEW-VARIANT" in summary and "question" in summary
+    assert "OLD-VARIANT" not in summary, "a hidden variant must not reach the prompt"

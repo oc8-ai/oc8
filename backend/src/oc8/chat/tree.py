@@ -22,7 +22,9 @@ needs, but never one listed earlier after one listed later:
   1. an approval row (`decide_approval`)
   2. an agent_run row (the executor's claim and every leg end; a decision
      waking its parked run; an answer to a parked question)
-  3. a conversation's offer lock (`copilot.direct_access._lock_offers`)
+  3. a conversation's offer lock (`copilot.direct_access._lock_offers`), or
+     its regenerate lock (`chat.service.lock_regenerate`) -- two advisory
+     locks no transaction holds together
   4. the tenant's audit lock (`lock_tenant_audit`; at the latest at the
      commit of any transaction that staged an audit event)
   5. a run's input lock (`lock_run_inputs`, which takes 4 first)
@@ -46,8 +48,10 @@ and waiting for the audit lock at its commit, is a deadlock.
 
 So every chat writer takes `lock_session` before it locks or changes the
 session row: `send_message` (an edit included), `record_assistant_reply`,
-`record_answer_turn`, a carried-over turn, the regenerate door
-(`api/v1/chat.py`), a branch switch (`switch_leaf`), and the chat
+`record_answer_turn`, a carried-over turn, a regenerate
+(`chat.service.regenerate_reply`), a branch switch (`switch_leaf`), deleting
+a chat (`chat.service.delete_session`, after its knowledge and file rows),
+and the chat
 mode a run entered (`chat.service.apply_entered_mode`); a direct-access
 decision takes the steps above in order. A run never locks the session row
 during its leg -- that would hold it while the model is called: the
@@ -69,6 +73,11 @@ from oc8 import models as m
 from oc8.audit.chain import lock_tenant_audit
 from oc8.chat.audience import session_audience_or_nobody
 from oc8.realtime.emit import publish_chat_session_updated
+
+
+class MessageGone(LookupError):
+    """The message a write builds on was removed before the write took the
+    session lock."""
 
 
 def _has_tree(session: m.ChatSession) -> bool:
@@ -291,12 +300,30 @@ async def add_edited_message(
 ) -> None:
     """An edited user turn: a sibling of the turn it rewrites (same parent),
     and the new leaf -- the person goes on from what they just wrote, while
-    the old branch stays as it was. Adds and flushes `message`."""
+    the old branch stays as it was. Adds and flushes `message`.
+
+    The original's parent is read again under the session lock: a quiet
+    follow-up above it may have been removed since the caller loaded it
+    (`remove_message` moves its children up), and the edit must not hang
+    under a row that is gone. Raises `MessageGone` when the original itself
+    was removed meanwhile."""
     if not _has_tree(session):
         await _place(db, message=message, parent=None)
         return
     await lock_session(db, session=session)
-    await _place(db, message=message, parent=original.parent_id)
+    row = (
+        await db.execute(
+            select(m.ChatMessage.parent_id).where(
+                m.ChatMessage.tenant_id == session.tenant_id,
+                m.ChatMessage.session_id == session.id,
+                m.ChatMessage.id == original.id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        raise MessageGone(original.id)
+    set_committed_value(original, "parent_id", row.parent_id)
+    await _place(db, message=message, parent=row.parent_id)
     await _set_leaf(db, session=session, leaf=message.id)
 
 

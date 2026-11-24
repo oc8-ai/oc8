@@ -52,6 +52,7 @@ from oc8.chat.context.base import ContextPage, Viewer
 from oc8.chat.context.registry import register
 from oc8.chat.context.sources import DEFAULT_CLASSIFICATION
 from oc8.chat.reach import reachable_chat_agent, reaches_agent_runs
+from oc8.chat.tree import visible_path
 from oc8.copilot.redaction import redact_text
 from oc8.departments.repo import visible_department, visible_departments
 from oc8.runtime.person import whose_run
@@ -457,17 +458,29 @@ class ChatSessionResolver(_Summarized):
         return str(obj.title or "Chat")
 
     async def summary(self, db: AsyncSession, obj: Any) -> str:
-        newest_first = (
-            await db.execute(
-                select(m.ChatMessage.role, m.ChatMessage.content)
-                .where(
-                    m.ChatMessage.tenant_id == obj.tenant_id,
-                    m.ChatMessage.session_id == obj.id,
-                )
-                .order_by(m.ChatMessage.created_at.desc(), m.ChatMessage.id.desc())
-                .limit(_CHAT_MESSAGES)
-            )
-        ).all()
+        newest_first: list[tuple[str, str]]
+        if obj.kind == "chat" and obj.current_leaf_id is not None:
+            # The conversation its owner sees: the newest messages of the
+            # visible path, never a hidden variant or another branch.
+            path = (await visible_path(db, session=obj))[-_CHAT_MESSAGES:]
+            newest_first = [(msg.role, msg.content) for msg in reversed(path)]
+        else:
+            # No tree (a Live timeline, or a chat with no leaf yet): every
+            # message is on screen, the newest last.
+            newest_first = [
+                (role, content)
+                for role, content in (
+                    await db.execute(
+                        select(m.ChatMessage.role, m.ChatMessage.content)
+                        .where(
+                            m.ChatMessage.tenant_id == obj.tenant_id,
+                            m.ChatMessage.session_id == obj.id,
+                        )
+                        .order_by(m.ChatMessage.created_at.desc(), m.ChatMessage.id.desc())
+                        .limit(_CHAT_MESSAGES)
+                    )
+                ).all()
+            ]
         text = f"Chat '{_compact(obj.title or 'Chat', 80)}':"
         lines: list[str] = []
         budget = SUMMARY_CHARS - len(text)

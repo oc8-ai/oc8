@@ -49,11 +49,12 @@ from oc8.chat.service import (
     get_session,
     list_messages,
     list_sessions,
+    lock_regenerate,
     regenerate_reply,
     rename_session,
     send_message,
 )
-from oc8.chat.tree import lock_session, switch_leaf, visible_path
+from oc8.chat.tree import MessageGone, switch_leaf, visible_path
 from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
 from oc8.schemas.base import CamelModel
@@ -745,10 +746,10 @@ async def regenerate_message(
     if msg.role != "user":
         raise HTTPException(status.HTTP_409_CONFLICT, "only a member's turn can be answered again")
     # Serialise concurrent regenerates: the lock is held until `enqueue_run`
-    # commits, so a second click waits and then sees the first one's run.
-    # Audit lock first, then the row -- the order every chat writer keeps
-    # (`chat.tree`).
-    await lock_session(db, session=session)
+    # commits, so a second click waits and then sees the first one's run. An
+    # advisory lock, not the session row: `regenerate_reply` embeds the turn
+    # before it takes the audit lock and the row (`chat.tree`).
+    await lock_regenerate(db, session_id=session.id)
     running = await active_runs_for_session(
         db, tenant_id=actor.principal.tenant_id, session_id=session.id
     )
@@ -810,16 +811,21 @@ async def edit_chat_message(
     # The same gate as sending: an edit starts a run.
     if not is_assistant and RUN_START not in authority.tenant_wide:
         raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires permission: {RUN_START}")
-    user_message, run = await edit_message(
-        db,
-        session=session,
-        tenant_id=actor.principal.tenant_id,
-        original=original,
-        content=body.content,
-        originating_operator=actor.principal.subject,
-        operator_role=actor.principal.role,
-        acting_member=actor.member,
-    )
+    try:
+        user_message, run = await edit_message(
+            db,
+            session=session,
+            tenant_id=actor.principal.tenant_id,
+            original=original,
+            content=body.content,
+            originating_operator=actor.principal.subject,
+            operator_role=actor.principal.role,
+            acting_member=actor.member,
+        )
+    except MessageGone:
+        # Removed between loading it above and the edit taking the session
+        # lock: the same answer as a turn that was never there.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found") from None
     dto = await _message_dto(user_message, db, actor.principal.tenant_id)
     if run is not None:
         # Same-response only, as for a sent turn (`post_message`).
