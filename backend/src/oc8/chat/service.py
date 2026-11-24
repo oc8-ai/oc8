@@ -617,14 +617,17 @@ async def fitting_agents_for_turn(
         copilot = await db.get(m.Agent, session.agent_id)
         if copilot is None or not copilot.is_tenant_assistant:
             return ""
-        matches = await matching_agents(
-            db,
-            member_id=owner_id,
-            tool_key=None,
-            request=text[:_FIT_REQUEST_LIMIT],
-            copilot=copilot,
-            token_role=token_role,
-        )
+        # A savepoint: a failing statement here must not abort the turn's own
+        # transaction, which still has to enqueue the run.
+        async with db.begin_nested():
+            matches = await matching_agents(
+                db,
+                member_id=owner_id,
+                tool_key=None,
+                request=text[:_FIT_REQUEST_LIMIT],
+                copilot=copilot,
+                token_role=token_role,
+            )
         return agent_fit_text(matches)
     except Exception:
         logger.warning("agent match failed; the turn goes on without it", exc_info=True)
@@ -1068,6 +1071,9 @@ async def regenerate_reply(
     and `operator_role`: the turn's own refs plus the chat's and project's pins
     as they stand now, under the member's rights as they stand now. A pin
     removed, or a right lost, since the first answer does not come back.
+
+    Serves the web door only: a messenger turn is never regenerated, so the
+    fit block here is the web owner's (`acting_member`) alone.
 
     COMMITS `db` (via `enqueue_run`) and re-binds the RLS tenant afterwards,
     like `send_message`.

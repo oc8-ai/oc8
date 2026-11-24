@@ -8,7 +8,7 @@ import uuid
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -281,3 +281,27 @@ async def test_messenger_turn_for_another_subject_gets_no_block(
         )
         assert run is not None and BLOCK not in run.context["task"]
         assert router.calls == []
+
+
+async def test_a_failing_sql_statement_in_matching_does_not_block_the_turn(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+
+    async def failing_sql(db: AsyncSession, **_: Any) -> list[Any]:
+        await db.execute(text("SELECT 1/0"))
+        return []
+
+    monkeypatch.setattr("oc8.chat.service.matching_agents", failing_sql)
+    async with app_session(tenant) as db:
+        session = await _office(db, tenant)
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator="anna",
+            acting_member=await _owner(db, session),
+        )
+        assert run is not None
+        assert BLOCK not in run.context["task"]
