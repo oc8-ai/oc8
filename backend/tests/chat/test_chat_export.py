@@ -196,7 +196,7 @@ async def test_filename_header_is_slugified_and_safe(
         async with app_session(tenant) as db:
             session = await db.get(m.ChatSession, uuid.UUID(sid))
             assert session is not None
-            session.title = 'Q4 "Plan"\r\nX-Evil: 1 – Übersicht'
+            session.title = 'Q4 "Plan"\r\nX-Evil: 1 \u2013 \u00dcbersicht'
         r = await c.get(f"/api/v1/chat/sessions/{sid}/export?format=json", headers=_token(tenant))
     assert (
         r.headers["content-disposition"] == 'attachment; filename="q4-plan-x-evil-1-ubersicht.json"'
