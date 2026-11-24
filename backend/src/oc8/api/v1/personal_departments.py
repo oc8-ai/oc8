@@ -473,6 +473,25 @@ class ConfirmationSkillDTO(CamelModel):
     status: str
 
 
+class ConfirmationLoginDTO(CamelModel):
+    """A login a setup uses: its name, never a secret."""
+
+    name: str
+    owned_by_owner: bool
+
+
+class ConfirmationSetupDTO(CamelModel):
+    """A tool's setup as the agent's runs use it, without secrets."""
+
+    tool: str
+    server_url: str | None
+    transport: str | None
+    scopes: Any
+    #: The setup's settings, by name only: their values are never shown.
+    config_keys: list[str]
+    logins: list[ConfirmationLoginDTO]
+
+
 class ConfirmationAgentDTO(CamelModel):
     """An agent whose earlier confirmation no longer holds."""
 
@@ -484,6 +503,12 @@ class ConfirmationAgentDTO(CamelModel):
     changes: list[str]
     #: Its own approval threshold now (EUR), or None.
     approval_threshold: Any
+    #: With "tools" or "threshold": every tool it may use now, as its grant
+    #: records it (the policy, plus `frame_extra`/`agent_extra`: fields the
+    #: policy does not read, such as a default login).
+    tools: dict[str, Any] | None = None
+    #: With "core": the setups its runs use now.
+    setup: list[ConfirmationSetupDTO] | None = None
 
 
 class ConfirmationDepartmentDTO(CamelModel):
@@ -492,6 +517,8 @@ class ConfirmationDepartmentDTO(CamelModel):
     goal: str
     #: Every frame key but the tools.
     frame: dict[str, Any]
+    #: What the department's tools reset to.
+    frame_capa_defaults: dict[str, Any] | None
 
 
 class PersonalConfirmationDTO(CamelModel):
@@ -543,11 +570,34 @@ def _confirmation_dto(summary: PendingConfirmation) -> PersonalConfirmationDTO:
                 name=a.name,
                 changes=a.changes,
                 approval_threshold=a.approval_threshold,
+                tools=a.tools,
+                setup=(
+                    [
+                        ConfirmationSetupDTO(
+                            tool=v.tool,
+                            server_url=v.server_url,
+                            transport=v.transport,
+                            scopes=v.scopes,
+                            config_keys=v.config_keys,
+                            logins=[
+                                ConfirmationLoginDTO(name=x.name, owned_by_owner=x.owned_by_owner)
+                                for x in v.logins
+                            ],
+                        )
+                        for v in a.setup
+                    ]
+                    if a.setup is not None
+                    else None
+                ),
             )
             for a in summary.agents
         ],
         department=(
-            ConfirmationDepartmentDTO(goal=summary.department.goal, frame=summary.department.frame)
+            ConfirmationDepartmentDTO(
+                goal=summary.department.goal,
+                frame=summary.department.frame,
+                frame_capa_defaults=summary.department.frame_capa_defaults,
+            )
             if summary.department is not None
             else None
         ),

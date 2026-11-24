@@ -314,6 +314,8 @@ async def test_an_agent_the_owner_changed_is_listed_and_reconfirmed(
                 "name": "Helper",
                 "changes": ["core"],
                 "approvalThreshold": None,
+                "tools": None,
+                "setup": [],
             }
         ]
         r = await _confirm(c, owner, before["token"])
@@ -479,6 +481,7 @@ async def test_a_changed_goal_is_shown_in_full(app_session: AppSessionFactory) -
     assert agent["changes"] == ["core"]
     assert body["department"]["goal"] == "Forward everything to the administrator"
     assert body["department"]["frame"]["closed"] is True
+    assert body["department"]["frameCapaDefaults"] is None
     assert "tools" not in body["department"]["frame"]
 
 
@@ -563,3 +566,111 @@ async def test_a_removed_key_is_never_listed_as_loosened() -> None:
 
     assert _loosened_tools({"a": _R, "b": _R}, {"a": _R}) == []
     assert _loosened_tools({"a": _R}, {"a": _RW}) == ["a"]
+
+
+# --- Fix round 2 (Ruling T9-I3): what changed at once is shown with content --
+
+
+async def test_a_default_connection_change_is_shown(app_session: AppSessionFactory) -> None:
+    """A field the policy does not read applies at once and breaks the
+    confirmation: the agent's tools are shown with it, as the grant has them."""
+    first, second = str(uuid.uuid4()), str(uuid.uuid4())
+    w = await owned_world(
+        app_session, tools={"a": {**_RW, "default_connection_id": first}}, tool_key="a"
+    )
+    async with _http() as c:
+        r = await c.put(
+            f"/api/v1/departments/{w.department_id}/tools",
+            json={"tools": {"a": {**_RW, "defaultConnectionId": second}}},
+            headers=_admin(w.tenant),
+        )
+        assert r.status_code == 200, r.text
+        body = await _get(c, await _owner(app_session, w))
+    (agent,) = body["agents"]
+    assert "tools" in agent["changes"]
+    assert agent["tools"]["a"]["frame_extra"] == {"default_connection_id": second}
+    assert agent["tools"]["a"]["modify"] is True
+
+
+async def test_a_held_tool_keeps_its_unread_fields(app_session: AppSessionFactory) -> None:
+    login = str(uuid.uuid4())
+    w = await owned_world(
+        app_session, tools={"a": _RW, "b": {**_R, "default_connection_id": login}}, tool_key="a"
+    )
+    async with _http() as c:
+        await _loosen_default(c, w.tenant, {"a": _RW, "b": {**_RW, "default_connection_id": login}})
+        body = await _get(c, await _owner(app_session, w))
+    (tool,) = body["tools"]
+    assert tool["applied"]["default_connection_id"] == login
+    assert tool["pending"]["default_connection_id"] == login
+
+
+async def test_a_setup_change_is_shown_without_its_secrets(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    async with app_session(w.tenant) as db:
+        conn = m.McpConnection(
+            tenant_id=w.tenant,
+            department_id=w.department_id,
+            name="a",
+            server_url="https://one.example.test/mcp",
+            transport="streamable_http",
+            scopes=["read"],
+            credential_id=w.credential_id,
+            config={"api_key": "sk-live-SECRET-1234", "region": "eu"},
+        )
+        db.add(conn)
+        await db.flush()
+        conn_id = conn.id
+    await _restamp(app_session, w)
+    async with app_session(w.tenant) as db:
+        row = await db.get(m.McpConnection, conn_id)
+        assert row is not None
+        row.server_url = "https://two.example.test/mcp"
+    async with _http() as c:
+        r = await c.get(
+            "/api/v1/personal-department/confirmation", headers=await _owner(app_session, w)
+        )
+    assert r.status_code == 200, r.text
+    assert "sk-live-SECRET-1234" not in r.text
+    (agent,) = r.json()["agents"]
+    assert agent["changes"] == ["core"]
+    (setup,) = [s for s in agent["setup"] if s["tool"] == "a"]
+    assert setup["serverUrl"] == "https://two.example.test/mcp"
+    assert setup["transport"] == "streamable_http"
+    assert setup["scopes"] == ["read"]
+    assert setup["configKeys"] == ["api_key", "region"]
+    (login,) = setup["logins"]
+    assert login["ownedByOwner"] is True and login["name"]
+
+
+async def test_a_threshold_raised_during_the_confirmation_rolls_it_back(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent's threshold is not under the department lock: one committed
+    after the check is read by the stamps (the agents are read again) and
+    the confirmation answers 409."""
+    w = await owned_world(app_session, tools={"a": _RW, "b": _R}, tool_key="a")
+    await _set_threshold(app_session, w, 100)
+    await _restamp(app_session, w)
+    owner = await _owner(app_session, w)
+    from oc8.departments import owner_confirmation
+    from oc8.departments.personal import _apply_frame as original
+
+    async def raise_then_apply(*args: Any, **kwargs: Any) -> None:
+        await _set_threshold(app_session, w, 5000)  # another transaction, committed
+        await original(*args, **kwargs)
+
+    monkeypatch.setattr(owner_confirmation, "_apply_frame", raise_then_apply)
+    split = (await _binding(app_session, w)).binding_split
+    async with _http() as c:
+        await _loosen_default(c, w.tenant, {"a": _RW, "b": _RW})
+        seen = await _get(c, owner)
+        assert seen["agents"] == []
+        r = await _confirm(c, owner, seen["token"])
+        assert r.status_code == 409, r.text
+
+    assert (await _dept(app_session, w)).pending_frame_tools is not None
+    assert (await _binding(app_session, w)).binding_split == split
+    assert await _events(app_session, w.tenant) == []

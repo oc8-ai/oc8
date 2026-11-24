@@ -35,6 +35,7 @@ from oc8.agents.versioning import payload_hash
 from oc8.audit import append_event
 from oc8.authz.pdp import ToolPolicy
 from oc8.authz.tightening import grant_loosenings, grant_tool_entry, policy_loosenings
+from oc8.connections.access import _setup_parts
 from oc8.connections.confirmation import (
     SplitFingerprint,
     agent_threshold,
@@ -90,6 +91,28 @@ class SkillChange:
 
 
 @dataclass(frozen=True)
+class LoginView:
+    """A login a setup uses: its name, never a secret."""
+
+    name: str
+    #: Whether the department's owner owns it (their own login).
+    owned_by_owner: bool
+
+
+@dataclass(frozen=True)
+class SetupView:
+    """A tool's setup as the agent's runs use it, without secrets: the
+    `config` shows its keys only, a login its name and whose it is."""
+
+    tool: str
+    server_url: str | None
+    transport: str | None
+    scopes: Any
+    config_keys: list[str]
+    logins: list[LoginView]
+
+
+@dataclass(frozen=True)
 class AgentChange:
     """A live agent with an owner confirmation that no longer holds.
     `changes` (sorted): "core" (its version, a setup, or the department's
@@ -100,6 +123,12 @@ class AgentChange:
     name: str
     changes: list[str]
     approval_threshold: Any
+    #: With "tools" or "threshold": every tool it may use now, as the grant
+    #: records it (`grant_tool_entry`, with `frame_extra`/`agent_extra`, the
+    #: fields the policy does not read, such as a default login).
+    tools: dict[str, Any] | None = None
+    #: With "core": the setups its runs use now.
+    setup: list[SetupView] | None = None
 
 
 @dataclass(frozen=True)
@@ -109,6 +138,8 @@ class DepartmentView:
 
     goal: str
     frame: dict[str, Any]
+    #: What the department's tools reset to (`frame_capa_defaults`).
+    frame_capa_defaults: dict[str, Any] | None
 
 
 @dataclass(frozen=True)
@@ -136,16 +167,87 @@ class _Pin:
     cores: dict[str | None, str] = field(default_factory=dict)
     skills: Any = None
     frame: Any = None
+    tools: Any = None
 
 
 def _readable(policy: Any) -> dict[str, Any] | None:
-    """A stored policy as the runtime reads it, None when it does not read."""
+    """A stored policy as the runtime reads it, plus the fields it does not
+    read (a default login, say) as stored; None when it does not read."""
     if not isinstance(policy, Mapping):
         return None
     try:
-        return ToolPolicy.from_json(dict(policy), strict=True).to_json()
+        read = ToolPolicy.from_json(dict(policy), strict=True).to_json()
     except (KeyError, TypeError, ValueError):
         return None
+    extras = {k: v for k, v in policy.items() if k not in read and v is not None}
+    return {**read, **extras}
+
+
+def _ids(values: Any) -> list[uuid.UUID]:
+    out: list[uuid.UUID] = []
+    for value in values if isinstance(values, list) else []:
+        try:
+            out.append(uuid.UUID(str(value)))
+        except ValueError:
+            continue  # a mode, or "None"
+    return out
+
+
+async def _logins(
+    db: AsyncSession, ids: list[uuid.UUID], owner: uuid.UUID | None
+) -> list[LoginView]:
+    out: list[LoginView] = []
+    for login_id in ids:
+        credential = await db.get(m.Credential, login_id)
+        if credential is not None:
+            out.append(
+                LoginView(
+                    credential.name, owner is not None and credential.owner_member_id == owner
+                )
+            )
+            continue
+        oauth = await db.get(m.OAuthConnection, login_id)
+        if oauth is not None:
+            label = f"{oauth.provider}: {oauth.account_label}"
+            out.append(LoginView(label, owner is not None and oauth.owner_member_id == owner))
+    return out
+
+
+def _config_keys(config: Any) -> list[str]:
+    return sorted(str(key) for key in config) if isinstance(config, Mapping) else []
+
+
+async def _setup_view(db: AsyncSession, agent: m.Agent, dept: m.Department) -> list[SetupView]:
+    """What `core` hashes of the setups (`connections.access._setup_parts`,
+    every tool), shown without secrets."""
+    setup, shared = await _setup_parts(db, agent, dept, None)
+    owner = dept.owner_member_id
+    out: list[SetupView] = []
+    for conn_id, credential_id, server_url, transport, scopes, config in setup:
+        conn = await db.get(m.McpConnection, uuid.UUID(conn_id))
+        out.append(
+            SetupView(
+                tool=conn.name if conn is not None else conn_id,
+                server_url=server_url,
+                transport=transport,
+                scopes=scopes,
+                config_keys=_config_keys(config),
+                logins=await _logins(db, _ids([credential_id]), owner),
+            )
+        )
+    for name, definition, used in shared:
+        server_url, transport, scopes, config = definition or [None, None, None, None]
+        out.append(
+            SetupView(
+                tool=name,
+                server_url=server_url,
+                transport=transport,
+                scopes=scopes,
+                config_keys=_config_keys(config),
+                logins=await _logins(db, _ids(used), owner),
+            )
+        )
+    return sorted(out, key=lambda view: view.tool)
 
 
 def _grant_entry(policy: Any) -> dict[str, Any] | None:
@@ -261,7 +363,11 @@ async def _agent_survey(
     which an owner confirmation of it no longer holds (empty: all hold)."""
     version_id = agent.current_version_id
     whole = await split_fingerprint(db, agent, None, version_id=version_id)
-    pin = _Pin(skills=whole.grant.get("skills"), frame=whole.grant.get("frame"))
+    pin = _Pin(
+        skills=whole.grant.get("skills"),
+        frame=whole.grant.get("frame"),
+        tools=whole.grant.get("tools"),
+    )
     pin.cores[None] = whole.core
     changes: set[str] = set()
     if owner is None:
@@ -332,7 +438,14 @@ async def _survey(
         skills |= _skill_changes(pin.skills, held)
         if changes:
             agents.append(
-                AgentChange(agent.id, agent.name, sorted(changes), agent_threshold(agent))
+                AgentChange(
+                    agent.id,
+                    agent.name,
+                    sorted(changes),
+                    agent_threshold(agent),
+                    tools=dict(pin.tools or {}) if changes & {"tools", "threshold"} else None,
+                    setup=await _setup_view(db, agent, dept) if "core" in changes else None,
+                )
             )
         pins[agent.id] = pin
         cores = sorted((str(key), core) for key, core in pin.cores.items())
@@ -340,7 +453,9 @@ async def _survey(
     department = None
     if any({"core", "frame"} & set(agent.changes) for agent in agents):
         department = DepartmentView(
-            goal=dept.goal or "", frame={k: v for k, v in frame.items() if k != "tools"}
+            goal=dept.goal or "",
+            frame={k: v for k, v in frame.items() if k != "tools"},
+            frame_capa_defaults=dept.frame_capa_defaults,
         )
     token = payload_hash(
         {
@@ -372,10 +487,18 @@ async def pending_confirmation(db: AsyncSession, dept: m.Department) -> PendingC
     return summary
 
 
-def _stamped_as_pinned(split: Mapping[str, Any] | None, pin: _Pin, key: str | None) -> bool:
-    """Whether a stamp recorded what the token pinned. `grant.tools` is not
-    compared: the held tools applied in between change it on purpose, and
-    they were pinned by the token themselves."""
+def _other_tools(tools: Any, applied: set[str]) -> dict[str, Any]:
+    return {
+        k: v for k, v in (tools if isinstance(tools, Mapping) else {}).items() if k not in applied
+    }
+
+
+def _stamped_as_pinned(
+    split: Mapping[str, Any] | None, pin: _Pin, key: str | None, applied: set[str]
+) -> bool:
+    """Whether a stamp recorded what the token pinned: its `core`, skills,
+    frame, and every tool but those the held tools just changed (`applied`:
+    they change on purpose, and the token pinned them itself)."""
     stamped = stored_split(split)
     return (
         stamped is not None
@@ -383,6 +506,7 @@ def _stamped_as_pinned(split: Mapping[str, Any] | None, pin: _Pin, key: str | No
         and stamped.core == pin.cores[key]
         and stamped.grant.get("skills") == pin.skills
         and stamped.grant.get("frame") == pin.frame
+        and _other_tools(stamped.grant.get("tools"), applied) == _other_tools(pin.tools, applied)
     )
 
 
@@ -402,10 +526,15 @@ async def confirm_pending(
     re-confirms a changed agent.
 
     The stamps read live state, and not all of it is under the department
-    lock (a tenant-wide skill assignment, a skill's text, a setup): each
-    stamp is compared with what the token pinned (Ruling T9-I1), and any
-    difference raises `ConfirmationChanged` -- the caller's transaction
-    then rolls back. Audited without content; nothing to confirm writes
+    lock (a tenant-wide skill assignment, a skill's text, a setup, the
+    agent's threshold): each stamp is compared with what the token pinned
+    (Rulings T9-I1, T9-I3), and any difference raises `ConfirmationChanged`
+    -- the caller's transaction then rolls back. The agents are read again
+    before they are stamped. Rows the session already holds (an assignment,
+    a setup) may be read as the check read them rather than as committed
+    since: a stamp then records what the token pinned, never anything
+    newer, and the newer state shows as unconfirmed afterwards -- it can
+    only fail safe. Audited without content; nothing to confirm writes
     nothing. Returns the summary as it is afterwards."""
     if dept.owner_member_id != member.id:
         raise NotTheOwner
@@ -415,6 +544,13 @@ async def confirm_pending(
         raise ConfirmationChanged
     if not current.needed:
         return current
+    applied_now = dict((dept.frame or {}).get("tools") or {})
+    pending_now = dict(dept.pending_frame_tools or {})
+    changed = {
+        key
+        for key in set(applied_now) | set(pending_now)
+        if dept.pending_frame_tools is not None and applied_now.get(key) != pending_now.get(key)
+    }
     if dept.pending_frame_tools is not None:
         tools = await validate_frame_tools(
             db, tenant_id=dept.tenant_id, tools=dept.pending_frame_tools
@@ -425,14 +561,15 @@ async def confirm_pending(
         pin = pins.get(agent.id)
         if pin is None:  # an agent hired since the check: not what was shown
             raise ConfirmationChanged
+        await db.refresh(agent)
         bindings, triggers = await owner_confirmations(db, agent, member.id)
         for row in bindings:
             await stamp_binding(db, row, agent, confirmed_by=member.id)
-            if not _stamped_as_pinned(row.binding_split, pin, row.tool_key):
+            if not _stamped_as_pinned(row.binding_split, pin, row.tool_key, changed):
                 raise ConfirmationChanged
         for trigger in triggers:
             await stamp_trigger(db, trigger, confirmed_by=member.id)
-            if not _stamped_as_pinned(trigger.access_split, pin, None):
+            if not _stamped_as_pinned(trigger.access_split, pin, None, changed):
                 raise ConfirmationChanged
     await db.flush()
     await append_event(
