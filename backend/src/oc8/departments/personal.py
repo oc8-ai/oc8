@@ -22,8 +22,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.authz.pdp import narrowing_within_frame
-from oc8.departments.frames import cascade_department_tools_change
+from oc8.authz.pdp import ToolPolicy, narrowing_within_frame
+from oc8.authz.tightening import held_frame_tools
+from oc8.departments.frames import FrameToolsInvalid, cascade_department_tools_change
 from oc8.departments.repo import live_department, lock_departments_owned_by
 from oc8.metering.budget import get_budget, resume_budget_scope, set_budget
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
@@ -153,6 +154,62 @@ def mark_budget_overridden(dept: m.Department) -> None:
     """The budget counterpart of `mark_frame_overridden`."""
     if dept.kind == DEPARTMENT_KIND_PERSONAL and dept.budget_overridden_at is None:
         dept.budget_overridden_at = dt.datetime.now(dt.UTC)
+
+
+def _readable(policy: Any) -> bool:
+    """Whether a stored tool policy passes the strict read every write is held to."""
+    if not isinstance(policy, dict):
+        return False
+    try:
+        ToolPolicy.from_json(dict(policy), strict=True)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return True
+
+
+def apply_held_tools(
+    dept: m.Department, requested: dict[str, Any], *, live_agents: bool
+) -> dict[str, Any]:
+    """The frame tools to write now for an administrator's `requested` write.
+
+    A department with an owner and live agents takes what only tightens at
+    once and holds what loosens (`authz.tightening.held_frame_tools`): the
+    request then waits in `pending_frame_tools` until the owner confirms it,
+    and the applied tools are returned. Anywhere else the request applies as
+    it is and nothing waits. Either way the newest write replaces anything an
+    earlier one left waiting.
+
+    On a department with an owner every requested policy must pass the
+    strict read, or this raises
+    `FrameToolsInvalid` (`frame_tools_malformed`). A stored policy that does
+    not is treated as absent, so the requested one for that key is held when
+    it is enabled. Fields the policy does not read (`default_connection_id`)
+    are not judged: they apply at once, and the owner's confirmation then
+    asks again (`connections.confirmation`)."""
+    if dept.owner_member_id is None:
+        # A standard department: exactly as before, nothing is held.
+        return copy.deepcopy(dict(requested))
+    malformed = sorted(key for key, policy in requested.items() if not _readable(policy))
+    if malformed:
+        raise FrameToolsInvalid({"error": "frame_tools_malformed", "keys": malformed})
+    if not live_agents:
+        dept.pending_frame_tools = None
+        return copy.deepcopy(dict(requested))
+    current = {
+        key: policy
+        for key, policy in ((dept.frame or {}).get("tools") or {}).items()
+        if _readable(policy)
+    }
+    now, pending = held_frame_tools(current, requested)
+    for key, entry in now.items():
+        if entry == requested[key]:
+            continue
+        # A meet: its `to_json` carries only what the policy reads. Keep the
+        # request's other fields (they apply at once, see above).
+        extra = {k: v for k, v in requested[key].items() if k not in entry}
+        now[key] = {**copy.deepcopy(extra), **entry}
+    dept.pending_frame_tools = pending
+    return now
 
 
 @dataclass(frozen=True)
@@ -376,6 +433,8 @@ class PersonalDepartmentSummary:
     follows_default_frame: bool
     follows_default_budget: bool
     created_at: dt.datetime
+    #: An administrator's loosening of the frame tools waits for the owner.
+    pending_confirmation: bool = False
 
 
 async def personal_department_summaries(
@@ -426,6 +485,7 @@ async def personal_department_summaries(
                 follows_default_frame=dept.frame_overridden_at is None,
                 follows_default_budget=dept.budget_overridden_at is None,
                 created_at=dept.created_at,
+                pending_confirmation=dept.pending_frame_tools is not None,
             )
         )
     return out
@@ -492,18 +552,29 @@ async def default_frame_agents(db: AsyncSession, *, tenant_id: uuid.UUID) -> lis
     return await _live_agents(db, tenant_id=tenant_id, department_ids=[d.id for d in depts])
 
 
-async def _apply_frame(db: AsyncSession, *, dept: m.Department, new_tools: dict[str, Any]) -> None:
+async def _apply_frame(
+    db: AsyncSession, *, dept: m.Department, new_tools: dict[str, Any], hold: bool = True
+) -> None:
+    """Write `new_tools` as the department's frame tools and cascade them to its
+    agents. With `hold` (every administrator's write) a loosening waits for the
+    owner (`apply_held_tools`); without it (the owner's own confirmation)
+    `new_tools` applies as it is and nothing is left waiting."""
     old_tools = dict((dept.frame or {}).get("tools", {}))
+    agents = await _live_agents(db, tenant_id=dept.tenant_id, department_ids=[dept.id])
+    if hold:
+        applied = apply_held_tools(dept, new_tools, live_agents=bool(agents))
+    else:
+        applied = copy.deepcopy(new_tools)
+        dept.pending_frame_tools = None
     # Only the tools follow the tenant's default: every other key of this
     # department's frame (what it emits, takes in, its default connection)
     # stays, and the frame stays closed (`personal_frame`).
     frame = copy.deepcopy(dict(dept.frame or {}))
-    frame["tools"] = copy.deepcopy(new_tools)
+    frame["tools"] = copy.deepcopy(applied)
     frame["closed"] = True
     dept.frame = frame
-    agents = await _live_agents(db, tenant_id=dept.tenant_id, department_ids=[dept.id])
     await cascade_department_tools_change(
-        db, old_tools=old_tools, new_tools=new_tools, agents=agents, clip_to_frame=True
+        db, old_tools=old_tools, new_tools=applied, agents=agents, clip_to_frame=True
     )
 
 

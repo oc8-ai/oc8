@@ -366,7 +366,11 @@ async def test_default_frame_resync_skips_overrides(app_session: AppSessionFacto
 
     assert (await _settings(app_session, w))[FRAME_KEY] == new_tools
     following = await _dept(app_session, w, w.following)
-    assert following.frame == personal_frame(new_tools)
+    # Switching "x" off tightens and applies at once; switching "y" on loosens,
+    # so with live agents it waits for the owner (`apply_held_tools`).
+    assert following.frame["tools"]["x"] == new_tools["x"]
+    assert following.frame["tools"]["y"]["enabled"] is False
+    assert following.pending_frame_tools == new_tools
     assert following.frame_overridden_at is None
     assert (await _dept(app_session, w, w.overridden)).frame == overridden_before
     assert (await _dept(app_session, w, w.orphaned)).frame == orphaned_before
@@ -378,7 +382,7 @@ async def test_default_frame_resync_skips_overrides(app_session: AppSessionFacto
     assert a1.narrowing_overridden_keys == []
     assert await _versions(app_session, w, w.a1) == 2
     assert a2.narrowing["tools"]["x"]["enabled"] is False
-    assert a2.narrowing["tools"]["y"]["enabled"] is True
+    assert a2.narrowing["tools"]["y"]["enabled"] is False  # held, not cascaded
     assert await _versions(app_session, w, w.a2) == 2
     # Untouched agents keep their single version.
     assert await _versions(app_session, w, w.b1) == 1
@@ -473,7 +477,9 @@ async def test_personal_list_is_metadata_only_and_admin_only(
             "followsDefaultFrame",
             "followsDefaultBudget",
             "createdAt",
+            "pendingConfirmation",
         }
+        assert row["pendingConfirmation"] is False
     following = by_id[str(w.following)]
     assert following["ownerName"] == "Ada"
     assert following["ownerActive"] is True
@@ -544,11 +550,14 @@ async def test_follow_default_clears_stamps_and_reapplies(
 
     dept = await _dept(app_session, w, w.overridden)
     assert dept.frame_overridden_at is None and dept.budget_overridden_at is None
-    assert dept.frame == personal_frame(_OLD_TOOLS)
+    # Dropping "z" tightens and applies; "x" comes back enabled, a loosening
+    # that waits for the owner while the department has a live agent.
+    assert dept.frame == personal_frame({"y": _OLD_TOOLS["y"]})
+    assert dept.pending_frame_tools == _OLD_TOOLS
     b1 = await _agent(app_session, w, w.b1)
-    # "z" left the default: a personal frame is a ceiling, so the key is dropped.
+    # "z" left the frame: a personal frame is a ceiling, so the key is dropped.
     assert "z" not in b1.narrowing["tools"]
-    assert b1.narrowing["tools"]["x"]["enabled"] is True
+    assert "x" not in b1.narrowing["tools"]
     assert await _versions(app_session, w, w.b1) == 2
     assert await _budget(app_session, w, w.overridden) == (100, 200)
     audits = await _audits(app_session, w, "department.personal.follow_default")

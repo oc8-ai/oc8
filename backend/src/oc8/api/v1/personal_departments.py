@@ -307,6 +307,9 @@ class PersonalDepartmentAdminDTO(CamelModel):
     follows_default_frame: bool
     follows_default_budget: bool
     created_at: dt.datetime
+    #: An administrator's loosening of the frame tools waits for the owner to
+    #: confirm it (`departments.personal.apply_held_tools`).
+    pending_confirmation: bool
 
 
 def _admin_dto(row: PersonalDepartmentSummary) -> PersonalDepartmentAdminDTO:
@@ -319,6 +322,7 @@ def _admin_dto(row: PersonalDepartmentSummary) -> PersonalDepartmentAdminDTO:
         follows_default_frame=row.follows_default_frame,
         follows_default_budget=row.follows_default_budget,
         created_at=row.created_at,
+        pending_confirmation=row.pending_confirmation,
     )
 
 
