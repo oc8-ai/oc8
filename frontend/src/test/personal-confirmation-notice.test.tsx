@@ -40,9 +40,17 @@ function summary(over: Record<string, unknown> = {}) {
       {
         agentId: "a1",
         name: "Mailer",
-        changes: ["core", "threshold"],
+        changes: ["core", "tools", "threshold"],
         approvalThreshold: 25,
-        tools: { mail: { ...POLICY, frame_extra: { default_connection_id: "login-9" } } },
+        tools: {
+          mail: {
+            ...POLICY,
+            frame_conditions: [{ attribute: "to", operator: "eq", value: "boss", then: "deny" }],
+            frame_extra: { default_connection_id: "login-9" },
+          },
+          calendar: { ...POLICY, enabled: false },
+          odd: { enabled: true, unreadable: "[{raw}]" },
+        },
         setup: [
           {
             tool: "mail",
@@ -58,7 +66,7 @@ function summary(over: Record<string, unknown> = {}) {
     department: {
       goal: "Keep my inbox tidy",
       frame: { language: "en" },
-      frameCapaDefaults: null,
+      frameCapaDefaults: { language: "de" },
     },
     ...over,
   };
@@ -106,7 +114,15 @@ describe("PersonalConfirmationNotice", () => {
     expect(screen.getByText(/mcp\.example\.com:8443\/mcp/)).toBeInTheDocument();
     expect(screen.getByText(/region, folder/)).toBeInTheDocument();
     expect(screen.getByText(/Ada work/)).toBeInTheDocument();
-    // Department goal.
+    // The agent's tools are open by default and show every field.
+    const grants = screen.getByTestId("agent-tools-a1");
+    expect(grants).toHaveAttribute("open");
+    expect(within(grants).getByText(/login-9/)).toBeInTheDocument();
+    expect(within(grants).getByText(/boss/)).toBeInTheDocument();
+    expect(within(screen.getByTestId("agent-tool-calendar")).getByText(/off/i)).toBeInTheDocument();
+    expect(within(screen.getByTestId("agent-tool-odd")).getByRole("alert")).toBeInTheDocument();
+    // Department goal and the capa defaults.
+    expect(screen.getByText(/"language": "de"/)).toBeInTheDocument();
     expect(screen.getByText("Keep my inbox tidy")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /review and confirm/i }));
@@ -144,8 +160,14 @@ describe("PersonalConfirmationNotice", () => {
     );
     renderNotice();
     fireEvent.click(await screen.findByRole("button", { name: /review and confirm/i }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be confirmed/i);
+    expect(await screen.findByText(/could not be confirmed/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /review and confirm/i })).toBeInTheDocument();
+  });
+
+  it("shows an unknown skill status as given", async () => {
+    current = summary({ skills: [{ name: "x", description: null, status: "weird" }] });
+    renderNotice();
+    expect(await screen.findByTestId("skill-status")).toHaveTextContent("weird");
   });
 
   it("invalidates the personal department, tool access and the admin list on success", async () => {
@@ -155,6 +177,10 @@ describe("PersonalConfirmationNotice", () => {
     fireEvent.click(await screen.findByRole("button", { name: /review and confirm/i }));
     await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ["personal-department"] }));
     expect(spy).toHaveBeenCalledWith({ queryKey: ["personal-departments"] });
-    expect(spy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["agents"] }));
+    const call = spy.mock.calls
+      .map((c) => c[0] as { queryKey: unknown[]; predicate?: (q: unknown) => boolean })
+      .find((c) => c.queryKey[0] === "agents");
+    expect(call?.predicate?.({ queryKey: ["agents", "a1", "tool-access"] })).toBe(true);
+    expect(call?.predicate?.({ queryKey: ["agents", "a1", "runs"] })).toBe(false);
   });
 });

@@ -49,6 +49,16 @@ function fieldLabel(t: Tr, field: string): string {
       return t("Login", "Zugang");
     case "default_connection_id":
       return t("Default login", "Standard-Zugang");
+    case "frame_conditions":
+      return t("Conditions (department)", "Bedingungen (Abteilung)");
+    case "agent_conditions":
+      return t("Conditions (agent)", "Bedingungen (Agent)");
+    case "agent_approval_eur":
+      return t("Approval threshold (agent, EUR)", "Freigabe-Schwelle (Agent, EUR)");
+    case "frame_extra":
+      return t("More settings (department)", "Weitere Einstellungen (Abteilung)");
+    case "agent_extra":
+      return t("More settings (agent)", "Weitere Einstellungen (Agent)");
     default:
       return field;
   }
@@ -220,6 +230,37 @@ function SetupView({ s }: { s: PersonalConfirmationSetupDTO }) {
   );
 }
 
+/** One tool of an agent's grant: every key it carries, nothing left out. */
+function GrantEntry({ toolKey, p }: { toolKey: string; p: ConfirmationPolicy }) {
+  const t = useT();
+  const off = p.enabled === false;
+  const keys = Object.keys(p).filter((k) => k !== "enabled" && k !== "unreadable");
+  return (
+    <li data-testid={`agent-tool-${toolKey}`}>
+      <span className="font-medium">{toolKey}</span>{" "}
+      <span className="text-muted-foreground">{off ? t("off", "aus") : t("on", "an")}</span>
+      {typeof p.unreadable === "string" && (
+        <p role="alert" className="text-destructive">
+          {t(
+            "Its settings cannot be read; treat it as unrestricted: {raw}",
+            "Die Einstellungen sind nicht lesbar; behandle es als uneingeschränkt: {raw}",
+          ).replace("{raw}", () => String(p.unreadable))}
+        </p>
+      )}
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 text-muted-foreground">
+        {keys
+          .filter((k) => !isEmpty(p[k]) || p[k] === false)
+          .map((k) => (
+            <div key={k} className="contents">
+              <dt>{fieldLabel(t, k)}</dt>
+              <dd className="break-words text-foreground">{show(t, k, p[k])}</dd>
+            </div>
+          ))}
+      </dl>
+    </li>
+  );
+}
+
 function AgentCard({ a }: { a: Agent }) {
   const t = useT();
   const hasThreshold = a.approvalThreshold != null && a.approvalThreshold !== "";
@@ -251,26 +292,17 @@ function AgentCard({ a }: { a: Agent }) {
         </details>
       )}
       {a.tools && Object.keys(a.tools).length > 0 && (
-        <details className="mt-1">
+        <details
+          data-testid={`agent-tools-${a.agentId}`}
+          open={a.changes.includes("tools") || a.changes.includes("threshold")}
+          className="mt-1"
+        >
           <summary className="cursor-pointer text-xs text-muted-foreground">
             {t("Tools it may use", "Werkzeuge, die er nutzen darf")}
           </summary>
-          <ul className="mt-1 space-y-1 text-xs">
+          <ul className="mt-1 space-y-1.5 text-xs">
             {Object.entries(a.tools).map(([key, p]) => (
-              <li key={key}>
-                <span className="font-medium">{key}</span>:{" "}
-                {[
-                  p.read ? t("read", "lesen") : null,
-                  p.modify ? t("modify", "ändern") : null,
-                  !isEmpty(p.only) ? `${t("only", "nur")} ${show(t, "only", p.only)}` : null,
-                  p.approval_eur != null
-                    ? `${t("approval above", "Freigabe ab")} ${String(p.approval_eur)} EUR`
-                    : null,
-                  !isEmpty(p.limits) ? show(t, "limits", p.limits) : null,
-                ]
-                  .filter(Boolean)
-                  .join(", ") || t("nothing", "nichts")}
-              </li>
+              <GrantEntry key={key} toolKey={key} p={p} />
             ))}
           </ul>
         </details>
@@ -286,28 +318,34 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
   const qc = useQueryClient();
   const query = usePersonalConfirmation(enabled);
   const confirm = useConfirmPersonal();
-  const [message, setMessage] = useState<string | null>(null);
+  // A refusal belongs to the summary it answered; the "review again" note
+  // stays until the owner confirms again.
+  const [note, setNote] = useState<{ text: string; token: string; keep: boolean } | null>(null);
 
   const data = query.data;
   if (!data || typeof data !== "object" || !data.needed) return null;
 
   const onConfirm = () => {
-    setMessage(null);
+    setNote(null);
     confirm.mutate(data.token, {
       onError: (err) => {
         const status = (err as { status?: number }).status;
         if (status === 409 || errorCode(err) === "confirmation_changed") {
           void qc.invalidateQueries({ queryKey: ["personal-department", "confirmation"] });
-          setMessage(
-            t(
+          setNote({
+            text: t(
               "Something changed meanwhile. Please review again.",
               "In der Zwischenzeit hat sich etwas geändert. Bitte erneut prüfen.",
             ),
-          );
+            token: data.token,
+            keep: true,
+          });
         } else {
           const code = errorCode(err);
-          setMessage(
-            t(
+          setNote({
+            token: data.token,
+            keep: false,
+            text: t(
               "This could not be confirmed: {reason}",
               "Das ließ sich nicht bestätigen: {reason}",
             ).replace(
@@ -316,7 +354,7 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
                 code ??
                 (err instanceof Error ? err.message : t("unknown error", "unbekannter Fehler")),
             ),
-          );
+          });
         }
       },
     });
@@ -363,7 +401,11 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
                   data-testid="skill-status"
                   className="rounded-full border border-border px-1.5 text-[10px]"
                 >
-                  {s.status === "new" ? t("new", "neu") : t("changed", "geändert")}
+                  {s.status === "new"
+                    ? t("new", "neu")
+                    : s.status === "changed"
+                      ? t("changed", "geändert")
+                      : s.status}
                 </span>
                 {s.description && <div className="text-muted-foreground">{s.description}</div>}
               </li>
@@ -392,6 +434,17 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
           </summary>
           <p className="mt-1 text-xs text-muted-foreground">{t("Goal", "Ziel")}</p>
           <p className="whitespace-pre-wrap text-sm">{data.department.goal}</p>
+          {data.department.frameCapaDefaults &&
+            Object.keys(data.department.frameCapaDefaults).length > 0 && (
+              <>
+                <p className="mt-2 text-xs text-muted-foreground">
+                  {t("Tools reset to", "Werkzeuge werden zurückgesetzt auf")}
+                </p>
+                <pre className="mt-1 overflow-x-auto rounded bg-muted/40 p-2 text-[11px]">
+                  {JSON.stringify(data.department.frameCapaDefaults, null, 2)}
+                </pre>
+              </>
+            )}
           {Object.keys(data.department.frame).length > 0 && (
             <pre className="mt-1 overflow-x-auto rounded bg-muted/40 p-2 text-[11px]">
               {JSON.stringify(data.department.frame, null, 2)}
@@ -400,9 +453,9 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
         </details>
       )}
 
-      {message && (
+      {note && (note.keep || note.token === data.token) && (
         <p role="alert" className="mt-3 text-xs text-destructive">
-          {message}
+          {note.text}
         </p>
       )}
       <button

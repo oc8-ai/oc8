@@ -1132,7 +1132,7 @@ export interface PersonalConfirmationDTO {
   /** Pins what the owner was shown: the confirm answers 409 when it moved. */
   token: string;
   tools: { key: string; applied: ConfirmationPolicy | null; pending: ConfirmationPolicy | null }[];
-  skills: { name: string; description: string | null; status: "new" | "changed" | string }[];
+  skills: { name: string; description: string | null; status: "new" | "changed" }[];
   agents: {
     agentId: string;
     name: string;
