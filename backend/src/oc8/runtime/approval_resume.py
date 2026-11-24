@@ -55,9 +55,25 @@ async def resolve_tool_approval(
         if run is not None and run.task_id != approval.task_id:
             run = None
     else:
-        run = (
-            await db.execute(select(AgentRun).where(AgentRun.task_id == approval.task_id))
-        ).scalar_one_or_none()
+        # An unlinked raiser (a card raised before this payload key existed, or
+        # by a raiser that never saw its run): fall back to the task's runs.
+        # `scalar_one_or_none` raised MultipleResultsFound here -- a 500 with an
+        # empty message -- as soon as a Copilot task had more than one run, so
+        # the person could never push their decision. Pick the parked leg when
+        # there is one (the approval holds exactly that run), else the newest.
+        runs = list(
+            (
+                await db.execute(
+                    select(AgentRun)
+                    .where(AgentRun.task_id == approval.task_id)
+                    .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+                )
+            ).scalars()
+        )
+        run = next(
+            (r for r in runs if r.state == RunState.WAITING_FOR_APPROVAL.value),
+            runs[0] if runs else None,
+        )
     if run is None:
         return None
 

@@ -1437,6 +1437,9 @@ async def run_agent(
                                     "justification": "",
                                     "preview": why,
                                     **(
+                                        {"run_id": str(run_row.id)} if run_row is not None else {}
+                                    ),
+                                    **(
                                         {
                                             "read_before_write_ok": True,
                                             "gate_connection": held_route[0] or "oc8",
@@ -2805,6 +2808,11 @@ async def run_agent(
                                         "justification": justification,
                                         "preview": (
                                             gate_verdict.preview if gate_verdict is not None else ""
+                                        ),
+                                        **(
+                                            {"run_id": str(run_row.id)}
+                                            if run_row is not None
+                                            else {}
                                         ),
                                         # Raised after the B gate answered "ask":
                                         # read-before-write had passed for it.

@@ -1102,7 +1102,7 @@ async def _call_tool(
             action_type="tool_send",
             title=f"{agent.name} wants to call {tc.name}",
             detail=decision.reason,
-            payload={"tool": tc.name, "arguments": tc.arguments},
+            payload={"tool": tc.name, "arguments": tc.arguments, "run_id": str(run.id)},
             reason_code=decision.reason_code,
             reason_context=decision.context,
             record_url=(

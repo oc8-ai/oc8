@@ -931,7 +931,13 @@ async def _park_held_call(
         action_type="tool_send",
         title=f"{agent.name} wants to call {tool}",
         detail=reason,
-        payload={"tool": tool, "arguments": arguments, "justification": "", "preview": reason},
+        payload={
+            "tool": tool,
+            "arguments": arguments,
+            "justification": "",
+            "preview": reason,
+            "run_id": str(run.id),
+        },
     )
     ctx["pending_elicitation"] = {**pending, "arguments": arguments, "merged": True}
     ctx["isolated_result"] = {"status": "waiting_for_approval", "output": reason}
@@ -2534,6 +2540,7 @@ async def _dispatch_one_tool(
                 "arguments": tc.arguments,
                 "justification": justification,
                 "preview": gate_verdict.preview if gate_verdict is not None else "",
+                "run_id": str(run.id),
                 **({"record_url": link} if link else {}),
             },
             record_url=link,
