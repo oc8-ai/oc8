@@ -148,6 +148,11 @@ async def _load_installation_config(db: AsyncSession, *, capa_id: uuid.UUID) -> 
     return dict(installation.config) if installation is not None else {}
 
 
+#: The template's setup values a hire substitutes; part of what a member is
+#: shown before a personal hire (`departments.personal_hire.hire_offer`).
+load_installation_config = _load_installation_config
+
+
 def _check_core_compat(spec: str) -> None:
     if not spec:
         return

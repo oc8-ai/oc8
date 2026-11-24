@@ -17,11 +17,12 @@ only, and every department or agent they touch is loaded by
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import Field, StringConstraints, ValidationError, model_validator
+from pydantic import ConfigDict, Field, StringConstraints, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +60,7 @@ from oc8.departments.personal import (
     default_frame_agents,
     follow_default,
     get_or_create_personal_department,
+    lock_owned_frame,
     owned_personal_department,
     personal_defaults,
     personal_department_summaries,
@@ -70,6 +72,7 @@ from oc8.departments.personal_hire import (
     ChosenLogin,
     HireBindingRefused,
     TemplateConnection,
+    hire_offer,
     resolve_hire_bindings,
     template_connections,
 )
@@ -106,11 +109,24 @@ class TemplateConnectionDTO(CamelModel):
     available: bool
 
 
+class HireGrantsDTO(CamelModel):
+    """What a hire grants the agent, shown before the member confirms it."""
+
+    #: The frame tools the agent may use.
+    tools: list[str]
+    #: The skills it runs with.
+    skills: list[str]
+
+
 class PersonalTemplateDTO(CamelModel):
     capa_id: str
     name: str
     label: str
     summary: str
+    #: Pins this offer: the hire answers 409 `hire_changed` when the template
+    #: version, its setup, the frame tools or the skills changed since.
+    hire_token: str
+    grants: HireGrantsDTO
     #: Left out for a template that connects to nothing.
     #: The member chooses a login for one of these at hire.
     connections_any: list[TemplateConnectionDTO] = []
@@ -121,7 +137,9 @@ class PersonalTemplateDTO(CamelModel):
 class HireConnection(CamelModel):
     """The member's own login for one capa the template names."""
 
-    integration: str
+    model_config = ConfigDict(extra="forbid")
+
+    integration: Annotated[str, StringConstraints(min_length=1, max_length=200)]
     credential_id: uuid.UUID | None = None
     oauth_connection_id: uuid.UUID | None = None
 
@@ -130,7 +148,11 @@ class HireConnection(CamelModel):
 
 
 class HirePersonalRequest(CamelModel):
+    model_config = ConfigDict(extra="forbid")
+
     capa_id: uuid.UUID
+    #: The `hireToken` of the template as the list showed it (Ruling T8-I1).
+    hire_token: Annotated[str, StringConstraints(min_length=1, max_length=128)]
     #: Optional; trimmed, and an empty name falls back to the template's own.
     #: The member names the agent and the logins it uses -- every other field
     #: comes from the template.
@@ -174,12 +196,11 @@ def _template_agent(manifest: dict[str, Any]) -> TemplateAgent | None:
 
 
 async def _hire_frame_tools(
-    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
+    db: AsyncSession, *, tenant_id: uuid.UUID, dept: m.Department | None
 ) -> dict[str, Any]:
     """The frame tools a hire binds against (Ruling 10): the member's
     personal department as applied, or the tenant default before its first
     hire."""
-    dept = await owned_personal_department(db, tenant_id=tenant_id, member_id=member_id)
     if dept is not None:
         tools = (dept.frame or {}).get("tools")
         return dict(tools) if isinstance(tools, dict) else {}
@@ -236,7 +257,8 @@ async def list_personal_templates(
     declared `scope = "personal"`, each with the capas it connects to and
     whether a hire may bind them now."""
     member = await _caller_member(db, principal)
-    frame_tools: dict[str, Any] | None = None
+    dept = await owned_personal_department(db, tenant_id=principal.tenant_id, member_id=member.id)
+    frame_tools = await _hire_frame_tools(db, tenant_id=principal.tenant_id, dept=dept)
     rows = (
         await db.execute(
             select(m.Capa, m.CapaVersion)
@@ -261,12 +283,17 @@ async def list_personal_templates(
         if mf.get("type") != "agent_template" or template_scope(mf) != "personal":
             continue
         spec = _template_agent(mf)
+        if spec is None:
+            continue  # the hire refuses it too
+        offer = await hire_offer(
+            db,
+            version=version,
+            spec=spec,
+            frame_tools=frame_tools,
+            department_id=dept.id if dept is not None else None,
+        )
         connections: dict[str, list[TemplateConnectionDTO]] = {}
-        if spec is not None and (spec.connections_any or spec.connections_optional):
-            if frame_tools is None:
-                frame_tools = await _hire_frame_tools(
-                    db, tenant_id=principal.tenant_id, member_id=member.id
-                )
+        if spec.connections_any or spec.connections_optional:
             connections["connections_any"] = _connection_dtos(
                 await template_connections(db, frame_tools=frame_tools, names=spec.connections_any)
             )
@@ -281,6 +308,8 @@ async def list_personal_templates(
                 name=capa.name,
                 label=_template_label(mf),
                 summary=str(mf.get("summary", "")),
+                hire_token=offer.token,
+                grants=HireGrantsDTO(tools=offer.tools, skills=offer.skills),
                 **connections,
             )
         )
@@ -341,7 +370,11 @@ async def hire_personal_agent(
             db,
             member=member,
             frame_tools=await _hire_frame_tools(
-                db, tenant_id=principal.tenant_id, member_id=member.id
+                db,
+                tenant_id=principal.tenant_id,
+                dept=await owned_personal_department(
+                    db, tenant_id=principal.tenant_id, member_id=member.id
+                ),
             ),
             spec=spec,
             connection=body.connection.chosen() if body.connection is not None else None,
@@ -357,6 +390,20 @@ async def hire_personal_agent(
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, {"error": "personal_departments_disabled"}
         ) from exc
+    # Ruling T8-I1: the hire confirms what the member was shown. Checked
+    # against the department as locked (a frame write takes the same lock),
+    # so a change committed since the list answers 409 and the transaction,
+    # the department created just now included, rolls back.
+    await lock_owned_frame(db, dept)
+    offer = await hire_offer(
+        db,
+        version=version,
+        spec=spec,
+        frame_tools=await _hire_frame_tools(db, tenant_id=principal.tenant_id, dept=dept),
+        department_id=dept.id,
+    )
+    if not hmac.compare_digest(offer.token, body.hire_token):
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "hire_changed"})
     try:
         # Plan ruling 4: a personal hire is exempt from the tenant's
         # `require_hire_approval`. The administrator who enabled this

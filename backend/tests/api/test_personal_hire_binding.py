@@ -173,7 +173,20 @@ async def _capa(app_session: AppSessionFactory, tenant: uuid.UUID, manifest: dic
         return str(version.capa_id)
 
 
-async def _hire(tenant: uuid.UUID, body: dict[str, Any]) -> Any:
+async def _token(tenant: uuid.UUID, capa_id: str) -> str:
+    """The `hireToken` the templates list shows the member for `capa_id`."""
+    async with _http() as http:
+        listed = await http.get("/api/v1/personal-department/templates", headers=_headers(tenant))
+    assert listed.status_code == 200, listed.text
+    (token,) = [t["hireToken"] for t in listed.json() if t["capaId"] == capa_id]
+    return str(token)
+
+
+async def _hire(tenant: uuid.UUID, body: dict[str, Any], *, token: bool = True) -> Any:
+    """Hire with the token the list shows now, unless `body` names one or
+    `token` is False."""
+    if token and "hireToken" not in body:
+        body = {**body, "hireToken": await _token(tenant, body["capaId"])}
     async with _http() as http:
         return await http.post(
             "/api/v1/personal-department/agents", json=body, headers=_headers(tenant)
@@ -498,6 +511,7 @@ async def test_an_alternative_that_is_not_installed_is_unavailable(
 
     assert r.status_code == 422, r.text
     assert r.json()["detail"] == {"error": "connection_unavailable"}
+    await _nothing_left(app_session, world.tenant)
 
 
 async def test_no_choice_for_a_template_with_alternatives_is_refused(
@@ -659,5 +673,183 @@ async def test_templates_list_their_alternatives_with_availability(
             "available": False,
         },
     ]
+    assert template["grants"] == {"tools": [world.tool_key], "skills": []}
+    assert isinstance(template["hireToken"], str) and template["hireToken"]
     (nowhere,) = template["connectionsOptional"]
     assert nowhere["integration"] == "nowhere" and nowhere["available"] is False
+
+
+async def test_a_login_of_another_organisation_is_refused(app_session: AppSessionFactory) -> None:
+    world = await _world(app_session)
+    elsewhere = await _world(app_session)
+    cid = await _offered(app_session, world)
+
+    r = await _hire(
+        world.tenant,
+        {
+            "capaId": cid,
+            "connection": _own(world, elsewhere.credential_id),
+            "confirmShare": True,
+        },
+    )
+
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == {"error": "login_not_usable"}
+    await _nothing_left(app_session, world.tenant)
+
+
+async def test_a_member_hires_on_their_own_oauth_connection(
+    app_session: AppSessionFactory,
+) -> None:
+    world = await _world(app_session)
+    source = f"oa_{uuid.uuid4().hex[:10]}"
+    tool_key = f"{source}_tools"
+    await install_oauth_capa(app_session, world.tenant, source, tool_key)
+    async with app_session(world.tenant) as db:
+        org = await db.get(m.Organization, world.tenant)
+        assert org is not None
+        org.settings = {**org.settings, FRAME_KEY: {tool_key: dict(_TOOLS)}}
+    conn = await oauth_login(
+        app_session, world.tenant, owner=world.member_id, grant_type="authorization_code"
+    )
+    cid = await _capa(app_session, world.tenant, _template("helper", connections_any=[source]))
+
+    r = await _hire(
+        world.tenant,
+        {
+            "capaId": cid,
+            "connection": {"integration": source, "oauthConnectionId": str(conn)},
+            "confirmShare": True,
+        },
+    )
+
+    assert r.status_code == 201, r.text
+    async with app_session(world.tenant) as db:
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(
+                m.AgentToolAccess.agent_id == uuid.UUID(r.json()["agentId"])
+            )
+        )
+        assert row is not None
+        assert (row.tool_key, row.mode, row.oauth_connection_id, row.credential_id) == (
+            tool_key,
+            "fixed",
+            conn,
+            None,
+        )
+        assert row.set_by_member_id == world.member_id
+
+
+# --- the hire is the offer the member was shown (Ruling T8-I1) -------------------------
+
+
+async def test_a_hire_without_a_token_or_with_an_unknown_field_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    world = await _world(app_session)
+    cid = await _offered(app_session, world)
+    token = await _token(world.tenant, cid)
+    body = {"capaId": cid, "connection": _own(world), "confirmShare": True}
+
+    missing = await _hire(world.tenant, body, token=False)
+    unknown = await _hire(world.tenant, {**body, "hireToken": token, "mode": "admin"})
+    nested = await _hire(
+        world.tenant,
+        {**body, "hireToken": token, "connection": {**_own(world), "shared": True}},
+    )
+
+    for r in (missing, unknown, nested):
+        assert r.status_code == 422, r.text
+    await _nothing_left(app_session, world.tenant)
+
+
+async def test_a_token_from_before_a_new_version_was_enabled_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    world = await _world(app_session, settings={MAX_AGENTS_KEY: 1})
+    cid = await _offered(app_session, world)
+    stale = await _token(world.tenant, cid)
+    await _capa(
+        app_session,
+        world.tenant,
+        {
+            **_template(
+                "helper",
+                connections_any=[world.source],
+                triggers=[_event(world.source)],
+                mission="Something else entirely.",
+            ),
+            "version": "2.0.0",
+        },
+    )
+    body = {"capaId": cid, "connection": _own(world), "confirmShare": True}
+
+    r = await _hire(world.tenant, {**body, "hireToken": stale})
+
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "hire_changed"}
+    await _nothing_left(app_session, world.tenant)
+    fresh = await _hire(world.tenant, body)
+    assert fresh.status_code == 201, fresh.text
+
+
+async def test_a_token_from_before_the_frame_loosened_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    world = await _world(app_session, settings={MAX_AGENTS_KEY: 1})
+    cid = await _offered(app_session, world)
+    stale = await _token(world.tenant, cid)
+    async with app_session(world.tenant) as db:
+        org = await db.get(m.Organization, world.tenant)
+        assert org is not None
+        org.settings = {
+            **org.settings,
+            FRAME_KEY: {world.tool_key: dict(_TOOLS), "more_tools": dict(_TOOLS)},
+        }
+    body = {"capaId": cid, "connection": _own(world), "confirmShare": True}
+
+    r = await _hire(world.tenant, {**body, "hireToken": stale})
+
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "hire_changed"}
+    await _nothing_left(app_session, world.tenant)
+    fresh = await _hire(world.tenant, body)
+    assert fresh.status_code == 201, fresh.text
+
+
+async def test_a_template_that_does_not_parse_is_not_listed(
+    app_session: AppSessionFactory,
+) -> None:
+    world = await _world(app_session)
+    async with app_session(world.tenant) as db:
+        capa = m.Capa(tenant_id=world.tenant, name="odd", type="agent_template")
+        db.add(capa)
+        await db.flush()
+        version = m.CapaVersion(
+            tenant_id=world.tenant,
+            capa_id=capa.id,
+            semver="1.0.0",
+            manifest={
+                "name": "odd",
+                "version": "1.0.0",
+                "type": "agent_template",
+                "agent_template": {"name": "Odd", "scope": "personal", "unknown": True},
+            },
+            artifact_hash=b"x",
+        )
+        db.add(version)
+        await db.flush()
+        capa.current_version_id = version.id
+        db.add(
+            m.CapaInstallation(
+                tenant_id=world.tenant, capa_id=capa.id, version_id=version.id, status="enabled"
+            )
+        )
+
+    async with _http() as http:
+        listed = await http.get(
+            "/api/v1/personal-department/templates", headers=_headers(world.tenant)
+        )
+
+    assert listed.status_code == 200, listed.text
+    assert listed.json() == []
