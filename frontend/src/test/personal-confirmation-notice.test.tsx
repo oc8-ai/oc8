@@ -120,7 +120,9 @@ describe("PersonalConfirmationNotice", () => {
     expect(within(grants).getByText(/login-9/)).toBeInTheDocument();
     expect(within(grants).getByText(/boss/)).toBeInTheDocument();
     expect(within(screen.getByTestId("agent-tool-calendar")).getByText(/off/i)).toBeInTheDocument();
-    expect(within(screen.getByTestId("agent-tool-odd")).getByRole("alert")).toBeInTheDocument();
+    expect(within(screen.getByTestId("agent-tool-odd")).getByRole("alert")).toHaveTextContent(
+      /stays blocked until an administrator fixes them/i,
+    );
     // Department goal and the capa defaults.
     expect(screen.getByText(/"language": "de"/)).toBeInTheDocument();
     expect(screen.getByText("Keep my inbox tidy")).toBeInTheDocument();

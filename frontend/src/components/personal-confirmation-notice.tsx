@@ -242,8 +242,8 @@ function GrantEntry({ toolKey, p }: { toolKey: string; p: ConfirmationPolicy }) 
       {typeof p.unreadable === "string" && (
         <p role="alert" className="text-destructive">
           {t(
-            "Its settings cannot be read; treat it as unrestricted: {raw}",
-            "Die Einstellungen sind nicht lesbar; behandle es als uneingeschränkt: {raw}",
+            "This tool's settings can't be read, so it stays blocked until an administrator fixes them: {raw}",
+            "Die Einstellungen dieses Werkzeugs sind nicht lesbar, daher bleibt es gesperrt, bis eine Administration sie korrigiert: {raw}",
           ).replace("{raw}", () => String(p.unreadable))}
         </p>
       )}
