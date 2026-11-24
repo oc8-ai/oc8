@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, text
 
+from oc8.departments.repo import personal_content_hidden
 from oc8.models.core import Agent, Department
 from oc8.models.identity import OrgMember
 from oc8.models.ops import Task
@@ -183,6 +184,10 @@ async def create_task(
 
     dept = await db.get(Department, department_id)
     if dept is None or dept.team_lead_agent_id is None:
+        raise NoTeamLead(f"department {department_id} has no team lead to receive tasks")
+    # Only the owner acts on a personal agent, so a personal department takes
+    # work from its owner alone; anybody else hears what an empty one says.
+    if personal_content_hidden(kind=dept.kind, department_id=dept.id, scope=actor.scope):
         raise NoTeamLead(f"department {department_id} has no team lead to receive tasks")
     lead = await db.get(Agent, dept.team_lead_agent_id)
     if lead is None or lead.deleted_at is not None:

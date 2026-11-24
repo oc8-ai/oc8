@@ -20,7 +20,7 @@ from oc8.agents.repo import (
     run_reachable_agent,
 )
 from oc8.agents.versioning import pinned_version_no
-from oc8.api.deps import DbSession, require_departmental
+from oc8.api.deps import DbSession, refuse_personal_agent_content, require_departmental
 from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.questions import QuestionError
@@ -65,6 +65,21 @@ async def _reachable_run(
     if run_row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     return run_row
+
+
+async def _refuse_personal_run(db: DbSession, actor: HumanActor, run_row: m.AgentRun) -> None:
+    """Only the owner acts on a personal agent: resuming or steering one of its
+    runs is refused to anybody else with the same 404 as no run at all. Reading
+    it is run reach, a separate rule (PR 3)."""
+    department_id = await db.scalar(
+        select(m.Agent.department_id).where(m.Agent.id == run_row.agent_id)
+    )
+    await refuse_personal_agent_content(
+        db,
+        actor.principal,
+        department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "run not found"),
+    )
 
 
 class AnswerRequest(BaseModel):
@@ -341,6 +356,13 @@ async def run(
     )
     if agent is None or agent.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    # Only the owner acts on a personal agent; anybody else gets the same 404.
+    await refuse_personal_agent_content(
+        db,
+        principal,
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
     if agent.status == "pending_approval":
         raise HTTPException(status.HTTP_409_CONFLICT, "agent awaiting hire approval")
 
@@ -438,6 +460,7 @@ async def answer_run(
     # 404 as no run at all, before any lock or answer is looked at.
     reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
     run_row = await _reachable_run(db, reach, actor, run_id)
+    await _refuse_personal_run(db, actor, run_row)
     # The same lock the inbox and chat doors take, on the CLARIFICATION rows
     # (never the run, which a running executor holds): two answers to the same
     # question serialise, and the second finds it already answered.
@@ -508,6 +531,7 @@ async def message_run(
     principal = actor.principal
     reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
     run_row = await _reachable_run(db, reach, actor, run_id)
+    await _refuse_personal_run(db, actor, run_row)
     if run_row.state in TERMINAL:
         raise HTTPException(status.HTTP_409_CONFLICT, "run has already finished")
     db.add(
