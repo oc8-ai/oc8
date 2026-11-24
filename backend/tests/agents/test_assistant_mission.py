@@ -148,3 +148,15 @@ def test_system_prompt_has_no_status_opener() -> None:
     prompt = system_prompt(assistant, caps=ModelCaps(), tenant_name="Acme")
     assert "At the start of a new conversation" not in prompt
     assert "list_pending_approvals" not in prompt
+
+
+def test_mission_keeps_preserved_rules_and_unambiguous_delegation() -> None:
+    for needle in (
+        "split it yourself into several smaller delegate_task calls",
+        "ask_user is not available",
+        "report=true",
+        "at most once per conversation",
+        "specialist work that clearly belongs to an agent in it",
+        "Without that block, general work is yours",
+    ):
+        assert needle in _MISSION, needle

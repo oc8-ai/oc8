@@ -22,8 +22,8 @@ from tests.copilot.test_agent_match import (
     _DownRouter,
     _fresh_cache,  # noqa: F401  (autouse fixture)
     _person,
-    _Router,
     _route,
+    _Router,
     _text,
 )
 
