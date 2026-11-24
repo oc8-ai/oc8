@@ -1,6 +1,7 @@
 # Copilot
 
-**Surface:** floating dock in the shell (not a sidebar route)
+**Surface:** the full **My Copilot** page (`/copilot`) and the floating **dock**
+in the shell, which links to the full page
 
 ## What it is
 
@@ -32,7 +33,8 @@ changes production config.
 If nothing fits and it cannot do the work, it says so openly.
 
 Copilot does not open with a status summary. Ask when you want one (“What is
-waiting?”), or look at the work panel and [My work](my-work.md).
+waiting?”), or open the work panel (the **Show work panel** toggle on the
+Copilot page) and [My work](my-work.md).
 
 ## Where you are in the flow
 
@@ -45,17 +47,18 @@ Copilot does not replace [My work](my-work.md) approvals for tool calls.
 
 ## What you do here
 
-1. Open the Copilot dock.
+1. Open the Copilot page, or the dock for a quick question.
 2. Ask for something concrete (“Summarise this contract”, “Support agent that
    escalates billing”).
 3. For setup proposals: review carefully, apply only what you trust, then test.
 
 ## Editing and branches
 
-- **Edit a sent message** and resend it: the chat continues on a new branch, the
+- **Edit a sent message** with the Edit button under your own message (shown on
+  hover, always visible on touch). It opens an inline editor; resending it: the chat continues on a new branch, the
   original stays.
 - A message with several versions shows **‹ n/m ›** — use the arrows to switch.
-- **Regenerate** an answer to get another variant of it; switch between variants
+- **Regenerate** (icon button in the answer's action row) to get another variant of it; switch between variants
   the same way.
 
 ## Attaching files
@@ -70,7 +73,9 @@ into one message.
 - If indexing is not possible — for example no embedding model is configured,
   or the agent runs on a local model and no local embedding model exists — the
   file is added inline instead, **truncated**, with a note saying so.
-- The ceiling is 2 000 000 characters per file.
+- Above 2 000 000 characters a file is stored but not indexed, and is handed
+  over inline, truncated, like the other fallbacks. Inline text is capped at
+  200 000 characters.
 - Deleting a file, or the whole chat, erases its indexed content.
 
 ## Exporting a chat
@@ -79,7 +84,7 @@ Open the chat menu:
 
 | Item | Contains |
 |------|----------|
-| **Export as Markdown** | The current branch only; no tool steps, no file contents |
+| **Export as Markdown** | The current branch only; no tool steps, no file contents (attached files appear by name only) |
 | **Export as JSON** | All branches |
 
 ## Where work goes next
