@@ -186,10 +186,20 @@ export function describePublishError(err: unknown, t: (en: string, de: string) =
   return err instanceof Error ? err.message : String(err);
 }
 
-export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayManage: boolean }) {
+export function AgentPublishBar({
+  agentId,
+  mayManage,
+  contentHidden = false,
+}: {
+  agentId: string;
+  mayManage: boolean;
+  /** A personal agent read by anybody but its owner: only the owner acts on
+   *  it, so there is no draft to review or publish here. */
+  contentHidden?: boolean;
+}) {
   const t = useT();
   const may = useMay();
-  const { data: status } = useAgentDraftStatus(agentId);
+  const { data: status } = useAgentDraftStatus(agentId, { enabled: !contentHidden });
   const publish = usePublishAgentVersion(agentId);
   const [reviewOpen, setReviewOpen] = useState(false);
   const [note, setNote] = useState("");
@@ -206,7 +216,7 @@ export function AgentPublishBar({ agentId, mayManage }: { agentId: string; mayMa
   // than one that is absent.
   const mayPublish = mayManage && may("agent_version:publish");
 
-  if (!status?.dirty) return null;
+  if (contentHidden || !status?.dirty) return null;
 
   const count = status.changedFields.length;
 

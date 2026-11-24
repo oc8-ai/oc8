@@ -444,7 +444,11 @@ function AgentDetail() {
       {/* Above the tabs, not inside one: an edit made on the Guardrails tab has
           to be publishable from wherever the operator ends up, and a bar that
           lives inside a tab is a bar half the people who need it never see. */}
-      <AgentPublishBar agentId={agent.id} mayManage={mayManage} />
+      <AgentPublishBar
+        agentId={agent.id}
+        mayManage={mayManage}
+        contentHidden={agent.contentHidden ?? false}
+      />
 
       {runPickerOpen && !agent.contentHidden && (
         <div

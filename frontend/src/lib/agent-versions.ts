@@ -113,11 +113,14 @@ export function useAgentVersionDiff(agentId: string, from: number | null, to?: n
  *  query: thirteen write endpoints move it and a publish clears it, and
  *  invalidating it must not drag the agent's whole effective-tools computation
  *  along. */
-export function useAgentDraftStatus(agentId: string) {
+export function useAgentDraftStatus(
+  agentId: string,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
   return useQuery({
     queryKey: agentVersionKeys.draftStatus(agentId),
     queryFn: () => api.get<AgentDraftStatus>(`/agents/${agentId}/draft-status`),
-    enabled: !!agentId,
+    enabled: enabled && !!agentId,
   });
 }
 

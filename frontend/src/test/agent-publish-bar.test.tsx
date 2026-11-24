@@ -56,6 +56,18 @@ describe("AgentPublishBar", () => {
     expect(container.textContent).toBe("");
   });
 
+  it("renders nothing for a personal agent whose content is hidden from the reader", async () => {
+    // Only the owner acts on a personal agent: an admin reading its metadata
+    // is not offered a draft to review or publish.
+    getMock.mockResolvedValue({ dirty: true, changedFields: ["mission"], currentVersionNo: 3 });
+    const { container } = renderBar(
+      <AgentPublishBar agentId="ag-1" mayManage={false} contentHidden />,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(container.textContent).toBe("");
+    expect(getMock).not.toHaveBeenCalled();
+  });
+
   it("counts the changed fields", async () => {
     getMock.mockResolvedValue({
       dirty: true,
