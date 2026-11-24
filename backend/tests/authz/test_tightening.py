@@ -459,6 +459,43 @@ def test_skills(confirmed: dict[str, Any], current: dict[str, Any], loosened: li
     assert grant_loosenings(_grant(skills=confirmed), _grant(skills=current)) == loosened
 
 
+# --- logins (Ruling T12-N2) ------------------------------------------------
+
+LA = ["cred-a", "None"]
+LB = ["cred-b", "None"]
+GONE = ["None", "None"]
+
+LOGIN_ROWS: list[tuple[Any, Any, list[str]]] = [
+    ({"t": LA}, {"t": LA}, []),  # equal
+    ({}, {}, []),
+    ({"t": LA}, {"t": GONE}, []),  # the login was deleted: tightens
+    ({"t": LA}, {}, []),  # the entry removed: tightens (core holds the mode)
+    ({}, {"t": LA}, ["login:t"]),  # added
+    ({"t": LA}, {"t": LB}, ["login:t"]),  # A -> B
+    ({"t": GONE}, {"t": LB}, ["login:t"]),  # gone -> B: a new login never holds
+    ({"t": GONE}, {"t": GONE}, []),
+    ({"t": LA}, {"t": ["None", "oauth-x"]}, ["login:t"]),  # partially null: a new oauth
+    ({"t": LA}, {"t": ["cred-a"]}, ["login:t"]),  # truncated
+    ({"t": LA}, {"t": "None"}, ["login:t"]),  # not a list
+    ({"t": LA}, {"t": None}, ["login:t"]),
+    ({"t": LA}, "not a mapping", ["grant:logins"]),
+    ("not a mapping", {"t": LA}, ["grant:logins"]),
+]
+
+
+@pytest.mark.parametrize(("confirmed", "current", "loosened"), LOGIN_ROWS)
+def test_logins(confirmed: Any, current: Any, loosened: list[str]) -> None:
+    assert grant_loosenings({**_grant(), "logins": confirmed}, {**_grant(), "logins": current}) == (
+        loosened
+    )
+
+
+def test_a_grant_without_logins_reads_as_none() -> None:
+    assert grant_loosenings(_grant(), {**_grant(), "logins": {}}) == []
+    assert grant_loosenings({**_grant(), "logins": {"t": LA}}, _grant()) == []
+    assert grant_loosenings(_grant(), {**_grant(), "logins": {"t": LA}}) == ["login:t"]
+
+
 # --- the whole grant ------------------------------------------------------
 
 

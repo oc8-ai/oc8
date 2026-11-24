@@ -162,10 +162,12 @@ class PendingConfirmation:
 @dataclass
 class _Pin:
     """What a stamp of one agent must record, as the token pinned it: the
-    `core` per tool key the owner's bindings scope (None: a trigger's,
+    `core` and the fixed logins (`grant.logins`, outside `core`: Ruling
+    T12-I1) per tool key the owner's bindings scope (None: a trigger's,
     every tool), and the grant's skills and frame."""
 
     cores: dict[str | None, str] = field(default_factory=dict)
+    logins: dict[str | None, Any] = field(default_factory=dict)
     skills: Any = None
     frame: Any = None
     tools: Any = None
@@ -390,6 +392,7 @@ async def _agent_survey(
         tools=whole.grant.get("tools"),
     )
     pin.cores[None] = whole.core
+    pin.logins[None] = whole.grant.get("logins")
     changes: set[str] = set()
     if owner is None:
         return pin, whole.grant, changes
@@ -398,6 +401,7 @@ async def _agent_survey(
         if row.tool_key not in pin.cores:
             scoped = await split_fingerprint(db, agent, row.tool_key, version_id=version_id)
             pin.cores[row.tool_key] = scoped.core
+            pin.logins[row.tool_key] = scoped.grant.get("logins")
         if not await confirmation_holds(
             db,
             agent,
@@ -470,7 +474,8 @@ async def _survey(
             )
         pins[agent.id] = pin
         cores = sorted((str(key), core) for key, core in pin.cores.items())
-        pinned.append([str(agent.id), str(agent.current_version_id), cores, grant, held])
+        logins = sorted(([str(key), value] for key, value in pin.logins.items()), key=str)
+        pinned.append([str(agent.id), str(agent.current_version_id), cores, logins, grant, held])
     department = None
     if any({"core", "frame"} & set(agent.changes) for agent in agents):
         department = DepartmentView(
@@ -517,14 +522,15 @@ def _other_tools(tools: Any, applied: set[str]) -> dict[str, Any]:
 def _stamped_as_pinned(
     split: Mapping[str, Any] | None, pin: _Pin, key: str | None, applied: set[str]
 ) -> bool:
-    """Whether a stamp recorded what the token pinned: its `core`, skills,
-    frame, and every tool but those the held tools just changed (`applied`:
+    """Whether a stamp recorded what the token pinned: its `core`, its
+    fixed logins, skills, frame, and every tool but those the held tools just changed (`applied`:
     they change on purpose, and the token pinned them itself)."""
     stamped = stored_split(split)
     return (
         stamped is not None
         and key in pin.cores
         and stamped.core == pin.cores[key]
+        and stamped.grant.get("logins") == pin.logins.get(key)
         and stamped.grant.get("skills") == pin.skills
         and stamped.grant.get("frame") == pin.frame
         and _other_tools(stamped.grant.get("tools"), applied) == _other_tools(pin.tools, applied)

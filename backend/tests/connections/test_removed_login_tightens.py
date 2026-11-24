@@ -14,14 +14,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agents.versioning import publish_version
 from oc8.connections.access import ConnectionRequired, resolve_tool_access
 from oc8.connections.access_write import write_tool_access
-from oc8.connections.confirmation import confirmation_holds, trigger_confirmed
+from oc8.connections.confirmation import (
+    confirmation_holds,
+    owner_confirmations,
+    trigger_confirmed,
+)
 from oc8.credentials.service import delete_credential
-from oc8.departments.owner_confirmation import pending_confirmation
+from oc8.departments import owner_confirmation
+from oc8.departments.owner_confirmation import (
+    ConfirmationChanged,
+    confirm_pending,
+    pending_confirmation,
+)
 from oc8.triggers.service import create_trigger
 from tests.conftest import AppSessionFactory
-from tests.connections.helpers import credential_row, enable_plugin_row
+from tests.connections.helpers import credential_row, enable_plugin_row, member
 from tests.departments.owned import OwnedWorld, owned_world
 
 pytestmark = pytest.mark.asyncio
@@ -203,13 +213,13 @@ async def test_a_new_login_in_its_place_needs_consent(app_session: AppSessionFac
 async def test_a_different_login_in_its_place_needs_consent(
     app_session: AppSessionFactory,
 ) -> None:
-    world, _conn_id, tid = await _world(app_session)
+    world, conn_id, tid = await _world(app_session)
     other = await credential_row(app_session, world.tenant, owner=world.member_id, name="Other")
 
     await _set_target(app_session, world, other)
 
     assert not await _binding_holds(app_session, world)
-    assert not await _trigger_holds(app_session, world, tid)
+    await _assert_held(app_session, world, conn_id, tid)
 
 
 async def test_the_owner_binding_the_new_login_confirms_it(
@@ -224,4 +234,142 @@ async def test_the_owner_binding_the_new_login_confirms_it(
     assert await _binding_holds(app_session, world)
     # The trigger was confirmed with the old login: the new one waits for
     # the owner there too.
+    assert not await _trigger_holds(app_session, world, tid)
+
+
+# --- a login swapped in by someone else is held (Ruling T12-I1) -------------
+
+
+async def _needed(app_session: AppSessionFactory, world: OwnedWorld) -> Any:
+    async with app_session(world.tenant) as db:
+        dept = await db.get(m.Department, world.department_id)
+        assert dept is not None
+        return await pending_confirmation(db, dept)
+
+
+async def _assert_held(
+    app_session: AppSessionFactory, world: OwnedWorld, conn_id: uuid.UUID, tid: uuid.UUID
+) -> None:
+    """The trigger and the binding wait for the owner, and the run is held."""
+    assert not await _trigger_holds(app_session, world, tid)
+    assert (await _needed(app_session, world)).needed is True
+    with pytest.raises(ConnectionRequired) as held:
+        await _resolve(app_session, world, conn_id)
+    assert held.value.reason == "binding_needs_confirmation"
+
+
+async def test_an_organisation_login_swapped_in_is_held(app_session: AppSessionFactory) -> None:
+    world, conn_id, tid = await _world(app_session)
+    org = await credential_row(app_session, world.tenant, owner=None, name="Shared")
+
+    await _set_target(app_session, world, org)
+
+    assert not await _binding_holds(app_session, world)
+    await _assert_held(app_session, world, conn_id, tid)
+
+
+async def test_an_admin_binding_a_new_login_is_held(app_session: AppSessionFactory) -> None:
+    world, conn_id, tid = await _world(app_session)
+    admin = await member(app_session, world.tenant, f"admin-{uuid.uuid4().hex[:6]}@acme.test")
+    fresh = await credential_row(app_session, world.tenant, owner=world.member_id, name="New")
+
+    async with app_session(world.tenant) as db:
+        agent = await db.get(m.Agent, world.agent_id)
+        assert agent is not None
+        await write_tool_access(
+            db,
+            agent=agent,
+            tool_key="odoo",
+            mode="fixed",
+            oauth_connection_id=None,
+            credential_id=fresh,
+            set_by_member_id=admin,
+            set_with_manage=False,
+            actor_type="operator",
+            actor_id=admin,
+        )
+
+    # Stamped anew by the admin's write, but not chosen by the owner.
+    await _assert_held(app_session, world, conn_id, tid)
+
+
+async def test_a_frame_and_login_change_shows_the_new_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """A login change sits outside `core`, yet the owner is shown it as a
+    setup change (`login:` -> core), next to the frame's."""
+    world, _conn_id, _tid = await _world(app_session)
+    org = await credential_row(app_session, world.tenant, owner=None, name="Shared mailbox")
+    async with app_session(world.tenant) as db:
+        dept = await db.get(m.Department, world.department_id)
+        assert dept is not None
+        dept.frame = {**(dept.frame or {}), "kbs": ["kb-new"]}
+    await _set_target(app_session, world, org)
+
+    summary = await _needed(app_session, world)
+
+    (agent,) = summary.agents
+    assert {"core", "frame"} <= set(agent.changes)
+    (setup,) = [view for view in agent.setup or [] if view.tool == "odoo"]
+    assert [login.name for login in setup.logins] == ["Shared mailbox"]
+
+
+async def test_a_login_swapped_during_the_confirmation_rolls_it_back(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An admin replaces the owner's binding with one on another login after
+    the token check: the trigger's stamp would record a login the owner
+    never saw, so the confirmation is refused and nothing is written."""
+    world, _conn_id, tid = await _world(app_session)
+    admin = await member(app_session, world.tenant, f"admin-{uuid.uuid4().hex[:6]}@acme.test")
+    org = await credential_row(app_session, world.tenant, owner=None, name="Shared")
+    async with app_session(world.tenant) as db:
+        agent = await db.get(m.Agent, world.agent_id)
+        assert agent is not None
+        agent.mission = "a new mission"
+        await db.flush()
+        await publish_version(db, agent)
+    seen = await _needed(app_session, world)
+    assert seen.needed
+    async with app_session(world.tenant) as db:
+        before = await db.get(m.Trigger, tid)
+        assert before is not None
+        split = before.access_split
+
+    original = owner_confirmations
+    calls = 0
+
+    async def swap_then_list(db: Any, agent: m.Agent, owner: uuid.UUID) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 2:  # after the survey, before the stamps
+            async with app_session(world.tenant) as other:
+                await other.delete(await _access_row(other, world))
+                await other.flush()
+                other.add(
+                    m.AgentToolAccess(
+                        tenant_id=world.tenant,
+                        agent_id=world.agent_id,
+                        tool_key="odoo",
+                        mode="fixed",
+                        credential_id=org,
+                        set_by_member_id=admin,
+                        set_with_manage=True,
+                    )
+                )
+        return await original(db, agent, owner)
+
+    monkeypatch.setattr(owner_confirmation, "owner_confirmations", swap_then_list)
+    with pytest.raises(ConfirmationChanged):
+        async with app_session(world.tenant) as db:
+            dept = await db.get(m.Department, world.department_id)
+            owner = await db.get(m.OrgMember, world.member_id)
+            assert dept is not None and owner is not None
+            await confirm_pending(db, dept, member=owner, token=seen.token)
+
+    assert calls >= 2
+    async with app_session(world.tenant) as db:
+        after = await db.get(m.Trigger, tid)
+        assert after is not None
+        assert after.access_split == split
     assert not await _trigger_holds(app_session, world, tid)
