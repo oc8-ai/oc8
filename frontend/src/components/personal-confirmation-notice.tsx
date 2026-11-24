@@ -185,9 +185,22 @@ function changeLabel(t: Tr, c: string): string {
   }
 }
 
+/** A setup's scopes: a list, or (a tool pack's) right -> tool names. */
+function scopesText(scopes: unknown): string {
+  if (Array.isArray(scopes)) return scopes.join(", ");
+  if (scopes && typeof scopes === "object") {
+    return Object.entries(scopes as Record<string, unknown>)
+      .map(
+        ([right, names]) => `${right}: ${Array.isArray(names) ? names.join(", ") : String(names)}`,
+      )
+      .join("; ");
+  }
+  return scopes ? String(scopes) : "";
+}
+
 function SetupView({ s }: { s: PersonalConfirmationSetupDTO }) {
   const t = useT();
-  const scopes = Array.isArray(s.scopes) ? s.scopes.join(", ") : s.scopes ? String(s.scopes) : "";
+  const scopes = scopesText(s.scopes);
   return (
     <li className="text-xs">
       <span className="font-medium">{s.tool}</span>

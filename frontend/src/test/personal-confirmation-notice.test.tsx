@@ -148,6 +148,25 @@ describe("PersonalConfirmationNotice", () => {
     expect(after).toHaveTextContent("files_list");
   });
 
+  it("shows a setup's scopes grouped by right, as a tool pack declares them", async () => {
+    const base = summary();
+    const agent = (base.agents as Record<string, unknown>[])[0];
+    const setup = (agent.setup as Record<string, unknown>[])[0];
+    current = {
+      ...base,
+      agents: [
+        {
+          ...agent,
+          setup: [{ ...setup, scopes: { read: ["mail_get"], modify: ["mail_send", "mail_move"] } }],
+        },
+      ],
+    };
+    renderNotice();
+    const scopes = (await screen.findByText("Scopes")).nextElementSibling;
+    expect(scopes).not.toHaveTextContent("[object Object]");
+    expect(scopes).toHaveTextContent("read: mail_get; modify: mail_send, mail_move");
+  });
+
   it("renders nothing when nothing waits", async () => {
     current = summary({ needed: false, tools: [], skills: [], agents: [], department: null });
     const { container } = renderNotice();
