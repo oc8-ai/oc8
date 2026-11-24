@@ -376,7 +376,8 @@ class _Stamps:
             if agent is None or agent.tenant_id != trigger.tenant_id:
                 continue  # its agent is gone: leave the stamp as it was
             before = trigger.access_fingerprint
-            await stamp_trigger(db, trigger)
+            # Held back: the pass confirms nothing the owner has not.
+            await stamp_trigger(db, trigger, held_back=True)
             if trigger.access_fingerprint != before:
                 count += 1
                 await _audit_restamp(
@@ -389,7 +390,7 @@ class _Stamps:
             if agent is None:
                 continue
             before = row.binding_fingerprint
-            await stamp_binding(db, row, agent)
+            await stamp_binding(db, row, agent, held_back=True)
             if row.binding_fingerprint != before:
                 count += 1
                 await _audit_restamp(
