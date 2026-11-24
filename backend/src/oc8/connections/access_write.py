@@ -67,7 +67,10 @@ async def write_tool_access(
     # Flushed first: the fingerprint reads the agent's access rows, this one
     # included, and the session does not autoflush.
     await db.flush()
-    await stamp_binding(db, row, agent)
+    # A system write (consolidation pinning a row) confirms nothing: it keeps
+    # the skills that wait for a department owner waiting.
+    system = actor_type == "system"
+    await stamp_binding(db, row, agent, confirmed_by=None if system else actor_id, held_back=system)
     await db.flush()
     # A trigger polling the login this tool was fixed to stops when the agent's
     # login for it changes, rather than listening on an account the agent's

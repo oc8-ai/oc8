@@ -353,7 +353,7 @@ async def create_trigger(
     if created_by_member_id is not None:
         # Its creator saves it: their own account may serve it while the
         # agent stays as they see it now (connections.access.schedule_confirmed).
-        await stamp_trigger(db, trigger)
+        await stamp_trigger(db, trigger, confirmed_by=created_by_member_id)
     # The manual-trigger-only check for ChatGPT-subscription-backed models
     # (`oc8.modelrouter.subscription_guard`) lives HERE, not in the HTTP route,
     # because this function is the one funnel every trigger creation goes

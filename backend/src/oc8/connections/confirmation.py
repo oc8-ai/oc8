@@ -15,8 +15,9 @@ Next to it a stamp now stores a split (`agent_tool_access.binding_split`,
   holds one entry per enabled tool key of the effective policies -- every
   one, for a binding too (a new tool next to the bound one is an addition
   the member confirms) -- `frame` the frame without `tools`,
-  `skills` `{assignment id: [skill_version_id, overrides, name, description]}`
-  (the name and description as the model reads them in the catalogue).
+  `skills` `{assignment id: [skill_version_id, overrides]}`, and in a
+  department with an owner also the skill's name and description as the
+  model reads them in the catalogue (`[..., name, description]`).
 
 The agent's own approval threshold (`presentation["approval_value_eur"]`,
 which the live gate adds as an extra threshold) is folded into each tool
@@ -168,10 +169,14 @@ def _grant_tools(
     return tools
 
 
-async def _grant_skills(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
-    """The assignments `binding_fingerprint` reads, enabled ones only, each
-    with the text the model reads of its skill (name, description: None when
-    the version or skill is gone), so a change to that text loosens too."""
+async def _grant_skills(db: AsyncSession, agent: m.Agent, *, owned: bool) -> dict[str, Any]:
+    """The assignments `binding_fingerprint` reads, enabled ones only, as
+    `[skill_version_id, overrides]`. `owned` (a department with an owner):
+    each also carries the text the model reads of its skill (name,
+    description: None when the version or skill is gone), so a change to
+    that text loosens too and waits for the owner (`held_skill_entries`).
+    A standard department leaves the text out: a rename there must not
+    break every confirmation in the tenant."""
     rows = (
         await db.execute(
             select(m.SkillAssignment, m.Skill.name, m.Skill.description)
@@ -188,7 +193,7 @@ async def _grant_skills(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
         )
     ).tuples()
     return {
-        str(a.id): [str(a.skill_version_id), a.overrides, name, description]
+        str(a.id): [str(a.skill_version_id), a.overrides] + ([name, description] if owned else [])
         for a, name, description in rows
         if bool(a.enabled)
     }
@@ -227,8 +232,9 @@ async def _department_owner(db: AsyncSession, agent: m.Agent) -> uuid.UUID | Non
 
 async def _owner_binding(db: AsyncSession, row: m.AgentToolAccess, owner: uuid.UUID) -> bool:
     """Whether `row` is the owner's own confirmation: fixed to a login or
-    connection of the owner, and set by the owner (or by nobody named)."""
-    if row.mode != "fixed" or row.set_by_member_id not in (owner, None):
+    connection of the owner, and set by the owner. A row the system wrote
+    (`set_by_member_id` None) is nobody's confirmation."""
+    if row.mode != "fixed" or row.set_by_member_id != owner:
         return False
     target: m.Credential | m.OAuthConnection | None = None
     if row.credential_id is not None:
@@ -346,7 +352,9 @@ async def split_fingerprint(
         }
     ).hex()
     frame = _dict(dept.frame) if dept is not None else {}
-    skills = await _grant_skills(db, agent)
+    skills = await _grant_skills(
+        db, agent, owned=dept is not None and dept.owner_member_id is not None
+    )
     if held_back:
         entries = await held_skill_entries(db, agent)
         if entries is not None:
@@ -406,12 +414,20 @@ def _record_confirmed(agent: m.Agent, split: SplitFingerprint) -> None:
 
 
 async def stamp_binding(
-    db: AsyncSession, row: m.AgentToolAccess, agent: m.Agent, *, held_back: bool = False
+    db: AsyncSession,
+    row: m.AgentToolAccess,
+    agent: m.Agent,
+    *,
+    confirmed_by: uuid.UUID | None,
+    held_back: bool = False,
 ) -> None:
     """Confirm the binding against the agent's published version as it is now.
-    `held_back`: a stamp nobody confirmed (the consolidation pass restamping
-    a confirmation that holds) keeps the skills that wait for the owner
-    waiting (`held_skill_entries`); a person's own stamp takes them all."""
+    `confirmed_by`: the member who confirms (None: the system). Only the
+    department owner confirming their own binding records the skills they
+    confirmed (`agent.confirmed_skills`). `held_back`: a stamp nobody
+    confirmed (a system write, the consolidation restamp) keeps the skills
+    that wait for the owner waiting (`held_skill_entries`); a person's own
+    stamp takes them all."""
     version_id = agent.current_version_id
     row.binding_fingerprint = await binding_fingerprint(
         db, agent, row.tool_key, version_id=version_id
@@ -421,7 +437,7 @@ async def stamp_binding(
     )
     row.binding_split = split.to_json()
     owner = await _department_owner(db, agent)
-    if owner is not None and await _owner_binding(db, row, owner):
+    if owner is not None and confirmed_by == owner and await _owner_binding(db, row, owner):
         _record_confirmed(agent, split)
 
 
@@ -432,9 +448,16 @@ async def _trigger_agent(db: AsyncSession, trigger: m.Trigger) -> m.Agent | None
     return agent
 
 
-async def stamp_trigger(db: AsyncSession, trigger: m.Trigger, *, held_back: bool = False) -> None:
+async def stamp_trigger(
+    db: AsyncSession,
+    trigger: m.Trigger,
+    *,
+    confirmed_by: uuid.UUID | None,
+    held_back: bool = False,
+) -> None:
     """Confirm the trigger's agent (every tool) as it is now; both None when
-    the agent is gone. `held_back` as for `stamp_binding`."""
+    the agent is gone. `confirmed_by` and `held_back` as for `stamp_binding`;
+    only the owner confirming a trigger they created records the skills."""
     agent = await _trigger_agent(db, trigger)
     if agent is None:
         trigger.access_fingerprint = None
@@ -445,7 +468,7 @@ async def stamp_trigger(db: AsyncSession, trigger: m.Trigger, *, held_back: bool
     split = await split_fingerprint(db, agent, None, version_id=version_id, held_back=held_back)
     trigger.access_split = split.to_json()
     owner = await _department_owner(db, agent)
-    if owner is not None and trigger.created_by_member_id == owner:
+    if owner is not None and confirmed_by == owner and trigger.created_by_member_id == owner:
         _record_confirmed(agent, split)
 
 

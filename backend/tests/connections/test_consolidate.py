@@ -657,8 +657,8 @@ async def test_a_split_confirmation_that_loosened_is_not_restamped(
         )
         db.add_all([trigger, access])
         await db.flush()
-        await stamp_trigger(db, trigger)
-        await stamp_binding(db, access, live)
+        await stamp_trigger(db, trigger, confirmed_by=anna)
+        await stamp_binding(db, access, live, confirmed_by=anna)
         before = (
             trigger.access_fingerprint,
             trigger.access_split,
@@ -743,8 +743,8 @@ async def test_a_core_change_the_digest_misses_is_not_restamped(
         )
         db.add_all([trigger, access])
         await db.flush()
-        await stamp_trigger(db, trigger)
-        await stamp_binding(db, access, live)
+        await stamp_trigger(db, trigger, confirmed_by=anna)
+        await stamp_binding(db, access, live, confirmed_by=anna)
         before = (
             trigger.access_fingerprint,
             trigger.access_split,

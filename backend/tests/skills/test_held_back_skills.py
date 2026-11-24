@@ -23,12 +23,13 @@ import oc8.agent  # noqa: F401
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.connections.access import unconfirmed_reason
+from oc8.connections.access_write import write_tool_access
 from oc8.connections.confirmation import held_skill_entries, stamp_binding, stamp_trigger
 from oc8.connections.consolidate import _Stamps
 from oc8.main import create_app
 from oc8.skills.runtime import catalog_block, load_assigned_skills, skill_tool_schemas
 from tests.conftest import AppSessionFactory
-from tests.connections.helpers import member
+from tests.connections.helpers import credential_row, member
 from tests.connections.test_split_confirmation import _bound
 from tests.connections.test_split_confirmation import _reason as _standard_reason
 from tests.departments.owned import OwnedWorld, owned_world
@@ -114,7 +115,7 @@ async def _confirm(app_session: AppSessionFactory, w: OwnedWorld) -> None:
     async with app_session(w.tenant) as db:
         agent = await db.get(m.Agent, w.agent_id)
         assert agent is not None
-        await stamp_binding(db, await _row(db, w), agent)
+        await stamp_binding(db, await _row(db, w), agent, confirmed_by=w.member_id)
 
 
 async def _loaded(app_session: AppSessionFactory, tenant: uuid.UUID, agent_id: Any) -> list[Any]:
@@ -230,7 +231,7 @@ async def _owner_trigger(
         )
         db.add(trigger)
         await db.flush()
-        await stamp_trigger(db, trigger)
+        await stamp_trigger(db, trigger, confirmed_by=creator)
         return trigger.id
 
 
@@ -344,7 +345,7 @@ async def test_a_binding_someone_else_set_does_not_confirm(app_session: AppSessi
         row = await _row(db, w)
         assert agent is not None
         row.set_by_member_id = other
-        await stamp_binding(db, row, agent)
+        await stamp_binding(db, row, agent, confirmed_by=other)
     assert await _loaded(app_session, w.tenant, w.agent_id) == []
 
 
@@ -410,3 +411,98 @@ async def test_a_renamed_skill_keeps_its_confirmed_text(app_session: AppSessionF
     # Once the owner confirms again, the new text reaches their agent too.
     await _confirm(app_session, w)
     assert "Ganz anders." in await _catalog(app_session, w.tenant, w.agent_id)
+
+
+# --- Fix round 2: a system stamp confirms nothing (T5-S1) ---------------------
+
+
+async def test_a_system_pinned_row_does_not_release_held_skills(
+    app_session: AppSessionFactory,
+) -> None:
+    """Consolidation pins a row on the owner's own login (`set_by` None,
+    `actor_type="system"`) after the owner's last trigger went away: the
+    skill that waits keeps waiting, and the confirmed set is unchanged."""
+    w = await owned_world(app_session, tools={"a": _RW})
+    trigger_id = await _owner_trigger(app_session, w, creator=w.member_id)
+    async with app_session(w.tenant) as db:
+        await db.delete(await db.get(m.Trigger, trigger_id))
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        before = agent.confirmed_skills
+    assert before is not None
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    cred = await credential_row(app_session, w.tenant, owner=w.member_id)
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        await write_tool_access(
+            db,
+            agent=agent,
+            tool_key="a",
+            mode="fixed",
+            oauth_connection_id=None,
+            credential_id=cred,
+            set_by_member_id=None,
+            set_with_manage=True,
+            actor_type="system",
+            actor_id=None,
+        )
+    assert await _loaded(app_session, w.tenant, w.agent_id) == []
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        assert agent.confirmed_skills == before
+
+
+async def test_a_trigger_stamped_by_someone_else_records_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await owned_world(app_session, tools={"a": _RW})
+    await _owner_trigger(app_session, w, creator=w.member_id)
+    async with app_session(w.tenant) as db:
+        agent = await db.get(m.Agent, w.agent_id)
+        assert agent is not None
+        before = agent.confirmed_skills
+    v1, _ = await _skill(app_session, w.tenant)
+    await _assign(app_session, w.tenant, v1)
+    async with app_session(w.tenant) as db:
+        trigger = await db.scalar(select(m.Trigger).where(m.Trigger.agent_id == w.agent_id))
+        agent = await db.get(m.Agent, w.agent_id)
+        assert trigger is not None and agent is not None
+        await stamp_trigger(db, trigger, confirmed_by=None, held_back=True)
+        assert agent.confirmed_skills == before
+    assert await _loaded(app_session, w.tenant, w.agent_id) == []
+
+
+# --- Fix round 2: a rename leaves a standard department's binding (T5-R1) -----
+
+
+async def test_a_rename_in_a_standard_department_keeps_the_binding(
+    app_session: AppSessionFactory,
+) -> None:
+    b = await _bound(app_session)
+    v1, _ = await _skill(app_session, b.tenant)
+    await _assign(app_session, b.tenant, v1)
+    async with app_session(b.tenant) as db:
+        agent = await db.get(m.Agent, b.agent.id)
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == b.agent.id)
+        )
+        assert agent is not None and row is not None
+        await stamp_binding(db, row, agent, confirmed_by=b.anna)
+        skill_id = (await db.get(m.SkillVersion, v1)).skill_id  # type: ignore[union-attr]
+        split = row.binding_split or {}
+        (entry,) = split["grant"]["skills"].values()
+        assert len(entry) == 2  # no name or description outside an owned department
+    assert await _standard_reason(app_session, b) is None
+
+    token = get_identity_provider().mint(tenant_id=b.tenant, subject="admin", role="org_admin")
+    async with _http() as c:
+        r = await c.patch(
+            f"/api/v1/skills/{skill_id}",
+            json={"name": "Neuer Stil", "description": "Ganz anders."},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert r.status_code == 200, r.text
+    assert await _standard_reason(app_session, b) is None

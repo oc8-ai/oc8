@@ -474,7 +474,7 @@ async def update_agent_trigger(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     if caller is not None and updated.created_by_member_id == caller:
         # Its creator saved it: they confirm the agent as it is now.
-        await stamp_trigger(db, updated)
+        await stamp_trigger(db, updated, confirmed_by=caller)
         await db.flush()
     # The guard only matters when this update is turning the trigger ON
     # (`body.enabled is True`, whether that flips a disabled row or

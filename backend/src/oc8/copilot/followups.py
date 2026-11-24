@@ -112,7 +112,7 @@ async def schedule_followup(
 
     # The member scheduled it: their own account may serve it while the
     # Copilot stays as it is now (connections.access.schedule_confirmed).
-    await stamp_trigger(db, trigger)
+    await stamp_trigger(db, trigger, confirmed_by=member_id)
     # Same guard and order as triggers.service.create_trigger: checked after
     # the flush, so this follow-up itself counts as the enabled trigger. A tool
     # call turns the rejection into an ERROR and the run carries on, so the

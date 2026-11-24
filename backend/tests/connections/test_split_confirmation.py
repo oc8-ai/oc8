@@ -253,7 +253,7 @@ async def test_a_removed_skill_keeps_it_and_an_added_one_does_not(
     async with app_session(b.tenant) as db:  # Anna confirms with both skills
         live = await db.get(m.Agent, b.agent.id)
         assert live is not None
-        await stamp_binding(db, await _access_row(db, b), live)
+        await stamp_binding(db, await _access_row(db, b), live, confirmed_by=b.anna)
     async with app_session(b.tenant) as db:
         gone = await db.get(m.SkillAssignment, first)
         assert gone is not None
