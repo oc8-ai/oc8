@@ -907,14 +907,37 @@ class GrantSeatRequest(CamelModel):
 
 
 class AnswerClarificationRequest(CamelModel):
-    """The sentence the agent is waiting for.
+    """The answer the agent is waiting for: a sentence, or the picked options of
+    the structured questions it asked (spec §4.1).
 
-    Non-empty, because an empty answer resumes the run with nothing to act on:
-    the agent asked because it could not proceed, and "" is not an answer, it is
-    the same question again with a person's time spent on it.
+    At least one of the two is required, because an empty answer resumes the run
+    with nothing to act on: the agent asked because it could not proceed, and ""
+    is not an answer, it is the same question again with a person's time spent on
+    it. Free text keeps working for structured questions too -- it is read like a
+    messenger reply (`1,3`, `1: 2; 2: yes`) by `parse_messenger_answer` -- but on
+    a run parked on SEVERAL questions any prose collapses onto the first one, so
+    the inbox's question card sends `answers` instead.
     """
 
-    answer: str = Field(min_length=1)
+    answer: Annotated[str, StringConstraints(min_length=1)] | None = None
+    #: `{question id: [option keys] | free text}`, same shape as ChatAnswerRequest.
+    answers: (
+        dict[
+            Annotated[str, StringConstraints(min_length=1, max_length=64)],
+            Annotated[
+                list[Annotated[str, StringConstraints(min_length=1, max_length=64)]],
+                Field(max_length=8),
+            ]
+            | Annotated[str, StringConstraints(max_length=2000)],
+        ]
+        | None
+    ) = Field(default=None, max_length=6)
+
+    @model_validator(mode="after")
+    def _one_of_the_two(self) -> AnswerClarificationRequest:
+        if self.answer is None and not self.answers:
+            raise ValueError("an answer is required")
+        return self
 
 
 class ChatAnswerRequest(CamelModel):

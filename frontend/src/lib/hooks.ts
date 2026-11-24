@@ -43,7 +43,7 @@ import type {
   Task,
 } from "@/lib/mock-data";
 import type { Skill } from "@/lib/skills";
-import type { QuestionDTO } from "@/lib/conversation-api";
+import type { QuestionAnswers, QuestionDTO } from "@/lib/conversation-api";
 import { useLang } from "@/lib/i18n";
 import {
   localizeActivity,
@@ -203,7 +203,7 @@ export interface ClarificationAnswer {
   id: string;
   runId: string;
   status: string;
-  answer: string;
+  answer?: string | null;
 }
 
 /** One person standing in one department. */
@@ -2034,8 +2034,19 @@ export function useDecideApproval() {
 export function useAnswerClarification() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clarificationId, answer }: { clarificationId: string; answer: string }) =>
-      api.post<ClarificationAnswer>(`/clarifications/${clarificationId}/answer`, { answer }),
+    mutationFn: ({
+      clarificationId,
+      answer,
+      answers,
+    }: {
+      clarificationId: string;
+      answer?: string;
+      answers?: QuestionAnswers;
+    }) =>
+      api.post<ClarificationAnswer>(`/clarifications/${clarificationId}/answer`, {
+        answer,
+        answers,
+      }),
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: keys.clarifications });
       if (data?.runId) qc.invalidateQueries({ queryKey: ["run", data.runId] });
