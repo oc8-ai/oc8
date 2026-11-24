@@ -301,6 +301,9 @@ class PersonalDepartmentAdminDTO(CamelModel):
     id: str
     owner_member_id: str
     owner_name: str
+    # False once the owner has left (or the member row is gone): the UI says
+    # "former member" rather than guessing from an empty name.
+    owner_active: bool
     agent_count: int
     follows_default_frame: bool
     follows_default_budget: bool
@@ -312,6 +315,7 @@ def _admin_dto(row: PersonalDepartmentSummary) -> PersonalDepartmentAdminDTO:
         id=str(row.id),
         owner_member_id=str(row.owner_member_id),
         owner_name=row.owner_name,
+        owner_active=row.owner_active,
         agent_count=row.agent_count,
         follows_default_frame=row.follows_default_frame,
         follows_default_budget=row.follows_default_budget,

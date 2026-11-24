@@ -371,6 +371,7 @@ class PersonalDepartmentSummary:
     id: uuid.UUID
     owner_member_id: uuid.UUID
     owner_name: str
+    owner_active: bool
     agent_count: int
     follows_default_frame: bool
     follows_default_budget: bool
@@ -390,7 +391,13 @@ async def personal_department_summaries(
         .subquery()
     )
     stmt = (
-        select(m.Department, m.OrgMember.display_name, agents.c.n)
+        select(
+            m.Department,
+            m.OrgMember.display_name,
+            m.OrgMember.id,
+            m.OrgMember.deleted_at,
+            agents.c.n,
+        )
         .outerjoin(
             m.OrgMember,
             (m.OrgMember.id == m.Department.owner_member_id)
@@ -407,13 +414,14 @@ async def personal_department_summaries(
     if department_id is not None:
         stmt = stmt.where(m.Department.id == department_id)
     out: list[PersonalDepartmentSummary] = []
-    for dept, display_name, n in (await db.execute(stmt)).all():
+    for dept, display_name, member_id, member_deleted_at, n in (await db.execute(stmt)).all():
         assert dept.owner_member_id is not None  # ck: personal <=> owner
         out.append(
             PersonalDepartmentSummary(
                 id=dept.id,
                 owner_member_id=dept.owner_member_id,
                 owner_name=display_name or "",
+                owner_active=member_id is not None and member_deleted_at is None,
                 agent_count=int(n or 0),
                 follows_default_frame=dept.frame_overridden_at is None,
                 follows_default_budget=dept.budget_overridden_at is None,

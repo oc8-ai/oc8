@@ -2774,7 +2774,7 @@ msgstr ""
 msgid "Forgot password?"
 msgstr ""
 
-msgid "Former or unnamed member"
+msgid "Former member"
 msgstr ""
 
 msgid "Forwarded verbatim to the provider after every named field above -- for knobs oc8 has no dedicated field for (e.g. OpenRouter's provider/top_p). Not validated here; the provider decides what it accepts."
@@ -3531,6 +3531,9 @@ msgid "May reach people outside without asking"
 msgstr ""
 
 msgid "MCP Connections"
+msgstr ""
+
+msgid "Member without a display name"
 msgstr ""
 
 msgid "Members who set up a second factor are asked for it at sign-in."

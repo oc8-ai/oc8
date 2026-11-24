@@ -954,6 +954,8 @@ export interface PersonalDepartmentAdminDTO {
   ownerMemberId: string;
   /** May be "" for a member with no display name. */
   ownerName: string;
+  /** False once the owner has left the organisation. */
+  ownerActive: boolean;
   agentCount: number;
   followsDefaultFrame: boolean;
   followsDefaultBudget: boolean;

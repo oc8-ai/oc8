@@ -377,7 +377,9 @@ function PersonalRow({ row, canFollow }: { row: PersonalDepartmentAdminDTO; canF
     <tr className="border-t border-border/40 align-top">
       <td className="py-2 pr-3">
         <Link to="/departments/$id" params={{ id: row.id }} className="hover:underline">
-          {row.ownerName || t("Former or unnamed member", "Ehemaliges oder unbenanntes Mitglied")}
+          {!row.ownerActive
+            ? t("Former member", "Ehemaliges Mitglied")
+            : row.ownerName || t("Member without a display name", "Mitglied ohne Anzeigenamen")}
         </Link>
       </td>
       <td className="py-2 pr-3">{row.agentCount}</td>

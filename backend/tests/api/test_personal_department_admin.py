@@ -468,6 +468,7 @@ async def test_personal_list_is_metadata_only_and_admin_only(
             "id",
             "ownerMemberId",
             "ownerName",
+            "ownerActive",
             "agentCount",
             "followsDefaultFrame",
             "followsDefaultBudget",
@@ -475,6 +476,7 @@ async def test_personal_list_is_metadata_only_and_admin_only(
         }
     following = by_id[str(w.following)]
     assert following["ownerName"] == "Ada"
+    assert following["ownerActive"] is True
     assert following["agentCount"] == 2
     assert following["followsDefaultFrame"] is True
     assert following["followsDefaultBudget"] is True
@@ -483,6 +485,11 @@ async def test_personal_list_is_metadata_only_and_admin_only(
     assert overridden["agentCount"] == 1
     assert overridden["followsDefaultFrame"] is False
     assert overridden["followsDefaultBudget"] is False
+    # The owner of the orphaned department has left: the name stays, but the
+    # flag tells the UI not to present them as a current member.
+    orphaned = by_id[str(w.orphaned)]
+    assert orphaned["ownerName"] == "Cid"
+    assert orphaned["ownerActive"] is False
 
 
 async def test_follow_default_clears_stamps_and_reapplies(
@@ -604,6 +611,8 @@ async def test_the_owner_name_never_falls_back_to_the_idp_subject(
     assert r.status_code == 200, r.text
     row = next(x for x in r.json() if x["id"] == str(w.following))
     assert row["ownerName"] == ""
+    # Still a current member -- just one without a display name.
+    assert row["ownerActive"] is True
     assert subject not in r.text
 
 

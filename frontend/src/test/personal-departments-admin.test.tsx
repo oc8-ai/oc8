@@ -41,6 +41,7 @@ function row(over: Record<string, unknown> = {}) {
   return {
     id: "d1",
     ownerName: "Ada",
+    ownerActive: true,
     ownerMemberId: "m1",
     agentCount: 2,
     followsDefaultFrame: false,
@@ -97,10 +98,19 @@ describe("PersonalDepartmentsAdminPanel", () => {
     );
   });
 
-  it("shows a neutral placeholder for an unnamed owner, never an id", async () => {
+  it("shows a neutral placeholder for an active owner without a name, never an id", async () => {
     list = [row({ ownerName: "", ownerMemberId: "member-secret-id" })];
     renderPanel();
-    expect(await screen.findByText(/former or unnamed member/i)).toBeInTheDocument();
+    expect(await screen.findByText(/member without a display name/i)).toBeInTheDocument();
+    expect(screen.queryByText(/former member/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/member-secret-id/)).not.toBeInTheDocument();
+  });
+
+  it("labels an owner who has left as a former member, never an id", async () => {
+    list = [row({ ownerName: "Cid", ownerActive: false, ownerMemberId: "member-secret-id" })];
+    renderPanel();
+    expect(await screen.findByText(/former member/i)).toBeInTheDocument();
+    expect(screen.queryByText(/member without a display name/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/member-secret-id/)).not.toBeInTheDocument();
   });
 
