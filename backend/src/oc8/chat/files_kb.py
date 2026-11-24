@@ -40,14 +40,21 @@ import datetime as dt
 import logging
 import uuid
 
-from sqlalchemy import or_, select, text, update
+from sqlalchemy import func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.auth import Principal
 from oc8.config import get_settings
+from oc8.knowledge.embedding_policy import LOCAL_AGENT_REASON, agent_runs_locally
 from oc8.knowledge.ingest import MAX_DOCUMENT_LENGTH
-from oc8.knowledge.tombstone import tombstone_base, tombstone_source
+from oc8.knowledge.tombstone import (
+    OPERATOR_DELETE,
+    tombstone_base,
+    tombstone_document,
+    tombstone_source,
+)
 from oc8.models.knowledge import CHAT_UPLOAD_CONNECTOR, KB_KIND_CHAT
 from oc8.storage import s3
 from oc8.storage.attachments import INDEXED_STATUSES, INLINE_ATTACHMENT_CHARS, full_text_key
@@ -93,7 +100,10 @@ async def chat_kb_for(
 ) -> m.KnowledgeBase | None:
     """The chat's live base, or None. With `create`, one is made when there is
     none: the deployment's default embedding model, `internal`, and a source of
-    its own.
+    its own. Not `local_only` even for an agent on a local model: that would
+    also keep the files' text from every run on a cloud model. Where the text
+    may be embedded is decided per ingest instead (`chat_local_reason`), and
+    a search's question by `retrieve_kb_context`'s own agent rule.
 
     Two uploads racing to create it both succeed: the loser's insert hits
     `uq_knowledge_base_chat_session` inside a savepoint, which is rolled back
@@ -138,6 +148,26 @@ async def chat_kb_for(
             raise
         return winner
     return kb
+
+
+#: Why a chat whose agent cannot be found keeps its files on a local model.
+UNKNOWN_AGENT_REASON = "the chat's agent is unknown, so its files stay on a local model"
+
+
+async def chat_local_reason(db: AsyncSession, *, session: m.ChatSession | None) -> str | None:
+    """Why this chat's files may only be embedded by a local model, or None.
+
+    The embedding policy agents already follow (`knowledge.embedding_policy`):
+    an agent on a local model may be handed restricted material that chat keeps
+    off cloud models, so what it reads -- here, the files of its chat -- is
+    embedded locally or not at all (`LOCAL_AGENT_REASON`). Read from the
+    agent's live row each time: the base is created at the first upload, the
+    file is ingested later, and the agent may have moved to a local model in
+    between. Fails closed: no session or no agent -> local only."""
+    agent = await db.get(m.Agent, session.agent_id) if session is not None else None
+    if agent is None:
+        return UNKNOWN_AGENT_REASON
+    return LOCAL_AGENT_REASON if await agent_runs_locally(db, agent, None) else None
 
 
 async def lock_chat_source(db: AsyncSession, *, source_id: uuid.UUID) -> m.DataSource | None:
@@ -307,3 +337,96 @@ async def _commit(db: AsyncSession, tenant_id: uuid.UUID) -> None:
     await db.execute(
         text("SELECT set_config('app.tenant_id', :tid, true)"), {"tid": str(tenant_id)}
     )
+
+
+def chat_file_uri(attachment_id: uuid.UUID) -> str:
+    """The `source_uri` a chat file's chunks carry: the id of the file whose
+    index they are (the original, never a copy)."""
+    return f"chat-file://{attachment_id}"
+
+
+async def _chat_of(db: AsyncSession, attachment: m.FileAttachment) -> m.ChatSession | None:
+    """The chat a chat file belongs to: `owner_id` is the session until the
+    turn is sent, the message after (see `api/v1/files.py`)."""
+    session = await db.get(m.ChatSession, attachment.owner_id)
+    if session is not None:
+        return session
+    message = await db.get(m.ChatMessage, attachment.owner_id)
+    return await db.get(m.ChatSession, message.session_id) if message is not None else None
+
+
+async def forget_chat_file(
+    db: AsyncSession, *, attachment: m.FileAttachment, principal: Principal | None
+) -> None:
+    """Delete a chat file's row and take its text out of the chat's base: a
+    file someone deleted -- removed before sending, or deleted after -- must
+    not stay searchable.
+
+    Locks in the order of everything else that writes a chat's base (module
+    docstring): its source first; then the original file's row, which is
+    where the ingest (`finish_chat_file`) and an edit's copy take it, so the
+    count of files sharing the index cannot miss a copy; then the file's
+    chunks (`tombstone_document`, reduced now, as an operator delete is),
+    then the file row, then its job. kb_chunk after file_attachment cannot
+    invert against anything: the only other writers of a chat's chunks hold
+    its source first.
+    The chunks stay while another row still shares the index -- the original
+    or an edited turn's copy (`indexed_from_id`) -- and go with the last of
+    them. An ingest still queued or running for the file is failed: the worker
+    finds the file gone and rolls back (`knowledge.worker.ingest_chat_file`).
+    Flush-only; the caller deletes the blobs and commits."""
+    root_id = attachment.indexed_from_id or attachment.id
+    shared = attachment.index_status in INDEXED_STATUSES
+    if shared:
+        chat = await _chat_of(db, attachment)
+        kb = await chat_kb_for(db, session=chat, create=False) if chat is not None else None
+        source = await chat_kb_source(db, kb=kb) if kb is not None else None
+        source = await lock_chat_source(db, source_id=source.id) if source is not None else None
+        # The original's row next, the lock `copy_attachment` reads its status
+        # under: a copy made meanwhile is either counted below or finds the
+        # original gone and falls back inline.
+        await db.execute(
+            select(m.FileAttachment.id).where(m.FileAttachment.id == root_id).with_for_update()
+        )
+        others = (
+            await db.execute(
+                select(func.count())
+                .select_from(m.FileAttachment)
+                .where(
+                    or_(
+                        m.FileAttachment.id == root_id,
+                        m.FileAttachment.indexed_from_id == root_id,
+                    ),
+                    m.FileAttachment.id != attachment.id,
+                )
+            )
+        ).scalar_one()
+        shared = others > 0
+        if not shared and kb is not None and source is not None:
+            await tombstone_document(
+                db,
+                tenant_id=attachment.tenant_id,
+                kb_id=kb.id,
+                data_source_id=source.id,
+                source_uri=chat_file_uri(root_id),
+                reason=OPERATOR_DELETE,
+                reduce_now=True,
+                now=dt.datetime.now(tz=dt.UTC),
+                principal=principal,
+            )
+    await db.delete(attachment)
+    await db.flush()
+    if attachment.index_status in INDEXED_STATUSES and not shared:
+        jobs = (
+            await db.execute(
+                select(m.IngestionJob).where(
+                    m.IngestionJob.tenant_id == attachment.tenant_id,
+                    m.IngestionJob.stats["attachment_id"].astext == str(root_id),
+                    m.IngestionJob.status.in_(("queued", "running")),
+                )
+            )
+        ).scalars()
+        for job in jobs:
+            job.status = "failed"
+            job.stats = {**(job.stats or {}), "error": "the file was deleted"}
+        await db.flush()

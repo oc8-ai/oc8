@@ -18,7 +18,7 @@ from oc8.api.v1.chat import _owned_session
 from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import AGENT, VIEW, perm
 from oc8.authz.scope import HumanActor
-from oc8.chat.files_kb import enqueue_chat_file_ingest
+from oc8.chat.files_kb import enqueue_chat_file_ingest, forget_chat_file
 from oc8.schemas.dto import FileAttachmentDTO
 from oc8.storage import s3
 from oc8.storage.attachment_access import member_may_open_attachment
@@ -170,5 +170,9 @@ async def delete_file(
 ) -> None:
     row = await _owned_attachment(request, db, actor, attachment_id)
     await delete_attachment_blobs(row)
-    await db.delete(row)
+    if row.owner_type == "chat_message":
+        # Its text leaves the chat's own base with it (spec §5.4).
+        await forget_chat_file(db, attachment=row, principal=actor.principal)
+    else:
+        await db.delete(row)
     await db.commit()

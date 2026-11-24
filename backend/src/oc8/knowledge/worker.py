@@ -19,7 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.chat.files_kb import CHAT_FILE_JOB, finish_chat_file, lock_chat_source
+from oc8.chat.files_kb import (
+    CHAT_FILE_JOB,
+    chat_file_uri,
+    chat_local_reason,
+    finish_chat_file,
+    lock_chat_source,
+)
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
 from oc8.knowledge.connectors.base import RawDocument
@@ -199,7 +205,10 @@ async def ingest_chat_file(message: RunMessage) -> None:
     every chunk or not at all: a model that is down, or an embedding policy
     that keeps the text off every model there is (a local-only base, a
     restricted label), fails the job and the file is handed to the model
-    inline and truncated, as before.
+    inline and truncated, as before. When the chat's agent runs on a local
+    model, only a local embedding model may embed the file
+    (`chat.files_kb.chat_local_reason`): a cloud one is refused and the file
+    goes inline.
 
     Before its chunks commit, the chat's source row is locked and re-checked
     (`chat.files_kb.lock_chat_source`, the mutex with `drop_chat_kb`): the
@@ -234,6 +243,15 @@ async def ingest_chat_file(message: RunMessage) -> None:
             return  # tenant_session commits the failed job
         assert attachment is not None and job.kb_id is not None
         kb_id, source_id = job.kb_id, job.data_source_id
+        base = await db.get(m.KnowledgeBase, kb_id)
+        chat = (
+            await db.get(m.ChatSession, base.chat_session_id)
+            if base is not None and base.chat_session_id is not None
+            else None
+        )
+        # The chat's agent on a local model -> no cloud embedding model sees
+        # its files; with no local one configured the file goes inline.
+        local_reason = await chat_local_reason(db, session=chat)
         text_key, filename = full_text_key(attachment), attachment.filename
         job.status = "running"
 
@@ -252,7 +270,7 @@ async def ingest_chat_file(message: RunMessage) -> None:
                 data_source=ds,
                 kb_id=kb_id,
                 raw=RawDocument(
-                    source_uri=f"chat-file://{attachment_id}",
+                    source_uri=chat_file_uri(attachment_id),
                     title=filename,
                     content=content,
                     content_type="text/plain",
@@ -261,6 +279,7 @@ async def ingest_chat_file(message: RunMessage) -> None:
                 ),
                 max_chars=get_settings().chat_file_max_chars,
                 require_embeddings=True,
+                require_local=local_reason,
             )
             if await lock_chat_source(db, source_id=source_id) is None:
                 raise _ChatFileGone("the chat was deleted while its file was indexed")

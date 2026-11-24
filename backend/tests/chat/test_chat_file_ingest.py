@@ -28,6 +28,7 @@ from oc8.chat.files_kb import (
 )
 from oc8.config import get_settings
 from oc8.knowledge.connectors.base import RawDocument
+from oc8.knowledge.embedding_policy import LOCAL_AGENT_REASON
 from oc8.knowledge.ingest import MAX_DOCUMENT_LENGTH, ingest_raw_document
 from oc8.knowledge.worker import ingest_job, recover_ingestion
 from oc8.modelrouter import EmbeddingUnavailable
@@ -504,3 +505,181 @@ async def test_a_queue_that_cannot_take_the_job_falls_back_inline(
         aid = await _upload(c, tenant, sid, "report.txt", _text(INLINE_ATTACHMENT_CHARS + 5))
     assert (await _attachment(app_session, tenant, aid)).index_status == "failed"
     assert (await _job_for(app_session, tenant, aid)).status == "failed"
+
+
+async def _indexed_upload(
+    app_session: AppSessionFactory, c: Any, tenant: uuid.UUID, sid: str, name: str
+) -> str:
+    aid = await _upload(c, tenant, sid, name, _text(INLINE_ATTACHMENT_CHARS + 5_000))
+    await ingest_job(_message(await _job_for(app_session, tenant, aid)))
+    assert (await _attachment(app_session, tenant, aid)).index_status == "indexed"
+    return aid
+
+
+async def test_deleting_a_chat_file_erases_its_chunks(
+    app_session: AppSessionFactory, redis_url: str, minio_url: str, router: _FakeEmbedRouter
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    async with _client() as c:
+        sid = await _new_chat(c, tenant, agent_id)
+        kept = await _indexed_upload(app_session, c, tenant, sid, "kept.txt")
+        gone = await _indexed_upload(app_session, c, tenant, sid, "gone.txt")
+        r = await c.delete(f"/api/v1/files/{gone}", headers=_token(tenant))
+        assert r.status_code == 204, r.text
+    live = await _live_chunks(app_session, tenant)
+    assert live and {ch.chunk_metadata["attachment_id"] for ch in live} == {kept}
+    async with app_session(tenant) as db:
+        erased = (
+            await db.execute(
+                select(func.count())
+                .select_from(m.KbChunk)
+                .where(m.KbChunk.source_uri == f"chat-file://{gone}", m.KbChunk.content == "")
+            )
+        ).scalar_one()
+    assert erased > 0, "reduced, not merely hidden"
+
+
+async def test_deleting_a_queued_file_fails_its_ingest(
+    app_session: AppSessionFactory, redis_url: str, minio_url: str, router: _FakeEmbedRouter
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    async with _client() as c:
+        sid = await _new_chat(c, tenant, agent_id)
+        aid = await _upload(c, tenant, sid, "report.txt", _text(INLINE_ATTACHMENT_CHARS + 5))
+        job = await _job_for(app_session, tenant, aid)
+        r = await c.delete(f"/api/v1/files/{aid}", headers=_token(tenant))
+        assert r.status_code == 204, r.text
+    assert (await _job_for(app_session, tenant, aid)).status == "failed"
+    await ingest_job(_message(job))
+    assert await _live_chunks(app_session, tenant) == []
+
+
+async def test_an_index_shared_with_a_copy_stays_until_the_last_file_goes(
+    app_session: AppSessionFactory, redis_url: str, minio_url: str, router: _FakeEmbedRouter
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    async with _client() as c:
+        sid = await _new_chat(c, tenant, agent_id)
+        original = await _indexed_upload(app_session, c, tenant, sid, "report.txt")
+        async with app_session(tenant) as db:
+            row = await db.get(m.FileAttachment, uuid.UUID(original))
+            copy = await copy_attachment(db, row, owner_id=uuid.UUID(sid))
+            copy_id = str(copy.id)
+        r = await c.delete(f"/api/v1/files/{original}", headers=_token(tenant))
+        assert r.status_code == 204, r.text
+        assert await _live_chunks(app_session, tenant), "the copy still uses the index"
+        async with app_session(tenant) as db:
+            copied = await db.get(m.FileAttachment, uuid.UUID(copy_id))
+            assert copied.index_status == "indexed"
+            again = await copy_attachment(db, copied, owner_id=uuid.UUID(sid))
+            assert again.index_status == "failed", "a copy of a copy whose original is gone"
+        r = await c.delete(f"/api/v1/files/{copy_id}", headers=_token(tenant))
+        assert r.status_code == 204, r.text
+    assert await _live_chunks(app_session, tenant) == []
+
+
+async def test_a_copy_whose_original_is_gone_falls_back_inline(
+    app_session: AppSessionFactory, redis_url: str, minio_url: str, router: _FakeEmbedRouter
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    async with _client() as c:
+        sid = await _new_chat(c, tenant, agent_id)
+        original = await _upload(c, tenant, sid, "a.txt", _text(INLINE_ATTACHMENT_CHARS + 5))
+        async with app_session(tenant) as db:
+            row = await db.get(m.FileAttachment, uuid.UUID(original))
+            copy = await copy_attachment(db, row, owner_id=uuid.UUID(sid))
+            copy_id = copy.id
+        r = await c.delete(f"/api/v1/files/{original}", headers=_token(tenant))
+        assert r.status_code == 204, r.text
+    async with app_session(tenant) as db:
+        copied = await db.get(m.FileAttachment, copy_id)
+        late = await copy_attachment(db, copied, owner_id=uuid.UUID(sid))
+        assert late.index_status == "failed" and late.indexed_from_id is None
+
+
+class _RecordingRouter(_FakeEmbedRouter):
+    def __init__(self) -> None:
+        self.require_local: list[object] = []
+
+    async def embed(self, text: str, model: str | None = None, **kw: object) -> list[float]:
+        self.require_local.append(kw.get("require_local"))
+        return await super().embed(text, model)
+
+
+async def _agent_on(app_session: AppSessionFactory, tenant: uuid.UUID, provider: str) -> uuid.UUID:
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Ops", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant, department_id=dept.id, name="A", presentation={"provider": provider}
+        )
+        db.add(agent)
+        await db.flush()
+        return agent.id
+
+
+@pytest.mark.parametrize(("provider", "local"), [("ollama", True), ("anthropic", False)])
+async def test_a_local_agents_chat_files_are_embedded_locally_only(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    minio_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    local: bool,
+) -> None:
+    recording = _RecordingRouter()
+    monkeypatch.setattr("oc8.knowledge.ingest.get_model_router", lambda: recording)
+    tenant = uuid.uuid4()
+    agent_id = await _agent_on(app_session, tenant, provider)
+    async with _client() as c:
+        sid = await _new_chat(c, tenant, agent_id)
+        aid = await _upload(c, tenant, sid, "notes.txt", _text(INLINE_ATTACHMENT_CHARS + 5))
+    job = await _job_for(app_session, tenant, aid)
+    await ingest_job(_message(job))
+    assert recording.require_local, "the file was embedded"
+    # Every call told the router to refuse any cloud model, or none did.
+    assert set(recording.require_local) == {LOCAL_AGENT_REASON if local else None}
+
+
+async def test_a_local_agents_file_goes_inline_when_only_cloud_embeddings_exist(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    minio_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("oc8.knowledge.ingest.get_model_router", lambda: _CloudOnlyRouter())
+    tenant = uuid.uuid4()
+    agent_id = await _agent_on(app_session, tenant, "ollama")
+    async with _client() as c:
+        sid = await _new_chat(c, tenant, agent_id)
+        aid = await _upload(c, tenant, sid, "notes.txt", _text(INLINE_ATTACHMENT_CHARS + 5))
+    await ingest_job(_message(await _job_for(app_session, tenant, aid)))
+    row = await _attachment(app_session, tenant, aid)
+    assert row.index_status == "failed"
+    assert await _live_chunks(app_session, tenant) == []
+    assert "read_chat_file" not in attachment_turn_text(row)
+
+
+async def test_a_base_made_before_the_agent_went_local_still_embeds_locally(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    minio_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recording = _RecordingRouter()
+    monkeypatch.setattr("oc8.knowledge.ingest.get_model_router", lambda: recording)
+    tenant = uuid.uuid4()
+    agent_id = await _agent_on(app_session, tenant, "anthropic")
+    async with _client() as c:
+        sid = await _new_chat(c, tenant, agent_id)
+        aid = await _upload(c, tenant, sid, "notes.txt", _text(INLINE_ATTACHMENT_CHARS + 5))
+    async with app_session(tenant) as db:
+        (await db.get(m.Agent, agent_id)).presentation = {"provider": "ollama"}
+    await ingest_job(_message(await _job_for(app_session, tenant, aid)))
+    assert recording.require_local
+    assert set(recording.require_local) == {LOCAL_AGENT_REASON}

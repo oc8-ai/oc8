@@ -214,6 +214,7 @@ async def ingest_raw_document(
     raw: RawDocument,
     max_chars: int | None = None,
     require_embeddings: bool = False,
+    require_local: str | None = None,
 ) -> int:
     """Connector-agnostic ingestion tail: extract -> chunk -> embed -> store.
 
@@ -238,6 +239,9 @@ async def ingest_raw_document(
     policy keeps the text off it -- instead of storing it unembedded for a later
     re-embed: a chat file that cannot be searched now is handed to the model
     inline instead. Both refuse with `IngestionError`, before anything is written.
+    `require_local` is the caller's own reason the text may only be embedded
+    locally (a chat file of an agent on a local model), on top of the base's
+    and the label's.
     """
     extracted = extract_text(content=raw.content, content_type=raw.content_type)
     if max_chars is not None and len(extracted) > max_chars:
@@ -259,7 +263,7 @@ async def ingest_raw_document(
     classification = strictest(
         kb.classification if kb is not None else None, data_source.classification
     )
-    require_local = require_local_reason(kb=kb, classification=classification)
+    require_local = require_local_reason(kb=kb, classification=classification) or require_local
     embeddings: list[list[float] | None] = []
     unavailable: str | None = None
     for chunk in chunks:

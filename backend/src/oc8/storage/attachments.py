@@ -243,7 +243,13 @@ async def copy_attachment(
                 .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
-        if root is not None and root.index_status is not None:
+        if root is None:
+            # The original is gone: nothing marks a copy of a queued file any
+            # more, and the index of an indexed one goes with the last file
+            # sharing it (`chat.files_kb.forget_chat_file`), which this copy
+            # cannot count on. Handed over inline.
+            index_status = "failed"
+        elif root.index_status is not None:
             index_status = root.index_status
     bucket_key = f"{row.tenant_id}/{row.owner_type}/{uuid.uuid4()}-{row.filename}"
     await s3.put_object(bucket_key, await s3.get_object(row.bucket_key), row.content_type)
