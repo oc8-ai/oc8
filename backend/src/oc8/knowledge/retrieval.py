@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -31,6 +31,7 @@ from oc8.knowledge.embedding_policy import (
 from oc8.knowledge.vector_indexes.base import VectorIndexError
 from oc8.knowledge.vector_indexes.registry import INTERNAL_INDEX_TYPE, resolve_vector_index
 from oc8.modelrouter import EmbeddingMustStayLocal, EmbeddingUnavailable, get_model_router
+from oc8.models.knowledge import KB_KIND_SHARED
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +271,13 @@ async def retrieve_kb_context(
 
     `skipped_local`, when given, receives the name of every base that was not
     searched because the question must stay local and the base embeds with a
-    cloud model."""
+    cloud model.
+
+    A chat's own base (`kind='chat'`, spec §5.4) is searched ONLY when the
+    caller names it in `only_kb_ids` (`search_chat_files`). Not through a
+    grant, not through `released_kb_ids` alone: nothing that feeds those sets
+    for an agent's normal search may ever reach a chat's files, so even a
+    stray grant or pin on one is ignored here."""
     kb_ids = await granted_kb_ids(db, agent=agent)
     if only_kb_ids is not None:
         # Intersection, never replacement. A `#` reference cannot reach a base
@@ -290,6 +297,10 @@ async def retrieve_kb_context(
                     m.KnowledgeBase.tenant_id == tenant_id,
                     m.KnowledgeBase.id.in_(kb_ids),
                     m.KnowledgeBase.deleted_at.is_(None),
+                    or_(
+                        m.KnowledgeBase.kind == KB_KIND_SHARED,
+                        m.KnowledgeBase.id.in_(sorted(only_kb_ids or ())),
+                    ),
                 )
             )
         )

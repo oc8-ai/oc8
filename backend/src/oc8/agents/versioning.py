@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agents.publish_hooks import run_publish_hooks
 from oc8.audit import append_event
+from oc8.models.knowledge import KB_KIND_SHARED
 
 #: The behavioural subset of `Agent` that a version snapshots. Anything NOT
 #: named here (status, pause_reason, paused_at, presentation, trust_level,
@@ -492,7 +493,11 @@ async def missing_references(db: AsyncSession, payload: dict[str, Any]) -> dict[
             (
                 await db.execute(
                     select(m.KnowledgeBase.id).where(
-                        m.KnowledgeBase.id.in_(kb_ids), m.KnowledgeBase.deleted_at.is_(None)
+                        m.KnowledgeBase.id.in_(kb_ids),
+                        m.KnowledgeBase.deleted_at.is_(None),
+                        # A chat's own base is never grantable, so a version
+                        # naming one names a base that is missing.
+                        m.KnowledgeBase.kind == KB_KIND_SHARED,
                     )
                 )
             )

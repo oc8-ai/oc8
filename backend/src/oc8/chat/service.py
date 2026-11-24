@@ -46,6 +46,7 @@ from oc8.chat.context.manifest import (
     manifest_text,
 )
 from oc8.chat.context.registry import RESOLVERS
+from oc8.chat.files_kb import drop_chat_kb
 from oc8.chat.modes import (
     ACT,
     ASSISTANT_ONLY_REFUSAL,
@@ -71,6 +72,7 @@ from oc8.copilot.agent_match import agent_fit_text, matching_agents
 from oc8.copilot.redaction import is_secret_request, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.knowledge.embedding_policy import strictest
+from oc8.models.knowledge import KB_KIND_SHARED
 from oc8.realtime.bus import get_event_bus
 from oc8.realtime.emit import publish_chat_message_created, publish_chat_session_updated
 from oc8.runtime.clarification import resolve_clarification
@@ -228,6 +230,9 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
             actor_agent_id=None,
             member_subject=member.subject if member is not None else "",
         )
+    # The chat's own knowledge base goes with it: its files must not stay
+    # searchable, or recoverable, once the chat they belong to is gone.
+    await drop_chat_kb(db, session=session)
     message_ids = list(
         (
             await db.execute(
@@ -346,6 +351,8 @@ async def _resolve_context_refs(
                 m.KnowledgeBase.tenant_id == tenant_id,
                 m.KnowledgeBase.id.in_(wanted),
                 m.KnowledgeBase.deleted_at.is_(None),
+                # A chat's own base is never a `#` reference (spec §5.4).
+                m.KnowledgeBase.kind == KB_KIND_SHARED,
             )
         )
     ).scalars()

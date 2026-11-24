@@ -28,6 +28,10 @@ needs, but never one listed earlier after one listed later:
   5. a run's input lock (`lock_run_inputs`, which takes 4 first)
   6. the chat_session row (`lock_session`, which takes 4 first)
 
+Knowledge rows a chat transaction touches (deleting a session drops its
+chat's own knowledge base, `chat.files_kb.drop_chat_kb`) come before step 4,
+in `knowledge.tombstone`'s own order (kb_chunk, data_source, knowledge_base).
+
 The hazard this guards against: a transaction holding a row from a later
 step while it waits for an earlier one -- most often the audit lock, which
 every transaction that staged an audit event takes at its commit and a

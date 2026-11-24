@@ -10,6 +10,9 @@ Each check is the rule oc8 already applies to that object:
   source's own scope can be pinned or read (`browse.source_file_in_scope`).
   There is no per-base or per-department visibility for a person:
   `KnowledgeGrant` gives a base to an AGENT's retrieval, not to a member.
+  A chat's own base and the source feeding it (spec §5.4) are not knowledge
+  objects in this sense at all: they load as "no such object" here, so they
+  can be neither found, pinned nor referenced.
 * file attachment -- `storage.attachment_access.member_may_open_attachment`,
   the predicate `GET /files/{id}` itself uses.
 """
@@ -30,6 +33,7 @@ from oc8.chat.context.registry import register
 from oc8.knowledge import browse
 from oc8.knowledge.connectors.base import ConnectorError
 from oc8.knowledge.embedding_policy import strictest
+from oc8.models.knowledge import CHAT_UPLOAD_CONNECTOR, KB_KIND_SHARED
 from oc8.storage.attachment_access import member_may_open_attachment, passes_files_door
 
 #: What an object with no classification of its own is treated as: the
@@ -48,6 +52,7 @@ async def _live_source(db: AsyncSession, tenant_id: Any, ref_id: str) -> m.DataS
                 m.DataSource.id == uuid.UUID(ref_id),
                 m.DataSource.tenant_id == tenant_id,
                 m.DataSource.deleted_at.is_(None),
+                m.DataSource.connector_type != CHAT_UPLOAD_CONNECTOR,
             )
         )
     ).scalar_one_or_none()
@@ -95,6 +100,7 @@ class KnowledgeBaseResolver(_KnowledgeKind):
                     m.KnowledgeBase.id == uuid.UUID(ref_id),
                     m.KnowledgeBase.tenant_id == tenant_id,
                     m.KnowledgeBase.deleted_at.is_(None),
+                    m.KnowledgeBase.kind == KB_KIND_SHARED,
                 )
             )
         ).scalar_one_or_none()
@@ -127,6 +133,7 @@ class KnowledgeBaseResolver(_KnowledgeKind):
             .where(
                 m.KnowledgeBase.tenant_id == viewer.member.tenant_id,
                 m.KnowledgeBase.deleted_at.is_(None),
+                m.KnowledgeBase.kind == KB_KIND_SHARED,
                 m.KnowledgeBase.name.icontains(query, autoescape=True),
             )
             .order_by(m.KnowledgeBase.name)
@@ -168,6 +175,7 @@ class DataSourceResolver(_KnowledgeKind):
             .where(
                 m.DataSource.tenant_id == viewer.member.tenant_id,
                 m.DataSource.deleted_at.is_(None),
+                m.DataSource.connector_type != CHAT_UPLOAD_CONNECTOR,
                 m.DataSource.name.icontains(query, autoescape=True),
             )
             .order_by(m.DataSource.name)

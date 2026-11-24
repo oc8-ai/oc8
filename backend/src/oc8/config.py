@@ -346,6 +346,10 @@ class Settings(BaseSettings):
     s3_secret_key: str = ""
     s3_bucket: str = "oc8-uploads"
     s3_region: str = "us-east-1"
+    #: Most characters one chat file may carry into its chat's own knowledge
+    #: base (spec §5.4), on top of the upload size limit. ~500k tokens, so a
+    #: 300-page PDF fits; `MAX_DOCUMENT_LENGTH` still caps everything else.
+    chat_file_max_chars: int = 2_000_000
 
     log_sql: bool = Field(default=False)
     #: Root log level for every oc8 process. INFO by default because the level
