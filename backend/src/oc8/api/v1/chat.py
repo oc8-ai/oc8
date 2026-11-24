@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
+from oc8.agents.repo import visible_agent
 from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._chat_common import (
@@ -24,7 +25,7 @@ from oc8.api.v1._chat_common import (
 )
 from oc8.api.v1.run import run_to_dto
 from oc8.audit import append_event
-from oc8.authz.authority import Authority, authority_for_principal
+from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.context.base import Viewer
@@ -364,7 +365,16 @@ async def export_chat(
         names = {mid: [_READER_ATTACHMENT_NAME] * len(files) for mid, files in names.items()}
     stem = export_filename_stem(session.title)
     if format == "md":
-        agent = await db.get(m.Agent, session.agent_id)
+        # Through the scoped repository: the name is shown only to a caller
+        # who may see the agent. The Assistant, and an agent out of the
+        # caller's scope, read as "Assistant" (`chat.export`).
+        authority = await authority_for_principal(request, db, actor.principal)
+        agent = await visible_agent(
+            db,
+            scope=actor.scope,
+            tenant_wide=tenant_wide_read(authority, perm(AGENT, VIEW)),
+            agent_id=session.agent_id,
+        )
         body = export_markdown(
             session, messages, names, agent_name=agent.name if agent is not None else ""
         )
