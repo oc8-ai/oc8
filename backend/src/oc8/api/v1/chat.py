@@ -4,10 +4,11 @@ exactly as they do to an autonomous run."""
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 
 from oc8 import models as m
@@ -27,6 +28,12 @@ from oc8.authz.authority import Authority, authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.context.base import Viewer
+from oc8.chat.export import (
+    attachment_names,
+    export_filename_stem,
+    export_json,
+    export_markdown,
+)
 from oc8.chat.model_choice import ModelOption, is_allowed_override, model_options
 from oc8.chat.modes import ASSISTANT_ONLY_REFUSAL, MODES, ModeNotAvailable
 from oc8.chat.port import session_access
@@ -46,7 +53,7 @@ from oc8.chat.service import (
     rename_session,
     send_message,
 )
-from oc8.chat.tree import lock_session, switch_leaf
+from oc8.chat.tree import lock_session, switch_leaf, visible_path
 from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
 from oc8.schemas.base import CamelModel
@@ -331,6 +338,44 @@ async def get_messages(
     return [
         await _message_dto(msg, db, actor.principal.tenant_id, reader=viewer) for msg in messages
     ]
+
+
+@router.get("/chat/sessions/{session_id}/export")
+async def export_chat(
+    request: Request,
+    session_id: uuid.UUID,
+    db: DbSession,
+    actor: _ChatActor,
+    format: Annotated[str, Query(pattern="^(md|json)$")],
+) -> Response:
+    """The chat as a file (spec §5.5): `md` is the conversation on screen,
+    `json` every branch. Same gate as reading the chat, so a reader of a
+    shared chat may export it -- with the same redactions they see on screen
+    (no attachment file names). Names only, never file contents."""
+    session, read_only = await _readable_session(request, session_id, db, actor)
+    tenant_id = actor.principal.tenant_id
+    if format == "md":
+        messages = await visible_path(db, session=session)
+    else:
+        messages = await list_messages(db, tenant_id=tenant_id, session_id=session_id)
+    names = await attachment_names(db, tenant_id=tenant_id, message_ids=[x.id for x in messages])
+    if read_only:
+        names = {mid: [_READER_ATTACHMENT_NAME] * len(files) for mid, files in names.items()}
+    stem = export_filename_stem(session.title)
+    if format == "md":
+        agent = await db.get(m.Agent, session.agent_id)
+        body = export_markdown(
+            session, messages, names, agent_name=agent.name if agent is not None else ""
+        )
+        media_type = "text/markdown; charset=utf-8"
+    else:
+        body = json.dumps(export_json(session, messages, names), ensure_ascii=False, indent=2)
+        media_type = "application/json"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{stem}.{format}"'},
+    )
 
 
 @router.get("/chat/sessions/{session_id}", response_model=ChatSessionDTO)
