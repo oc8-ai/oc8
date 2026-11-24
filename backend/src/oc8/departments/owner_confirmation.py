@@ -360,9 +360,10 @@ async def _changes(
     if stored is None:
         return {"core"}
     out: set[str] = set()
-    if stored.core != current.core:
-        out.add("core")
     loosened = grant_loosenings(stored.grant, current.grant)
+    if stored.core != current.core or any(item.startswith("login:") for item in loosened):
+        # A new or different login of a fixed binding: part of the setup.
+        out.add("core")
     if any(item.startswith("frame:") for item in loosened):
         out.add("frame")
     if any(item.startswith("skill:") for item in loosened):

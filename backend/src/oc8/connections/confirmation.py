@@ -10,14 +10,19 @@ Next to it a stamp now stores a split (`agent_tool_access.binding_split`,
   `narrowing_overridden_keys`, `skill_assignments` and `_meta` (the frame
   cascade publishes a new version for each `enabled` change, and those parts
   are judged in `grant`), plus the department's `goal` and
-  `frame_capa_defaults` and its setup of the tool (`setup`, `shared`).
+  `frame_capa_defaults` and its setup of the tool (`setup`, `shared`) --
+  of a fixed binding in `shared` only its mode: the login it acts through
+  is judged in `grant.logins`.
 - `grant` may only tighten (`authz.tightening.grant_loosenings`): `tools`
   holds one entry per enabled tool key of the effective policies -- every
   one, for a binding too (a new tool next to the bound one is an addition
   the member confirms) -- `frame` the frame without `tools`,
   `skills` `{assignment id: [skill_version_id, overrides]}`, and in a
   department with an owner also the skill's name and description as the
-  model reads them in the catalogue (`[..., name, description]`).
+  model reads them in the catalogue (`[..., name, description]`), and
+  `logins` (only when there is one) `{tool key: [credential id, oauth
+  connection id]}` for each fixed binding in `shared`: a login deleted since
+  only takes away, a new or different one never holds (Ruling T12-N2).
 
 The agent's own approval threshold (`presentation["approval_value_eur"]`,
 which the live gate adds as an extra threshold) is folded into each tool
@@ -349,6 +354,7 @@ async def split_fingerprint(
     if "narrowing" in version and isinstance(version["narrowing"], Mapping):
         version["narrowing"] = {k: v for k, v in narrowing.items() if k != "tools"}
     setup, shared = await _setup_parts(db, agent, dept, tool_key)
+    shared, logins = await _fixed_logins(db, agent, shared)
     core = payload_hash(
         {
             **which,
@@ -374,9 +380,41 @@ async def split_fingerprint(
         "frame": {k: v for k, v in frame.items() if k != "tools"},
         "skills": skills,
     }
+    if logins:
+        grant["logins"] = logins
     # Stored as JSONB: round-trip now, so a stored grant and a fresh one
     # compare in the same shape.
     return SplitFingerprint(core, json.loads(json.dumps(grant, default=str)))
+
+
+async def _fixed_logins(
+    db: AsyncSession, agent: m.Agent, shared: list[Any]
+) -> tuple[list[Any], dict[str, list[str]]]:
+    """`shared` with each fixed binding's login ids taken out (its mode
+    stays), and those ids by tool key. A `shared` entry's login part is the
+    agent's access row whenever it has one (`_shared_setup`)."""
+    rows = {
+        row.tool_key: row
+        for row in (
+            await db.execute(
+                select(m.AgentToolAccess).where(
+                    m.AgentToolAccess.agent_id == agent.id,
+                    m.AgentToolAccess.mode == "fixed",
+                )
+            )
+        ).scalars()
+    }
+    out: list[Any] = []
+    logins: dict[str, list[str]] = {}
+    for entry in shared:
+        name, definition, _used = entry
+        row = rows.get(name)
+        if row is None:
+            out.append(entry)
+            continue
+        out.append([name, definition, [row.mode]])
+        logins[name] = [str(row.credential_id), str(row.oauth_connection_id)]
+    return out, logins
 
 
 async def grant_tools_at(

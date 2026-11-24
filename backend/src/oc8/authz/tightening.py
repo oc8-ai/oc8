@@ -50,6 +50,13 @@ is a loosening.
   name or description: loosens.
   Removed: tightens (a skill's guardrails apply only once the model
   activates it, so removing one opens nothing).
+- `logins` (absent = {}): `{tool key: [credential id, oauth connection id]}`,
+  the login a fixed binding acts through. Equal, or gone now (both ids null:
+  the login was deleted, ON DELETE SET NULL, and the run refuses the tool --
+  it never re-chooses), or the tool's entry removed (the strict `core` still
+  holds the binding's mode and the setup it falls back to). A tool added or a
+  new or different login loosens: removal may tighten, a login in its place
+  never.
 - any other grant part: equal.
 
 Missing fields read as `ToolPolicy.from_json` reads them, so a stored policy
@@ -89,7 +96,11 @@ ENTRY_FIELDS: tuple[str, ...] = (
 )
 
 #: The parts of a grant snapshot with a rule of their own.
-GRANT_PARTS: tuple[str, ...] = ("tools", "frame", "skills")
+GRANT_PARTS: tuple[str, ...] = ("tools", "frame", "skills", "logins")
+
+#: A fixed binding's ids, as a grant's `logins` stores them, once its login
+#: is gone (`str(None)` for each).
+LOGIN_GONE: tuple[str, str] = ("None", "None")
 
 _MISSING = object()
 
@@ -347,8 +358,9 @@ def _keys(*parts: Mapping[str, Any]) -> Iterable[str]:
 
 def grant_loosenings(confirmed: Mapping[str, Any], current: Mapping[str, Any]) -> list[str]:
     """Everything `current` grants beyond `confirmed`, as sorted items
-    `tool:<key>`, `frame:<key>`, `skill:<assignment id>` (and `grant:<part>`
-    for a part with no rule). Empty means the confirmation still holds."""
+    `tool:<key>`, `frame:<key>`, `skill:<assignment id>`, `login:<key>`
+    (and `grant:<part>` for a part with no rule). Empty means the
+    confirmation still holds."""
     out: list[str] = []
     for part in _keys(confirmed, current):
         if part not in GRANT_PARTS and not _same(
@@ -386,10 +398,26 @@ def _skills_loosenings(conf: Mapping[str, Any], cur: Mapping[str, Any]) -> list[
     ]
 
 
+def _logins_loosenings(conf: Mapping[str, Any], cur: Mapping[str, Any]) -> list[str]:
+    def gone(value: Any) -> bool:
+        return (
+            isinstance(value, Sequence)
+            and not isinstance(value, str)
+            and tuple(value) == LOGIN_GONE
+        )
+
+    return [
+        f"login:{key}"
+        for key in _keys(cur)
+        if not (key in conf and (_same(conf[key], cur[key]) or gone(cur[key])))
+    ]
+
+
 _PART_CHECKS: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], list[str]]] = {
     "tools": _tools_loosenings,
     "frame": _frame_loosenings,
     "skills": _skills_loosenings,
+    "logins": _logins_loosenings,
 }
 
 

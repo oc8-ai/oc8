@@ -439,6 +439,9 @@ async def test_deleting_the_owned_login_switches_the_personal_trigger_off(
     assert owned.fake.calls == []
     row = await _trigger(app_session, owned.tenant, t.id)
     assert row.enabled is False and row.last_skip_reason == EVENT_TARGET_CHANGED
+    # Switched off, not waiting: a gone login only takes away (T12-N2).
+    async with app_session(owned.tenant) as db:
+        assert await trigger_confirmed(db, row)
 
 
 async def test_a_departed_owners_login_is_never_polled(app_session: AppSessionFactory) -> None:
