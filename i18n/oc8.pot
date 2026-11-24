@@ -5306,6 +5306,9 @@ msgstr ""
 msgid "Task distribution"
 msgstr ""
 
+msgid "Task for each run"
+msgstr ""
+
 msgid "tasks"
 msgstr ""
 
@@ -6446,6 +6449,9 @@ msgstr ""
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
 msgstr ""
 
+msgid "What the agent is told to do on every scheduled run — its standing Instructions always apply on top of this."
+msgstr ""
+
 msgid "What this role is for"
 msgstr ""
 
@@ -6489,6 +6495,9 @@ msgid "With recommendation"
 msgstr ""
 
 msgid "within limits"
+msgstr ""
+
+msgid "Without a task, the runs this schedule starts have nothing to work on and no title on the board."
 msgstr ""
 
 msgid "Work"
