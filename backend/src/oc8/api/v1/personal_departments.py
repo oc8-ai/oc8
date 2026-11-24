@@ -21,7 +21,7 @@ import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,6 +45,7 @@ from oc8.authz.permissions import (
     perm,
 )
 from oc8.authz.scope import scope_for_principal
+from oc8.capas.manifest import TemplateAgent
 from oc8.capas.service import PluginError, instantiate_agent, template_scope
 from oc8.departments.frames import FrameChangeRefused, deviation_counts, validate_frame_tools
 from oc8.departments.personal import (
@@ -64,6 +65,13 @@ from oc8.departments.personal import (
     resync_budgets,
     resync_frames,
     update_personal_settings,
+)
+from oc8.departments.personal_hire import (
+    ChosenLogin,
+    HireBindingRefused,
+    TemplateConnection,
+    resolve_hire_bindings,
+    template_connections,
 )
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import DepartmentDTO
@@ -85,22 +93,58 @@ class PersonalDepartmentMineDTO(CamelModel):
     department: DepartmentDTO | None
 
 
+class TemplateConnectionDTO(CamelModel):
+    """A capa a personal template connects to, and whether a hire may bind it
+    now (plan Ruling 10)."""
+
+    integration: str
+    label: str
+    #: "credential" or "oauth"; "" for a capa this organisation has not installed.
+    kind: str
+    provider: str | None
+    credential_type: str | None
+    available: bool
+
+
 class PersonalTemplateDTO(CamelModel):
     capa_id: str
     name: str
     label: str
     summary: str
+    #: Left out for a template that connects to nothing.
+    #: The member chooses a login for one of these at hire.
+    connections_any: list[TemplateConnectionDTO] = []
+    #: The member may add a login for each of these.
+    connections_optional: list[TemplateConnectionDTO] = []
+
+
+class HireConnection(CamelModel):
+    """The member's own login for one capa the template names."""
+
+    integration: str
+    credential_id: uuid.UUID | None = None
+    oauth_connection_id: uuid.UUID | None = None
+
+    def chosen(self) -> ChosenLogin:
+        return ChosenLogin(self.integration, self.credential_id, self.oauth_connection_id)
 
 
 class HirePersonalRequest(CamelModel):
     capa_id: uuid.UUID
     #: Optional; trimmed, and an empty name falls back to the template's own.
-    #: The member names the agent and nothing else -- every other field comes
-    #: from the template.
+    #: The member names the agent and the logins it uses -- every other field
+    #: comes from the template.
     name: (
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=_AGENT_NAME_MAX_LENGTH)]
         | None
     ) = None
+    #: The login for one of the template's `connections_any`.
+    connection: HireConnection | None = None
+    #: Logins for any of the template's `connections_optional`.
+    optional_connections: list[HireConnection] = Field(default_factory=list, max_length=20)
+    #: Binding a login of one's own shares it with the agent: required with
+    #: any login, as for `PUT /agents/{id}/tool-access/{key}`.
+    confirm_share: bool = False
 
 
 class HirePersonalResponse(CamelModel):
@@ -118,6 +162,42 @@ async def _caller_member(db: AsyncSession, principal: Principal) -> m.OrgMember:
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no member record for this caller")
     return member
+
+
+def _template_agent(manifest: dict[str, Any]) -> TemplateAgent | None:
+    """The stored template's agent, read as the manifest declares it; None
+    when it does not parse (a manifest stored before a stricter schema)."""
+    try:
+        return TemplateAgent.model_validate(manifest.get("agent_template") or {})
+    except ValidationError:
+        return None
+
+
+async def _hire_frame_tools(
+    db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
+) -> dict[str, Any]:
+    """The frame tools a hire binds against (Ruling 10): the member's
+    personal department as applied, or the tenant default before its first
+    hire."""
+    dept = await owned_personal_department(db, tenant_id=tenant_id, member_id=member_id)
+    if dept is not None:
+        tools = (dept.frame or {}).get("tools")
+        return dict(tools) if isinstance(tools, dict) else {}
+    return (await personal_defaults(db, tenant_id=tenant_id)).frame_tools
+
+
+def _connection_dtos(rows: list[TemplateConnection]) -> list[TemplateConnectionDTO]:
+    return [
+        TemplateConnectionDTO(
+            integration=row.integration,
+            label=row.label,
+            kind=row.kind,
+            provider=row.provider,
+            credential_type=row.credential_type,
+            available=row.available,
+        )
+        for row in rows
+    ]
 
 
 def _template_label(manifest: dict[str, Any]) -> str:
@@ -145,14 +225,18 @@ async def get_my_personal_department(
 @router.get(
     "/personal-department/templates",
     response_model=list[PersonalTemplateDTO],
+    # A template without connections answers as before PR 2: no empty lists.
+    response_model_exclude_unset=True,
     dependencies=_OWN,
 )
 async def list_personal_templates(
     db: DbSession, principal: CurrentPrincipal
 ) -> list[PersonalTemplateDTO]:
     """The agent templates a member may hire: enabled by an administrator and
-    declared `scope = "personal"`."""
-    await _caller_member(db, principal)
+    declared `scope = "personal"`, each with the capas it connects to and
+    whether a hire may bind them now."""
+    member = await _caller_member(db, principal)
+    frame_tools: dict[str, Any] | None = None
     rows = (
         await db.execute(
             select(m.Capa, m.CapaVersion)
@@ -176,12 +260,28 @@ async def list_personal_templates(
         mf = version.manifest or {}
         if mf.get("type") != "agent_template" or template_scope(mf) != "personal":
             continue
+        spec = _template_agent(mf)
+        connections: dict[str, list[TemplateConnectionDTO]] = {}
+        if spec is not None and (spec.connections_any or spec.connections_optional):
+            if frame_tools is None:
+                frame_tools = await _hire_frame_tools(
+                    db, tenant_id=principal.tenant_id, member_id=member.id
+                )
+            connections["connections_any"] = _connection_dtos(
+                await template_connections(db, frame_tools=frame_tools, names=spec.connections_any)
+            )
+            connections["connections_optional"] = _connection_dtos(
+                await template_connections(
+                    db, frame_tools=frame_tools, names=spec.connections_optional
+                )
+            )
         out.append(
             PersonalTemplateDTO(
                 capa_id=str(capa.id),
                 name=capa.name,
                 label=_template_label(mf),
                 summary=str(mf.get("summary", "")),
+                **connections,
             )
         )
     return out
@@ -229,6 +329,28 @@ async def hire_personal_agent(
     if not defaults.enabled:
         raise HTTPException(status.HTTP_403_FORBIDDEN, {"error": "personal_departments_disabled"})
     member = await _caller_member(db, principal)
+    spec = _template_agent(mf)
+    if spec is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "the template does not parse")
+    # Every choice is checked before anything is written, against the frame
+    # the department has (or will start with): a refused hire creates no
+    # department.
+    unprocessable = status.HTTP_422_UNPROCESSABLE_CONTENT
+    try:
+        bindings = await resolve_hire_bindings(
+            db,
+            member=member,
+            frame_tools=await _hire_frame_tools(
+                db, tenant_id=principal.tenant_id, member_id=member.id
+            ),
+            spec=spec,
+            connection=body.connection.chosen() if body.connection is not None else None,
+            optional=[c.chosen() for c in body.optional_connections],
+        )
+    except HireBindingRefused as exc:
+        raise HTTPException(unprocessable, {"error": exc.error}) from exc
+    if bindings and not body.confirm_share:
+        raise HTTPException(unprocessable, {"error": "confirm_share_required"})
     try:
         dept = await get_or_create_personal_department(db, member=member)
     except PersonalDepartmentsDisabled as exc:  # pragma: no cover - checked above
@@ -248,6 +370,8 @@ async def hire_personal_agent(
             department_id=dept.id,
             name=body.name or None,
             owner_hire=True,
+            hired_by=member.id,
+            bindings=bindings,
         )
     except PersonalDepartmentRefused as exc:  # the cap, or the owner left (`instantiate_agent`)
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc

@@ -6,7 +6,8 @@ import hashlib
 import json
 import re
 import uuid
-from typing import Any, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
@@ -40,6 +41,7 @@ from oc8.departments.personal import (
 from oc8.departments.repo import live_department
 from oc8.models import (
     Agent,
+    AgentToolAccess,
     Capa,
     CapaInstallation,
     CapaVersion,
@@ -47,10 +49,14 @@ from oc8.models import (
     MemoryStore,
     Skill,
     SkillAssignment,
+    Trigger,
 )
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.triggers.service import InvalidTriggerConfig
 from oc8.triggers.service import create_trigger as create_trigger_row
+
+if TYPE_CHECKING:
+    from oc8.departments.personal_hire import HireBinding
 
 __all__ = [
     "CoreCompatError",
@@ -497,6 +503,122 @@ async def _checked_template_narrowing(
     return checked.narrowing
 
 
+async def _bind_hire_logins(
+    db: AsyncSession, *, agent: Agent, hired_by: uuid.UUID, bindings: Sequence[HireBinding]
+) -> None:
+    """Fix each bound integration's tools to the member's own login: their
+    own consent (plan Ruling 9), through the one writer of tool access."""
+    from oc8.connections.access_write import write_tool_access
+
+    for binding in bindings:
+        await write_tool_access(
+            db,
+            agent=agent,
+            tool_key=binding.integration.tool_key,
+            mode="fixed",
+            oauth_connection_id=binding.oauth_connection_id,
+            credential_id=binding.credential_id,
+            set_by_member_id=hired_by,
+            set_with_manage=False,
+            actor_type="operator",
+            actor_id=hired_by,
+            audit={
+                "consent": "owner",
+                "confirm_share": True,
+                "target_owner_member_id": str(hired_by),
+                "at_hire": True,
+            },
+        )
+
+
+async def _create_template_triggers(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    triggers: Sequence[dict[str, Any]],
+    config: dict[str, str],
+    hired_by: uuid.UUID,
+    bound: set[str],
+) -> list[Trigger]:
+    """A personal template's triggers, created by the member acting for
+    themselves (plan Ruling 11): every cron trigger, and an event trigger
+    only when its `source` is a capa the hire bound (Ruling 6). An event
+    trigger listens on the login the agent is now fixed to for that capa's
+    tools -- the member's own (`polled_event_target`). Each goes through
+    `create_trigger`, as `_create_trigger_if_present` does; `{{key}}` tokens
+    of the template's setup fill the task text and the cron expression."""
+    from oc8.triggers.service import polled_event_target
+
+    created: list[Trigger] = []
+    try:
+        for trig in triggers:
+            task_text = _substitute_template_values(str(trig.get("task_text", "")), config)
+            if trig.get("kind", "cron") == "cron":
+                created.append(
+                    await create_trigger_row(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        kind="cron",
+                        task_text=task_text,
+                        cron_expression=_substitute_template_values(
+                            str(trig.get("cron_expression", "")), config
+                        ),
+                        created_by_member_id=hired_by,
+                        acts_for_creator=True,
+                    )
+                )
+                continue
+            source = str(trig.get("source", ""))
+            if source not in bound:
+                continue
+            event_type = str(trig.get("event_type", ""))
+            target = await polled_event_target(
+                db,
+                agent_id=agent_id,
+                event_source=source,
+                event_type=event_type,
+                creator=hired_by,
+            )
+            created.append(
+                await create_trigger_row(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    kind="event",
+                    task_text=task_text,
+                    event_source=source,
+                    event_type=event_type,
+                    event_target=target,
+                    event_config=dict(trig.get("config") or {}) if target is not None else None,
+                    created_by_member_id=hired_by,
+                    acts_for_creator=True,
+                )
+            )
+    except InvalidTriggerConfig as exc:
+        raise PluginError(f"invalid trigger in template: {exc}") from exc
+    return created
+
+
+async def _stamp_owner_hire(
+    db: AsyncSession, *, agent: Agent, hired_by: uuid.UUID, triggers: Sequence[Trigger]
+) -> None:
+    """Stamp the member's bindings and triggers against v1, once everything
+    they confirm exists: a binding written after another changes what the
+    first one confirmed."""
+    from oc8.connections.confirmation import stamp_binding, stamp_trigger
+
+    rows = (
+        await db.execute(select(AgentToolAccess).where(AgentToolAccess.agent_id == agent.id))
+    ).scalars()
+    for row in rows:
+        await stamp_binding(db, row, agent, confirmed_by=hired_by)
+    for trigger in triggers:
+        await stamp_trigger(db, trigger, confirmed_by=hired_by)
+    await db.flush()
+
+
 def template_scope(manifest: dict[str, Any]) -> str:
     """Where an agent_template may be hired: "department" (default) or "personal"."""
     return str((manifest.get("agent_template") or {}).get("scope") or "department")
@@ -510,6 +632,8 @@ async def instantiate_agent(
     department_id: uuid.UUID,
     name: str | None = None,
     owner_hire: bool = False,
+    hired_by: uuid.UUID | None = None,
+    bindings: Sequence[HireBinding] = (),
 ) -> Agent:
     """Hire one agent from an agent_template version into a live
     department. add/flush only -- the endpoint owns the commit.
@@ -525,6 +649,11 @@ async def instantiate_agent(
     administrator enabling the template's capa is the approval. Such a hire
     raises no hire request and never starts `pending_approval`; otherwise the
     owner, approver in their own department, would approve their own hire.
+
+    `hired_by` (the owner, with `owner_hire`) and `bindings` (checked by
+    `departments.personal_hire.resolve_hire_bindings`): a personal hire runs
+    plan Ruling 11's order -- the agent, v1, the member's bindings, the
+    template's triggers created as the member, then every stamp against v1.
     """
     mf = version.manifest
     if mf.get("type", "agent_template") != "agent_template":
@@ -595,18 +724,38 @@ async def instantiate_agent(
     await _assign_named_skills(
         db, tenant_id=tenant_id, agent_id=agent.id, skill_names=list(spec.get("skills") or [])
     )
-    await _create_trigger_if_present(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent.id,
-        trigger=spec.get("trigger"),
-        config=config,
-    )
+    member_hire = owner_hire and is_personal_dept and hired_by is not None
+    if not member_hire:
+        await _create_trigger_if_present(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            trigger=spec.get("trigger"),
+            config=config,
+        )
     # v1 in the same transaction as the hire, after the skill assignments, so
     # the snapshot includes them -- same create-and-publish shape as
     # api/v1/agents_write.py::create_agent. Every run is pinned to a version;
     # an agent without one would run off its live row.
     await publish_version(db, agent, at_hire=True)
+    if member_hire:
+        assert hired_by is not None
+        await _bind_hire_logins(db, agent=agent, hired_by=hired_by, bindings=bindings)
+        triggers = list(spec.get("triggers") or [])
+        if spec.get("trigger"):
+            triggers.append(dict(spec["trigger"]))
+        created = await _create_template_triggers(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            triggers=triggers,
+            config=config,
+            hired_by=hired_by,
+            bound={binding.integration.name for binding in bindings},
+        )
+        await _stamp_owner_hire(db, agent=agent, hired_by=hired_by, triggers=created)
+    elif bindings:
+        raise PluginError("only the owner's own hire binds logins")
     return agent
 
 
