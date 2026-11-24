@@ -38,10 +38,12 @@ import { useConfirm } from "@/hooks/use-confirm";
 import { useIsNarrow } from "@/hooks/use-mobile";
 import { mostRecentSession } from "@/lib/chat-sessions";
 import {
+  exportChat,
   useChatProjects,
   useDeleteProject,
   useSetSessionPinned,
   useSetSessionProject,
+  type ChatExportFormat,
   type ChatProjectDTO,
 } from "@/lib/conversation-api";
 import {
@@ -108,6 +110,7 @@ interface RowActions {
   pin: (s: ChatSessionDTO) => void;
   move: (s: ChatSessionDTO, projectId: string | null) => void;
   remove: (s: ChatSessionDTO) => void;
+  exportAs: (s: ChatSessionDTO, format: ChatExportFormat) => void;
 }
 
 const itemClass = "min-h-11 cursor-pointer text-sm sm:min-h-9";
@@ -248,6 +251,13 @@ function Row({
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
+            <DropdownMenuItem className={itemClass} onSelect={() => actions.exportAs(s, "md")}>
+              {t("Export as Markdown", "Als Markdown exportieren")}
+            </DropdownMenuItem>
+            <DropdownMenuItem className={itemClass} onSelect={() => actions.exportAs(s, "json")}>
+              {t("Export as JSON", "Als JSON exportieren")}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className={cn(itemClass, "text-destructive focus:text-destructive")}
               onSelect={() => actions.remove(s)}
@@ -381,6 +391,10 @@ export function CopilotSidebar({
       "The chat was not moved. Try again.",
       "Der Chat wurde nicht verschoben. Versuch es noch einmal.",
     ),
+    export: t(
+      "The chat was not exported. Try again.",
+      "Der Chat wurde nicht exportiert. Versuch es noch einmal.",
+    ),
     deleteProject: t(
       "The project was not deleted. Try again.",
       "Das Projekt wurde nicht gelöscht. Versuch es noch einmal.",
@@ -447,6 +461,10 @@ export function CopilotSidebar({
         { onError: () => setActionError(failed.move) },
       ),
     remove: (s) => void removeSession(s),
+    exportAs: (s, format) => {
+      setActionError(null);
+      exportChat(s.id, format).catch(() => setActionError(failed.export));
+    },
   };
   const shared = { sessionId, onSelect: (id: string) => open(id), actions };
 

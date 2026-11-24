@@ -11,7 +11,7 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 
-import { api, ApiError, retryUnlessRefused } from "@/lib/api";
+import { api, API_URL, ApiError, getToken, retryUnlessRefused } from "@/lib/api";
 import { isUuid } from "@/lib/ids";
 import {
   chatKeys,
@@ -819,4 +819,25 @@ export function useSetChatMode(sessionId: string | null) {
       );
     },
   });
+}
+
+export type ChatExportFormat = "md" | "json";
+
+/** Downloads a chat as a file: Markdown is the conversation on screen, JSON
+ *  every branch. Fetched with the bearer token (a plain link carries none),
+ *  then saved under the name the server chose. */
+export async function exportChat(sessionId: string, format: ChatExportFormat): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/chat/sessions/${encodeURIComponent(sessionId)}/export?format=${format}`,
+    { headers: { authorization: `Bearer ${await getToken()}` } },
+  );
+  if (!res.ok) throw new ApiError(res.statusText || "export failed", res.status);
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const filename = /filename="([^"]+)"/i.exec(disposition)?.[1] ?? `chat.${format}`;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }
