@@ -122,6 +122,26 @@ async def ensure_owner_present(db: AsyncSession, dept: m.Department) -> None:
         raise PersonalOwnerLeft
 
 
+async def live_department_owner(db: AsyncSession, agent_id: uuid.UUID) -> uuid.UUID | None:
+    """The owner of the agent's department, when the department is live and
+    its owner's member row is too; None otherwise (a standard department, a
+    deleted one, a departed owner, no such agent). Read from the database in
+    one query, not the identity map, like `ensure_owner_present`."""
+    owner: uuid.UUID | None = await db.scalar(
+        select(m.OrgMember.id)
+        .join(m.Department, m.Department.owner_member_id == m.OrgMember.id)
+        .join(m.Agent, m.Agent.department_id == m.Department.id)
+        .where(
+            m.Agent.id == agent_id,
+            m.Department.tenant_id == m.Agent.tenant_id,
+            m.OrgMember.tenant_id == m.Agent.tenant_id,
+            m.Department.deleted_at.is_(None),
+            m.OrgMember.deleted_at.is_(None),
+        )
+    )
+    return owner
+
+
 async def ensure_personal_capacity(db: AsyncSession, dept: m.Department) -> None:
     """Raise `PersonalOwnerLeft` when the department's owner has left, and
     `PersonalAgentLimit` when a personal department holds the tenant's cap of

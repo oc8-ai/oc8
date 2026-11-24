@@ -763,6 +763,7 @@ async def apply_operation(
                     agent_id=operation.agentId,
                     event_source=operation.eventSource,
                     event_type=operation.eventType,
+                    creator=actor_member_id,
                 )
             await create_trigger(
                 db,

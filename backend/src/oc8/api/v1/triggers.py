@@ -355,7 +355,11 @@ async def create_agent_trigger(
         if body.kind == "event" and not named and body.event_source and body.event_type:
             # A polled event listens on the agent's fixed login for its tools.
             target = await polled_event_target(
-                db, agent_id=agent_id, event_source=body.event_source, event_type=body.event_type
+                db,
+                agent_id=agent_id,
+                event_source=body.event_source,
+                event_type=body.event_type,
+                creator=caller,
             )
         trigger = await create_trigger(
             db,
