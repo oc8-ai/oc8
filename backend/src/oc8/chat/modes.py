@@ -31,7 +31,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from oc8.authz.pdp import required_right
 
@@ -286,6 +286,11 @@ def parse_command(text: str) -> tuple[ChatMode | None, str]:
     if not body:
         return None, text
     return mode, body
+
+
+#: Run-context key `enter_agent_mode` sets: the mode a run switched its chat
+#: into, written to the chat at the leg's end (`chat.service.apply_entered_mode`).
+ENTERED_MODE: Final = "entered_mode"
 
 
 def mode_from_context(context: Mapping[str, Any] | None) -> ChatMode | None:

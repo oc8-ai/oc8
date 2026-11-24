@@ -49,6 +49,7 @@ from oc8.chat.context.registry import RESOLVERS
 from oc8.chat.modes import (
     ACT,
     ASSISTANT_ONLY_REFUSAL,
+    ENTERED_MODE,
     MODES,
     ChatMode,
     ModeNotAvailable,
@@ -1338,6 +1339,32 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
         acting_subject=(run.context or {}).get("originating_operator"),
         acting_role=(run.context or {}).get("operator_role"),
     )
+
+
+async def apply_entered_mode(db: AsyncSession, *, run: m.AgentRun) -> None:
+    """Write the mode a run switched its chat into (`ENTERED_MODE`) to the
+    chat, and consume the key. Called by the executor at the end of a leg,
+    after its last model or network call: it takes the tenant's audit lock and
+    then the session row (`chat.tree`), both held until the commit right
+    after. Taken during the leg instead, the row would be held -- ahead of the
+    audit lock the leg's commit takes -- while the model is called."""
+    raw = (run.context or {}).get(ENTERED_MODE)
+    if not raw:
+        return
+    from oc8.runtime.run_context import merge_context
+
+    await merge_context(db, run, {ENTERED_MODE: None})
+    session_raw = (run.context or {}).get("chat_session_id")
+    try:
+        session_id = uuid.UUID(str(session_raw))
+    except ValueError:
+        return
+    session = await get_session(db, tenant_id=run.tenant_id, session_id=session_id)
+    if session is None or MODES.get(str(raw)) is None:
+        return
+    await tree.lock_session(db, session=session)
+    session.mode = str(raw)
+    await db.flush()
 
 
 async def active_runs_for_session(

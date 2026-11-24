@@ -427,16 +427,15 @@ async def test_carried_over_turn_with_a_vanished_anchor_appends_to_the_leaf(
         assert await _leaf(db, session) == staged.id
 
 
-_AUDIT_LOCK = re.compile(r"pg_advisory_xact_lock")
 _SESSION_ROW = re.compile(r"(FROM chat_session\b.*FOR UPDATE|UPDATE chat_session\b)", re.S)
 
 
 @contextmanager
-def _statements() -> Iterator[list[str]]:
+def statements() -> Iterator[list[str]]:
     seen: list[str] = []
 
-    def _record(_conn: Any, _cursor: Any, statement: str, *_args: Any) -> None:
-        seen.append(statement)
+    def _record(_conn: Any, _cursor: Any, statement: str, parameters: Any, *_args: Any) -> None:
+        seen.append(f"{statement} -- {parameters!r}")
 
     event.listen(Engine, "before_cursor_execute", _record)
     try:
@@ -445,9 +444,21 @@ def _statements() -> Iterator[list[str]]:
         event.remove(Engine, "before_cursor_execute", _record)
 
 
-def _audit_lock_comes_first(seen: list[str]) -> None:
-    session_row = next(i for i, sql in enumerate(seen) if _SESSION_ROW.search(sql))
-    audit = next((i for i, sql in enumerate(seen) if _AUDIT_LOCK.search(sql)), None)
+def is_audit_lock(sql: str, tenant: uuid.UUID) -> bool:
+    """The tenant's audit lock -- told apart from the other advisory locks
+    (a run's inputs, a conversation's offers) by its key, the tenant id."""
+    return "pg_advisory_xact_lock" in sql and str(tenant) in sql
+
+
+def locks_session_row(sql: str) -> bool:
+    return bool(_SESSION_ROW.search(sql))
+
+
+def audit_lock_comes_first(seen: list[str], tenant: uuid.UUID) -> None:
+    """The tenant's audit lock is taken before the chat_session row is first
+    locked or changed (`chat.tree`'s lock order)."""
+    session_row = next(i for i, sql in enumerate(seen) if locks_session_row(sql))
+    audit = next((i for i, sql in enumerate(seen) if is_audit_lock(sql, tenant)), None)
     assert audit is not None and audit < session_row, seen[session_row]
 
 
@@ -460,10 +471,10 @@ async def test_send_takes_the_audit_lock_before_the_session_row(
     async with app_session(tenant) as db:
         session = await _session(db, tenant, assistant=True)
         await _commit(db, tenant)
-        with _statements() as seen:
+        with statements() as seen:
             msg, _run = await _send(db, session, "/agent build me an invoice checker")
         assert session.mode == "agent" and msg.mode == "agent"
-    _audit_lock_comes_first(seen)
+    audit_lock_comes_first(seen, tenant)
 
 
 async def test_regenerate_door_takes_the_audit_lock_before_the_session_row(
@@ -509,10 +520,10 @@ async def test_regenerate_door_takes_the_audit_lock_before_the_session_row(
                 assert run is not None
                 run.state = "done"
                 await record_assistant_reply(db, run=run, output="first answer")
-            with _statements() as seen, patch("oc8.runtime.intake.publish_run"):
+            with statements() as seen, patch("oc8.runtime.intake.publish_run"):
                 again = await c.post(
                     f"/api/v1/chat/sessions/{sid}/messages/{turn['id']}/regenerate",
                     headers=headers,
                 )
             assert again.status_code == 201, again.text
-    _audit_lock_comes_first(seen)
+    audit_lock_comes_first(seen, tenant)

@@ -767,3 +767,21 @@ async def test_choosing_an_agent_deleted_after_the_offer_is_refused(
                 db, offer, decision="approve", tenant_id=tenant, actor=anna, agent_id=writer.id
             )
         assert await _delegations(db) == []
+
+
+async def test_approving_takes_the_audit_lock_before_the_conversation_row(
+    app_session: AppSessionFactory,
+) -> None:
+    """`chat.tree`'s lock order: a decision stages audit events (taking the
+    audit lock at commit), so it must not hold the chat_session row first."""
+    from tests.chat.test_message_tree import audit_lock_comes_first, statements
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        offer, _run = await _parked_offer(db, office)
+        anna = await _human(db, tenant, "anna", "member")
+        with statements() as seen:
+            await decide_approval(db, offer, decision="approve", tenant_id=tenant, actor=anna)
+        assert len(await _grants(db)) == 1
+    audit_lock_comes_first(seen, tenant)

@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -22,6 +22,7 @@ from oc8.agent.control_tools import (
 from oc8.agent.harness.stages.b_direct_access import DirectAccessView, offers_direct
 from oc8.approvals import AgentNotOffered, AgentNotRunnable, EffectRefused, raise_approval
 from oc8.audit import append_event
+from oc8.audit.chain import lock_tenant_audit
 from oc8.connections.access import (
     ConnectionRequired,
     ToolAccess,
@@ -157,6 +158,23 @@ def _request_text(purpose: str, request: str) -> str:
     return "\n".join(part for part in (purpose, request) if part)[:_REQUEST_LIMIT]
 
 
+async def _lock_offers(db: AsyncSession, *, session_id: uuid.UUID) -> None:
+    """Serialise the offers and decisions of one conversation, until commit.
+
+    An advisory lock of its own, NOT the chat_session row: an offer is made
+    inside the Copilot's run, whose transaction goes on to call the model and
+    stages audit events that take the tenant's audit lock only at its commit.
+    Holding the session row that long, ahead of the audit lock, would invert
+    the order every chat writer keeps (audit, then row -- `chat.tree`): a send
+    holding the audit lock would wait on the row, and the run's end on the
+    audit lock. Nothing but offers and decisions takes this lock, and a
+    decision takes it BEFORE the audit lock, so it adds no cycle either."""
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"direct_access:{session_id}"},
+    )
+
+
 async def _fitting_agents(
     db: AsyncSession,
     *,
@@ -233,9 +251,7 @@ async def execute_direct_access_tool(
         )
     # Serialise the offers of one conversation: two parallel calls must not
     # both find nothing waiting and raise two cards.
-    await db.execute(
-        select(m.ChatSession.id).where(m.ChatSession.id == direct.session_id).with_for_update()
-    )
+    await _lock_offers(db, session_id=direct.session_id)
     if await active_grant(db, session_id=direct.session_id, tool_key=key) is not None:
         return ControlOutcome(
             output=f"Direct access to {key} is already allowed in this conversation; use its tools."
@@ -511,8 +527,15 @@ async def resolve_direct_access_approval(
     grant can no longer be given or the agent no longer be started.
 
     One grant at most: `decide_approval` holds the approval row locked and
-    refuses a second decision, the conversation row is locked here like the
-    offer locks it, and the partial unique index is the last word."""
+    refuses a second decision, the conversation's offers are serialised here
+    as the offer serialises them (`_lock_offers`), and the partial unique
+    index is the last word.
+
+    Locks, in the one order that cannot cycle: the offer lock, then the
+    tenant's audit lock, then the conversation row (`chat.tree`'s order; the
+    row lock keeps a concurrent delete of the conversation from slipping in
+    under the grant). Everything after them up to the caller's commit is
+    database work: no model or network call."""
     payload = approval.payload or {}
     raw_info = payload.get("direct_access")
     info: Mapping[str, Any] = raw_info if isinstance(raw_info, dict) else {}
@@ -521,6 +544,9 @@ async def resolve_direct_access_approval(
     key = str(info.get("tool_key") or "")
     chosen: dict[str, str] | None = None
     if decision == "approve":
+        if session_id is not None:
+            await _lock_offers(db, session_id=session_id)
+        await lock_tenant_audit(db, approval.tenant_id)
         session = (
             await db.execute(
                 select(m.ChatSession).where(m.ChatSession.id == session_id).with_for_update()

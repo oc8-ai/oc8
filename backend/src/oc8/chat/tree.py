@@ -16,17 +16,22 @@ so two runs finishing at once, or a send racing a reply, cannot both build on
 the same stale leaf; the lock is held until the caller commits.
 
 Lock order: `lock_session` takes the tenant's audit lock BEFORE the session
-row. A run's end already holds the audit lock (`lock_run_inputs`) when it
-records its answer here, so a transaction that held the session row first
-and took the audit lock at its commit would deadlock against it. Every
-transaction that writes a message of a "chat" session -- `send_message`,
-`record_assistant_reply`, `record_answer_turn`, a carried-over turn -- and the
-regenerate door (`api/v1/chat.py`) therefore take `lock_session` before they
-lock or change the session row in any other way. (The direct-access offer
-and decision in `copilot/direct_access.py` still lock the row alone; they
-write no message.) Callers lock
-late, shortly before they commit, because the audit lock serialises the
-tenant's audited commits while held.
+row. The hazard is any transaction that holds the session row and then takes
+the audit lock -- which every transaction that staged an audit event does at
+its commit, and a run's end does earlier still (`lock_run_inputs`): it waits
+on a writer holding the audit lock while that writer waits on the row. So
+every transaction that locks or changes a chat_session row and stages an
+audit event takes the audit lock first -- `lock_session`, or
+`lock_tenant_audit` right before its own row lock: `send_message`,
+`record_assistant_reply`, `record_answer_turn`, a carried-over turn, the
+regenerate door (`api/v1/chat.py`), a direct-access decision
+(`copilot/direct_access.py`), and the chat mode a run entered
+(`chat.service.apply_entered_mode`). A run never locks the row during its
+leg -- that would hold it while the model is called; the direct-access offer
+serialises on an advisory lock of its own instead, and a mode the run
+enters is written at the leg's end. Callers lock late, after their last
+model or network call and shortly before they commit, because the audit
+lock serialises the tenant's audited commits while held.
 """
 
 from __future__ import annotations

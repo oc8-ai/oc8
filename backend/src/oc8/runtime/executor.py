@@ -126,6 +126,19 @@ def _chat_run_failed_answer(run_id: uuid.UUID) -> str:
     return f"That didn't work out \u2013 [see the run](oc8://run/{run_id}) for what happened."
 
 
+async def _apply_entered_mode(db: AsyncSession, run: m.AgentRun) -> None:
+    """A chat run that switched its chat into a mode (`enter_agent_mode`)
+    writes it to the chat here, at the leg's end, close to the commit and
+    after the leg's last network call: the session row is locked behind the
+    tenant's audit lock (`chat.tree`), which must not be held while the model
+    is called. No-op for any other run."""
+    if run.source != "chat":
+        return
+    from oc8.chat.service import apply_entered_mode
+
+    await apply_entered_mode(db, run=run)
+
+
 async def _answer_failed_chat_run(
     db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
 ) -> None:
@@ -1349,6 +1362,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         await request_clarification(
                             db, run=run, question=result.output, questions=parked_questions
                         )
+                        await _apply_entered_mode(db, run)
                         from oc8.copilot.followups import load_responsibility_for_run
 
                         # Only the Copilot's own turns (source chat) wait on the
@@ -1432,6 +1446,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # As at every end: no input arrives until this commits.
                         await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                         await repo.transition(run, RunState.FAILED)
+                        await _apply_entered_mode(db, run)
                         await record_activity(
                             db,
                             tenant_id=tenant_id,
@@ -1578,6 +1593,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             and await run_still_open(db, run_id=run.id)
                         )
                     await repo.transition(run, new_state)
+                    await _apply_entered_mode(db, run)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
                     record_run_outcome(new_state.value)
                     if run.source == "chat" and new_state in (RunState.DONE, RunState.FAILED):
