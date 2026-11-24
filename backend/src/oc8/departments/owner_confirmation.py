@@ -27,6 +27,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -213,6 +214,25 @@ async def _logins(
     return out
 
 
+def _safe_url(url: Any) -> str | None:
+    """A setup's URL as the owner may see it (Ruling T9-L1): scheme, host,
+    port and path only -- never a userinfo, query or fragment, which may
+    carry a secret. None for anything that does not parse as such."""
+    if not isinstance(url, str):
+        return None
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return None
+    if not parts.scheme or not host:
+        return None
+    if ":" in host:  # an IPv6 address
+        host = f"[{host}]"
+    netloc = host if port is None else f"{host}:{port}"
+    return f"{parts.scheme}://{netloc}{parts.path}"
+
+
 def _config_keys(config: Any) -> list[str]:
     return sorted(str(key) for key in config) if isinstance(config, Mapping) else []
 
@@ -228,7 +248,7 @@ async def _setup_view(db: AsyncSession, agent: m.Agent, dept: m.Department) -> l
         out.append(
             SetupView(
                 tool=conn.name if conn is not None else conn_id,
-                server_url=server_url,
+                server_url=_safe_url(server_url),
                 transport=transport,
                 scopes=scopes,
                 config_keys=_config_keys(config),
@@ -240,7 +260,7 @@ async def _setup_view(db: AsyncSession, agent: m.Agent, dept: m.Department) -> l
         out.append(
             SetupView(
                 tool=name,
-                server_url=server_url,
+                server_url=_safe_url(server_url),
                 transport=transport,
                 scopes=scopes,
                 config_keys=_config_keys(config),

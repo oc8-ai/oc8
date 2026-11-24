@@ -674,3 +674,49 @@ async def test_a_threshold_raised_during_the_confirmation_rolls_it_back(
     assert (await _dept(app_session, w)).pending_frame_tools is not None
     assert (await _binding(app_session, w)).binding_split == split
     assert await _events(app_session, w.tenant) == []
+
+
+async def test_a_setup_url_is_shown_without_credentials_or_query(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling T9-L1: only scheme, host, port and path of a setup's URL."""
+    w = await owned_world(app_session, tools={"a": _RW}, tool_key="a")
+    async with app_session(w.tenant) as db:
+        conn = m.McpConnection(
+            tenant_id=w.tenant,
+            department_id=w.department_id,
+            name="a",
+            server_url="https://one.example.test/mcp",
+            transport="streamable_http",
+            scopes=[],
+            config={},
+        )
+        db.add(conn)
+        await db.flush()
+        conn_id = conn.id
+    await _restamp(app_session, w)
+    async with app_session(w.tenant) as db:
+        row = await db.get(m.McpConnection, conn_id)
+        assert row is not None
+        row.server_url = (
+            "https://bob:hunter2pass@two.example.test:8443/v1/mcp?token=s3cretvalue#frag"
+        )
+    async with _http() as c:
+        r = await c.get(
+            "/api/v1/personal-department/confirmation", headers=await _owner(app_session, w)
+        )
+    assert r.status_code == 200, r.text
+    assert "hunter2pass" not in r.text and "s3cretvalue" not in r.text
+    assert "bob" not in r.text and "frag" not in r.text
+    (agent,) = r.json()["agents"]
+    (setup,) = [s for s in agent["setup"] if s["tool"] == "a"]
+    assert setup["serverUrl"] == "https://two.example.test:8443/v1/mcp"
+
+
+async def test_an_unparsable_setup_url_is_not_shown() -> None:
+    from oc8.departments.owner_confirmation import _safe_url
+
+    assert _safe_url("https://[broken/x?token=s3cret") is None
+    assert _safe_url("not a url at all") is None
+    assert _safe_url(None) is None
+    assert _safe_url("http://host.test") == "http://host.test"
