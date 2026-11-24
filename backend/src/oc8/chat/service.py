@@ -586,14 +586,19 @@ async def fitting_agents_for_turn(
     db: AsyncSession,
     *,
     session: m.ChatSession,
-    member_id: uuid.UUID | None,
+    acting_member: m.OrgMember | None,
     text: str,
     token_role: str | None,
 ) -> str:
     """The "agents that fit" block for one Copilot user turn, or "" -- for
     another agent's chat, no person, no match, or any failure: matching never
-    blocks a turn."""
-    if member_id is None:
+    blocks a turn.
+
+    Only for the chat owner's own turn (the rule of `_turn_manifest`): a
+    channel sender, a follow-up or someone else replying in this chat has no
+    block, so the ranking never reveals what the owner may run to anyone else.
+    `token_role` MUST be the role on that member's live request token."""
+    if acting_member is None or acting_member.id != session.member_id:
         return ""
     try:
         copilot = await db.get(m.Agent, session.agent_id)
@@ -601,7 +606,7 @@ async def fitting_agents_for_turn(
             return ""
         matches = await matching_agents(
             db,
-            member_id=member_id,
+            member_id=acting_member.id,
             tool_key=None,
             request=text[:_FIT_REQUEST_LIMIT],
             copilot=copilot,
@@ -903,7 +908,7 @@ async def send_message(
         task_text += await fitting_agents_for_turn(
             db,
             session=session,
-            member_id=session.member_id,
+            acting_member=acting_member,
             text=body,
             token_role=operator_role,
         )
@@ -1083,7 +1088,7 @@ async def regenerate_reply(
     task_text += await fitting_agents_for_turn(
         db,
         session=session,
-        member_id=session.member_id,
+        acting_member=acting_member,
         text=user_message.content,
         token_role=operator_role,
     )

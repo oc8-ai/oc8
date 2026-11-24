@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -54,6 +55,12 @@ async def _office(
     return session
 
 
+async def _owner(db: AsyncSession, session: m.ChatSession) -> m.OrgMember:
+    owner = await db.get(m.OrgMember, session.member_id)
+    assert owner is not None
+    return owner
+
+
 def _fits() -> _Router:
     return _Router({_text("Sales agent", "Writes quotations"): 0.9})
 
@@ -71,6 +78,7 @@ async def test_user_turn_task_text_contains_fit_block(
             tenant_id=tenant,
             message=REQUEST,
             originating_operator="anna",
+            acting_member=await _owner(db, session),
         )
         assert run is not None
         assert BLOCK in run.context["task"]
@@ -85,7 +93,12 @@ async def test_regenerated_turn_contains_fit_block(
     async with app_session(tenant) as db:
         session = await _office(db, tenant)
         msg, _run = await send_message(
-            db, session=session, tenant_id=tenant, message=REQUEST, originating_operator="anna"
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator="anna",
+            acting_member=await _owner(db, session),
         )
         again = await regenerate_reply(
             db,
@@ -94,6 +107,7 @@ async def test_regenerated_turn_contains_fit_block(
             user_message=msg,
             originating_operator="anna",
             operator_role=None,
+            acting_member=await _owner(db, session),
         )
         assert BLOCK in again.context["task"]
 
@@ -106,7 +120,12 @@ async def test_no_fit_block_when_embeddings_down(
     async with app_session(tenant) as db:
         session = await _office(db, tenant)
         _msg, run = await send_message(
-            db, session=session, tenant_id=tenant, message=REQUEST, originating_operator="anna"
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator="anna",
+            acting_member=await _owner(db, session),
         )
         assert run is not None
         assert BLOCK not in run.context["task"]
@@ -124,7 +143,12 @@ async def test_no_fit_block_when_matching_raises(
     async with app_session(tenant) as db:
         session = await _office(db, tenant)
         _msg, run = await send_message(
-            db, session=session, tenant_id=tenant, message=REQUEST, originating_operator="anna"
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator="anna",
+            acting_member=await _owner(db, session),
         )
         assert run is not None
         assert BLOCK not in run.context["task"]
@@ -156,8 +180,59 @@ async def test_no_fit_block_for_followup_and_non_assistant_sessions(
     async with app_session(tenant) as db:
         session = await _office(db, tenant, copilot_chat=False)
         _msg, run = await send_message(
-            db, session=session, tenant_id=tenant, message=REQUEST, originating_operator="anna"
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator="anna",
+            acting_member=await _owner(db, session),
         )
         assert run is not None
         assert BLOCK not in run.context["task"]
         assert router.calls == []
+
+
+async def test_a_turn_by_someone_other_than_the_owner_gets_no_block(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tenant = uuid.uuid4()
+    router = _fits()
+    _route(monkeypatch, router)
+    async with app_session(tenant) as db:
+        session = await _office(db, tenant)
+        owner = await db.get(m.OrgMember, session.member_id)
+        sales = (await db.execute(select(m.Department))).scalars().first()
+        assert owner is not None and sales is not None
+        boss = await _person(db, tenant, "boss", seats=[sales])
+
+        _msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator="boss",
+            acting_member=boss,
+        )
+        assert run is not None and BLOCK not in run.context["task"]
+        assert router.calls == []
+
+        msg, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant,
+            message=REQUEST,
+            originating_operator="anna",
+            acting_member=owner,
+        )
+        assert run is not None and BLOCK in run.context["task"]
+
+        again = await regenerate_reply(
+            db,
+            session=session,
+            tenant_id=tenant,
+            user_message=msg,
+            originating_operator="boss",
+            operator_role=None,
+            acting_member=boss,
+        )
+        assert BLOCK not in again.context["task"]
