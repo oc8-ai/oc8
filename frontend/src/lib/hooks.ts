@@ -1047,11 +1047,51 @@ export interface PersonalDepartmentMineDTO {
   enabled: boolean;
   department: Department | null;
 }
+/** A capa a personal template connects to, and whether a hire may bind it now. */
+export interface TemplateConnectionDTO {
+  integration: string;
+  label: string;
+  /** "credential" or "oauth"; "" for a capa the organisation has not installed. */
+  kind: string;
+  provider: string | null;
+  credentialType: string | null;
+  available: boolean;
+}
+
+/** What a hire grants the agent: tool keys and skill names. */
+export interface HireGrantsDTO {
+  tools: string[];
+  skills: string[];
+}
+
 export interface PersonalTemplateDTO {
   capaId: string;
   name: string;
   label: string;
   summary: string;
+  /** Pins this offer; the hire answers 409 `hire_changed` once it changed. */
+  hireToken: string;
+  grants: HireGrantsDTO;
+  /** The member chooses a login for one of these at hire. */
+  connectionsAny: TemplateConnectionDTO[];
+  /** The member may add a login for each of these. */
+  connectionsOptional: TemplateConnectionDTO[];
+}
+
+/** The member's own login for one capa: a credential or an OAuth connection. */
+export interface HireConnectionBody {
+  integration: string;
+  credentialId?: string;
+  oauthConnectionId?: string;
+}
+
+export interface HirePersonalBody {
+  capaId: string;
+  hireToken: string;
+  name?: string;
+  connection?: HireConnectionBody;
+  optionalConnections?: HireConnectionBody[];
+  confirmShare?: boolean;
 }
 
 export function useMyPersonalDepartment(enabled = true) {
@@ -1073,7 +1113,7 @@ export function usePersonalTemplates(enabled = true) {
 export function useHirePersonalTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { capaId: string }) =>
+    mutationFn: (body: HirePersonalBody) =>
       api.post<{ agentId: string; departmentId: string }>("/personal-department/agents", body),
     onSuccess: async (data) => {
       await Promise.all([
