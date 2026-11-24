@@ -29,6 +29,7 @@ from oc8.events.sources import (
     poll_tick,
     polled_event_spec,
 )
+from oc8.runtime.cancellation import AGENT_ARCHIVED
 from oc8.runtime.person import whose_run
 from oc8.runtime.queue import RunQueue
 from oc8.triggers.service import (
@@ -573,3 +574,83 @@ async def test_an_organisation_login_trigger_behaves_as_before(
     assert len(await _runs(app_session, polled.tenant, polled.agent_id)) == 1
     row = await _trigger(app_session, polled.tenant, t.id)
     assert row.enabled is True and row.last_skip_reason is None
+
+
+# --- review follow-ups (Task 6 -> Task 8) ----------------------------------------------
+
+
+async def test_the_poll_signs_in_for_the_triggers_creator_not_the_logins_owner(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whose own login the poll may sign in with is the trigger's listening
+    creator (`listening_creator`), never the login's owner read back from
+    the login itself, which would only compare the login with itself."""
+    polled = await polled_setup(app_session)
+    register(polled, FakePoller(baseline_then(lambda _c: [])))
+    someone = await member(app_session, polled.tenant, f"{uuid.uuid4().hex[:8]}@acme.test")
+    async with app_session(polled.tenant) as db:
+        await create_trigger(
+            db,
+            tenant_id=polled.tenant,
+            agent_id=polled.agent_id,
+            kind="event",
+            task_text="Handle it",
+            event_source=polled.source,
+            event_type=polled.event_type,
+            created_by_member_id=someone,
+            acts_for_creator=True,
+            event_target_credential_id=polled.credential_id,
+        )
+    seen: list[uuid.UUID | None] = []
+    original = sources._login_fields
+
+    async def spy(*args: Any, owner: uuid.UUID | None = None, **kwargs: Any) -> Any:
+        seen.append(owner)
+        return await original(*args, owner=owner, **kwargs)
+
+    monkeypatch.setattr(sources, "_login_fields", spy)
+
+    await poll_tick()
+
+    assert seen == [someone]
+
+
+async def test_an_owned_login_the_owner_did_not_bind_is_no_fixed_login(
+    app_session: AppSessionFactory,
+) -> None:
+    """The owner's own login counts for their trigger only when they bound
+    it themselves (`set_by_member_id`), as for their confirmation
+    (`connections.confirmation._owner_binding`)."""
+    owned = await owned_polled_setup(app_session)
+    async with app_session(owned.tenant) as db:
+        assert await sources.fixed_login(
+            db, owned.agent_id, owned.tool_key, creator=owned.member_id
+        ) == LoginTarget("credential", owned.credential_id)
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(
+                m.AgentToolAccess.agent_id == owned.agent_id,
+                m.AgentToolAccess.tool_key == owned.tool_key,
+            )
+        )
+        assert row is not None
+        row.set_by_member_id = None
+        await db.flush()
+        assert (
+            await sources.fixed_login(db, owned.agent_id, owned.tool_key, creator=owned.member_id)
+            is None
+        )
+
+
+async def test_an_archived_agents_trigger_is_never_polled(app_session: AppSessionFactory) -> None:
+    owned = await owned_polled_setup(app_session)
+    t = await _create(app_session, owned)
+    async with app_session(owned.tenant) as db:
+        agent = await db.get(m.Agent, owned.agent_id)
+        assert agent is not None
+        agent.deleted_at = datetime.now(tz=UTC)
+
+    await poll_tick()
+
+    assert owned.fake.calls == []
+    row = await _trigger(app_session, owned.tenant, t.id)
+    assert row.enabled is False and row.last_skip_reason == AGENT_ARCHIVED

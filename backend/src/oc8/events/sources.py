@@ -474,8 +474,8 @@ async def fixed_login(
     created by `creator` may listen on, if any: a credential or an OAuth
     connection of the organisation; or one a person owns, only when that
     person is `creator` and the live owner of the agent's live department
-    (`live_department_owner`). Without a `creator`, a person's own login is
-    never one."""
+    (`live_department_owner`) and bound it themselves. Without a `creator`,
+    a person's own login is never one."""
     from oc8.departments.personal import live_department_owner
 
     row = await db.scalar(
@@ -498,7 +498,9 @@ async def fixed_login(
     owner = login.owner_member_id
     if owner is None:
         return target
-    if creator is not None and owner == creator:
+    # A person's own login also needs the binding to be theirs: set by them,
+    # as their confirmation is (`connections.confirmation._owner_binding`).
+    if creator is not None and owner == creator and row.set_by_member_id == creator:
         if await live_department_owner(db, agent_id) == creator:
             return target
     return None
@@ -900,6 +902,21 @@ def _record_failure(cursor_row: m.EventSourceCursor, error: str) -> None:
     cursor_row.next_poll_at = now + timedelta(seconds=backoff_seconds(cursor_row.failures))
 
 
+async def _agent_retired(db: AsyncSession, trigger: m.Trigger) -> bool:
+    """Whether the trigger's agent is archived or gone: then it is switched
+    off, as the scheduler's `fire_trigger` does, before its login is read."""
+    from oc8.agents.retire import AGENT_MISSING
+    from oc8.runtime.cancellation import AGENT_ARCHIVED
+
+    agent = await db.get(m.Agent, trigger.agent_id)
+    if agent is not None and agent.deleted_at is None:
+        return False
+    trigger.enabled = False
+    trigger.last_skip_reason = AGENT_MISSING if agent is None else AGENT_ARCHIVED
+    logger.info("polled trigger %s switched off: %s", trigger.id, trigger.last_skip_reason)
+    return True
+
+
 async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: float) -> int:
     """Poll one trigger, holding its cursor row for the whole poll. Returns
     how many events it was handed."""
@@ -923,6 +940,8 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             return 0  # another replica holds it, or polled it a moment ago
         trigger = await db.get(m.Trigger, trigger_id)
         if trigger is None or not trigger.enabled:
+            return 0
+        if await _agent_retired(db, trigger):
             return 0
         assert trigger.event_source is not None and trigger.event_type is not None
         spec = await polled_event_spec(db, trigger.event_source, trigger.event_type)
@@ -980,8 +999,11 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             return 0
         secret_forms: list[str] = []
         try:
+            # Signed in as the organisation's login or the creator's own: the
+            # creator `fixed_login` checked above, not the login's owner read
+            # back from the login itself.
             login, secret_forms = await _login_fields(
-                db, tenant_id, target, spec, config, owner=owner
+                db, tenant_id, target, spec, config, owner=creator
             )
             # The lists themselves, so a poller can check again on its own.
             login.update({f"allowed_{key}": ",".join(v) for key, v in allowed.items()})
