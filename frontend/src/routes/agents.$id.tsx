@@ -264,7 +264,12 @@ function AgentDetail() {
   // is the `agent:view` that put the page on the screen. Gates all three
   // agent:manage-reachable controls below: the narrowing editor's Save, the
   // skill-assign button, and the model select.
-  const mayManage = useMayManageAgent()(agent?.departmentId);
+  //
+  // Never for a personal agent read by someone other than its owner
+  // (`contentHidden`): only the owner's seat may write there, whatever the
+  // caller holds tenant-wide, so every write control would 404.
+  const mayManageDept = useMayManageAgent()(agent?.departmentId);
+  const mayManage = mayManageDept && !agent?.contentHidden;
   const renameAgent = useRenameAgent();
   const search = Route.useSearch();
   const [tab, setTab] = useState<TabId>(search.tab ?? "overview");
@@ -579,7 +584,8 @@ function AgentDetail() {
         </div>
       )}
 
-      {tab === "instructions" && (
+      {tab === "instructions" && agent.contentHidden && <PrivateContentNotice />}
+      {tab === "instructions" && !agent.contentHidden && (
         <AgentInstructionsPanel
           agentId={agent.id}
           agentName={agent.name}
@@ -619,8 +625,26 @@ function AgentDetail() {
         <AgentSkillsTab agentId={agent.id} agentName={agent.name} mayManage={mayManage} />
       )}
 
-      {tab === "versions" && <AgentVersionsTab agentId={agent.id} mayManage={mayManage} />}
+      {tab === "versions" && agent.contentHidden && <PrivateContentNotice />}
+      {tab === "versions" && !agent.contentHidden && (
+        <AgentVersionsTab agentId={agent.id} mayManage={mayManage} />
+      )}
     </div>
+  );
+}
+
+/** In place of a tab whose content belongs to a personal agent's owner alone:
+ *  the API answers it with a 404, and an empty editor would read as "this
+ *  agent has no instructions". */
+export function PrivateContentNotice() {
+  const t = useT();
+  return (
+    <Panel className="p-5 text-sm text-muted-foreground">
+      {t(
+        "This is a personal agent. Only its owner sees its instructions, versions and files.",
+        "Das ist ein persönlicher Agent. Seine Anweisungen, Versionen und Dateien sieht nur sein Besitzer.",
+      )}
+    </Panel>
   );
 }
 

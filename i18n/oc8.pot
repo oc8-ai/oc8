@@ -6359,6 +6359,9 @@ msgstr ""
 msgid "This integration is not available yet."
 msgstr ""
 
+msgid "This is a personal agent. Only its owner sees its instructions, versions and files."
+msgstr ""
+
 msgid "This is no longer a personal department, or its owner has left."
 msgstr ""
 

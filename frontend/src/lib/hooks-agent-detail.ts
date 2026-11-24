@@ -29,6 +29,10 @@ export interface AgentDetail {
   modelConfigId: string | null;
   isLead: boolean;
   mission: string;
+  /** A personal agent read by someone other than its owner: metadata only.
+   *  The mission and the other content fields are blank because they are
+   *  private, not because the agent has none. */
+  contentHidden?: boolean;
   departmentName: string | null;
   // Inherited from AgentDTO (backend/src/oc8/schemas/dto.py) -- opening
   // questions the composer offers on an empty conversation (§5.3). Was
