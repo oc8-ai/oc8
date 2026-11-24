@@ -395,15 +395,16 @@ async def hire_personal_agent(
     # so a change committed since the list answers 409 and the transaction,
     # the department created just now included, rolls back.
     await lock_owned_frame(db, dept)
-    offer = await hire_offer(
-        db,
-        version=version,
-        spec=spec,
-        frame_tools=await _hire_frame_tools(db, tenant_id=principal.tenant_id, dept=dept),
-        department_id=dept.id,
-    )
-    if not hmac.compare_digest(offer.token, body.hire_token):
-        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "hire_changed"})
+    frame_tools = await _hire_frame_tools(db, tenant_id=principal.tenant_id, dept=dept)
+
+    async def check_offer() -> None:
+        offer = await hire_offer(
+            db, version=version, spec=spec, frame_tools=frame_tools, department_id=dept.id
+        )
+        if not hmac.compare_digest(offer.token, body.hire_token):
+            raise HTTPException(status.HTTP_409_CONFLICT, {"error": "hire_changed"})
+
+    await check_offer()
     try:
         # Plan ruling 4: a personal hire is exempt from the tenant's
         # `require_hire_approval`. The administrator who enabled this
@@ -424,6 +425,12 @@ async def hire_personal_agent(
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    # Ruling T8-R1: and once more after the stamps. Skills and setup values
+    # are not under the department lock, and a stamp records what it reads
+    # (read committed): one committed since the check above would count as
+    # confirmed by the member. Checked last, so the stamps can only hold
+    # what the member was shown; a mismatch rolls the whole hire back.
+    await check_offer()
 
     await append_event(
         db,

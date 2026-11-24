@@ -199,7 +199,11 @@ class HireOffer:
 
 
 async def _offered_skills(
-    db: AsyncSession, *, skill_names: Sequence[str], department_id: uuid.UUID | None
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    skill_names: Sequence[str],
+    department_id: uuid.UUID | None,
 ) -> dict[str, list[Any]]:
     """The skills an agent hired now would get, as `[skill_version_id,
     overrides, name, description]`: the template's own (resolved by name as
@@ -211,7 +215,11 @@ async def _offered_skills(
             (
                 await db.execute(
                     select(m.Skill)
-                    .where(m.Skill.name == name, m.Skill.deleted_at.is_(None))
+                    .where(
+                        m.Skill.tenant_id == tenant_id,
+                        m.Skill.name == name,
+                        m.Skill.deleted_at.is_(None),
+                    )
                     .order_by(m.Skill.created_at)
                 )
             )
@@ -263,7 +271,9 @@ async def hire_offer(
     from oc8.capas.service import load_installation_config
 
     config = await load_installation_config(db, capa_id=version.capa_id)
-    skills = await _offered_skills(db, skill_names=spec.skills, department_id=department_id)
+    skills = await _offered_skills(
+        db, tenant_id=version.tenant_id, skill_names=spec.skills, department_id=department_id
+    )
     token = payload_hash(
         {
             "version_id": str(version.id),

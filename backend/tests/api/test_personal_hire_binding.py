@@ -853,3 +853,75 @@ async def test_a_template_that_does_not_parse_is_not_listed(
 
     assert listed.status_code == 200, listed.text
     assert listed.json() == []
+
+
+async def _assign_tenant_wide_skill(app_session: AppSessionFactory, tenant: uuid.UUID) -> None:
+    """An administrator assigns a new skill to every agent, committed at once."""
+    async with app_session(tenant) as db:
+        skill = m.Skill(tenant_id=tenant, name=f"late_{uuid.uuid4().hex[:6]}", description="Late")
+        db.add(skill)
+        await db.flush()
+        version = m.SkillVersion(
+            tenant_id=tenant, skill_id=skill.id, semver="1.0.0", definition={}, artifact_hash=b"x"
+        )
+        db.add(version)
+        await db.flush()
+        skill.current_version_id = version.id
+        db.add(m.SkillAssignment(tenant_id=tenant, skill_version_id=version.id))
+
+
+async def test_a_skill_assigned_while_the_hire_runs_is_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling T8-R1: the hire checks the offer again after the agent, its
+    bindings and their stamps exist, so a skill committed after the first
+    check is never recorded as confirmed by the member."""
+    from oc8.api.v1 import personal_departments as route
+
+    world = await _world(app_session, settings={MAX_AGENTS_KEY: 1})
+    cid = await _offered(app_session, world)
+    token = await _token(world.tenant, cid)
+    from oc8.capas.service import instantiate_agent as original
+
+    async def racing(*args: Any, **kwargs: Any) -> Any:
+        await _assign_tenant_wide_skill(app_session, world.tenant)
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(route, "instantiate_agent", racing)
+
+    r = await _hire(
+        world.tenant,
+        {"capaId": cid, "connection": _own(world), "confirmShare": True, "hireToken": token},
+    )
+
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "hire_changed"}
+    await _nothing_left(app_session, world.tenant)
+    monkeypatch.setattr(route, "instantiate_agent", original)
+    fresh = await _hire(
+        world.tenant, {"capaId": cid, "connection": _own(world), "confirmShare": True}
+    )
+    assert fresh.status_code == 201, fresh.text
+
+
+async def test_a_token_from_before_the_template_setup_changed_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    world = await _world(app_session)
+    cid = await _offered(app_session, world)
+    stale = await _token(world.tenant, cid)
+    async with app_session(world.tenant) as db:
+        installation = await db.scalar(
+            select(m.CapaInstallation).where(m.CapaInstallation.capa_id == uuid.UUID(cid))
+        )
+        assert installation is not None
+        installation.config = {**(installation.config or {}), "greeting": "Hello"}
+
+    r = await _hire(
+        world.tenant,
+        {"capaId": cid, "connection": _own(world), "confirmShare": True, "hireToken": stale},
+    )
+
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"] == {"error": "hire_changed"}
+    await _nothing_left(app_session, world.tenant)
