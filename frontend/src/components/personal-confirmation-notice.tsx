@@ -447,7 +447,7 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
             {t("Department", "Abteilung")}
           </summary>
           <p className="mt-1 text-xs text-muted-foreground">{t("Goal", "Ziel")}</p>
-          <p className="whitespace-pre-wrap text-sm">{data.department.goal}</p>
+          <p className="whitespace-pre-wrap text-sm">{data.department.goal || "-"}</p>
           {data.department.frameCapaDefaults &&
             Object.keys(data.department.frameCapaDefaults).length > 0 && (
               <>
@@ -460,9 +460,14 @@ export function PersonalConfirmationNotice({ enabled = true }: { enabled?: boole
               </>
             )}
           {Object.keys(data.department.frame).length > 0 && (
-            <pre className="mt-1 overflow-x-auto rounded bg-muted/40 p-2 text-[11px]">
-              {JSON.stringify(data.department.frame, null, 2)}
-            </pre>
+            <>
+              <p className="mt-2 text-xs text-muted-foreground">
+                {t("Department frame", "Rahmen der Abteilung")}
+              </p>
+              <pre className="mt-1 overflow-x-auto rounded bg-muted/40 p-2 text-[11px]">
+                {JSON.stringify(data.department.frame, null, 2)}
+              </pre>
+            </>
           )}
         </details>
       )}

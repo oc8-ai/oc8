@@ -148,6 +148,18 @@ describe("PersonalConfirmationNotice", () => {
     expect(after).toHaveTextContent("files_list");
   });
 
+  it("labels the department's frame apart from its goal, and an empty goal as none", async () => {
+    current = summary({
+      department: { goal: "", frame: { closed: true }, frameCapaDefaults: {} },
+    });
+    renderNotice();
+    const goal = (await screen.findByText("Goal")).nextElementSibling;
+    expect(goal).toHaveTextContent("-");
+    expect(goal).not.toHaveTextContent(/closed/);
+    const frame = screen.getByText("Department frame").nextElementSibling;
+    expect(frame).toHaveTextContent(/"closed": true/);
+  });
+
   it("shows a setup's scopes grouped by right, as a tool pack declares them", async () => {
     const base = summary();
     const agent = (base.agents as Record<string, unknown>[])[0];
