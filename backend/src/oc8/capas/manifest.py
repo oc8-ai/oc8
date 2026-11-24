@@ -119,14 +119,34 @@ def check_policy_limits(policies: dict[str, Any]) -> dict[str, Any]:
 
 class TemplateAgentTrigger(BaseModel):
     """A cron schedule an agent template ships. The ONLY trigger kind a
-    template may declare -- a webhook trigger's token is a secret and an
-    event trigger names a source that may not exist in the target tenant,
-    so neither survives an export/install round trip (design's Non-Goals)."""
+    department template may declare -- a webhook trigger's token is a secret
+    and an event trigger names a source that may not exist in the target
+    tenant, so neither survives an export/install round trip (design's
+    Non-Goals). A personal template lifts the event half of that
+    (`TemplateAgentEventTrigger`, `TemplateAgent.triggers`): its source is a
+    connection the template itself declares."""
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["cron"] = "cron"
     cron_expression: str
     task_text: str
+
+
+class TemplateAgentEventTrigger(BaseModel):
+    """An event trigger a personal template ships. `source` names one of the
+    template's own `connections_any` / `connections_optional` entries, so it
+    always resolves in the member's tenant (A6)."""
+
+    model_config = ConfigDict(extra="forbid")
+    kind: Literal["event"]
+    source: str
+    event_type: str
+    task_text: str
+    config: dict[str, str] = {}
+
+
+#: The most triggers one template may ship.
+MAX_TEMPLATE_TRIGGERS = 10
 
 
 class TemplateAgent(BaseModel):
@@ -168,6 +188,52 @@ class TemplateAgent(BaseModel):
     #: Where this template may be hired: a standard department, or a member's
     #: personal one. A6 adds more.
     scope: Literal["department", "personal"] = "department"
+    #: Personal templates only (A6, Ruling 6): connections of which the member
+    #: needs at least one, and connections the agent can use but does not need.
+    connections_any: list[str] = []
+    connections_optional: list[str] = []
+    #: Personal templates only: cron and event triggers, in place of the single
+    #: `trigger`. A plain union; `extra="forbid"` and `kind` tell the two apart.
+    triggers: list[TemplateAgentTrigger | TemplateAgentEventTrigger] = []
+
+    @model_validator(mode="after")
+    def _personal_connections_and_triggers(self) -> TemplateAgent:
+        declared = [
+            name
+            for name, value in (
+                ("connections_any", self.connections_any),
+                ("connections_optional", self.connections_optional),
+                ("triggers", self.triggers),
+            )
+            if value
+        ]
+        if declared and self.scope != "personal":
+            raise ValueError(
+                f"agent {self.name!r} sets {', '.join(declared)}; "
+                "only a template with scope 'personal' may"
+            )
+        if self.trigger is not None and self.triggers:
+            raise ValueError(f"agent {self.name!r} sets `trigger` or `triggers`, not both")
+        names = [*self.connections_any, *self.connections_optional]
+        if any(not n.strip() for n in names):
+            raise ValueError(f"agent {self.name!r} lists an empty connection name")
+        if len(set(names)) != len(names):
+            both = set(self.connections_any) & set(self.connections_optional)
+            if both:
+                raise ValueError(
+                    f"agent {self.name!r}: connection {sorted(both)[0]!r} is in both "
+                    "connections_any and connections_optional"
+                )
+            raise ValueError(f"agent {self.name!r} lists a connection twice")
+        if len(self.triggers) > MAX_TEMPLATE_TRIGGERS:
+            raise ValueError(f"agent {self.name!r} has more than {MAX_TEMPLATE_TRIGGERS} triggers")
+        for trig in self.triggers:
+            if isinstance(trig, TemplateAgentEventTrigger) and trig.source not in names:
+                raise ValueError(
+                    f"agent {self.name!r}: event trigger source {trig.source!r} is not "
+                    "in connections_any or connections_optional"
+                )
+        return self
 
     @field_validator("prompt_starters")
     @classmethod
