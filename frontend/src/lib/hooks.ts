@@ -2131,6 +2131,9 @@ export function useRun(runId: string | null) {
       return mergePolledRun(previous, fresh, live);
     },
     enabled: !!runId,
+    // A run the reader may not read (a personal agent's) answers 404, which
+    // is final: never asked again, so the caller can say so at once.
+    retry: retryUnlessRefused,
     // Live runs only: keeps `updatedAt` fresh enough for the staleness
     // indicator (see the field's comment above) without polling a run
     // that's already finished.
