@@ -755,8 +755,8 @@ def _announce_departure_after_commit(
       (`EventBus.publish_member_gone`): the socket checks `deleted_at` only at
       connect, and a departed member must receive nothing more.
     """
-    from oc8.realtime.audience import forget_owner
     from oc8.realtime import bus
+    from oc8.realtime.audience import forget_owner
     from oc8.realtime.emit import publish_after_commit
 
     async def _announce() -> None:
