@@ -2,13 +2,14 @@
 the admins.
 
 A `blast_radius` card stops a run that changed too many records. Deciding one
-needs `approval:decide_any` (it is not in `EFFECT_PERMISSIONS`), which the
-owner of a personal department does not hold -- while A4 refused every admin
+needs `approval:decide_any` (`EFFECT_PERMISSIONS`), which the owner of a
+personal department does not hold -- while A4 refused every admin
 any personal card. Nobody could answer it. Now it is an `ADMIN_KEPT_ACTIONS`
 card like the budget incident (its title, count, entity and record reference
 are metadata, R2), and the department's owner may also apply its effect in
-their OWN personal department. Standard departments and every other card are
-unchanged.
+their OWN personal department, in person: not through the Copilot acting for
+them, and not in somebody else's personal department. Standard departments and
+every other card are unchanged.
 
 The world is `test_personal_approvals`': `owner` owns a personal department
 with agent Pia; "Vertrieb" holds Nora; `admin` is an `org_admin`;
@@ -24,11 +25,17 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.approvals import NotYourSayAtAll, decide_approval, publish_created, raise_approval
+from oc8.approvals import (
+    NotYourDepartment,
+    NotYourSayAtAll,
+    decide_approval,
+    publish_created,
+    raise_approval,
+)
 from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.auth.principal import Principal
 from oc8.authz.permissions import SEAT_APPROVER
-from oc8.authz.scope import HumanActor, scope_for_principal
+from oc8.authz.scope import AgentActor, HumanActor, scope_for_member, scope_for_principal
 from tests.approvals.test_personal_approvals import (
     _SECRET_DETAIL,
     _SECRET_TITLE,
@@ -123,6 +130,84 @@ async def test_the_owner_still_cannot_decide_a_personal_budget_incident(
                 actor=actor,
             )
     assert await _status(app_session, w, w.budget_card) == "pending"
+
+
+async def test_the_copilot_acting_for_the_owner_cannot_decide_it(
+    app_session: AppSessionFactory,
+) -> None:
+    """The owner's exception is for the owner in person: an agent's assistant
+    does not wave a runaway agent on."""
+    w = await _world(app_session)
+    card = await _blast_card(app_session, w, agent=w.pia, department=w.personal)
+    async with app_session(w.tenant) as db:
+        member = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.id == w.owner_member))
+        ).scalar_one()
+        copilot = AgentActor(member=member, scope=await scope_for_member(db, member))
+        assert w.personal in copilot.scope.personal_owned
+        with pytest.raises(NotYourSayAtAll):
+            await decide_approval(
+                db, await _row(db, card), decision="approve", tenant_id=w.tenant, actor=copilot
+            )
+    assert await _status(app_session, w, card) == "pending"
+
+
+async def test_owning_one_personal_department_decides_nothing_in_another(
+    app_session: AppSessionFactory,
+) -> None:
+    """`everywhere` owns personal department B and reaches every department
+    (`all_departments`), so it may see A's alarm -- but owning B is not owning
+    A, and without `approval:decide_any` it cannot decide it. The owner of A,
+    seated nowhere else, is refused B's alarm outright."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        everywhere = (
+            await db.execute(
+                select(m.OrgMember).where(
+                    m.OrgMember.tenant_id == w.tenant, m.OrgMember.subject == "everywhere"
+                )
+            )
+        ).scalar_one()
+        other = m.Department(
+            tenant_id=w.tenant,
+            name="Everywhere",
+            frame={"closed": True},
+            kind="personal",
+            owner_member_id=everywhere.id,
+        )
+        db.add(other)
+        await db.flush()
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=w.tenant,
+                member_id=everywhere.id,
+                department_id=other.id,
+                seat_role=SEAT_APPROVER,
+                agent_manage=True,
+            )
+        )
+        theo = m.Agent(tenant_id=w.tenant, department_id=other.id, name="Theo")
+        db.add(theo)
+        await db.flush()
+        other_id, theo_id = other.id, theo.id
+    in_a = await _blast_card(app_session, w, agent=w.pia, department=w.personal)
+    in_b = await _blast_card(app_session, w, agent=theo_id, department=other_id)
+
+    async with app_session(w.tenant) as db:
+        b_owner = await _actor(db, w, "everywhere")
+        assert other_id in b_owner.scope.personal_owned
+        with pytest.raises(NotYourSayAtAll):
+            await decide_approval(
+                db, await _row(db, in_a), decision="approve", tenant_id=w.tenant, actor=b_owner
+            )
+    async with app_session(w.tenant) as db:
+        a_owner = await _actor(db, w, "owner")
+        with pytest.raises(NotYourDepartment):
+            await decide_approval(
+                db, await _row(db, in_b), decision="approve", tenant_id=w.tenant, actor=a_owner
+            )
+    assert await _status(app_session, w, in_a) == "pending"
+    assert await _status(app_session, w, in_b) == "pending"
 
 
 # ------------------------------------------------------------------ the admins
