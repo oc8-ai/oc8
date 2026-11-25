@@ -468,3 +468,73 @@ async def test_a_lookup_straddling_forget_owner_caches_nothing_stale(
     assert held is not None
     assert held.personal and held.owner_member_id is None
     assert spy_bus.raw == []
+
+
+async def test_offboarding_announces_the_departure_after_its_commit(
+    app_session: AppSessionFactory, spy_bus: _SpyBus
+) -> None:
+    w = await _world(app_session)
+    await _offboard(app_session, w)
+    assert spy_bus.gone == [w.owner]
+
+
+async def test_member_gone_closes_that_members_sockets_and_reaches_no_browser(
+    redis_url: str,
+) -> None:
+    """Ruling T2-I2: the control envelope closes the departed member's
+    sockets on every replica, and is never sent to anybody as a frame."""
+    from oc8.realtime.bus import EventBus
+    from oc8.realtime.manager import ConnectionManager
+
+    class _WS:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+            self.closed: int | None = None
+
+        async def send_text(self, data: str) -> None:
+            self.sent.append(data)
+
+        async def close(self, code: int = 1000) -> None:
+            self.closed = code
+
+    tenant, gone, stays = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    mgr = ConnectionManager(redis_url)
+    bus = EventBus(redis_url)
+    feed_ws, member_ws, other_ws, anon_ws = _WS(), _WS(), _WS(), _WS()
+    await mgr.connect(tenant, feed_ws, member_id=gone, feed=True)
+    await mgr.connect(tenant, member_ws, member_id=gone, feed=False)
+    await mgr.connect(tenant, other_ws, member_id=stays, feed=True)
+    await mgr.connect(tenant, anon_ws)
+    try:
+        await bus.publish_member_gone(tenant, gone)
+        for _ in range(100):
+            if feed_ws.closed and member_ws.closed:
+                break
+            await asyncio.sleep(0.02)
+        assert feed_ws.closed == 1008 and member_ws.closed == 1008
+        assert other_ws.closed is None and anon_ws.closed is None
+        # The tenant's channel still works for the others, and no control
+        # frame reached any socket.
+        await bus.publish_event(tenant, "agent.status", {"agent_id": "a"}, source="t")
+        for _ in range(100):
+            if other_ws.sent:
+                break
+            await asyncio.sleep(0.02)
+        for ws in (feed_ws, member_ws, other_ws, anon_ws):
+            assert all("oc8_control" not in frame for frame in ws.sent)
+        assert [json.loads(f)["type"] for f in other_ws.sent] == ["agent.status"]
+        assert feed_ws.sent == [] and member_ws.sent == []
+    finally:
+        await bus.close()
+        await mgr.close()
+
+
+def test_a_control_envelope_is_never_routed_to_a_socket() -> None:
+    from oc8.realtime.bus import CONTROL_MEMBER_GONE, control_envelope
+
+    raw = control_envelope(CONTROL_MEMBER_GONE, member_id=str(uuid.uuid4()))
+    for conn in (
+        _Conn(ws=_NullWS(), member_id=None, feed=True),
+        _Conn(ws=_NullWS(), member_id=str(uuid.uuid4()), feed=False),
+    ):
+        assert _route(conn, raw) == (None, None)

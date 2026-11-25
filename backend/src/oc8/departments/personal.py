@@ -743,18 +743,27 @@ async def follow_default(
     return dept
 
 
-def _forget_live_audience_after_commit(db: AsyncSession, member_id: uuid.UUID) -> None:
-    """The realtime owner cache (`realtime.audience`, R5) holds this member as
-    the audience of their personal agents' live content; once the offboarding
-    commits, that is nobody. Not before the commit: a lookup in between would
-    still see the owner and cache them again. Process-local, like the cache."""
+def _announce_departure_after_commit(
+    db: AsyncSession, tenant_id: uuid.UUID, member_id: uuid.UUID
+) -> None:
+    """Once the offboarding commits -- not before: a lookup in between would
+    still see the owner and cache them again --
+
+    - drop this process's cached live audience naming the member
+      (`realtime.audience`, R5; other processes re-read within its TTL), and
+    - tell every replica to close the member's open sockets
+      (`EventBus.publish_member_gone`): the socket checks `deleted_at` only at
+      connect, and a departed member must receive nothing more.
+    """
     from oc8.realtime.audience import forget_owner
+    from oc8.realtime import bus
     from oc8.realtime.emit import publish_after_commit
 
-    async def _forget() -> None:
+    async def _announce() -> None:
         forget_owner(member_id)
+        await bus.get_event_bus().publish_member_gone(tenant_id, member_id)
 
-    publish_after_commit(db, _forget)
+    publish_after_commit(db, _announce)
 
 
 async def stop_departments_owned_by(
@@ -785,7 +794,7 @@ async def stop_departments_owned_by(
     # gone. Without the lock a hire committing after this select would leave
     # a live agent behind.
     owned = await lock_departments_owned_by(db, tenant_id=tenant_id, member_id=member_id)
-    _forget_live_audience_after_commit(db, member_id)
+    _announce_departure_after_commit(db, tenant_id, member_id)
     agent_ids = list(
         (
             await db.execute(

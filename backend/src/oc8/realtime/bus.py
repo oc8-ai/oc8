@@ -29,6 +29,20 @@ def channel_for(tenant_id: uuid.UUID) -> str:
     return f"oc8:events:{tenant_id}"
 
 
+#: The key a control envelope starts with. Control envelopes travel on the
+#: tenant channel so every replica's `ConnectionManager` hears them, and are
+#: acted on there -- never forwarded to a browser.
+CONTROL_KEY = "oc8_control"
+#: Control: close every socket of `member_id` (they left the tenant).
+CONTROL_MEMBER_GONE = "member_gone"
+
+
+def control_envelope(kind: str, **fields: str) -> str:
+    """A control message, serialised with `CONTROL_KEY` first so the manager
+    recognises it before parsing anything else."""
+    return json.dumps({CONTROL_KEY: kind, **fields})
+
+
 class EventBus:
     def __init__(self, url: str) -> None:
         self._client: redis.Redis = redis.from_url(url, decode_responses=True)
@@ -80,6 +94,23 @@ class EventBus:
             # members (a member-owned card, a personal agent's) reaches their
             # subscriptions only -- its title and detail are theirs (spec A4).
             self._schedule_push(tenant_id, data, member_ids=list(member_ids))
+
+    async def publish_member_gone(self, tenant_id: uuid.UUID, member_id: uuid.UUID) -> None:
+        """Every replica closes `member_id`'s open sockets: a departed member
+        must stop receiving anything, and `ws.py` checks `deleted_at` only at
+        connect. Best-effort like every publish."""
+        try:
+            await self._client.publish(
+                channel_for(tenant_id),
+                control_envelope(CONTROL_MEMBER_GONE, member_id=str(member_id)),
+            )
+        except Exception:
+            logger.warning(
+                "member-gone publish failed (tenant=%s member=%s)",
+                tenant_id,
+                member_id,
+                exc_info=True,
+            )
 
     def _schedule_push(
         self,
