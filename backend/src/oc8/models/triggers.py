@@ -74,7 +74,7 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     access_fingerprint: Mapped[str | None] = mapped_column(Text)
     #: The policy snapshot the creator confirmed when this trigger's runs act
     #: through more than one account; NULL when it does not split.
-    access_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    access_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     #: kind='event' on a polled event only (`oc8.events.sources`): the
     #: organisation login the event is polled from. It is always the login the
     #: agent is fixed to for the event capa's tools, so the run's tools reach

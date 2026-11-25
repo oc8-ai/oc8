@@ -40,7 +40,7 @@ class AgentToolAccess(Base, PkMixin, TenantMixin, TimestampMixin):
     binding_fingerprint: Mapped[str | None] = mapped_column(Text)
     #: The policy snapshot the confirming person saw when this binding acts
     #: through more than one account; NULL when it does not split.
-    binding_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    binding_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (
         UniqueConstraint("agent_id", "tool_key", name="uq_agent_tool_access"),
