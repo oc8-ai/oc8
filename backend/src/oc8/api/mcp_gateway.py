@@ -786,7 +786,11 @@ async def _call_tool(
     if core_call and name in skill_tool_names:
         skill = next(s for s in assigned if s.tool_name == name)
         if skill in active:
-            return _tool_result(f"Skill '{skill.name}' is already active.")
+            # The procedure again -- same reasoning as in control_tools.py.
+            return _tool_result(
+                f"Skill '{skill.name}' is already active. Its procedure:\n\n"
+                f"{instruction_block(skill)}"
+            )
         await merge_context(
             db,
             run,
