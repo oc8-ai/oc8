@@ -538,3 +538,57 @@ def test_a_control_envelope_is_never_routed_to_a_socket() -> None:
         _Conn(ws=_NullWS(), member_id=str(uuid.uuid4()), feed=False),
     ):
         assert _route(conn, raw) == (None, None)
+
+
+async def test_a_personal_tool_call_after_the_requests_commit_reaches_only_the_owner(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through a real call site: the isolated control plane's POST .../tool
+    commits, then publishes `run.tool_call` -- on a session that lost its
+    tenant binding with that commit (`_bound_to` False), so the audience is
+    resolved from a fresh tenant session."""
+    from oc8.runtime.states import RunState
+    from tests.api.test_internal_agent import _post_tool
+
+    bus = _SpyBus()
+    monkeypatch.setattr(emit, "get_event_bus", lambda: bus)
+    monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: bus)
+    bound: list[bool] = []
+    real_bound = emit._bound_to
+
+    async def _spy_bound(db: Any, tenant_id: uuid.UUID) -> bool:
+        result = await real_bound(db, tenant_id)
+        bound.append(result)
+        return result
+
+    monkeypatch.setattr(emit, "_bound_to", _spy_bound)
+
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        pia = await db.get(m.Agent, w.pia)
+        assert pia is not None
+        pia.status, pia.narrowing, pia.definition, pia.presentation = "running", {}, {}, {}
+        run = m.AgentRun(
+            tenant_id=w.tenant,
+            agent_id=w.pia,
+            state=RunState.RUNNING.value,
+            context={"task": _SECRET},
+        )
+        db.add(run)
+        await db.flush()
+        run_id = run.id
+
+    code, body = await _post_tool(
+        w.tenant,
+        w.pia,
+        run_id,
+        "todo_write",
+        {"todos": [{"content": _SECRET, "status": "pending"}]},
+    )
+    assert code == 200, body
+    assert False in bound, "the post-commit publish ran on a bound session"
+    # The personal frame is closed, so the call itself is refused -- and the
+    # refusal (with the arguments) is still content, published after commit.
+    assert [e["type"] for e in _received(bus, w.owner)] == ["run.tool_call"]
+    assert _received(bus, w.admin) == []
+    assert bus.tenant_wide == []
