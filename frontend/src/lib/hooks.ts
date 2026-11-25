@@ -165,6 +165,8 @@ export interface Approval {
   proposalId?: string | null;
   // A Copilot direct-access offer or held write; null/absent for every other kind.
   directAccess?: DirectAccessInfo | null;
+  // The person's own pending write-tier card: it may offer "Always allow for me".
+  alwaysAllowOffered?: boolean;
 }
 
 /** A question an agent parked mid-run. The other half of the workspace queue. */
@@ -3209,6 +3211,35 @@ export function useRevokeChannelBinding() {
   return useMutation({
     mutationFn: (bindingId: string) => api.delete<void>(`/channels/bindings/${bindingId}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["channels", "bindings"] }),
+  });
+}
+
+// ---- Always-allowed tools ("always allow for me") ----------------------------
+// The caller's own rules, made on an approval card and revoked on the profile.
+
+export interface ToolAllowRule {
+  id: string;
+  agentId: string;
+  agentName: string;
+  /** null for a core tool, and once the connection is gone. */
+  connectionName: string | null;
+  toolKey: string;
+  createdAt: string;
+}
+
+export function useToolAllowRules() {
+  return useQuery({
+    queryKey: ["tool-allow-rules"],
+    queryFn: () => api.get<ToolAllowRule[]>("/tool-allow-rules"),
+  });
+}
+
+export function useRevokeToolAllowRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ruleId: string) =>
+      api.delete<void>(`/tool-allow-rules/${encodeURIComponent(ruleId)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tool-allow-rules"] }),
   });
 }
 
