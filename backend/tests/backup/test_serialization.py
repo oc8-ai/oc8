@@ -50,6 +50,10 @@ def _assert_round_trips(table: Table, row: dict[str, Any]) -> None:
     encoded = serialize_row(table, row)
     decoded = deserialize_row(table, encoded)
     for col in table.columns:
+        if col.computed is not None:
+            # A generated column is the database's to compute, never data.
+            assert col.name not in encoded and col.name not in decoded
+            continue
         original = row[col.name]
         got = decoded[col.name]
         if original is None:
@@ -185,3 +189,19 @@ def test_embeddings_encode_little_endian_regardless_of_host() -> None:
 
     assert base64.b64decode(encoded) == struct.pack("<3f", 1.0, -2.5, 0.0)
     assert _decode_value(encoded, vector_type) == [1.0, -2.5, 0.0]
+
+
+def test_a_generated_column_is_neither_written_nor_read() -> None:
+    """`kb_chunk.search_tsv` (0137) is computed from `content`: Postgres
+    refuses an INSERT that sets it, and an archive written before it existed
+    has no such key."""
+    table = table_by_name("kb_chunk")
+    assert table.c.search_tsv.computed is not None
+    row: dict[str, Any] = {c.name: None for c in table.columns}
+    row["search_tsv"] = "'invoice':1"
+
+    encoded = serialize_row(table, row)
+    assert "search_tsv" not in encoded
+
+    decoded = deserialize_row(table, encoded)
+    assert "search_tsv" not in decoded

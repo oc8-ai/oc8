@@ -1,14 +1,18 @@
 # backend/src/oc8/knowledge/retrieval.py
-"""Access-scoped KB retrieval (§11.4-11.5): cosine search over granted KBs.
+"""Access-scoped KB retrieval (§11.4-11.5): hybrid search over granted KBs.
 
-Internal bases query ``kb_chunk``. External bases (``index_type`` ≠
-``internal``) dispatch to a capa ``VectorIndex``. Both paths share grants,
+Internal bases query ``kb_chunk`` twice -- by cosine distance and by full text
+(``websearch_to_tsquery('simple', q)``, which finds an invoice number or an
+article code verbatim where cosine finds only what sounds alike). External
+bases (``index_type`` ≠ ``internal``) dispatch to a capa ``VectorIndex``. Every
+ranked list is fused with reciprocal rank fusion; all paths share grants,
 classification clearance, and the token budget.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import math
 import uuid
@@ -16,7 +20,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -39,6 +43,8 @@ logger = logging.getLogger(__name__)
 KB_TOKEN_BUDGET = 1200
 _CANDIDATE_LIMIT = 50
 SIMILAR_CHUNKS_LIMIT = 5
+#: Reciprocal rank fusion constant: a hit at rank r in a list adds 1 / (k + r).
+RRF_K = 60
 
 
 @dataclass
@@ -52,6 +58,35 @@ class _Hit:
     score: float
     local_only: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: The `kb_chunk` row of an internal hit; None for a remote one.
+    chunk_id: uuid.UUID | None = None
+    #: Set by `fuse_rrf`; what the budget trim ranks by. `score` stays cosine.
+    rank_score: float = 0.0
+
+
+def _identity(hit: _Hit) -> tuple[Any, ...]:
+    if hit.chunk_id is not None:
+        return ("chunk", hit.chunk_id)
+    digest = hashlib.sha1(hit.content.encode(), usedforsecurity=False).hexdigest()
+    return ("remote", hit.kb_id, hit.source_uri, digest)
+
+
+def fuse_rrf(ranked_lists: list[list[_Hit]], *, k: int = RRF_K) -> list[_Hit]:
+    """Reciprocal rank fusion: each hit scores the sum of 1 / (k + rank) over
+    the lists it appears in (rank from 1), and comes back once, highest first,
+    with `rank_score` set. A hit is its chunk for an internal base, and its
+    base, source and text for a remote one. Ties keep first-seen order, so
+    callers pass each base's vector list before its full-text list and a tie
+    goes to the better vector rank."""
+    fused: dict[tuple[Any, ...], _Hit] = {}
+    for ranked in ranked_lists:
+        for rank, hit in enumerate(ranked, start=1):
+            key = _identity(hit)
+            kept = fused.setdefault(key, hit)
+            if kept is hit:
+                hit.rank_score = 0.0
+            kept.rank_score += 1.0 / (k + rank)
+    return sorted(fused.values(), key=lambda h: h.rank_score, reverse=True)
 
 
 async def granted_kb_ids(db: AsyncSession, *, agent: m.Agent) -> set[uuid.UUID]:
@@ -77,7 +112,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def _trim_hits_to_budget(hits: list[_Hit], token_budget: int) -> list[_Hit]:
-    scored = sorted(hits, key=lambda h: h.score, reverse=True)
+    scored = sorted(hits, key=lambda h: h.rank_score, reverse=True)
     out: list[_Hit] = []
     used = 0
     for h in scored:
@@ -139,22 +174,39 @@ async def _search_internal(
     tenant_id: uuid.UUID,
     kb: m.KnowledgeBase,
     query_embedding: list[float],
+    query_text: str,
     only_sources: Mapping[str, str] | None = None,
-) -> list[_Hit]:
+) -> tuple[list[_Hit], list[_Hit]]:
+    """(top by cosine, top by full text), each at most `_CANDIDATE_LIMIT` and
+    under the same filters. The full-text list is empty for a question with
+    no words in it (`#`, `--`, blank)."""
     stmt = live_chunks().where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id == kb.id)
     if only_sources is not None:
         # In the query, so other documents cannot crowd these out of the
         # candidate limit.
         stmt = stmt.where(m.KbChunk.source_uri.in_(sorted(only_sources)))
-    stmt = stmt.order_by(m.KbChunk.embedding.cosine_distance(query_embedding)).limit(
+    by_vector = stmt.order_by(m.KbChunk.embedding.cosine_distance(query_embedding)).limit(
         _CANDIDATE_LIMIT
     )
-    chunks = list((await db.execute(stmt)).scalars().all())
+    vector_chunks = list((await db.execute(by_vector)).scalars().all())
+    text_chunks: list[m.KbChunk] = []
+    if query_text.strip():
+        tsq = func.websearch_to_tsquery("simple", query_text)
+        # `numnode` is 0 for a query without lexemes; the planner folds the
+        # constant, so such a query reads no rows at all.
+        by_text = (
+            stmt.where(func.numnode(tsq) > 0, m.KbChunk.search_tsv.bool_op("@@")(tsq))
+            .order_by(func.ts_rank_cd(m.KbChunk.search_tsv, tsq).desc(), m.KbChunk.id)
+            .limit(_CANDIDATE_LIMIT)
+        )
+        text_chunks = list((await db.execute(by_text)).scalars().all())
     # A chunk's own label may be looser than its source's or its base's: chunks
     # stored before ingest copied those labels read `internal`, and a label
     # changed later on the base or source is not rewritten into every chunk.
     # Judge each hit by the strictest of the three.
-    source_ids = {c.data_source_id for c in chunks if c.data_source_id is not None}
+    source_ids = {
+        c.data_source_id for c in (*vector_chunks, *text_chunks) if c.data_source_id is not None
+    }
     source_labels: dict[uuid.UUID, str] = {}
     if source_ids:
         source_labels = {
@@ -167,26 +219,26 @@ async def _search_internal(
                 )
             ).all()
         }
-    hits: list[_Hit] = []
-    for c in chunks:
+
+    def to_hit(c: m.KbChunk) -> _Hit:
         score = 0.0
         if c.embedding is not None:
             score = cosine_similarity(c.embedding, query_embedding)
-        hits.append(
-            _Hit(
-                kb_id=kb.id,
-                content=c.content,
-                source_uri=c.source_uri,
-                classification=strictest(
-                    c.classification,
-                    kb.classification,
-                    source_labels.get(c.data_source_id) if c.data_source_id else None,
-                ),
-                score=score,
-                local_only=kb.local_only,
-            )
+        return _Hit(
+            kb_id=kb.id,
+            content=c.content,
+            source_uri=c.source_uri,
+            classification=strictest(
+                c.classification,
+                kb.classification,
+                source_labels.get(c.data_source_id) if c.data_source_id else None,
+            ),
+            score=score,
+            local_only=kb.local_only,
+            chunk_id=c.id,
         )
-    return hits
+
+    return [to_hit(c) for c in vector_chunks], [to_hit(c) for c in text_chunks]
 
 
 async def _search_external(
@@ -321,7 +373,9 @@ async def retrieve_kb_context(
         return "", False
 
     local_agent = await agent_runs_locally(db, agent, model_locality)
-    all_hits: list[_Hit] = []
+    # Each internal base's vector list, then its full-text list; each external
+    # base's one remote list. Fused once, across bases, before any filter.
+    ranked_lists: list[list[_Hit]] = []
     for kb in bases:
         query_embedding = await _embed_for_kb(
             db,
@@ -335,17 +389,18 @@ async def retrieve_kb_context(
             continue
         index_type = kb.index_type or INTERNAL_INDEX_TYPE
         if index_type == INTERNAL_INDEX_TYPE:
-            all_hits.extend(
+            ranked_lists.extend(
                 await _search_internal(
                     db,
                     tenant_id=tenant_id,
                     kb=kb,
                     query_embedding=query_embedding,
+                    query_text=query_text,
                     only_sources=only_sources,
                 )
             )
         else:
-            all_hits.extend(
+            ranked_lists.append(
                 await _search_external(
                     db,
                     tenant_id=tenant_id,
@@ -355,6 +410,7 @@ async def retrieve_kb_context(
                 )
             )
 
+    all_hits = fuse_rrf(ranked_lists)
     if only_sources is not None:
         all_hits = [h for h in all_hits if h.source_uri in only_sources]
     if not all_hits:

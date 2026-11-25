@@ -7,8 +7,17 @@ import uuid
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import CheckConstraint, DateTime, Index, Text, UniqueConstraint, Uuid, text
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import (
+    CheckConstraint,
+    Computed,
+    DateTime,
+    Index,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -164,6 +173,14 @@ class KbChunk(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     kb_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM))
+    #: Full-text vector of `content` (migration 0137), computed by Postgres and
+    #: never written: retrieval ranks by it next to `embedding`. Deferred, so
+    #: loading a chunk does not carry it along.
+    search_tsv: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', coalesce(content, ''))", persisted=True),
+        deferred=True,
+    )
     source_uri: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict

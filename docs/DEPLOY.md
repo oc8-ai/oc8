@@ -343,6 +343,8 @@ connections themselves.
   shared ingestion stream, and an older ingestion worker cannot run them.
   `docker compose up -d --build` replaces both at once; with Helm or any
   rolling rollout, update the ingestion workers first.
+- **Upgrading to 0.20.0:** 0137 rewrites kb_chunk once (generated full-text
+  column); expect a few minutes on large knowledge bases.
 - **The four backend processes** are one image with different commands:
   `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
   restart them independently with `docker compose restart <service>`.
