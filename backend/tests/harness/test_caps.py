@@ -64,6 +64,23 @@ def test_a_non_positive_window_is_ignored() -> None:
     assert resolve_caps({"context_window_tokens": True}) == ModelCaps()
 
 
+def test_the_window_set_in_the_model_settings_is_honoured() -> None:
+    """The model API and settings page store the window as `context_window`;
+    reading only `context_window_tokens` left a window set there without
+    effect on compaction and chat checkpoints."""
+    assert resolve_caps({"context_window": 32_000}).context_window_tokens == 32_000
+    # The harness's own key wins when both are set.
+    both = {"context_window_tokens": 200_000, "context_window": 32_000}
+    assert resolve_caps(both).context_window_tokens == 200_000
+    # Same validation as the harness's key: a bad one falls back to the other.
+    assert resolve_caps({"context_window_tokens": 0, "context_window": 32_000}) == ModelCaps(
+        context_window_tokens=32_000
+    )
+    assert resolve_caps({"context_window": True}) == ModelCaps()
+    assert resolve_caps({"context_window": 0}) == ModelCaps()
+    assert resolve_caps({"context_window": "big"}) == ModelCaps()
+
+
 def test_caps_are_immutable() -> None:
     caps = ModelCaps()
     try:
