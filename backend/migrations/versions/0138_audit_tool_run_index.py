@@ -18,14 +18,14 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-from oc8.models.ops import AuditEvent
-
 revision: str = "0138"
 down_revision: str | None = "0137"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_TABLE = AuditEvent.__tablename__
+# A literal, never the model's name: a later rename of the model must not
+# change what this historical revision does.
+_TABLE = "audit_event"
 _INDEXES = {
     "ix_audit_event_tool_run": "run_id",
     "ix_audit_event_tool_chat": "chat_session_id",
