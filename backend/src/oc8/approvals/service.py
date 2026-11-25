@@ -40,9 +40,10 @@ from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
 from oc8.authz.scope import AgentActor, DecisionActor, HumanActor
+from oc8.db.session import tenant_session
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.notifications.events import on_approval_decided
-from oc8.realtime.emit import publish_after_commit, record_activity
+from oc8.realtime.emit import _bound_to, publish_after_commit, record_activity
 
 Verdict = Literal["approve", "reject"]
 
@@ -474,10 +475,18 @@ async def publish_created(
     """
     if is_member_owned(approval):
         return
-    kind, _owner = await card_department(db, approval.department_id)
+    tenant_id, approval_id = approval.tenant_id, approval.id
+    kind: str | None = None
+    if approval.department_id is not None:
+        kind = await _department_kind_or_none(db, tenant_id, approval.department_id)
+        if kind is None:
+            # Unreadable is not "no department": it could be a personal one.
+            logger.warning(
+                "could not read the department of approval %s; publishing nothing", approval_id
+            )
+            return
     if is_personal_card(approval.action_type, department_kind=kind):
         return
-    tenant_id, approval_id = approval.tenant_id, approval.id
     event = (
         data
         if data is not None
@@ -508,6 +517,28 @@ async def publish_created(
             logger.warning("could not announce approval %s", approval_id, exc_info=True)
 
     publish_after_commit(db, _publish_quietly)
+
+
+async def _department_kind_or_none(
+    db: AsyncSession, tenant_id: uuid.UUID, department_id: uuid.UUID
+) -> str | None:
+    """The kind of the department a card is filed in, or None when it cannot
+    be read: from the caller's session while it is bound to the tenant (it may
+    hold the card uncommitted), else from a fresh tenant session (a caller that
+    committed has lost its binding, and RLS would show it nothing or raise) --
+    the pattern of `realtime.emit._audience_for`. A lookup that fails answers
+    None, and `publish_created` then publishes nothing."""
+    try:
+        if await _bound_to(db, tenant_id):
+            # A savepoint, so a failed read does not abort the caller's
+            # transaction.
+            async with db.begin_nested():
+                return (await card_department(db, department_id))[0]
+        async with tenant_session(tenant_id) as fresh:
+            return (await card_department(fresh, department_id))[0]
+    except Exception:
+        logger.warning("department %s lookup failed", department_id, exc_info=True)
+        return None
 
 
 async def _member_present(db: AsyncSession, tenant_id: uuid.UUID, member_id: uuid.UUID) -> bool:
