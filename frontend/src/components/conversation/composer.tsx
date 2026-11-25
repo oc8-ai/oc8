@@ -89,6 +89,11 @@ export interface ComposerProps {
   /** While busy, a send goes to the running run (steering): Send stays
    *  beside Stop, and Enter sends. */
   sendWhileBusy?: boolean;
+  /** While busy, "Send after" queues the text as the next message once the
+   *  answer is done (spec §5.5). With `sendWhileBusy` the plain Send becomes
+   *  "Steer now" beside it; Enter takes "Steer now" when it is offered,
+   *  otherwise "Send after". */
+  onSendAfter?: (submit: ComposerSubmit) => void;
   agentItems?: SigilItem[];
   onAddressAgent?: (agentId: string) => void;
   /** C4: "To the running run …" */
@@ -128,6 +133,10 @@ function maxMb(): number {
 // 44 px on touch screens, 36 px with a pointer (DESIGN.md, Buttons).
 const ICON_BUTTON =
   "grid size-11 place-items-center sm:size-9 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+
+// The two labelled sends while an answer runs: 44 px tall on touch screens.
+const TEXT_BUTTON =
+  "inline-flex h-11 shrink-0 items-center rounded-md px-3 text-xs font-medium sm:h-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 export function Composer(props: ComposerProps) {
   const t = useT();
@@ -357,10 +366,23 @@ export function Composer(props: ComposerProps) {
     }
   }
 
-  function submit() {
+  /** `after`: the "Send after" button, or Enter while it is the only send. */
+  function submit(after = props.busy && !!props.onSendAfter && !props.sendWhileBusy) {
     const text = props.draft.trim();
-    const steering = props.busy && !!props.sendWhileBusy;
-    if (!text || props.disabled || (props.busy && !steering) || uploading > 0) return;
+    const queueing = props.busy && after && !!props.onSendAfter;
+    const steering = props.busy && !queueing && !!props.sendWhileBusy;
+    if (!text || props.disabled || (props.busy && !steering && !queueing) || uploading > 0) {
+      return;
+    }
+    if (queueing && (attachments.length > 0 || refs.length > 0)) {
+      setError(
+        t(
+          "A message for after the answer is text only. Remove the attachments, or send them once it's done.",
+          "Eine Nachricht für nach der Antwort geht nur als Text. Entfern die Anhänge oder schick sie, wenn sie fertig ist.",
+        ),
+      );
+      return;
+    }
     if (steering && (attachments.length > 0 || refs.length > 0)) {
       setError(
         t(
@@ -397,7 +419,9 @@ export function Composer(props: ComposerProps) {
       props.onDraftChange("");
       return;
     }
-    props.onSend({ text, attachmentIds: attachments.map((a) => a.id), contextRefs: refs });
+    const sent = { text, attachmentIds: attachments.map((a) => a.id), contextRefs: refs };
+    if (queueing) props.onSendAfter?.(sent);
+    else props.onSend(sent);
     setAttachments([]);
     setRefs([]);
     setError(null);
@@ -641,10 +665,52 @@ export function Composer(props: ComposerProps) {
               <Square className="size-3.5" aria-hidden />
             </button>
           )}
-          {props.busy && !props.sendWhileBusy ? null : (
+          {props.busy && props.onSendAfter && !props.disabled ? (
+            // Two sends while the answer runs (spec §5.5): never a plain one.
+            <>
+              {props.sendWhileBusy && (
+                <button
+                  type="button"
+                  onClick={() => submit(false)}
+                  disabled={!canSend}
+                  title={t(
+                    "Goes to the running answer before its next step",
+                    "Geht vor dem nächsten Schritt an die laufende Antwort",
+                  )}
+                  className={cn(
+                    TEXT_BUTTON,
+                    canSend
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {t("Steer now", "Jetzt einlenken")}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => submit(true)}
+                disabled={!canSend}
+                title={t(
+                  "Becomes the next message when the answer is done",
+                  "Wird die nächste Nachricht, wenn die Antwort fertig ist",
+                )}
+                className={cn(
+                  TEXT_BUTTON,
+                  !canSend
+                    ? "bg-muted text-muted-foreground"
+                    : props.sendWhileBusy
+                      ? "border border-border text-foreground hover:bg-muted"
+                      : "bg-primary text-primary-foreground",
+                )}
+              >
+                {t("Send after", "Danach senden")}
+              </button>
+            </>
+          ) : props.busy && !props.sendWhileBusy ? null : (
             <button
               type="button"
-              onClick={submit}
+              onClick={() => submit()}
               disabled={!canSend}
               aria-label={props.sendLabel ?? t("Send", "Senden")}
               className={cn(

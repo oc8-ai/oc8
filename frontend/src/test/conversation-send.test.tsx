@@ -4,7 +4,7 @@
 // status with "Send again" (Ruling 53), the local budget chip, and Stop and
 // regenerate failures shown inline.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const conv = vi.hoisted(() => ({
@@ -51,54 +51,65 @@ vi.mock("@/lib/governance-hooks", () => ({
   useMay: () => () => false,
   useMayManageAgent: () => () => false,
 }));
-vi.mock("@/lib/conversation-api", async (orig) => ({
-  ...(await orig<typeof import("@/lib/conversation-api")>()),
-  useRunSteering: (runId: string | null) => {
-    steering.asked.push(runId);
-    return { data: runId ? steering.value : undefined };
-  },
-  // The Live tab's timeline: the member's own chat runs are never on it
-  // (they are the session's turns), so it names no running run.
-  useLiveTimeline: () => ({
-    data: { sessionId: "s", mayViewAllRuns: false, nextBefore: null, items: [] },
-    error: null,
-    hasOlder: false,
-    loadingOlder: false,
-    fetchOlder: vi.fn(),
-  }),
-  useSessionModels: (sessionId: string | null, _enabled: boolean, agentId?: string) => ({
-    // A chat that does not exist yet lists its agent's options (Ruling 57).
-    data:
-      sessionId || agentId
-        ? [
-            {
-              id: null,
-              label: "Auto",
-              provider: "",
-              locality: "",
-              isDefault: false,
-              supportsReasoning: thinks.auto ?? thinks.value,
-              defaultEffort: "balanced",
-            },
-            {
-              id: "m2",
-              label: "Llama",
-              provider: "ollama",
-              locality: "local",
-              isDefault: false,
-              supportsReasoning: thinks.value,
-              defaultEffort: "balanced",
-            },
-          ]
-        : [],
-    isLoading: false,
-  }),
-}));
+vi.mock("@/lib/conversation-api", async (orig) => {
+  const { useQuery: useQueryReal } = await import("@tanstack/react-query");
+  return {
+    ...(await orig<typeof import("@/lib/conversation-api")>()),
+    // The server's answer is `steering.value`, held in the real query cache, so
+    // what the steering mutations write to the cache shows on screen.
+    useRunSteering: (runId: string | null) => {
+      steering.asked.push(runId);
+      return useQueryReal({
+        queryKey: ["run-steering", runId ?? ""],
+        queryFn: async () => steering.value ?? null,
+        initialData: runId ? (steering.value as object | undefined) : undefined,
+        enabled: !!runId,
+      });
+    },
+    // The Live tab's timeline: the member's own chat runs are never on it
+    // (they are the session's turns), so it names no running run.
+    useLiveTimeline: () => ({
+      data: { sessionId: "s", mayViewAllRuns: false, nextBefore: null, items: [] },
+      error: null,
+      hasOlder: false,
+      loadingOlder: false,
+      fetchOlder: vi.fn(),
+    }),
+    useSessionModels: (sessionId: string | null, _enabled: boolean, agentId?: string) => ({
+      // A chat that does not exist yet lists its agent's options (Ruling 57).
+      data:
+        sessionId || agentId
+          ? [
+              {
+                id: null,
+                label: "Auto",
+                provider: "",
+                locality: "",
+                isDefault: false,
+                supportsReasoning: thinks.auto ?? thinks.value,
+                defaultEffort: "balanced",
+              },
+              {
+                id: "m2",
+                label: "Llama",
+                provider: "ollama",
+                locality: "local",
+                isDefault: false,
+                supportsReasoning: thinks.value,
+                defaultEffort: "balanced",
+              },
+            ]
+          : [],
+      isLoading: false,
+    }),
+  };
+});
 
 import { Conversation } from "@/components/conversation";
 import { LiveTimeline } from "@/components/conversation/live-timeline";
 import { api, ApiError } from "@/lib/api";
 import { appendMessage, chatKeys, type ChatMessageDTO } from "@/lib/hooks-chat";
+import { applyEvent } from "@/lib/live/apply-event";
 
 function message(id: string, role: "user" | "assistant", over: Record<string, unknown> = {}) {
   return {
@@ -336,63 +347,240 @@ describe("writing to the own running answer (Ruling 52)", () => {
     conv.liveRunIds = ["r1"];
   });
 
-  it("sends to POST /runs/{id}/inputs with the hint, and Stop stays", async () => {
-    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
-    const post = vi.spyOn(api, "post").mockResolvedValue({
+  function input(over: Record<string, unknown> = {}) {
+    return {
       id: "i1",
       text: "only March",
       authorName: "Me",
       createdAt: "",
       consumedAt: null,
       consumedStep: null,
-    });
+      delivery: "steer",
+      ...over,
+    };
+  }
+
+  it('while an answer runs the composer shows "Steer now" and "Send after" and no plain send', () => {
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
     mount("s");
-    expect(screen.getByText("Goes to the running answer")).toBeInTheDocument();
+    const steer = screen.getByRole("button", { name: "Steer now" });
+    const after = screen.getByRole("button", { name: "Send after" });
+    expect(steer).toHaveAttribute("title", "Goes to the running answer before its next step");
+    expect(after).toHaveAttribute("title", "Becomes the next message when the answer is done");
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
     expect(screen.getByRole("button", { name: "Stop the answer" })).toBeInTheDocument();
-    type("only March");
-    await waitFor(() =>
-      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", { text: "only March" }),
-    );
-    expect(post).not.toHaveBeenCalledWith("/runs/r1/stop");
-    expect(send).not.toHaveBeenCalled();
     // Only the run being steered is asked for its steering state.
     expect(new Set(steering.asked.filter(Boolean))).toEqual(new Set(["r1"]));
   });
 
-  it("in the Live tab, sends to the member's own running run (E2E A)", async () => {
+  it('"Steer now" posts delivery steer, and Enter takes it', async () => {
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    const post = vi.spyOn(api, "post").mockResolvedValue(input());
+    mount("s");
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "only March" } });
+    fireEvent.click(screen.getByRole("button", { name: "Steer now" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", {
+        text: "only March",
+        delivery: "steer",
+      }),
+    );
+    type("and April");
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", {
+        text: "and April",
+        delivery: "steer",
+      }),
+    );
+    expect(post).not.toHaveBeenCalledWith("/runs/r1/stop");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('"Send after" posts delivery next_turn', async () => {
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    const queuedInput = input({ id: "q1", text: "then April", delivery: "next_turn" });
+    const post = vi.spyOn(api, "post").mockImplementation(async () => {
+      steering.value = { mayWrite: true, acceptsInputs: true, inputs: [queuedInput] };
+      return queuedInput;
+    });
+    mount("s");
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "then April" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send after" }));
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", {
+        text: "then April",
+        delivery: "next_turn",
+      }),
+    );
+    expect(box).toHaveValue("");
+    expect(send).not.toHaveBeenCalled();
+    // It is listed as waiting under the composer.
+    const queued = await screen.findByRole("list", { name: "Queued messages" });
+    expect(queued).toHaveTextContent("then April");
+  });
+
+  it("sends a message for after a run that has just finished as an ordinary message", async () => {
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    vi.spyOn(api, "post").mockRejectedValue(new ApiError("run has already finished", 409));
+    send.mockResolvedValue(message("u2", "user", { content: "then April" }));
+    mount("s");
+    const box = screen.getByRole("textbox", { name: /Message/ });
+    fireEvent.change(box, { target: { value: "then April" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send after" }));
+    await waitFor(() =>
+      expect(send).toHaveBeenCalledWith({
+        message: "then April",
+        attachmentIds: [],
+        contextRefs: [],
+      }),
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it('a runtime that takes no inputs shows only "Send after"', async () => {
+    steering.value = { mayWrite: true, acceptsInputs: false, inputs: [] };
+    const post = vi.spyOn(api, "post").mockResolvedValue(input({ delivery: "next_turn" }));
+    mount("s");
+    expect(screen.queryByRole("button", { name: "Steer now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Send after" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop the answer" })).toBeInTheDocument();
+    // Enter takes "Send after" when there is no "Steer now".
+    type("then April");
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", {
+        text: "then April",
+        delivery: "next_turn",
+      }),
+    );
+  });
+
+  it("queued messages are listed with edit and cancel", async () => {
+    steering.value = {
+      mayWrite: true,
+      acceptsInputs: true,
+      inputs: [
+        input({ id: "s1", text: "only March" }),
+        input({ id: "q1", text: "then April", delivery: "next_turn" }),
+        input({ id: "q0", text: "withdrawn", delivery: "next_turn", consumedStep: -3 }),
+      ],
+    };
+    const patch = vi.spyOn(api, "patch").mockImplementation(async () => {
+      const edited = input({ id: "q1", text: "then May", delivery: "next_turn" });
+      steering.value = { mayWrite: true, acceptsInputs: true, inputs: [edited] };
+      return edited;
+    });
+    mount("s");
+    const queued = screen.getByRole("list", { name: "Queued messages" });
+    expect(queued).toHaveTextContent("then April");
+    // A steering message is not queued, and a cancelled one is gone.
+    expect(queued).not.toHaveTextContent("only March");
+    expect(screen.queryByText("withdrawn")).toBeNull();
+    fireEvent.click(within(queued).getByRole("button", { name: "Edit" }));
+    const edit = within(queued).getByRole("textbox", { name: "Edit queued message" });
+    fireEvent.change(edit, { target: { value: "then May" } });
+    fireEvent.click(within(queued).getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith("/runs/r1/inputs/q1", { text: "then May" }),
+    );
+    expect(await within(queued).findByText("then May")).toBeInTheDocument();
+  });
+
+  it("cancel removes it from the list", async () => {
+    steering.value = {
+      mayWrite: true,
+      acceptsInputs: true,
+      inputs: [input({ id: "q1", text: "then April", delivery: "next_turn" })],
+    };
+    const del = vi.spyOn(api, "delete").mockImplementation(async () => {
+      // What the server now answers: the input stamped cancelled.
+      steering.value = {
+        mayWrite: true,
+        acceptsInputs: true,
+        inputs: [input({ id: "q1", text: "then April", delivery: "next_turn", consumedStep: -3 })],
+      };
+      return undefined;
+    });
+    mount("s");
+    const queued = screen.getByRole("list", { name: "Queued messages" });
+    fireEvent.click(within(queued).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(del).toHaveBeenCalledWith("/runs/r1/inputs/q1"));
+    await waitFor(() => expect(screen.queryByRole("list", { name: "Queued messages" })).toBeNull());
+    expect(screen.queryByText("then April")).toBeNull();
+  });
+
+  it("after the run ends the queued message appears as the next turn", async () => {
+    steering.value = {
+      mayWrite: true,
+      acceptsInputs: true,
+      inputs: [input({ id: "q1", text: "then April", delivery: "next_turn" })],
+    };
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = () => (
+      <QueryClientProvider client={qc}>
+        <Conversation agentId="a" sessionId="s" onSessionChange={vi.fn()} variant="full" />
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view());
+    expect(screen.getByRole("list", { name: "Queued messages" })).toHaveTextContent("then April");
+    // The run ends; its queued input became a turn, announced by
+    // "chat.message_created" -- the transcript refetch brings it.
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyEvent(qc, {
+      id: "e1",
+      type: "chat.message_created",
+      data: { session_id: "s", message_id: "u2" },
+    } as never);
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["chat", "messages", "s"] });
+    const turn = message("u2", "user", { content: "then April" });
+    conv.session = detail({ activeRuns: [{ runId: "r2", replyToId: "u2", state: "queued" }] });
+    conv.messages = [message("u1", "user"), message("a1", "assistant"), turn];
+    conv.turns = [
+      { kind: "user", key: "u1", message: message("u1", "user") },
+      {
+        kind: "assistant",
+        key: "answer-u1",
+        replyToId: "u1",
+        variants: [message("a1", "assistant")],
+        liveRunId: null,
+      },
+      { kind: "user", key: "u2", message: turn },
+      { kind: "assistant", key: "answer-u2", replyToId: "u2", variants: [], liveRunId: "r2" },
+    ];
+    conv.liveRunIds = ["r2"];
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    rerender(view());
+    expect(screen.queryByRole("list", { name: "Queued messages" })).toBeNull();
+    expect(screen.getAllByText("then April")).toHaveLength(1);
+  });
+
+  it("the live tab keeps its own send", async () => {
     conv.session = detail({
       kind: "live",
       activeRuns: [{ runId: "r1", replyToId: "u1", state: "running" }],
     });
     steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
-    const post = vi.spyOn(api, "post").mockResolvedValue({
-      id: "i1",
-      text: "only March",
-      authorName: "Me",
-      createdAt: "",
-      consumedAt: null,
-      consumedStep: null,
-    });
+    const post = vi.spyOn(api, "post").mockResolvedValue(input());
     render(
       <QueryClientProvider client={new QueryClient()}>
         <LiveTimeline agentId="a" departmentId="d" promptStarters={[]} />
       </QueryClientProvider>,
     );
     expect(screen.getByText("Goes to the running answer")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Steer now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send after" })).toBeNull();
     const box = type("only March");
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", { text: "only March" }),
+      expect(post).toHaveBeenCalledWith("/runs/r1/inputs", {
+        text: "only March",
+        delivery: "steer",
+      }),
     );
     expect(send).not.toHaveBeenCalled();
     expect(box).toHaveValue("");
-  });
-
-  it("keeps Send away while the run takes no messages", () => {
-    steering.value = { mayWrite: true, acceptsInputs: false, inputs: [] };
-    mount("s");
-    expect(screen.queryByText("Goes to the running answer")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Send" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Stop the answer" })).toBeInTheDocument();
   });
 
   it("shows a failed Stop inline", async () => {
@@ -530,5 +718,49 @@ describe("a sent message shows once (I2)", () => {
     ({ qc } = mount(null));
     type("hi");
     await waitFor(() => expect(qc?.getQueryData(chatKeys.messages("new"))).toEqual([sent]));
+  });
+});
+
+describe("a send racing a running answer (spec 5.5)", () => {
+  it("is queued behind it (202), never shown as a turn of its own", async () => {
+    conv.session = detail();
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    send.mockResolvedValue({
+      queued: true,
+      runId: "r9",
+      input: {
+        id: "q1",
+        text: "then April",
+        authorName: "Me",
+        createdAt: "",
+        consumedAt: null,
+        consumedStep: null,
+        delivery: "next_turn",
+      },
+    });
+    const { qc } = mount("s");
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const box = type("then April");
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    // The run it waits on and the chat (now busy) are fetched again, so it
+    // is listed under the composer.
+    await waitFor(() => expect(spy).toHaveBeenCalledWith({ queryKey: ["run-steering", "r9"] }));
+    expect(spy).toHaveBeenCalledWith({ queryKey: ["chat", "session", "s"] });
+    expect(box).toHaveValue("");
+    expect(screen.queryByRole("alert")).toBeNull();
+    // No outbox bubble pretends it is a turn.
+    expect(screen.queryByText("then April")).toBeNull();
+  });
+
+  it("words an attachment refused while an answer runs", async () => {
+    conv.session = detail();
+    send.mockRejectedValue(
+      new ApiError("An answer is still running — send text only, or wait.", 409),
+    );
+    mount("s");
+    type("hello");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "An answer is still running — send text only, or wait.",
+    );
   });
 });

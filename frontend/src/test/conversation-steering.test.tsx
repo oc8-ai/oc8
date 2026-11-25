@@ -198,6 +198,93 @@ describe("run steering", () => {
     expect(screen.getByText("Waiting for the next step")).toBeInTheDocument();
   });
 
+  it("lists under the answer only what steered it: queued and cancelled messages are not", () => {
+    steering.value = {
+      mayWrite: true,
+      acceptsInputs: true,
+      inputs: [
+        {
+          id: "1",
+          text: "skip 4",
+          authorName: "Alice",
+          createdAt: "",
+          consumedAt: null,
+          consumedStep: null,
+          delivery: "steer",
+        },
+        {
+          id: "2",
+          text: "then April",
+          authorName: "Alice",
+          createdAt: "",
+          consumedAt: null,
+          consumedStep: null,
+          delivery: "next_turn",
+        },
+        {
+          id: "3",
+          text: "withdrawn",
+          authorName: "Alice",
+          createdAt: "",
+          consumedAt: "x",
+          consumedStep: -3,
+          delivery: "next_turn",
+        },
+      ],
+    };
+    render(<RunInputs runId="r1" runState="running" />);
+    expect(screen.getByText("skip 4")).toBeInTheDocument();
+    expect(screen.queryByText("then April")).toBeNull();
+    expect(screen.queryByText("withdrawn")).toBeNull();
+  });
+
+  it("lists the queued messages still waiting, each with edit and cancel", () => {
+    steering.value = {
+      mayWrite: true,
+      acceptsInputs: true,
+      inputs: [
+        {
+          id: "1",
+          text: "skip 4",
+          authorName: "Alice",
+          createdAt: "",
+          consumedAt: null,
+          consumedStep: null,
+          delivery: "steer",
+        },
+        {
+          id: "2",
+          text: "then April",
+          authorName: "Alice",
+          createdAt: "",
+          consumedAt: null,
+          consumedStep: null,
+          delivery: "next_turn",
+        },
+        {
+          id: "3",
+          text: "withdrawn",
+          authorName: "Alice",
+          createdAt: "",
+          consumedAt: "x",
+          consumedStep: -3,
+          delivery: "next_turn",
+        },
+      ],
+    };
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RunInputs runId="r1" runState="running" queued />
+      </QueryClientProvider>,
+    );
+    const list = screen.getByRole("list", { name: "Queued messages" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    expect(list).toHaveTextContent("then April");
+    expect(list).toHaveTextContent("Sent when the answer is done");
+    expect(within(list).getByRole("button", { name: "Edit" })).toBeInTheDocument();
+    expect(within(list).getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
   it("words each refusal for an inline error", () => {
     expect(runInputError(new ApiError("run has already finished", 409), t)).toBe(
       "The run has already finished.",

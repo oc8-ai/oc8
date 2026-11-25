@@ -7,6 +7,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, retryUnlessRefused, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
 import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
+import type { QueuedTurnDTO } from "@/lib/conversation-api";
 import type { LiveReasoning, RunComponentDTO } from "@/lib/hooks";
 
 export type { FileAttachmentDTO } from "@/lib/api";
@@ -193,6 +194,12 @@ export function appendMessage(
   return [...(prev ?? []), message];
 }
 
+/** A chat send's answer: the stored message (201), or, while an answer still
+ *  runs, the message queued behind it (202, spec §5.5). */
+export function isQueuedTurn(sent: ChatMessageDTO | QueuedTurnDTO): sent is QueuedTurnDTO {
+  return "queued" in sent && sent.queued === true;
+}
+
 export function useSendChatMessage(sessionId: string) {
   const qc = useQueryClient();
   return useMutation({
@@ -205,12 +212,13 @@ export function useSendChatMessage(sessionId: string) {
       attachmentIds?: string[];
       contextRefs?: { kind: string; id: string }[];
     }) =>
-      api.post<ChatMessageDTO>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
-        message,
-        attachmentIds,
-        contextRefs,
-      }),
+      api.post<ChatMessageDTO | QueuedTurnDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
+        { message, attachmentIds, contextRefs },
+      ),
     onSuccess: (message) => {
+      // Queued behind a running answer (202): no message in the transcript yet.
+      if (isQueuedTurn(message)) return;
       qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
         appendMessage(prev, message),
       );

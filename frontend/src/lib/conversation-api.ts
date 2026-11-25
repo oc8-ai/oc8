@@ -584,6 +584,19 @@ export interface RunInputDTO {
   createdAt: string;
   consumedAt: string | null;
   consumedStep: number | null;
+  /** `steer`: read at the run's next step. `next_turn`: queued, it becomes
+   *  the chat's next message when the answer is done (spec §5.5). */
+  delivery: RunInputDelivery;
+}
+
+export type RunInputDelivery = "steer" | "next_turn";
+
+/** A chat send while an answer still runs (202): not a turn yet, but a
+ *  `next_turn` input on that run (`runId`). */
+export interface QueuedTurnDTO {
+  queued: true;
+  runId: string;
+  input: RunInputDTO;
 }
 
 export interface RunSteeringDTO {
@@ -676,19 +689,64 @@ export function useRunSteering(runId: string | null, cachedId: string | null = r
   });
 }
 
-/** Write to a running run. Refusals (409 finished / takes no messages, 422
- *  too long, 429 too many waiting) come back as ApiError -- word them with
- *  `runInputError` (components/conversation/run-steering.tsx). */
+/** The run's steering cache with `input` in it, added or replaced. */
+export function withRunInput(
+  prev: RunSteeringDTO | undefined,
+  input: RunInputDTO,
+): RunSteeringDTO | undefined {
+  if (!prev) return prev;
+  return prev.inputs.some((i) => i.id === input.id)
+    ? { ...prev, inputs: prev.inputs.map((i) => (i.id === input.id ? input : i)) }
+    : { ...prev, inputs: [...prev.inputs, input] };
+}
+
+/** Write to a running run: `steer` reaches it before its next step,
+ *  `next_turn` waits and becomes the chat's next message (spec §5.5).
+ *  Refusals (409 finished / takes no messages, 422 too long, 429 too many
+ *  waiting) come back as ApiError -- word them with `runInputError`
+ *  (components/conversation/run-steering.tsx). */
 export function useSendRunInput(runId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (text: string) =>
-      api.post<RunInputDTO>(`/runs/${encodeURIComponent(runId ?? "")}/inputs`, { text }),
+    mutationFn: ({ text, delivery }: { text: string; delivery: RunInputDelivery }) =>
+      api.post<RunInputDTO>(`/runs/${encodeURIComponent(runId ?? "")}/inputs`, {
+        text,
+        delivery,
+      }),
     onSuccess: (input) =>
+      qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) => withRunInput(prev, input)),
+    onSettled: () => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
+  });
+}
+
+/** Change a queued message while it waits (its author only). 409 once it
+ *  was already delivered. */
+export function useEditRunInput(runId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ inputId, text }: { inputId: string; text: string }) =>
+      api.patch<RunInputDTO>(
+        `/runs/${encodeURIComponent(runId ?? "")}/inputs/${encodeURIComponent(inputId)}`,
+        { text },
+      ),
+    onSuccess: (input) =>
+      qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) => withRunInput(prev, input)),
+    onSettled: () => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
+  });
+}
+
+/** Withdraw a queued message while it waits (its author only, 204): it never
+ *  becomes a turn. 409 once it was already delivered. */
+export function useCancelRunInput(runId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (inputId: string) =>
+      api.delete<void>(
+        `/runs/${encodeURIComponent(runId ?? "")}/inputs/${encodeURIComponent(inputId)}`,
+      ),
+    onSuccess: (_data, inputId) =>
       qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) =>
-        prev && !prev.inputs.some((i) => i.id === input.id)
-          ? { ...prev, inputs: [...prev.inputs, input] }
-          : prev,
+        prev ? { ...prev, inputs: prev.inputs.filter((i) => i.id !== inputId) } : prev,
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
   });
