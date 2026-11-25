@@ -136,6 +136,7 @@ from oc8.capas.claude_hooks.context import (
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import AGENT, mode_from_context
+from oc8.chat.replay import chat_replay_of
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
@@ -917,6 +918,9 @@ async def run_agent(
             task=task,
             run_id=run_id,
             pinned=pinned,
+            # A chat turn reads its conversation here, as native turns; every
+            # other runtime gets it flattened (runtime/executor.py).
+            replay=chat_replay_of(run_row.context or {}) if run_row is not None else None,
         )
         messages: list[NeutralMessage] = list(preamble.messages)
         if run_id is not None:

@@ -112,3 +112,27 @@ def test_rebuild_keeps_prefix_checkpoint_ledger_tail_pair_and_skill() -> None:
     assert recent_result in rebuilt
     assert rebuilt[rebuilt.index(recent_result) - 1] is recent_call
     assert rebuilt[-1].content == "[Skill: Verify]\n\nRe-read after changing a record."
+
+
+def test_rebuild_keeps_a_replayed_chat_and_its_new_turn() -> None:
+    """A chat turn's earlier turns sit between the system messages and the
+    final "# Run context" message (spec §5.2): compaction summarises the
+    run's own steps and keeps that prefix whole, so the new turn is never
+    summarised away and the replay stays the cached prefix."""
+    call = ToolCall(id="call-1", name="lookup", arguments={"id": "42"})
+    system = NeutralMessage(role="system", content="standing instructions")
+    old_question = NeutralMessage(role="user", content="old question")
+    old_answer = NeutralMessage(role="assistant", content="old answer")
+    final = NeutralMessage(role="user", content="# Run context\n- Step budget: 40\n\nnew turn")
+    step_call = NeutralMessage(role="assistant", content="", tool_calls=[call])
+    step_result = NeutralMessage(
+        role="tool", content="result " * 50, tool_call_id="call-1", name="lookup"
+    )
+    messages = [system, old_question, old_answer, final, step_call, step_result]
+
+    rebuilt = rebuild_transcript(
+        messages, summary="Looked up 42.", ledger_block="ledger", skill_blocks=[]
+    )
+
+    assert rebuilt[:4] == [system, old_question, old_answer, final]
+    assert rebuilt[4].content.endswith("Looked up 42.")

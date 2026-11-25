@@ -14,6 +14,7 @@ Core-neutral: names no vendor, product or software specifics.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -48,6 +49,15 @@ from oc8.authz.permissions import (
     perm,
 )
 from oc8.authz.scope import AgentActor
+from oc8.chat.replay import (
+    ChatReplay,
+    last_answer,
+    new_turn_text,
+    replay_messages,
+    replay_path,
+    withheld,
+)
+from oc8.chat.turn_context import flattened_task_text
 from oc8.connections.tool_connection import tool_connections
 from oc8.connections.usable import needs_department
 from oc8.copilot.notes import member_behind_run_task
@@ -56,6 +66,8 @@ from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
 from oc8.modelrouter.types import ImagePart, TextPart
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
+
+logger = logging.getLogger(__name__)
 
 _ORIGIN_LABELS: dict[str, str] = {
     "chat": "chat",
@@ -365,6 +377,7 @@ async def build_run_preamble(
     task: m.Task | None = None,
     run_id: uuid.UUID | None = None,
     pinned: Mapping[str, Any] | None = None,
+    replay: ChatReplay | None = None,
 ) -> RunPreamble:
     """Seed a run's conversation: system context first, the task last.
 
@@ -373,6 +386,13 @@ async def build_run_preamble(
 
     `pinned` is the run's resolved agent version (`resolve_version`). Every
     runtime passes it; None (a direct call with no run) reads the live row.
+
+    `replay` (a chat turn of the in-process engine, spec §5.2): the system
+    messages keep only what is stable for the session, the earlier turns
+    follow as real turns, and everything that varies per turn -- run context,
+    memory and KB retrieval, roster, direct access -- goes into one final
+    user message with the new turn. A replay that cannot be read falls back
+    to the flattened transcript in today's order.
     """
     org = await db.get(m.Organization, tenant_id)
     tenant_name = org.name if org is not None else "the organization"
@@ -397,6 +417,34 @@ async def build_run_preamble(
     run = await db.get(m.AgentRun, run_id) if run_id is not None else None
     origin = await _origin_label(db, run=run)
 
+    turns: list[NeutralMessage] | None = None
+    query_text = task_text
+    replay_restricted = False
+    if replay is not None:
+        try:
+            # A savepoint, so a failed read leaves the run's transaction usable.
+            async with db.begin_nested():
+                turns = await replay_messages(db, replay=replay, model_locality=model_locality)
+                path = await replay_path(db, replay=replay)
+        except Exception:
+            logger.warning(
+                "chat replay for run %s failed; using the flattened transcript",
+                run_id,
+                exc_info=True,
+            )
+            turns = None
+            if run is not None:
+                task_text = await flattened_task_text(db, run)
+            query_text = task_text
+        else:
+            task_text = new_turn_text((run.context or {}) if run is not None else {}, task_text)
+            answer = last_answer(path, model_locality=model_locality)
+            query_text = task_text if answer is None else f"{task_text}\n{answer}"
+            # A restricted answer replayed in full (a local model) puts
+            # restricted data into this run, as a restricted KB hit does.
+            replay_restricted = any(
+                msg.restricted and not withheld(msg, model_locality=model_locality) for msg in path
+            )
     department = await db.get(m.Department, agent.department_id)
     department_name = department.name if department is not None else "unassigned"
 
@@ -437,6 +485,16 @@ async def build_run_preamble(
     # limit in agent/blast_radius.py.
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
 
+    # Per-turn context: system messages without a replay; with one, part of
+    # the final user message, so the system prefix stays stable across turns.
+    turn_blocks: list[str] = []
+
+    def _per_turn(block: str) -> None:
+        if turns is not None:
+            turn_blocks.append(block)
+        else:
+            messages.append(NeutralMessage(role="system", content=block))
+
     copilot_member = (
         await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
         if agent.is_tenant_assistant
@@ -447,24 +505,25 @@ async def build_run_preamble(
         agent=agent,
         tenant_id=tenant_id,
         frame=frame,
-        query_text=task_text,
+        query_text=query_text,
         model_locality=model_locality,
         narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         member_id=copilot_member,
     )
     if memory_ctx:
-        messages.append(NeutralMessage(role="system", content=memory_ctx))
+        _per_turn(memory_ctx)
 
     kb_ctx, contains_restricted = await retrieve_kb_context(
         db,
         agent=agent,
         tenant_id=tenant_id,
-        query_text=task_text,
+        query_text=query_text,
         frame=frame,
         model_locality=model_locality,
     )
     if kb_ctx:
-        messages.append(NeutralMessage(role="system", content=kb_ctx))
+        _per_turn(kb_ctx)
+    contains_restricted = contains_restricted or replay_restricted
     has_knowledge = bool(await granted_kb_ids(db, agent=agent))
 
     instruction_file_count = (
@@ -502,7 +561,7 @@ async def build_run_preamble(
         # system_prompt is a pure sync function and this needs the DB.
         roster = await roster_block(db, agent=agent, task=task, run=run)
         if roster is not None:
-            messages.append(NeutralMessage(role="system", content=roster))
+            _per_turn(roster)
 
     if agent.is_tenant_assistant:
         # What the Copilot may offer to do itself (copilot direct access §3).
@@ -515,7 +574,7 @@ async def build_run_preamble(
             narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         )
         if block is not None:
-            messages.append(NeutralMessage(role="system", content=block))
+            _per_turn(block)
 
     from oc8.boards.mission import board_section
 
@@ -528,27 +587,29 @@ async def build_run_preamble(
     if catalog:
         messages.append(NeutralMessage(role="system", content=catalog))
 
-    messages.append(
-        NeutralMessage(
-            role="user",
-            content=run_context_block(
-                now=now,
-                tz_label=tz_label,
-                acting_for=acting_for,
-                origin=origin,
-                department=department_name,
-                connection_names=connection_names,
-                max_steps=max_steps,
-                instruction_file_count=instruction_file_count,
-                task_attachment_count=len(task_images) if task_images else 0,
-                connection_details=connection_details or None,
-            ),
-        )
+    run_context = run_context_block(
+        now=now,
+        tz_label=tz_label,
+        acting_for=acting_for,
+        origin=origin,
+        department=department_name,
+        connection_names=connection_names,
+        max_steps=max_steps,
+        instruction_file_count=instruction_file_count,
+        task_attachment_count=len(task_images) if task_images else 0,
+        connection_details=connection_details or None,
     )
+    if turns is not None:
+        messages.extend(turns)
+        # One final user message: run context, per-turn blocks, the new turn.
+        final_text = "\n\n".join([run_context, *turn_blocks, task_text])
+    else:
+        messages.append(NeutralMessage(role="user", content=run_context))
+        final_text = task_text
 
     if task_images and supports_vision:
         messages.append(
-            NeutralMessage(role="user", content=[TextPart(text=task_text), *task_images])
+            NeutralMessage(role="user", content=[TextPart(text=final_text), *task_images])
         )
     else:
         note = ""
@@ -557,7 +618,7 @@ async def build_run_preamble(
                 "\n\n(An image was attached to this message, but this agent's "
                 "model cannot process images.)"
             )
-        messages.append(NeutralMessage(role="user", content=task_text + note))
+        messages.append(NeutralMessage(role="user", content=final_text + note))
 
     copilot_permissions = await _gated_copilot_permissions(
         db, agent=agent, tenant_id=tenant_id, task=task, run_id=run_id, actor=actor
