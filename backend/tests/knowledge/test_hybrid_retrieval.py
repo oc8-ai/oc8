@@ -402,8 +402,8 @@ async def test_a_filtered_vector_search_is_not_capped_by_the_hnsw_scan(
     ("version", "ef_search", "iterative_scan"),
     [
         (None, str(retrieval.HNSW_EF_SEARCH), "relaxed_order"),  # read from the database
-        ((0, 7), str(retrieval.HNSW_EF_SEARCH), "off"),  # no iterative scan before 0.8
-        ((0, 4), "40", "off"),  # no HNSW before 0.5: nothing is set
+        ((0, 7), "40", "off"),  # no index before 0.8 (migration 0137): nothing is set
+        ((0, 4), "40", "off"),  # no HNSW at all before 0.5
         ((), "40", "off"),  # no pgvector extension
     ],
 )

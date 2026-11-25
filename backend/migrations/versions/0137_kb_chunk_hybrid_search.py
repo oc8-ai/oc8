@@ -3,9 +3,14 @@
 `search_tsv` is generated from `content` with the language-agnostic `simple`
 configuration (tenants mix German and English, and an invoice number must
 match as written), and indexed with GIN. `embedding` gets an HNSW index for
-cosine distance where pgvector supports one (0.5.0 and later) and the column
-has a fixed dimension; otherwise that index is skipped with a NOTICE and the
-search stays an exact scan, as before.
+cosine distance from pgvector 0.8.0 on, when the column has a fixed
+dimension; otherwise that index is skipped with a NOTICE and the search stays
+an exact scan, as before. 0.5 to 0.7 can build one, but their HNSW scan
+returns at most `hnsw.ef_search` rows ahead of the tenant/base filter, so a
+filtered search would lose candidates the exact scan finds; 0.8's iterative
+scan (which retrieval turns on) keeps scanning until the filtered LIMIT is
+met. A database whose image was upgraded needs `ALTER EXTENSION vector
+UPDATE` before this migration to get the index.
 
 Adding a STORED generated column rewrites `kb_chunk` once, under an ACCESS
 EXCLUSIVE lock: `lock_timeout` keeps it from queueing the app behind a long
@@ -62,16 +67,23 @@ def _drop_invalid_and_build(name: str, ddl: str) -> None:
     op.execute(ddl)
 
 
+def _hnsw_version_ok(extversion: str | None) -> bool:
+    """pgvector 0.8.0 or later (`extversion`, None without the extension)."""
+    if not extversion:
+        return False
+    parts = tuple(int(p) for p in extversion.split(".")[:2] if p.isdigit())
+    return parts >= (0, 8)
+
+
 def _hnsw_supported() -> bool:
-    """pgvector 0.5.0 or later, and `embedding` declared with a dimension
-    (`atttypmod` is -1 for a bare `vector`)."""
+    """pgvector new enough (`_hnsw_version_ok`), and `embedding` declared with
+    a dimension (`atttypmod` is -1 for a bare `vector`)."""
     row = (
         op.get_bind()
         .execute(
             sa.text(
                 "SELECT "
-                "(SELECT string_to_array(extversion, '.')::int[] >= ARRAY[0, 5, 0] "
-                " FROM pg_extension WHERE extname = 'vector'), "
+                "(SELECT extversion FROM pg_extension WHERE extname = 'vector'), "
                 "(SELECT atttypmod > 0 FROM pg_attribute "
                 " WHERE attrelid = 'kb_chunk'::regclass AND attname = 'embedding' "
                 " AND NOT attisdropped)"
@@ -79,7 +91,7 @@ def _hnsw_supported() -> bool:
         )
         .first()
     )
-    return row is not None and bool(row[0]) and bool(row[1])
+    return row is not None and _hnsw_version_ok(row[0]) and bool(row[1])
 
 
 def upgrade() -> None:
@@ -103,7 +115,7 @@ def upgrade() -> None:
     else:
         op.execute(
             "DO $$ BEGIN RAISE NOTICE 'ix_kb_chunk_embedding_hnsw skipped: pgvector "
-            "older than 0.5.0 or kb_chunk.embedding has no fixed dimension'; END $$"
+            "older than 0.8.0 or kb_chunk.embedding has no fixed dimension'; END $$"
         )
 
 

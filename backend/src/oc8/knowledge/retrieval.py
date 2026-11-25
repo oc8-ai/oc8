@@ -182,16 +182,17 @@ async def _embed_for_kb(
 
 async def _widen_hnsw_scan(db: AsyncSession) -> None:
     """Let an HNSW scan return enough rows for the filtered candidate list,
-    for the rest of this transaction: `hnsw.ef_search` from pgvector 0.5.0,
-    and from 0.8.0 `hnsw.iterative_scan = relaxed_order`, which keeps scanning
-    until the filtered LIMIT is met (the order may be slightly off; fusion
-    re-sorts anyway). Lasting to the end of the transaction is harmless: it
-    only widens a later HNSW scan of `kb_chunk` in the same transaction the
-    same way, and no other table has an HNSW index.
+    for the rest of this transaction: `hnsw.ef_search`, and
+    `hnsw.iterative_scan = relaxed_order`, which keeps scanning until the
+    filtered LIMIT is met (the order may be slightly off; fusion re-sorts
+    anyway). Lasting to the end of the transaction is harmless: it only
+    widens a later HNSW scan of `kb_chunk` in the same transaction the same
+    way, and no other table has an HNSW index.
 
-    Gated by version because pgvector reserves the `hnsw.` prefix: setting a
-    name an older version does not know is an error that would abort the
-    transaction."""
+    Only from pgvector 0.8.0, the version migration 0137 builds the index
+    from: below it there is no index to widen. And pgvector reserves the
+    `hnsw.` prefix, so setting a name an older version does not know is an
+    error that would abort the transaction."""
     global _pgvector_version
     if _pgvector_version is None:
         extversion = (
@@ -200,12 +201,15 @@ async def _widen_hnsw_scan(db: AsyncSession) -> None:
         _pgvector_version = (
             tuple(int(p) for p in extversion.split(".")[:2] if p.isdigit()) if extversion else ()
         )
-    if _pgvector_version < (0, 5):
+    if _pgvector_version < (0, 8):
         return
-    settings = "set_config('hnsw.ef_search', :ef, true)"
-    if _pgvector_version >= (0, 8):
-        settings += ", set_config('hnsw.iterative_scan', 'relaxed_order', true)"
-    await db.execute(text(f"SELECT {settings}"), {"ef": str(HNSW_EF_SEARCH)})
+    await db.execute(
+        text(
+            "SELECT set_config('hnsw.ef_search', :ef, true), "
+            "set_config('hnsw.iterative_scan', 'relaxed_order', true)"
+        ),
+        {"ef": str(HNSW_EF_SEARCH)},
+    )
 
 
 async def _search_internal(

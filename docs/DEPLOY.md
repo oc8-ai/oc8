@@ -349,9 +349,21 @@ connections themselves.
   applies them through the `migrate` service. Two of them take longer on big
   instances:
   - 0137 rewrites `kb_chunk` once (a generated full-text column); expect a few
-    minutes on large knowledge bases. It then builds a full-text (GIN) and a
-    vector (HNSW, pgvector 0.5 or newer) index on `kb_chunk` concurrently, so
-    writes keep going meanwhile, but the migration runs longer.
+    minutes on large knowledge bases. The rewrite holds an exclusive lock on
+    `kb_chunk` for its whole duration, so knowledge search and ingestion wait
+    until it is done: plan it for a quiet moment. It then builds a full-text
+    (GIN) and a vector (HNSW) index on `kb_chunk` concurrently; reads and
+    writes keep going during those two builds, but the migration runs longer.
+  - The HNSW index is only built on pgvector 0.8 or newer (older versions
+    lose rows from a filtered vector search); without it, vector search stays
+    an exact scan, as before. Upgrading the Postgres image does not upgrade
+    the extension in an existing database: run
+    `ALTER EXTENSION vector UPDATE;` in the oc8 database after the image
+    upgrade and before 0137 runs to get the index. If 0137 already ran
+    without it, update the extension and build the index by hand:
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_kb_chunk_embedding_hnsw ON
+    kb_chunk USING hnsw (embedding vector_cosine_ops);`, then restart the
+    backend processes so retrieval picks up the new pgvector version.
   - 0138 builds two audit-log expression indexes concurrently (run and chat
     filters); writes are not blocked.
 
