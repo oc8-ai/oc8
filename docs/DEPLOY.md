@@ -344,7 +344,9 @@ connections themselves.
   `docker compose up -d --build` replaces both at once; with Helm or any
   rolling rollout, update the ingestion workers first.
 - **Upgrading to 0.20.0:** 0137 rewrites kb_chunk once (generated full-text
-  column); expect a few minutes on large knowledge bases.
+  column); expect a few minutes on large knowledge bases. It then builds a
+  full-text and a vector (HNSW) index on kb_chunk concurrently, so writes go
+  on meanwhile, but the migration takes longer on large knowledge bases.
 - **The four backend processes** are one image with different commands:
   `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
   restart them independently with `docker compose restart <service>`.

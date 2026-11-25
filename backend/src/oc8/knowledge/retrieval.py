@@ -15,12 +15,13 @@ import datetime as dt
 import hashlib
 import logging
 import math
+import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -45,6 +46,17 @@ _CANDIDATE_LIMIT = 50
 SIMILAR_CHUNKS_LIMIT = 5
 #: Reciprocal rank fusion constant: a hit at rank r in a list adds 1 / (k + r).
 RRF_K = 60
+#: Rows an HNSW scan of `kb_chunk.embedding` (migration 0137) hands back before
+#: the tenant/base/source filter. At pgvector's default of 40 a base whose
+#: nearest rows sit among other bases' rows got fewer than `_CANDIDATE_LIMIT`
+#: candidates, or none, where the exact scan before the index found them all.
+HNSW_EF_SEARCH = 4 * _CANDIDATE_LIMIT
+#: pgvector's version as `(major, minor)`, read once per process: `None` until
+#: read, `()` when the extension is absent.
+_pgvector_version: tuple[int, ...] | None = None
+#: A question full-text search can use at all; without a word character
+#: `websearch_to_tsquery` yields an empty query (and a NOTICE per base).
+_HAS_WORD = re.compile(r"\w")
 
 
 @dataclass
@@ -168,6 +180,34 @@ async def _embed_for_kb(
         return None
 
 
+async def _widen_hnsw_scan(db: AsyncSession) -> None:
+    """Let an HNSW scan return enough rows for the filtered candidate list,
+    for the rest of this transaction: `hnsw.ef_search` from pgvector 0.5.0,
+    and from 0.8.0 `hnsw.iterative_scan = relaxed_order`, which keeps scanning
+    until the filtered LIMIT is met (the order may be slightly off; fusion
+    re-sorts anyway). Lasting to the end of the transaction is harmless: it
+    only widens a later HNSW scan of `kb_chunk` in the same transaction the
+    same way, and no other table has an HNSW index.
+
+    Gated by version because pgvector reserves the `hnsw.` prefix: setting a
+    name an older version does not know is an error that would abort the
+    transaction."""
+    global _pgvector_version
+    if _pgvector_version is None:
+        extversion = (
+            await db.execute(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'"))
+        ).scalar_one_or_none()
+        _pgvector_version = (
+            tuple(int(p) for p in extversion.split(".")[:2] if p.isdigit()) if extversion else ()
+        )
+    if _pgvector_version < (0, 5):
+        return
+    settings = "set_config('hnsw.ef_search', :ef, true)"
+    if _pgvector_version >= (0, 8):
+        settings += ", set_config('hnsw.iterative_scan', 'relaxed_order', true)"
+    await db.execute(text(f"SELECT {settings}"), {"ef": str(HNSW_EF_SEARCH)})
+
+
 async def _search_internal(
     db: AsyncSession,
     *,
@@ -185,12 +225,13 @@ async def _search_internal(
         # In the query, so other documents cannot crowd these out of the
         # candidate limit.
         stmt = stmt.where(m.KbChunk.source_uri.in_(sorted(only_sources)))
+    await _widen_hnsw_scan(db)
     by_vector = stmt.order_by(m.KbChunk.embedding.cosine_distance(query_embedding)).limit(
         _CANDIDATE_LIMIT
     )
     vector_chunks = list((await db.execute(by_vector)).scalars().all())
     text_chunks: list[m.KbChunk] = []
-    if query_text.strip():
+    if _HAS_WORD.search(query_text):
         tsq = func.websearch_to_tsquery("simple", query_text)
         # `numnode` is 0 for a query without lexemes; the planner folds the
         # constant, so such a query reads no rows at all.
@@ -492,6 +533,9 @@ async def similar_chunks(
     ).scalar_one_or_none()
     if source is None or source.embedding is None:
         return None
+    # The same HNSW post-filter cap as `_search_internal`: other bases' rows
+    # would otherwise crowd this base's neighbours out of the scan.
+    await _widen_hnsw_scan(db)
     stmt = (
         live_chunks()
         .where(

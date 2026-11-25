@@ -11,7 +11,8 @@ Adding a STORED generated column rewrites `kb_chunk` once, under an ACCESS
 EXCLUSIVE lock: `lock_timeout` keeps it from queueing the app behind a long
 transaction, and `statement_timeout` is lifted for that statement because the
 rewrite of a large knowledge base takes minutes. Both indexes are built
-CONCURRENTLY outside the migration transaction.
+CONCURRENTLY outside the migration transaction, likewise without a statement
+timeout.
 
 Revision ID: 0137
 Revises: 0136
@@ -34,22 +35,31 @@ def _build_index_concurrently(name: str, ddl: str) -> None:
     """`ddl` (a `CREATE INDEX CONCURRENTLY IF NOT EXISTS`) outside the
     migration transaction, after dropping an INVALID leftover of a failed
     earlier build that `IF NOT EXISTS` would otherwise keep for good. Same as
-    `0111_chat_c1.py`."""
+    `0111_chat_c1.py`, plus no `statement_timeout` for the build itself (a
+    session setting here, outside any transaction, so reset afterwards)."""
     with op.get_context().autocommit_block():
-        invalid = (
-            op.get_bind()
-            .execute(
-                sa.text(
-                    "SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
-                    "WHERE c.relname = :name AND NOT i.indisvalid"
-                ),
-                {"name": name},
-            )
-            .first()
+        op.execute("SET statement_timeout = 0")
+        try:
+            _drop_invalid_and_build(name, ddl)
+        finally:
+            op.execute("RESET statement_timeout")
+
+
+def _drop_invalid_and_build(name: str, ddl: str) -> None:
+    invalid = (
+        op.get_bind()
+        .execute(
+            sa.text(
+                "SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+                "WHERE c.relname = :name AND NOT i.indisvalid"
+            ),
+            {"name": name},
         )
-        if invalid is not None:
-            op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
-        op.execute(ddl)
+        .first()
+    )
+    if invalid is not None:
+        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {name}")
+    op.execute(ddl)
 
 
 def _hnsw_supported() -> bool:

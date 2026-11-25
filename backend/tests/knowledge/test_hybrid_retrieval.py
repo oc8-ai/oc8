@@ -14,6 +14,7 @@ import uuid
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
 from oc8 import models as m
 from oc8.knowledge import retrieval
@@ -342,3 +343,123 @@ async def test_external_index_is_fused_but_not_text_searched(
     # One fusion over every list: the internal base's two and the external one.
     assert len(fused_inputs) == 1
     assert sorted(len(lst) for lst in fused_inputs[0]) == [1, 1, 1]
+
+
+# ------------------------------------------------------------ the HNSW index
+
+
+async def _hnsw_plan(db: Any, tenant: uuid.UUID, kb: m.KnowledgeBase) -> str:
+    rows = (
+        await db.execute(
+            text(
+                "EXPLAIN SELECT id FROM kb_chunk WHERE deleted_at IS NULL "
+                "AND tenant_id = :t AND kb_id = :k "
+                "ORDER BY embedding <=> CAST(:q AS vector) LIMIT 50"
+            ),
+            {"t": tenant, "k": kb.id, "q": str(QUERY_VECTOR)},
+        )
+    ).scalars()
+    return "\n".join(rows)
+
+
+async def test_a_filtered_vector_search_is_not_capped_by_the_hnsw_scan(
+    app_session: AppSessionFactory,
+) -> None:
+    """An HNSW scan hands back only `hnsw.ef_search` rows (40 by default)
+    BEFORE the tenant/base filter. With the nearest rows in another base, the
+    50 candidates of this base shrank to nothing, where the exact scan before
+    the index found all of them."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        # Push the planner onto the HNSW index, as it picks it on a large table.
+        await db.execute(text("SET LOCAL enable_seqscan = off"))
+        await db.execute(text("SET LOCAL enable_sort = off"))
+        await db.execute(text("SET LOCAL enable_bitmapscan = off"))
+        _agent, kb = await _granted_kb(db, tenant)
+        crowd = m.KnowledgeBase(tenant_id=tenant, name="Crowd", embedding_model="x")
+        db.add(crowd)
+        await db.flush()
+        for i in range(150):
+            db.add(_chunk(tenant, crowd, f"crowd {i}", _unit(0, 0.001 * (i + 1))))
+        for i in range(60):
+            db.add(_chunk(tenant, kb, f"own note {i}", _unit(0, 1.0 + 0.01 * i)))
+        await db.flush()
+        plan = await _hnsw_plan(db, tenant, kb)
+        if "ix_kb_chunk_embedding_hnsw" not in plan:
+            pytest.skip(f"the planner does not use the HNSW index here:\n{plan}")
+
+        vector_hits, _ = await retrieval._search_internal(
+            db, tenant_id=tenant, kb=kb, query_embedding=QUERY_VECTOR, query_text=""
+        )
+        ef_search = (await db.execute(text("SHOW hnsw.ef_search"))).scalar_one()
+
+    assert len(vector_hits) == 50
+    assert {h.content for h in vector_hits} <= {f"own note {i}" for i in range(60)}
+    assert int(ef_search) >= 2 * 50
+
+
+@pytest.mark.parametrize(
+    ("version", "ef_search", "iterative_scan"),
+    [
+        (None, str(retrieval.HNSW_EF_SEARCH), "relaxed_order"),  # read from the database
+        ((0, 7), str(retrieval.HNSW_EF_SEARCH), "off"),  # no iterative scan before 0.8
+        ((0, 4), "40", "off"),  # no HNSW before 0.5: nothing is set
+        ((), "40", "off"),  # no pgvector extension
+    ],
+)
+async def test_the_hnsw_scan_is_widened_only_as_far_as_pgvector_allows(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    version: tuple[int, ...] | None,
+    ef_search: str,
+    iterative_scan: str,
+) -> None:
+    monkeypatch.setattr(retrieval, "_pgvector_version", version)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, kb = await _granted_kb(db, tenant)
+        db.add(_chunk(tenant, kb, TARGET, _unit(1)))
+        await db.flush()
+
+        ctx, _ = await _retrieve(db, agent, tenant, INVOICE)
+        shown = (
+            (await db.execute(text("SHOW hnsw.ef_search"))).scalar_one(),
+            (await db.execute(text("SHOW hnsw.iterative_scan"))).scalar_one(),
+        )
+
+    assert TARGET in ctx
+    assert shown == (ef_search, iterative_scan)
+    if version is None:
+        assert retrieval._pgvector_version is not None
+        assert retrieval._pgvector_version >= (0, 8)
+
+
+async def test_similar_chunks_are_not_capped_by_the_hnsw_scan(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        await db.execute(text("SET LOCAL enable_seqscan = off"))
+        await db.execute(text("SET LOCAL enable_sort = off"))
+        await db.execute(text("SET LOCAL enable_bitmapscan = off"))
+        _agent, kb = await _granted_kb(db, tenant)
+        crowd = m.KnowledgeBase(tenant_id=tenant, name="Crowd", embedding_model="x")
+        db.add(crowd)
+        await db.flush()
+        for i in range(150):
+            db.add(_chunk(tenant, crowd, f"crowd {i}", _unit(0, 0.001 * (i + 1))))
+        source = _chunk(tenant, kb, "own source", _unit(0))
+        db.add(source)
+        for i in range(10):
+            db.add(_chunk(tenant, kb, f"own note {i}", _unit(0, 1.0 + 0.01 * i)))
+        await db.flush()
+        plan = await _hnsw_plan(db, tenant, kb)
+        if "ix_kb_chunk_embedding_hnsw" not in plan:
+            pytest.skip(f"the planner does not use the HNSW index here:\n{plan}")
+
+        similar = await retrieval.similar_chunks(
+            db, tenant_id=tenant, kb_id=kb.id, chunk_id=source.id
+        )
+
+    assert similar is not None
+    assert [c.content for c in similar] == [f"own note {i}" for i in range(5)]
