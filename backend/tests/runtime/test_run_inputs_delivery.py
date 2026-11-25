@@ -310,14 +310,16 @@ async def _cancelled(
 
 
 async def test_a_crashed_runs_queued_message_becomes_the_next_turn(
-    app_session: AppSessionFactory, redis_url: str
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     world = await _world(app_session, messenger=False)
+    await _asked(app_session, world)
     await _queued_input(app_session, world)
+    published, started = _record_carry_events(monkeypatch)
 
     await _execute(world, _raising())
 
-    await _carried(app_session, world, ended="failed")
+    await _answered_then_carried(app_session, world, published, started)
 
 
 async def test_an_abandoned_runs_queued_message_becomes_the_next_turn(
@@ -477,4 +479,95 @@ async def test_a_crash_after_somebody_else_failed_the_run_carries_nothing_over(
     runs, messages, inputs = await _state(app_session, world)
     assert [r.state for r in runs] == ["failed"], "no second turn"
     assert [msg.role for msg in messages] == ["user"], "no failure answer of this executor's"
+    assert [i.consumed_at for i in inputs] == [None]
+
+
+async def test_a_late_answer_after_somebody_else_failed_the_run_is_not_recorded(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reconciler failed the run (its failure answer, the queued message
+    carried over) while the runtime was still working; the runtime then
+    returns an answer. That ending stands: no late answer after the carried
+    turn, no second reply on the messenger."""
+    from sqlalchemy import update
+
+    from oc8.runtime.executor import answer_failed_chat_end
+    from oc8.runtime.run_inputs import lock_run_inputs
+    from tests.runtime.test_executor import _RecordingChannels
+
+    world = await _world(app_session, messenger=True)
+    fake = _RecordingChannels(app_session, world.tenant, world.run_id)
+    monkeypatch.setattr("oc8.channels.registry.channels_for_tenant", fake._channels_for_tenant)
+    await _asked(app_session, world)
+    await _queued_input(app_session, world)
+
+    async def fn(db: Any, **kw: Any) -> RunResult:
+        # The reconciler's end, in the session that holds the run's row.
+        await lock_run_inputs(db, tenant_id=world.tenant, run_id=world.run_id)
+        await db.execute(
+            update(m.AgentRun).where(m.AgentRun.id == world.run_id).values(state="failed")
+        )
+        run = await db.get(m.AgentRun, world.run_id)
+        assert run is not None
+        await answer_failed_chat_end(db, run)
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="Es sind 3 offen.",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await _execute(world, _FnRuntime(fn))
+
+    runs, messages, inputs = await _state(app_session, world)
+    assert [r.state for r in runs] == ["failed", "queued"], "carried over once"
+    assert [msg.role for msg in messages] == ["user", "assistant", "user"], "no late answer"
+    assert "Es sind 3 offen." not in [msg.content for msg in messages]
+    assert [i.consumed_step for i in inputs] == [CARRIED_OVER_STEP]
+    assert "Es sind 3 offen." not in [text for _ext, text in fake.said]
+
+
+def _no_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oc8.runtime import executor
+
+    async def _resolve(*_a: Any, **_kw: Any) -> Any:
+        return executor._ConnectionChoice(None, "no login for this tool")
+
+    monkeypatch.setattr(executor, "_resolve_mcp_connection", _resolve)
+
+
+async def test_a_run_without_its_connection_answers_then_carries_over(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = await _world(app_session, messenger=False)
+    await _asked(app_session, world)
+    await _queued_input(app_session, world)
+    published, started = _record_carry_events(monkeypatch)
+    _no_connection(monkeypatch)
+
+    await _execute(world, _raising())
+
+    await _answered_then_carried(app_session, world, published, started)
+
+
+async def test_a_run_without_its_connection_ended_elsewhere_answers_nothing(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world = await _world(app_session, messenger=False)
+    await _asked(app_session, world)
+    await _queued_input(app_session, world)
+    _no_connection(monkeypatch)
+
+    async def _ended_elsewhere(*_a: Any, **_kw: Any) -> bool:
+        return False
+
+    monkeypatch.setattr("oc8.runtime.executor._run_still_open", _ended_elsewhere)
+
+    await _execute(world, _raising())
+
+    runs, messages, inputs = await _state(app_session, world)
+    assert [r.state for r in runs] == ["failed"]
+    assert [msg.role for msg in messages] == ["user"]
     assert [i.consumed_at for i in inputs] == [None]

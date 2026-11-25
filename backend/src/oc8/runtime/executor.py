@@ -1757,9 +1757,14 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             pending_runs.append(wake_id)
                     await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                     carry_over = False
+                    # Did THIS executor end the run? False when somebody else
+                    # (the reconciler, a reclaim) ended it while the runtime
+                    # was still working: the transition then leaves their
+                    # verdict standing, and their end already answered the
+                    # chat and carried its inputs over -- nothing more is
+                    # written or sent for this turn.
+                    ended_here = True
                     if new_state in TERMINAL:
-                        from oc8.chat.carry_over import run_still_open
-
                         # No input is written to this run from here until the
                         # end below commits (`add_run_input` asks again under
                         # this lock, taken after the tenant's audit lock --
@@ -1774,10 +1779,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # with, those inputs stay "not read". Not for a
                         # stopped run (stop means stop): its queued inputs
                         # are cancelled.
+                        ended_here = await _run_still_open(db, run)
                         carry_over = (
                             new_state in (RunState.DONE, RunState.FAILED)
                             and run.source == "chat"
-                            and await run_still_open(db, run_id=run.id)
+                            and ended_here
                         )
                         if new_state is RunState.INTERRUPTED:
                             await _end_queued_inputs(db, run, carry_over=False)
@@ -1785,7 +1791,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     await _apply_entered_mode(db, run)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
                     record_run_outcome(new_state.value)
-                    if run.source == "chat" and new_state in (RunState.DONE, RunState.FAILED):
+                    if (
+                        run.source == "chat"
+                        and new_state in (RunState.DONE, RunState.FAILED)
+                        and ended_here
+                    ):
                         # A chat turn IS a run (see oc8.chat.service) so it gets the
                         # exact same guardrail/approval suspend-resume for free; this
                         # is the one place that turns its outcome back into the
