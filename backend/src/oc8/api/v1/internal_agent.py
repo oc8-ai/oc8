@@ -37,11 +37,11 @@ from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
     ControlOutcome,
+    audited_decision,
     execute_control_tool,
     has_readable_context,
     has_released_knowledge,
     offered_tools,
-    runs_under_routine_denial,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.engine import _max_steps
@@ -2533,8 +2533,17 @@ async def _dispatch_one_tool(
     # A reading core tool runs under the frame's routine verdict on a
     # connection it does not belong to: audited as the ALLOW that applied,
     # with its result, like the in-process engine (spec §5.7).
-    ran_despite_denial = runs_under_routine_denial(decision, tc.name)
-    audited = Decision(Effect.ALLOW) if ran_despite_denial else decision
+    # The task a core tool runs against; without one, none is dispatched.
+    task = await db.get(m.Task, run.task_id) if run.task_id is not None else None
+    # Only a call this endpoint dispatches to the core tool: never one a route
+    # renamed to a core name (it goes to the connection), never an edition
+    # call, and none without a task to run it against.
+    audited, audit_terms = audited_decision(
+        decision,
+        tc.name,
+        core_call=is_control_call and not is_edition_call and task is not None,
+    )
+    ran_despite_denial = bool(audit_terms)
     await append_event(
         db,
         tenant_id=run.tenant_id,
@@ -2545,9 +2554,14 @@ async def _dispatch_one_tool(
         # An edition call keeps its arguments out of the audit; its own
         # `edition_tool.called` event is the record of it.
         resource=(
-            {"tool": tc.name, **run_link(run.id, run.context)}
+            {"tool": tc.name, **run_link(run.id, run.context), **audit_terms}
             if edition.claims(tc.name)
-            else {"tool": tc.name, "arguments": tc.arguments, **run_link(run.id, run.context)}
+            else {
+                "tool": tc.name,
+                "arguments": tc.arguments,
+                **run_link(run.id, run.context),
+                **audit_terms,
+            }
         ),
         decision=audited.effect.value,
         reason=audited.reason or None,
@@ -2760,8 +2774,8 @@ async def _dispatch_one_tool(
 
     # A core-owned tool goes through the SAME dispatcher as the in-process engine
     # (oc8.agent.control_tools). It returns None for a connection tool, which then
-    # falls through to the MCP server below.
-    task = await db.get(m.Task, run.task_id) if run.task_id is not None else None
+    # falls through to the MCP server below. (`task` is loaded before the
+    # tool.call audit, which needs to know whether a core tool can run.)
     # Tool-call timing, at parity with the in-process engine (agent/engine.py's
     # own `_tool_call_started_at`/`_tool_call_dispatched` pair, same key names
     # and same millisecond unit). Without this the container/isolated runtime

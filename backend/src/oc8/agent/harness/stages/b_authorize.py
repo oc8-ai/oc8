@@ -335,7 +335,14 @@ def authorize(
         guardrail_attribute_specs=guardrail_attribute_specs,
     )
     if verdict.effect is Effect.DENY:
-        return Decision(Effect.DENY, verdict.reason, reason_code=NOT_THIS_CONNECTION)
+        # The frame's own code (e.g. right_not_granted) rides along for the
+        # audit, which records it when the tool runs anyway.
+        return Decision(
+            Effect.DENY,
+            verdict.reason,
+            reason_code=NOT_THIS_CONNECTION,
+            context=({"frame_reason_code": verdict.reason_code} if verdict.reason_code else {}),
+        )
     return verdict
 
 

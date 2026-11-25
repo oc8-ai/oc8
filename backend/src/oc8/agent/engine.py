@@ -33,11 +33,11 @@ from oc8.agent.control_tools import (
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
     READ_RESOURCE,
     audit_edition_call,
+    audited_decision,
     execute_control_tool,
     has_readable_context,
     has_released_knowledge,
     offered_tools,
-    runs_under_routine_denial,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.harness import GateVerdict, Harness, resolve_caps
@@ -2646,10 +2646,16 @@ async def run_agent(
                     # A reading core tool runs under the frame's routine verdict
                     # on a connection it does not belong to (none at all on a
                     # Copilot chat): what applies to it is an ALLOW, so that is
-                    # what the audit records, with its result (spec §5.7).
-                    # `decision` itself stays as the PEP gave it.
-                    ran_despite_denial = runs_under_routine_denial(decision, tc.name)
-                    audited = Decision(Effect.ALLOW) if ran_despite_denial else decision
+                    # what the audit records, marked, with its result (spec
+                    # §5.7). `decision` itself stays as the PEP gave it. Only
+                    # the core tool itself: a routed call keeps its real name
+                    # in `auth_tc` and goes to the connection.
+                    audited, audit_terms = audited_decision(
+                        decision,
+                        tc.name,
+                        core_call=is_core_call(auth_tc.name, routed=auth_tc.name != tc.name),
+                    )
+                    ran_despite_denial = bool(audit_terms)
                     record_tool_call(tool=tc.name, decision=audited.effect.value)
                     with get_tracer().start_as_current_span("tool.call") as tool_span:
                         tool_span.set_attribute("tool", tc.name)
@@ -2664,9 +2670,14 @@ async def run_agent(
                             # An edition call keeps its arguments out of the audit; its own
                             # `edition_tool.called` event is the record of it.
                             resource=(
-                                {"tool": tc.name, **audit_link}
+                                {"tool": tc.name, **audit_link, **audit_terms}
                                 if edition.claims(tc.name)
-                                else {"tool": tc.name, "arguments": tc.arguments, **audit_link}
+                                else {
+                                    "tool": tc.name,
+                                    "arguments": tc.arguments,
+                                    **audit_link,
+                                    **audit_terms,
+                                }
                             ),
                             decision=audited.effect.value,
                             reason=audited.reason or None,

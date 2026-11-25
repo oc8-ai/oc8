@@ -3257,7 +3257,12 @@ async def _board_write(
     )
 
 
-def runs_under_routine_denial(decision: Decision, tool: str) -> bool:
+#: `basis` of a `tool.call` audited as the ALLOW that applied although the
+#: PEP returned the routine frame DENY (`runs_under_routine_denial`).
+CORE_READ_OUTSIDE_FRAME = "core_read_outside_frame"
+
+
+def runs_under_routine_denial(decision: Decision, tool: str, *, core_call: bool) -> bool:
     """Whether `execute_control_tool` still runs the core tool `tool` under
     this DENY -- so the call is, in effect, allowed.
 
@@ -3266,14 +3271,46 @@ def runs_under_routine_denial(decision: Decision, tool: str) -> bool:
     its own: that verdict judges the run's bound connection (or the absence of
     one), which the tool does not belong to. Never a writing tool, and never
     read_resource, which is decided on the connection it names and refused
-    under any denial. The runtime audits such a call as the ALLOW that applied
-    (spec §5.7), not as the unrelated DENY."""
+    under any denial.
+
+    `core_call` is the caller's word that this call is dispatched to the core
+    tool at all: not a connection's tool whose real name a route rewrote to a
+    core one, and not a call the runtime cannot dispatch (no task). Required,
+    so no caller can forget to say it."""
     return (
-        decision.effect is Effect.DENY
+        core_call
+        and decision.effect is Effect.DENY
         and decision.reason_code == NOT_THIS_CONNECTION
         and tool in CONTROL_TOOL_NAMES
         and tool not in WRITING_CONTROL_TOOLS
         and tool != READ_RESOURCE.name
+    )
+
+
+def audited_decision(
+    decision: Decision, tool: str, *, core_call: bool
+) -> tuple[Decision, dict[str, Any]]:
+    """The verdict a runtime audits a tool call with, and the extra terms for
+    the `tool.call` event's resource.
+
+    The PEP's decision as it is -- except for a call that runs under the
+    routine frame denial (`runs_under_routine_denial`). That one ran, so it is
+    audited as an ALLOW (spec §5.7), but marked so an auditor can tell it from
+    a policy ALLOW: its `basis`, the PEP's own verdict and why the frame
+    refused."""
+    if not runs_under_routine_denial(decision, tool, core_call=core_call):
+        return decision, {}
+    frame_code = decision.context.get("frame_reason_code") or NOT_THIS_CONNECTION
+    return (
+        Decision(
+            Effect.ALLOW,
+            "core read run outside the connection frame; "
+            f"frame verdict: {decision.reason or 'deny'}",
+        ),
+        {
+            "basis": CORE_READ_OUTSIDE_FRAME,
+            "pdp": {"effect": decision.effect.value, "reason_code": frame_code},
+        },
     )
 
 
@@ -3357,7 +3394,9 @@ async def execute_control_tool(
         decision.effect is Effect.DENY
         and tc.name != DELEGATE_TASK.name
         and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_by_tool)
-        and not runs_under_routine_denial(decision, tc.name)
+        # The dispatcher IS the core dispatch: every caller sends it only
+        # the calls it runs as core tools.
+        and not runs_under_routine_denial(decision, tc.name, core_call=True)
     ):
         return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
 
