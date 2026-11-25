@@ -434,7 +434,16 @@ async def build_run_preamble(
             )
             turns = None
             if run is not None:
-                task_text = await flattened_task_text(db, run)
+                try:
+                    task_text = await flattened_task_text(db, run)
+                except Exception:
+                    # Never fail the turn over the fallback: the task text
+                    # passed in is the new turn alone.
+                    logger.warning(
+                        "flattened transcript for run %s failed; keeping the task text",
+                        run_id,
+                        exc_info=True,
+                    )
             query_text = task_text
         else:
             task_text = new_turn_text((run.context or {}) if run is not None else {}, task_text)

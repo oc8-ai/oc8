@@ -136,3 +136,13 @@ def test_rebuild_keeps_a_replayed_chat_and_its_new_turn() -> None:
 
     assert rebuilt[:4] == [system, old_question, old_answer, final]
     assert rebuilt[4].content.endswith("Looked up 42.")
+
+    # A replayed user turn the person began with the literal "# Run context"
+    # must not end the protected prefix: the new turn stays whole.
+    lookalike = NeutralMessage(role="user", content="# Run context is what I want to discuss")
+    messages = [system, lookalike, old_answer, final, step_call, step_result]
+    rebuilt = rebuild_transcript(
+        messages, summary="Looked up 42.", ledger_block="ledger", skill_blocks=[]
+    )
+    assert rebuilt[:4] == [system, lookalike, old_answer, final]
+    assert rebuilt[4].content.endswith("Looked up 42.")

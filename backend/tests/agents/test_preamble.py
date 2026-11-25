@@ -993,3 +993,72 @@ async def test_retrieval_query_is_new_message_plus_last_answer(
             run_id=run.id, replay=replay,
         )
     assert queries == ["NEW-TURN\nOLD-ANSWER", "NEW-TURN\nOLD-ANSWER"]
+
+
+async def _preamble_for(
+    db: Any, tenant: uuid.UUID, assistant: Any, task: Any, run: Any, replay: ChatReplay,
+    *, locality: str = "cloud",
+) -> Any:
+    return await build_run_preamble(
+        db, agent=assistant, tenant_id=tenant, task_text="User: NEW-TURN", frame={},
+        model_locality=locality, caps=ModelCaps(), max_steps=40, task=task,
+        run_id=run.id, replay=replay,
+    )
+
+async def _restricted_chat(db: Any, tenant: uuid.UUID) -> tuple[Any, Any, Any, ChatReplay]:
+    assistant, task, run, replay = await _copilot_chat(
+        db, tenant, [("user", "Q"), ("assistant", "SECRET-ANSWER")]
+    )
+    secret = await db.get(m.ChatMessage, replay.until_id)
+    secret.restricted = True
+    await db.flush()
+    return assistant, task, run, replay
+
+
+async def test_restricted_answer_replayed_to_a_local_model_marks_the_run_restricted(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _restricted_chat(db, tenant)
+        local = await _preamble_for(db, tenant, assistant, task, run, replay, locality="local")
+        cloud = await _preamble_for(db, tenant, assistant, task, run, replay, locality="cloud")
+    assert local.contains_restricted is True
+    assert any(msg.content == "SECRET-ANSWER" for msg in local.messages)
+    assert cloud.contains_restricted is False
+    assert not any("SECRET-ANSWER" in str(msg.content) for msg in cloud.messages)
+
+
+async def test_restricted_kb_hit_still_marks_the_run_restricted_on_the_replay_path(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _memory(*_a: Any, **_kw: Any) -> str:
+        return ""
+
+    async def _kb(*_a: Any, **_kw: Any) -> tuple[str, bool]:
+        return "KB-BLOCK", True
+
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_context", _memory)
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_kb_context", _kb)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q")])
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay)
+    assert pre.contains_restricted is True
+
+
+async def test_failing_flattened_fallback_keeps_the_task_text(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("replay unreadable")
+
+    monkeypatch.setattr("oc8.agent.preamble.replay_messages", _boom)
+    monkeypatch.setattr("oc8.agent.preamble.flattened_task_text", _boom)
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q")])
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay)
+    assert pre.messages[-1].content == "User: NEW-TURN"
