@@ -1455,6 +1455,35 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
         acting_subject=(run.context or {}).get("originating_operator"),
         acting_role=(run.context or {}).get("operator_role"),
     )
+    await _checkpoint_when_long(db, session=session, run=run, reply=reply)
+
+
+async def _checkpoint_when_long(
+    db: AsyncSession, *, session: m.ChatSession, run: m.AgentRun, reply: m.ChatMessage
+) -> None:
+    """Start a background checkpoint once the commit is through, when the
+    replayed path now fills more than `BACKGROUND_RATIO` of the window of
+    the model the run used (spec §5.3). Never fails the reply."""
+    from oc8.chat import checkpoint
+    from oc8.realtime.emit import publish_after_commit
+
+    try:
+        async with db.begin_nested():
+            path = await tree.path_to(db, session=session, message_id=reply.id)
+            estimate = await checkpoint.replayed_estimate(db, session=session, path=path)
+        window = checkpoint.context_window_of(run.context)
+        if estimate <= checkpoint.BACKGROUND_RATIO * window:
+            return
+        tenant_id, session_id, run_id = session.tenant_id, session.id, run.id
+
+        async def _start() -> None:
+            checkpoint.schedule_checkpoint(
+                tenant_id=tenant_id, session_id=session_id, run_id=run_id
+            )
+
+        publish_after_commit(db, _start)
+    except Exception:
+        logger.warning("chat checkpoint check for run %s failed", run.id, exc_info=True)
 
 
 async def apply_entered_mode(db: AsyncSession, *, run: m.AgentRun) -> None:

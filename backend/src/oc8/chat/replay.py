@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.harness.caps import ModelCaps
 from oc8.chat import tree
 from oc8.chat.turn_context import _speaker
 from oc8.modelrouter import NeutralMessage
@@ -30,6 +31,8 @@ RESTRICTED_PLACEHOLDER: Final = "[restricted answer withheld from this model]"
 WORK_DONE_HEADER: Final = "[Work done in this turn]"
 #: An answer without text: its run ended with tool calls only, or failed.
 NO_ANSWER: Final = "[no answer — run ended: {state}]"
+#: The window a replay is bounded by when the caller names none.
+DEFAULT_WINDOW: Final = ModelCaps().context_window_tokens
 
 
 @dataclass(frozen=True)
@@ -156,26 +159,11 @@ def _assistant_text(
     return text
 
 
-def _merged(turns: list[NeutralMessage]) -> list[NeutralMessage]:
-    """Neighbours of the same role as one message, for providers that
-    require strict alternation."""
-    merged: list[NeutralMessage] = []
-    for turn in turns:
-        if merged and merged[-1].role == turn.role:
-            previous = merged[-1]
-            merged[-1] = NeutralMessage(
-                role=previous.role, content=f"{previous.content}\n\n{turn.content}"
-            )
-        else:
-            merged.append(turn)
-    return merged
-
-
-async def replay_messages(
-    db: AsyncSession, *, replay: ChatReplay, model_locality: str
+async def message_turns(
+    db: AsyncSession, path: list[m.ChatMessage], *, model_locality: str
 ) -> list[NeutralMessage]:
-    """The conversation before the new turn, as alternating model turns."""
-    path = await replay_path(db, replay=replay)
+    """Each message on `path` as the model turn it is replayed as, one per
+    message and not merged yet."""
     notes = await _file_notes(db, path)
     states = await _run_states(db, path)
     turns: list[NeutralMessage] = []
@@ -190,4 +178,50 @@ async def replay_messages(
         else:
             content = f"{_speaker(message.role, message.content)}: {message.content}"
             turns.append(NeutralMessage(role="user", content=content))
-    return _merged(turns)
+    return turns
+
+
+def merged(turns: list[NeutralMessage]) -> list[NeutralMessage]:
+    """Neighbours of the same role as one message, for providers that
+    require strict alternation."""
+    out: list[NeutralMessage] = []
+    for turn in turns:
+        if out and out[-1].role == turn.role:
+            previous = out[-1]
+            out[-1] = NeutralMessage(
+                role=previous.role, content=f"{previous.content}\n\n{turn.content}"
+            )
+        else:
+            out.append(turn)
+    return out
+
+
+async def replay_messages(
+    db: AsyncSession,
+    *,
+    replay: ChatReplay,
+    model_locality: str,
+    path: list[m.ChatMessage] | None = None,
+    window: int = DEFAULT_WINDOW,
+) -> list[NeutralMessage]:
+    """The conversation before the new turn, as alternating model turns,
+    within `window` (spec §5.3): from the newest checkpoint on the path, with
+    a checkpoint made on the spot when the replay would still fill more than
+    `SYNC_RATIO` of the window. `path` is `replay_path`, when the caller has
+    read it already."""
+    from oc8.chat.checkpoint import bounded_turns
+
+    if path is None:
+        path = await replay_path(db, replay=replay)
+    if not path:
+        return []
+    turns = await message_turns(db, path, model_locality=model_locality)
+    bounded = await bounded_turns(
+        db,
+        session_id=replay.session_id,
+        path=path,
+        turns=turns,
+        window=window,
+        model_locality=model_locality,
+    )
+    return merged(bounded)

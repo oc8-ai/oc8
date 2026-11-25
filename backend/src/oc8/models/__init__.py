@@ -13,7 +13,7 @@ from oc8.models.boards import (
 )
 from oc8.models.capas import Capa, CapaInstallation, CapaVersion
 from oc8.models.channels import ApprovalChannelBinding, ChannelPollCursor
-from oc8.models.chat import ChatMessage, ChatProject, ChatSession
+from oc8.models.chat import ChatCheckpoint, ChatMessage, ChatProject, ChatSession
 from oc8.models.collab import ContractBinding, Handoff, HandoffType
 from oc8.models.components import ComponentGrant
 from oc8.models.connections import AgentToolAccess
@@ -101,6 +101,7 @@ __all__ = [
     "CapaInstallation",
     "CapaVersion",
     "ChannelPollCursor",
+    "ChatCheckpoint",
     "ChatMessage",
     "ChatProject",
     "ChatSession",

@@ -12,7 +12,18 @@ import datetime as dt
 import uuid
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Index, Text, Uuid, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    Text,
+    Uuid,
+    func,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -158,4 +169,32 @@ class ChatProject(Base, PkMixin, TenantMixin, TimestampMixin):
     #: Reserved for the later sharing work; never read in core.
     shared_with: Mapped[list[Any]] = mapped_column(
         JSONB, nullable=False, default=list, server_default="[]"
+    )
+
+
+class ChatCheckpoint(Base, PkMixin, TenantMixin):
+    """A summary of a chat's path up to `upto_message_id` (spec §5.3). A
+    replay starts from the newest one on the person's path and replays only
+    the messages after it, so a long chat stays within the model's window."""
+
+    __tablename__ = "chat_checkpoint"
+    __table_args__ = (
+        Index("ix_chat_checkpoint_session_created", "session_id", text("created_at DESC")),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("chat_session.id", ondelete="CASCADE"), nullable=False
+    )
+    upto_message_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    token_estimate: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: The model that wrote the summary.
+    model: Mapped[str] = mapped_column(Text, nullable=False)
+    #: A local model summarised a restricted answer: the summary is withheld
+    #: from any model that is not local, as the answer itself is.
+    restricted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )

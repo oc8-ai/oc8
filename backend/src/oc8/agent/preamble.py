@@ -424,8 +424,16 @@ async def build_run_preamble(
         try:
             # A savepoint, so a failed read leaves the run's transaction usable.
             async with db.begin_nested():
-                turns = await replay_messages(db, replay=replay, model_locality=model_locality)
                 path = await replay_path(db, replay=replay)
+                # Bounded by the window (spec §5.3): from the newest
+                # checkpoint, with one made now when the chat outgrew it.
+                turns = await replay_messages(
+                    db,
+                    replay=replay,
+                    model_locality=model_locality,
+                    path=path,
+                    window=caps.context_window_tokens,
+                )
         except Exception:
             logger.warning(
                 "chat replay for run %s failed; using the flattened transcript",

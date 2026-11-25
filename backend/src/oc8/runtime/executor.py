@@ -126,6 +126,19 @@ def _chat_run_failed_answer(run_id: uuid.UUID) -> str:
     return f"That didn't work out \u2013 [see the run](oc8://run/{run_id}) for what happened."
 
 
+def _leg_model(result: Any) -> dict[str, Any]:
+    """The window and model a leg ended on, for the run context (the chat
+    checkpoint reads them). Nothing for a runtime that reports neither."""
+    keys: dict[str, Any] = {}
+    window = getattr(result, "context_window_tokens", None)
+    if isinstance(window, int) and window > 0:
+        keys["context_window_tokens"] = window
+    model = getattr(result, "model", None)
+    if isinstance(model, str) and model:
+        keys["model"] = model
+    return keys
+
+
 async def _apply_entered_mode(db: AsyncSession, run: m.AgentRun) -> None:
     """A chat run that switched its chat into a mode (`enter_agent_mode`)
     writes it to the chat here, at the leg's end, close to the commit and
@@ -1348,6 +1361,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             "toolCalls": result.tool_calls,
                             "contains_restricted": bool(run.context.get("contains_restricted"))
                             or result.contains_restricted,
+                            **_leg_model(result),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "pending_question": result.output,
@@ -1490,6 +1504,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             "toolCalls": result.tool_calls,
                             "contains_restricted": bool(run.context.get("contains_restricted"))
                             or result.contains_restricted,
+                            **_leg_model(result),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "rendered_components": result.rendered_components,

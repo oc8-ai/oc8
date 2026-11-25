@@ -310,6 +310,11 @@ class RunResult:
     # True once this leg read restricted data (`_mark_restricted`). The executor
     # ORs it over the run's legs into `run.context["contains_restricted"]`.
     contains_restricted: bool = False
+    # The window and the model this leg ended on, for the chat checkpoint
+    # (`oc8.chat.checkpoint`): the executor writes them into the run context.
+    # None when the leg never resolved a model (e.g. the budget gate).
+    context_window_tokens: int | None = None
+    model: str | None = None
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -3742,7 +3747,13 @@ async def run_agent(
                 if session_state["started"]:
                     await dispatch_claude_event(tenant_id, "SessionEnd", _hook_ctx())
 
-        return await _run_with_session_end()
+        result = await _run_with_session_end()
+        # The model the leg ended on: an Auto run's last concrete one.
+        result.context_window_tokens = resolve_caps(
+            model_config.params if model_config is not None else None
+        ).context_window_tokens
+        result.model = model
+        return result
 
     with get_tracer().start_as_current_span("agent.run") as span:
         span.set_attribute("tenant_id", str(tenant_id))

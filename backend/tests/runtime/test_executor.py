@@ -123,6 +123,33 @@ async def test_contains_restricted_is_merged_into_run_context(
             assert run.context["contains_restricted"] is True
 
 
+async def test_the_legs_window_and_model_are_merged_into_run_context(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def fn(db: Any, **kw: Any) -> RunResult:
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="ok",
+            context_window_tokens=32_000,
+            model="m-1",
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(fn),
+    )
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["context_window_tokens"] == 32_000
+        assert run.context["model"] == "m-1"
+
+
 async def test_execute_run_marks_failed_on_error(app_session: AppSessionFactory) -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     run_id = await _make_queued_run(app_session, tenant)
