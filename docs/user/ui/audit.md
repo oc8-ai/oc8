@@ -34,7 +34,18 @@ the record” weeks later.
 
 Every `tool.call` event names the run it belongs to (and the chat, for Copilot
 chats). Each dispatched call also gets a `tool.result` event with its outcome
-(`ok` or `error`) and its duration. Neither event stores arguments or content.
+(`ok` or `error`) and its duration.
+
+- A `tool.call` event stores the call's arguments. The exception is a call
+  to an edition tool: its `tool.call` event names only the tool, and its own
+  `edition_tool.called` event records the call without arguments or output.
+- A built-in oc8 tool that runs (a knowledge search, a budget overview) is
+  recorded as `allow` with its `tool.result`, also on a Copilot chat with no
+  connection.
+- A `tool.result` event never stores the tool's output or the call's
+  arguments. It holds the tool, the run (and chat), the connection (omitted
+  for oc8's built-in tools), the outcome and the duration in milliseconds.
+
 Runs on the in-process engine whose connection cannot be resolved at session
 start record no per-call result event; isolated and gateway runs record the
 outcome as `error`.
