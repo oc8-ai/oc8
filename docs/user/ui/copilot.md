@@ -52,6 +52,40 @@ Copilot does not replace [My work](my-work.md) approvals for tool calls.
    escalates billing”).
 3. For setup proposals: review carefully, apply only what you trust, then test.
 
+## Long chats
+
+A long conversation does not run out of room. When a chat grows past what the
+model can hold, Copilot summarises the older part into a **checkpoint** and
+carries on with the summary plus the recent messages. Summaries that came from
+restricted content are only replayed to local models.
+
+## Approvals
+
+When Copilot wants a tool that needs your approval, the card appears in the
+chat. Approve it and the conversation **continues with its context**, as if
+nothing had paused. If you reject, you can give a **reason**; Copilot sees it
+(“rejected by <name>: <reason>”) and adapts instead of retrying blindly.
+
+On your own approval card for a **write**-level tool you can choose **Always
+allow (for me)**. It is never offered for delete, irreversible or outward-facing
+tools, nor for a department stage. Review and revoke your rules under
+**Profile → Always-allowed tools**.
+
+## Sending while an answer runs
+
+While Copilot is still answering, the composer offers two choices:
+
+- **Steer now** hands your message to the running answer before its next step.
+  It is offered only when the runtime accepts inputs.
+- **Send after** queues your message as the next one, sent when the answer is
+  done. Until then you can edit or cancel it. If the run fails, the queued
+  message still becomes the next turn after the failure answer; if you stop the
+  run, it is cancelled.
+
+A plain send while an answer runs is queued the same way. During an open
+clarification question the composer answers that question instead. Only the
+chat's owner can queue messages.
+
 ## Editing and branches
 
 - **Edit a sent message** with the Edit button under your own message (shown on

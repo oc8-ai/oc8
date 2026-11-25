@@ -343,10 +343,20 @@ connections themselves.
   shared ingestion stream, and an older ingestion worker cannot run them.
   `docker compose up -d --build` replaces both at once; with Helm or any
   rolling rollout, update the ingestion workers first.
-- **Upgrading to 0.20.0:** 0137 rewrites kb_chunk once (generated full-text
-  column); expect a few minutes on large knowledge bases. It then builds a
-  full-text and a vector (HNSW) index on kb_chunk concurrently, so writes go
-  on meanwhile, but the migration takes longer on large knowledge bases.
+- **Upgrading to 0.20.0:** this release adds migrations 0133-0138 (chat message
+  digests, chat checkpoints, always-allow tool rules, queued-message delivery,
+  hybrid knowledge search, audit run/chat indexes). `docker compose up -d --build`
+  applies them through the `migrate` service. Two of them take longer on big
+  instances:
+  - 0137 rewrites `kb_chunk` once (a generated full-text column); expect a few
+    minutes on large knowledge bases. It then builds a full-text (GIN) and a
+    vector (HNSW, pgvector 0.5 or newer) index on `kb_chunk` concurrently, so
+    writes keep going meanwhile, but the migration runs longer.
+  - 0138 builds two audit-log expression indexes concurrently (run and chat
+    filters); writes are not blocked.
+
+  There is no worker-order constraint beyond the 0.19.0 one above (ingestion
+  workers first).
 - **The four backend processes** are one image with different commands:
   `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
   restart them independently with `docker compose restart <service>`.
