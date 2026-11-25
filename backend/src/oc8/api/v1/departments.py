@@ -67,7 +67,7 @@ from oc8.departments.personal import (
     mark_frame_overridden,
     owned_personal_department,
 )
-from oc8.departments.repo import visible_department, visible_departments
+from oc8.departments.repo import is_private_to, visible_department, visible_departments
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDTO, TaskDTO
@@ -769,9 +769,14 @@ async def department_board(
     """
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
-    await _visible_department_or_404(
+    dept = await _visible_department_or_404(
         db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id, authority=authority
     )
+    # A personal department's tasks are what its owner's agents were asked to
+    # do (spec A4): a `department:manage` holder who reaches the department
+    # for its metadata gets the same 404 as the run list (ruling P1).
+    if is_private_to(actor.scope, kind=dept.kind, department_id=dept.id):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
 
     limit = max(1, min(limit, 200))
     rows = (

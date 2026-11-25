@@ -25,10 +25,11 @@ import logging
 import secrets
 import uuid
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, and_, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.approvals.repo import card_department, is_personal_card
 from oc8.authz.permissions import SEAT_PERMISSIONS
 from oc8.authz.scope import APPROVAL_VIEW
 from oc8.models.identity import OrgMember, OrgMemberDepartment
@@ -220,7 +221,12 @@ async def has_ever_been_bound(
 
 
 async def recipients(
-    db: AsyncSession, *, tenant_id: uuid.UUID, channel: str, department_id: uuid.UUID | None
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    channel: str,
+    department_id: uuid.UUID | None,
+    action_type: str,
 ) -> list[m.ApprovalChannelBinding]:
     """Everyone bound to this channel who may be told about THIS department's
     approval.
@@ -254,6 +260,11 @@ async def recipients(
     withdrawals with nothing logged and `raise_approval` succeeding. The only
     trace was a comment in migration 0046. One small indexed count per announce
     buys a line that names the row and the fix.
+
+    A personal department's card (`approvals.repo.is_personal_card`, so every
+    `action_type` but the budget incident, ruling R2) reaches its owner and
+    nobody else -- not `all_departments` (spec A4). `action_type` is required
+    for the same forcing reason as `department_id`.
     """
     seat = (
         select(OrgMemberDepartment.id)
@@ -269,9 +280,19 @@ async def recipients(
         )
         .exists()
     )
-    covers = (
-        OrgMember.all_departments if department_id is None else or_(OrgMember.all_departments, seat)
-    )
+    kind, owner_member_id = await card_department(db, department_id)
+    covers: ColumnElement[bool]
+    if is_personal_card(action_type, department_kind=kind):
+        # The owner's own seat, nothing else; a department with no owner
+        # reaches nobody (fail closed). A departed owner is dropped by
+        # `deleted_at IS NULL` below.
+        covers = (
+            and_(OrgMember.id == owner_member_id, seat) if owner_member_id is not None else false()
+        )
+    elif department_id is None:
+        covers = OrgMember.all_departments.is_(True)
+    else:
+        covers = or_(OrgMember.all_departments, seat)
 
     orphans = (
         await db.scalar(

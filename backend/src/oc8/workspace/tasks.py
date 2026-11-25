@@ -38,9 +38,9 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 
-from oc8.departments.repo import personal_content_hidden
+from oc8.departments.repo import personal_content_hidden, private_department_ids
 from oc8.models.core import Agent, Department
 from oc8.models.identity import OrgMember
 from oc8.models.ops import Task
@@ -150,6 +150,15 @@ async def visible_tasks(
         stmt = stmt.where(Task.department_id.in_(scope.viewable))
     else:
         return []
+    # A personal agent's task is its owner's alone (spec A4): its title is the
+    # work. `Task.department_id` is NOT NULL; a task handed to an agent of a
+    # private department from elsewhere is left out too (`assigned_agent_id`
+    # may be NULL, hence the explicit IS NULL).
+    private = private_department_ids(scope)
+    stmt = stmt.where(
+        Task.department_id.not_in(private),
+        or_(Agent.department_id.is_(None), Agent.department_id.not_in(private)),
+    )
 
     if department_id is not None:
         if not scope.may_view(department_id):

@@ -40,6 +40,7 @@ from oc8.approvals import (
     NotYourSayAtAll,
     UnknownDecision,
     UnknownOption,
+    announced_privately,
     decide_approval,
     raise_approval,
 )
@@ -3726,20 +3727,23 @@ async def execute_control_tool(
         )
         from oc8.realtime.bus import get_event_bus
 
-        await get_event_bus().publish_event(
-            tenant_id,
-            "approval.created",
-            {
-                "approval_id": str(approval.id),
-                "agent_id": str(agent.id),
-                # Carried in the envelope on purpose: the executor commits, not
-                # us, so a fresh session reading this row would see nothing
-                # (see EventBus._push_payload).
-                "title": approval.title,
-                "detail": approval.detail,
-            },
-            source=f"oc8/approval/{approval.id}",
-        )
+        # A member-owned or personal card was announced to its member alone
+        # (raise_approval), or to nobody: never tenant-wide (spec A4).
+        if not announced_privately(approval):
+            await get_event_bus().publish_event(
+                tenant_id,
+                "approval.created",
+                {
+                    "approval_id": str(approval.id),
+                    "agent_id": str(agent.id),
+                    # Carried in the envelope on purpose: the executor commits, not
+                    # us, so a fresh session reading this row would see nothing
+                    # (see EventBus._push_payload).
+                    "title": approval.title,
+                    "detail": approval.detail,
+                },
+                source=f"oc8/approval/{approval.id}",
+            )
         # Deliberately NOT a suspend: a queue behind this agent must not wait on
         # a human's lunch break. The decision comes back later as its own run.
         return ControlOutcome(

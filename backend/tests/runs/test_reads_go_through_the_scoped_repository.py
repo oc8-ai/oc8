@@ -82,6 +82,11 @@ ALLOWED: dict[str, str] = {
         "authorize_agent_write, which refuses a personal agent to all but its owner "
         "(is_private_to); answers 204, no content"
     ),
+    "api/v1/_serializers.py": (
+        "resolve_approval_names decorates cards visible_approvals/load_for_actor already "
+        "admitted (a personal agent's card to its owner alone); the reply_to excerpt and "
+        "run ids are read only for runs of those cards' own agents"
+    ),
     # --- Metadata only (ruling R2): ids and state, never content.
     "api/v1/agents.py": (
         "the agent detail's current_run is a run id only (R2 metadata); the "
@@ -141,13 +146,7 @@ ALLOWED: dict[str, str] = {
 #: Path -> the later PR 3 task that makes the read private-safe. Not ALLOWED:
 #: these reads are NOT fine yet; they are named so the sweep stays green while
 #: the finding stays visible.
-KNOWN_UNFIXED: dict[str, str] = {
-    "api/v1/_serializers.py": (
-        "Task 3 (approvals, queues, boards): resolve_approval_names reads the raising "
-        "run's reply_to message (a 200-character content excerpt) and run ids for "
-        "approval cards, without asking whether the run's agent is private to the reader"
-    ),
-}
+KNOWN_UNFIXED: dict[str, str] = {}
 
 
 def _swept_modules() -> list[pathlib.Path]:

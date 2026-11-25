@@ -22,11 +22,19 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.approvals.repo import department_after_person, direct_access_owner, is_member_owned
+from oc8.approvals.repo import (
+    card_department,
+    department_after_person,
+    direct_access_owner,
+    is_member_owned,
+    is_personal_card,
+    personal_owner_of,
+    private_card,
+)
 from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
@@ -349,6 +357,23 @@ async def raise_approval(
     )
     db.add(approval)
     await db.flush()
+    personal = False
+    if announce_to_member is None:
+        # A personal agent's card is its owner's alone (spec A4), announced
+        # the way a member-owned card is: to the owner's sockets and push
+        # subscriptions, and on the messenger to the owner's phone only
+        # (`channels.binding.recipients`). A departed owner is told nothing,
+        # and neither is anybody else; the row is kept.
+        kind, owner_member_id = await card_department(db, department_id)
+        personal = is_personal_card(action_type, department_kind=kind)
+        if personal:
+            owner = personal_owner_of(
+                approval, department_kind=kind, owner_member_id=owner_member_id
+            )
+            if owner is not None and await _member_present(db, tenant_id, owner):
+                announce_to_member = owner
+    if personal or announce_to_member is not None:
+        inspect(approval).info[_ANNOUNCED_PRIVATELY] = True
     if announce_to_member is not None:
         # A member-owned card (copilot direct access): its title and detail name
         # the person and their private purpose. Neither the tenant-wide event,
@@ -368,9 +393,43 @@ async def raise_approval(
             },
             source=f"oc8/approval/{approval.id}",
         )
-    else:
+    # The messenger: never for a member-owned card; for a personal one only
+    # while its owner is present, and then to the owner's phone alone.
+    if personal:
+        if announce_to_member is not None:
+            await _announce(db, approval)
+    elif announce_to_member is None:
         await _announce(db, approval)
     return approval
+
+
+#: `InstanceState.info` key: `raise_approval` told named members only, or nobody.
+_ANNOUNCED_PRIVATELY: Final = "oc8.approval.announced_privately"
+
+
+def announced_privately(approval: m.ApprovalRequest) -> bool:
+    """Whether `raise_approval` announced this card to named members only (a
+    member-owned card, a personal agent's) or to nobody (a personal agent's
+    whose owner has left). Every direct `approval.created` publisher asks it
+    and stays silent when it holds: the tenant-wide event, and the push to
+    every subscriber behind it, would carry the title and detail to the whole
+    company. Kept on the instance's state, not on the row: it describes this
+    raise, not the approval."""
+    return bool(inspect(approval).info.get(_ANNOUNCED_PRIVATELY))
+
+
+async def _member_present(db: AsyncSession, tenant_id: uuid.UUID, member_id: uuid.UUID) -> bool:
+    """The member row is live in this tenant (not offboarded). Read from the
+    database, never the identity map, like `departments.personal.
+    ensure_owner_present`."""
+    found = await db.scalar(
+        select(m.OrgMember.id).where(
+            m.OrgMember.id == member_id,
+            m.OrgMember.tenant_id == tenant_id,
+            m.OrgMember.deleted_at.is_(None),
+        )
+    )
+    return found is not None
 
 
 async def _department_of(
@@ -609,7 +668,10 @@ async def _raise_department_stage(db: AsyncSession, approval: m.ApprovalRequest)
         except Exception:
             logger.warning("could not announce approval %s", stage_id, exc_info=True)
 
-    publish_after_commit(db, _publish)
+    # A personal department holding the write: its owner was told
+    # (raise_approval); never tenant-wide (spec A4).
+    if not announced_privately(stage):
+        publish_after_commit(db, _publish)
 
 
 async def decide_approval(
@@ -659,6 +721,12 @@ async def decide_approval(
             # The Copilot's decide_approval acts AS the owner; letting it would
             # let the model approve its own request.
             raise NotYourSayAtAll("a direct-access approval is decided by the person, in oc8")
+    elif await private_card(db, approval, actor=actor):
+        # A personal agent's card is decided by its owner alone (spec A4):
+        # checked before `may_decide`, which `decide_everywhere`
+        # (`approval:decide_any`, `all_departments`) answers True for. Same
+        # sentence as a missing row.
+        raise NotYourDepartment("this approval belongs to another department")
     elif not actor.scope.may_decide(approval.department_id):
         raise NotYourDepartment("this approval belongs to another department")
     elif isinstance(actor, AgentActor) and isinstance(

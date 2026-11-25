@@ -124,7 +124,7 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import DERIVE, raise_approval
+from oc8.approvals import DERIVE, announced_privately, raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     NOT_THIS_CONNECTION,
@@ -1686,9 +1686,10 @@ async def run_agent(
                             parked.context = parked_ctx
                             from oc8.realtime.bus import get_event_bus
 
-                            # A member-owned card was announced to its member
-                            # alone (raise_approval); never tenant-wide.
-                            if held_terms is None or "announce_to_member" not in held_terms[2]:
+                            # A member-owned or personal card was announced to
+                            # its member alone (raise_approval), or to nobody;
+                            # never tenant-wide (spec A4).
+                            if not announced_privately(held_ar):
                                 await get_event_bus().publish_event(
                                     held_ar.tenant_id,
                                     "approval.created",
@@ -3150,9 +3151,10 @@ async def run_agent(
 
                             from oc8.realtime.bus import get_event_bus
 
-                            # A member-owned card was announced to its member
-                            # alone (raise_approval); never tenant-wide (R22).
-                            if hold_terms is None or "announce_to_member" not in hold_terms[2]:
+                            # A member-owned or personal card was announced to
+                            # its member alone (raise_approval), or to nobody;
+                            # never tenant-wide (R22, spec A4).
+                            if not announced_privately(ar):
                                 await get_event_bus().publish_event(
                                     ar.tenant_id,
                                     "approval.created",

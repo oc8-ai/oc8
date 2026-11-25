@@ -253,7 +253,9 @@ async def resolve_approval_names(
     `approvals/repo.py`, which is the security boundary, and widening it into a
     four-way join to decorate a screen is how a `WHERE` clause acquires a shape
     nobody can read. This runs afterwards, over rows the scope has already
-    admitted, so it can see nothing the caller could not.
+    admitted, so it can see nothing the caller could not -- a personal agent's
+    card is admitted to its owner alone (`approvals.repo.private_card`), and
+    the run excerpt and run id are read only for runs of the cards' own agents.
     """
     if not rows:
         return _NO_NAMES
@@ -283,7 +285,10 @@ async def resolve_approval_names(
         replies = (
             await db.execute(
                 select(m.AgentRun.id, m.AgentRun.context["reply_to_message_id"].astext).where(
-                    m.AgentRun.id.in_(run_ids)
+                    m.AgentRun.id.in_(run_ids),
+                    # The raising agent's own run only: the card was admitted,
+                    # so its agent is one the caller may see the content of.
+                    m.AgentRun.agent_id.in_(agent_ids),
                 )
             )
         ).all()
@@ -314,7 +319,7 @@ async def resolve_approval_names(
         rows = (
             await db.execute(
                 select(m.AgentRun.task_id, m.AgentRun.id)
-                .where(m.AgentRun.task_id.in_(ids))
+                .where(m.AgentRun.task_id.in_(ids), m.AgentRun.agent_id.in_(agent_ids))
                 .order_by(m.AgentRun.updated_at.asc())
             )
         ).all()

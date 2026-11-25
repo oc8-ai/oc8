@@ -82,7 +82,7 @@ from oc8.agent.tool_semantics import (
 )
 from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
-from oc8.approvals import raise_approval
+from oc8.approvals import announced_privately, raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -667,21 +667,24 @@ async def _stop_for_blast_radius(
     await _rebind_tenant(db, run.tenant_id)
     from oc8.realtime.bus import get_event_bus
 
-    await get_event_bus().publish_event(
-        run.tenant_id,
-        "approval.created",
-        {
-            "approval_id": str(ar.id),
-            "action_type": ar.action_type,
-            "status": ar.status,
-            # title/detail travel in the envelope so the push hook never has to
-            # re-read this row from a fresh, uncommitted-blind session (see
-            # EventBus._push_payload).
-            "title": ar.title,
-            "detail": ar.detail,
-        },
-        source=f"oc8/approval/{ar.id}",
-    )
+    # A member-owned or personal card was announced to its member alone
+    # (raise_approval), or to nobody: never tenant-wide (spec A4).
+    if not announced_privately(ar):
+        await get_event_bus().publish_event(
+            run.tenant_id,
+            "approval.created",
+            {
+                "approval_id": str(ar.id),
+                "action_type": ar.action_type,
+                "status": ar.status,
+                # title/detail travel in the envelope so the push hook never has to
+                # re-read this row from a fresh, uncommitted-blind session (see
+                # EventBus._push_payload).
+                "title": ar.title,
+                "detail": ar.detail,
+            },
+            source=f"oc8/approval/{ar.id}",
+        )
     return _tool_result(blast_refusal(touched, limit), is_error=True)
 
 
@@ -1176,21 +1179,24 @@ async def _call_tool(
         await _rebind_tenant(db, run.tenant_id)
         from oc8.realtime.bus import get_event_bus
 
-        await get_event_bus().publish_event(
-            run.tenant_id,
-            "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
-            source=f"oc8/approval/{ar.id}",
-        )
+        # A member-owned or personal card was announced to its member alone
+        # (raise_approval), or to nobody: never tenant-wide (spec A4).
+        if not announced_privately(ar):
+            await get_event_bus().publish_event(
+                run.tenant_id,
+                "approval.created",
+                {
+                    "approval_id": str(ar.id),
+                    "action_type": ar.action_type,
+                    "status": ar.status,
+                    # title/detail travel in the envelope so the push hook never
+                    # has to re-read this row from a fresh, uncommitted-blind
+                    # session (see EventBus._push_payload).
+                    "title": ar.title,
+                    "detail": ar.detail,
+                },
+                source=f"oc8/approval/{ar.id}",
+            )
         return _tool_result(
             f"This action needs human approval ({decision.reason or 'threshold reached'}). "
             "The run is parked; it continues once an operator decides. "
