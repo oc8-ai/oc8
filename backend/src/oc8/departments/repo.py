@@ -265,12 +265,18 @@ async def visible_department(
     return None
 
 
-async def member_departments(db: AsyncSession, *, member: OrgMember) -> list[Department]:
+async def member_departments(
+    db: AsyncSession, *, member: OrgMember, seats_only: bool = False
+) -> list[Department]:
     """The departments one member BELONGS to -- a live seat, or every department
     for `all_departments` -- ordered by name. Never the Assistant's own, never an
     archived one, and never another department of the tenant: a member with no
     seat gets nothing (fail closed). Never a `personal` department, not even the
     member's own: belonging to a team is what this answers, and that is not one.
+
+    `seats_only`: only the departments of a live seat row, `all_departments`
+    or not -- what a personal agent borrows knowledge from (spec A5, ruling
+    T6-2), where seeing every department is no seat in one.
 
     `populate_existing`: a frame edited since this session loaded the row (it
     keeps rows across commits) must be seen on the very next call."""
@@ -284,7 +290,7 @@ async def member_departments(db: AsyncSession, *, member: OrgMember) -> list[Dep
         )
         .order_by(Department.name, Department.id)
     )
-    if not member.all_departments:
+    if seats_only or not member.all_departments:
         seated = select(OrgMemberDepartment.department_id).where(
             OrgMemberDepartment.member_id == member.id,
             OrgMemberDepartment.revoked_at.is_(None),

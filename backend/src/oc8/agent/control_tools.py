@@ -55,7 +55,7 @@ from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.config import get_settings
 from oc8.connections.causal import causal_ancestors
 from oc8.copilot.notes import member_behind_run_task
-from oc8.departments.personal import withholds_content_from_trail
+from oc8.departments.personal import live_department_owner, withholds_content_from_trail
 from oc8.departments.repo import (
     private_department_ids_for_agent,
     visible_department,
@@ -1942,6 +1942,31 @@ async def person_token_role(
     return None
 
 
+async def owner_token_role(
+    db: AsyncSession, *, tenant_id: uuid.UUID, agent: m.Agent, run_id: uuid.UUID | None
+) -> str | None:
+    """The role claim this run carries for the owner of the agent's personal
+    department, or None: what a personal agent borrows knowledge with when
+    its owner has no assigned role (spec A5, ruling U4).
+
+    Only the OWNER's claim: the run's own claim counts when the run's
+    `originating_operator` is the owner (`chat.audience._role_for`'s shape),
+    otherwise the claim inherited along the causal chain (`person_token_role`,
+    which checks the subject itself). Anybody else's claim lends nothing."""
+    if run_id is None:
+        return None
+    owner_id = await live_department_owner(db, agent.id)
+    owner = await db.get(m.OrgMember, owner_id) if owner_id is not None else None
+    if owner is None:
+        return None
+    claim = await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id)
+    if claim is not None:
+        run = await db.get(m.AgentRun, run_id)
+        acting = (run.context or {}).get("originating_operator") if run is not None else None
+        return claim if acting == owner.subject else None
+    return await person_token_role(db, tenant_id=tenant_id, run_id=run_id, person=owner)
+
+
 async def _context_kb_ids(
     db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID | None
 ) -> frozenset[uuid.UUID] | None:
@@ -3291,6 +3316,9 @@ async def execute_control_tool(
             # What the member pinned to the chat or its project: their release.
             released_kb_ids=released,
             skipped_local=skipped_local,
+            # A personal agent borrows its owner's departments' bases with the
+            # owner's authority, and this turn's claim only if it is theirs.
+            token_role=await owner_token_role(db, tenant_id=tenant_id, agent=agent, run_id=run_id),
         )
         # A base that could not be searched with this model is said, once, in
         # a fixed line the chat shows the member under the answer's steps --

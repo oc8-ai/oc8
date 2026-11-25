@@ -27,6 +27,7 @@ from oc8.agent.control_tools import (
     _acting_token_role,
     _resolve_agent_actor,
     copilot_person,
+    owner_token_role,
     person_token_role,
 )
 from oc8.agent.harness.caps import ModelCaps
@@ -52,7 +53,7 @@ from oc8.authz.scope import AgentActor
 from oc8.connections.tool_connection import tool_connections
 from oc8.connections.usable import needs_department
 from oc8.copilot.notes import member_behind_run_task
-from oc8.knowledge.retrieval import granted_kb_ids, retrieve_kb_context
+from oc8.knowledge.retrieval import granted_kb_ids, lending_departments, retrieve_kb_context
 from oc8.memory.router import retrieve_context
 from oc8.modelrouter import NeutralMessage
 from oc8.modelrouter.types import ImagePart, TextPart
@@ -465,6 +466,13 @@ async def build_run_preamble(
     if memory_ctx:
         messages.append(NeutralMessage(role="system", content=memory_ctx))
 
+    # Resolved once for this run (spec A5): what the up-front retrieval reads
+    # and what `has_knowledge` offers search_knowledge for cannot disagree.
+    lenders = await lending_departments(
+        db,
+        agent=agent,
+        token_role=await owner_token_role(db, tenant_id=tenant_id, agent=agent, run_id=run_id),
+    )
     kb_ctx, contains_restricted = await retrieve_kb_context(
         db,
         agent=agent,
@@ -472,10 +480,11 @@ async def build_run_preamble(
         query_text=task_text,
         frame=frame,
         model_locality=model_locality,
+        lenders=lenders,
     )
     if kb_ctx:
         messages.append(NeutralMessage(role="system", content=kb_ctx))
-    has_knowledge = bool(await granted_kb_ids(db, agent=agent))
+    has_knowledge = bool(await granted_kb_ids(db, agent=agent, lenders=lenders))
 
     instruction_file_count = (
         await db.scalar(

@@ -77,13 +77,24 @@ async def _role(db: Any, tenant: uuid.UUID, *permissions: str) -> m.Role:
     return role
 
 
-async def _member(db: Any, tenant: uuid.UUID, subject: str, role: m.Role) -> m.OrgMember:
+async def _member(
+    db: Any,
+    tenant: uuid.UUID,
+    subject: str,
+    role: m.Role | None,
+    *,
+    last_token_role: str | None = None,
+    all_departments: bool = False,
+) -> m.OrgMember:
     member = m.OrgMember(
         tenant_id=tenant,
         subject=subject,
         subject_uuid=uuid.uuid5(uuid.NAMESPACE_URL, f"oc8:subject:{subject}:{tenant}"),
         display_name=subject.title(),
-        role_id=role.id,
+        role_id=None if role is None else role.id,
+        last_token_role=last_token_role,
+        last_token_role_at=None if last_token_role is None else dt.datetime.now(dt.UTC),
+        all_departments=all_departments,
     )
     db.add(member)
     await db.flush()
@@ -127,9 +138,22 @@ async def _world(
     knowledge_view: bool = True,
     dept_frame: dict[str, Any] | None = None,
     personal_frame: dict[str, Any] | None = None,
+    assigned: bool = True,
+    last_token_role: str | None = None,
+    all_departments: bool = False,
+    seated: bool = True,
 ) -> _World:
+    """`assigned=False` gives an owner with no assigned role (`role_id` NULL),
+    the default for a member minted from a token or provisioned."""
     granted = [perm(AGENT, VIEW)] + ([perm(KNOWLEDGE, VIEW)] if knowledge_view else [])
-    owner = await _member(db, tenant, "owner", await _role(db, tenant, *granted))
+    owner = await _member(
+        db,
+        tenant,
+        "owner",
+        await _role(db, tenant, *granted) if assigned else None,
+        last_token_role=last_token_role,
+        all_departments=all_departments,
+    )
     personal = m.Department(
         tenant_id=tenant,
         name="Owner",
@@ -143,7 +167,8 @@ async def _world(
     db.add_all([personal, dept])
     await db.flush()
     seat = _seat(tenant, owner, dept)
-    db.add(seat)
+    if seated:
+        db.add(seat)
     kb = await _kb(db, tenant, "Vertraege", _KB_TEXT)
     db.add(_grant(tenant, kb, dept))
     pia = m.Agent(
@@ -179,7 +204,13 @@ async def _world(
     )
 
 
-async def _search(db: Any, w: _World, query: str = "Rahmenvertrag Lieferant") -> str:
+async def _search(
+    db: Any,
+    w: _World,
+    query: str = "Rahmenvertrag Lieferant",
+    *,
+    run_id: uuid.UUID | None = None,
+) -> str:
     outcome = await execute_control_tool(
         db,
         tenant_id=w.tenant,
@@ -191,12 +222,13 @@ async def _search(db: Any, w: _World, query: str = "Rahmenvertrag Lieferant") ->
         active_skills=[],
         mcp_conn=None,
         originating_operator=None,
+        run_id=run_id,
     )
     assert outcome is not None
     return outcome.output
 
 
-async def _has_knowledge(db: Any, w: _World) -> bool:
+async def _has_knowledge(db: Any, w: _World, *, run_id: uuid.UUID | None = None) -> bool:
     pre = await build_run_preamble(
         db,
         agent=w.pia,
@@ -206,8 +238,25 @@ async def _has_knowledge(db: Any, w: _World) -> bool:
         model_locality="eu",
         caps=ModelCaps(),
         max_steps=40,
+        task=w.task,
+        run_id=run_id,
     )
     return pre.has_knowledge
+
+
+async def _chat_run(db: Any, w: _World, *, subject: str, role: str) -> uuid.UUID:
+    """A web chat turn of the personal agent, carrying `subject`'s role claim."""
+    run = m.AgentRun(
+        tenant_id=w.tenant,
+        agent_id=w.pia.id,
+        task_id=w.task.id,
+        state="running",
+        source="chat",
+        context={"operator_role": role, "originating_operator": subject},
+    )
+    db.add(run)
+    await db.flush()
+    return run.id
 
 
 async def test_personal_agent_searches_the_knowledge_of_the_owners_department(
@@ -217,7 +266,7 @@ async def test_personal_agent_searches_the_knowledge_of_the_owners_department(
     async with app_session(tenant) as db:
         w = await _world(db, tenant)
 
-        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: w.dept.id}
+        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: {w.dept.id}}
         assert w.kb.id in await granted_kb_ids(db, agent=w.pia)
         assert _KB_TEXT in await _search(db, w)
 
@@ -319,7 +368,7 @@ async def test_no_knowledge_from_personal_or_assistant_departments(
         )
         await db.flush()
 
-        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: w.dept.id}
+        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: {w.dept.id}}
         assert await granted_kb_ids(db, agent=w.pia) == {w.kb.id, own_kb.id}
 
 
@@ -469,7 +518,7 @@ async def test_the_agents_own_grant_wins_over_the_borrowed_one(
         db.add(_grant(tenant, w.kb, w.pia))
         await db.flush()
 
-        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: w.dept.id}
+        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: {w.dept.id}}
         context, _ = await retrieve_kb_context(
             db,
             agent=w.pia,
@@ -536,3 +585,223 @@ async def test_standard_agent_knowledge_is_unchanged(app_session: AppSessionFact
             db, agent=nora, tenant_id=tenant, query_text="Rahmenvertrag", frame={}
         )
         assert _KB_TEXT in context
+
+
+# ------------------------------------------------ whose authority decides (U4)
+#
+# The owner's authority for A5: the assigned role; else the run's own token
+# claim, only when the claim is the owner's; else the role of the owner's last
+# token; else nothing. `role_id` NULL is the default for a member minted from a
+# token or provisioned, so the last three terms are what most owners rely on.
+
+
+async def test_a_claimless_run_borrows_through_the_owners_last_token_role(
+    app_session: AppSessionFactory,
+) -> None:
+    """A trigger-like run (no claim at all) of an owner with no assigned role:
+    the role of their last token (`operator` holds `knowledge:view`) decides."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, assigned=False, last_token_role="operator")
+
+        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: {w.dept.id}}
+        assert _KB_TEXT in await _search(db, w)
+        assert await _has_knowledge(db, w) is True
+
+
+async def test_a_last_token_role_without_knowledge_view_borrows_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, assigned=False, last_token_role="member")
+
+        assert await borrowed_kb_sources(db, agent=w.pia) == {}
+        assert _KB_TEXT not in await _search(db, w)
+
+
+async def test_no_assigned_role_and_no_token_seen_borrows_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, assigned=False)
+
+        assert await borrowed_kb_sources(db, agent=w.pia) == {}
+        assert _KB_TEXT not in await _search(db, w)
+
+
+async def test_the_runs_claim_counts_only_when_it_is_the_owners(
+    app_session: AppSessionFactory,
+) -> None:
+    """The owner's own chat turn lends its claim; a turn carrying somebody
+    else's claim lends nothing, and the owner's stored role (`member`, no
+    knowledge:view) decides."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, assigned=False, last_token_role="member")
+
+        own = await _chat_run(db, w, subject=w.owner.subject, role="operator")
+        assert _KB_TEXT in await _search(db, w, run_id=own)
+        assert await _has_knowledge(db, w, run_id=own) is True
+
+        foreign = await _chat_run(db, w, subject="somebody-else", role="org_admin")
+        assert _KB_TEXT not in await _search(db, w, run_id=foreign)
+        assert await _has_knowledge(db, w, run_id=foreign) is False
+
+
+async def test_an_assigned_role_wins_over_every_token_role(
+    app_session: AppSessionFactory,
+) -> None:
+    """An assigned role without knowledge:view: neither the owner's own claim
+    nor their last token role (both `org_admin`) brings the bases back."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, knowledge_view=False, last_token_role="org_admin")
+        own = await _chat_run(db, w, subject=w.owner.subject, role="org_admin")
+
+        assert _KB_TEXT not in await _search(db, w, run_id=own)
+        assert await _has_knowledge(db, w, run_id=own) is False
+
+
+async def test_an_offboarded_owner_with_a_last_token_role_borrows_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, assigned=False, last_token_role="org_admin")
+        own = await _chat_run(db, w, subject=w.owner.subject, role="org_admin")
+        await db.execute(
+            update(m.OrgMember)
+            .where(m.OrgMember.id == w.owner.id)
+            .values(deleted_at=dt.datetime.now(dt.UTC))
+        )
+        await db.flush()
+
+        assert await borrowed_kb_sources(db, agent=w.pia) == {}
+        assert _KB_TEXT not in await _search(db, w, run_id=own)
+
+
+# ------------------------------------------------------ lenders (T6-2, T6-3)
+
+
+async def test_all_departments_alone_lends_nothing(app_session: AppSessionFactory) -> None:
+    """`all_departments` sees every department; it is no seat in one, and only
+    a real seat row makes a department lend its bases (ruling T6-2)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, all_departments=True, seated=False)
+
+        assert await borrowed_kb_sources(db, agent=w.pia) == {}
+        assert _KB_TEXT not in await _search(db, w)
+
+
+async def test_a_base_lent_by_two_departments_is_cleared_by_either(
+    app_session: AppSessionFactory,
+) -> None:
+    """K is lent by D (clears only `public`) and by E (clears `restricted`
+    too). The restricted chunk is cleared through E -- the union over lenders
+    of personal ∩ lender (ruling T6-3) -- and both lenders are named."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        personal_frame = {"closed": True, **_WITH_RESTRICTED}
+        w = await _world(
+            db, tenant, personal_frame=personal_frame, dept_frame={"cleared_classes": ["public"]}
+        )
+        other = m.Department(tenant_id=tenant, name="Zentrale", frame=dict(_WITH_RESTRICTED))
+        db.add(other)
+        await db.flush()
+        db.add_all([_seat(tenant, w.owner, other), _grant(tenant, w.kb, other)])
+        await ingest_document(
+            db,
+            tenant_id=tenant,
+            kb_id=w.kb.id,
+            filename="gehalt.txt",
+            content=_RESTRICTED_TEXT,
+            content_type="text/plain",
+        )
+        await db.execute(
+            update(m.KbChunk)
+            .where(m.KbChunk.kb_id == w.kb.id, m.KbChunk.content.contains("Gehaltsband"))
+            .values(classification="restricted")
+        )
+        await db.flush()
+
+        assert await borrowed_kb_sources(db, agent=w.pia) == {w.kb.id: {w.dept.id, other.id}}
+        context, contains_restricted = await retrieve_kb_context(
+            db,
+            agent=w.pia,
+            tenant_id=tenant,
+            query_text="Gehaltsband Rahmenvertrag",
+            frame=personal_frame,
+            model_locality="local",
+        )
+        assert _RESTRICTED_TEXT in context
+        assert _KB_TEXT in context
+        assert contains_restricted is True
+
+
+async def test_two_lenders_never_clear_more_than_the_personal_frame(
+    app_session: AppSessionFactory,
+) -> None:
+    """Both lenders clear `restricted`, the personal frame does not: the
+    union of the intersections stays within the personal frame."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        personal_frame = {"closed": True, **_WITHOUT_RESTRICTED}
+        w = await _world(
+            db, tenant, personal_frame=personal_frame, dept_frame=dict(_WITH_RESTRICTED)
+        )
+        other = m.Department(tenant_id=tenant, name="Zentrale", frame=dict(_WITH_RESTRICTED))
+        db.add(other)
+        await db.flush()
+        db.add_all([_seat(tenant, w.owner, other), _grant(tenant, w.kb, other)])
+        await ingest_document(
+            db,
+            tenant_id=tenant,
+            kb_id=w.kb.id,
+            filename="gehalt.txt",
+            content=_RESTRICTED_TEXT,
+            content_type="text/plain",
+        )
+        await db.execute(
+            update(m.KbChunk)
+            .where(m.KbChunk.kb_id == w.kb.id, m.KbChunk.content.contains("Gehaltsband"))
+            .values(classification="restricted")
+        )
+        await db.flush()
+
+        context, _ = await retrieve_kb_context(
+            db,
+            agent=w.pia,
+            tenant_id=tenant,
+            query_text="Gehaltsband Rahmenvertrag",
+            frame=personal_frame,
+            model_locality="local",
+        )
+        assert _KB_TEXT in context
+        assert _RESTRICTED_TEXT not in context
+
+
+async def test_the_preamble_resolves_the_lenders_once(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """M-2: one resolution per preamble build, shared by the up-front
+    retrieval and `has_knowledge`."""
+    import oc8.knowledge.retrieval as retrieval
+
+    calls = 0
+    real = retrieval.lending_departments
+
+    async def counting(*a: Any, **kw: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return await real(*a, **kw)
+
+    monkeypatch.setattr(retrieval, "lending_departments", counting)
+    monkeypatch.setattr("oc8.agent.preamble.lending_departments", counting)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+        assert await _has_knowledge(db, w) is True
+    assert calls == 1
