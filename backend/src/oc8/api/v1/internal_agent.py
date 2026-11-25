@@ -3261,7 +3261,9 @@ async def _dispatch_one_tool(
     if suspend is not None:
         return ToolResult(status=suspend, output=output, spill=spill_payload)
     return ToolResult(
-        status="denied" if decision.effect is Effect.DENY else "ok",
+        # A core read that ran under the routine frame denial ran: "denied"
+        # would make the code-mode SDK raise ToolDenied over its output.
+        status=("denied" if decision.effect is Effect.DENY and not ran_despite_denial else "ok"),
         output=output,
         spill=spill_payload,
     )

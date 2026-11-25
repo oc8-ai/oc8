@@ -580,7 +580,8 @@ async def test_the_isolated_runtime_audits_a_core_tool_that_ran_as_allowed(
     todos = [{"content": "check", "status": "completed"}]
     code, body = await _post_tool(tenant, agent_id, run_id, "todo_write", {"todos": todos})
     assert code == 200, body
-    # It ran. (The isolated /tool still reports the PEP's "denied" status.)
+    # It ran, and the SDK is told so (a "denied" status raises ToolDenied).
+    assert body["status"] == "ok", body
     assert "Updated todo list" in body["output"], body
     (call,) = await _tool_events(app_session, tenant, "tool.call:todo_write")
     assert call.decision == "allow"
@@ -651,7 +652,8 @@ async def test_the_isolated_runtime_audits_a_copilot_core_read_with_no_connectio
     tenant, agent_id, run_id = await _isolated_core_run(app_session)
     code, body = await _post_tool(tenant, agent_id, run_id, "todo_write", _TODOS)
     assert code == 200, body
-    # It ran. (The isolated /tool still reports the PEP's "denied" status.)
+    # It ran, and the SDK is told so (a "denied" status raises ToolDenied).
+    assert body["status"] == "ok", body
     assert "Updated todo list" in body["output"], body
     (call,) = await _tool_events(app_session, tenant, "tool.call:todo_write")
     assert call.decision == "allow"
