@@ -297,13 +297,15 @@ def _limit(value: Any) -> int | None:
 async def personal_defaults(db: AsyncSession, *, tenant_id: uuid.UUID) -> PersonalDefaults:
     """The tenant's defaults for personal departments.
 
-    The feature is an administrator's opt-in: with the enabled key absent (or
-    anything but `true`) it reads as disabled. A missing org row or a
-    malformed value reads as the default -- disabled, no tools, no limits.
+    The feature is on by default now that a personal department's content is
+    private to its owner (spec A1, switched in PR 3): only an explicit `false`
+    -- an administrator who turned it off -- reads as disabled. A missing org
+    row or a malformed value reads as the default -- enabled, no tools, no
+    limits.
     """
     org = await db.get(m.Organization, tenant_id)
     settings: dict[str, Any] = org.settings if org is not None and org.settings else {}
-    enabled = settings.get(ENABLED_KEY) is True
+    enabled = settings.get(ENABLED_KEY) is not False
     tools = settings.get(FRAME_KEY)
     budget = settings.get(BUDGET_KEY)
     if not isinstance(budget, dict):

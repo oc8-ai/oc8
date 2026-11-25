@@ -244,6 +244,21 @@ async def _audits(app_session: AppSessionFactory, w: _World, action: str) -> lis
         return [dict(e.resource) for e in rows.scalars().all()]
 
 
+async def test_settings_switch_reads_on_when_never_set(app_session: AppSessionFactory) -> None:
+    # PR 3 switched personal departments on by default (spec A1).
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        org = await db.get(m.Organization, w.tenant)
+        assert org is not None
+        org.settings = {k: v for k, v in (org.settings or {}).items() if k != ENABLED_KEY}
+    async with _http() as c:
+        got = await c.get(
+            "/api/v1/settings/personal-departments", headers=_headers(w.tenant, "operator")
+        )
+    assert got.status_code == 200, got.text
+    assert got.json() == {"enabled": True, "maxAgents": 10}
+
+
 async def test_settings_switch_read_write_and_gate(app_session: AppSessionFactory) -> None:
     w = await _world(app_session, settings={ENABLED_KEY: False})
     url = "/api/v1/settings/personal-departments"

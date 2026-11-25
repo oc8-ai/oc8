@@ -90,18 +90,25 @@ async def _live_seats(
 
 
 async def test_defaults_when_nothing_is_set(app_session: AppSessionFactory) -> None:
-    # Controller ruling C2: the feature is an admin opt-in, so an absent key
-    # reads as disabled.
+    # PR 3 switched the default on (spec A1): now that a personal department's
+    # content is private to its owner, an absent key reads as enabled.
     tenant, _ = await _tenant(app_session, {})
     async with app_session(tenant) as db:
         d = await personal_defaults(db, tenant_id=tenant)
     assert d == PersonalDefaults(
-        enabled=False, frame_tools={}, soft_limit_tokens=None, hard_limit_tokens=None
+        enabled=True, frame_tools={}, soft_limit_tokens=None, hard_limit_tokens=None
     )
 
 
-async def test_absent_enabled_key_reads_as_disabled(app_session: AppSessionFactory) -> None:
+async def test_absent_key_reads_as_enabled(app_session: AppSessionFactory) -> None:
     tenant, _ = await _tenant(app_session, {FRAME_KEY: {"x": {"enabled": True}}})
+    async with app_session(tenant) as db:
+        assert (await personal_defaults(db, tenant_id=tenant)).enabled is True
+
+
+async def test_explicit_false_reads_as_disabled(app_session: AppSessionFactory) -> None:
+    # An administrator who switched the feature off keeps it off.
+    tenant, _ = await _tenant(app_session, {ENABLED_KEY: False})
     async with app_session(tenant) as db:
         assert (await personal_defaults(db, tenant_id=tenant)).enabled is False
 
@@ -111,7 +118,7 @@ async def test_defaults_without_an_org_row(app_session: AppSessionFactory) -> No
     async with app_session(tenant) as db:
         d = await personal_defaults(db, tenant_id=tenant)
     assert d == PersonalDefaults(
-        enabled=False, frame_tools={}, soft_limit_tokens=None, hard_limit_tokens=None
+        enabled=True, frame_tools={}, soft_limit_tokens=None, hard_limit_tokens=None
     )
 
 
@@ -126,8 +133,10 @@ async def test_malformed_values_read_as_the_defaults(app_session: AppSessionFact
     )
     async with app_session(tenant) as db:
         d = await personal_defaults(db, tenant_id=tenant)
+    # A malformed switch reads as the default (on); only an explicit `false`
+    # turns the feature off.
     assert d == PersonalDefaults(
-        enabled=False, frame_tools={}, soft_limit_tokens=None, hard_limit_tokens=None
+        enabled=True, frame_tools={}, soft_limit_tokens=None, hard_limit_tokens=None
     )
 
 
@@ -230,8 +239,16 @@ async def test_disabled_refuses_creation(app_session: AppSessionFactory) -> None
         assert await owned_personal_department(db, tenant_id=tenant, member_id=member_id) is None
 
 
-async def test_absent_enabled_key_refuses_creation(app_session: AppSessionFactory) -> None:
+async def test_absent_enabled_key_allows_creation(app_session: AppSessionFactory) -> None:
+    # On by default since PR 3 (spec A1).
     tenant, member_id = await _tenant(app_session, {})
+    async with app_session(tenant) as db:
+        dept = await get_or_create_personal_department(db, member=await _member(db, member_id))
+        assert dept.kind == DEPARTMENT_KIND_PERSONAL
+
+
+async def test_explicit_false_refuses_creation(app_session: AppSessionFactory) -> None:
+    tenant, member_id = await _tenant(app_session, {ENABLED_KEY: False})
     async with app_session(tenant) as db:
         member = await _member(db, member_id)
         with pytest.raises(PersonalDepartmentsDisabled):
