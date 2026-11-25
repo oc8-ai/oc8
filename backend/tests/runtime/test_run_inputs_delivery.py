@@ -236,6 +236,57 @@ def _raising() -> _FnRuntime:
     return _FnRuntime(fn)
 
 
+async def _asked(app_session: AppSessionFactory, world: _World) -> None:
+    """The user turn the run answers, in the chat's tree."""
+    from oc8.chat import tree
+
+    async with app_session(world.tenant) as db:
+        session = await db.get(m.ChatSession, world.session_id)
+        run = await db.get(m.AgentRun, world.run_id)
+        assert session is not None and run is not None
+        asked = m.ChatMessage(
+            tenant_id=world.tenant,
+            session_id=session.id,
+            role="user",
+            content="Wie viele sind offen?",
+            author_member_id=world.member_id,
+        )
+        await tree.append_person_write(db, session=session, message=asked)
+        run.context = {**run.context, "reply_to_message_id": str(asked.id)}
+        await db.commit()
+
+
+def _record_carry_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list[list[ConsumedInput]], list[uuid.UUID]]:
+    published = _record_publish(monkeypatch)
+    started: list[uuid.UUID] = []
+
+    async def _publish_run(*, run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
+        started.append(run_id)
+
+    monkeypatch.setattr("oc8.runtime.intake.publish_run", _publish_run)
+    return published, started
+
+
+async def _answered_then_carried(
+    app_session: AppSessionFactory,
+    world: _World,
+    published: list[list[ConsumedInput]],
+    started: list[uuid.UUID],
+) -> None:
+    """The run's own failure answer, then the queued message as the next
+    turn -- announced and started after commit."""
+    await _after_commit_events()
+    await _carried(app_session, world, ended="failed")
+    runs, messages, inputs = await _state(app_session, world)
+    assert [msg.role for msg in messages] == ["user", "assistant", "user"]
+    assert "didn't work out" in messages[1].content
+    assert [[c.id for c in batch] for batch in published] == [[inputs[0].id]]
+    assert published[0][0].step == CARRIED_OVER_STEP
+    assert started == [runs[1].id]
+
+
 async def _carried(app_session: AppSessionFactory, world: _World, *, ended: str) -> None:
     runs, messages, inputs = await _state(app_session, world)
     assert [r.state for r in runs] == [ended, "queued"], "the queued message is the next turn"
@@ -270,13 +321,14 @@ async def test_a_crashed_runs_queued_message_becomes_the_next_turn(
 
 
 async def test_an_abandoned_runs_queued_message_becomes_the_next_turn(
-    app_session: AppSessionFactory, redis_url: str
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sqlalchemy import update
 
     from oc8.runtime.reconcile import close_abandoned_runs
 
     world = await _world(app_session, messenger=False)
+    await _asked(app_session, world)
     async with app_session(world.tenant) as db:
         db.add(m.Organization(id=world.tenant, slug=f"t-{world.tenant.hex[:8]}", name="T"))
         await db.flush()
@@ -287,14 +339,15 @@ async def test_an_abandoned_runs_queued_message_becomes_the_next_turn(
         )
         await db.commit()
     await _queued_input(app_session, world)
+    published, started = _record_carry_events(monkeypatch)
 
     assert world.run_id in await close_abandoned_runs()
 
-    await _carried(app_session, world, ended="failed")
+    await _answered_then_carried(app_session, world, published, started)
 
 
 async def test_a_reclaimed_dead_runs_queued_message_becomes_the_next_turn(
-    app_session: AppSessionFactory, redis_url: str
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from sqlalchemy import update
 
@@ -302,6 +355,7 @@ async def test_a_reclaimed_dead_runs_queued_message_becomes_the_next_turn(
     from oc8.runtime.queue import RunMessage
 
     world = await _world(app_session, messenger=False)
+    await _asked(app_session, world)
     async with app_session(world.tenant) as db:
         await db.execute(
             update(m.AgentRun)
@@ -310,6 +364,7 @@ async def test_a_reclaimed_dead_runs_queued_message_becomes_the_next_turn(
         )
         await db.commit()
     await _queued_input(app_session, world)
+    published, started = _record_carry_events(monkeypatch)
 
     await recover_reclaimed(
         RunMessage(
@@ -317,7 +372,7 @@ async def test_a_reclaimed_dead_runs_queued_message_becomes_the_next_turn(
         )
     )
 
-    await _carried(app_session, world, ended="failed")
+    await _answered_then_carried(app_session, world, published, started)
 
 
 async def test_a_run_cancelled_while_queued_cancels_its_queued_message(
@@ -395,3 +450,31 @@ async def test_a_queued_message_is_refused_on_a_run_that_is_not_a_chat_turn(
     with pytest.raises(InputRefused) as refused:
         await _queued_input(app_session, world)
     assert refused.value.status_code == 409
+
+
+async def test_a_crash_after_somebody_else_failed_the_run_carries_nothing_over(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The reconciler failed the run while its runtime was still working:
+    that ending stands, with its own answer and carry-over. The executor
+    coming back with a crash neither carries the queued message over a
+    second time nor records a second failure answer."""
+    from sqlalchemy import update
+
+    world = await _world(app_session, messenger=False)
+    await _asked(app_session, world)
+    await _queued_input(app_session, world)
+
+    async def fn(db: Any, **kw: Any) -> RunResult:
+        # Somebody else's verdict, as the database has it.
+        await db.execute(
+            update(m.AgentRun).where(m.AgentRun.id == world.run_id).values(state="failed")
+        )
+        raise RuntimeError("the model provider is down")
+
+    await _execute(world, _FnRuntime(fn))
+
+    runs, messages, inputs = await _state(app_session, world)
+    assert [r.state for r in runs] == ["failed"], "no second turn"
+    assert [msg.role for msg in messages] == ["user"], "no failure answer of this executor's"
+    assert [i.consumed_at for i in inputs] == [None]

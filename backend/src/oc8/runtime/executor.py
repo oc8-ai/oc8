@@ -155,30 +155,47 @@ async def _apply_entered_mode(db: AsyncSession, run: m.AgentRun) -> None:
     await apply_entered_mode(db, run=run)
 
 
-async def _answer_failed_chat_run(
-    db: AsyncSession,
-    run: m.AgentRun,
-    channel_replies: list[tuple[uuid.UUID, str, str, str]],
-) -> None:
-    """A chat turn that FAILED without an output of its own still answers: the
-    canned failure line in the transcript, the plain one to a channel sender,
-    the queued (`next_turn`) inputs carried over as the next turn (published
-    after commit), and the unread follow-ups told they were not read. No-op
-    for other runs. The caller holds `lock_run_inputs`."""
+async def answer_failed_chat_end(db: AsyncSession, run: m.AgentRun) -> None:
+    """The transcript side of a chat turn that FAILED without an output of its
+    own: the canned failure line as the run's answer, then its queued
+    (`next_turn`) inputs as the next turn after it (published after commit).
+    For whoever ended the run -- this executor, the reconciler, a reclaim --
+    and only for them: the caller holds `lock_run_inputs` and has made the
+    FAILED transition itself. No-op for other runs."""
     if run.source != "chat":
         return
     from oc8.chat.carry_over import end_queued_inputs
     from oc8.chat.service import record_assistant_reply
 
     await record_assistant_reply(db, run=run, output=_chat_run_failed_answer(run.id))
+    await end_queued_inputs(db, run=run, carry_over=True)
+
+
+async def _answer_failed_chat_run(
+    db: AsyncSession,
+    run: m.AgentRun,
+    channel_replies: list[tuple[uuid.UUID, str, str, str]],
+    *,
+    ended_here: bool,
+) -> None:
+    """A chat turn that FAILED without an output of its own still answers:
+    `answer_failed_chat_end`, the plain line to a channel sender, and the
+    unread follow-ups told they were not read. No-op for other runs. The
+    caller holds `lock_run_inputs`.
+
+    `ended_here` is `run_still_open`, asked under that lock BEFORE the FAILED
+    transition: False when somebody else (the reconciler) ended the run
+    meanwhile -- the transition then leaves their verdict standing, and their
+    end already answered and carried over, so the transcript gets nothing
+    more. The channel sender still hears it: no other end tells them."""
+    if run.source != "chat":
+        return
+    if ended_here:
+        await answer_failed_chat_end(db, run)
     sender = await _current_chat_sender(db, run)
     if sender is not None:
         channel, external_id = sender
         channel_replies.append((run.tenant_id, channel, external_id, _CHAT_RUN_FAILED))
-    # No `run_still_open` here: the caller already made the FAILED transition,
-    # whose state guard refuses a run somebody else ended, under the run row
-    # lock the executor holds for the whole run.
-    await end_queued_inputs(db, run=run, carry_over=True)
     await _tell_unread_inputs(db, run, channel_replies)
 
 
@@ -204,6 +221,12 @@ async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, 
 #: Told once to a messenger sender whose failed run never read what they
 #: wrote to it (Ruling 59): it is not carried over, so they must know.
 _UNREAD_AFTER_FAILURE = "Deine letzte Nachricht kam nicht mehr an – schick sie bitte nochmal."  # noqa: RUF001
+
+
+async def _run_still_open(db: AsyncSession, run: m.AgentRun) -> bool:
+    from oc8.chat.carry_over import run_still_open
+
+    return await run_still_open(db, run_id=run.id)
 
 
 async def _end_queued_inputs(db: AsyncSession, run: m.AgentRun, *, carry_over: bool) -> None:
@@ -1106,9 +1129,15 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 error = mcp_error
                 await merge_context(db, run, {"error": error})
                 await settle_agent_status(db, agent, "idle")
-                # A failed end: what was queued for after it is the next turn.
-                await _end_queued_inputs(db, run, carry_over=True)
+                # No input arrives until this commits; asked before the
+                # transition, as at every other end.
+                await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                ended_here = await _run_still_open(db, run)
                 await repo.transition(run, RunState.FAILED)
+                if ended_here:
+                    # The chat's answer, then what was queued for after it.
+                    # Its messenger sender is not told here, as before.
+                    await answer_failed_chat_end(db, run)
                 await record_activity(
                     db,
                     tenant_id=tenant_id,
@@ -1427,6 +1456,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                 # As at every end: no input arrives until this commits.
                 await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                # Asked before the transition, which leaves a run somebody
+                # else ended as they left it: only an end of ours answers.
+                ended_here = await _run_still_open(db, run)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -1445,7 +1477,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # user's message and nothing after it, on every surface, for
                 # ever. The generic status branch below has always recorded
                 # one; this one now does too.
-                await _answer_failed_chat_run(db, run, channel_replies)
+                await _answer_failed_chat_run(db, run, channel_replies, ended_here=ended_here)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -1591,6 +1623,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                         # As at every end: no input arrives until this commits.
                         await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                        ended_here = await _run_still_open(db, run)
                         await repo.transition(run, RunState.FAILED)
                         await _apply_entered_mode(db, run)
                         await record_activity(
@@ -1606,7 +1639,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         record_run_outcome(RunState.FAILED.value)
                         # Same gap the crash path had: without this the member's
                         # answer stays the chat's last line for ever.
-                        await _answer_failed_chat_run(db, run, channel_replies)
+                        await _answer_failed_chat_run(
+                            db, run, channel_replies, ended_here=ended_here
+                        )
                 else:
                     run.task_id = result.task_id
                     await merge_context(
@@ -1904,9 +1939,18 @@ async def recover_reclaimed(message: RunMessage) -> None:
             if agent is not None:
                 agent.status = "idle"
                 await publish_agent_status(agent)
-            # A failed end: what was queued for after it is the next turn.
-            await _end_queued_inputs(db, run, carry_over=True)
+            # No input arrives until this commits. The run is ours to end:
+            # read `running` under its row lock above.
+            await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
             await repo.transition(run, RunState.FAILED)
+            # The chat's failure answer, then what was queued for after it --
+            # never at the cost of closing the run (rolled back to its
+            # savepoint on failure).
+            try:
+                async with db.begin_nested():
+                    await answer_failed_chat_end(db, run)
+            except Exception:
+                logger.exception("run %s: lease lost, closed without its answer", run_id)
             await record_activity(
                 db,
                 tenant_id=tenant_id,
