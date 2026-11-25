@@ -241,6 +241,8 @@ async def auto_decide_by_rules(db: AsyncSession, *, run: m.AgentRun) -> list[uui
         )
         if rule is None:
             continue
+        # A rolled-back savepoint expires both rows; log ids read before it.
+        rule_id, approval_id = rule.id, approval.id
         try:
             async with db.begin_nested():
                 actor = await _deciding_member(db, approval=approval, rule=rule, run=run)
@@ -275,8 +277,8 @@ async def auto_decide_by_rules(db: AsyncSession, *, run: m.AgentRun) -> list[uui
         except Exception:
             logger.warning(
                 "always-allow rule %s could not decide approval %s; it stays pending",
-                rule.id,
-                approval.id,
+                rule_id,
+                approval_id,
                 exc_info=True,
             )
             continue

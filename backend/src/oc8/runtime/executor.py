@@ -1758,7 +1758,14 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # run is suspended, not finished, so nothing else tells
                         # the Telegram sender that their request is now sitting
                         # in somebody's approval queue.
-                        held_sender = await _current_chat_sender(db, run)
+                        # The person's own "always allow" rule answers their
+                        # card now, as they would (approvals.allow_rules). It
+                        # never fails the park: on any error the card stays
+                        # pending and the run waits, as without a rule.
+                        auto_resumed = await _auto_decide_by_rules(db, run)
+                        # A rule-approved call is not waiting, so the sender is
+                        # told only when the card is still pending.
+                        held_sender = None if auto_resumed else await _current_chat_sender(db, run)
                         if held_sender is not None:
                             held_channel, held_external_id = held_sender
                             channel_replies.append(
@@ -1769,11 +1776,6 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                     _CHAT_WAITING_FOR_APPROVAL,
                                 )
                             )
-                        # The person's own "always allow" rule answers their
-                        # card now, as they would (approvals.allow_rules). It
-                        # never fails the park: on any error the card stays
-                        # pending and the run waits, as without a rule.
-                        auto_resumed = await _auto_decide_by_rules(db, run)
                         if auto_resumed:
                             pending_runs.extend(auto_resumed)
                             logger.info(

@@ -164,6 +164,26 @@ async def test_the_park_path_requeues_and_survives_a_failing_rule_check(
         assert run.state == "queued"
 
 
+async def test_a_failure_after_the_decision_keeps_the_card_pending_without_raising(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The savepoint rollback expires the decided card; the failure is still
+    logged and contained, so it cannot undo the park's other cards."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _rule(db, office)
+        run = await _parked(db, office)
+        card = await _card(db, office, run)
+
+        async def _boom(*_a: Any, **_kw: Any) -> Any:
+            raise RuntimeError("audit failed")
+
+        monkeypatch.setattr("oc8.approvals.allow_rules.append_event", _boom)
+        assert await auto_decide_by_rules(db, run=run) == []
+        assert (await _fresh(db, card)).status == "pending"
+
+
 async def test_a_rule_never_skips_the_department_stage(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:
