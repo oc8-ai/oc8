@@ -1416,3 +1416,74 @@ async def test_live_session_send_is_unchanged(
                 assert r.status_code == 201, r.text
 
     assert len(await _chat_runs(app_session, tenant)) == 2
+
+
+async def test_a_colleague_cannot_queue_into_someone_elses_running_answer(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A copilot:manage holder may reply in a colleague's Assistant chat, but
+    not while its answer runs: her message could never become the owner's
+    next turn (spec §5.5), and it never starts a parallel one."""
+    tenant = uuid.uuid4()
+    other = {
+        "Authorization": "Bearer "
+        + get_identity_provider().mint(tenant_id=tenant, subject="other-op", role="org_admin")
+    }
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            agent_id = (await c.get("/api/v1/assistant", headers=_headers(tenant))).json()[
+                "agentId"
+            ]
+            session_id, _run_id = await _open_chat_with_a_running_turn(c, tenant, agent_id)
+            r = await c.post(
+                f"/api/v1/chat/sessions/{session_id}/messages",
+                json={"message": "Von mir"},
+                headers=other,
+            )
+            assert r.status_code == 409, r.text
+            assert "An answer is still running" in r.json()["detail"]
+
+    assert len(await _chat_runs(app_session, tenant)) == 1
+    async with app_session(tenant) as db:
+        assert (await db.execute(select(m.RunInput))).scalars().first() is None
+
+
+async def test_a_send_racing_the_end_of_the_running_answer_becomes_an_ordinary_turn(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer ends between the send's read and its input lock: the input
+    is refused as finished, the send looks again, finds nothing running and
+    is an ordinary turn -- never lost, never parallel."""
+    from oc8.api.v1 import chat as chat_api
+    from oc8.runtime.run_inputs import InputRefused
+
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    attempts: list[uuid.UUID] = []
+
+    async def _ends_first(db: object, *, run: m.AgentRun, **_kw: object) -> m.RunInput:
+        attempts.append(run.id)
+        async with app_session(tenant) as other:
+            ended = await other.get(m.AgentRun, run.id)
+            assert ended is not None
+            ended.state = "done"
+            await other.commit()
+        raise InputRefused(409, "run has already finished", "finished")
+
+    monkeypatch.setattr(chat_api, "add_run_input", _ends_first)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            session_id, run_id = await _open_chat_with_a_running_turn(c, tenant, agent_id)
+            r = await c.post(
+                f"/api/v1/chat/sessions/{session_id}/messages",
+                json={"message": "Zweite Frage"},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()["content"] == "Zweite Frage"
+
+    assert [str(a) for a in attempts] == [run_id], "asked once, then looked again"
+    runs = await _chat_runs(app_session, tenant)
+    assert sorted(r.state for r in runs) == ["done", "queued"]

@@ -49,6 +49,8 @@ logger = logging.getLogger(__name__)
 #: Mirrors `ck_run_input_text` (migration 0112).
 MAX_INPUT_CHARS: Final = 4000
 #: Unconsumed inputs one run may hold; bounds what a writer can pile up.
+#: Steer and queued (`next_turn`) inputs share the cap deliberately: both are
+#: words waiting on the same run.
 MAX_PENDING_INPUTS: Final = 20
 
 
@@ -58,7 +60,9 @@ MAX_PENDING_INPUTS: Final = 20
 Delivery = Literal["steer", "next_turn"]
 
 #: Why an input was refused, for doors that word it themselves (a messenger).
-RefusalCode = Literal["empty", "too_long", "secret", "finished", "too_many", "delivered"]
+RefusalCode = Literal[
+    "empty", "too_long", "secret", "finished", "too_many", "delivered", "not_chat"
+]
 
 #: Editing or withdrawing an input that is no longer waiting, or not one's own.
 ALREADY_DELIVERED: Final = "This message was already delivered."
@@ -169,6 +173,10 @@ async def add_run_input(
     and, for `steer`, that the run's runtime takes messages at all
     (`run_accepts_inputs`): a `next_turn` input never reaches the runtime."""
     body = await _checked_text(db, run=run, text=text)
+    if delivery == "next_turn" and run.source != "chat":
+        # Only a chat turn has a next turn to become; anywhere else the
+        # message would wait for ever.
+        raise InputRefused(409, "Only a chat answer takes a message for after it.", "not_chat")
     if RunState(run.state) in TERMINAL:
         raise InputRefused(409, "run has already finished", "finished")
     # Serialise writers per run, until commit: the pending cap below is then a

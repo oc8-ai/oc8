@@ -51,12 +51,7 @@ from oc8.runtime.reconcile import ABANDONED_AFTER, heartbeat
 from oc8.runtime.registry import resolve_runtime
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
-from oc8.runtime.run_inputs import (
-    ConsumedInput,
-    cancel_waiting_next_turn_inputs,
-    has_pending_run_inputs,
-    lock_run_inputs,
-)
+from oc8.runtime.run_inputs import has_pending_run_inputs, lock_run_inputs
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.workspace import sync_run_output
 from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
@@ -164,16 +159,15 @@ async def _answer_failed_chat_run(
     db: AsyncSession,
     run: m.AgentRun,
     channel_replies: list[tuple[uuid.UUID, str, str, str]],
-    pending_runs: list[uuid.UUID],
 ) -> None:
     """A chat turn that FAILED without an output of its own still answers: the
     canned failure line in the transcript, the plain one to a channel sender,
-    the queued (`next_turn`) inputs carried over as the next turn, and the
-    unread follow-ups told they were not read. No-op for other runs. The
-    caller holds `lock_run_inputs`."""
+    the queued (`next_turn`) inputs carried over as the next turn (published
+    after commit), and the unread follow-ups told they were not read. No-op
+    for other runs. The caller holds `lock_run_inputs`."""
     if run.source != "chat":
         return
-    from oc8.chat.carry_over import stage_carried_over_turn
+    from oc8.chat.carry_over import end_queued_inputs
     from oc8.chat.service import record_assistant_reply
 
     await record_assistant_reply(db, run=run, output=_chat_run_failed_answer(run.id))
@@ -181,9 +175,10 @@ async def _answer_failed_chat_run(
     if sender is not None:
         channel, external_id = sender
         channel_replies.append((run.tenant_id, channel, external_id, _CHAT_RUN_FAILED))
-    carried_run = await stage_carried_over_turn(db, run=run, deliveries=("next_turn",))
-    if carried_run is not None:
-        pending_runs.append(carried_run)
+    # No `run_still_open` here: the caller already made the FAILED transition,
+    # whose state guard refuses a run somebody else ended, under the run row
+    # lock the executor holds for the whole run.
+    await end_queued_inputs(db, run=run, carry_over=True)
     await _tell_unread_inputs(db, run, channel_replies)
 
 
@@ -209,6 +204,12 @@ async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, 
 #: Told once to a messenger sender whose failed run never read what they
 #: wrote to it (Ruling 59): it is not carried over, so they must know.
 _UNREAD_AFTER_FAILURE = "Deine letzte Nachricht kam nicht mehr an – schick sie bitte nochmal."  # noqa: RUF001
+
+
+async def _end_queued_inputs(db: AsyncSession, run: m.AgentRun, *, carry_over: bool) -> None:
+    from oc8.chat.carry_over import end_queued_inputs
+
+    await end_queued_inputs(db, run=run, carry_over=carry_over)
 
 
 async def _tell_unread_inputs(
@@ -870,9 +871,6 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
     #: durable would hand the user an answer the system never recorded, and
     #: a redelivery would then send it a second time.
     channel_replies: list[tuple[uuid.UUID, str, str, str]] = []
-    #: Queued (`next_turn`) inputs a stopped run cancelled, announced after
-    #: commit like `pending_runs`, so the composer drops them.
-    cancelled_inputs: list[ConsumedInput] = []
 
     with get_tracer().start_as_current_span("run.execute") as span:
         span.set_attribute("run_id", str(run_id))
@@ -919,6 +917,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             if agent is None:
                 error = "agent not found"
                 await merge_context(db, run, {"error": error})
+                # Its next turn could not run either: cancelled, not carried.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -948,6 +948,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # Compare-and-set, as on the cancel drain below: an archived
                 # agent does not stay "running" once its last run is drained.
                 await settle_agent_status(db, agent, "idle")
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.INTERRUPTED)
                 await record_activity(
                     db,
@@ -967,6 +968,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # here, not only at the HTTP /run endpoint.
                 error = "agent awaiting hire approval"
                 await merge_context(db, run, {"error": error})
+                # Its next turn would meet the same gate: cancelled.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -998,9 +1001,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # may have paused it since the claim read it.
                 await settle_agent_status(db, agent, "idle")
                 # Stop means stop: what was queued for after this run is
-                # cancelled with it. No input arrives until this commits.
-                await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
-                cancelled_inputs.extend(await cancel_waiting_next_turn_inputs(db, run_id=run.id))
+                # cancelled with it.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.INTERRUPTED)
                 logger.info("run %s interrupted before start (cancelled while queued)", run_id)
                 record_run_outcome(RunState.INTERRUPTED.value)
@@ -1016,6 +1018,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     {"cancellation_kind": TENANT_INACTIVE_KIND, "output": TENANT_INACTIVE_OUTPUT},
                 )
                 await settle_agent_status(db, agent, "idle")
+                # Its next turn could not run either: cancelled.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.INTERRUPTED)
                 await record_activity(
                     db,
@@ -1102,6 +1106,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 error = mcp_error
                 await merge_context(db, run, {"error": error})
                 await settle_agent_status(db, agent, "idle")
+                # A failed end: what was queued for after it is the next turn.
+                await _end_queued_inputs(db, run, carry_over=True)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -1439,7 +1445,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # user's message and nothing after it, on every surface, for
                 # ever. The generic status branch below has always recorded
                 # one; this one now does too.
-                await _answer_failed_chat_run(db, run, channel_replies, pending_runs)
+                await _answer_failed_chat_run(db, run, channel_replies)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -1600,7 +1606,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         record_run_outcome(RunState.FAILED.value)
                         # Same gap the crash path had: without this the member's
                         # answer stays the chat's last line for ever.
-                        await _answer_failed_chat_run(db, run, channel_replies, pending_runs)
+                        await _answer_failed_chat_run(db, run, channel_replies)
                 else:
                     run.task_id = result.task_id
                     await merge_context(
@@ -1739,9 +1745,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             and await run_still_open(db, run_id=run.id)
                         )
                         if new_state is RunState.INTERRUPTED:
-                            cancelled_inputs.extend(
-                                await cancel_waiting_next_turn_inputs(db, run_id=run.id)
-                            )
+                            await _end_queued_inputs(db, run, carry_over=False)
                     await repo.transition(run, new_state)
                     await _apply_entered_mode(db, run)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
@@ -1835,10 +1839,6 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
         # every run row must be durably visible first.
         for pending_id in pending_runs:
             await publish_run(run_id=pending_id, tenant_id=tenant_id)
-        if cancelled_inputs:
-            from oc8.runtime.run_inputs import publish_inputs_consumed
-
-            await publish_inputs_consumed(tenant_id, run_id=run_id, consumed=cancelled_inputs)
 
         # Same reasoning as the publish loop above: a chat reply is sent
         # only once the record_assistant_reply write it reports on is
@@ -1904,6 +1904,8 @@ async def recover_reclaimed(message: RunMessage) -> None:
             if agent is not None:
                 agent.status = "idle"
                 await publish_agent_status(agent)
+            # A failed end: what was queued for after it is the next turn.
+            await _end_queued_inputs(db, run, carry_over=True)
             await repo.transition(run, RunState.FAILED)
             await record_activity(
                 db,

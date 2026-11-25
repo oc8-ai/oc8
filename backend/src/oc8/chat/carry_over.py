@@ -22,14 +22,23 @@ import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import partial
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.db.session import tenant_session
+from oc8.runtime import run_inputs
 from oc8.runtime.person import whose_run
-from oc8.runtime.run_inputs import CARRIED_OVER_STEP, Delivery, unread_run_inputs
+from oc8.runtime.run_inputs import (
+    CARRIED_OVER_STEP,
+    ConsumedInput,
+    Delivery,
+    cancel_waiting_next_turn_inputs,
+    lock_run_inputs,
+    unread_run_inputs,
+)
 from oc8.runtime.states import TERMINAL, RunState
 
 logger = logging.getLogger(__name__)
@@ -119,7 +128,70 @@ async def stage_carried_over_turn(
         row.consumed_at = now
         row.consumed_step = CARRIED_OVER_STEP
     await db.flush()
+    _announce_after_commit(
+        db,
+        run=run,
+        inputs=[
+            ConsumedInput(id=row.id, author_name="", text=row.text, step=CARRIED_OVER_STEP)
+            for row in rows
+        ],
+    )
     return run_id
+
+
+def _announce_after_commit(
+    db: AsyncSession, *, run: m.AgentRun, inputs: list[ConsumedInput]
+) -> None:
+    """`run.input_consumed` for `inputs`, once the transaction commits, so
+    every open composer drops them from the waiting list."""
+    from oc8.realtime.emit import publish_after_commit
+
+    if inputs:
+        publish_after_commit(
+            db,
+            partial(
+                # Looked up now, not at import: the module's own function.
+                run_inputs.publish_inputs_consumed,
+                run.tenant_id,
+                run_id=run.id,
+                consumed=inputs,
+            ),
+        )
+
+
+async def end_queued_inputs(db: AsyncSession, *, run: m.AgentRun, carry_over: bool) -> None:
+    """The queued (`next_turn`) inputs of a run that ends anywhere but the
+    executor's main terminal branch: a crash, the reconciler, a lost lease, a
+    run that never started. Call before the run's terminal transition, in
+    that transaction -- it takes `lock_run_inputs` (after the tenant's audit
+    lock, before any chat_session row), so no input arrives until it commits.
+
+    `carry_over` (a FAILED end whose next turn can run): they become the
+    chat's next turn, its run published after commit; if a check refuses,
+    they stay unread like a failed run's steer inputs. Otherwise (a stopped
+    end, or one whose next turn could not run either): cancelled,
+    `CANCELLED_STEP`. Either way the composer is told after commit. A
+    carry-over that raises is rolled back to its savepoint and leaves them
+    unread: it never fails the end of the run. Nothing for a run that is not
+    a chat turn: only a chat turn takes a queued input (`add_run_input`)."""
+    if run.source != "chat":
+        return
+    await lock_run_inputs(db, tenant_id=run.tenant_id, run_id=run.id)
+    if carry_over:
+        from oc8.realtime.emit import publish_after_commit
+        from oc8.runtime.intake import publish_run
+
+        try:
+            async with db.begin_nested():
+                carried = await stage_carried_over_turn(db, run=run, deliveries=("next_turn",))
+        except Exception:
+            logger.exception("run %s: queued inputs not carried over", run.id)
+            return
+        if carried is not None:
+            publish_after_commit(db, partial(publish_run, run_id=carried, tenant_id=run.tenant_id))
+        return
+    cancelled = await cancel_waiting_next_turn_inputs(db, run_id=run.id)
+    _announce_after_commit(db, run=run, inputs=cancelled)
 
 
 def _anchor(run: m.AgentRun) -> uuid.UUID | None:

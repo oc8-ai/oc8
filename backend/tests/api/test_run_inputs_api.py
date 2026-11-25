@@ -428,11 +428,11 @@ async def test_edit_after_delivery_is_409(app_session: AppSessionFactory) -> Non
 
 async def test_only_the_author_may_edit(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
-    # The agent's own run: every manager may write to it, each to her own words.
-    run_id = await _run(app_session, tenant, operator=None)
+    run_id = await _run(app_session, tenant, operator="alice")
     app = create_app()
     async with LifespanManager(app), _client(app) as c:
-        input_id = await _queue_input(c, tenant, run_id, "admin")
+        input_id = await _queue_input(c, tenant, run_id, "alice")
+        # Another admin does not steer alice's run at all: the run's 404.
         for r in (
             await c.patch(
                 f"/api/v1/runs/{run_id}/inputs/{input_id}",
@@ -443,11 +443,53 @@ async def test_only_the_author_may_edit(app_session: AppSessionFactory) -> None:
                 f"/api/v1/runs/{run_id}/inputs/{input_id}", headers=_h(tenant, "admin2")
             ),
         ):
-            assert r.status_code == 409, r.text
-        outsider = await c.delete(
-            f"/api/v1/runs/{run_id}/inputs/{input_id}", headers=_h(tenant, "emp", "member")
-        )
-        assert outsider.status_code == 404
+            assert r.status_code == 404, r.text
     async with app_session(tenant) as db:
         row = await db.get(m.RunInput, uuid.UUID(input_id))
         assert row is not None and row.text == "after this" and row.consumed_at is None
+
+
+async def test_only_the_author_may_edit_her_input_to_a_run_another_may_steer(
+    app_session: AppSessionFactory,
+) -> None:
+    """`edit_queued_input` itself: a second person who may steer the run
+    still cannot touch the first one's waiting words."""
+    from oc8.runtime.run_inputs import InputRefused, add_run_input, edit_queued_input
+
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        alice = m.OrgMember(tenant_id=tenant, subject="alice", subject_uuid=uuid.uuid4())
+        bob = m.OrgMember(tenant_id=tenant, subject="bob", subject_uuid=uuid.uuid4())
+        db.add_all([alice, bob])
+        await db.flush()
+        row = await add_run_input(db, run=run, member=alice, text="after", delivery="next_turn")
+        with pytest.raises(InputRefused) as refused:
+            await edit_queued_input(db, run=run, member=bob, input_id=row.id, text="mine")
+        assert refused.value.status_code == 409
+        assert refused.value.message == "This message was already delivered."
+
+
+async def test_an_edit_tells_other_composers(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published: list[tuple[uuid.UUID, list[str]]] = []
+
+    async def _publish(tenant_id: uuid.UUID, *, run_id: uuid.UUID, consumed: Any) -> None:
+        published.append((run_id, [str(c.id) for c in consumed]))
+
+    monkeypatch.setattr("oc8.api.v1.run_inputs.publish_inputs_consumed", _publish)
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        input_id = await _queue_input(c, tenant, run_id, "alice")
+        edited = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}",
+            json={"text": "changed"},
+            headers=_h(tenant, "alice"),
+        )
+        assert edited.status_code == 200, edited.text
+    assert published == [(run_id, [input_id])]

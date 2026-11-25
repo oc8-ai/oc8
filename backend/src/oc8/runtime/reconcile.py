@@ -98,9 +98,7 @@ REASON = (
 )
 
 
-async def close_abandoned_runs(
-    *, now: dt.datetime | None = None
-) -> list[uuid.UUID]:
+async def close_abandoned_runs(*, now: dt.datetime | None = None) -> list[uuid.UUID]:
     """Fail every run whose executor has gone silent. Returns the ids closed.
 
     Never raises: this runs on the worker's own timer, and one bad sweep must
@@ -145,6 +143,11 @@ async def close_abandoned_runs(
                         # Announced once this commits, never for a rolled-back write.
                         agent.status = "idle"
                         publish_after_commit(db, partial(publish_agent_status, agent))
+                    # A failed end: what was queued for after it becomes the
+                    # chat's next turn (spec §5.5), never stranded.
+                    from oc8.chat.carry_over import end_queued_inputs
+
+                    await end_queued_inputs(db, run=run, carry_over=True)
                     await repo.transition(run, RunState.FAILED)
                     record_run_outcome(RunState.FAILED.value)
                     closed.append(run.id)
@@ -414,9 +417,7 @@ __all__ = [
 
 
 @contextlib.asynccontextmanager
-async def heartbeat(
-    *, tenant_id: uuid.UUID, run_id: uuid.UUID
-) -> AsyncIterator[None]:
+async def heartbeat(*, tenant_id: uuid.UUID, run_id: uuid.UUID) -> AsyncIterator[None]:
     """Report that this run is still being executed, for as long as it is.
 
     Wrapped around the runtime call rather than left to each adapter: there are

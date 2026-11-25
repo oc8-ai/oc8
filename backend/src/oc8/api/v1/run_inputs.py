@@ -163,7 +163,12 @@ async def edit_input(
         raise HTTPException(exc.status_code, exc.message) from exc
     await db.refresh(row)
     dto = input_dto(row, _name(actor.member))
+    changed = ConsumedInput(id=row.id, author_name="", text=row.text, step=0)
     await db.commit()
+    # After commit: other open composers refetch the waiting list. The same
+    # `run.input_consumed` event as a cancel -- the composer refetches the
+    # run's steering on it -- with `step` 0: nothing was read.
+    await publish_inputs_consumed(run.tenant_id, run_id=run.id, consumed=[changed])
     return dto
 
 
