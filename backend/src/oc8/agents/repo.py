@@ -326,14 +326,12 @@ async def start_reach(
     *,
     authority: Authority,
     scope: DepartmentScope,
-    tenant_id: uuid.UUID,
 ) -> RunReach:
     """`run_reach` for `run:start`, plus the personal departments this caller
     may not start agents in (`RunReach.personal_refused`) -- the private ones,
     since only the owner acts on a personal agent. The only reach
-    `agent_runnable_in` answers from. `tenant_id` is RLS's as well; kept so
-    every start caller names the tenant it asks about."""
-    del tenant_id
+    `agent_runnable_in` answers from. Tenant-scoped by RLS, as
+    `private_department_ids` is."""
     base = await run_reach(db, authority=authority, scope=scope, permission=RUN_START)
     return replace(base, personal_refused=base.private)
 
@@ -386,9 +384,7 @@ async def resolve_cancel_reach(request: Request, db: AsyncSession, actor: HumanA
 async def resolve_start_reach(request: Request, db: AsyncSession, actor: HumanActor) -> RunReach:
     """`start_reach` for an HTTP caller, with the request-memoised authority."""
     authority = await authority_for_principal(request, db, actor.principal)
-    return await start_reach(
-        db, authority=authority, scope=actor.scope, tenant_id=actor.principal.tenant_id
-    )
+    return await start_reach(db, authority=authority, scope=actor.scope)
 
 
 def restrict_to_run_reach[TP: tuple[Any, ...]](
@@ -431,8 +427,9 @@ async def run_reachable_agent(
     """One agent whose runs `reach` admits, or `None` for both "no such row"
     and "exists outside reach" -- the caller 404s on either, as
     `visible_agent` does; an agent of a private department (`reach.private`)
-    is outside every reach but `cancel_reach`. Deleted agents are included; the run routes that
-    must refuse one (starting a run) check `deleted_at` themselves.
+    is outside every reach but `cancel_reach`. Deleted agents are included;
+    the run routes that must refuse one (starting a run) check `deleted_at`
+    themselves.
     """
     # The tenant is written out as well as left to RLS, as every run route does.
     stmt = select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)

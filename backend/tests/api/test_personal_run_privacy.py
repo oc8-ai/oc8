@@ -19,6 +19,7 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -28,8 +29,13 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.authz.permissions import SEAT_APPROVER, SEAT_VIEWER
+from oc8.chat.context.base import viewer_for_member
+from oc8.chat.context.registry import resolve_ref
+from oc8.chat.reach import member_reaches_agent_runs
+from oc8.chat.watch import may_watch_run
 from oc8.copilot.profile import offboard_member
 from oc8.main import create_app
+from oc8.storage import s3
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -127,13 +133,26 @@ async def _world(app_session: AppSessionFactory) -> _World:
             "task": _SECRET_TASK,
             "output": _SECRET_OUTPUT,
             "toolCalls": [{"name": "search", "arguments": {"q": _SECRET_ARG}}],
+            "rendered_components": [{"component_key": "note", "props": {"t": _SECRET_OUTPUT}}],
         }
         pia_run = m.AgentRun(tenant_id=tenant, agent_id=pia.id, state="done", context=content)
         pia_running = m.AgentRun(
-            tenant_id=tenant, agent_id=pia.id, state="running", context=dict(content)
+            # A schedule's run: the agent's own (autonomous), so the Live and
+            # watch doors ask run reach for it.
+            tenant_id=tenant,
+            agent_id=pia.id,
+            state="running",
+            source="cron",
+            context=dict(content),
         )
         nora_run = m.AgentRun(
-            tenant_id=tenant, agent_id=nora.id, state="done", context={"output": "public"}
+            tenant_id=tenant,
+            agent_id=nora.id,
+            state="done",
+            context={
+                "output": "public",
+                "rendered_components": [{"component_key": "note", "props": {"t": "public"}}],
+            },
         )
         db.add_all([pia_run, pia_running, nora_run])
         await db.flush()
@@ -206,7 +225,7 @@ async def test_admin_runs_list_leaves_out_personal_runs(app_session: AppSessionF
         assert str(w.pia_run) in {r["id"] for r in owner.json()}
 
 
-async def test_admin_history_tab_is_empty_for_a_personal_agent(
+async def test_admin_gets_404_on_a_personal_agents_history(
     app_session: AppSessionFactory,
 ) -> None:
     """Ruling P1: the run list is content (task text, output), so a non-owner
@@ -330,3 +349,100 @@ async def test_a_departed_owners_runs_stay_private(app_session: AppSessionFactor
         assert str(w.pia_run) not in {row["id"] for row in listed.json()}
     async with app_session(w.tenant) as db:
         assert await db.get(m.AgentRun, w.pia_run) is not None
+
+
+async def test_admin_cannot_download_a_personal_runs_file(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`GET /files/{id}`: a run's file is run output, so it follows the run
+    reach (`storage.attachment_access`), private departments included."""
+    w = await _world(app_session)
+
+    async def _bytes(key: str) -> bytes:
+        return _SECRET_OUTPUT.encode()
+
+    monkeypatch.setattr(s3, "get_object", _bytes)
+    async with app_session(w.tenant) as db:
+        file_id = (
+            await db.execute(
+                select(m.FileAttachment.id).where(m.FileAttachment.owner_id == w.pia_run)
+            )
+        ).scalar_one()
+    async with _http() as http:
+        admin = await http.get(f"/api/v1/files/{file_id}", headers=_admin(w))
+        assert admin.status_code == 404, admin.text
+        assert _SECRET_OUTPUT not in admin.text
+
+        owner = await http.get(f"/api/v1/files/{file_id}", headers=_owner(w))
+        assert owner.status_code == 200, owner.text
+        assert owner.content == _SECRET_OUTPUT.encode()
+
+
+async def test_admin_reports_leave_out_personal_runs(app_session: AppSessionFactory) -> None:
+    w = await _world(app_session)
+    async with _http() as http:
+        admin = await http.get("/api/v1/reports", headers=_admin(w))
+        assert admin.status_code == 200, admin.text
+        runs = {r["runId"] for r in admin.json()}
+        assert str(w.nora_run) in runs, "a standard agent's report stays listed"
+        assert str(w.pia_run) not in runs
+        assert _SECRET_OUTPUT not in admin.text
+
+        owner = await http.get("/api/v1/reports", headers=_owner(w))
+        assert owner.status_code == 200, owner.text
+        assert str(w.pia_run) in {r["runId"] for r in owner.json()}
+
+
+async def _members(db: Any, w: _World) -> tuple[m.OrgMember, m.OrgMember]:
+    rows = {
+        row.subject: row
+        for row in (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.tenant_id == w.tenant))
+        ).scalars()
+    }
+    return rows["admin"], rows["owner"]
+
+
+async def test_an_admins_pinned_personal_run_resolves_to_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    """The chat's `run:{id}` pin (`RunResolver`): a run read, so run reach."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        admin, owner = await _members(db, w)
+        admin_viewer = await viewer_for_member(db, admin, token_role="org_admin")
+        assert await resolve_ref(db, viewer=admin_viewer, kind="run", ref_id=str(w.pia_run)) is None
+        # A standard agent's run still resolves for the same admin.
+        assert (
+            await resolve_ref(db, viewer=admin_viewer, kind="run", ref_id=str(w.nora_run))
+            is not None
+        )
+        owner_viewer = await viewer_for_member(db, owner, token_role="member")
+        assert (
+            await resolve_ref(db, viewer=owner_viewer, kind="run", ref_id=str(w.pia_run))
+            is not None
+        )
+
+
+async def test_the_chat_run_reach_and_watch_refuse_an_admin(
+    app_session: AppSessionFactory,
+) -> None:
+    """`member_reaches_agent_runs` (Live, watch, pins) and the watch entry
+    point `may_watch_run`: false for the admin, true for the owner."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        admin, owner = await _members(db, w)
+        pia = await db.get(m.Agent, w.pia)
+        nora = await db.get(m.Agent, w.nora)
+        assert pia is not None and nora is not None
+
+        assert not await member_reaches_agent_runs(
+            db, member=admin, agent=pia, token_role="org_admin"
+        )
+        assert await member_reaches_agent_runs(db, member=admin, agent=nora, token_role="org_admin")
+        assert await member_reaches_agent_runs(db, member=owner, agent=pia, token_role="member")
+
+        assert not await may_watch_run(
+            db, member=admin, run_id=w.pia_running, token_role="org_admin"
+        )
+        assert await may_watch_run(db, member=owner, run_id=w.pia_running, token_role="member")
