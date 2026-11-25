@@ -1329,6 +1329,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         {
                             "output": result.output,
                             "toolCalls": result.tool_calls,
+                            "contains_restricted": bool(run.context.get("contains_restricted"))
+                            or result.contains_restricted,
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "pending_question": result.output,
@@ -1469,6 +1471,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         {
                             "output": result.output,
                             "toolCalls": result.tool_calls,
+                            "contains_restricted": bool(run.context.get("contains_restricted"))
+                            or result.contains_restricted,
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "rendered_components": result.rendered_components,

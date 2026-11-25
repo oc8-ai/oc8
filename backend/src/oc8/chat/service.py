@@ -46,6 +46,7 @@ from oc8.chat.context.manifest import (
     manifest_text,
 )
 from oc8.chat.context.registry import RESOLVERS
+from oc8.chat.digest import build_work_digest
 from oc8.chat.files_kb import attachment_turn_text, drop_chat_kb
 from oc8.chat.modes import (
     ACT,
@@ -1419,12 +1420,22 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
         from oc8.runtime.run_context import merge_context
 
         await merge_context(db, run, consumed)
+    restricted = bool((run.context or {}).get("contains_restricted"))
+    work_digest: str | None = None
+    try:
+        work_digest = build_work_digest(
+            (run.context or {}).get("toolCalls") or [], run_id=run.id, restricted=restricted
+        )
+    except Exception:
+        logger.exception("work digest failed for run %s; the reply is recorded without it", run.id)
     reply = m.ChatMessage(
         tenant_id=run.tenant_id,
         session_id=session.id,
         role="assistant",
         content=output or "",
         run_id=run.id,
+        work_digest=work_digest,
+        restricted=restricted,
         parts=reply_parts or None,
         rendered_components=rendered_components,
         reply_to_id=reply_to_id,

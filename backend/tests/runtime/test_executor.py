@@ -85,6 +85,44 @@ async def test_execute_run_marks_done(app_session: AppSessionFactory) -> None:
         assert agent.status == "idle"
 
 
+async def test_contains_restricted_is_merged_into_run_context(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    first_run = await _make_queued_run(app_session, tenant)
+    second_run = await _make_queued_run(app_session, tenant)
+    # A run that already flagged an earlier leg.
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, second_run)
+        assert run is not None
+        run.context = {**run.context, "contains_restricted": True}
+
+    def runner(flag: bool) -> Callable[..., Awaitable[RunResult]]:
+        async def fn(db: Any, **kw: Any) -> RunResult:
+            return RunResult(
+                task_id=uuid.uuid4(),
+                agent_id=kw["agent"].id,
+                status="done",
+                output="ok",
+                contains_restricted=flag,
+            )
+
+        return fn
+
+    for run_id, flag in ((first_run, True), (second_run, False)):
+        await execute_run(
+            RunMessage(
+                run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False
+            ),
+            runtime=_FnRuntime(runner(flag)),
+        )
+    async with app_session(tenant) as s:
+        for run_id in (first_run, second_run):
+            run = await s.get(m.AgentRun, run_id)
+            assert run is not None
+            assert run.context["contains_restricted"] is True
+
+
 async def test_execute_run_marks_failed_on_error(app_session: AppSessionFactory) -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     run_id = await _make_queued_run(app_session, tenant)

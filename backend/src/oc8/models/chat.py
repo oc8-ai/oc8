@@ -123,6 +123,15 @@ class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):
     #: is a sibling (same parent). NULL for the first message and for chats of
     #: other kinds than "chat", which stay linear (migration 0130).
     parent_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: One line per tool call the run made (name, arguments, outcome, a short
+    #: preview), for replaying the turn to the model (`oc8.chat.digest`). NULL
+    #: for a human turn, for a run without tool calls and for rows before 0133.
+    work_digest: Mapped[str | None] = mapped_column(Text)
+    #: The run read restricted data, so this answer must not be replayed to a
+    #: model that may not see it. Fail closed: set whenever the run flagged it.
+    restricted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
 
     __table_args__ = (
         CheckConstraint("role IN ('user','assistant','followup')", name="ck_chat_message_role"),

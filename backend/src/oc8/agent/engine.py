@@ -306,6 +306,9 @@ class RunResult:
     # the executor to park beside the readable `output`. None for a plain ask
     # and for every other status.
     pending_questions: list[dict[str, Any]] | None = None
+    # True once this leg read restricted data (`_mark_restricted`). The executor
+    # ORs it over the run's legs into `run.context["contains_restricted"]`.
+    contains_restricted: bool = False
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -1495,6 +1498,7 @@ async def run_agent(
                                 rendered_components,
                                 todos,
                                 step_timings,
+                                contains_restricted=contains_restricted,
                             )
                         # The same replay-safety as the step loop's dispatch
                         # (B9), keyed on the merged call: an identical later
@@ -1568,6 +1572,7 @@ async def run_agent(
                                     rendered_components,
                                     todos,
                                     step_timings,
+                                    contains_restricted=contains_restricted,
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
@@ -1671,6 +1676,7 @@ async def run_agent(
                         rendered_components,
                         todos,
                         step_timings,
+                        contains_restricted=contains_restricted,
                     )
                 # Operator chat (§ live steering): drain any messages an operator
                 # sent to this running agent and inject them as user turns, so the
@@ -1792,6 +1798,7 @@ async def run_agent(
                             rendered_components,
                             todos,
                             step_timings,
+                            contains_restricted=contains_restricted,
                         )
                     provider = model_config.provider
                     model = model_config.model
@@ -2192,6 +2199,7 @@ async def run_agent(
                             rendered_components,
                             todos,
                             step_timings,
+                            contains_restricted=contains_restricted,
                         )
 
                     open_todos = [t for t in todos if t.get("status") != "completed"]
@@ -2281,6 +2289,7 @@ async def run_agent(
                         rendered_components,
                         todos,
                         step_timings,
+                        contains_restricted=contains_restricted,
                     )
 
                 messages.append(
@@ -2905,6 +2914,7 @@ async def run_agent(
                                 rendered_components,
                                 todos,
                                 step_timings,
+                                contains_restricted=contains_restricted,
                             )
 
                         # Ledger outward attribution must follow the tool that
@@ -3132,6 +3142,7 @@ async def run_agent(
                                     todos,
                                     step_timings,
                                     pending_questions=control.questions,
+                                    contains_restricted=contains_restricted,
                                 )
                             if control.suspend == "waiting_for_approval":
                                 # offer_direct_access asked the person (§3 step
@@ -3167,6 +3178,7 @@ async def run_agent(
                                     rendered_components,
                                     todos,
                                     step_timings,
+                                    contains_restricted=contains_restricted,
                                 )
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"
@@ -3320,6 +3332,7 @@ async def run_agent(
                                             rendered_components,
                                             todos,
                                             step_timings,
+                                            contains_restricted=contains_restricted,
                                         )
                                     except Exception as exc:  # surface tool errors to the model
                                         tool_error = classify_exception(
@@ -3600,6 +3613,7 @@ async def run_agent(
                 rendered_components,
                 todos,
                 step_timings,
+                contains_restricted=contains_restricted,
             )
 
         def _offerable(listed: list[NeutralTool], conn: m.McpConnection) -> list[NeutralTool]:
