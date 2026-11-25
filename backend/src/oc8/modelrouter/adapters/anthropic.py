@@ -147,6 +147,12 @@ _RESERVED_PAYLOAD_KEYS = frozenset(
     }
 )
 
+#: Fields oc8 itself stamps into `extra` for OpenAI-shaped providers. Anthropic
+#: refuses any unknown top-level field with a 400 ("Extra inputs are not
+#: permitted"), so one of these would fail every Claude request. Claude caches
+#: through `cache_control` (above) instead of `prompt_cache_key`.
+_OPENAI_ONLY_EXTRA_KEYS = frozenset({"prompt_cache_key"})
+
 #: Top-level, so Anthropic puts the breakpoint on the last cacheable block
 #: itself: the next step of the same run reads everything up to there at a
 #: tenth of the price instead of paying for the whole transcript again.
@@ -224,7 +230,7 @@ def _build_payload(
     # Applied last so an operator-typed key can never clobber a field this
     # adapter relies on -- see ModelParams.extra.
     for key, value in (req.params.extra or {}).items():
-        if key in _RESERVED_PAYLOAD_KEYS:
+        if key in _RESERVED_PAYLOAD_KEYS or key in _OPENAI_ONLY_EXTRA_KEYS:
             continue
         if key == "thinking" and thinking is not None:
             continue
