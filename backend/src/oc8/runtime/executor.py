@@ -31,7 +31,7 @@ from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
-from oc8.runtime.adapter import RuntimeAdapter
+from oc8.runtime.adapter import RuntimeAdapter, runs_in_process
 from oc8.runtime.agent_status import (
     RunningGuard,
     expected_status,
@@ -1077,20 +1077,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     }
                     await merge_context(db, run, stamp)
 
-            task_text = str(run.context.get("task", ""))
             # Raw {bucket_key, content_type} pointers only (Task 6) -- the actual
             # bytes are fetched one layer down, at run-preamble time, so this
             # module (which drives runs generically) never has to import
             # oc8.storage.s3 itself.
             task_images_raw = run.context.get("task_images", [])
             clarifications = run.context.get("clarifications", [])
-            if clarifications:
-                from oc8.runtime.run_inputs import format_clarification_answers
-
-                task_text = (
-                    f"{task_text}\n\nClarifications:\n"
-                    f"{format_clarification_answers(clarifications)}"
-                )
 
             # Resume after a value-gated tool approval: replace the task with a
             # focused instruction to perform exactly the approved calls (and skip
@@ -1109,15 +1101,33 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # leg -- woken by a held write -- is not told it again.
             resolved_access = run.context.get("resolved_direct_access")
             if isinstance(resolved_access, dict):
-                from oc8.copilot.direct_access import direct_access_resume_text
                 from oc8.runtime.run_context import take_direct_access_answer
 
-                task_text = direct_access_resume_text(task_text, resolved_access)
                 await take_direct_access_answer(db, run)
-            elif approvals:
-                from oc8.runtime.approval_resume import resume_instruction
 
-                task_text = resume_instruction(approvals)
+            def _with_resume(task_text: str) -> str:
+                """The task as this leg tells it: clarifications answered so
+                far, then the answer that woke it."""
+                if clarifications:
+                    from oc8.runtime.run_inputs import format_clarification_answers
+
+                    task_text = (
+                        f"{task_text}\n\nClarifications:\n"
+                        f"{format_clarification_answers(clarifications)}"
+                    )
+                if isinstance(resolved_access, dict):
+                    from oc8.copilot.direct_access import direct_access_resume_text
+
+                    return direct_access_resume_text(task_text, resolved_access)
+                if approvals:
+                    from oc8.runtime.approval_resume import resume_instruction
+
+                    return resume_instruction(approvals)
+                return task_text
+
+            # The run's own task, which is the in-process engine's; another
+            # runtime gets it flattened once the runtime is known, below.
+            task_text = _with_resume(str(run.context.get("task", "")))
 
             # Set by delegate_task (§7) when this run is a delegated sub-task, and by
             # the wake-up when a team lead is re-queued. Absent for an ordinary run.
@@ -1198,6 +1208,13 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 runtime_adapter = runtime or await resolve_runtime(
                     db, tenant_id=tenant_id, agent=agent, runtime_ref=pinned["runtime_ref"]
                 )
+                if not runs_in_process(runtime_adapter):
+                    # A chat run carries its turn, not its transcript: the
+                    # in-process engine reads the conversation itself, every
+                    # other runtime gets it as one text, as it always did.
+                    from oc8.chat.turn_context import flattened_task_text
+
+                    task_text = _with_resume(await flattened_task_text(db, run))
                 # One heartbeat for every runtime, wrapped here rather than
                 # inside each adapter: there are three of them, and a liveness
                 # signal one of them forgets does not read as "unknown", it

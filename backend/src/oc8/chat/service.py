@@ -68,6 +68,7 @@ from oc8.chat.questions import (
     render_answers_text,
 )
 from oc8.chat.titles import schedule_auto_title
+from oc8.chat.turn_context import turn_keys
 from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
 from oc8.copilot.agent_match import agent_fit_text, matching_agents
 from oc8.copilot.redaction import is_secret_request, redact_text
@@ -84,17 +85,6 @@ from oc8.runtime.states import TERMINAL, RunState
 from oc8.storage.attachments import copy_attachment, delete_attachment_blobs
 
 logger = logging.getLogger(__name__)
-
-#: How many prior turns to fold into the next run's `task` text. A chat is
-#: interactive, not a long autonomous investigation -- this keeps the prompt
-#: bounded without needing a separate summarization step for v1.
-_TRANSCRIPT_TURNS = 20
-
-#: How an oc8 notice turn starts (`send_message(notice=...)`): something oc8
-#: tells the Copilot about this chat -- an agent the person tried to create
-#: from its card was refused -- neither typed by the person nor scheduled by
-#: the Copilot. Stored as a `followup` row (no new role), told apart by this.
-NOTICE_PREFIX: Final = "oc8 notice: "
 
 #: Matches the retired `oc8.copilot.chat._SECRET_REFUSAL` text -- carried over
 #: rather than imported so this module has no dependency on the module Task 5
@@ -288,29 +278,6 @@ async def list_messages(
     return list((await db.execute(stmt)).scalars())
 
 
-def _speaker(role: str, content: str = "") -> str:
-    if role == "user":
-        return "User"
-    if role == "followup" and content.startswith(NOTICE_PREFIX):
-        return "oc8 (a notice from the system, not typed by the user)"
-    if role == "followup":
-        return "Follow-up (scheduled by you, not typed by the user)"
-    return "You (assistant)"
-
-
-def _build_task_text(history: list[m.ChatMessage], new_message: str, new_role: str = "user") -> str:
-    """The run's `task` text: the whole visible conversation, plain-labelled,
-    ending in the new turn. `run_agent`/`internal_agent.py` know nothing of
-    "chat" -- from their side this is just one more task instruction, so any
-    continuity across turns has to be spelled out here rather than relying
-    on native multi-turn state that does not exist on that path."""
-    lines = []
-    for msg in history[-_TRANSCRIPT_TURNS:]:
-        lines.append(f"{_speaker(msg.role, msg.content)}: {msg.content}")
-    lines.append(f"{_speaker(new_role, new_message)}: {new_message}")
-    return "\n".join(lines)
-
-
 async def _resolve_context_refs(
     db: AsyncSession,
     *,
@@ -464,7 +431,10 @@ _EXTRA_CONTEXT_KEYS: Final = frozenset({"regenerated"})
 def _build_turn_context(
     *,
     session: m.ChatSession,
-    task_text: str,
+    turn_message: str,
+    turn_text: str,
+    turn_role: str,
+    transcript_until: uuid.UUID | None,
     reply_to_message_id: uuid.UUID,
     image_attachments: list[m.FileAttachment],
     originating_operator: str | None,
@@ -483,8 +453,13 @@ def _build_turn_context(
     """The `AgentRun.context` for the run answering one chat turn.
 
     Shared by every path that starts such a run (a new turn here, a
-    regenerated reply later) so both carry the same keys. `context["task"]`
-    is `task_text` plus the mode directive when a mode is set -- callers that
+    regenerated reply later) so both carry the same keys. The context holds
+    the turn, never the transcript (`chat.turn_context`): `turn_message` is
+    what was said as `turn_role`, `turn_text` that plus what the caller
+    appended, and the run reads the conversation up to `transcript_until`
+    (None: the turn follows nothing) from the tree when it starts.
+    `context["turn_text"]` is `turn_text` plus the manifest text and the mode
+    directive, `context["task"]` that turn's labelled line -- callers that
     need the final text read it back from there.
 
     `manifest` is the turn's pinned context (`chat.context.manifest`): its
@@ -495,9 +470,16 @@ def _build_turn_context(
     if manifest is not None:
         extra_text = manifest_text(manifest, tools=mode is None or mode.allows_tools)
         if extra_text:
-            task_text = task_text + "\n\n" + extra_text
+            turn_text = turn_text + "\n\n" + extra_text
+    if mode is not None:
+        turn_text = turn_text + "\n\n" + mode_directive(mode)
     context: dict[str, object] = {
-        "task": task_text,
+        **turn_keys(
+            turn_role=turn_role,
+            message=turn_message,
+            turn_text=turn_text,
+            transcript_until=transcript_until,
+        ),
         "chat_session_id": str(session.id),
         "reply_to_message_id": str(reply_to_message_id),
     }
@@ -552,9 +534,9 @@ def _build_turn_context(
         # Two consumers, deliberately: the model is TOLD (the directive below)
         # and the PEP ENFORCES (engine._authorize reads this key back through
         # mode_from_context). Neither is sufficient alone -- a told model can
-        # ignore it, and a silently denied tool wastes a step.
+        # ignore it, and a silently denied tool wastes a step. The directive
+        # itself ends `turn_text` above.
         context["chat_mode"] = mode.key
-        context["task"] = task_text + "\n\n" + mode_directive(mode)
     kb_ids = [ref["id"] for ref in resolved_refs if ref.get("kind") == "knowledge_base"]
     if manifest is not None:
         # A data source attached to this message narrows to the bases it feeds,
@@ -976,10 +958,9 @@ async def send_message(
         )
         return user_message, None
 
-    task_text = _build_task_text(history, body, new_role=role)
-    task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
+    turn_text = body + _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
     if role == "user" and notice is None:
-        task_text += await fitting_agents_for_turn(
+        turn_text += await fitting_agents_for_turn(
             db,
             session=session,
             acting_member=acting_member,
@@ -991,7 +972,7 @@ async def send_message(
     for att in attachments:
         if att.is_image:
             continue
-        task_text += attachment_turn_text(att)
+        turn_text += attachment_turn_text(att)
 
     acting = await _acting_person(
         db,
@@ -1003,7 +984,12 @@ async def send_message(
     )
     context = _build_turn_context(
         session=session,
-        task_text=task_text,
+        turn_message=body,
+        turn_text=turn_text,
+        turn_role=role,
+        # The end of the transcript read above, not the leaf the turn lands
+        # on: a reply placed in between is missing from it, as it always was.
+        transcript_until=history[-1].id if history else None,
         reply_to_message_id=user_message.id,
         image_attachments=[att for att in attachments if att.is_image],
         originating_operator=originating_operator,
@@ -1261,9 +1247,10 @@ async def regenerate_reply(
             acting_member=acting_member,
             token_role=operator_role,
         )
-    task_text = _build_task_text(before, last.content, new_role=last.role)
-    task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
-    task_text += await fitting_agents_for_turn(
+    turn_text = last.content + _kb_reference_text(
+        resolved_refs, mode, manifest, restricted=restricted_ids
+    )
+    turn_text += await fitting_agents_for_turn(
         db,
         session=session,
         acting_member=acting_member,
@@ -1284,7 +1271,7 @@ async def regenerate_reply(
     for att in attachments:
         if att.is_image:
             continue
-        task_text += attachment_turn_text(att)
+        turn_text += attachment_turn_text(att)
     acting = await _acting_person(
         db,
         session=session,
@@ -1295,7 +1282,12 @@ async def regenerate_reply(
     )
     context = _build_turn_context(
         session=session,
-        task_text=task_text,
+        turn_message=last.content,
+        turn_text=turn_text,
+        turn_role=last.role,
+        # The answered turn's parent -- or, when the turn's question was
+        # answered, the turn itself: that answer is told as the newest turn.
+        transcript_until=before[-1].id if before else None,
         reply_to_message_id=user_message.id,
         image_attachments=[att for att in attachments if att.is_image],
         originating_operator=originating_operator,

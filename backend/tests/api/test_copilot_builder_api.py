@@ -19,7 +19,7 @@ from oc8.auth import get_identity_provider
 from oc8.authz.authority import authority_for_member, tenant_wide_read
 from oc8.authz.permissions import DEPARTMENT, SEAT_APPROVER, SEAT_VIEWER, VIEW, perm
 from oc8.authz.scope import scope_for_member
-from oc8.chat.service import NOTICE_PREFIX
+from oc8.chat.turn_context import NOTICE_PREFIX
 from oc8.copilot.builder import create_builder_proposal
 from oc8.copilot.models import CopilotProposal
 from oc8.edition.runtime import RuntimeComposition

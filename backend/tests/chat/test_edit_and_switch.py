@@ -19,6 +19,7 @@ from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
 from oc8.auth import get_identity_provider
 from oc8.chat.service import edit_message, record_answer_turn, record_assistant_reply
+from oc8.chat.turn_context import flattened_task_text
 from oc8.main import create_app
 from tests.chat.test_message_tree import (
     _commit,
@@ -89,10 +90,10 @@ async def test_edited_turn_and_the_next_one_follow_the_new_branch(
         _edited, edit_run = await _edit(db, session, u2, "EDITED-TWO")
         await _reply(db, edit_run, "ANSWER-EDITED")
         _u3, run3 = await _send(db, session, "three")
-    edit_task = str(edit_run.context["task"])
+        edit_task = await flattened_task_text(db, edit_run)
+        task = await flattened_task_text(db, run3)
     assert "ANSWER-ONE" in edit_task and "EDITED-TWO" in edit_task
     assert "ORIGINAL-TWO" not in edit_task and "ANSWER-TWO" not in edit_task
-    task = str(run3.context["task"])
     assert "EDITED-TWO" in task and "ANSWER-EDITED" in task
     assert "ORIGINAL-TWO" not in task and "ANSWER-TWO" not in task
 
@@ -186,7 +187,7 @@ async def _task(app_session: AppSessionFactory, tenant: uuid.UUID, run_id: str) 
     async with app_session(tenant) as db:
         run = await db.get(m.AgentRun, uuid.UUID(run_id))
         assert run is not None
-        return str(run.context["task"])
+        return await flattened_task_text(db, run)
 
 
 async def test_edit_door_answers_with_the_new_turn(

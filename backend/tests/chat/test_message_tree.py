@@ -25,6 +25,7 @@ from oc8.chat.service import (
     send_message,
 )
 from oc8.chat.tree import MessageGone, add_edited_message, remove_message, visible_path
+from oc8.chat.turn_context import flattened_task_text
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -139,7 +140,7 @@ async def test_transcript_after_regenerate_has_only_active_variant(
         assert await _parent(db, r1b.id) == await _parent(db, r1.id) == u1.id
         assert await _leaf(db, session) == r1b.id
         _u2, run2 = await _send(db, session, "follow on")
-    task = str(run2.context["task"])
+        task = await flattened_task_text(db, run2)
     assert "NEW-VARIANT" in task
     assert "OLD-VARIANT" not in task, "a hidden variant must not reach the next turn"
 
@@ -199,7 +200,7 @@ async def test_late_reply_does_not_move_leaf(
         assert await _leaf(db, session) == edited.id, "the person stays on their branch"
         u3, run3 = await _send(db, session, "three")
         assert await _parent(db, u3.id) == edited.id
-    assert "LATE answer two" not in str(run3.context["task"])
+        assert "LATE answer two" not in await flattened_task_text(db, run3)
 
 
 async def test_followup_appends_to_current_leaf(
@@ -290,7 +291,7 @@ async def test_live_session_stays_linear(app_session: AppSessionFactory, redis_u
         for msg in (u1, r1, u2):
             assert await _parent(db, msg.id) is None
         assert await _leaf(db, session) is None
-    task = str(run2.context["task"])
+        task = await flattened_task_text(db, run2)
     assert "LIVE-ONE" in task and "LIVE-ANSWER" in task
 
 
@@ -359,7 +360,7 @@ async def test_regenerate_transcript_ends_at_the_answered_question(
         )
         again = await _reply(db, run_regen, "SECOND-BOOKING")
         assert await _parent(db, again.id) == answer.id
-    task = str(run_regen.context["task"])
+        task = await flattened_task_text(db, run_regen)
     assert "BOOK-A-ROOM" in task
     assert task.index("BOOK-A-ROOM") < task.index("THE-THIRD-FLOOR")
     assert "FIRST-BOOKING" not in task

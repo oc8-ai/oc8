@@ -164,7 +164,7 @@ def notice_text(
     """The notice for the proposal's stored refusal, or None when there is
     nothing the Copilot could explain (no refusal, or one about state).
     `board_title` names a board-only proposal's board."""
-    from oc8.chat.service import NOTICE_PREFIX
+    from oc8.chat.turn_context import NOTICE_PREFIX
 
     result = proposal.result or {}
     refusal = result.get("refusal")

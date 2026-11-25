@@ -224,11 +224,7 @@ async def _stage_turn(
     leaf only while the person is still on that branch."""
     from oc8.chat import tree
     from oc8.chat.modes import parse_command
-    from oc8.chat.service import (
-        _build_task_text,
-        _build_turn_context,
-        _kb_reference_text,
-    )
+    from oc8.chat.service import _build_turn_context, _kb_reference_text
     from oc8.realtime.emit import publish_chat_message_created
     from oc8.runtime.repository import RunRepository
 
@@ -244,10 +240,12 @@ async def _stage_turn(
     )
     await tree.append_run_write(db, session=session, message=message, anchor_id=anchor_id)
     history = await tree.path_before(db, session=session, message=message)
-    task_text = _build_task_text(history, body) + _kb_reference_text([], mode, None)
     context = _build_turn_context(
         session=session,
-        task_text=task_text,
+        turn_message=body,
+        turn_text=body + _kb_reference_text([], mode, None),
+        turn_role="user",
+        transcript_until=history[-1].id if history else None,
         reply_to_message_id=message.id,
         image_attachments=[],
         originating_operator=door.originating_operator,

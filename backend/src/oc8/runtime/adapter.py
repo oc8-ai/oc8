@@ -106,6 +106,12 @@ class Oc8AgentRuntime:
         )
 
 
+def runs_in_process(adapter: RuntimeAdapter) -> bool:
+    """Whether `adapter` is the in-process engine, the one runtime that reads
+    a chat from the database itself instead of one flattened task text."""
+    return isinstance(adapter, Oc8AgentRuntime)
+
+
 class EchoRuntimeStub:
     """Minimal, non-production runtime used only to prove the negotiation
     and dispatch machinery against real installed-plugin data. Not a usable

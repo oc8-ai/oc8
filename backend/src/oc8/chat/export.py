@@ -19,7 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.chat.service import NOTICE_PREFIX
+from oc8.chat.turn_context import NOTICE_PREFIX
 
 _MAX_SLUG = 80
 

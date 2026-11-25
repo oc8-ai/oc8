@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.chat.export import export_filename_stem
-from oc8.chat.service import NOTICE_PREFIX
+from oc8.chat.turn_context import NOTICE_PREFIX
 from tests.chat.test_edit_and_switch import (
     _answer,
     _client,
