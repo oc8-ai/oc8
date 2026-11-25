@@ -2545,6 +2545,12 @@ export interface UsageDTO {
   /** The parts of tokensIn read from / written to the provider's prompt cache. */
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** The group's display name (agent or department) and, for an agent row, its
+   *  department. Set even for a member's personal agent, which the admin's
+   *  agent and department lists leave out (its name stays visible, R2). */
+  name?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
 }
 
 /** `month` is the current calendar month on the organisation's clock. */

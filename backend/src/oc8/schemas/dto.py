@@ -1030,6 +1030,14 @@ class PrincipalUsageDTO(CamelModel):
     #: cache; `provider_cost_micros` already bills them at the cache rates.
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    #: The group's display name (the agent's or the department's), and for an
+    #: agent row its department. Metadata an admin keeps (R2) even where the
+    #: agent and department lists leave a member's personal ones out, so the
+    #: Costs page names every row without a second lookup. `None` for the
+    #: "unassigned" bucket.
+    name: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
 
 
 class TokenUsageExportRowDTO(CamelModel):

@@ -291,6 +291,32 @@ async def test_usage_still_counts_personal_runs(app_session: AppSessionFactory) 
     assert "providerCostMicros" in rows[str(w.pia)]
 
 
+async def test_usage_names_a_personal_agent_and_its_department(
+    app_session: AppSessionFactory,
+) -> None:
+    """R2: an agent's name and department are metadata an admin keeps. The
+    admin's agent and department lists leave personal ones out, so the usage
+    row names them itself; otherwise the Costs page can only show a raw id."""
+    w = await _world(app_session)
+    async with _http() as http:
+        by_agent = await http.get(
+            "/api/v1/usage", params={"group_by": "agent", "period": "all"}, headers=_admin(w)
+        )
+        by_dept = await http.get(
+            "/api/v1/usage", params={"group_by": "department", "period": "all"}, headers=_admin(w)
+        )
+    assert by_agent.status_code == 200, by_agent.text
+    agent_row = {row["group"]: row for row in by_agent.json()}[str(w.pia)]
+    assert agent_row["name"] == "Pia"
+    assert agent_row["departmentId"] == str(w.personal)
+    assert agent_row["departmentName"] == "Owner"
+    assert by_dept.status_code == 200, by_dept.text
+    dept_row = {row["group"]: row for row in by_dept.json()}[str(w.personal)]
+    assert dept_row["name"] == "Owner"
+    assert dept_row["departmentId"] == str(w.personal)
+    assert dept_row["departmentName"] == "Owner"
+
+
 async def test_admin_may_cancel_a_personal_run(app_session: AppSessionFactory) -> None:
     """U1: the emergency stop stays an admin's, and reveals nothing: neither
     the response nor the audit entry carries output, task text or arguments."""
