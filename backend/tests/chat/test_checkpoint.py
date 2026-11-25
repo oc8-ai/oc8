@@ -299,7 +299,7 @@ async def test_sync_checkpoint_when_over_70_percent_without_a_fresh_one(
     assert len(stored) == 1 and stored[0].summary == "SYNC SUM"
 
 
-async def test_a_fresh_checkpoint_needs_no_sync_one(
+async def test_a_background_checkpoint_spares_the_sync_one(
     app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     complete = _FakeComplete()
@@ -349,8 +349,8 @@ async def test_one_oversized_message_still_starts_the_run(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         session = await _session(db, tenant)
-        # 100 000 tokens: above 70 % of a 128k window on its own.
-        (big,) = await _chain(db, session, [("user", "z" * 400_000, {})])
+        # 150 000 tokens: more than the whole 128k window on its own.
+        (big,) = await _chain(db, session, [("user", "z" * 600_000, {})])
         pre = await _preamble(db, session, big, window=128_000)
     assert complete.calls == []
     replayed = _replayed(pre.messages)
@@ -482,6 +482,9 @@ async def test_checkpoints_are_tenant_isolated(app_session: AppSessionFactory) -
             )
         )
         await db.flush()
+    async with app_session(a) as db:
+        mine = (await db.execute(m.ChatCheckpoint.__table__.select())).all()
+        assert [row.summary for row in mine] == ["mine"]
     async with app_session(b) as db:
         rows = (await db.execute(m.ChatCheckpoint.__table__.select())).all()
         assert rows == []

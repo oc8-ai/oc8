@@ -68,6 +68,34 @@ async def is_allowed_override(
     return model_config_id in await allowed_model_ids(db, agent=agent)
 
 
+async def session_model_config(
+    db: AsyncSession, *, session: m.ChatSession, agent: m.Agent
+) -> tuple[m.ModelConfig | None, str, str]:
+    """(config, provider, model) a chat's own housekeeping calls (its title,
+    its checkpoints) run on, so they see its words only where its turns do:
+    the chat's allowed model choice, else the agent's pinned model, else the
+    default provider and model (config None). An Auto config is returned as
+    is; the caller decides how to route it."""
+    # Deferred: oc8.agents.versioning calls into this module.
+    from oc8.agents.versioning import pinned_model_config_id, resolve_version
+    from oc8.config import get_settings
+
+    if session.model_override_id is not None and await is_allowed_override(
+        db, agent=agent, model_config_id=session.model_override_id
+    ):
+        config_id: uuid.UUID | None = session.model_override_id
+    else:
+        config_id = pinned_model_config_id(await resolve_version(db, None, agent))
+    config = await db.get(m.ModelConfig, config_id) if config_id is not None else None
+    if config is not None and config.tenant_id != session.tenant_id:
+        config = None
+    if config is not None:
+        return config, config.provider, config.model
+    settings = get_settings()
+    provider = (agent.presentation or {}).get("provider", settings.default_model_provider)
+    return None, str(provider), settings.default_model
+
+
 def _reasoning_of(
     config: m.ModelConfig | None, definition: dict[str, Any] | None
 ) -> tuple[bool, str]:

@@ -80,6 +80,11 @@ ALLOWED: dict[str, str] = {
         "reads the finished run's own agent, after its owner's reach was "
         "re-checked, to stage the follow-up turn; no departmental browse"
     ),
+    "chat/checkpoint.py": (
+        "reads the chat's own agent in a background job with no human caller; "
+        "only for its model config and its department's budget, never a "
+        "departmental browse"
+    ),
     "runtime/clarification.py": (
         "the answer path reading the run's own agent for the secret gate "
         "(is_tenant_assistant); no departmental browse"

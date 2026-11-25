@@ -28,7 +28,6 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.config import get_settings
 from oc8.copilot.redaction import redact_text
 from oc8.modelrouter.fallback import complete_with_fallback
 from oc8.modelrouter.router import get_model_router
@@ -148,30 +147,18 @@ async def _title_model(
     The chat's own model choice first -- a member who picked a local model for
     this chat keeps its words local -- then the agent's pinned model. An Auto
     config answers with its cheapest connected tier."""
-    from oc8.agents.versioning import pinned_model_config_id, resolve_version
-    from oc8.chat.model_choice import is_allowed_override
+    from oc8.chat.model_choice import session_model_config
     from oc8.modelrouter.auto_router import cheapest_connected_tier, is_auto_config
 
-    config_id = None
-    if session.model_override_id is not None and await is_allowed_override(
-        db, agent=agent, model_config_id=session.model_override_id
-    ):
-        config_id = session.model_override_id
-    else:
-        config_id = pinned_model_config_id(await resolve_version(db, None, agent))
-    config = await db.get(m.ModelConfig, config_id) if config_id is not None else None
-    if config is not None and config.tenant_id != session.tenant_id:
-        config = None
+    choice = await session_model_config(db, session=session, agent=agent)
+    config = choice[0]
     if is_auto_config(config):
         assert config is not None
         config = await cheapest_connected_tier(db, config, tenant_id=session.tenant_id)
         if config is None:
             return None
-    if config is not None:
         return config, config.provider, config.model
-    settings = get_settings()
-    provider = (agent.presentation or {}).get("provider", settings.default_model_provider)
-    return None, str(provider), settings.default_model
+    return choice
 
 
 async def _model_title(db: AsyncSession, *, session: m.ChatSession, message: str) -> str | None:

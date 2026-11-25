@@ -29,8 +29,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.harness.prompts import compaction_instruction
 from oc8.agent.harness.stages.a_compaction import prompt_token_fallback
+from oc8.chat.model_choice import session_model_config
 from oc8.chat.replay import DEFAULT_WINDOW, merged, message_turns
-from oc8.config import get_settings
 from oc8.modelrouter.fallback import complete_with_fallback
 from oc8.modelrouter.router import get_model_router, locality_for_provider
 from oc8.modelrouter.types import ModelParams, NeutralMessage, TextPart
@@ -84,14 +84,19 @@ def context_window_of(run_context: Mapping[str, Any] | None) -> int:
     return DEFAULT_WINDOW
 
 
-async def _checkpoints_on_path(
-    db: AsyncSession, *, session_id: uuid.UUID, path_ids: list[uuid.UUID], restricted_ok: bool
-) -> list[m.ChatCheckpoint]:
-    """The session's checkpoints whose `upto` is on the path, newest first
-    (of two written at once, the one further along the path). A restricted
-    one only when `restricted_ok`."""
+async def newest_checkpoint_on_path(
+    db: AsyncSession,
+    *,
+    session_id: uuid.UUID,
+    path_ids: list[uuid.UUID],
+    restricted_ok: bool = False,
+) -> m.ChatCheckpoint | None:
+    """The newest checkpoint whose `upto` is on the path (of two written at
+    once, the one further along it): one on another branch never is. A
+    restricted one only when `restricted_ok` (fail closed: only a caller that
+    sends nothing to a model may skip it)."""
     if not path_ids:
-        return []
+        return None
     query = select(m.ChatCheckpoint).where(
         m.ChatCheckpoint.session_id == session_id,
         m.ChatCheckpoint.upto_message_id.in_(path_ids),
@@ -100,23 +105,7 @@ async def _checkpoints_on_path(
         query = query.where(m.ChatCheckpoint.restricted.is_(False))
     position = {message_id: index for index, message_id in enumerate(path_ids)}
     rows = list((await db.execute(query)).scalars())
-    rows.sort(key=lambda row: (row.created_at, position[row.upto_message_id]), reverse=True)
-    return rows
-
-
-async def newest_checkpoint_on_path(
-    db: AsyncSession,
-    *,
-    session_id: uuid.UUID,
-    path_ids: list[uuid.UUID],
-    restricted_ok: bool = True,
-) -> m.ChatCheckpoint | None:
-    """The newest checkpoint whose `upto` is on the path: one on another
-    branch never is. A restricted one only when `restricted_ok`."""
-    rows = await _checkpoints_on_path(
-        db, session_id=session_id, path_ids=path_ids, restricted_ok=restricted_ok
-    )
-    return rows[0] if rows else None
+    return max(rows, key=lambda row: (row.created_at, position[row.upto_message_id]), default=None)
 
 
 def _start_after(path: list[m.ChatMessage], checkpoint: m.ChatCheckpoint | None) -> int:
@@ -144,39 +133,20 @@ def _cut(tokens: list[int], *, start: int, window: int) -> int | None:
     return index if index >= start else None
 
 
-async def _session_config(
-    db: AsyncSession, *, session: m.ChatSession, agent: m.Agent
-) -> tuple[m.ModelConfig | None, str, str]:
-    """(config, provider, model) the session's runs use: the chat's allowed
-    model choice, else the agent's pinned model, else the default. An Auto
-    config is returned as is."""
-    from oc8.agents.versioning import pinned_model_config_id, resolve_version
-    from oc8.chat.model_choice import is_allowed_override
-
-    config_id = None
-    if session.model_override_id is not None and await is_allowed_override(
-        db, agent=agent, model_config_id=session.model_override_id
-    ):
-        config_id = session.model_override_id
-    else:
-        config_id = pinned_model_config_id(await resolve_version(db, None, agent))
-    config = await db.get(m.ModelConfig, config_id) if config_id is not None else None
-    if config is not None and config.tenant_id != session.tenant_id:
-        config = None
-    if config is not None:
-        return config, config.provider, config.model
-    settings = get_settings()
-    provider = (agent.presentation or {}).get("provider", settings.default_model_provider)
-    return None, str(provider), settings.default_model
-
-
-async def session_model_locality(db: AsyncSession, *, session: m.ChatSession) -> str:
-    """The locality of the model the session's runs use, as the engine
-    derives it; "cloud" when the agent is gone."""
+async def _session_agent(db: AsyncSession, *, session: m.ChatSession) -> m.Agent | None:
+    """The chat's own agent, or None when it is gone."""
     agent = await db.get(m.Agent, session.agent_id)
     if agent is None or agent.tenant_id != session.tenant_id:
-        return "cloud"
-    config, provider, _model = await _session_config(db, session=session, agent=agent)
+        return None
+    return agent
+
+
+async def session_model_locality(
+    db: AsyncSession, *, session: m.ChatSession, agent: m.Agent
+) -> str:
+    """The locality of the model the session's runs use, as the engine
+    derives it."""
+    config, provider, _model = await session_model_config(db, session=session, agent=agent)
     return config.locality if config is not None else locality_for_provider(provider)
 
 
@@ -192,7 +162,7 @@ async def _session_model(
     not the cheapest tier. An Auto config routes `messages` as a run would."""
     from oc8.modelrouter.auto_router import is_auto_config, resolve_auto_config
 
-    config, provider, model = await _session_config(db, session=session, agent=agent)
+    config, provider, model = await session_model_config(db, session=session, agent=agent)
     if is_auto_config(config):
         assert config is not None
         config, _decision = await resolve_auto_config(
@@ -227,19 +197,22 @@ async def make_checkpoint(
     path: list[m.ChatMessage],
     window: int,
     model_locality: str,
+    agent: m.Agent | None = None,
 ) -> m.ChatCheckpoint | None:
     """Summarise `path` up to the cut that keeps about `TAIL_RATIO * window`
     verbatim, on top of the newest checkpoint before it, and store it. None
     when there is nothing to cut or no model to ask. A model failure raises.
 
     A restricted answer goes into the summary only when both `model_locality`
-    (the run's model) and the summarising model are local."""
+    (the run's model) and the summarising model are local. `agent` is the
+    session's agent, when the caller has read it already."""
     from oc8.metering import check_budget, record_usage
 
     if len(path) < 2:
         return None
-    agent = await db.get(m.Agent, session.agent_id)
-    if agent is None or agent.tenant_id != session.tenant_id:
+    if agent is None:
+        agent = await _session_agent(db, session=session)
+    if agent is None:
         return None
     budget = await check_budget(db, tenant_id=session.tenant_id, department_id=agent.department_id)
     if budget.hard_exceeded:
@@ -333,8 +306,9 @@ def tail_fit(turns: list[NeutralMessage], *, budget: int) -> list[NeutralMessage
     """The newest turns that fit `budget` tokens. The newest one that does
     not fit whole is cut to the room left, with `CUT_NOTE`; the ones before
     it are dropped, and the replay says so."""
-    # Counted in chars, as the estimate is; the note on a dropped start and
-    # its separator are reserved up front.
+    # Counted in text chars, because `estimate_tokens` is joined text chars
+    # // 4: change one and the other must follow. The note on a dropped
+    # start and its separator are reserved up front.
     room = budget * 4 - len(EARLIER_CUT) - 2
     kept: list[NeutralMessage] = []
     for turn in reversed(turns):
@@ -364,16 +338,16 @@ async def bounded_turns(
 ) -> list[NeutralMessage]:
     """`turns` (one per message on `path`) as the replay sends them: from the
     newest checkpoint on the path this model may see, then the sync rule. A
-    replay above `SYNC_RATIO` of the window without a fresh checkpoint (one
-    whose `upto` lies in the messages a cut would summarise) makes one now;
-    when that fails or is not enough, the newest turns that fit are kept."""
-    checkpoints = await _checkpoints_on_path(
+    replay still above `SYNC_RATIO` of the window has no fresh checkpoint --
+    the newest one lies before every message a cut would summarise -- so it
+    makes one now; when that fails or is not enough, the newest turns that
+    fit are kept."""
+    base = await newest_checkpoint_on_path(
         db,
         session_id=session_id,
         path_ids=[message.id for message in path],
         restricted_ok=model_locality == "local",
     )
-    base = checkpoints[0] if checkpoints else None
 
     def _from(checkpoint: m.ChatCheckpoint | None) -> list[NeutralMessage]:
         rest = turns[_start_after(path, checkpoint) :]
@@ -385,13 +359,7 @@ async def bounded_turns(
         return replayed
     start = _start_after(path, base)
     cut = _cut([estimate_tokens([turn]) for turn in turns], start=start, window=window)
-    fresh = None
     if cut is not None:
-        ids = {message.id for message in path[start : cut + 1]}
-        fresh = next((c for c in checkpoints if c.upto_message_id in ids), None)
-    if fresh is not None:
-        replayed = _from(fresh)
-    elif cut is not None:
         session = await db.get(m.ChatSession, session_id)
         made = None
         if session is not None:
@@ -418,8 +386,9 @@ async def replayed_estimate(
 ) -> int:
     """The estimated size of `path` as a replay sends it, from its newest
     checkpoint on."""
+    # Measures size only, nothing reaches a model: a restricted one counts.
     base = await newest_checkpoint_on_path(
-        db, session_id=session.id, path_ids=[message.id for message in path]
+        db, session_id=session.id, path_ids=[message.id for message in path], restricted_ok=True
     )
     rest = path[_start_after(path, base) :]
     turns = await message_turns(db, rest, model_locality="cloud")
@@ -449,13 +418,17 @@ async def checkpoint_after_reply(
     )
     if reply_id is None:
         return None
+    agent = await _session_agent(db, session=session)
+    if agent is None:
+        return None
     path = await tree.path_to(db, session=session, message_id=reply_id)
     return await make_checkpoint(
         db,
         session=session,
         path=path,
         window=context_window_of(run.context),
-        model_locality=await session_model_locality(db, session=session),
+        model_locality=await session_model_locality(db, session=session, agent=agent),
+        agent=agent,
     )
 
 
