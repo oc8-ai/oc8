@@ -112,12 +112,6 @@ function DepartmentDetail() {
   // `dept.id`, until the guards confirm `dept` is defined.
   const { data: dept, isLoading } = useDepartment(id);
   const { data: members = [] } = useDepartmentAgents(id);
-  // Fetch up to the backend's per-column cap once; pagination below is
-  // client-side over that set rather than re-fetching a growing window.
-  const BOARD_FETCH_LIMIT = 200;
-  const BOARD_PAGE_SIZE = 8;
-  const [boardPage, setBoardPage] = useState(0);
-  const { data: board } = useDepartmentBoard(id, BOARD_FETCH_LIMIT);
   // KB grants for this department, not a paginated list view.
   const { data: allBasesPage } = useKnowledgeBases({ pageSize: 200 });
   const allBases = allBasesPage?.items ?? [];
@@ -125,20 +119,6 @@ function DepartmentDetail() {
   const [tab, setTab] = useState<DepartmentTab>(initialDepartmentTab);
   const [hireOpen, setHireOpen] = useState(false);
   const updateDepartment = useUpdateDepartment(id);
-
-  const taskState = board?.tasks ?? [];
-  const boardTotals = board?.totals ?? {};
-  const totalTasks = Object.values(boardTotals).reduce((a, b) => a + b, 0);
-  // Every column paginates on the same page index, sized to whichever
-  // column has the most fetched items — short columns just show fewer
-  // cards on later pages rather than getting their own page count.
-  const boardColumnCounts = ["backlog", "in_progress", "waiting", "done"].map(
-    (col) => taskState.filter((task) => task.column === col).length,
-  );
-  const boardPageCount = Math.max(
-    1,
-    Math.ceil(Math.max(...boardColumnCounts, 0) / BOARD_PAGE_SIZE),
-  );
 
   // Live feed (seeded once from each member's last action; not a live stream)
   type FeedItem = { id: string; time: string; text: string; agent: string };
@@ -194,12 +174,6 @@ function DepartmentDetail() {
     );
   }
 
-  const COLUMNS: { id: TaskColumn; label: string }[] = [
-    { id: "backlog", label: t("Backlog", "Backlog") },
-    { id: "in_progress", label: t("In Progress", "In Bearbeitung") },
-    { id: "waiting", label: t("Awaiting Approval", "Wartet auf Freigabe") },
-    { id: "done", label: t("Done", "Erledigt") },
-  ];
   // Backend presentation.icon is a free-form string (e.g. a freshly
   // provisioned tenant's default department uses "building"), so it can fall
   // outside the fixed icon set below — fall back rather than render undefined.
@@ -393,89 +367,11 @@ function DepartmentDetail() {
             </div>
           </section>
 
-          {/* Kanban */}
-          <section>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="font-serif text-lg">{t("Task board", "Aufgaben-Board")}</h3>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground">
-                  {totalTasks} {t("tasks", "Aufgaben")}
-                </span>
-                {boardPageCount > 1 && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      disabled={boardPage === 0}
-                      onClick={() => setBoardPage((n) => Math.max(0, n - 1))}
-                      aria-label={t("Previous page", "Vorherige Seite")}
-                      className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
-                    >
-                      <ChevronLeft className="h-3.5 w-3.5" />
-                    </button>
-                    <span className="min-w-[64px] text-center text-xs text-muted-foreground">
-                      {t(
-                        `Page ${boardPage + 1} / ${boardPageCount}`,
-                        `Seite ${boardPage + 1} / ${boardPageCount}`,
-                      )}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={boardPage >= boardPageCount - 1}
-                      onClick={() => setBoardPage((n) => Math.min(boardPageCount - 1, n + 1))}
-                      aria-label={t("Next page", "Nächste Seite")}
-                      className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
-                    >
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              {COLUMNS.map((col) => {
-                const columnItems = taskState.filter((t) => t.column === col.id);
-                const items = columnItems.slice(
-                  boardPage * BOARD_PAGE_SIZE,
-                  boardPage * BOARD_PAGE_SIZE + BOARD_PAGE_SIZE,
-                );
-                const isWaiting = col.id === "waiting";
-                return (
-                  <div
-                    key={col.id}
-                    className={cn(
-                      "flex min-h-[220px] flex-col rounded-lg border bg-panel/60 p-3",
-                      isWaiting
-                        ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5"
-                        : "border-border",
-                    )}
-                  >
-                    <div className="mb-2 flex items-center justify-between">
-                      <span
-                        className={cn(
-                          "text-[10px] uppercase tracking-widest",
-                          isWaiting
-                            ? "text-[color:var(--status-warning)]"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        {col.label}
-                      </span>
-                      <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                        {(boardTotals[col.id] ?? columnItems.length) > columnItems.length
-                          ? `${columnItems.length}/${boardTotals[col.id]}`
-                          : columnItems.length}
-                      </span>
-                    </div>
-                    <div className="flex-1 space-y-2">
-                      {items.map((t) => (
-                        <TaskCard key={t.id} task={t} members={members} />
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </section>
+          <DepartmentTaskBoard
+            departmentId={id}
+            contentHidden={dept.contentHidden ?? false}
+            members={members}
+          />
 
           {/* Knowledge + Feed */}
           <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
@@ -829,6 +725,142 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
         }
       />
     </Panel>
+  );
+}
+
+/** The department's task board. A member's personal department read by
+ *  anybody but its owner (`contentHidden`): its tasks are what the owner's
+ *  agents were asked to do, the board is a 404 for this reader, so it is
+ *  never asked for and the page says why instead of showing an empty board. */
+export function DepartmentTaskBoard({
+  departmentId,
+  contentHidden,
+  members,
+}: {
+  departmentId: string;
+  contentHidden: boolean;
+  members: Agent[];
+}) {
+  const t = useT();
+  // Fetch up to the backend's per-column cap once; pagination below is
+  // client-side over that set rather than re-fetching a growing window.
+  const BOARD_FETCH_LIMIT = 200;
+  const BOARD_PAGE_SIZE = 8;
+  const [boardPage, setBoardPage] = useState(0);
+  const { data: board } = useDepartmentBoard(departmentId, BOARD_FETCH_LIMIT, !contentHidden);
+  if (contentHidden) {
+    return (
+      <section>
+        <h3 className="mb-3 font-serif text-lg">{t("Task board", "Aufgaben-Board")}</h3>
+        <Panel className="p-5 text-sm text-muted-foreground">
+          {t(
+            "This is a member's personal department. Only that member can see its tasks.",
+            "Das ist die persönliche Abteilung eines Mitglieds. Nur dieses Mitglied sieht ihre Aufgaben.",
+          )}
+        </Panel>
+      </section>
+    );
+  }
+  const taskState = board?.tasks ?? [];
+  const boardTotals = board?.totals ?? {};
+  const totalTasks = Object.values(boardTotals).reduce((a, b) => a + b, 0);
+  // Every column paginates on the same page index, sized to whichever
+  // column has the most fetched items — short columns just show fewer
+  // cards on later pages rather than getting their own page count.
+  const boardColumnCounts = ["backlog", "in_progress", "waiting", "done"].map(
+    (col) => taskState.filter((task) => task.column === col).length,
+  );
+  const boardPageCount = Math.max(
+    1,
+    Math.ceil(Math.max(...boardColumnCounts, 0) / BOARD_PAGE_SIZE),
+  );
+  const COLUMNS: { id: TaskColumn; label: string }[] = [
+    { id: "backlog", label: t("Backlog", "Backlog") },
+    { id: "in_progress", label: t("In Progress", "In Bearbeitung") },
+    { id: "waiting", label: t("Awaiting Approval", "Wartet auf Freigabe") },
+    { id: "done", label: t("Done", "Erledigt") },
+  ];
+  return (
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="font-serif text-lg">{t("Task board", "Aufgaben-Board")}</h3>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">
+            {totalTasks} {t("tasks", "Aufgaben")}
+          </span>
+          {boardPageCount > 1 && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={boardPage === 0}
+                onClick={() => setBoardPage((n) => Math.max(0, n - 1))}
+                aria-label={t("Previous page", "Vorherige Seite")}
+                className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="min-w-[64px] text-center text-xs text-muted-foreground">
+                {t(
+                  `Page ${boardPage + 1} / ${boardPageCount}`,
+                  `Seite ${boardPage + 1} / ${boardPageCount}`,
+                )}
+              </span>
+              <button
+                type="button"
+                disabled={boardPage >= boardPageCount - 1}
+                onClick={() => setBoardPage((n) => Math.min(boardPageCount - 1, n + 1))}
+                aria-label={t("Next page", "Nächste Seite")}
+                className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {COLUMNS.map((col) => {
+          const columnItems = taskState.filter((t) => t.column === col.id);
+          const items = columnItems.slice(
+            boardPage * BOARD_PAGE_SIZE,
+            boardPage * BOARD_PAGE_SIZE + BOARD_PAGE_SIZE,
+          );
+          const isWaiting = col.id === "waiting";
+          return (
+            <div
+              key={col.id}
+              className={cn(
+                "flex min-h-[220px] flex-col rounded-lg border bg-panel/60 p-3",
+                isWaiting
+                  ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5"
+                  : "border-border",
+              )}
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <span
+                  className={cn(
+                    "text-[10px] uppercase tracking-widest",
+                    isWaiting ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
+                  )}
+                >
+                  {col.label}
+                </span>
+                <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  {(boardTotals[col.id] ?? columnItems.length) > columnItems.length
+                    ? `${columnItems.length}/${boardTotals[col.id]}`
+                    : columnItems.length}
+                </span>
+              </div>
+              <div className="flex-1 space-y-2">
+                {items.map((t) => (
+                  <TaskCard key={t.id} task={t} members={members} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

@@ -14,6 +14,7 @@ import {
   api,
   ApiError,
   deleteFile,
+  retryUnlessRefused,
   fetchCapaIcon,
   listInstructionFiles,
   previewBackup,
@@ -660,6 +661,8 @@ export const useAgentWorkspaceFiles = (agentId: string) =>
     queryKey: ["agents", agentId, "workspace", "files"],
     queryFn: () => api.get<WorkspaceFilesDTO>(`/agents/${agentId}/workspace/files`),
     enabled: !!agentId,
+    // A personal agent's files are its owner's: anybody else gets a final 404.
+    retry: retryUnlessRefused,
   });
 
 export interface Board {
@@ -670,8 +673,9 @@ export interface Board {
 }
 
 // `limit` is per column, so a busy "done" column cannot crowd out the two tasks
-// actually in progress.
-export const useDepartmentBoard = (id: string, limit = 25) => {
+// actually in progress. `enabled` false for a member's personal department
+// read by anybody else (`contentHidden`): its board is a 404 for them.
+export const useDepartmentBoard = (id: string, limit = 25, enabled = true) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: [...keys.board(id), limit],
@@ -680,7 +684,8 @@ export const useDepartmentBoard = (id: string, limit = 25) => {
       ...board,
       tasks: board.tasks.map((t) => localizeTask(t, lang)),
     }),
-    enabled: !!id,
+    enabled: !!id && enabled,
+    retry: retryUnlessRefused,
   });
 };
 
@@ -1941,6 +1946,7 @@ export function useAgentMemory(agentId: string) {
   return useQuery({
     queryKey: ["agents", agentId, "memory"],
     queryFn: () => api.get<MemoryList>(`/agents/${agentId}/memory`),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -2181,6 +2187,9 @@ export function useAgentRuns(agentId: string, opts: { limit: number; offset: num
         `/agents/${agentId}/runs?limit=${opts.limit}&offset=${opts.offset}`,
       ),
     enabled: !!agentId,
+    // A personal agent's runs are its owner's: anybody else gets a final 404
+    // (the page header asks for them too).
+    retry: retryUnlessRefused,
     // Keep the current page on screen while the next one loads -- but never
     // another agent's page.
     placeholderData: (previous, previousQuery) =>
