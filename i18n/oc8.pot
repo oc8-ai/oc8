@@ -6053,6 +6053,9 @@ msgstr ""
 msgid "The agent that should fill the dashboard no longer exists or is out of reach."
 msgstr ""
 
+msgid "The agent was changed. Please review and confirm the changes in your profile, under your personal assistants."
+msgstr ""
+
 msgid "The agent was created without its email trigger: pick its mailbox in the agent's tool settings, then add the trigger on the agent's page."
 msgstr ""
 
