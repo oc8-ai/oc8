@@ -248,43 +248,6 @@ def _tool_req(model: str, reasoning: Any = None) -> CompletionRequest:
     return req
 
 
-async def test_a_model_that_wants_no_reasoning_next_to_tools_gets_none(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """gpt-6.2-sol and gpt-6-astra reason by default and refuse function tools
-    on Chat Completions unless `reasoning_effort` is 'none' (issue #164). A
-    request that sent no effort at all is refused too, so dropping the level
-    is not enough: the adapter sends 'none', as the provider asks. (With a
-    level asked for, the request moves to the Responses API instead -- see
-    below.)"""
-    sent = _post_answering(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _OK))
-    result = await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol"))
-    assert result.text == "hi"
-    assert len(sent) == 2 and sent[1]["reasoning_effort"] == "none"
-
-
-async def test_the_stream_sends_reasoning_none_next_to_tools(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sent = _stream_answering(
-        monkeypatch,
-        (400, jsonlib.dumps(_TOOLS_NEED_REASONING_NONE).encode()),
-        (200, _OPENAI_SSE),
-    )
-    chunks = [c async for c in OpenAIAdapter(api_key="sk-test").stream(_tool_req("gpt-6-astra"))]
-    assert "".join(c.text for c in chunks) == "hi"
-    assert "reasoning_effort" not in sent[0] and sent[1]["reasoning_effort"] == "none"
-
-
-async def test_reasoning_none_that_stays_refused_is_not_retried_forever(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sent = _post_answering(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE))
-    with pytest.raises(httpx.HTTPStatusError):
-        await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol"))
-    assert len(sent) == 2
-
-
 # ---------------------------------------------------------------- Anthropic
 
 
@@ -440,15 +403,100 @@ async def test_the_next_call_for_that_model_goes_straight_to_responses(
     assert [url.rsplit("/", 1)[-1] for url, _ in sent] == ["completions", "responses", "responses"]
 
 
+_NONE_UNSUPPORTED = {
+    "error": {
+        "message": (
+            "Unsupported value: 'reasoning_effort' does not support 'none' with this "
+            "model. Supported values are: 'low', 'medium', 'high', and 'xhigh'."
+        ),
+        "type": "invalid_request_error",
+        "param": "reasoning_effort",
+        "code": "unsupported_value",
+    }
+}
+
+
 @pytest.mark.usefixtures("_fresh_responses_models")
-async def test_without_a_level_chat_completions_stays_with_reasoning_none(
+async def test_without_a_level_tools_move_to_the_responses_api_too(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    sent = _urls_and_payloads(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _OK))
+    """The Copilot sends no level. gpt-6.2-sol's refusal offers 'none', but
+    the model then refuses 'none' as well ("Supported values are: 'low',
+    'medium', 'high', and 'xhigh'"), so the assistant answered nothing. The
+    Responses API takes tools at the model's own default effort."""
+    sent = _urls_and_payloads(
+        monkeypatch,
+        (400, _TOOLS_NEED_REASONING_NONE),
+        (200, _RESPONSES_OK),
+        (400, _NONE_UNSUPPORTED),
+    )
     result = await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol"))
     assert result.text == "hi"
-    assert [url.rsplit("/", 1)[-1] for url, _ in sent] == ["completions", "completions"]
-    assert sent[1][1]["reasoning_effort"] == "none"
+    assert [url.rsplit("/", 1)[-1] for url, _ in sent] == ["completions", "responses"]
+    assert "reasoning" not in sent[1][1]
+    assert sent[1][1]["tools"][0]["name"] == "ping"
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_a_model_remembered_without_a_level_goes_straight_to_responses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _urls_and_payloads(
+        monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _RESPONSES_OK), (200, _RESPONSES_OK)
+    )
+    adapter = OpenAIAdapter(api_key="sk-test")
+    await adapter.complete(_tool_req("gpt-6.2-sol"))
+    await adapter.complete(_tool_req("gpt-6.2-sol"))
+    assert [url.rsplit("/", 1)[-1] for url, _ in sent] == ["completions", "responses", "responses"]
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_a_call_without_tools_stays_on_chat_completions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _urls_and_payloads(
+        monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _RESPONSES_OK), (200, _OK)
+    )
+    adapter = OpenAIAdapter(api_key="sk-test")
+    await adapter.complete(_tool_req("gpt-6.2-sol"))
+    result = await adapter.complete(_req("openai", "gpt-6.2-sol"))
+    assert result.text == "hi"
+    urls = [url.rsplit("/", 1)[-1] for url, _ in sent]
+    assert urls == ["completions", "responses", "completions"]
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_a_refusal_from_the_responses_api_is_the_callers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _urls_and_payloads(
+        monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (400, _NONE_UNSUPPORTED)
+    )
+    with pytest.raises(httpx.HTTPStatusError):
+        await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol"))
+    assert len(sent) == 2
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_the_stream_moves_to_the_responses_api_without_a_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[Any] = []
+    bodies = [
+        (400, jsonlib.dumps(_TOOLS_NEED_REASONING_NONE).encode()),
+        (200, _RESPONSES_SSE),
+    ]
+
+    def fake_stream(self: httpx.AsyncClient, method: str, url: str, **kw: Any) -> _FakeStream:
+        sent.append((url, kw.get("json")))
+        status, body = bodies[min(len(sent), len(bodies)) - 1]
+        return _FakeStream(status, body)
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream", fake_stream)
+    chunks = [c async for c in OpenAIAdapter(api_key="sk-test").stream(_tool_req("gpt-6.2-sol"))]
+    assert "".join(c.text or "" for c in chunks) == "hi"
+    assert [url.rsplit("/", 1)[-1] for url, _ in sent] == ["completions", "responses"]
+    assert "reasoning" not in sent[1][1]
 
 
 @pytest.mark.usefixtures("_fresh_responses_models")
