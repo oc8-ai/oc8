@@ -57,7 +57,7 @@ from oc8.chat.replay import (
     replay_path,
     withheld,
 )
-from oc8.chat.turn_context import flattened_task_text
+from oc8.chat.turn_context import flattened_task_text_for_model
 from oc8.connections.tool_connection import tool_connections
 from oc8.connections.usable import needs_department
 from oc8.copilot.notes import member_behind_run_task
@@ -465,7 +465,9 @@ async def build_run_preamble(
             turns = None
             if run is not None:
                 try:
-                    task_text = await flattened_task_text(db, run)
+                    task_text, replay_restricted = await flattened_task_text_for_model(
+                        db, run, model_locality=model_locality
+                    )
                 except Exception:
                     # Never fail the turn over the fallback: the task text
                     # passed in is the new turn alone.

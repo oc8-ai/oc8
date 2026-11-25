@@ -1140,13 +1140,43 @@ async def test_failing_flattened_fallback_keeps_the_task_text(
         raise RuntimeError("replay unreadable")
 
     monkeypatch.setattr("oc8.agent.preamble.replay_messages", _boom)
-    monkeypatch.setattr("oc8.agent.preamble.flattened_task_text", _boom)
+    monkeypatch.setattr("oc8.agent.preamble.flattened_task_text_for_model", _boom)
     _fixed_retrieval(monkeypatch, [])
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q")])
         pre = await _preamble_for(db, tenant, assistant, task, run, replay)
     assert pre.messages[-1].content == "User: NEW-TURN"
+
+
+@pytest.mark.parametrize(
+    ("locality", "shown", "restricted"),
+    [("cloud", "[restricted answer withheld from this model]", False),
+     ("local", "SECRET-ANSWER", True)],
+)
+async def test_the_flattened_fallback_withholds_a_restricted_answer_from_a_cloud_model(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch,
+    locality: str, shown: str, restricted: bool,
+) -> None:
+    """When the native replay fails, the run falls back to the flattened
+    transcript -- which printed a restricted answer verbatim, to whichever
+    model the in-process run was on."""
+
+    async def _boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("replay unreadable")
+
+    monkeypatch.setattr("oc8.agent.preamble.replay_messages", _boom)
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _restricted_chat(db, tenant)
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay, locality=locality)
+    final = pre.messages[-1].content
+    assert isinstance(final, str)
+    assert f"You (assistant): {shown}\n" in final
+    if locality != "local":
+        assert not any("SECRET-ANSWER" in str(msg.content) for msg in pre.messages)
+    assert pre.contains_restricted is restricted
 
 
 @pytest.mark.parametrize(

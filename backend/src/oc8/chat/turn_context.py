@@ -40,12 +40,23 @@ def _speaker(role: str, content: str = "") -> str:
     return "You (assistant)"
 
 
-def transcript_lines(history: list[m.ChatMessage]) -> list[str]:
+def transcript_lines(
+    history: list[m.ChatMessage], *, model_locality: str | None = None
+) -> list[str]:
     """The last `_TRANSCRIPT_TURNS` messages of `history`, plain-labelled, one
-    line each."""
-    return [
-        f"{_speaker(msg.role, msg.content)}: {msg.content}" for msg in history[-_TRANSCRIPT_TURNS:]
-    ]
+    line each. With `model_locality` (the in-process engine's fallback, which
+    knows its model), a restricted answer a non-local model may not see is
+    withheld as the native replay withholds it; without it, every message as
+    stored -- what the external runtimes have always been given."""
+    from oc8.chat.replay import RESTRICTED_PLACEHOLDER, withheld
+
+    lines = []
+    for msg in history[-_TRANSCRIPT_TURNS:]:
+        content = msg.content
+        if model_locality is not None and withheld(msg, model_locality=model_locality):
+            content = RESTRICTED_PLACEHOLDER
+        lines.append(f"{_speaker(msg.role, msg.content)}: {content}")
+    return lines
 
 
 def turn_keys(
@@ -62,6 +73,17 @@ def turn_keys(
     }
 
 
+async def _transcript_path(db: AsyncSession, context: dict[str, Any]) -> list[m.ChatMessage]:
+    until = context["transcript_until"]
+    session_id = context.get("chat_session_id")
+    if until is None or not session_id:
+        return []
+    session = await db.get(m.ChatSession, uuid.UUID(str(session_id)))
+    if session is None:
+        return []
+    return await tree.path_to(db, session=session, message_id=uuid.UUID(str(until)))
+
+
 async def flattened_task_text(db: AsyncSession, run: m.AgentRun) -> str:
     """The run's task as one text: for a chat turn the transcript up to
     `transcript_until`, plain-labelled, ending in the turn -- what `run_agent`
@@ -71,11 +93,26 @@ async def flattened_task_text(db: AsyncSession, run: m.AgentRun) -> str:
     task = str(context.get("task", ""))
     if "transcript_until" not in context:
         return task
-    path: list[m.ChatMessage] = []
-    until = context["transcript_until"]
-    session_id = context.get("chat_session_id")
-    if until is not None and session_id:
-        session = await db.get(m.ChatSession, uuid.UUID(str(session_id)))
-        if session is not None:
-            path = await tree.path_to(db, session=session, message_id=uuid.UUID(str(until)))
+    path = await _transcript_path(db, context)
     return "\n".join([*transcript_lines(path), task])
+
+
+async def flattened_task_text_for_model(
+    db: AsyncSession, run: m.AgentRun, *, model_locality: str
+) -> tuple[str, bool]:
+    """`flattened_task_text` for the in-process engine when its native replay
+    failed: a restricted answer is withheld from a non-local model, exactly
+    as the replay withholds it. Also says whether a restricted answer went in
+    whole (a local model), which makes the run restricted."""
+    context = run.context or {}
+    task = str(context.get("task", ""))
+    if "transcript_until" not in context:
+        return task, False
+    from oc8.chat.replay import withheld
+
+    path = await _transcript_path(db, context)
+    shown = path[-_TRANSCRIPT_TURNS:]
+    restricted = any(
+        msg.restricted and not withheld(msg, model_locality=model_locality) for msg in shown
+    )
+    return "\n".join([*transcript_lines(path, model_locality=model_locality), task]), restricted
