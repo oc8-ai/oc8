@@ -24,3 +24,22 @@ def test_openai_payload_forwards_prompt_cache_key():
         request_id=uuid.UUID("00000000-0000-0000-0000-000000000003"),
     )
     assert build_payload(req)["prompt_cache_key"] == "run-1"
+
+
+def test_chat_run_uses_session_id_as_prompt_cache_key():
+    from oc8.chat.replay import prompt_cache_key
+
+    session, run = uuid.uuid4(), uuid.uuid4()
+    chat = {"chat_session_id": str(session), "transcript_until": None}
+    assert prompt_cache_key(chat, run) == str(session)
+    assert prompt_cache_key({**chat, "prompt_cache_key": "pinned"}, run) == "pinned"
+
+
+def test_other_runs_keep_run_id():
+    from oc8.chat.replay import prompt_cache_key
+
+    run = uuid.uuid4()
+    assert prompt_cache_key({}, run) == str(run)
+    assert prompt_cache_key(None, run) == str(run)
+    assert prompt_cache_key({"chat_session_id": str(uuid.uuid4())}, run) == str(run)
+    assert prompt_cache_key({}, None) is None

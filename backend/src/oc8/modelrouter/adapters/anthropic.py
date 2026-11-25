@@ -77,18 +77,51 @@ def _current_exchange_start(messages: list[NeutralMessage]) -> int:
     return 0
 
 
-def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[dict[str, Any]]]:
+#: Anthropic allows four cache breakpoints per request; the top-level
+#: `cache_control` takes one, so a request carries at most this many marked
+#: messages. The last ones win: they cover the longest prefix.
+_MAX_MARKED_MESSAGES = 3
+
+
+def _marked_positions(messages: list[NeutralMessage]) -> set[int]:
+    marked = [i for i, msg in enumerate(messages) if msg.cache_breakpoint and msg.content]
+    return set(marked[-_MAX_MARKED_MESSAGES:])
+
+
+def _with_cache_marker(content: str | list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`content` as a block list whose last block carries the cache marker."""
+    blocks = [{"type": "text", "text": content}] if isinstance(content, str) else list(content)
+    if blocks:
+        blocks[-1] = {**blocks[-1], "cache_control": dict(_CACHE_CONTROL)}
+    return blocks
+
+
+def _to_anthropic_messages(
+    messages: list[NeutralMessage], *, cache_markers: bool = False
+) -> tuple[str | list[dict[str, Any]], list[dict[str, Any]]]:
+    """`cache_markers`: honour `NeutralMessage.cache_breakpoint`. The system
+    param is then a block list when one of its messages is marked (that block
+    carries the marker); otherwise it stays the plain joined string."""
     system_parts: list[str] = []
+    system_blocks: list[dict[str, Any]] = []
     out: list[dict[str, Any]] = []
     exchange_start = _current_exchange_start(messages)
+    marked = _marked_positions(messages) if cache_markers else set()
     for position, msg in enumerate(messages):
         if msg.role == "system":
             # System messages never carry images in this design -- Anthropic's
             # system param is text-only.
             assert isinstance(msg.content, str)
             system_parts.append(msg.content)
+            block: dict[str, Any] = {"type": "text", "text": msg.content}
+            if position in marked:
+                block["cache_control"] = dict(_CACHE_CONTROL)
+            system_blocks.append(block)
         elif msg.role == "user":
-            out.append({"role": "user", "content": _content_blocks(msg.content)})
+            content = _content_blocks(msg.content)
+            if position in marked:
+                content = _with_cache_marker(content)
+            out.append({"role": "user", "content": content})
         elif msg.role == "assistant":
             blocks: list[dict[str, Any]] = []
             if position >= exchange_start and msg.tool_calls:
@@ -101,6 +134,8 @@ def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[di
                 )
             if msg.content:
                 content_blocks = _content_blocks(msg.content)
+                if position in marked:
+                    content_blocks = _with_cache_marker(content_blocks)
                 if isinstance(content_blocks, str):
                     blocks.append({"type": "text", "text": content_blocks})
                 else:
@@ -123,6 +158,8 @@ def _to_anthropic_messages(messages: list[NeutralMessage]) -> tuple[str, list[di
                     ],
                 }
             )
+    if any("cache_control" in block for block in system_blocks):
+        return system_blocks, out
     return "\n".join(system_parts), out
 
 
@@ -201,7 +238,7 @@ def _reasoning_fields(req: CompletionRequest) -> tuple[str | None, dict[str, Any
 def _build_payload(
     req: CompletionRequest, *, include_temperature: bool = True, prompt_caching: bool = False
 ) -> dict[str, Any]:
-    system, messages = _to_anthropic_messages(req.messages)
+    system, messages = _to_anthropic_messages(req.messages, cache_markers=prompt_caching)
     payload: dict[str, Any] = {
         "model": req.model,
         "max_tokens": req.params.max_tokens,

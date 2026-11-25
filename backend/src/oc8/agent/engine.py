@@ -136,7 +136,7 @@ from oc8.capas.claude_hooks.context import (
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import AGENT, mode_from_context
-from oc8.chat.replay import chat_replay_of
+from oc8.chat.replay import chat_replay_of, prompt_cache_key
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
@@ -1952,7 +1952,8 @@ async def run_agent(
                 ) -> tuple[Any, uuid.UUID]:
                     nonlocal key, resolved_messages, overflow_retried
                     stamped = with_prompt_cache_key(
-                        sampling_params, str(run_id) if run_id is not None else None
+                        sampling_params,
+                        prompt_cache_key(run_row.context if run_row is not None else None, run_id),
                     )
                     try:
                         return (

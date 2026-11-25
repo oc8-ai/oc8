@@ -1005,6 +1005,91 @@ async def _preamble_for(
         run_id=run.id, replay=replay,
     )
 
+
+async def test_system_prefix_is_byte_equal_across_two_turns(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memory, KB and the run context (Now, person) differ per turn; none of
+    them is in the system part, so two turns of one chat share the prefix."""
+    blocks = iter(["MEMORY-ONE", "KB-ONE", "MEMORY-TWO", "KB-TWO"])
+
+    async def _memory(*_a: Any, **_kw: Any) -> str:
+        return next(blocks)
+
+    async def _kb(*_a: Any, **_kw: Any) -> tuple[str, bool]:
+        return next(blocks), False
+
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_context", _memory)
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_kb_context", _kb)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q1")])
+        first = await _preamble_for(db, tenant, assistant, task, run, replay)
+        session = await db.get(m.ChatSession, replay.session_id)
+        parent = session.current_leaf_id
+        for role, content in (("assistant", "A1"), ("user", "Q2")):
+            message = m.ChatMessage(
+                tenant_id=tenant, session_id=session.id, role=role, content=content,
+                parent_id=parent,
+            )
+            db.add(message)
+            await db.flush()
+            parent = message.id
+        session.current_leaf_id = parent
+        second = await _preamble_for(
+            db, tenant, assistant, task, run, ChatReplay(session.id, parent)
+        )
+
+    def _system(pre: Any) -> list[tuple[str, Any]]:
+        return [(msg.role, msg.content) for msg in pre.messages if msg.role == "system"]
+
+    assert _system(first) == _system(second)
+    assert "MEMORY-ONE" in str(first.messages[-1].content)
+    assert "MEMORY-TWO" in str(second.messages[-1].content)
+
+
+async def test_breakpoints_at_end_of_system_and_end_of_replay(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(
+            db, tenant, [("user", "OLD-QUESTION"), ("assistant", "OLD-ANSWER")]
+        )
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay)
+    marked = [i for i, msg in enumerate(pre.messages) if msg.cache_breakpoint]
+    first_turn = [msg.role for msg in pre.messages].index("user")
+    assert marked == [first_turn - 1, len(pre.messages) - 2]
+    assert pre.messages[marked[1]].content == "OLD-ANSWER"
+
+
+async def test_first_turn_marks_only_the_system_prefix_and_other_runs_none(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run = await _copilot_with_person(db, tenant, seats=[])
+        first = await _preamble_for(
+            db, tenant, assistant, task, run, ChatReplay(uuid.uuid4(), None)
+        )
+        agent = await _solo_agent(db, tenant)
+        trigger = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, source="event", state="running",
+            context={"task": "Invoice arrived"},
+        )
+        db.add(trigger)
+        await db.flush()
+        other = await build_run_preamble(
+            db, agent=agent, tenant_id=tenant, task_text="Invoice arrived", frame={},
+            model_locality="cloud", caps=ModelCaps(), max_steps=40, run_id=trigger.id,
+        )
+    marked = [msg for msg in first.messages if msg.cache_breakpoint]
+    assert len(marked) == 1 and marked[0].role == "system"
+    assert not any(msg.cache_breakpoint for msg in other.messages)
+
+
 async def _restricted_chat(db: Any, tenant: uuid.UUID) -> tuple[Any, Any, Any, ChatReplay]:
     assistant, task, run, replay = await _copilot_chat(
         db, tenant, [("user", "Q"), ("assistant", "SECRET-ANSWER")]

@@ -609,6 +609,11 @@ async def build_run_preamble(
         connection_details=connection_details or None,
     )
     if turns is not None:
+        # Cache breakpoints (spec §5.2): the end of the stable system prefix,
+        # and the end of the replayed turns, which only grow turn by turn.
+        messages[-1].cache_breakpoint = True
+        if turns:
+            turns[-1].cache_breakpoint = True
         messages.extend(turns)
         # One final user message: run context, per-turn blocks, the new turn.
         final_text = "\n\n".join([run_context, *turn_blocks, task_text])
