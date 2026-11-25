@@ -22,7 +22,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Final, Literal
 
-from sqlalchemy import inspect, select, text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -406,8 +406,6 @@ async def raise_approval(
             and await _member_present(db, tenant_id, owner_member_id)
         ):
             owner_too = owner_member_id
-    if personal or announce_to_member is not None:
-        inspect(approval).info[_ANNOUNCED_PRIVATELY] = True
     member_event = {
         "approval_id": str(approval.id),
         "agent_id": str(agent_id),
@@ -451,19 +449,65 @@ async def raise_approval(
     return approval
 
 
-#: `InstanceState.info` key: `raise_approval` told named members only, or nobody.
-_ANNOUNCED_PRIVATELY: Final = "oc8.approval.announced_privately"
+async def publish_created(
+    db: AsyncSession,
+    approval: m.ApprovalRequest,
+    *,
+    data: dict[str, Any] | None = None,
+    after_commit: bool = False,
+) -> None:
+    """The tenant-wide `approval.created` event, and the push to every
+    subscriber behind it -- the one place that sends it for a raised card.
 
+    Silent for a card that is not the tenant's to hear of, read off the ROW
+    so a freshly loaded instance answers the same as the one `raise_approval`
+    returned: a member-owned card (`is_member_owned`) and a personal
+    department's (`is_personal_card`), which `raise_approval` announced to
+    their member alone, or to nobody once a personal department's owner has
+    left. Their title and detail are that person's (spec A4).
 
-def announced_privately(approval: m.ApprovalRequest) -> bool:
-    """Whether `raise_approval` announced this card to named members only (a
-    member-owned card, a personal agent's) or to nobody (a personal agent's
-    whose owner has left). Every direct `approval.created` publisher asks it
-    and stays silent when it holds: the tenant-wide event, and the push to
-    every subscriber behind it, would carry the title and detail to the whole
-    company. Kept on the instance's state, not on the row: it describes this
-    raise, not the approval."""
-    return bool(inspect(approval).info.get(_ANNOUNCED_PRIVATELY))
+    `data` is the envelope when the caller's differs from the usual one.
+    `title`/`detail` travel in it so the push never has to re-read a row a
+    fresh session may not see yet (`EventBus._push_payload`). `after_commit`
+    publishes once the caller's transaction commits (`publish_after_commit`);
+    the decision who hears of it is made now, on this session.
+    """
+    if is_member_owned(approval):
+        return
+    kind, _owner = await card_department(db, approval.department_id)
+    if is_personal_card(approval.action_type, department_kind=kind):
+        return
+    tenant_id, approval_id = approval.tenant_id, approval.id
+    event = (
+        data
+        if data is not None
+        else {
+            "approval_id": str(approval_id),
+            "action_type": approval.action_type,
+            "status": approval.status,
+            "title": approval.title,
+            "detail": approval.detail,
+        }
+    )
+
+    async def _publish() -> None:
+        from oc8.realtime.bus import get_event_bus
+
+        await get_event_bus().publish_event(
+            tenant_id, "approval.created", event, source=f"oc8/approval/{approval_id}"
+        )
+
+    if not after_commit:
+        await _publish()
+        return
+
+    async def _publish_quietly() -> None:
+        try:
+            await _publish()
+        except Exception:
+            logger.warning("could not announce approval %s", approval_id, exc_info=True)
+
+    publish_after_commit(db, _publish_quietly)
 
 
 async def _member_present(db: AsyncSession, tenant_id: uuid.UUID, member_id: uuid.UUID) -> bool:
@@ -697,29 +741,7 @@ async def _raise_department_stage(db: AsyncSession, approval: m.ApprovalRequest)
         record_url=approval.record_url,
         related_links=list(approval.related_links or []),
     )
-    tenant_id, stage_id = stage.tenant_id, stage.id
-    event = {
-        "approval_id": str(stage.id),
-        "action_type": stage.action_type,
-        "status": stage.status,
-        "title": stage.title,
-        "detail": stage.detail,
-    }
-
-    async def _publish() -> None:
-        try:
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                tenant_id, "approval.created", event, source=f"oc8/approval/{stage_id}"
-            )
-        except Exception:
-            logger.warning("could not announce approval %s", stage_id, exc_info=True)
-
-    # A personal department holding the write: its owner was told
-    # (raise_approval); never tenant-wide (spec A4).
-    if not announced_privately(stage):
-        publish_after_commit(db, _publish)
+    await publish_created(db, stage, after_commit=True)
 
 
 async def decide_approval(

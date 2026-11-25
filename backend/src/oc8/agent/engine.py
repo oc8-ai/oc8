@@ -124,7 +124,7 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import DERIVE, announced_privately, raise_approval
+from oc8.approvals import DERIVE, publish_created, raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     NOT_THIS_CONNECTION,
@@ -1684,24 +1684,7 @@ async def run_agent(
                                 "merged": True,
                             }
                             parked.context = parked_ctx
-                            from oc8.realtime.bus import get_event_bus
-
-                            # A member-owned or personal card was announced to
-                            # its member alone (raise_approval), or to nobody;
-                            # never tenant-wide (spec A4).
-                            if not announced_privately(held_ar):
-                                await get_event_bus().publish_event(
-                                    held_ar.tenant_id,
-                                    "approval.created",
-                                    {
-                                        "approval_id": str(held_ar.id),
-                                        "action_type": held_ar.action_type,
-                                        "status": held_ar.status,
-                                        "title": held_ar.title,
-                                        "detail": held_ar.detail,
-                                    },
-                                    source=f"oc8/approval/{held_ar.id}",
-                                )
+                            await publish_created(db, held_ar)
                             task.state = "waiting_for_approval"
                             # Not over a pause or stop somebody made during the run: the
                             # executor no longer holds the agent row (oc8.runtime.agent_status).
@@ -3149,28 +3132,7 @@ async def run_agent(
                                     ),
                                 )
 
-                            from oc8.realtime.bus import get_event_bus
-
-                            # A member-owned or personal card was announced to
-                            # its member alone (raise_approval), or to nobody;
-                            # never tenant-wide (R22, spec A4).
-                            if not announced_privately(ar):
-                                await get_event_bus().publish_event(
-                                    ar.tenant_id,
-                                    "approval.created",
-                                    {
-                                        "approval_id": str(ar.id),
-                                        "action_type": ar.action_type,
-                                        "status": ar.status,
-                                        # Carried in the envelope on purpose: the
-                                        # executor commits, not us, so a fresh
-                                        # session reading this row would see
-                                        # nothing (see EventBus._push_payload).
-                                        "title": ar.title,
-                                        "detail": ar.detail,
-                                    },
-                                    source=f"oc8/approval/{ar.id}",
-                                )
+                            await publish_created(db, ar)
                             tool_trace.append(
                                 {
                                     "tool": tc.name,

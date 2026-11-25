@@ -21,9 +21,9 @@ from oc8.approvals.service import (
     NotYourSayAtAll,
     UnknownDecision,
     UnknownOption,
-    announced_privately,
     decide_approval,
     expire_approval,
+    publish_created,
     raise_approval,
 )
 
@@ -40,7 +40,6 @@ __all__ = [
     "NotYourSayAtAll",
     "UnknownDecision",
     "UnknownOption",
-    "announced_privately",
     "awaiting_department",
     "decide_approval",
     "department_after_person",
@@ -48,6 +47,7 @@ __all__ = [
     "expire_approval",
     "load_direct_access_card",
     "member_direct_access_cards",
+    "publish_created",
     "raise_approval",
     "record_url_for_connection",
 ]

@@ -24,12 +24,14 @@ import pytest
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.approvals import NotYourSayAtAll, decide_approval
+from oc8.approvals import NotYourSayAtAll, decide_approval, publish_created, raise_approval
 from oc8.approvals.repo import load_for_actor, visible_approvals
 from oc8.auth.principal import Principal
 from oc8.authz.permissions import SEAT_APPROVER
 from oc8.authz.scope import HumanActor, scope_for_principal
 from tests.approvals.test_personal_approvals import (
+    _SECRET_DETAIL,
+    _SECRET_TITLE,
     _actor,
     _bind_phones,
     _headers,
@@ -258,3 +260,31 @@ async def test_a_personal_blast_radius_alarm_reaches_the_admins_and_the_owner(
     owner_events = [e for e in bus.member_events if e[1] == "approval.created"]
     assert [e[0] for e in owner_events] == [[w.owner_member]]
     assert sorted(channel.delivered) == ["phone-everywhere", "phone-owner"]
+
+
+async def test_a_reloaded_personal_card_is_still_not_published_tenant_wide(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T3-M2: the publisher reads the card's department, not state left on the
+    instance `raise_approval` returned -- a row loaded afresh is just as
+    private."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        raised = await raise_approval(
+            db,
+            tenant_id=w.tenant,
+            agent_id=w.pia,
+            action_type="tool_send",
+            title=_SECRET_TITLE,
+            detail=_SECRET_DETAIL,
+        )
+        raised_id = raised.id
+
+    bus, _channel = _spy(monkeypatch)
+    async with app_session(w.tenant) as db:
+        await publish_created(db, await _row(db, raised_id))
+        # The control: a standard card loaded the same way is published.
+        await publish_created(db, await _row(db, w.shared_card))
+    published = [e[1]["approval_id"] for e in bus.tenant_events if e[0] == "approval.created"]
+    assert published == [str(w.shared_card)]
+    assert not bus.member_events
