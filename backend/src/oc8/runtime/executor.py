@@ -51,7 +51,12 @@ from oc8.runtime.reconcile import ABANDONED_AFTER, heartbeat
 from oc8.runtime.registry import resolve_runtime
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
-from oc8.runtime.run_inputs import has_pending_run_inputs, lock_run_inputs
+from oc8.runtime.run_inputs import (
+    ConsumedInput,
+    cancel_waiting_next_turn_inputs,
+    has_pending_run_inputs,
+    lock_run_inputs,
+)
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.runtime.workspace import sync_run_output
 from oc8.tenants.activity import TENANT_INACTIVE_KIND, TENANT_INACTIVE_OUTPUT, tenant_may_run
@@ -156,13 +161,19 @@ async def _apply_entered_mode(db: AsyncSession, run: m.AgentRun) -> None:
 
 
 async def _answer_failed_chat_run(
-    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
+    db: AsyncSession,
+    run: m.AgentRun,
+    channel_replies: list[tuple[uuid.UUID, str, str, str]],
+    pending_runs: list[uuid.UUID],
 ) -> None:
     """A chat turn that FAILED without an output of its own still answers: the
     canned failure line in the transcript, the plain one to a channel sender,
-    and the unread follow-ups told they were not read. No-op for other runs."""
+    the queued (`next_turn`) inputs carried over as the next turn, and the
+    unread follow-ups told they were not read. No-op for other runs. The
+    caller holds `lock_run_inputs`."""
     if run.source != "chat":
         return
+    from oc8.chat.carry_over import stage_carried_over_turn
     from oc8.chat.service import record_assistant_reply
 
     await record_assistant_reply(db, run=run, output=_chat_run_failed_answer(run.id))
@@ -170,6 +181,9 @@ async def _answer_failed_chat_run(
     if sender is not None:
         channel, external_id = sender
         channel_replies.append((run.tenant_id, channel, external_id, _CHAT_RUN_FAILED))
+    carried_run = await stage_carried_over_turn(db, run=run, deliveries=("next_turn",))
+    if carried_run is not None:
+        pending_runs.append(carried_run)
     await _tell_unread_inputs(db, run, channel_replies)
 
 
@@ -203,7 +217,7 @@ async def _tell_unread_inputs(
     """A failed messenger turn with inputs it never read: say so, once, on the
     run's channel (gated, like every reply). The inputs stay unread."""
     sender = await _current_chat_sender(db, run)
-    if sender is None or not await has_pending_run_inputs(db, run_id=run.id):
+    if sender is None or not await has_pending_run_inputs(db, run_id=run.id, delivery=None):
         return
     channel, external_id = sender
     channel_replies.append((run.tenant_id, channel, external_id, _UNREAD_AFTER_FAILURE))
@@ -856,6 +870,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
     #: durable would hand the user an answer the system never recorded, and
     #: a redelivery would then send it a second time.
     channel_replies: list[tuple[uuid.UUID, str, str, str]] = []
+    #: Queued (`next_turn`) inputs a stopped run cancelled, announced after
+    #: commit like `pending_runs`, so the composer drops them.
+    cancelled_inputs: list[ConsumedInput] = []
 
     with get_tracer().start_as_current_span("run.execute") as span:
         span.set_attribute("run_id", str(run_id))
@@ -980,6 +997,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # never over a pause: the agent row is not locked, so a hard-stop
                 # may have paused it since the claim read it.
                 await settle_agent_status(db, agent, "idle")
+                # Stop means stop: what was queued for after this run is
+                # cancelled with it. No input arrives until this commits.
+                await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                cancelled_inputs.extend(await cancel_waiting_next_turn_inputs(db, run_id=run.id))
                 await repo.transition(run, RunState.INTERRUPTED)
                 logger.info("run %s interrupted before start (cancelled while queued)", run_id)
                 record_run_outcome(RunState.INTERRUPTED.value)
@@ -1418,7 +1439,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # user's message and nothing after it, on every surface, for
                 # ever. The generic status branch below has always recorded
                 # one; this one now does too.
-                await _answer_failed_chat_run(db, run, channel_replies)
+                await _answer_failed_chat_run(db, run, channel_replies, pending_runs)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -1579,7 +1600,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         record_run_outcome(RunState.FAILED.value)
                         # Same gap the crash path had: without this the member's
                         # answer stays the chat's last line for ever.
-                        await _answer_failed_chat_run(db, run, channel_replies)
+                        await _answer_failed_chat_run(db, run, channel_replies, pending_runs)
                 else:
                     run.task_id = result.task_id
                     await merge_context(
@@ -1706,14 +1727,21 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                         # Ruling 59: what the person wrote and a DONE run never
                         # read becomes the chat's next turn -- unless somebody
-                        # else ended the run meanwhile. Not for a stopped run
-                        # (stop means stop) nor a failed one (its failure is
-                        # the answer; the inputs stay "not read").
+                        # else ended the run meanwhile. A failed run carries
+                        # over only what was queued for after it (spec §5.5):
+                        # its failure is the answer to what it was steered
+                        # with, those inputs stay "not read". Not for a
+                        # stopped run (stop means stop): its queued inputs
+                        # are cancelled.
                         carry_over = (
-                            new_state is RunState.DONE
+                            new_state in (RunState.DONE, RunState.FAILED)
                             and run.source == "chat"
                             and await run_still_open(db, run_id=run.id)
                         )
+                        if new_state is RunState.INTERRUPTED:
+                            cancelled_inputs.extend(
+                                await cancel_waiting_next_turn_inputs(db, run_id=run.id)
+                            )
                     await repo.transition(run, new_state)
                     await _apply_entered_mode(db, run)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
@@ -1748,7 +1776,15 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         # After the answer is recorded, in this transaction
                         # (Ruling 61): the turn, its run and the inputs' stamp
                         # commit together; the run is published below.
-                        carried_run = await stage_carried_over_turn(db, run=run)
+                        carried_run = await stage_carried_over_turn(
+                            db,
+                            run=run,
+                            deliveries=(
+                                ("steer", "next_turn")
+                                if new_state is RunState.DONE
+                                else ("next_turn",)
+                            ),
+                        )
                         if carried_run is not None:
                             pending_runs.append(carried_run)
                     if run.source == "chat" and new_state is RunState.FAILED:
@@ -1799,6 +1835,10 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
         # every run row must be durably visible first.
         for pending_id in pending_runs:
             await publish_run(run_id=pending_id, tenant_id=tenant_id)
+        if cancelled_inputs:
+            from oc8.runtime.run_inputs import publish_inputs_consumed
+
+            await publish_inputs_consumed(tenant_id, run_id=run_id, consumed=cancelled_inputs)
 
         # Same reasoning as the publish loop above: a chat reply is sent
         # only once the record_assistant_reply write it reports on is

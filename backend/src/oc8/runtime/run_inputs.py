@@ -52,8 +52,16 @@ MAX_INPUT_CHARS: Final = 4000
 MAX_PENDING_INPUTS: Final = 20
 
 
+#: How an input reaches the run (spec §5.5): `steer` is read at the run's next
+#: step boundary; `next_turn` never is -- it waits for the run to end and then
+#: becomes the chat's next turn (`oc8.chat.carry_over`).
+Delivery = Literal["steer", "next_turn"]
+
 #: Why an input was refused, for doors that word it themselves (a messenger).
-RefusalCode = Literal["empty", "too_long", "secret", "finished", "too_many"]
+RefusalCode = Literal["empty", "too_long", "secret", "finished", "too_many", "delivered"]
+
+#: Editing or withdrawing an input that is no longer waiting, or not one's own.
+ALREADY_DELIVERED: Final = "This message was already delivered."
 
 
 class InputRefused(Exception):
@@ -132,10 +140,7 @@ def may_still_take(whose: Whose, author_subject: str | None) -> bool:
     return author_subject is not None and whose.is_own(author_subject)
 
 
-async def add_run_input(
-    db: AsyncSession, *, run: m.AgentRun, member: m.OrgMember, text: str
-) -> m.RunInput:
-    """Queue `text` for `run`. The caller has already checked `may_steer_run`."""
+async def _checked_text(db: AsyncSession, *, run: m.AgentRun, text: str) -> str:
     body = text.strip()
     if not body:
         raise InputRefused(422, "message must not be empty", "empty")
@@ -149,6 +154,21 @@ async def add_run_input(
             from oc8.runtime.clarification import SECRET_REFUSAL
 
             raise InputRefused(422, SECRET_REFUSAL, "secret")
+    return body
+
+
+async def add_run_input(
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    member: m.OrgMember,
+    text: str,
+    delivery: Delivery = "steer",
+) -> m.RunInput:
+    """Queue `text` for `run`. The caller has already checked `may_steer_run`,
+    and, for `steer`, that the run's runtime takes messages at all
+    (`run_accepts_inputs`): a `next_turn` input never reaches the runtime."""
+    body = await _checked_text(db, run=run, text=text)
     if RunState(run.state) in TERMINAL:
         raise InputRefused(409, "run has already finished", "finished")
     # Serialise writers per run, until commit: the pending cap below is then a
@@ -179,26 +199,94 @@ async def add_run_input(
     ).scalar_one()
     if pending >= MAX_PENDING_INPUTS:
         raise InputRefused(429, "too many messages are waiting for this run", "too_many")
-    row = m.RunInput(tenant_id=run.tenant_id, run_id=run.id, author_member_id=member.id, text=body)
+    row = m.RunInput(
+        tenant_id=run.tenant_id,
+        run_id=run.id,
+        author_member_id=member.id,
+        text=body,
+        delivery=delivery,
+    )
     db.add(row)
     await db.flush()
     # The text itself stays out of the audit chain (append-only, unencrypted
     # resource JSON); the row id points at it.
+    await _audit_input(db, run=run, member=member, row=row, action="run.input_added")
+    return row
+
+
+async def _audit_input(
+    db: AsyncSession, *, run: m.AgentRun, member: m.OrgMember, row: m.RunInput, action: str
+) -> None:
     await append_event(
         db,
         tenant_id=run.tenant_id,
         actor_type="operator",
         actor_id=member.id,
         category="run",
-        action="run.input_added",
+        action=action,
         resource={
             "run_id": str(run.id),
             "agent_id": str(run.agent_id),
             "input_id": str(row.id),
-            "chars": len(body),
+            "delivery": row.delivery,
+            "chars": len(row.text),
         },
         originating_operator=member.subject,
     )
+
+
+async def _waiting_own_input(
+    db: AsyncSession, *, run: m.AgentRun, member: m.OrgMember, input_id: uuid.UUID
+) -> m.RunInput:
+    """The author's own `next_turn` input to `run`, still waiting, locked --
+    under the per-run writer lock, so the executor cannot carry it over or
+    cancel it until this commits. None of `run`'s: `LookupError`. Anything
+    else (somebody else's, a steer input, already delivered or withdrawn):
+    refused with `ALREADY_DELIVERED`."""
+    await lock_run_inputs(db, tenant_id=run.tenant_id, run_id=run.id)
+    row = (
+        await db.execute(
+            select(m.RunInput)
+            .where(m.RunInput.id == input_id, m.RunInput.run_id == run.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise LookupError(input_id)
+    if (
+        row.author_member_id != member.id
+        or row.delivery != "next_turn"
+        or row.consumed_at is not None
+    ):
+        raise InputRefused(409, ALREADY_DELIVERED, "delivered")
+    return row
+
+
+async def edit_queued_input(
+    db: AsyncSession, *, run: m.AgentRun, member: m.OrgMember, input_id: uuid.UUID, text: str
+) -> m.RunInput:
+    """Change the text of the author's waiting `next_turn` input. The caller
+    has already checked `may_steer_run`."""
+    body = await _checked_text(db, run=run, text=text)
+    row = await _waiting_own_input(db, run=run, member=member, input_id=input_id)
+    row.text = body
+    await db.flush()
+    await _audit_input(db, run=run, member=member, row=row, action="run.input_edited")
+    return row
+
+
+async def cancel_queued_input(
+    db: AsyncSession, *, run: m.AgentRun, member: m.OrgMember, input_id: uuid.UUID
+) -> m.RunInput:
+    """Withdraw the author's waiting `next_turn` input: stamped
+    `CANCELLED_STEP`, so it never becomes a turn. The caller has already
+    checked `may_steer_run`."""
+    row = await _waiting_own_input(db, run=run, member=member, input_id=input_id)
+    row.consumed_at = dt.datetime.now(tz=dt.UTC)
+    row.consumed_step = CANCELLED_STEP
+    await db.flush()
+    await _audit_input(db, run=run, member=member, row=row, action="run.input_cancelled")
     return row
 
 
@@ -269,15 +357,28 @@ CARRIED_OVER_STEP: Final = -1
 #: `consumed_step` of an input the run never received: by the time it was
 #: consumed, the run was no longer one its author may steer (`may_still_take`).
 REFUSED_STEP: Final = -2
+#: `consumed_step` of a `next_turn` input that never became a turn: its author
+#: withdrew it, or the run it waited on was stopped (stop means stop).
+CANCELLED_STEP: Final = -3
 
 
-async def unread_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[m.RunInput]:
-    """The inputs `run_id` has not read, in acceptance order, locked."""
+async def unread_run_inputs(
+    db: AsyncSession,
+    *,
+    run_id: uuid.UUID,
+    deliveries: Sequence[Delivery] = ("steer", "next_turn"),
+) -> list[m.RunInput]:
+    """The inputs of `deliveries` that `run_id` has not read, in acceptance
+    order, locked."""
     return list(
         (
             await db.execute(
                 select(m.RunInput)
-                .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_(None))
+                .where(
+                    m.RunInput.run_id == run_id,
+                    m.RunInput.delivery.in_(list(deliveries)),
+                    m.RunInput.consumed_at.is_(None),
+                )
                 .order_by(m.RunInput.seq)
                 .with_for_update()
             )
@@ -288,7 +389,8 @@ async def unread_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[m.Ru
 async def consume_run_inputs(
     db: AsyncSession, *, run_id: uuid.UUID, step: int
 ) -> list[ConsumedInput]:
-    """Take every waiting input for `run_id`, in acceptance order, and stamp it.
+    """Take every waiting `steer` input for `run_id`, in acceptance order, and
+    stamp it. A `next_turn` input is never the run's to read (spec §5.5).
 
     One consumer per run at a time: a rival that finds the per-run consumer
     lock taken gets nothing rather than waiting or taking newer inputs past
@@ -302,16 +404,7 @@ async def consume_run_inputs(
     ).scalar_one()
     if not got:
         return []
-    rows = list(
-        (
-            await db.execute(
-                select(m.RunInput)
-                .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_(None))
-                .order_by(m.RunInput.seq)
-                .with_for_update()
-            )
-        ).scalars()
-    )
+    rows = await unread_run_inputs(db, run_id=run_id, deliveries=("steer",))
     if not rows:
         return []
     # The door's "whose run" check, made again now (as carry-over does,
@@ -376,18 +469,35 @@ async def take_run_inputs(
         return await consume_run_inputs(db, run_id=run_id, step=step)
 
 
-async def has_pending_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> bool:
-    return bool(
-        (
-            await db.execute(
-                select(
-                    select(m.RunInput.id)
-                    .where(m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_(None))
-                    .exists()
-                )
-            )
-        ).scalar_one()
+async def has_pending_run_inputs(
+    db: AsyncSession, *, run_id: uuid.UUID, delivery: Delivery | None = "steer"
+) -> bool:
+    """Does an unread input of `delivery` (None: of either) wait for `run_id`?
+    By default what the run itself would read: `steer` inputs."""
+    waiting = select(m.RunInput.id).where(
+        m.RunInput.run_id == run_id, m.RunInput.consumed_at.is_(None)
     )
+    if delivery is not None:
+        waiting = waiting.where(m.RunInput.delivery == delivery)
+    return bool((await db.execute(select(waiting.exists()))).scalar_one())
+
+
+async def cancel_waiting_next_turn_inputs(
+    db: AsyncSession, *, run_id: uuid.UUID
+) -> list[ConsumedInput]:
+    """Stamp every `next_turn` input still waiting for `run_id` as
+    `CANCELLED_STEP`: the run was stopped, and stop means stop. In the
+    caller's open transaction, under `lock_run_inputs`; the caller publishes
+    the returned inputs after committing, so the composer drops them."""
+    rows = await unread_run_inputs(db, run_id=run_id, deliveries=("next_turn",))
+    now = dt.datetime.now(tz=dt.UTC)
+    for row in rows:
+        row.consumed_at = now
+        row.consumed_step = CANCELLED_STEP
+    await db.flush()
+    return [
+        ConsumedInput(id=row.id, author_name="", text=row.text, step=CANCELLED_STEP) for row in rows
+    ]
 
 
 async def delivered_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[ConsumedInput]:
@@ -402,9 +512,10 @@ async def delivered_run_inputs(db: AsyncSession, *, run_id: uuid.UUID) -> list[C
                     m.RunInput.run_id == run_id,
                     m.RunInput.consumed_at.is_not(None),
                     # Never delivered to this run: carried over to a new
-                    # turn, or refused when consumed.
+                    # turn, refused when consumed, or a cancelled queued one.
                     m.RunInput.consumed_step.is_distinct_from(CARRIED_OVER_STEP),
                     m.RunInput.consumed_step.is_distinct_from(REFUSED_STEP),
+                    m.RunInput.consumed_step.is_distinct_from(CANCELLED_STEP),
                 )
                 .order_by(m.RunInput.seq)
             )

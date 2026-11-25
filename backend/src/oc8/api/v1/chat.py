@@ -9,6 +9,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from oc8 import models as m
@@ -24,6 +25,7 @@ from oc8.api.v1._chat_common import (
     session_owned_by_caller,
 )
 from oc8.api.v1.run import run_to_dto
+from oc8.api.v1.run_inputs import input_dto
 from oc8.audit import append_event
 from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
@@ -58,6 +60,7 @@ from oc8.chat.service import (
 from oc8.chat.tree import MessageGone, switch_leaf, visible_path
 from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
+from oc8.runtime.run_inputs import InputRefused, add_run_input, may_steer_run
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     ActiveRunDTO,
@@ -67,6 +70,7 @@ from oc8.schemas.dto import (
     ChatModelOptionDTO,
     ChatSessionDTO,
     FileAttachmentDTO,
+    QueuedTurnDTO,
     RunDTO,
 )
 from oc8.schemas.requests import (
@@ -659,10 +663,70 @@ async def delete_chat_session(
     await db.commit()
 
 
+_STILL_RUNNING_TEXT_ONLY = "An answer is still running — send text only, or wait."
+_STILL_RUNNING_WAIT = "An answer is still running — wait for it to finish."
+
+
+async def _queue_behind_running_answer(
+    db: DbSession,
+    actor: HumanActor,
+    *,
+    session: m.ChatSession,
+    body: SendChatMessageRequest,
+    authority: Authority,
+) -> JSONResponse | None:
+    """No parallel turns in an ordinary chat (spec §5.5): while an answer
+    runs, a plain send is queued on the newest running answer as a
+    `next_turn` input, which becomes the next turn when that run ends. None
+    when nothing runs -- the send is an ordinary turn."""
+    # Asked again when the run ended between the read and the input lock:
+    # its end may have started the carried-over turn, which runs now.
+    for _attempt in range(3):
+        running = await active_runs_for_session(
+            db, tenant_id=actor.principal.tenant_id, session_id=session.id
+        )
+        if not running:
+            return None
+        # A queued input is text only; the turn it becomes has no files or
+        # `#` references (`chat.carry_over`).
+        if body.attachment_ids or body.context_refs:
+            raise HTTPException(status.HTTP_409_CONFLICT, _STILL_RUNNING_TEXT_ONLY)
+        run = running[-1]
+        # Carried over only as the chat owner's own words, in her own run.
+        if session.member_id != actor.member.id or not await may_steer_run(
+            db, run=run, member=actor.member, authority=authority, scope=actor.scope
+        ):
+            raise HTTPException(status.HTTP_409_CONFLICT, _STILL_RUNNING_WAIT)
+        try:
+            # Takes the tenant audit lock, then the run_input lock -- before
+            # the chat_session row `send_message` locks if this falls through
+            # (the global lock order, `chat/tree.py`).
+            row = await add_run_input(
+                db, run=run, member=actor.member, text=body.message, delivery="next_turn"
+            )
+        except InputRefused as exc:
+            if exc.code == "finished":
+                continue
+            raise HTTPException(exc.status_code, exc.message) from exc
+        await db.refresh(row)
+        queued = QueuedTurnDTO(
+            run_id=str(run.id),
+            input=input_dto(row, actor.member.display_name or actor.member.subject),
+        )
+        await db.commit()
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=queued.model_dump(mode="json", by_alias=True),
+        )
+    # Answers kept ending and starting under this send: never a parallel turn.
+    raise HTTPException(status.HTTP_409_CONFLICT, _STILL_RUNNING_WAIT)
+
+
 @router.post(
     "/chat/sessions/{session_id}/messages",
     response_model=ChatMessageDTO,
     status_code=status.HTTP_201_CREATED,
+    responses={status.HTTP_202_ACCEPTED: {"model": QueuedTurnDTO}},
 )
 async def post_message(
     request: Request,
@@ -673,7 +737,7 @@ async def post_message(
         HumanActor,
         Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE)),
     ],
-) -> ChatMessageDTO:
+) -> ChatMessageDTO | JSONResponse:
     session = await _owned_session(request, session_id, db, actor)
     authority = await authority_for_principal(request, db, actor.principal)
     is_assistant_session = await _assistant_visible(
@@ -688,6 +752,12 @@ async def post_message(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=f"requires permission: {RUN_START}"
         )
+    if session.kind == "chat":
+        queued = await _queue_behind_running_answer(
+            db, actor, session=session, body=body, authority=authority
+        )
+        if queued is not None:
+            return queued
     try:
         user_message, run = await send_message(
             db,

@@ -7,6 +7,9 @@ for an autonomous run
 (`may_steer_run`). Stop uses exactly the same rule as writing, so this door
 never lets anyone stop a run they could not also steer. "Not yours" and "no
 such run" are the same 404.
+
+An input queued for after the run (`delivery="next_turn"`, spec §5.5) may be
+edited or withdrawn by its author while it still waits.
 """
 
 from __future__ import annotations
@@ -23,15 +26,20 @@ from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.runtime.run_inputs import (
+    CANCELLED_STEP,
+    ConsumedInput,
     InputRefused,
     add_run_input,
+    cancel_queued_input,
+    edit_queued_input,
     may_steer_run,
+    publish_inputs_consumed,
     request_stop,
     run_accepts_inputs,
 )
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.schemas.dto import RunInputDTO, RunSteeringDTO
-from oc8.schemas.requests import RunInputRequest
+from oc8.schemas.requests import EditRunInputRequest, RunInputRequest
 
 router = APIRouter()
 
@@ -40,6 +48,7 @@ _Actor = Annotated[
 ]
 _NOT_FOUND = "run not found"
 _NO_INPUTS = "This run doesn't take messages — you can stop it."
+_INPUT_NOT_FOUND = "message not found"
 
 
 async def _steerable(
@@ -72,7 +81,7 @@ def _is_terminal(run: m.AgentRun) -> bool:
     return RunState(run.state) in TERMINAL
 
 
-def _input_dto(row: m.RunInput, author_name: str) -> RunInputDTO:
+def input_dto(row: m.RunInput, author_name: str) -> RunInputDTO:
     return RunInputDTO(
         id=str(row.id),
         text=row.text,
@@ -80,6 +89,7 @@ def _input_dto(row: m.RunInput, author_name: str) -> RunInputDTO:
         created_at=row.created_at.isoformat(),
         consumed_at=row.consumed_at.isoformat() if row.consumed_at else None,
         consumed_step=row.consumed_step,
+        delivery="next_turn" if row.delivery == "next_turn" else "steer",
     )
 
 
@@ -106,7 +116,7 @@ async def get_steering(
     return RunSteeringDTO(
         may_write=not _is_terminal(run),
         accepts_inputs=await _accepts(db, run),
-        inputs=[_input_dto(row, names[row.author_member_id]) for row in rows],
+        inputs=[input_dto(row, names[row.author_member_id]) for row in rows],
     )
 
 
@@ -117,16 +127,63 @@ async def post_input(
     request: Request, run_id: uuid.UUID, body: RunInputRequest, db: DbSession, actor: _Actor
 ) -> RunInputDTO:
     run = await _steerable(request, run_id, db, actor)
-    if not _is_terminal(run) and not await _accepts(db, run):
+    # A queued input never reaches the runtime: any run takes one.
+    if body.delivery == "steer" and not _is_terminal(run) and not await _accepts(db, run):
         raise HTTPException(status.HTTP_409_CONFLICT, _NO_INPUTS)
     try:
-        row = await add_run_input(db, run=run, member=actor.member, text=body.text)
+        row = await add_run_input(
+            db, run=run, member=actor.member, text=body.text, delivery=body.delivery
+        )
     except InputRefused as exc:
         raise HTTPException(exc.status_code, exc.message) from exc
     await db.refresh(row)
-    dto = _input_dto(row, _name(actor.member))
+    dto = input_dto(row, _name(actor.member))
     await db.commit()
     return dto
+
+
+@router.patch("/runs/{run_id}/inputs/{input_id}", response_model=RunInputDTO)
+async def edit_input(
+    request: Request,
+    run_id: uuid.UUID,
+    input_id: uuid.UUID,
+    body: EditRunInputRequest,
+    db: DbSession,
+    actor: _Actor,
+) -> RunInputDTO:
+    """Change a queued input while it waits: its author only."""
+    run = await _steerable(request, run_id, db, actor)
+    try:
+        row = await edit_queued_input(
+            db, run=run, member=actor.member, input_id=input_id, text=body.text
+        )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _INPUT_NOT_FOUND) from exc
+    except InputRefused as exc:
+        raise HTTPException(exc.status_code, exc.message) from exc
+    await db.refresh(row)
+    dto = input_dto(row, _name(actor.member))
+    await db.commit()
+    return dto
+
+
+@router.delete("/runs/{run_id}/inputs/{input_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_input(
+    request: Request, run_id: uuid.UUID, input_id: uuid.UUID, db: DbSession, actor: _Actor
+) -> None:
+    """Withdraw a queued input while it waits: its author only. It stays as
+    a row, stamped `CANCELLED_STEP`, and never becomes a turn."""
+    run = await _steerable(request, run_id, db, actor)
+    try:
+        row = await cancel_queued_input(db, run=run, member=actor.member, input_id=input_id)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _INPUT_NOT_FOUND) from exc
+    except InputRefused as exc:
+        raise HTTPException(exc.status_code, exc.message) from exc
+    gone = ConsumedInput(id=row.id, author_name="", text=row.text, step=CANCELLED_STEP)
+    await db.commit()
+    # After commit: other open composers drop it.
+    await publish_inputs_consumed(run.tenant_id, run_id=run.id, consumed=[gone])
 
 
 @router.post("/runs/{run_id}/stop", status_code=status.HTTP_202_ACCEPTED)

@@ -276,6 +276,7 @@ EXEMPT: dict[str, str] = {
     "role.description": "content column to encrypt as-is, not yet migrated, design spec §6a",
     "role_permission.permission": "authorization/policy input read directly by the permission decision point, design spec §6c",
     "run_cancellation.cancellation_kind": "structural enum-like column (status/state/kind/classification/...), CHECK-constrained, not content, design spec §6c",
+    "run_input.delivery": "how a run input is delivered ('steer' or 'next_turn') -- structural enum column, not customer free text, design spec §6c",
     "run_input.text": "content column to encrypt as-is, not yet migrated, design spec §6a -- same class as chat_message.content and run_message.body",
     "run_message.author": "not individually named in spec section 6; structural/config/identifier column, not customer free text -- see design spec §6",
     "run_message.body": "content column to encrypt as-is, not yet migrated, design spec §6a",

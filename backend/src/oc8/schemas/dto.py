@@ -2306,6 +2306,19 @@ class RunInputDTO(CamelModel):
     created_at: str
     consumed_at: str | None = None
     consumed_step: int | None = None
+    #: `steer` (read at the run's next step) or `next_turn` (queued: becomes
+    #: the chat's next turn when the run ends, spec §5.5).
+    delivery: Literal["steer", "next_turn"] = "steer"
+
+
+class QueuedTurnDTO(CamelModel):
+    """A chat send while an answer is still running (spec §5.5): not a turn
+    yet, but a `next_turn` input on that run (`run_id`), which becomes the
+    next turn when it ends."""
+
+    queued: Literal[True] = True
+    run_id: str
+    input: RunInputDTO
 
 
 class RunSteeringDTO(CamelModel):

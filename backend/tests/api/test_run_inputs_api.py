@@ -15,6 +15,7 @@ from oc8.auth import get_identity_provider
 from oc8.main import create_app
 from oc8.runtime.adapter import EchoRuntimeStub
 from oc8.runtime.clarification import SECRET_REFUSAL
+from oc8.runtime.run_inputs import CANCELLED_STEP
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -314,3 +315,139 @@ async def test_an_ordinary_agents_run_input_is_not_secret_gated(
             headers=_h(tenant, "alice"),
         )
         assert r.status_code == 201
+
+
+# --------------------------------------------- steer or queue (spec §5.5)
+
+
+async def test_next_turn_is_accepted_by_a_runtime_without_inputs(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _echo(*_a: Any, **_kw: Any) -> EchoRuntimeStub:
+        return EchoRuntimeStub()
+
+    monkeypatch.setattr("oc8.runtime.registry.resolve_runtime", _echo)
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        r = await c.post(
+            f"/api/v1/runs/{run_id}/inputs",
+            json={"text": "after this", "delivery": "next_turn"},
+            headers=_h(tenant, "alice"),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["delivery"] == "next_turn"
+        steering = (
+            await c.get(f"/api/v1/runs/{run_id}/steering", headers=_h(tenant, "alice"))
+        ).json()
+        assert [(i["text"], i["delivery"]) for i in steering["inputs"]] == [
+            ("after this", "next_turn")
+        ]
+
+
+async def _queue_input(c: AsyncClient, tenant: uuid.UUID, run_id: uuid.UUID, subject: str) -> str:
+    r = await c.post(
+        f"/api/v1/runs/{run_id}/inputs",
+        json={"text": "after this", "delivery": "next_turn"},
+        headers=_h(tenant, subject),
+    )
+    assert r.status_code == 201, r.text
+    return str(r.json()["id"])
+
+
+async def test_edit_and_cancel_a_waiting_input(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        input_id = await _queue_input(c, tenant, run_id, "alice")
+        edited = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}",
+            json={"text": "after this, in German"},
+            headers=_h(tenant, "alice"),
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["text"] == "after this, in German"
+        assert edited.json()["delivery"] == "next_turn"
+        assert edited.json()["consumedAt"] is None
+        empty = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}",
+            json={"text": " "},
+            headers=_h(tenant, "alice"),
+        )
+        assert empty.status_code == 422
+
+        gone = await c.delete(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}", headers=_h(tenant, "alice")
+        )
+        assert gone.status_code == 204, gone.text
+        unknown = await c.delete(
+            f"/api/v1/runs/{run_id}/inputs/{uuid.uuid4()}", headers=_h(tenant, "alice")
+        )
+        assert unknown.status_code == 404
+    async with app_session(tenant) as db:
+        row = await db.get(m.RunInput, uuid.UUID(input_id))
+        assert row is not None
+        assert row.text == "after this, in German"
+        assert row.consumed_at is not None and row.consumed_step == CANCELLED_STEP
+
+
+async def test_edit_after_delivery_is_409(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        queued = await _queue_input(c, tenant, run_id, "alice")
+        steer = await c.post(
+            f"/api/v1/runs/{run_id}/inputs", json={"text": "now"}, headers=_h(tenant, "alice")
+        )
+        assert steer.status_code == 201 and steer.json()["delivery"] == "steer"
+        steer_id = steer.json()["id"]
+        # A steer input is never edited, delivered or not.
+        r = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{steer_id}",
+            json={"text": "x"},
+            headers=_h(tenant, "alice"),
+        )
+        assert r.status_code == 409 and "already delivered" in r.text
+        cancel = await c.delete(
+            f"/api/v1/runs/{run_id}/inputs/{queued}", headers=_h(tenant, "alice")
+        )
+        assert cancel.status_code == 204
+        for again in (
+            await c.patch(
+                f"/api/v1/runs/{run_id}/inputs/{queued}",
+                json={"text": "x"},
+                headers=_h(tenant, "alice"),
+            ),
+            await c.delete(f"/api/v1/runs/{run_id}/inputs/{queued}", headers=_h(tenant, "alice")),
+        ):
+            assert again.status_code == 409 and "already delivered" in again.text
+
+
+async def test_only_the_author_may_edit(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    # The agent's own run: every manager may write to it, each to her own words.
+    run_id = await _run(app_session, tenant, operator=None)
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        input_id = await _queue_input(c, tenant, run_id, "admin")
+        for r in (
+            await c.patch(
+                f"/api/v1/runs/{run_id}/inputs/{input_id}",
+                json={"text": "mine now"},
+                headers=_h(tenant, "admin2"),
+            ),
+            await c.delete(
+                f"/api/v1/runs/{run_id}/inputs/{input_id}", headers=_h(tenant, "admin2")
+            ),
+        ):
+            assert r.status_code == 409, r.text
+        outsider = await c.delete(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}", headers=_h(tenant, "emp", "member")
+        )
+        assert outsider.status_code == 404
+    async with app_session(tenant) as db:
+        row = await db.get(m.RunInput, uuid.UUID(input_id))
+        assert row is not None and row.text == "after this" and row.consumed_at is None

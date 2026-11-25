@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -28,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.db.session import tenant_session
 from oc8.runtime.person import whose_run
-from oc8.runtime.run_inputs import CARRIED_OVER_STEP, unread_run_inputs
+from oc8.runtime.run_inputs import CARRIED_OVER_STEP, Delivery, unread_run_inputs
 from oc8.runtime.states import TERMINAL, RunState
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,18 @@ async def run_still_open(db: AsyncSession, *, run_id: uuid.UUID) -> bool:
     return state is not None and RunState(state) not in TERMINAL
 
 
-async def stage_carried_over_turn(db: AsyncSession, *, run: m.AgentRun) -> uuid.UUID | None:
-    """Stage the turn `run`'s unread inputs become, in the caller's open
-    transaction, and return its queued run's id for the caller to publish
-    after committing. None -- and nothing written -- when nothing waits, or
-    any check refuses.
+async def stage_carried_over_turn(
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    deliveries: Sequence[Delivery] = ("steer", "next_turn"),
+) -> uuid.UUID | None:
+    """Stage the turn `run`'s unread inputs of `deliveries` become, joined in
+    acceptance order, in the caller's open transaction, and return its queued
+    run's id for the caller to publish after committing. None -- and nothing
+    written -- when nothing waits, or any check refuses. A DONE run carries
+    both deliveries over; a FAILED one only the queued (`next_turn`) inputs
+    -- its failure is the answer to what it was steered with.
 
     The caller holds `lock_run_inputs` (no input can arrive until it
     commits) and has already recorded `run`'s own answer, so the new turn
@@ -67,7 +75,7 @@ async def stage_carried_over_turn(db: AsyncSession, *, run: m.AgentRun) -> uuid.
         session_id = uuid.UUID(str(ctx.get("chat_session_id")))
     except ValueError:
         return None
-    rows = await unread_run_inputs(db, run_id=run.id)
+    rows = await unread_run_inputs(db, run_id=run.id, deliveries=deliveries)
     if not rows:
         return None
     # The checks read in a FRESH session: this one is the run's, and may hold

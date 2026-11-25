@@ -1108,6 +1108,15 @@ class RunInputRequest(CamelModel):
     """Mirrors `ck_run_input_text` (migration 0112) and MAX_INPUT_CHARS."""
 
     text: str = Field(min_length=1, max_length=4000)
+    #: `steer`: read at the run's next step. `next_turn`: the chat's next turn
+    #: once the run ends (spec §5.5).
+    delivery: Literal["steer", "next_turn"] = "steer"
+
+
+class EditRunInputRequest(CamelModel):
+    """A waiting `next_turn` input's new text; same bounds as `RunInputRequest`."""
+
+    text: str = Field(min_length=1, max_length=4000)
 
 
 class SetAgentToolAccessRequest(CamelModel):
