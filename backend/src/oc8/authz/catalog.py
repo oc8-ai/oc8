@@ -142,10 +142,12 @@ _PROSE: Final[dict[str, tuple[str, str, str, str]]] = {
     "backup:export": (
         "Sicherung exportieren",
         "Lädt eine vollständige Kopie des Mandanten herunter -- jedes Protokoll, jeden "
-        "Wissens-Baustein und, mit einer Passphrase, jedes hinterlegte Zugangsdatum.",
+        "Wissens-Baustein, die Inhalte persönlicher Abteilungen und, mit einer "
+        "Passphrase, jedes hinterlegte Zugangsdatum.",
         "Export a backup",
         "Downloads a complete copy of the tenant -- every transcript, every knowledge "
-        "chunk and, with a passphrase, every credential the company holds.",
+        "chunk, the content of personal departments and, with a passphrase, every "
+        "credential the company holds.",
     ),
     "backup:restore": (
         "Sicherung wiederherstellen",
