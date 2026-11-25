@@ -26,10 +26,12 @@ from sqlalchemy import select
 import oc8.agent  # noqa: F401
 from oc8 import models as m
 from oc8.connections.access import unconfirmed_reason
-from oc8.connections.confirmation import trigger_confirmed
+from oc8.connections.access_write import write_tool_access
+from oc8.connections.confirmation import stamp_trigger, trigger_confirmed
 from oc8.departments.personal import get_or_create_personal_department
 from oc8.events import sources
 from oc8.skills.runtime import load_assigned_skills
+from oc8.triggers.service import create_trigger
 from tests.api.test_personal_hire_binding import (
     World,
     _capa,
@@ -37,13 +39,14 @@ from tests.api.test_personal_hire_binding import (
     _headers,
     _hire,
     _http,
+    _member,
     _own,
     _template,
     _triggers,
     _world,
 )
 from tests.conftest import AppSessionFactory
-from tests.events.polled import use_kek
+from tests.events.polled import login, use_kek
 from tests.skills.test_held_back_skills import _assign, _skill
 
 pytestmark = pytest.mark.asyncio
@@ -348,3 +351,124 @@ async def test_an_agent_created_in_an_owned_department_holds_later_skills(
     await _admin_changes(app_session, world, goal=False)
 
     await _still_waiting(app_session, world, agent_id, goal=False)
+
+
+# --- a stale stamp of someone else never becomes the owner's confirmation ----------
+
+
+async def test_taking_over_someone_elses_trigger_does_not_inherit_their_stamp(
+    app_session: AppSessionFactory,
+) -> None:
+    """A trigger another member created and stamped as the agent is now
+    (after the admin's change) is no confirmation of the owner: when the
+    owner's edit makes it theirs while their own confirmation does not hold,
+    the old stamp must not count as theirs."""
+    world = await _world(app_session)
+    agent_id = await _hired(app_session, world, triggers=[_cron()])
+    await _admin_changes(app_session, world)
+    other = await _member(app_session, world.tenant, "bo")
+    async with app_session(world.tenant) as db:
+        trigger = await create_trigger(
+            db,
+            tenant_id=world.tenant,
+            agent_id=agent_id,
+            kind="cron",
+            task_text="Bo's",
+            cron_expression="0 12 * * *",
+            created_by_member_id=other,
+        )
+        await stamp_trigger(db, trigger, confirmed_by=other, held_back=False)
+        taken_id = trigger.id
+    assert await _confirmed(app_session, world, taken_id)
+
+    async with _http() as http:
+        r = await http.patch(
+            f"/api/v1/triggers/{taken_id}",
+            json={"taskText": "Mine now"},
+            headers=_headers(world.tenant),
+        )
+    assert r.status_code == 200, r.text
+    async with app_session(world.tenant) as db:
+        taken = await db.get(m.Trigger, taken_id)
+        assert taken is not None and taken.created_by_member_id == world.member_id
+        assert taken.access_fingerprint is None and taken.access_split is None
+    assert not await _confirmed(app_session, world, taken_id)
+    await _still_waiting(app_session, world, agent_id)
+
+
+async def test_owning_a_system_pinned_binding_does_not_inherit_its_stamp(
+    app_session: AppSessionFactory,
+) -> None:
+    """A row the system pinned (consolidation, `set_by_member_id` None) and
+    stamped as the agent is now becomes the owner's own binding when they
+    save it; while their trigger's confirmation does not hold, the system's
+    stamp must not count as theirs."""
+    world = await _world(app_session)
+    agent_id = await _hired(
+        app_session, world, connection=True, connections_any=[world.source], triggers=[_cron()]
+    )
+    await _admin_changes(app_session, world)
+    async with app_session(world.tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        await write_tool_access(
+            db,
+            agent=agent,
+            tool_key=world.tool_key,
+            mode="fixed",
+            oauth_connection_id=None,
+            credential_id=world.credential_id,
+            set_by_member_id=None,
+            set_with_manage=False,
+            actor_type="system",
+            actor_id=None,
+        )
+
+    await _put_own_access(world, agent_id)
+
+    async with app_session(world.tenant) as db:
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent_id)
+        )
+        assert row is not None and row.set_by_member_id == world.member_id
+        assert row.binding_fingerprint is None and row.binding_split is None
+    assert await _binding_reason(app_session, world, agent_id) is not None
+    await _still_waiting(app_session, world, agent_id)
+
+
+async def test_a_stale_split_after_a_login_change_does_not_hold(
+    app_session: AppSessionFactory,
+) -> None:
+    """The owner switches their unconfirmed binding to another own login: the
+    old split already refuses it (`grant.logins`), and the row is cleared."""
+    world = await _world(app_session)
+    agent_id = await _hired(app_session, world, connection=True, connections_any=[world.source])
+    await _admin_changes(app_session, world)
+    second = await login(app_session, world.tenant, owner=world.member_id)
+    async with _http() as http:
+        r = await http.put(
+            f"/api/v1/agents/{agent_id}/tool-access/{world.tool_key}",
+            json={"mode": "fixed", "credentialId": str(second), "confirmShare": True},
+            headers=_headers(world.tenant),
+        )
+    assert r.status_code == 200, r.text
+    async with app_session(world.tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        row = await db.scalar(
+            select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == agent_id)
+        )
+        assert agent is not None and row is not None and row.credential_id == second
+        assert row.binding_fingerprint is None and row.binding_split is None
+        assert (
+            await unconfirmed_reason(
+                db,
+                row,
+                agent,
+                row.tool_key,
+                second,
+                world.member_id,
+                version_id=agent.current_version_id,
+            )
+            is not None
+        )
+    await _still_waiting(app_session, world, agent_id)

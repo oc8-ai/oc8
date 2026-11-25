@@ -21,7 +21,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.audit import append_event
 from oc8.auth import Principal
-from oc8.connections.confirmation import binding_held, save_may_stamp, stamp_binding
+from oc8.connections.confirmation import (
+    binding_held,
+    clear_binding_stamp,
+    save_may_stamp,
+    stamp_binding,
+)
+
+
+def _changed(previous: dict[str, Any], row: m.AgentToolAccess) -> bool:
+    """Whether the save changed the row's mode, login or who set it."""
+    now = {
+        "mode": row.mode,
+        "oauth_connection_id": str(row.oauth_connection_id) if row.oauth_connection_id else None,
+        "credential_id": str(row.credential_id) if row.credential_id else None,
+        "set_by_member_id": str(row.set_by_member_id) if row.set_by_member_id else None,
+    }
+    return any(previous[key] != value for key, value in now.items())
 
 
 async def write_tool_access(
@@ -59,7 +75,8 @@ async def write_tool_access(
     # the skills that wait for a department owner waiting. A person's save
     # stamps only where Ruling FR-C1 allows it, decided before the save.
     system = actor_type == "system"
-    may_stamp = system or await save_may_stamp(db, agent, held=await binding_held(db, row, agent))
+    held = await binding_held(db, row, agent)
+    may_stamp = system or await save_may_stamp(db, agent, held=held)
     if row is None:
         row = m.AgentToolAccess(
             tenant_id=agent.tenant_id, agent_id=agent.id, tool_key=tool_key, mode=mode
@@ -75,6 +92,14 @@ async def write_tool_access(
     await db.flush()
     if may_stamp:
         await stamp_binding(db, row, agent, confirmed_by=None if system else actor_id)
+        await db.flush()
+    elif held is None or _changed(previous, row):
+        # Not stamped, and the stamp it carries is not the owner's for this
+        # row as it is now (somebody else's, the system's, or of another
+        # mode or login): it must not count as theirs. An unchanged row of
+        # the owner's keeps its stale stamp, which does not hold either and
+        # tells the card what changed.
+        clear_binding_stamp(row)
         await db.flush()
     # A trigger polling the login this tool was fixed to stops when the agent's
     # login for it changes, rather than listening on an account the agent's

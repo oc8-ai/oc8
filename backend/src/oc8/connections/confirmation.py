@@ -538,6 +538,32 @@ async def binding_held(
     )
 
 
+async def trigger_held(db: AsyncSession, trigger: m.Trigger, agent: m.Agent) -> bool | None:
+    """`save_may_stamp`'s `held` for a save of `trigger`: whether it is the
+    owner's own confirmation (a trigger the department owner created) and
+    holds; None when it is no owner confirmation (a department without an
+    owner, a trigger somebody else created or nobody did). Another
+    person's stamp never counts as the owner's."""
+    owner = await _department_owner(db, agent)
+    if owner is None or trigger.created_by_member_id != owner:
+        return None
+    return await trigger_confirmed(db, trigger)
+
+
+def clear_binding_stamp(row: m.AgentToolAccess) -> None:
+    """Leave `row` unconfirmed: a save that may not stamp it
+    (`save_may_stamp`) must not keep a stamp the owner never gave -- the
+    system's, another person's, or one of a login it no longer uses."""
+    row.binding_fingerprint = None
+    row.binding_split = None
+
+
+def clear_trigger_stamp(trigger: m.Trigger) -> None:
+    """`clear_binding_stamp` for a trigger."""
+    trigger.access_fingerprint = None
+    trigger.access_split = None
+
+
 async def record_created_skills(db: AsyncSession, agent: m.Agent) -> None:
     """Ruling FR-I2: an agent created in a department with an owner (the
     member's hire, an agent the owner creates) starts from the skill set it

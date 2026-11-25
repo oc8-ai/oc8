@@ -23,7 +23,13 @@ from oc8.authz.scope import scope_for_principal
 from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
-from oc8.connections.confirmation import save_may_stamp, stamp_trigger, trigger_confirmed
+from oc8.connections.confirmation import (
+    clear_trigger_stamp,
+    save_may_stamp,
+    stamp_trigger,
+    trigger_confirmed,
+    trigger_held,
+)
 from oc8.events.sources import LoginTarget
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
@@ -466,9 +472,8 @@ async def update_agent_trigger(
     owner = trigger.created_by_member_id
     # Ruling FR-C1: decided before the save changes anything.
     trigger_agent = await db.get(m.Agent, trigger.agent_id)
-    may_stamp = trigger_agent is not None and await save_may_stamp(
-        db, trigger_agent, held=await trigger_confirmed(db, trigger)
-    )
+    held = None if trigger_agent is None else await trigger_held(db, trigger, trigger_agent)
+    may_stamp = trigger_agent is not None and await save_may_stamp(db, trigger_agent, held=held)
     if body.acts_for_creator is True and owner is not None and caller != owner:
         # Letting a trigger borrow the creator's account is the creator's
         # decision alone.
@@ -501,11 +506,17 @@ async def update_agent_trigger(
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    if caller is not None and updated.created_by_member_id == caller and may_stamp:
-        # Its creator saved it: they confirm the agent as it is now -- in a
-        # department with an owner only a confirmation that held before
-        # (`save_may_stamp`); the card confirms the rest.
-        await stamp_trigger(db, updated, confirmed_by=caller)
+    if caller is not None and updated.created_by_member_id == caller:
+        if may_stamp:
+            # Its creator saved it: they confirm the agent as it is now -- in
+            # a department with an owner only a confirmation that held before
+            # (`save_may_stamp`); the card confirms the rest.
+            await stamp_trigger(db, updated, confirmed_by=caller)
+        elif held is None or owner != caller:
+            # Not stamped, and the stamp it carries was not the caller's own
+            # confirmation (another creator's, or nobody's): it must not
+            # count as theirs now that the trigger is.
+            clear_trigger_stamp(updated)
         await db.flush()
     # The guard only matters when this update is turning the trigger ON
     # (`body.enabled is True`, whether that flips a disabled row or
