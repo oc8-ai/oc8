@@ -12,8 +12,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.preamble import Resume
 from oc8.agents.versioning import resolve_version
 from oc8.approvals.repo import DIRECT_ACCESS_ACTION
+from oc8.chat.digest import build_work_digest
+from oc8.chat.replay import chat_replay_of
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
     ActingPerson,
@@ -1097,12 +1100,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             task_images_raw = run.context.get("task_images", [])
             clarifications = run.context.get("clarifications", [])
 
-            # Resume after a value-gated tool approval: replace the task with a
-            # focused instruction to perform exactly the approved calls (and skip
-            # the rejected ones), and hand the engine the per-call verdicts so it
-            # executes them instead of suspending again.
+            # Resume after a value-gated tool approval: tell the leg to perform
+            # exactly the approved calls (and skip the rejected ones), and hand
+            # the engine the per-call verdicts so it executes them instead of
+            # suspending again.
             approvals = run.context.get("resolved_tool_approvals", [])
-            pre_decided: dict[str, str] = {}
+            pre_decided: dict[str, dict[str, Any]] = {}
             if approvals:
                 from oc8.runtime.approval_resume import pre_decided_map
 
@@ -1118,16 +1121,22 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
 
                 await take_direct_access_answer(db, run)
 
+            def _with_clarifications(task_text: str) -> str:
+                """The task with the clarifications answered so far."""
+                if not clarifications:
+                    return task_text
+                from oc8.runtime.run_inputs import format_clarification_answers
+
+                return (
+                    f"{task_text}\n\nClarifications:\n"
+                    f"{format_clarification_answers(clarifications)}"
+                )
+
             def _with_resume(task_text: str) -> str:
                 """The task as this leg tells it: clarifications answered so
-                far, then the answer that woke it."""
-                if clarifications:
-                    from oc8.runtime.run_inputs import format_clarification_answers
-
-                    task_text = (
-                        f"{task_text}\n\nClarifications:\n"
-                        f"{format_clarification_answers(clarifications)}"
-                    )
+                far, then the answer that woke it -- a held call's decision
+                in place of the task."""
+                task_text = _with_clarifications(task_text)
                 if isinstance(resolved_access, dict):
                     from oc8.copilot.direct_access import direct_access_resume_text
 
@@ -1138,9 +1147,49 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     return resume_instruction(approvals)
                 return task_text
 
+            def _chat_resume(context: dict[str, Any]) -> Resume | None:
+                """A chat turn's leg woken by a decision, as the in-process
+                engine is told it: the conversation and the turn stay, the
+                run's own work so far and the decision follow them. None for
+                any other leg, which keeps today's text."""
+                try:
+                    is_chat_turn = chat_replay_of(context) is not None
+                except (TypeError, ValueError):
+                    is_chat_turn = False
+                if not is_chat_turn:
+                    return None
+                if isinstance(resolved_access, dict):
+                    from oc8.copilot.direct_access import direct_access_resume_note
+
+                    instruction = direct_access_resume_note(resolved_access)
+                elif approvals:
+                    from oc8.runtime.approval_resume import resume_instruction
+
+                    instruction = resume_instruction(approvals)
+                else:
+                    return None
+                digest: str | None = None
+                try:
+                    digest = build_work_digest(
+                        context.get("toolCalls") or [],
+                        run_id=run_id,
+                        restricted=bool(context.get("contains_restricted")),
+                    )
+                except Exception:
+                    # Never fail the turn over its digest.
+                    logger.warning("resume digest for run %s failed", run_id, exc_info=True)
+                return Resume(own_work_digest=digest, instruction=instruction)
+
             # The run's own task, which is the in-process engine's; another
-            # runtime gets it flattened once the runtime is known, below.
-            task_text = _with_resume(str(run.context.get("task", "")))
+            # runtime gets it flattened once the runtime is known, below. A
+            # chat turn's resumed leg keeps its turn (`chat_resume`).
+            chat_resume = _chat_resume(run.context or {})
+            own_task = str(run.context.get("task", ""))
+            task_text = (
+                _with_clarifications(own_task)
+                if chat_resume is not None
+                else _with_resume(own_task)
+            )
 
             # Set by delegate_task (§7) when this run is a delegated sub-task, and by
             # the wake-up when a team lead is re-queued. Absent for an ordinary run.
@@ -1228,6 +1277,13 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     from oc8.chat.turn_context import flattened_task_text
 
                     task_text = _with_resume(await flattened_task_text(db, run))
+                # Only the in-process engine reads a conversation, so only it
+                # is told a resume after one; its signature alone takes it.
+                in_process_only: dict[str, Any] = (
+                    {"resume": chat_resume}
+                    if chat_resume is not None and runs_in_process(runtime_adapter)
+                    else {}
+                )
                 # One heartbeat for every runtime, wrapped here rather than
                 # inside each adapter: there are three of them, and a liveness
                 # signal one of them forgets does not read as "unknown", it
@@ -1249,6 +1305,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             str(originating_operator) if originating_operator else None
                         ),
                         task_images_raw=task_images_raw,
+                        **in_process_only,
                     )
                 # One check for every runtime and every destination: the saved
                 # run output, the chat message, messenger doors and a parent's

@@ -1101,7 +1101,7 @@ async def test_the_resumed_harness_is_told_exactly_which_action_was_approved(
             json.loads(r[0])["text"]
             for r in conn.execute("SELECT content FROM messages_in ORDER BY seq")
         ]
-    assert any("FREIGEGEBEN" in t and "create_record" in t and "7500" in t for t in texts)
+    assert any("APPROVED" in t and "create_record" in t and "7500" in t for t in texts)
     assert not any(t == "Lege ein Angebot über 7500 an" for t in texts), (
         "the resume leg sends the decision, not the original task again"
     )
@@ -1143,7 +1143,7 @@ async def test_a_rejected_action_is_named_as_rejected(
             json.loads(r[0])["text"]
             for r in conn.execute("SELECT content FROM messages_in ORDER BY seq")
         ]
-    assert any("ABGELEHNT" in t for t in texts)
+    assert any("REJECTED" in t for t in texts)
 
 
 async def test_a_resume_leg_does_not_re_park_on_the_previous_legs_stale_marker(

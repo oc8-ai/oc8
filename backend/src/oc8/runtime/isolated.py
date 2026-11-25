@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Mapping
+from typing import Any
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -92,7 +94,7 @@ class DockerIsolatedRuntime:
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: dict[str, str] | None = None,
+        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
         originating_operator: str | None = None,
         # Accepted only to satisfy the RuntimeAdapter Protocol -- unused here
         # because the container never receives images through this call. It

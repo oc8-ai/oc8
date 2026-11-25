@@ -7,12 +7,14 @@ sandboxing by trust level, and dynamic entry-point loading are out of scope
 from __future__ import annotations
 
 import uuid
-from typing import Protocol, runtime_checkable
+from collections.abc import Mapping
+from typing import Any, Protocol, runtime_checkable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import CancelCheck, InboxCheck, RunResult, run_agent
+from oc8.agent.preamble import Resume
 
 
 class RuntimeAdapter(Protocol):
@@ -29,7 +31,7 @@ class RuntimeAdapter(Protocol):
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: dict[str, str] | None = None,
+        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
         originating_operator: str | None = None,
         task_images_raw: list[dict[str, str]] | None = None,
     ) -> RunResult: ...
@@ -83,9 +85,10 @@ class Oc8AgentRuntime:
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: dict[str, str] | None = None,
+        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
         originating_operator: str | None = None,
         task_images_raw: list[dict[str, str]] | None = None,
+        resume: Resume | None = None,
     ) -> RunResult:
         return await run_agent(
             db,
@@ -103,6 +106,7 @@ class Oc8AgentRuntime:
             pre_decided=pre_decided,
             originating_operator=originating_operator,
             task_images_raw=task_images_raw,
+            resume=resume,
         )
 
 
@@ -134,7 +138,7 @@ class EchoRuntimeStub:
         delegation_depth: int = 0,
         cancel_check: CancelCheck | None = None,
         inbox_check: InboxCheck | None = None,
-        pre_decided: dict[str, str] | None = None,
+        pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
         originating_operator: str | None = None,
         task_images_raw: list[dict[str, str]] | None = None,
     ) -> RunResult:

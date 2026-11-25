@@ -160,7 +160,7 @@ from oc8.records.links import (
     related_links,
 )
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import pre_decided_map
+from oc8.runtime.approval_resume import pre_decided_map, rejection_text
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call, write_back_context
@@ -483,7 +483,10 @@ def _local_allowed(
             )
             if verdict.effect == "allow":
                 continue
-            if verdict.effect == "ask" and decided.get(_call_sig(sent)) == "approve":
+            if (
+                verdict.effect == "ask"
+                and (decided.get(_call_sig(sent)) or {}).get("decision") == "approve"
+            ):
                 continue
             ok = False
         if ok:
@@ -886,11 +889,14 @@ def _held_call_verdict(
         # Always the connection's tool, whatever core tool shares its name.
         routed=True,
     )
-    verdict = pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held))
+    held_entry = (
+        pre_decided_map(ctx.get("resolved_tool_approvals", []) or []).get(_call_sig(held)) or {}
+    )
+    verdict = held_entry.get("decision")
     if decision.effect is Effect.DENY:
         return "refuse", decision.reason or "denied"
     if verdict == "reject":
-        return "refuse", "operator rejected this action"
+        return "refuse", rejection_text(held_entry)
     if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
         return "park", decision.reason or ""
     gate = _b_gate(
@@ -2443,11 +2449,14 @@ async def _dispatch_one_tool(
     ctx["transcript"] = transcript
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:
-        verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
+        decided = (
+            pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc)) or {}
+        )
+        verdict = decided.get("decision")
         if verdict == "approve":
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
-            decision = Decision(Effect.DENY, "operator rejected this action")
+            decision = Decision(Effect.DENY, rejection_text(decided))
 
     tool_schema = next(
         (
@@ -2480,13 +2489,15 @@ async def _dispatch_one_tool(
         )
         tier = gate_verdict.tier
         if gate_verdict.effect == "ask":
-            verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(
-                _call_sig(tc)
+            decided = (
+                pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
+                or {}
             )
+            verdict = decided.get("decision")
             if verdict == "approve":
                 decision = Decision(Effect.ALLOW, "operator approved")
             elif verdict == "reject":
-                decision = Decision(Effect.DENY, "operator rejected this action")
+                decision = Decision(Effect.DENY, rejection_text(decided))
             else:
                 decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
         elif gate_verdict.effect == "deny":

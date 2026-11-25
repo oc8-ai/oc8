@@ -178,7 +178,7 @@ async def _guarded_run(app_session, monkeypatch, pre_decided):
         await db.flush()
         return await run_agent(
             db, agent=agent, task_text="resume", tenant_id=tenant, toolset=toolset,
-            pre_decided={sig: pre_decided},
+            pre_decided={sig: {"decision": pre_decided}},
         ), toolset
 
 

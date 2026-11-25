@@ -227,7 +227,7 @@ async def test_each_leg_is_told_only_the_answer_that_woke_it(
 
     await _requeue_with(app_session, run_id, _decided_write())
     second = await _resume(run_id)
-    assert "FREIGEGEBEN" in second and "update_record" in second
+    assert "APPROVED" in second and "update_record" in second
     assert OFFER_NOTE not in second
     async with app_session(uuid.UUID(str(ACME_TENANT_ID))) as s:
         run = await s.get(m.AgentRun, run_id)
@@ -246,7 +246,7 @@ async def test_an_offer_answered_after_an_earlier_held_write_wakes_its_leg_with_
     )
     text = await _resume(run_id)
     assert OFFER_NOTE in text
-    assert "FREIGEGEBEN" not in text
+    assert "APPROVED" not in text
 
 
 @pytest.mark.parametrize("status", ["done", "waiting_for_approval"])

@@ -280,7 +280,7 @@ async def test_resolved_b5_ask_does_not_park_again(
             task_text="go",
             tenant_id=tenant,
             mcp_conn=conn,
-            pre_decided={call_sig(resolved_call): verdict},
+            pre_decided={call_sig(resolved_call): {"decision": verdict}},
         )
 
     assert result.status == "done", result

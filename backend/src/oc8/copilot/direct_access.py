@@ -622,7 +622,15 @@ async def resolve_direct_access_approval(
 def direct_access_resume_text(task_text: str, entry: Mapping[str, Any]) -> str:
     """The resumed run's task: the original request plus the person's answer
     (§3 step 4/6). Unlike a held write's resume, the run carries on with the
-    request -- that is what the access was asked for."""
+    request -- that is what the access was asked for. A chat turn of the
+    in-process engine keeps its turn and is told the answer alone, after its
+    conversation (`direct_access_resume_note`)."""
+    return f"{task_text}\n\n{direct_access_resume_note(entry)}"
+
+
+def direct_access_resume_note(entry: Mapping[str, Any]) -> str:
+    """The person's answer to a direct-access offer, as the resumed leg is
+    told it."""
     label = one_line(str(entry.get("label") or entry.get("tool_key") or ""), 120)
     key = one_line(str(entry.get("tool_key") or ""), 200)
     chosen = entry.get("chosen_agent")
@@ -644,4 +652,4 @@ def direct_access_resume_text(task_text: str, entry: Mapping[str, Any]) -> str:
             f"[oc8] The person declined direct access to {label} ({key}). Answer without "
             "it, and do not offer it again in this conversation unless they ask."
         )
-    return f"{task_text}\n\n{note}"
+    return note

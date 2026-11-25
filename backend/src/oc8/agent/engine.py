@@ -108,7 +108,7 @@ from oc8.agent.offering import (
     unavailable_sentence,
 )
 from oc8.agent.outward import outward_target
-from oc8.agent.preamble import build_run_preamble
+from oc8.agent.preamble import Resume, build_run_preamble
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
@@ -205,6 +205,7 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
+from oc8.runtime.approval_resume import rejection_text
 from oc8.runtime.run_context import append_tool_call, append_waived_read_before_write
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
@@ -558,9 +559,10 @@ async def run_agent(
     delegation_depth: int = 0,
     cancel_check: CancelCheck | None = None,
     inbox_check: InboxCheck | None = None,
-    pre_decided: dict[str, str] | None = None,
+    pre_decided: Mapping[str, Mapping[str, Any]] | None = None,
     originating_operator: str | None = None,
     task_images_raw: list[dict[str, str]] | None = None,
+    resume: Resume | None = None,
 ) -> RunResult:
     async def _run() -> RunResult:
         settings = get_settings()
@@ -926,6 +928,7 @@ async def run_agent(
             # A chat turn reads its conversation here, as native turns; every
             # other runtime gets it flattened (runtime/executor.py).
             replay=chat_replay_of(run_row.context or {}) if run_row is not None else None,
+            resume=resume,
         )
         messages: list[NeutralMessage] = list(preamble.messages)
         if run_id is not None:
@@ -1310,11 +1313,12 @@ async def run_agent(
                     routed=True,
                     direct_access=direct_view,
                 )
-                verdict = (pre_decided or {}).get(_call_sig(held))
+                held_entry = (pre_decided or {}).get(_call_sig(held)) or {}
+                verdict = held_entry.get("decision")
                 if decision.effect is Effect.DENY:
                     return "refuse", decision.reason or "denied", decision, False
                 if verdict == "reject":
-                    return "refuse", "operator rejected this action", decision, False
+                    return "refuse", rejection_text(held_entry), decision, False
                 if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
                     return "park", decision.reason or "", decision, False
                 gate = _gate(
@@ -2379,7 +2383,7 @@ async def run_agent(
                         _pre_tc.arguments = stripped
                         call_justifications[_pre_tc.id] = justification
                         if pre_decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
-                            verdict = pre_decided.get(_call_sig(_pre_tc))
+                            verdict = (pre_decided.get(_call_sig(_pre_tc)) or {}).get("decision")
                             if verdict == "approve":
                                 pre_decision = Decision(Effect.ALLOW, "operator approved")
                         if pre_decision.effect is not Effect.ALLOW:
@@ -2574,11 +2578,12 @@ async def run_agent(
                     # again -- approve executes it, reject turns it into a DENY
                     # the model sees and moves past.
                     if decision.effect is Effect.REQUIRE_APPROVAL and pre_decided:
-                        verdict = pre_decided.get(_call_sig(tc))
-                        if verdict == "approve":
+                        decided = pre_decided.get(_call_sig(tc)) or {}
+                        decided_verdict = decided.get("decision")
+                        if decided_verdict == "approve":
                             decision = Decision(Effect.ALLOW, "operator approved")
-                        elif verdict == "reject":
-                            decision = Decision(Effect.DENY, "operator rejected this action")
+                        elif decided_verdict == "reject":
+                            decision = Decision(Effect.DENY, rejection_text(decided))
                     record_tool_call(tool=tc.name, decision=decision.effect.value)
                     with get_tracer().start_as_current_span("tool.call") as tool_span:
                         tool_span.set_attribute("tool", tc.name)
@@ -2699,18 +2704,17 @@ async def run_agent(
                                 direct=direct_call,
                             )
                             if gate_verdict.effect == "ask":
-                                verdict = pre_decided.get(_call_sig(tc)) if pre_decided else None
-                                if verdict == "approve":
+                                asked = (pre_decided or {}).get(_call_sig(tc)) or {}
+                                asked_verdict = asked.get("decision")
+                                if asked_verdict == "approve":
                                     # The approved write runs: spend its proof
                                     # (if it carries one) even though this leg
                                     # needed no waiver, so a later leg cannot
                                     # spend it on a second execution.
                                     await _consume_waiver(call_key, _call_sig(tc))
                                     decision = Decision(Effect.ALLOW, "operator approved")
-                                elif verdict == "reject":
-                                    decision = Decision(
-                                        Effect.DENY, "operator rejected this action"
-                                    )
+                                elif asked_verdict == "reject":
+                                    decision = Decision(Effect.DENY, rejection_text(asked))
                                 else:
                                     decision = Decision(
                                         Effect.REQUIRE_APPROVAL, gate_verdict.preview
@@ -2719,7 +2723,8 @@ async def run_agent(
                                 gate_verdict.effect == "deny"
                                 and gate_verdict.rule == "read_before_write"
                                 and pre_decided
-                                and pre_decided.get(_call_sig(tc)) == "approve"
+                                and (pre_decided.get(_call_sig(tc)) or {}).get("decision")
+                                == "approve"
                                 and await _consume_waiver(call_key, _call_sig(tc))
                             ):
                                 # A resumed leg starts with a fresh ledger, but

@@ -1137,7 +1137,7 @@ async def _two_legs_on(
         task_text="resume",
         tenant_id=office.tenant,
         run_id=run.id,
-        pre_decided={approved: "approve"},
+        pre_decided={approved: {"decision": "approve"}},
     )
 
 
@@ -1233,7 +1233,7 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
             task_text="resume again",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided={approved: "approve"},
+            pre_decided={approved: {"decision": "approve"}},
         )
     (entry,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry["result"])
@@ -1242,7 +1242,7 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
 
 async def _decide_both_stages(
     db: AsyncSession, office: DirectOffice, run: m.AgentRun
-) -> dict[str, str]:
+) -> dict[str, dict[str, Any]]:
     """The person approves their card, then the holding department approves
     the one that raises; returns what the resumed leg is pre-decided with."""
     from tests.copilot.test_direct_access_department_stage import _approver, _human
@@ -1349,7 +1349,7 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
         # Nothing ran on the person's approval alone.
         assert [n for n, _s, _e in recorder.windows] == ["get_record"]
         approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
-        assert pre == {approved: "approve"}
+        assert {sig: e["decision"] for sig, e in pre.items()} == {approved: "approve"}
         (entry,) = run.context["resolved_tool_approvals"]
         assert entry["read_before_write_ok"] is True
         leg2 = await run_agent(
@@ -1379,3 +1379,60 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
     (entry3,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry3["result"])
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
+
+
+async def test_the_repeated_call_is_denied_with_the_reason(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A person rejected the held write and said why: the resumed leg's
+    repeat of exactly that call is refused with who rejected it and why, so
+    the model changes course instead of retrying."""
+    from oc8.runtime.approval_resume import pre_decided_map, resolve_tool_approval
+
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+            # The resumed leg reads again and retries the very call.
+            _turn("", ToolCall(id="c3", name="get_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
+            *[_turn("done") for _ in range(8)],
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        leg1 = await _run(db, office, agent, run)
+        assert leg1.status == "waiting_for_approval"
+        ada = m.OrgMember(
+            tenant_id=tenant, subject="ada", subject_uuid=uuid.uuid4(), display_name="Ada Admin"
+        )
+        db.add(ada)
+        await db.flush()
+        held = await _held(db)
+        held.status, held.reason, held.decided_by = "rejected", "wrong customer", ada.id
+        await db.flush()
+        await resolve_tool_approval(db, approval=held, decision="reject")
+        await db.refresh(run)
+        leg2 = await run_agent(
+            db,
+            agent=agent,
+            task_text="resume",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided=pre_decided_map(run.context["resolved_tool_approvals"]),
+        )
+    (repeat,) = [e for e in leg2.tool_calls if e["tool"] == "update_record"]
+    assert repeat["state"] == "denied"
+    assert (
+        "ERROR from oc8 (update_record): rejected by Ada Admin: wrong customer. "
+        "Adjust your approach instead of retrying the same call."
+    ) in str(repeat["result"])
+    assert [n for n, _s, _e in recorder.windows] == ["get_record", "get_record"]

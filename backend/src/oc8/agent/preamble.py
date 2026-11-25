@@ -164,6 +164,23 @@ class RunPreamble:
     tz: str = "UTC"
 
 
+@dataclass(frozen=True)
+class Resume:
+    """A chat turn's leg woken by a decision (a held call's approval, an
+    offer's answer): the conversation and the turn stay, and the leg is told
+    what it already did and what was decided after them."""
+
+    #: This run's own work before the pause (`chat.digest`), as the
+    #: assistant's turn; None reads as "[no tool calls yet]".
+    own_work_digest: str | None
+    #: What the leg is told to do now, as the user's turn.
+    instruction: str
+
+
+#: The assistant's turn of a resumed leg whose run had called no tool yet.
+NO_TOOL_CALLS_YET = "[no tool calls yet]"
+
+
 #: How many tool keys one roster line names before it says "…".
 ROSTER_TOOL_LIMIT = 8
 
@@ -378,6 +395,7 @@ async def build_run_preamble(
     run_id: uuid.UUID | None = None,
     pinned: Mapping[str, Any] | None = None,
     replay: ChatReplay | None = None,
+    resume: Resume | None = None,
 ) -> RunPreamble:
     """Seed a run's conversation: system context first, the task last.
 
@@ -393,6 +411,10 @@ async def build_run_preamble(
     memory and KB retrieval, roster, direct access -- goes into one final
     user message with the new turn. A replay that cannot be read falls back
     to the flattened transcript in today's order.
+
+    `resume` (that chat turn's leg after a decision): two more turns after
+    the final user message -- the run's own work so far as the assistant's,
+    the decision as the user's -- so the cached prefix stays as it was.
     """
     org = await db.get(m.Organization, tenant_id)
     tenant_name = org.name if org is not None else "the organization"
@@ -641,6 +663,11 @@ async def build_run_preamble(
                 "model cannot process images.)"
             )
         messages.append(NeutralMessage(role="user", content=final_text + note))
+    if resume is not None:
+        messages.append(
+            NeutralMessage(role="assistant", content=resume.own_work_digest or NO_TOOL_CALLS_YET)
+        )
+        messages.append(NeutralMessage(role="user", content=resume.instruction))
 
     copilot_permissions = await _gated_copilot_permissions(
         db, agent=agent, tenant_id=tenant_id, task=task, run_id=run_id, actor=actor

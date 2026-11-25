@@ -1147,3 +1147,44 @@ async def test_failing_flattened_fallback_keeps_the_task_text(
         assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q")])
         pre = await _preamble_for(db, tenant, assistant, task, run, replay)
     assert pre.messages[-1].content == "User: NEW-TURN"
+
+
+@pytest.mark.parametrize(
+    ("digest", "told"), [("search_records {} → ok: 3 rows", None), (None, "[no tool calls yet]")]
+)
+async def test_a_resume_follows_the_turn_and_keeps_the_cached_prefix(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    digest: str | None,
+    told: str | None,
+) -> None:
+    """A resumed chat leg: the replayed turns and the new turn stay as they
+    were, the run's own work and the decision follow them, and the cache
+    breakpoints stay where a leg without a resume has them."""
+    from oc8.agent.preamble import Resume
+
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(
+            db, tenant, [("user", "OLD-QUESTION"), ("assistant", "OLD-ANSWER")]
+        )
+        plain = await _preamble_for(db, tenant, assistant, task, run, replay)
+        resumed = await build_run_preamble(
+            db, agent=assistant, tenant_id=tenant, task_text="User: NEW-TURN", frame={},
+            model_locality="cloud", caps=ModelCaps(), max_steps=40, task=task,
+            run_id=run.id, replay=replay,
+            resume=Resume(own_work_digest=digest, instruction="RESUME-INSTRUCTION"),
+        )
+    head = resumed.messages[: len(plain.messages)]
+    assert [(msg.role, msg.cache_breakpoint) for msg in head] == [
+        (msg.role, msg.cache_breakpoint) for msg in plain.messages
+    ]
+    assert [msg.content for msg in head[:-1]] == [msg.content for msg in plain.messages[:-1]]
+    assert str(head[-1].content).endswith("\n\nNEW-TURN")
+    tail = resumed.messages[len(plain.messages) :]
+    assert [(msg.role, msg.content) for msg in tail] == [
+        ("assistant", told or digest),
+        ("user", "RESUME-INSTRUCTION"),
+    ]
+    assert not any(msg.cache_breakpoint for msg in tail)

@@ -118,7 +118,7 @@ async def _resume(
         db.add(run)
         await db.flush()
         pre = (
-            {call_sig(ToolCall(id="x", name="write_a", arguments=held)): "approve"}
+            {call_sig(ToolCall(id="x", name="write_a", arguments=held)): {"decision": "approve"}}
             if approved_original
             else None
         )
@@ -358,7 +358,7 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
             tenant_id=tenant,
             toolset=toolset,
             run_id=run.id,
-            pre_decided={merged: "approve"},
+            pre_decided={merged: {"decision": "approve"}},
         )
         assert third.status == "done", third
         assert toolset.ran == [{"value_eur": 500}]
@@ -375,7 +375,7 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
             tenant_id=tenant,
             toolset=toolset,
             run_id=run.id,
-            pre_decided={merged: "approve"},
+            pre_decided={merged: {"decision": "approve"}},
         )
         assert fourth.status == "done", fourth
         assert toolset.ran == [{"value_eur": 500}], "replayed, not executed again"

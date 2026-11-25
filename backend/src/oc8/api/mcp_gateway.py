@@ -106,7 +106,7 @@ from oc8.realtime.emit import note_focus, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import pre_decided_map
+from oc8.runtime.approval_resume import pre_decided_map, rejection_text
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
 from oc8.skills.runtime import (
@@ -1076,11 +1076,14 @@ async def _call_tool(
     )
     # Honour an operator's earlier decision on this exact call (resume).
     if decision.effect is Effect.REQUIRE_APPROVAL:
-        verdict = pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc))
+        decided = (
+            pre_decided_map(run.context.get("resolved_tool_approvals", [])).get(_call_sig(tc)) or {}
+        )
+        verdict = decided.get("decision")
         if verdict == "approve":
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
-            decision = Decision(Effect.DENY, "operator rejected this action")
+            decision = Decision(Effect.DENY, rejection_text(decided))
 
     await append_event(
         db,
