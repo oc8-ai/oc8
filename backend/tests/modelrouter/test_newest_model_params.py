@@ -19,7 +19,7 @@ from oc8.modelrouter.adapters.anthropic import AnthropicAdapter, _build_payload
 from oc8.modelrouter.adapters.openai import OpenAIAdapter
 from oc8.modelrouter.adapters.openai_compatible import OpenAICompatibleAdapter
 from oc8.modelrouter.reasoning_support import anthropic_takes_temperature
-from oc8.modelrouter.types import CompletionRequest, ModelParams, NeutralMessage
+from oc8.modelrouter.types import CompletionRequest, ModelParams, NeutralMessage, NeutralTool
 
 pytestmark = pytest.mark.asyncio
 
@@ -225,6 +225,63 @@ async def test_the_openai_stream_sends_max_completion_tokens(
     assert "".join(c.text for c in chunks) == "hi"
     assert sent[0]["max_completion_tokens"] == 64
     assert "max_tokens" not in sent[0] and "temperature" not in sent[0]
+
+
+_TOOLS_NEED_REASONING_NONE = {
+    "error": {
+        "message": (
+            "Function tools with reasoning_effort are not supported for gpt-6.2-sol in "
+            "/v1/chat/completions. To use function tools, use /v1/responses or set "
+            "reasoning_effort to 'none'."
+        ),
+        "type": "invalid_request_error",
+        "param": "reasoning_effort",
+        "code": None,
+    }
+}
+
+
+def _tool_req(model: str, reasoning: Any = None) -> CompletionRequest:
+    req = _req("openai", model)
+    req.params.reasoning = reasoning
+    req.tools = [NeutralTool(name="ping", description="d", parameters={"type": "object"})]
+    return req
+
+
+@pytest.mark.parametrize("reasoning", [None, "thorough"])
+async def test_a_model_that_wants_no_reasoning_next_to_tools_gets_none(
+    monkeypatch: pytest.MonkeyPatch, reasoning: Any
+) -> None:
+    """gpt-6.2-sol and gpt-6-astra reason by default and refuse function tools
+    on Chat Completions unless `reasoning_effort` is 'none' (issue #164). A
+    request that sent no effort at all is refused too, so dropping the level
+    is not enough: the adapter sends 'none', as the provider asks."""
+    sent = _post_answering(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _OK))
+    result = await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol", reasoning))
+    assert result.text == "hi"
+    assert len(sent) == 2 and sent[1]["reasoning_effort"] == "none"
+
+
+async def test_the_stream_sends_reasoning_none_next_to_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _stream_answering(
+        monkeypatch,
+        (400, jsonlib.dumps(_TOOLS_NEED_REASONING_NONE).encode()),
+        (200, _OPENAI_SSE),
+    )
+    chunks = [c async for c in OpenAIAdapter(api_key="sk-test").stream(_tool_req("gpt-6-astra"))]
+    assert "".join(c.text for c in chunks) == "hi"
+    assert "reasoning_effort" not in sent[0] and sent[1]["reasoning_effort"] == "none"
+
+
+async def test_reasoning_none_that_stays_refused_is_not_retried_forever(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _post_answering(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE))
+    with pytest.raises(httpx.HTTPStatusError):
+        await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol"))
+    assert len(sent) == 2
 
 
 # ---------------------------------------------------------------- Anthropic

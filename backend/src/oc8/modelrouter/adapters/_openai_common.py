@@ -315,6 +315,14 @@ _MAX_TOKENS_REFUSED = re.compile(
     re.IGNORECASE,
 )
 _TEMPERATURE_REFUSED = re.compile(r"temperature", re.IGNORECASE)
+#: A model that reasons by default and takes function tools on Chat Completions
+#: only with reasoning switched off (gpt-6.2-sol, gpt-6-astra: "set
+#: reasoning_effort to 'none'"). Sending no effort at all is refused as well,
+#: so it has to be sent as 'none', not dropped.
+_REASONING_NONE_ASKED = re.compile(
+    r"reasoning_effort\W+to\W+none|tools with reasoning_effort are not supported",
+    re.IGNORECASE,
+)
 #: Only a malformed or unprocessable request can be a refused parameter.
 _PARAM_REFUSAL_STATUSES = frozenset({400, 422})
 
@@ -324,7 +332,8 @@ def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, 
     this error is not that. Read from the provider's own words, like the
     reasoning retry in router.py: no list of model names could keep up with
     which server wants `max_completion_tokens` or refuses `temperature`.
-    Each call removes one key, so retrying on it always ends."""
+    Each call removes one key or sets `reasoning_effort` to 'none' once, so
+    retrying on it always ends."""
     if not isinstance(exc, httpx.HTTPStatusError):
         return None
     if exc.response.status_code not in _PARAM_REFUSAL_STATUSES:
@@ -333,6 +342,12 @@ def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, 
         text = exc.response.text
     except Exception:
         text = str(exc).split(": ", 1)[-1]
+    if (
+        payload.get("tools")
+        and payload.get("reasoning_effort") != "none"
+        and _REASONING_NONE_ASKED.search(text)
+    ):
+        return {**payload, "reasoning_effort": "none"}
     if "max_tokens" in payload and _MAX_TOKENS_REFUSED.search(text):
         adapted = {k: v for k, v in payload.items() if k != "max_tokens"}
         adapted["max_completion_tokens"] = payload["max_tokens"]
