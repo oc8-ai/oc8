@@ -327,7 +327,22 @@ _REASONING_NONE_ASKED = re.compile(
 _PARAM_REFUSAL_STATUSES = frozenset({400, 422})
 
 
-def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, Any] | None:
+def asks_for_responses_api(exc: Exception) -> bool:
+    """A model that reasons next to function tools only on the Responses API."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code not in _PARAM_REFUSAL_STATUSES:
+        return False
+    try:
+        text = exc.response.text
+    except Exception:
+        text = str(exc).split(": ", 1)[-1]
+    return bool(_REASONING_NONE_ASKED.search(text))
+
+
+def adapt_refused_payload(
+    payload: dict[str, Any], exc: Exception, *, reasoning_none: bool = True
+) -> dict[str, Any] | None:
     """`payload` without the parameter the provider just refused, or None if
     this error is not that. Read from the provider's own words, like the
     reasoning retry in router.py: no list of model names could keep up with
@@ -343,7 +358,8 @@ def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, 
     except Exception:
         text = str(exc).split(": ", 1)[-1]
     if (
-        payload.get("tools")
+        reasoning_none
+        and payload.get("tools")
         and payload.get("reasoning_effort") != "none"
         and _REASONING_NONE_ASKED.search(text)
     ):
@@ -358,7 +374,7 @@ def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, 
 
 
 async def post_completion(
-    url: str, payload: dict[str, Any], headers: dict[str, str]
+    url: str, payload: dict[str, Any], headers: dict[str, str], *, reasoning_none: bool = True
 ) -> dict[str, Any]:
     """POST the completion, once more per parameter the provider refuses."""
     async with httpx.AsyncClient(timeout=180.0) as client:
@@ -367,7 +383,7 @@ async def post_completion(
             try:
                 raise_for_status_with_body(resp)
             except httpx.HTTPStatusError as exc:
-                adapted = adapt_refused_payload(payload, exc)
+                adapted = adapt_refused_payload(payload, exc, reasoning_none=reasoning_none)
                 if adapted is None:
                     raise
                 payload = adapted
@@ -377,7 +393,7 @@ async def post_completion(
 
 
 async def stream_completion(
-    url: str, payload: dict[str, Any], headers: dict[str, str]
+    url: str, payload: dict[str, Any], headers: dict[str, str], *, reasoning_none: bool = True
 ) -> AsyncIterator[CompletionChunk]:
     """`stream_openai_sse`, once more per parameter the provider refuses. A
     refusal arrives before any SSE line, so nothing has reached the caller;
@@ -390,7 +406,11 @@ async def stream_completion(
                 yield chunk
             return
         except httpx.HTTPStatusError as exc:
-            adapted = None if emitted else adapt_refused_payload(payload, exc)
+            adapted = (
+                None
+                if emitted
+                else adapt_refused_payload(payload, exc, reasoning_none=reasoning_none)
+            )
             if adapted is None:
                 raise
             payload = adapted
