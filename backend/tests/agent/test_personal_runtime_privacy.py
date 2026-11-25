@@ -450,3 +450,164 @@ async def test_audit_reason_is_stripped_for_non_owners(app_session: AppSessionFa
     assert export.text.count(reason) == 1
     owner_by_actor = {e["actorId"]: e for e in owner.json()["events"]}
     assert owner_by_actor[str(w.personal_agent)]["reason"] == reason
+
+
+# ------------------------------------------------------------------ fix round 1: kept reasons
+
+
+_KEPT_REASON = {
+    "budget_incident": "approved: month-end close needs the extra tokens",
+    "blast_radius": "rejected: 400 records at once is too many",
+}
+_HIDDEN_REASON = "approved: yes, forward the divorce papers"
+_HARD_STOP_REASON = "token budget hard-exceeded"
+
+
+async def _card(db: Any, tenant: uuid.UUID, agent: uuid.UUID, action_type: str) -> uuid.UUID:
+    card = m.ApprovalRequest(
+        tenant_id=tenant,
+        agent_id=agent,
+        action_type=action_type,
+        status="approved",
+        title="t",
+        detail="",
+        payload={},
+    )
+    db.add(card)
+    await db.flush()
+    return card.id
+
+
+async def _decision(
+    db: Any,
+    tenant: uuid.UUID,
+    agent: uuid.UUID,
+    approval_id: uuid.UUID,
+    reason: str,
+    *,
+    action_type: str | None = None,
+) -> None:
+    """An `approval.approve` line as the decide funnel writes it; without
+    `action_type` it is a row written before the resource carried one."""
+    resource: dict[str, Any] = {"approval_id": str(approval_id), "agent_id": str(agent)}
+    if action_type is not None:
+        resource["action_type"] = action_type
+    await append_event(
+        db,
+        tenant_id=tenant,
+        actor_type="operator",
+        actor_id=None,
+        category="approval",
+        action="approval.approve",
+        resource=resource,
+        decision="approved",
+        reason=reason,
+    )
+
+
+async def _kept_reason_world(app_session: AppSessionFactory) -> Any:
+    w = await _api_world(app_session)
+    async with app_session(w.tenant) as db:
+        for action_type, reason in _KEPT_REASON.items():
+            card = await _card(db, w.tenant, w.personal_agent, action_type)
+            await _decision(db, w.tenant, w.personal_agent, card, reason)
+        hidden = await _card(db, w.tenant, w.personal_agent, "memory_write")
+        await _decision(db, w.tenant, w.personal_agent, hidden, _HIDDEN_REASON)
+        # Written from now on: the card's action_type rides in the resource.
+        await _decision(
+            db,
+            w.tenant,
+            w.personal_agent,
+            await _card(db, w.tenant, w.personal_agent, "budget_incident"),
+            "approved: new-style row",
+            action_type="budget_incident",
+        )
+        # A card that cannot be resolved fails closed.
+        await _decision(db, w.tenant, w.personal_agent, uuid.uuid4(), "approved: unknown card")
+        await append_event(
+            db,
+            tenant_id=w.tenant,
+            actor_type="agent",
+            actor_id=w.personal_agent,
+            category="budget",
+            action="budget_hard_stop",
+            resource={"scope": "department", "department_id": None, "queued_cancelled": 0},
+            decision="deny",
+            reason=_HARD_STOP_REASON,
+        )
+    return w
+
+
+async def test_an_admin_keeps_the_reason_of_budget_and_blast_radius_events(
+    app_session: AppSessionFactory,
+) -> None:
+    """Ruling T4-4: the budget incident and the blast-radius card are an
+    administrator's to see and decide (R2, U3), so the reason on their decision
+    -- often the admin's own -- and on a budget hard stop stays. Every other
+    personal card's decision reason is still stripped, and so is one whose card
+    cannot be found."""
+    w = await _kept_reason_world(app_session)
+    async with _http() as http:
+        r = await http.get("/api/v1/audit", headers=_headers(w.tenant, "admin", "org_admin"))
+    assert r.status_code == 200, r.text
+    reasons = {e["reason"] for e in r.json()["events"]}
+    assert set(_KEPT_REASON.values()) <= reasons
+    assert _HARD_STOP_REASON in reasons
+    assert "approved: new-style row" in reasons
+    assert _HIDDEN_REASON not in r.text
+    assert "approved: unknown card" not in r.text
+    hidden = [e for e in r.json()["events"] if e["reason"] is None]
+    assert len(hidden) == 2
+    assert {e["decision"] for e in hidden} == {"approved"}
+
+
+@pytest.mark.parametrize("fmt", ["csv", "jsonl"])
+async def test_the_export_keeps_the_same_reasons(app_session: AppSessionFactory, fmt: str) -> None:
+    w = await _kept_reason_world(app_session)
+    async with _http() as http:
+        r = await http.get(
+            f"/api/v1/audit/export?format={fmt}",
+            headers=_headers(w.tenant, "admin", "org_admin"),
+        )
+    assert r.status_code == 200, r.text
+    for reason in (*_KEPT_REASON.values(), _HARD_STOP_REASON, "approved: new-style row"):
+        assert reason in r.text
+    assert _HIDDEN_REASON not in r.text
+    assert "approved: unknown card" not in r.text
+
+
+async def test_the_owner_still_reads_every_reason(app_session: AppSessionFactory) -> None:
+    w = await _kept_reason_world(app_session)
+    async with _http() as http:
+        r = await http.get("/api/v1/audit", headers=_headers(w.tenant, "owner", "org_admin"))
+    assert r.status_code == 200, r.text
+    reasons = {e["reason"] for e in r.json()["events"]}
+    assert {
+        *_KEPT_REASON.values(),
+        _HIDDEN_REASON,
+        _HARD_STOP_REASON,
+        "approved: new-style row",
+        "approved: unknown card",
+    } <= reasons
+
+
+async def test_a_decision_names_its_cards_action_type(app_session: AppSessionFactory) -> None:
+    """From now on the decision line carries the card's `action_type`, so the
+    reader needs no lookup for it."""
+    from tests.approvals.test_decided_by_is_recorded import _desk
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        _member, approval = await _desk(db, tenant, "hos")
+    async with _http() as http:
+        got = await http.post(
+            f"/api/v1/approvals/{approval}/decision",
+            json={"decision": "approve"},
+            headers=_headers(tenant, "hos", "member"),
+        )
+    assert got.status_code == 200, got.text
+    async with app_session(tenant) as db:
+        event = (
+            await db.execute(select(m.AuditEvent).where(m.AuditEvent.category == "approval"))
+        ).scalar_one()
+    assert event.resource["action_type"] == "tool_send"

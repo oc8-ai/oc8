@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import datetime as dt
 import uuid
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from sqlalchemy import (
@@ -171,6 +172,25 @@ def personal_owner_of(
     if not is_personal_card(row.action_type, department_kind=department_kind):
         return None
     return owner_member_id
+
+
+async def admin_kept_approval_ids(
+    db: AsyncSession, approval_ids: Collection[uuid.UUID]
+) -> set[uuid.UUID]:
+    """Which of these cards are `ADMIN_KEPT_ACTIONS` ones, for the audit
+    reader deciding whether a decision line's reason stays with the admins
+    (ruling T4-4). Ids and the kind only -- nothing of the card is returned --
+    so no reader scope applies. An id that resolves to nothing is simply not
+    in the answer, which keeps its reason stripped (fail closed)."""
+    if not approval_ids:
+        return set()
+    rows = await db.execute(
+        select(ApprovalRequest.id).where(
+            ApprovalRequest.id.in_(approval_ids),
+            ApprovalRequest.action_type.in_(ADMIN_KEPT_ACTIONS),
+        )
+    )
+    return set(rows.scalars().all())
 
 
 def private_to_caller(scope: DepartmentScope) -> ColumnElement[bool]:

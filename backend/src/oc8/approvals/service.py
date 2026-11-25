@@ -991,6 +991,9 @@ async def decide_approval(
         resource={
             "approval_id": str(approval.id),
             "agent_id": str(approval.agent_id),
+            # What kind of card: the audit reader keeps the reason of an
+            # admin-kept one (`ADMIN_KEPT_ACTIONS`) visible to admins.
+            "action_type": approval.action_type,
             # Whose queue this was in, and whose task it belonged to. Both are on
             # the row and neither was in the trail: "who may decide this" is the
             # first question asked about a decision afterwards.
