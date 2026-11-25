@@ -1,6 +1,6 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { AlertTriangle, ChevronDown, ChevronRight, Download } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import {
@@ -10,10 +10,27 @@ import {
   useVerifyChain,
   type AuditFilters,
 } from "@/lib/audit-hooks";
+import { urlId } from "@/lib/ids";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 
+export interface AuditSearch {
+  /** Every event of one run -- other pages link here as `/audit?run_id=…`. */
+  run_id?: string;
+  /** Every event of one chat. */
+  chat_session_id?: string;
+}
+
+/** Only the well-formed ids, so the URL never carries one the server refuses. */
+function linkSearch(runId: string | undefined, chatSessionId: string | undefined): AuditSearch {
+  const run = urlId(runId);
+  const chat = urlId(chatSessionId);
+  return { ...(run ? { run_id: run } : {}), ...(chat ? { chat_session_id: chat } : {}) };
+}
+
 export const Route = createFileRoute("/audit")({
+  validateSearch: (search: Record<string, unknown>): AuditSearch =>
+    linkSearch(search.run_id as string | undefined, search.chat_session_id as string | undefined),
   component: AuditPage,
 });
 
@@ -234,11 +251,63 @@ function IntegrityBanner() {
   );
 }
 
-function AuditPage() {
+/** What a `tool.result` event records: the outcome and the duration only. */
+function ToolResultSummary({ resource }: { resource: Record<string, unknown> }) {
   const t = useT();
+  const outcome = typeof resource.outcome === "string" ? resource.outcome : null;
+  const duration = typeof resource.duration_ms === "number" ? resource.duration_ms : null;
+  return (
+    <dl className="grid w-fit grid-cols-[auto_auto] gap-x-4 gap-y-1 text-foreground">
+      <dt className="text-muted-foreground">{t("Outcome", "Ergebnis")}</dt>
+      <dd
+        style={{
+          color: outcome === "ok" ? "var(--status-running)" : "var(--status-error)",
+        }}
+      >
+        {outcome ?? "—"}
+      </dd>
+      <dt className="text-muted-foreground">{t("Duration", "Dauer")}</dt>
+      <dd className="font-mono">{duration !== null ? `${duration} ms` : "—"}</dd>
+    </dl>
+  );
+}
+
+export function AuditPage() {
+  const t = useT();
+  const navigate = useNavigate();
+  const search = Route.useSearch();
   const { data: integrity, isError: integrityIsError, error: integrityError } = useAuditIntegrity();
-  const [draftFilters, setDraftFilters] = useState<AuditFilters>({});
-  const filters = useDebouncedValue(draftFilters, 300);
+  const [draftFilters, setDraftFilters] = useState<AuditFilters>(() => ({
+    runId: search.run_id,
+    chatSessionId: search.chat_session_id,
+  }));
+  const debouncedFilters = useDebouncedValue(draftFilters, 300);
+  // A half-typed id is never sent: the server would answer it with 422.
+  const filters = useMemo<AuditFilters>(
+    () => ({
+      ...debouncedFilters,
+      runId: urlId(debouncedFilters.runId),
+      chatSessionId: urlId(debouncedFilters.chatSessionId),
+    }),
+    [debouncedFilters],
+  );
+
+  // The run and chat filters live in the URL, so other pages can link here.
+  useEffect(() => {
+    const next = linkSearch(filters.runId, filters.chatSessionId);
+    if (next.run_id !== search.run_id || next.chat_session_id !== search.chat_session_id) {
+      void navigate({ to: "/audit", search: next, replace: true });
+    }
+    // Only a change of the filters writes the URL; a new URL is read below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.runId, filters.chatSessionId]);
+  useEffect(() => {
+    setDraftFilters((f) =>
+      urlId(f.runId) === search.run_id && urlId(f.chatSessionId) === search.chat_session_id
+        ? f
+        : { ...f, runId: search.run_id, chatSessionId: search.chat_session_id },
+    );
+  }, [search.run_id, search.chat_session_id]);
   const [openId, setOpenId] = useState<string | null>(null);
   const {
     data,
@@ -257,7 +326,14 @@ function AuditPage() {
 
   const onExport = async (format: "csv" | "jsonl") => {
     try {
-      await downloadAuditExport(draftFilters, format);
+      await downloadAuditExport(
+        {
+          ...draftFilters,
+          runId: urlId(draftFilters.runId),
+          chatSessionId: urlId(draftFilters.chatSessionId),
+        },
+        format,
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : t("Export failed", "Export fehlgeschlagen"));
     }
@@ -315,6 +391,22 @@ function AuditPage() {
           onChange={setFilter("decision")}
           placeholder={t("Decision", "Entscheidung")}
           className="w-36 rounded-md border border-border bg-panel px-3 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus:border-primary/50"
+        />
+        <input
+          value={draftFilters.runId ?? ""}
+          onChange={setFilter("runId")}
+          placeholder={t("Run", "Lauf")}
+          aria-label={t("Run", "Lauf")}
+          spellCheck={false}
+          className="w-72 rounded-md border border-border bg-panel px-3 py-1.5 font-mono text-xs outline-none placeholder:font-sans placeholder:text-sm placeholder:text-muted-foreground focus:border-primary/50"
+        />
+        <input
+          value={draftFilters.chatSessionId ?? ""}
+          onChange={setFilter("chatSessionId")}
+          placeholder={t("Chat", "Chat")}
+          aria-label={t("Chat", "Chat")}
+          spellCheck={false}
+          className="w-72 rounded-md border border-border bg-panel px-3 py-1.5 font-mono text-xs outline-none placeholder:font-sans placeholder:text-sm placeholder:text-muted-foreground focus:border-primary/50"
         />
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
           {/* The server interprets these bounds as UTC, while the table below
@@ -403,6 +495,9 @@ function AuditPage() {
                     {isOpen && (
                       <tr className="border-b border-border/60 bg-background/30">
                         <td colSpan={7} className="space-y-2 px-14 py-3 text-xs">
+                          {ev.action.startsWith("tool.result:") && (
+                            <ToolResultSummary resource={ev.resource} />
+                          )}
                           <pre className="overflow-x-auto whitespace-pre-wrap break-all text-muted-foreground">
                             {JSON.stringify(ev.resource, null, 2)}
                           </pre>

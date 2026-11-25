@@ -65,12 +65,23 @@ export interface AuditFilters {
   decision?: string;
   from?: string;
   to?: string;
+  /** The run (and chat) a tool call came from: `resource.run_id` /
+   *  `resource.chat_session_id`. Only a well-formed UUID; the server answers
+   *  anything else with 422. */
+  runId?: string;
+  chatSessionId?: string;
 }
+
+const PARAM: Partial<Record<keyof AuditFilters, string>> = {
+  actorType: "actor_type",
+  runId: "run_id",
+  chatSessionId: "chat_session_id",
+};
 
 function toParams(filters: AuditFilters): URLSearchParams {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(filters)) {
-    if (v) p.set(k === "actorType" ? "actor_type" : k, v);
+    if (v) p.set(PARAM[k as keyof AuditFilters] ?? k, v);
   }
   return p;
 }
