@@ -1454,7 +1454,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # only runs on a run's FIRST step, so without this every later step of
         # the same run would have to guess -- and it is what forces a restricted
         # run to a local model and keeps it out of the department cache.
-        ctx["contains_restricted"] = preamble.contains_restricted
+        # One-way: a resume leg builds the preamble again on its fresh
+        # transcript, and must not clear what an earlier leg of the run read.
+        ctx["contains_restricted"] = (
+            bool(ctx.get("contains_restricted")) or preamble.contains_restricted
+        )
         ctx["has_knowledge"] = preamble.has_knowledge
         ctx["produces_board"] = preamble.produces_board
         ctx["has_instruction_files"] = preamble.has_instruction_files

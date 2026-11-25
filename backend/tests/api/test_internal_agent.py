@@ -1732,6 +1732,81 @@ async def test_restricted_content_reaches_the_model_call_on_every_step(
 
 
 @pytest.mark.asyncio
+async def test_a_resumed_legs_fresh_preamble_keeps_the_run_restricted(
+    app_session: object, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A resume leg starts the isolated runtime on an empty transcript
+    (runtime/isolated.py), so its first /step builds the preamble again. A
+    preamble with nothing restricted in it overwrote the flag the earlier leg
+    set, and the rest of the run went out to any model as unrestricted."""
+    from asgi_lifespan import LifespanManager
+    from httpx import ASGITransport, AsyncClient
+
+    from oc8 import models as m
+    from oc8.main import create_app
+    from oc8.modelrouter.types import CompletionResult, Usage
+    from oc8.runtime.states import RunState
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        dept = m.Department(tenant_id=tenant, name="Legal", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Agent R",
+            status="running",
+            narrowing={},
+            definition={},
+            presentation={},
+        )
+        db.add(agent)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            state=RunState.RUNNING.value,
+            # What a resumed leg finds: the earlier leg read restricted data,
+            # the runtime cleared the transcript for the new leg.
+            context={"task": "go on", "transcript": [], "contains_restricted": True},
+        )
+        db.add(run)
+        await db.flush()
+        agent_id, run_id = agent.id, run.id
+
+    seen: list[object] = []
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        seen.append(kw["contains_restricted"])
+        return CompletionResult(
+            text="ok",
+            tool_calls=[],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop",
+            provider="ollama",
+            model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            headers = {"Authorization": f"Bearer {_agent_token(tenant, agent_id, run_id)}"}
+            r = await c.post(f"/api/v1/internal/agent/{run_id}/step", headers=headers)
+            assert r.status_code == 200, r.text
+
+    assert seen == [True]
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        assert row.context["contains_restricted"] is True
+
+
+@pytest.mark.asyncio
 async def test_step_persists_and_reoffers_copilot_permissions_across_calls(
     app_session: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
