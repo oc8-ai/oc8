@@ -207,7 +207,11 @@ from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
 from oc8.runtime.approval_resume import rejection_text
-from oc8.runtime.run_context import append_tool_call, append_waived_read_before_write
+from oc8.runtime.run_context import (
+    append_tool_call,
+    append_waived_read_before_write,
+    merge_context,
+)
 from oc8.runtime.step_record import call_state_for, step_timing_dto
 from oc8.runtime.supervision_hook import maybe_checkpoint, maybe_create_anchor
 from oc8.skills.runtime import (
@@ -950,6 +954,11 @@ async def run_agent(
         assigned_skills = preamble.assigned_skills
         skill_tool_names = preamble.skill_tool_names
         contains_restricted = preamble.contains_restricted
+        if contains_restricted and run_row is not None:
+            # Restricted from the start (knowledge, replayed answers): on the
+            # run now, so a reply recorded after a crash honours it too (see
+            # _mark_restricted).
+            await merge_context(db, run_row, {"contains_restricted": True})
         has_knowledge = preamble.has_knowledge
         has_instruction_files = preamble.has_instruction_files
         copilot_permissions = preamble.copilot_permissions
@@ -1060,13 +1069,20 @@ async def run_agent(
                 db, run_row.context if run_row is not None else None
             )
 
-            def _mark_restricted() -> None:
+            async def _mark_restricted() -> None:
                 # One-way: restricted text is in the transcript from here on, so
                 # every later completion says so and the router refuses a cloud
                 # model or fallback. The step helpers below read the flag late,
                 # on purpose -- each call sees the run's current state.
                 nonlocal contains_restricted
                 contains_restricted = True
+                # Persisted now, not only through the RunResult: the call's
+                # result preview is already on the run's toolCalls (see
+                # _live_tool_call), and a leg that crashes before returning
+                # would otherwise leave the reply's work digest unrestricted
+                # (same one-way write as the isolated runtime's /step).
+                if run_row is not None:
+                    await merge_context(db, run_row, {"contains_restricted": True})
 
             def _offered() -> list[NeutralTool]:
                 # Shared with the isolated runtime so both offer the same list --
@@ -3128,7 +3144,7 @@ async def run_agent(
                                     message=control.output.removeprefix("ERROR: ").strip(),
                                 )
                             if control.contains_restricted:
-                                _mark_restricted()
+                                await _mark_restricted()
                             if control.pending_run is not None:
                                 pending_runs.append(control.pending_run)
                             if control.activated_skill is not None:

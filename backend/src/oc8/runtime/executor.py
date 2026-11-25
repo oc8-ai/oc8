@@ -155,6 +155,18 @@ async def _apply_entered_mode(db: AsyncSession, run: m.AgentRun) -> None:
     await apply_entered_mode(db, run=run)
 
 
+def _all_legs_calls(
+    earlier: list[dict[str, Any]], leg: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """The `toolCalls` patch a leg's terminal write makes: the earlier legs'
+    calls, then this leg's. A runtime that reports none (the isolated one
+    keeps them on the run's context as it goes) leaves the stored list as
+    it stands."""
+    if not leg:
+        return {}
+    return {"toolCalls": [*earlier, *leg]}
+
+
 async def answer_failed_chat_end(db: AsyncSession, run: m.AgentRun) -> None:
     """The transcript side of a chat turn that FAILED without an output of its
     own: the canned failure line as the run's answer, then its queued
@@ -1285,6 +1297,11 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # Where the answer's record links were issued (`link_scope`); read
             # here, while `run` is live.
             links_context = {"chat_session_id": run.context.get("chat_session_id")}
+            # The calls earlier legs of this run made (a run resumed after an
+            # approval or an answer): kept ahead of this leg's own at its
+            # terminal write, so the run's trace and its reply's work digest
+            # cover the whole run, not only the last leg.
+            earlier_calls = list(run.context.get("toolCalls") or [])
 
             stopped_by_gate = False
             stopped_by_owner_change = False
@@ -1503,7 +1520,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            "toolCalls": result.tool_calls,
+                            **_all_legs_calls(earlier_calls, result.tool_calls),
                             "contains_restricted": bool(run.context.get("contains_restricted"))
                             or result.contains_restricted,
                             **_leg_model(result),
@@ -1649,7 +1666,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            "toolCalls": result.tool_calls,
+                            **_all_legs_calls(earlier_calls, result.tool_calls),
                             "contains_restricted": bool(run.context.get("contains_restricted"))
                             or result.contains_restricted,
                             **_leg_model(result),
