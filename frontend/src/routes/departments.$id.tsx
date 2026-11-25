@@ -179,6 +179,8 @@ function DepartmentDetail() {
   // outside the fixed icon set below — fall back rather than render undefined.
   const Icon = iconMap[dept.icon as keyof typeof iconMap] ?? Building2;
   const lead = members.find((m) => m.isLead);
+  // A member's personal department read by anybody but its owner.
+  const contentHidden = dept.contentHidden ?? false;
 
   return (
     <div className="space-y-6">
@@ -324,125 +326,140 @@ function DepartmentDetail() {
           <section>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="font-serif text-lg">{t("Team roster", "Team-Übersicht")}</h3>
-              <button
-                type="button"
-                onClick={() => setHireOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal"
-              >
-                <UserPlus className="h-4 w-4" /> {t("Hire agent", "Agent einstellen")}
-              </button>
+              {/* A member's personal department read by anybody but its owner:
+                  its agents answer to the owner alone (the API refuses this
+                  reader's hire), and the agent list leaves them out, so the
+                  roster would only ever be empty. */}
+              {!contentHidden && (
+                <button
+                  type="button"
+                  onClick={() => setHireOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal"
+                >
+                  <UserPlus className="h-4 w-4" /> {t("Hire agent", "Agent einstellen")}
+                </button>
+              )}
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {members.map((m) => (
-                <Link key={m.id} to="/agents/$id" params={{ id: m.id }} className="group">
-                  <Panel className="p-4 transition hover:border-primary/40">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <AgentAvatar seed={m.id} size={40} title={m.name} />
-                        {lead?.id === m.id && (
-                          <Crown
-                            className="absolute -top-2 -right-1 h-3.5 w-3.5 text-[color:var(--status-warning)]"
-                            fill="currentColor"
-                          />
-                        )}
+            {contentHidden ? (
+              <Panel className="p-5 text-sm text-muted-foreground">
+                {t(
+                  "This is a member's personal department. Only that member can see and hire its agents.",
+                  "Das ist die persönliche Abteilung eines Mitglieds. Nur dieses Mitglied sieht ihre Agenten und stellt welche ein.",
+                )}
+              </Panel>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {members.map((m) => (
+                  <Link key={m.id} to="/agents/$id" params={{ id: m.id }} className="group">
+                    <Panel className="p-4 transition hover:border-primary/40">
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <AgentAvatar seed={m.id} size={40} title={m.name} />
+                          {lead?.id === m.id && (
+                            <Crown
+                              className="absolute -top-2 -right-1 h-3.5 w-3.5 text-[color:var(--status-warning)]"
+                              fill="currentColor"
+                            />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">{m.name}</div>
+                          <div className="truncate text-xs text-muted-foreground">{m.role}</div>
+                        </div>
+                        <StatusPill status={m.status} />
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{m.name}</div>
-                        <div className="truncate text-xs text-muted-foreground">{m.role}</div>
+                      <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span className="rounded border border-border bg-background/40 px-1.5 py-0.5 font-mono">
+                          {m.llm}
+                        </span>
+                        <span>{m.lastRun}</span>
                       </div>
-                      <StatusPill status={m.status} />
-                    </div>
-                    <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
-                      <span className="rounded border border-border bg-background/40 px-1.5 py-0.5 font-mono">
-                        {m.llm}
-                      </span>
-                      <span>{m.lastRun}</span>
-                    </div>
-                    <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
-                      {m.lastAction}
-                    </p>
-                  </Panel>
-                </Link>
-              ))}
-            </div>
+                      <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+                        {m.lastAction}
+                      </p>
+                    </Panel>
+                  </Link>
+                ))}
+              </div>
+            )}
           </section>
 
-          <DepartmentTaskBoard
-            departmentId={id}
-            contentHidden={dept.contentHidden ?? false}
-            members={members}
-          />
+          <DepartmentTaskBoard departmentId={id} contentHidden={contentHidden} members={members} />
 
-          {/* Knowledge + Feed */}
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <Panel className="p-5">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <BookOpen className="h-4 w-4" style={{ color: dept.accent }} />
-                  <h3 className="font-serif text-lg">
-                    {t("Department knowledge", "Abteilungswissen")}
-                  </h3>
+          {/* Knowledge + Feed: the department's shared notes and its agents'
+              last actions are the owner's content, so a reader the content is
+              hidden from gets neither (the board above already says why). */}
+          {!contentHidden && (
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <BookOpen className="h-4 w-4" style={{ color: dept.accent }} />
+                    <h3 className="font-serif text-lg">
+                      {t("Department knowledge", "Abteilungswissen")}
+                    </h3>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {t("Team shared", "Team-geteilt")}
+                  </span>
                 </div>
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Team shared", "Team-geteilt")}
-                </span>
-              </div>
-              <p className="mb-3 text-xs text-muted-foreground">
-                {t(
-                  `All agents in ${dept.name} read and write this store.`,
-                  `Alle Agenten in ${dept.name} lesen und schreiben in diesen Speicher.`,
-                )}{" "}
-                {t(
-                  'For personal notes, open an agent and switch to the "Memory" tab.',
-                  'Für persönliche Notizen einen Agenten öffnen und zum Tab „Gedächtnis" wechseln.',
-                )}
-              </p>
-              {/* No backend for department-shared notes yet — seed empty
+                <p className="mb-3 text-xs text-muted-foreground">
+                  {t(
+                    `All agents in ${dept.name} read and write this store.`,
+                    `Alle Agenten in ${dept.name} lesen und schreiben in diesen Speicher.`,
+                  )}{" "}
+                  {t(
+                    'For personal notes, open an agent and switch to the "Memory" tab.',
+                    'Für persönliche Notizen einen Agenten öffnen und zum Tab „Gedächtnis" wechseln.',
+                  )}
+                </p>
+                {/* No backend for department-shared notes yet — seed empty
                   rather than the old fixed mock snippets (they weren't even
                   scoped per department, so they'd misrepresent real ones). */}
-              <MemoryEditor
-                scope={dept.name}
-                seed={[]}
-                accent={dept.accent}
-                emptyLabel={t(
-                  `No shared knowledge in ${dept.name} yet.`,
-                  `Noch kein geteiltes Wissen in ${dept.name}.`,
-                )}
-              />
-            </Panel>
+                <MemoryEditor
+                  scope={dept.name}
+                  seed={[]}
+                  accent={dept.accent}
+                  emptyLabel={t(
+                    `No shared knowledge in ${dept.name} yet.`,
+                    `Noch kein geteiltes Wissen in ${dept.name}.`,
+                  )}
+                />
+              </Panel>
 
-            <Panel className="flex max-h-[520px] flex-col p-0">
-              <header className="flex items-center justify-between border-b border-border px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-primary" />
-                  <h3 className="font-serif text-base">Live feed</h3>
-                </div>
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Recent", "Zuletzt")}
-                </span>
-              </header>
-              <ol className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-xs">
-                {feed.map((f, idx) => (
-                  <li
-                    key={f.id}
-                    className={cn(
-                      "border-l border-border pl-3",
-                      idx === 0 &&
-                        f.id.startsWith("live-") &&
-                        "animate-in fade-in slide-in-from-top-2 duration-500",
-                    )}
-                  >
-                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                      <span className="font-medium text-foreground">{f.agent}</span>
-                      <span>·</span>
-                      <span>{f.time}</span>
-                    </div>
-                    <p className="mt-0.5 text-foreground/90">{f.text}</p>
-                  </li>
-                ))}
-              </ol>
-            </Panel>
-          </div>
+              <Panel className="flex max-h-[520px] flex-col p-0">
+                <header className="flex items-center justify-between border-b border-border px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    <h3 className="font-serif text-base">Live feed</h3>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {t("Recent", "Zuletzt")}
+                  </span>
+                </header>
+                <ol className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-xs">
+                  {feed.map((f, idx) => (
+                    <li
+                      key={f.id}
+                      className={cn(
+                        "border-l border-border pl-3",
+                        idx === 0 &&
+                          f.id.startsWith("live-") &&
+                          "animate-in fade-in slide-in-from-top-2 duration-500",
+                      )}
+                    >
+                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                        <span className="font-medium text-foreground">{f.agent}</span>
+                        <span>·</span>
+                        <span>{f.time}</span>
+                      </div>
+                      <p className="mt-0.5 text-foreground/90">{f.text}</p>
+                    </li>
+                  ))}
+                </ol>
+              </Panel>
+            </div>
+          )}
 
           {/* Knowledge bases assignment — enabling POSTs a real grant
               (POST /knowledge/grants) and invalidates useKnowledgeBases, so
@@ -457,7 +474,9 @@ function DepartmentDetail() {
         </>
       )}
 
-      <NewAgentDialog open={hireOpen} onOpenChange={setHireOpen} defaultDepartmentId={dept.id} />
+      {!contentHidden && (
+        <NewAgentDialog open={hireOpen} onOpenChange={setHireOpen} defaultDepartmentId={dept.id} />
+      )}
     </div>
   );
 }

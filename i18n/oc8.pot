@@ -6527,6 +6527,9 @@ msgstr ""
 msgid "This integration is not available yet."
 msgstr ""
 
+msgid "This is a member's personal department. Only that member can see and hire its agents."
+msgstr ""
+
 msgid "This is a member's personal department. Only that member can see its tasks."
 msgstr ""
 
