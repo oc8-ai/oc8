@@ -3257,6 +3257,26 @@ async def _board_write(
     )
 
 
+def runs_under_routine_denial(decision: Decision, tool: str) -> bool:
+    """Whether `execute_control_tool` still runs the core tool `tool` under
+    this DENY -- so the call is, in effect, allowed.
+
+    Only a reading core tool, and only under the routine frame verdict
+    (`NOT_THIS_CONNECTION`) `authorize` hands a core tool without a branch of
+    its own: that verdict judges the run's bound connection (or the absence of
+    one), which the tool does not belong to. Never a writing tool, and never
+    read_resource, which is decided on the connection it names and refused
+    under any denial. The runtime audits such a call as the ALLOW that applied
+    (spec §5.7), not as the unrelated DENY."""
+    return (
+        decision.effect is Effect.DENY
+        and decision.reason_code == NOT_THIS_CONNECTION
+        and tool in CONTROL_TOOL_NAMES
+        and tool not in WRITING_CONTROL_TOOLS
+        and tool != READ_RESOURCE.name
+    )
+
+
 async def execute_control_tool(
     db: AsyncSession,
     *,
@@ -3329,14 +3349,15 @@ async def execute_control_tool(
     # with one exception: a READING tool still runs under the routine frame
     # DENY (`NOT_THIS_CONNECTION`) that `authorize` hands a core tool without a
     # branch of its own -- that verdict is about the run's bound connection,
-    # which the tool does not belong to. A writing tool never runs under it,
-    # and a mode's refusal (`MODE_WITHHELD`) is never that code. delegate_task
-    # keeps its own DENY branch, which also reports the depth limit.
+    # which the tool does not belong to (`runs_under_routine_denial`). A
+    # writing tool never runs under it, and a mode's refusal (`MODE_WITHHELD`)
+    # is never that code. delegate_task keeps its own DENY branch, which also
+    # reports the depth limit.
     if (
         decision.effect is Effect.DENY
         and tc.name != DELEGATE_TASK.name
         and (tc.name in CONTROL_TOOL_NAMES or tc.name in skill_by_tool)
-        and (decision.reason_code != NOT_THIS_CONNECTION or tc.name in WRITING_CONTROL_TOOLS)
+        and not runs_under_routine_denial(decision, tc.name)
     ):
         return ControlOutcome(output=f"ERROR: {decision.reason or 'denied'}")
 

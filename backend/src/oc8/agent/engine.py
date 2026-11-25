@@ -37,6 +37,7 @@ from oc8.agent.control_tools import (
     has_readable_context,
     has_released_knowledge,
     offered_tools,
+    runs_under_routine_denial,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.harness import GateVerdict, Harness, resolve_caps
@@ -2642,10 +2643,17 @@ async def run_agent(
                             decision = Decision(Effect.ALLOW, "operator approved")
                         elif decided_verdict == "reject":
                             decision = Decision(Effect.DENY, rejection_text(decided))
-                    record_tool_call(tool=tc.name, decision=decision.effect.value)
+                    # A reading core tool runs under the frame's routine verdict
+                    # on a connection it does not belong to (none at all on a
+                    # Copilot chat): what applies to it is an ALLOW, so that is
+                    # what the audit records, with its result (spec §5.7).
+                    # `decision` itself stays as the PEP gave it.
+                    ran_despite_denial = runs_under_routine_denial(decision, tc.name)
+                    audited = Decision(Effect.ALLOW) if ran_despite_denial else decision
+                    record_tool_call(tool=tc.name, decision=audited.effect.value)
                     with get_tracer().start_as_current_span("tool.call") as tool_span:
                         tool_span.set_attribute("tool", tc.name)
-                        tool_span.set_attribute("decision", decision.effect.value)
+                        tool_span.set_attribute("decision", audited.effect.value)
                         await append_event(
                             db,
                             tenant_id=tenant_id,
@@ -2660,8 +2668,8 @@ async def run_agent(
                                 if edition.claims(tc.name)
                                 else {"tool": tc.name, "arguments": tc.arguments, **audit_link}
                             ),
-                            decision=decision.effect.value,
-                            reason=decision.reason or None,
+                            decision=audited.effect.value,
+                            reason=audited.reason or None,
                             originating_operator=originating_operator,
                         )
                         pre_hook = await dispatch_claude_event(
@@ -3634,7 +3642,9 @@ async def run_agent(
                                 tool_error.message if tool_error is not None else None
                             )
                         tool_trace.append(_tool_call_entry)
-                        if _tool_call_dispatched and decision.effect is Effect.ALLOW:
+                        if _tool_call_dispatched and (
+                            decision.effect is Effect.ALLOW or ran_despite_denial
+                        ):
                             # With the trace entry, so call and result commit
                             # together. Sequential even for a parallel read
                             # batch, so the chain keeps the calls' order.

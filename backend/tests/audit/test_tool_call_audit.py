@@ -454,3 +454,129 @@ async def test_a_gateway_replay_audits_the_replayed_outcome(
     results = await _tool_events(app_session, tenant, "tool.result:create_record")
     assert [r.resource["outcome"] for r in results] == ["ok", "ok", "error"]
     assert "SECRET-ROW-42" not in json.dumps([r.resource for r in results])
+
+
+async def _core_call_run(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    assistant: bool,
+    with_connection: bool,
+    chat_mode: str | None = None,
+) -> tuple[uuid.UUID, uuid.UUID, Any]:
+    """A chat run that calls the core tool todo_write -- through the Copilot
+    (tenant Assistant) with no connection bound, like a live Copilot chat, or
+    through an agent whose bound connection's frame refuses the call's right."""
+    tenant = uuid.uuid4()
+    recorder = _RecordingServer(delay_s=0.0)
+    monkeypatch.setattr(
+        "oc8.agent.mcp_client.McpSession",
+        _session_factory(recorder, ["read_a"]),
+    )
+    script = [
+        _turn(
+            "",
+            ToolCall(
+                id="c1",
+                name="todo_write",
+                arguments={"todos": [{"content": "check", "status": "completed"}]},
+            ),
+        ),
+        _turn("Done."),
+    ]
+    monkeypatch.setattr("oc8.agent.engine.stream_completion_with_fallback", _ScriptedStream(script))
+    async with app_session(tenant) as db:
+        agent, conn = await _fixture(db, tenant, tool_scopes={"read": ["read_a"]})
+        agent.is_tenant_assistant = assistant
+        if with_connection:
+            # todo_write is in none of the connection's scopes, so the frame
+            # judges it as a modify -- which this frame does not grant.
+            dept = await db.get(m.Department, agent.department_id)
+            assert dept is not None
+            dept.frame = {"tools": {"things": {"enabled": True, "read": True, "modify": False}}}
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=uuid.uuid4())
+        db.add(session)
+        await db.flush()
+        context: dict[str, Any] = {"task": "go", "chat_session_id": str(session.id)}
+        if chat_mode is not None:
+            context["chat_mode"] = chat_mode
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, state="running", source="chat", context=context
+        )
+        db.add(run)
+        await db.flush()
+        result = await run_agent(
+            db,
+            agent=agent,
+            task_text="go",
+            tenant_id=tenant,
+            mcp_conn=conn if with_connection else None,
+            run_id=run.id,
+        )
+    return tenant, run.id, result
+
+
+@pytest.mark.parametrize(
+    ("assistant", "with_connection"), [(True, False), (False, False), (False, True)]
+)
+async def test_a_core_tool_that_ran_is_audited_as_allowed_with_its_result(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    assistant: bool,
+    with_connection: bool,
+) -> None:
+    """A reading core tool with no rule of its own runs under the frame's
+    routine verdict on the run's bound connection (or on none at all). The
+    audit records what applied -- it ran -- not that unrelated verdict (live
+    2026-11-25: a Copilot chat's search_knowledge was audited as denied with
+    "no tool connection bound to this run", and had no result event)."""
+    tenant, run_id, result = await _core_call_run(
+        app_session, monkeypatch, assistant=assistant, with_connection=with_connection
+    )
+    assert result.status == "done"
+    assert result.todos == [{"content": "check", "status": "completed"}]
+    (call,) = await _tool_events(app_session, tenant, "tool.call:todo_write")
+    assert call.decision == "allow"
+    assert call.reason is None
+    (event,) = await _tool_events(app_session, tenant, "tool.result:todo_write")
+    assert event.decision == "allow"
+    assert event.resource["run_id"] == str(run_id)
+    assert event.resource["outcome"] == "ok"
+    assert "connection" not in event.resource
+
+
+async def test_a_core_tool_a_mode_withholds_stays_denied_and_does_not_run(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real refusal of a core tool is still audited as one, and stops it."""
+    tenant, _run_id, result = await _core_call_run(
+        app_session, monkeypatch, assistant=True, with_connection=False, chat_mode="ask"
+    )
+    assert result.status == "done"
+    assert result.todos == []
+    (call,) = await _tool_events(app_session, tenant, "tool.call:todo_write")
+    assert call.decision == "deny"
+    assert await _tool_events(app_session, tenant, "tool.result:") == []
+
+
+async def test_the_isolated_runtime_audits_a_core_tool_that_ran_as_allowed(
+    app_session: AppSessionFactory,
+) -> None:
+    """The isolated control plane records the same thing as the engine: a
+    reading core tool that ran under the frame's routine verdict on the bound
+    connection is an ALLOW with one result."""
+    from tests.api.test_internal_agent import _mcp_backed_run, _post_tool
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        # No modify on `odoo`: the frame judges todo_write (in no scope) a modify.
+        agent_id, run_id = await _mcp_backed_run(db, tenant, modify=False)
+    todos = [{"content": "check", "status": "completed"}]
+    code, body = await _post_tool(tenant, agent_id, run_id, "todo_write", {"todos": todos})
+    assert code == 200, body
+    assert not str(body.get("output", "")).startswith("ERROR"), body
+    (call,) = await _tool_events(app_session, tenant, "tool.call:todo_write")
+    assert call.decision == "allow"
+    (result,) = await _tool_events(app_session, tenant, "tool.result:todo_write")
+    assert result.resource["outcome"] == "ok"
+    assert "connection" not in result.resource

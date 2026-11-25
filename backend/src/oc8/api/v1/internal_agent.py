@@ -41,6 +41,7 @@ from oc8.agent.control_tools import (
     has_readable_context,
     has_released_knowledge,
     offered_tools,
+    runs_under_routine_denial,
 )
 from oc8.agent.elicitation import ElicitationNeeded, arguments_with_answer
 from oc8.agent.engine import _max_steps
@@ -2529,6 +2530,11 @@ async def _dispatch_one_tool(
         elif gate_verdict.effect == "deny":
             decision = Decision(Effect.DENY, gate_verdict.reason)
 
+    # A reading core tool runs under the frame's routine verdict on a
+    # connection it does not belong to: audited as the ALLOW that applied,
+    # with its result, like the in-process engine (spec §5.7).
+    ran_despite_denial = runs_under_routine_denial(decision, tc.name)
+    audited = Decision(Effect.ALLOW) if ran_despite_denial else decision
     await append_event(
         db,
         tenant_id=run.tenant_id,
@@ -2543,8 +2549,8 @@ async def _dispatch_one_tool(
             if edition.claims(tc.name)
             else {"tool": tc.name, "arguments": tc.arguments, **run_link(run.id, run.context)}
         ),
-        decision=decision.effect.value,
-        reason=decision.reason or None,
+        decision=audited.effect.value,
+        reason=audited.reason or None,
         originating_operator=run.context.get("originating_operator"),
     )
 
@@ -3215,7 +3221,7 @@ async def _dispatch_one_tool(
         live_call["reason"] = denial_record_reason or (
             tool_error.message if tool_error is not None else None
         )
-    if dispatched and suspend is None and decision.effect is Effect.ALLOW:
+    if dispatched and suspend is None and (decision.effect is Effect.ALLOW or ran_despite_denial):
         # With the timeline entry and before the one commit below, so the call
         # and its result commit together. A suspended call (asked a question,
         # parked) has no result yet.
