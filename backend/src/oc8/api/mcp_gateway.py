@@ -18,6 +18,7 @@ messages, and this server initiates none.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -78,6 +79,7 @@ from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
+from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
     Decision,
     Effect,
@@ -725,6 +727,33 @@ def _authorize_unbound(
     )
 
 
+async def _audit_result(
+    db: DbSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    conn: m.McpConnection,
+    tool: str,
+    ok: bool,
+    started: float | None = None,
+    duration_ms: int = 0,
+) -> None:
+    """The `tool.result` event of a call this gateway dispatched (spec §5.7)."""
+    if started is not None:
+        duration_ms = int((time.monotonic() - started) * 1000)
+    await audit_tool_result(
+        db,
+        tenant_id=run.tenant_id,
+        agent_id=agent.id,
+        tool=tool,
+        link=run_link(run.id, run.context),
+        connection=conn.name,
+        ok=ok,
+        duration_ms=duration_ms,
+        originating_operator=run.context.get("originating_operator"),
+    )
+
+
 async def _call_tool(
     db: DbSession,
     *,
@@ -1092,7 +1121,7 @@ async def _call_tool(
         actor_id=agent.id,
         category="tool_action",
         action=f"tool.call:{tc.name}",
-        resource={"tool": tc.name, "arguments": tc.arguments},
+        resource={"tool": tc.name, "arguments": tc.arguments, **run_link(run.id, run.context)},
         decision=decision.effect.value,
         reason=decision.reason or None,
         originating_operator=run.context.get("originating_operator"),
@@ -1267,6 +1296,7 @@ async def _call_tool(
                 arguments=tc.arguments,
                 output=replay,
             )
+            await _audit_result(db, run=run, agent=agent, conn=conn, tool=tc.name, ok=True)
             await db.commit()
             return _tool_result(replay)
 
@@ -1286,6 +1316,7 @@ async def _call_tool(
 
     focus = describe_focus(tc.name, tc.arguments, focus_spec)
     names_record = describes_a_record(tc.name, tc.arguments, focus_spec)
+    started = time.monotonic()
     try:
         # Resolved inside the guard: minting an OAuth-backed token is now part
         # of this, and a failure there belongs to the model as a tool error --
@@ -1296,8 +1327,14 @@ async def _call_tool(
     except ConnectionRequired as exc:
         # Already recorded on the run for the "connect" call to action; the
         # model gets the reason verbatim (it starts `connection_required:`).
+        await _audit_result(
+            db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
+        )
         return _tool_result(str(exc), is_error=True)
     except Exception as exc:  # surface to the model, not as a broken server
+        await _audit_result(
+            db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
+        )
         return _tool_result(f"ERROR: {exc}", is_error=True)
     link_ctx = link_context(conn, env)
     record_url = (
@@ -1337,7 +1374,12 @@ async def _call_tool(
             reusable=launch.reusable,
         )
     except Exception as exc:  # surface to the model, not as a broken server
+        await _audit_result(
+            db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
+        )
         return _tool_result(f"ERROR: {exc}", is_error=True)
+    duration_ms = int((time.monotonic() - started) * 1000)
+    answered_ok = not output.startswith("ERROR:")
 
     # Now that the call has answered, the record's own name is available -- it is
     # in the RESULT, never in the arguments -- so the card can say WHICH ticket
@@ -1390,6 +1432,9 @@ async def _call_tool(
             arguments=tc.arguments,
             urls=issued,
         )
+    await _audit_result(
+        db, run=run, agent=agent, conn=conn, tool=tc.name, ok=answered_ok, duration_ms=duration_ms
+    )
     await db.commit()
     # Fenced, so what a stranger wrote cannot pass itself off as an instruction
     # from oc8. Only the connection's answer -- never this gateway's own

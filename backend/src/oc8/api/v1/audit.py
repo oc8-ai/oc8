@@ -15,6 +15,7 @@ import csv
 import datetime as dt
 import io
 import json
+import uuid
 from collections.abc import AsyncIterator
 from typing import Annotated, Literal
 
@@ -81,6 +82,8 @@ def _filtered(
     responsible_type: str | None,
     from_ts: dt.datetime | None,
     to_ts: dt.datetime | None,
+    run_id: uuid.UUID | None = None,
+    chat_session_id: uuid.UUID | None = None,
 ) -> Select[tuple[m.AuditEvent]]:
     if category:
         stmt = stmt.where(m.AuditEvent.category == category)
@@ -96,6 +99,12 @@ def _filtered(
         stmt = stmt.where(m.AuditEvent.ts >= from_ts)
     if to_ts:
         stmt = stmt.where(m.AuditEvent.ts <= to_ts)
+    # Every event of a run or chat, tool calls included (spec §5.7): they name
+    # it in `resource` (migration 0138 indexes the tool events' keys).
+    if run_id is not None:
+        stmt = stmt.where(m.AuditEvent.resource["run_id"].astext == str(run_id))
+    if chat_session_id is not None:
+        stmt = stmt.where(m.AuditEvent.resource["chat_session_id"].astext == str(chat_session_id))
     return stmt
 
 
@@ -109,6 +118,8 @@ async def list_audit_events(
     responsible_type: str | None = None,
     from_: Annotated[str | None, Query(alias="from")] = None,
     to: Annotated[str | None, Query(alias="to")] = None,
+    run_id: uuid.UUID | None = None,
+    chat_session_id: uuid.UUID | None = None,
     before_seq: int | None = None,
     limit: int = 50,
 ) -> AuditPageDTO:
@@ -124,6 +135,8 @@ async def list_audit_events(
         responsible_type=responsible_type,
         from_ts=from_ts,
         to_ts=to_ts,
+        run_id=run_id,
+        chat_session_id=chat_session_id,
     )
     if before_seq is not None:
         stmt = stmt.where(m.AuditEvent.seq < before_seq)
@@ -182,6 +195,8 @@ async def export_audit_events(
     responsible_type: str | None = None,
     from_: Annotated[str | None, Query(alias="from")] = None,
     to: Annotated[str | None, Query(alias="to")] = None,
+    run_id: uuid.UUID | None = None,
+    chat_session_id: uuid.UUID | None = None,
 ) -> StreamingResponse:
     from_ts = _parse_bound(from_, field="from", end_of_day=False)
     to_ts = _parse_bound(to, field="to", end_of_day=True)
@@ -194,6 +209,8 @@ async def export_audit_events(
         responsible_type=responsible_type,
         from_ts=from_ts,
         to_ts=to_ts,
+        run_id=run_id,
+        chat_session_id=chat_session_id,
     )
 
     # NOTE: this generator keeps using the request-scoped `db` (DbSession) after

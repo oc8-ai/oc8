@@ -227,3 +227,100 @@ async def test_explicit_to_timestamp_is_still_respected_exactly(
             )
     assert r.status_code == 200
     assert [e["seq"] for e in r.json()["events"]] == []
+
+
+# ------------------------------------------------------- run and chat filters
+
+
+async def _seed_tool_events(
+    app_session: AppSessionFactory, tenant: uuid.UUID
+) -> tuple[str, str, str]:
+    """Two runs of one chat and one trigger run, each with a call and a result,
+    plus an unrelated event. Returns (chat run, other chat run, chat session)."""
+    chat_run, other_run, trigger_run = (str(uuid.uuid4()) for _ in range(3))
+    chat = str(uuid.uuid4())
+    async with app_session(tenant) as s:
+        for run_id, session in ((chat_run, chat), (other_run, chat), (trigger_run, None)):
+            link = {"run_id": run_id, **({"chat_session_id": session} if session else {})}
+            for action in ("tool.call:search", "tool.result:search"):
+                await append_event(
+                    s,
+                    tenant_id=tenant,
+                    actor_type="agent",
+                    actor_id=None,
+                    category="tool_action",
+                    action=action,
+                    resource={"tool": "search", **link},
+                    decision="allow",
+                )
+        await append_event(
+            s, tenant_id=tenant, actor_type="system", actor_id=None, category="tool", action="x"
+        )
+    return chat_run, other_run, chat
+
+
+async def test_filter_by_run_and_chat(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    chat_run, other_run, chat = await _seed_tool_events(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with await _client(app) as c:
+            h = {"Authorization": f"Bearer {_token(tenant)}"}
+            by_run = (await c.get(f"/api/v1/audit?run_id={chat_run}", headers=h)).json()
+            by_chat = (await c.get(f"/api/v1/audit?chat_session_id={chat}", headers=h)).json()
+            both = (
+                await c.get(f"/api/v1/audit?run_id={other_run}&chat_session_id={chat}", headers=h)
+            ).json()
+            none = (await c.get(f"/api/v1/audit?run_id={uuid.uuid4()}", headers=h)).json()
+    assert {e["action"] for e in by_run["events"]} == {"tool.call:search", "tool.result:search"}
+    assert {e["resource"]["run_id"] for e in by_run["events"]} == {chat_run}
+    assert len(by_chat["events"]) == 4
+    assert {e["resource"]["run_id"] for e in by_chat["events"]} == {chat_run, other_run}
+    assert {e["resource"]["run_id"] for e in both["events"]} == {other_run}
+    assert none["events"] == []
+
+
+async def test_export_honours_the_run_filter(app_session: AppSessionFactory) -> None:
+    import json as _json
+
+    tenant = uuid.uuid4()
+    chat_run, _other, chat = await _seed_tool_events(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with await _client(app) as c:
+            h = {"Authorization": f"Bearer {_token(tenant)}"}
+            jsonl = await c.get(f"/api/v1/audit/export?format=jsonl&run_id={chat_run}", headers=h)
+            csv_ = await c.get(f"/api/v1/audit/export?format=csv&chat_session_id={chat}", headers=h)
+    assert jsonl.status_code == 200
+    rows = [_json.loads(ln) for ln in jsonl.text.splitlines() if ln.strip()]
+    assert len(rows) == 2
+    assert {r["resource"]["run_id"] for r in rows} == {chat_run}
+    assert csv_.status_code == 200
+    assert len(csv_.text.strip().splitlines()) == 1 + 4
+
+
+async def test_filter_requires_audit_view(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    chat_run, _other, _chat = await _seed_tool_events(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with await _client(app) as c:
+            h = {"Authorization": f"Bearer {_token(tenant, role='member')}"}
+            listed = await c.get(f"/api/v1/audit?run_id={chat_run}", headers=h)
+            exported = await c.get(f"/api/v1/audit/export?run_id={chat_run}", headers=h)
+    assert listed.status_code == 403
+    assert exported.status_code == 403
+
+
+async def test_malformed_run_id_is_422(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    app = create_app()
+    async with LifespanManager(app):
+        async with await _client(app) as c:
+            h = {"Authorization": f"Bearer {_token(tenant)}"}
+            run = await c.get("/api/v1/audit?run_id=not-a-uuid", headers=h)
+            chat = await c.get("/api/v1/audit?chat_session_id=1' OR '1'='1", headers=h)
+            export = await c.get("/api/v1/audit/export?run_id=nope", headers=h)
+    assert run.status_code == 422
+    assert chat.status_code == 422
+    assert export.status_code == 422

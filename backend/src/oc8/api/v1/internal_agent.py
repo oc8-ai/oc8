@@ -108,6 +108,7 @@ from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import raise_approval
 from oc8.audit import append_event
+from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
     Decision,
     Effect,
@@ -536,7 +537,11 @@ async def _answer_withheld_local_calls(
             actor_id=agent.id,
             category="tool_action",
             action=f"tool.call:{call.name}",
-            resource={"tool": call.name, "arguments": call.arguments},
+            resource={
+                "tool": call.name,
+                "arguments": call.arguments,
+                **run_link(run.id, run.context),
+            },
             decision="deny",
             reason=reason,
         )
@@ -1030,7 +1035,7 @@ async def _finish_elicitation(
             actor_id=agent.id,
             category="tool_action",
             action=f"tool.call:{tool}",
-            resource={"tool": tool, "arguments": arguments},
+            resource={"tool": tool, "arguments": arguments, **run_link(run.id, run.context)},
             decision={"run": "allow", "refuse": "deny", "park": "require_approval"}[effect],
             reason=why or None,
             originating_operator=ctx.get("originating_operator"),
@@ -1049,11 +1054,15 @@ async def _finish_elicitation(
         return "waiting_for_approval", why
     refusal = why if effect == "refuse" else None
     dispatched = False
+    #: Allowed and answered (run or replayed): the call has a result to audit.
+    ran = False
+    held_started_at = dt.datetime.now(dt.UTC)
     if conn is None or not tool:
         output = "ERROR: the connection that asked for this answer is no longer available"
     elif refusal is not None:
         output = f"ERROR: {refusal}"
     else:
+        ran = True
         # The same replay-safety as /tools (B9), keyed on the merged call: an
         # identical later call -- which the run-long approval would also let
         # through -- gets this result back instead of acting twice, and so
@@ -1184,6 +1193,19 @@ async def _finish_elicitation(
             "state": call_state_for(output, dispatched=dispatched),
         },
     ]
+    if ran:
+        # With the timeline entry, in this /step's transaction.
+        await audit_tool_result(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tool,
+            link=run_link(run.id, run.context),
+            connection=connection_name or None,
+            ok=not output.startswith("ERROR:"),
+            duration_ms=int((dt.datetime.now(dt.UTC) - held_started_at).total_seconds() * 1000),
+            originating_operator=ctx.get("originating_operator"),
+        )
     ctx["transcript"] = transcript
     run.context = ctx
     return None
@@ -2513,9 +2535,9 @@ async def _dispatch_one_tool(
         # An edition call keeps its arguments out of the audit; its own
         # `edition_tool.called` event is the record of it.
         resource=(
-            {"tool": tc.name}
+            {"tool": tc.name, **run_link(run.id, run.context)}
             if edition.claims(tc.name)
-            else {"tool": tc.name, "arguments": tc.arguments}
+            else {"tool": tc.name, "arguments": tc.arguments, **run_link(run.id, run.context)}
         ),
         decision=decision.effect.value,
         reason=decision.reason or None,
@@ -3188,6 +3210,21 @@ async def _dispatch_one_tool(
     else:
         live_call["reason"] = denial_record_reason or (
             tool_error.message if tool_error is not None else None
+        )
+    if dispatched and suspend is None and decision.effect is Effect.ALLOW:
+        # With the timeline entry and before the one commit below, so the call
+        # and its result commit together. A suspended call (asked a question,
+        # parked) has no result yet.
+        await audit_tool_result(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tc.name,
+            link=run_link(run.id, run.context),
+            connection=None if control is not None or conn is None else conn.name,
+            ok=succeeded,
+            duration_ms=duration_ms,
+            originating_operator=run.context.get("originating_operator"),
         )
     await append_tool_call(db, run, live_call)
     await db.commit()

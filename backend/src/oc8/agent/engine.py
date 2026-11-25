@@ -115,6 +115,7 @@ from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.approvals import DERIVE, raise_approval
 from oc8.audit import append_event
+from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
     NOT_THIS_CONNECTION,
     Decision,
@@ -581,6 +582,8 @@ async def run_agent(
         # The slash command this turn was sent with, if any (chat/service.py
         # writes it into the run's context; oc8.chat.modes reads it back).
         chat_mode = mode_from_context(run_row.context if run_row is not None else None)
+        # The run (and chat) every tool event of this run names (spec §5.7).
+        audit_link = run_link(run_id, run_row.context if run_row is not None else None)
         # Every behavioural field below (model, narrowing, definition, mission,
         # team-lead flag) comes from the run's pinned version, never the live
         # row -- the same answer the isolated control plane and the MCP gateway
@@ -1440,7 +1443,7 @@ async def run_agent(
                             actor_id=agent.id,
                             category="tool_action",
                             action=f"tool.call:{tool_name}",
-                            resource={"tool": tool_name, "arguments": arguments},
+                            resource={"tool": tool_name, "arguments": arguments, **audit_link},
                             decision={
                                 "run": "allow",
                                 "refuse": "deny",
@@ -1549,6 +1552,7 @@ async def run_agent(
                             if effect == "run"
                             else None
                         )
+                        held_started_at = dt.datetime.now(dt.UTC)
                         if effect == "refuse":
                             finished = f"ERROR: {why}"
                         elif replayed is not None:
@@ -1657,6 +1661,22 @@ async def run_agent(
                                 ),
                             }
                         )
+                        if effect != "refuse":
+                            # With the trace entry, so call and result commit together.
+                            await audit_tool_result(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tool_name,
+                                link=audit_link,
+                                connection=held_route[0],
+                                ok=not str(finished).startswith("ERROR:"),
+                                duration_ms=int(
+                                    (dt.datetime.now(dt.UTC) - held_started_at).total_seconds()
+                                    * 1000
+                                ),
+                                originating_operator=originating_operator,
+                            )
                         if held_direct and direct_run is not None:
                             # Run log: whom the Copilot acted for (§8).
                             tool_trace[-1]["actingMember"] = str(direct_run.member_id)
@@ -2609,9 +2629,9 @@ async def run_agent(
                             # An edition call keeps its arguments out of the audit; its own
                             # `edition_tool.called` event is the record of it.
                             resource=(
-                                {"tool": tc.name}
+                                {"tool": tc.name, **audit_link}
                                 if edition.claims(tc.name)
-                                else {"tool": tc.name, "arguments": tc.arguments}
+                                else {"tool": tc.name, "arguments": tc.arguments, **audit_link}
                             ),
                             decision=decision.effect.value,
                             reason=decision.reason or None,
@@ -3585,6 +3605,21 @@ async def run_agent(
                                 tool_error.message if tool_error is not None else None
                             )
                         tool_trace.append(_tool_call_entry)
+                        if _tool_call_dispatched and decision.effect is Effect.ALLOW:
+                            # With the trace entry, so call and result commit
+                            # together. Sequential even for a parallel read
+                            # batch, so the chain keeps the calls' order.
+                            await audit_tool_result(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tc.name,
+                                link=audit_link,
+                                connection=None if control is not None else call_key,
+                                ok=succeeded,
+                                duration_ms=int(_tool_call_entry["durationMs"]),
+                                originating_operator=originating_operator,
+                            )
                         await _live_tool_call(tool_trace[-1])
                         messages.append(
                             NeutralMessage(
