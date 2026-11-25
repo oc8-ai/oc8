@@ -61,6 +61,7 @@ class _SpyBus:
     def __init__(self) -> None:
         self.raw: list[str] = []
         self.tenant_wide: list[str] = []
+        self.gone: list[uuid.UUID] = []
 
     async def publish_event(
         self, tenant_id: uuid.UUID, type_: str, data: dict[str, Any], *, source: str
@@ -82,6 +83,9 @@ class _SpyBus:
         self.raw.append(
             json.dumps(build_envelope(tenant_id, type_, data, source, audience=member_ids))
         )
+
+    async def publish_member_gone(self, tenant_id: uuid.UUID, member_id: uuid.UUID) -> None:
+        self.gone.append(member_id)
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,7 @@ def _received(bus: _SpyBus, member_id: uuid.UUID) -> list[dict[str, Any]]:
 def spy_bus(monkeypatch: pytest.MonkeyPatch) -> _SpyBus:
     bus = _SpyBus()
     monkeypatch.setattr(emit, "get_event_bus", lambda: bus)
+    monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: bus)
     return bus
 
 
@@ -372,3 +377,94 @@ async def test_approval_push_goes_only_to_the_audience(
             "url": "/workspace",
         }
     ]
+
+
+async def _offboard(app_session: AppSessionFactory, w: _World) -> None:
+    async with app_session(w.tenant) as db:
+        owner = await db.get(m.OrgMember, w.owner)
+        assert owner is not None
+        owner.deleted_at = dt.datetime.now(dt.UTC)
+        await offboard_member(db, tenant_id=w.tenant, member_id=w.owner)
+    await asyncio.sleep(0)  # the after-commit hook runs as a task
+    await asyncio.sleep(0)
+
+
+async def test_owner_answers_expire_and_standard_ones_do_not(
+    app_session: AppSessionFactory, spy_bus: _SpyBus, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling T2-I1: `forget_owner` reaches only the offboarding's process, so
+    every other one re-reads an owner within `OWNER_TTL_SECONDS`. A standard
+    agent never changes and is not re-read; an unknown agent briefly cached."""
+    w = await _world(app_session)
+    now = [1000.0]
+    monkeypatch.setattr(audience_mod, "_clock", lambda: now[0])
+    lookups: list[uuid.UUID] = []
+    real = audience_mod._lookup
+
+    async def _counting(db: Any, agent_id: uuid.UUID) -> Any:
+        lookups.append(agent_id)
+        return await real(db, agent_id)
+
+    monkeypatch.setattr(audience_mod, "_lookup", _counting)
+    ghost = uuid.uuid4()
+    run_id = uuid.uuid4()
+
+    async def _tick() -> None:
+        for agent_id in (w.pia, w.nora, ghost):
+            await emit.publish_run_token_delta(w.tenant, run_id=run_id, agent_id=agent_id, text="x")
+
+    await _tick()
+    assert lookups == [w.pia, w.nora, ghost]
+    now[0] += audience_mod.UNKNOWN_TTL_SECONDS + 0.1
+    await _tick()
+    assert lookups[3:] == [ghost]
+    now[0] += audience_mod.OWNER_TTL_SECONDS
+    lookups.clear()
+    await _tick()
+    assert lookups == [w.pia, ghost]
+    assert audience_mod.OWNER_TTL_SECONDS == 60.0
+
+
+async def test_another_process_stops_reaching_a_departed_owner_within_the_ttl(
+    app_session: AppSessionFactory, spy_bus: _SpyBus, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A process that never ran `forget_owner` (a worker) still holds the
+    owner; once the TTL passes it finds the department ownerless."""
+    w = await _world(app_session)
+    now = [1000.0]
+    monkeypatch.setattr(audience_mod, "_clock", lambda: now[0])
+    run_id = uuid.uuid4()
+    await emit.publish_run_token_delta(w.tenant, run_id=run_id, agent_id=w.pia, text="a")
+    # The offboarding commits in ANOTHER process: no forget_owner here.
+    monkeypatch.setattr(audience_mod, "forget_owner", lambda member_id: None)
+    await _offboard(app_session, w)
+    now[0] += audience_mod.OWNER_TTL_SECONDS + 0.1
+    spy_bus.raw.clear()
+    await emit.publish_run_token_delta(w.tenant, run_id=run_id, agent_id=w.pia, text="b")
+    assert spy_bus.raw == []
+
+
+async def test_a_lookup_straddling_forget_owner_caches_nothing_stale(
+    app_session: AppSessionFactory, spy_bus: _SpyBus, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling T2-I1: a lookup that read the owner, then saw the offboarding
+    commit and `forget_owner` run before it could cache, must not cache the
+    owner it read."""
+    w = await _world(app_session)
+    real = audience_mod._lookup
+    calls: list[Any] = []
+
+    async def _straddling(db: Any, agent_id: uuid.UUID) -> Any:
+        answer = await real(db, agent_id)
+        calls.append(answer)
+        if len(calls) == 1:
+            assert answer.owner_member_id == w.owner
+            await _offboard(app_session, w)  # commits, runs forget_owner
+        return answer
+
+    monkeypatch.setattr(audience_mod, "_lookup", _straddling)
+    await emit.publish_run_token_delta(w.tenant, run_id=uuid.uuid4(), agent_id=w.pia, text="x")
+    held = audience_mod.cached(w.pia)
+    assert held is not None
+    assert held.personal and held.owner_member_id is None
+    assert spy_bus.raw == []

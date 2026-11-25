@@ -11,14 +11,18 @@ stay tenant-wide: metadata (R2).
 The owner is resolved once per agent and kept in a process-local LRU keyed by
 `agent_id`: a personal agent cannot move departments and a department's kind
 and owner are set at creation, so the answer is stable for the agent's
-lifetime -- except that the owner can leave, and `forget_owner` (called once
-an offboarding commits) drops what was cached for them.
+lifetime -- except that the owner can leave. `forget_owner` (called once an
+offboarding commits) drops what this process cached for them; every other
+process re-reads an owner within `OWNER_TTL_SECONDS`, and the departed
+member's sockets are closed everywhere (`EventBus.publish_member_gone`).
 """
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from sqlalchemy import select
@@ -41,11 +45,42 @@ class PersonalAudience:
 
 
 STANDARD = PersonalAudience(personal=False)
-#: An agent the lookup could not see. Never cached, and treated like a personal
-#: agent without an owner: content goes to nobody rather than to everybody.
+#: An agent the lookup could not see: treated like a personal agent without an
+#: owner, so content goes to nobody rather than to everybody.
 UNKNOWN = PersonalAudience(personal=True)
 
-_cache: OrderedDict[uuid.UUID, PersonalAudience] = OrderedDict()
+#: How long an answer naming an owner is trusted. The owner can leave, and
+#: `forget_owner` only reaches the process that committed the offboarding: every
+#: other process (workers, runtimes, other replicas) re-reads within this window.
+OWNER_TTL_SECONDS = 60.0
+#: How long "the agent cannot be seen" is trusted, so a misconfigured caller does
+#: not cost one database round-trip per streamed token.
+UNKNOWN_TTL_SECONDS = 5.0
+
+#: The cache's clock; tests replace it.
+_clock: Callable[[], float] = time.monotonic
+
+#: Bumped by `forget_owner`. A lookup that started under an older generation may
+#: have read an owner who has since left, so its answer is never cached.
+_generation = 0
+
+
+@dataclass(frozen=True)
+class _Entry:
+    answer: PersonalAudience
+    #: On `_clock`; None never expires (a standard agent, a departed owner).
+    expires_at: float | None
+
+
+_cache: OrderedDict[uuid.UUID, _Entry] = OrderedDict()
+
+
+def _expiry(answer: PersonalAudience) -> float | None:
+    if answer is UNKNOWN:
+        return _clock() + UNKNOWN_TTL_SECONDS
+    if answer.owner_member_id is not None:
+        return _clock() + OWNER_TTL_SECONDS
+    return None
 
 
 async def _lookup(db: AsyncSession, agent_id: uuid.UUID) -> PersonalAudience | None:
@@ -70,33 +105,48 @@ async def _lookup(db: AsyncSession, agent_id: uuid.UUID) -> PersonalAudience | N
 
 
 def cached(agent_id: uuid.UUID) -> PersonalAudience | None:
-    """The cached answer for `agent_id`, without touching the database."""
-    hit = _cache.get(agent_id)
-    if hit is not None:
-        _cache.move_to_end(agent_id)
-    return hit
+    """The cached answer for `agent_id`, without touching the database; None
+    when there is none or it has expired."""
+    entry = _cache.get(agent_id)
+    if entry is None:
+        return None
+    if entry.expires_at is not None and _clock() >= entry.expires_at:
+        _cache.pop(agent_id, None)
+        return None
+    _cache.move_to_end(agent_id)
+    return entry.answer
 
 
 async def personal_audience(db: AsyncSession, agent_id: uuid.UUID) -> PersonalAudience:
     """Whether `agent_id` is a personal agent, and whose sockets its content
     may reach. `db` must be bound to the agent's tenant (RLS): an unbound
-    session sees no agent and answers `UNKNOWN`, which publishes nothing."""
+    session sees no agent and answers `UNKNOWN`, which publishes nothing.
+
+    A lookup that straddles a `forget_owner` is read once more (the departure
+    has committed by then) and, if the generation moved again, answered
+    without being cached."""
     hit = cached(agent_id)
     if hit is not None:
         return hit
-    found = await _lookup(db, agent_id)
-    if found is None:
-        return UNKNOWN
-    _cache[agent_id] = found
-    if len(_cache) > _CACHE_MAXSIZE:
-        _cache.popitem(last=False)
-    return found
+    answer = UNKNOWN
+    for _ in range(2):
+        started = _generation
+        answer = await _lookup(db, agent_id) or UNKNOWN
+        if started == _generation:
+            _cache[agent_id] = _Entry(answer, _expiry(answer))
+            if len(_cache) > _CACHE_MAXSIZE:
+                _cache.popitem(last=False)
+            return answer
+    return answer
 
 
 def forget_owner(member_id: uuid.UUID) -> None:
     """Drop every cached answer naming `member_id` as owner: they have left,
-    and the next lookup finds their department without one."""
-    for agent_id in [a for a, hit in _cache.items() if hit.owner_member_id == member_id]:
+    and the next lookup finds their department without one. Bumps the
+    generation, so a lookup already in flight cannot cache them again."""
+    global _generation
+    _generation += 1
+    for agent_id in [a for a, e in _cache.items() if e.answer.owner_member_id == member_id]:
         _cache.pop(agent_id, None)
 
 
