@@ -359,6 +359,54 @@ async def test_a_rule_never_covers_a_card_whose_tier_is_not_write(
             await db.flush()
 
 
+async def test_a_connection_tool_whose_connection_is_unresolved_never_matches_a_core_rule(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A connection tool whose owner the engine could not resolve used to be
+    stored with connection_id NULL -- the key of a core tool -- so a rule for
+    a core tool of the same name answered it. Such a card names no
+    connection at all and can never become, or use, a rule; a core tool's
+    card says so explicitly (connection_id None)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        db.add(
+            m.ToolAllowRule(
+                tenant_id=tenant,
+                member_id=office.member_id,
+                agent_id=office.copilot_id,
+                connection_id=None,
+                tool_key="update_record",
+            )
+        )
+        await db.flush()
+        core_run = await _parked(db, office)
+        core_card = await _card(db, office, core_run, connection_id=None)
+        assert rule_eligible(core_card), "a core tool's card names its (absent) connection"
+        core_run.state = "done"
+        await db.flush()
+
+        run = await _parked(db, office)
+        card = await _card(db, office, run)
+        payload = dict(card.payload)
+        del payload["connection_id"]  # the engine could not resolve the owner
+        card.payload = payload
+        await db.flush()
+        assert not rule_eligible(card)
+        assert await auto_decide_by_rules(db, run=run) == []
+        assert (await _fresh(db, card)).status == "pending"
+
+
+async def test_the_engine_names_a_cards_connection_only_when_it_knows_it() -> None:
+    from oc8.agent.engine import _card_connection
+
+    conn = m.McpConnection(id=uuid.uuid4(), name="office")
+    assert _card_connection(None, core=True) == {"connection_id": None}
+    assert _card_connection(conn, core=True) == {"connection_id": None}
+    assert _card_connection(conn, core=False) == {"connection_id": str(conn.id)}
+    assert _card_connection(None, core=False) == {}
+
+
 async def test_a_rule_is_only_made_from_the_members_own_approved_write(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:

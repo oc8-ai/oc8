@@ -550,6 +550,17 @@ async def _open_tool_session_for(
     )
 
 
+def _card_connection(owner: m.McpConnection | None, *, core: bool) -> dict[str, str | None]:
+    """A held call's `connection_id` for its card: None for a core tool, the
+    connection's id for a connection tool, and nothing when that connection
+    is unresolved (approvals.allow_rules.rule_eligible refuses such a card)."""
+    if core:
+        return {"connection_id": None}
+    if owner is None:
+        return {}
+    return {"connection_id": str(owner.id)}
+
+
 async def run_agent(
     db: AsyncSession,
     *,
@@ -2899,20 +2910,22 @@ async def run_agent(
                                         # What "always allow" reads
                                         # (approvals.allow_rules): the call's
                                         # tier and the connection, by id --
-                                        # None for a core tool.
+                                        # None for a core tool, and no key
+                                        # at all for a connection tool whose
+                                        # connection is unresolved (never a
+                                        # rule: it would share a core tool's
+                                        # key).
                                         "risk_tier": _call_tier(
                                             auth_tc,
                                             scopes=call_scopes,
                                             config=call_config,
                                             advertised=tc.name,
                                         ),
-                                        "connection_id": (
-                                            None
-                                            if owner is None
-                                            or is_core_call(
+                                        **_card_connection(
+                                            owner,
+                                            core=is_core_call(
                                                 auth_tc.name, routed=auth_tc.name != tc.name
-                                            )
-                                            else str(owner.id)
+                                            ),
                                         ),
                                         **({"record_url": link} if link else {}),
                                         **(hold_terms[1] if hold_terms is not None else {}),

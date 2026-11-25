@@ -81,7 +81,11 @@ def _uuid_or_none(raw: object) -> uuid.UUID | None:
 def rule_eligible(approval: m.ApprovalRequest) -> bool:
     """May this card offer "always allow"? Only a person's own held write
     whose stored tier is `write`. A card without a tier (raised before the
-    engine stored one, or by another raiser) is never eligible."""
+    engine stored one, or by another raiser) is never eligible, nor is one
+    without `connection_id`: the engine stores None for a core tool and the
+    connection's id otherwise, and leaves it out for a connection tool whose
+    connection it could not resolve -- which must not share a core tool's
+    rule key."""
     payload = approval.payload or {}
     return (
         approval.action_type == "tool_send"
@@ -89,6 +93,7 @@ def rule_eligible(approval: m.ApprovalRequest) -> bool:
         and payload.get("risk_tier") == ALLOWED_TIER
         and isinstance(payload.get("tool"), str)
         and bool(payload.get("tool"))
+        and "connection_id" in payload
     )
 
 
