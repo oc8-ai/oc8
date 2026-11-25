@@ -34,10 +34,12 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
       { onError },
     );
 
-  // A trigger the owner's confirmation card holds (`needs_confirmation`) is
-  // confirmed there; a second, older way to do it here only confuses.
-  const askToSaveAgain =
-    trigger.needsConfirmation && isCreator && trigger.lastSkipReason !== "needs_confirmation";
+  // In a department with an owner only the owner's confirmation card
+  // confirms what changed (a save there confirms nothing it did not hold
+  // before), so the trigger points to the card instead.
+  const viaCard = !!trigger.ownerConfirms || trigger.lastSkipReason === "needs_confirmation";
+  const askToSaveAgain = trigger.needsConfirmation && isCreator && !viaCard;
+  const pointToCard = trigger.needsConfirmation && isCreator && !!trigger.ownerConfirms;
 
   let hint: string | null = null;
   if (offersActing && !owner) {
@@ -66,6 +68,17 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
             {t("Save the schedule again", "Zeitplan erneut speichern")}
           </button>
         </div>
+      )}
+      {pointToCard && (
+        <p
+          role="status"
+          className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground"
+        >
+          {t(
+            "The agent was changed. Please review and confirm the changes in your profile, under your personal assistants.",
+            "Der Agent wurde geändert. Bitte prüfe und bestätige die Änderungen in deinem Profil, bei deinen persönlichen Assistenten.",
+          )}
+        </p>
       )}
       {owner ? (
         <p>{t(`Created by ${ownerName}`, `Angelegt von ${ownerName}`)}</p>

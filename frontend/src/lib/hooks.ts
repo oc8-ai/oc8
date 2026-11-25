@@ -2762,6 +2762,10 @@ export interface TriggerDTO {
   //: trigger, so its runs no longer use their own accounts until they save
   //: it again.
   needsConfirmation: boolean;
+  //: Its agent is in a department with an owner: what changed is confirmed
+  //: on the owner's confirmation card (profile), never by saving the
+  //: trigger again.
+  ownerConfirms?: boolean;
   //: A polled event's trigger: the organisation login it listens on (the
   //: agent's fixed login for the event's tools) and its declared settings.
   eventTargetCredentialId?: string | null;

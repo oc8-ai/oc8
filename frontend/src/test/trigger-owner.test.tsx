@@ -137,6 +137,34 @@ describe("TriggerOwner", () => {
     expect(screen.getByText("Dieser Webhook hat keinen Besitzer.")).toBeInTheDocument();
   });
 
+  it("points the owner to the confirmation card instead of saving again", () => {
+    renderOwner({
+      kind: "cron",
+      cronExpression: "0 9 * * *",
+      webhookUrl: null,
+      needsConfirmation: true,
+      ownerConfirms: true,
+    });
+    expect(screen.queryByRole("button", { name: "Zeitplan erneut speichern" })).toBeNull();
+    expect(screen.queryByText(/speicher den Zeitplan erneut/)).toBeNull();
+    expect(
+      screen.getByText(
+        "Der Agent wurde geändert. Bitte prüfe und bestätige die Änderungen in deinem Profil, bei deinen persönlichen Assistenten.",
+      ),
+    ).toBeInTheDocument();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("shows no card pointer while a schedule in an owned department is confirmed", () => {
+    renderOwner({
+      kind: "cron",
+      cronExpression: "0 9 * * *",
+      webhookUrl: null,
+      ownerConfirms: true,
+    });
+    expect(screen.queryByText(/in deinem Profil/)).toBeNull();
+  });
+
   it("leaves the owner's confirmation card to ask when the trigger waits for it", () => {
     renderOwner({
       kind: "event",
