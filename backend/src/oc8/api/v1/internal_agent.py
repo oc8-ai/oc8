@@ -140,6 +140,7 @@ from oc8.modelrouter.sampling import (
     bumped_for_length_retry,
     refusal_message,
     resolve_params,
+    truncated_without_answer,
 )
 from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, TextPart, with_prompt_cache_key
@@ -1822,9 +1823,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             note_usage(step_rec, result.usage, max_tokens=resolved_params.max_tokens)
             retry_params = bumped_for_length_retry(resolved_params, provider=provider)
             if (
-                result.stop_reason == "length"
-                and not result.tool_calls
-                and not result.text.strip()
+                truncated_without_answer(result)
                 # Already at the provider's cap: a retry could only fail the
                 # same way again.
                 and retry_params.max_tokens > resolved_params.max_tokens
@@ -1877,9 +1876,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         )
         ctx["steps"] = int(ctx.get("steps", 0)) + 1
 
-        truncated_empty = (
-            result.stop_reason == "length" and not result.tool_calls and not result.text.strip()
-        )
+        truncated_empty = truncated_without_answer(result)
         # The model declined the request (HTTP 200, "refusal"): whatever it
         # wrote before that is not an answer -- see engine.py's identical check.
         refused = result.stop_reason == "refusal" and not result.tool_calls

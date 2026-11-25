@@ -99,6 +99,46 @@ async def test_a_tool_call_with_no_argument_fragments_defaults_to_an_empty_objec
     assert result.tool_calls[0].arguments == {}
 
 
+async def test_a_tool_call_cut_off_mid_json_is_dropped_and_flagged() -> None:
+    """`finish_reason: length` arrives with the arguments still open. Executing
+    this call would act on arguments the model never wrote (a missing subject,
+    a missing recipient), so the call is dropped and the result flagged -- the
+    runtimes' length retry (`sampling.truncated_without_answer`) asks again with
+    a doubled budget."""
+    result = await accumulate_stream(
+        _stream(
+            CompletionChunk(
+                tool_calls=[
+                    ToolCallDelta(index=0, id="c1", name="send_email", arguments_fragment='{"to"')
+                ]
+            ),
+            CompletionChunk(stop_reason="length"),
+        )
+    )
+    assert result.stop_reason == "length"
+    assert result.tool_calls == []
+    assert result.truncated_tool_calls is True
+
+
+async def test_a_complete_call_is_not_flagged_even_when_the_answer_was_cut_off() -> None:
+    """A call the model finished writing stays executable; the flag marks only
+    the calls the cut-off actually damaged."""
+    result = await accumulate_stream(
+        _stream(
+            CompletionChunk(text="Done. "),
+            CompletionChunk(
+                tool_calls=[ToolCallDelta(index=0, id="c1", name="a", arguments_fragment="{}")]
+            ),
+            CompletionChunk(
+                tool_calls=[ToolCallDelta(index=1, id="c2", name="b", arguments_fragment='{"x":')]
+            ),
+            CompletionChunk(stop_reason="length"),
+        )
+    )
+    assert [tc.name for tc in result.tool_calls] == ["a"]
+    assert result.truncated_tool_calls is True
+
+
 async def test_the_most_recently_reported_usage_wins() -> None:
     """Providers report usage as a cumulative total, not an increment -- summing
     chunk usages would double count."""
