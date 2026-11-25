@@ -128,14 +128,17 @@ async def live_department(
 
     `for_update` takes a row lock (`SELECT ... FOR UPDATE`) held until the
     transaction ends, so a check-then-write on the department -- the personal
-    agent cap -- serialises with a concurrent one."""
+    agent cap, a held frame write -- serialises with a concurrent one. The
+    locked row is read afresh, also into an instance already loaded."""
     stmt = select(Department).where(
         Department.id == department_id,
         Department.tenant_id == tenant_id,
         Department.deleted_at.is_(None),
     )
     if for_update:
-        stmt = stmt.with_for_update()
+        # Re-read the row as it is once locked: a department this session
+        # loaded earlier must not keep the values from before the lock.
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     return (await db.execute(stmt)).scalar_one_or_none()
 
 

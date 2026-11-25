@@ -32,7 +32,18 @@ import { ApiError } from "@/lib/api";
 import { PersonalAssistantsPanel } from "@/components/personal-assistants-panel";
 
 const DEPT = { id: "d1", name: "Ada's assistants", kind: "personal" };
-const TEMPLATES = [{ capaId: "c1", name: "helper", label: "Helper", summary: "Helps you" }];
+const TEMPLATES: unknown[] = [
+  {
+    capaId: "c1",
+    name: "helper",
+    label: "Helper",
+    summary: "Helps you",
+    hireToken: "tok1",
+    grants: { tools: [], skills: [] },
+    connectionsAny: [],
+    connectionsOptional: [],
+  },
+];
 
 let mine: { enabled: boolean; department: unknown };
 let agents: unknown[];
@@ -68,9 +79,80 @@ describe("PersonalAssistantsPanel", () => {
     expect(await screen.findByText("Helper")).toBeInTheDocument();
     fireEvent.click(await screen.findByRole("button", { name: /hire/i }));
     await waitFor(() =>
-      expect(postMock).toHaveBeenCalledWith("/personal-department/agents", { capaId: "c1" }),
+      expect(postMock).toHaveBeenCalledWith("/personal-department/agents", {
+        capaId: "c1",
+        hireToken: "tok1",
+      }),
     );
     await waitFor(() => expect(toastSuccessMock).toHaveBeenCalled());
+  });
+
+  it("refetches the templates when the one-click hire answers hire_changed", async () => {
+    postMock.mockRejectedValue(new ApiError("x", 409, { detail: { error: "hire_changed" } }));
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    renderPanel(qc);
+    fireEvent.click(await screen.findByRole("button", { name: /hire/i }));
+    await waitFor(() =>
+      expect(spy).toHaveBeenCalledWith({ queryKey: ["personal-department", "templates"] }),
+    );
+  });
+
+  it("opens the dialog for a template that grants tools even with no login", async () => {
+    TEMPLATES.push({
+      capaId: "c3",
+      name: "g",
+      label: "Granting helper",
+      summary: "",
+      hireToken: "tok3",
+      grants: { tools: ["calendar"], skills: [] },
+      connectionsAny: [],
+      connectionsOptional: [],
+    });
+    try {
+      renderPanel();
+      await screen.findByText("Granting helper");
+      fireEvent.click(screen.getAllByRole("button", { name: /hire/i })[1]);
+      expect(
+        await screen.findByLabelText(/let this assistant use my account/i),
+      ).toBeInTheDocument();
+      expect(postMock).not.toHaveBeenCalled();
+    } finally {
+      TEMPLATES.pop();
+    }
+  });
+
+  it("opens the hire dialog for a template that connects to a login", async () => {
+    TEMPLATES.push({
+      capaId: "c2",
+      name: "mail",
+      label: "Mail helper",
+      summary: "",
+      hireToken: "tok2",
+      grants: { tools: ["email"], skills: [] },
+      connectionsAny: [
+        {
+          integration: "email",
+          label: "Email",
+          kind: "credential",
+          provider: null,
+          credentialType: "mail_account",
+          available: true,
+        },
+      ],
+      connectionsOptional: [],
+    });
+    try {
+      renderPanel();
+      await screen.findByText("Mail helper");
+      fireEvent.click(screen.getAllByRole("button", { name: /hire/i })[1]);
+      expect(
+        await screen.findByLabelText(/let this assistant use my account/i),
+      ).toBeInTheDocument();
+      expect(postMock).not.toHaveBeenCalled();
+    } finally {
+      TEMPLATES.pop();
+    }
   });
 
   it("refreshes the admin's personal-department list after a hire", async () => {

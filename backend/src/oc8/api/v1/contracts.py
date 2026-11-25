@@ -192,6 +192,11 @@ async def set_contracts(
     dept = await db.get(m.Department, department_id)
     if dept is None or dept.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
+    if dept.owner_member_id is not None:
+        # The owner's confirmation covers the whole frame, and only its tools
+        # can be held for them (`departments.personal.apply_held_tools`): a
+        # department with an owner takes no contracts edit at all.
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "frame_owned_by_member"})
     frame = dict(dept.frame or {})
     frame["emits"] = list(dict.fromkeys(body.emits))  # dedupe, preserve order
     frame["intakes"] = [

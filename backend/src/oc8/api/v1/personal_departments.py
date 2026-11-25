@@ -17,11 +17,12 @@ only, and every department or agent they touch is loaded by
 from __future__ import annotations
 
 import datetime as dt
+import hmac
 import uuid
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import ConfigDict, Field, StringConstraints, ValidationError, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -45,8 +46,16 @@ from oc8.authz.permissions import (
     perm,
 )
 from oc8.authz.scope import scope_for_principal
+from oc8.capas.manifest import TemplateAgent
 from oc8.capas.service import PluginError, instantiate_agent, template_scope
 from oc8.departments.frames import FrameChangeRefused, deviation_counts, validate_frame_tools
+from oc8.departments.owner_confirmation import (
+    ConfirmationChanged,
+    NotTheOwner,
+    PendingConfirmation,
+    confirm_pending,
+    pending_confirmation,
+)
 from oc8.departments.personal import (
     BUDGET_KEY,
     ENABLED_KEY,
@@ -58,12 +67,21 @@ from oc8.departments.personal import (
     default_frame_agents,
     follow_default,
     get_or_create_personal_department,
+    lock_owned_frame,
     owned_personal_department,
     personal_defaults,
     personal_department_summaries,
     resync_budgets,
     resync_frames,
     update_personal_settings,
+)
+from oc8.departments.personal_hire import (
+    ChosenLogin,
+    HireBindingRefused,
+    TemplateConnection,
+    hire_offer,
+    resolve_hire_bindings,
+    template_connections,
 )
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import DepartmentDTO
@@ -85,22 +103,77 @@ class PersonalDepartmentMineDTO(CamelModel):
     department: DepartmentDTO | None
 
 
+class TemplateConnectionDTO(CamelModel):
+    """A capa a personal template connects to, and whether a hire may bind it
+    now (plan Ruling 10)."""
+
+    integration: str
+    label: str
+    #: "credential" or "oauth"; "" for a capa this organisation has not installed.
+    kind: str
+    provider: str | None
+    credential_type: str | None
+    available: bool
+
+
+class HireGrantsDTO(CamelModel):
+    """What a hire grants the agent, shown before the member confirms it."""
+
+    #: The frame tools the agent may use.
+    tools: list[str]
+    #: The skills it runs with.
+    skills: list[str]
+
+
 class PersonalTemplateDTO(CamelModel):
     capa_id: str
     name: str
     label: str
     summary: str
+    #: Pins this offer: the hire answers 409 `hire_changed` when the template
+    #: version, its setup, the frame tools or the skills changed since.
+    hire_token: str
+    grants: HireGrantsDTO
+    #: Left out for a template that connects to nothing.
+    #: The member chooses a login for one of these at hire.
+    connections_any: list[TemplateConnectionDTO] = []
+    #: The member may add a login for each of these.
+    connections_optional: list[TemplateConnectionDTO] = []
+
+
+class HireConnection(CamelModel):
+    """The member's own login for one capa the template names."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    integration: Annotated[str, StringConstraints(min_length=1, max_length=200)]
+    credential_id: uuid.UUID | None = None
+    oauth_connection_id: uuid.UUID | None = None
+
+    def chosen(self) -> ChosenLogin:
+        return ChosenLogin(self.integration, self.credential_id, self.oauth_connection_id)
 
 
 class HirePersonalRequest(CamelModel):
+    model_config = ConfigDict(extra="forbid")
+
     capa_id: uuid.UUID
+    #: The `hireToken` of the template as the list showed it (Ruling T8-I1).
+    hire_token: Annotated[str, StringConstraints(min_length=1, max_length=128)]
     #: Optional; trimmed, and an empty name falls back to the template's own.
-    #: The member names the agent and nothing else -- every other field comes
-    #: from the template.
+    #: The member names the agent and the logins it uses -- every other field
+    #: comes from the template.
     name: (
         Annotated[str, StringConstraints(strip_whitespace=True, max_length=_AGENT_NAME_MAX_LENGTH)]
         | None
     ) = None
+    #: The login for one of the template's `connections_any`.
+    connection: HireConnection | None = None
+    #: Logins for any of the template's `connections_optional`.
+    optional_connections: list[HireConnection] = Field(default_factory=list, max_length=20)
+    #: Binding a login of one's own shares it with the agent: required with
+    #: any login, as for `PUT /agents/{id}/tool-access/{key}`.
+    confirm_share: bool = False
 
 
 class HirePersonalResponse(CamelModel):
@@ -118,6 +191,41 @@ async def _caller_member(db: AsyncSession, principal: Principal) -> m.OrgMember:
     if member is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no member record for this caller")
     return member
+
+
+def _template_agent(manifest: dict[str, Any]) -> TemplateAgent | None:
+    """The stored template's agent, read as the manifest declares it; None
+    when it does not parse (a manifest stored before a stricter schema)."""
+    try:
+        return TemplateAgent.model_validate(manifest.get("agent_template") or {})
+    except ValidationError:
+        return None
+
+
+async def _hire_frame_tools(
+    db: AsyncSession, *, tenant_id: uuid.UUID, dept: m.Department | None
+) -> dict[str, Any]:
+    """The frame tools a hire binds against (Ruling 10): the member's
+    personal department as applied, or the tenant default before its first
+    hire."""
+    if dept is not None:
+        tools = (dept.frame or {}).get("tools")
+        return dict(tools) if isinstance(tools, dict) else {}
+    return (await personal_defaults(db, tenant_id=tenant_id)).frame_tools
+
+
+def _connection_dtos(rows: list[TemplateConnection]) -> list[TemplateConnectionDTO]:
+    return [
+        TemplateConnectionDTO(
+            integration=row.integration,
+            label=row.label,
+            kind=row.kind,
+            provider=row.provider,
+            credential_type=row.credential_type,
+            available=row.available,
+        )
+        for row in rows
+    ]
 
 
 def _template_label(manifest: dict[str, Any]) -> str:
@@ -145,14 +253,19 @@ async def get_my_personal_department(
 @router.get(
     "/personal-department/templates",
     response_model=list[PersonalTemplateDTO],
+    # A template without connections answers as before PR 2: no empty lists.
+    response_model_exclude_unset=True,
     dependencies=_OWN,
 )
 async def list_personal_templates(
     db: DbSession, principal: CurrentPrincipal
 ) -> list[PersonalTemplateDTO]:
     """The agent templates a member may hire: enabled by an administrator and
-    declared `scope = "personal"`."""
-    await _caller_member(db, principal)
+    declared `scope = "personal"`, each with the capas it connects to and
+    whether a hire may bind them now."""
+    member = await _caller_member(db, principal)
+    dept = await owned_personal_department(db, tenant_id=principal.tenant_id, member_id=member.id)
+    frame_tools = await _hire_frame_tools(db, tenant_id=principal.tenant_id, dept=dept)
     rows = (
         await db.execute(
             select(m.Capa, m.CapaVersion)
@@ -176,12 +289,35 @@ async def list_personal_templates(
         mf = version.manifest or {}
         if mf.get("type") != "agent_template" or template_scope(mf) != "personal":
             continue
+        spec = _template_agent(mf)
+        if spec is None:
+            continue  # the hire refuses it too
+        offer = await hire_offer(
+            db,
+            version=version,
+            spec=spec,
+            frame_tools=frame_tools,
+            department_id=dept.id if dept is not None else None,
+        )
+        connections: dict[str, list[TemplateConnectionDTO]] = {}
+        if spec.connections_any or spec.connections_optional:
+            connections["connections_any"] = _connection_dtos(
+                await template_connections(db, frame_tools=frame_tools, names=spec.connections_any)
+            )
+            connections["connections_optional"] = _connection_dtos(
+                await template_connections(
+                    db, frame_tools=frame_tools, names=spec.connections_optional
+                )
+            )
         out.append(
             PersonalTemplateDTO(
                 capa_id=str(capa.id),
                 name=capa.name,
                 label=_template_label(mf),
                 summary=str(mf.get("summary", "")),
+                hire_token=offer.token,
+                grants=HireGrantsDTO(tools=offer.tools, skills=offer.skills),
+                **connections,
             )
         )
     return out
@@ -229,12 +365,53 @@ async def hire_personal_agent(
     if not defaults.enabled:
         raise HTTPException(status.HTTP_403_FORBIDDEN, {"error": "personal_departments_disabled"})
     member = await _caller_member(db, principal)
+    spec = _template_agent(mf)
+    if spec is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "the template does not parse")
+    # Every choice is checked before anything is written, against the frame
+    # the department has (or will start with): a refused hire creates no
+    # department.
+    unprocessable = status.HTTP_422_UNPROCESSABLE_CONTENT
+    try:
+        bindings = await resolve_hire_bindings(
+            db,
+            member=member,
+            frame_tools=await _hire_frame_tools(
+                db,
+                tenant_id=principal.tenant_id,
+                dept=await owned_personal_department(
+                    db, tenant_id=principal.tenant_id, member_id=member.id
+                ),
+            ),
+            spec=spec,
+            connection=body.connection.chosen() if body.connection is not None else None,
+            optional=[c.chosen() for c in body.optional_connections],
+        )
+    except HireBindingRefused as exc:
+        raise HTTPException(unprocessable, {"error": exc.error}) from exc
+    if bindings and not body.confirm_share:
+        raise HTTPException(unprocessable, {"error": "confirm_share_required"})
     try:
         dept = await get_or_create_personal_department(db, member=member)
     except PersonalDepartmentsDisabled as exc:  # pragma: no cover - checked above
         raise HTTPException(
             status.HTTP_403_FORBIDDEN, {"error": "personal_departments_disabled"}
         ) from exc
+    # Ruling T8-I1: the hire confirms what the member was shown. Checked
+    # against the department as locked (a frame write takes the same lock),
+    # so a change committed since the list answers 409 and the transaction,
+    # the department created just now included, rolls back.
+    await lock_owned_frame(db, dept)
+    frame_tools = await _hire_frame_tools(db, tenant_id=principal.tenant_id, dept=dept)
+
+    async def check_offer() -> None:
+        offer = await hire_offer(
+            db, version=version, spec=spec, frame_tools=frame_tools, department_id=dept.id
+        )
+        if not hmac.compare_digest(offer.token, body.hire_token):
+            raise HTTPException(status.HTTP_409_CONFLICT, {"error": "hire_changed"})
+
+    await check_offer()
     try:
         # Plan ruling 4: a personal hire is exempt from the tenant's
         # `require_hire_approval`. The administrator who enabled this
@@ -248,11 +425,19 @@ async def hire_personal_agent(
             department_id=dept.id,
             name=body.name or None,
             owner_hire=True,
+            hired_by=member.id,
+            bindings=bindings,
         )
     except PersonalDepartmentRefused as exc:  # the cap, or the owner left (`instantiate_agent`)
         raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
     except PluginError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    # Ruling T8-R1: and once more after the stamps. Skills and setup values
+    # are not under the department lock, and a stamp records what it reads
+    # (read committed): one committed since the check above would count as
+    # confirmed by the member. Checked last, so the stamps can only hold
+    # what the member was shown; a mismatch rolls the whole hire back.
+    await check_offer()
 
     await append_event(
         db,
@@ -265,6 +450,206 @@ async def hire_personal_agent(
         principal=principal,
     )
     return HirePersonalResponse(agent_id=str(agent.id), department_id=str(dept.id))
+
+
+class ConfirmationToolDTO(CamelModel):
+    """A frame tool an administrator loosened: both policies in full, as the
+    runtime reads them (`enabled`, `read`, `modify`, `only`, `limits`,
+    `approval_eur`, `approval_actions`, `conditions`, `connection_id`)."""
+
+    key: str
+    #: What applies now; None when the department grants nothing for it.
+    applied: dict[str, Any] | None
+    #: What applies once the owner confirms.
+    pending: dict[str, Any] | None
+
+
+class ConfirmationSkillDTO(CamelModel):
+    """A skill held back from the agents, as the model would read it."""
+
+    name: str
+    description: str | None
+    #: "new" (never confirmed) or "changed" (version, overrides or text).
+    status: str
+
+
+class ConfirmationLoginDTO(CamelModel):
+    """A login a setup uses: its name, never a secret."""
+
+    name: str
+    owned_by_owner: bool
+
+
+class ConfirmationSetupDTO(CamelModel):
+    """A tool's setup as the agent's runs use it, without secrets."""
+
+    tool: str
+    server_url: str | None
+    transport: str | None
+    scopes: Any
+    #: The setup's settings, by name only: their values are never shown.
+    config_keys: list[str]
+    logins: list[ConfirmationLoginDTO]
+
+
+class ConfirmationAgentDTO(CamelModel):
+    """An agent whose earlier confirmation no longer holds."""
+
+    agent_id: str
+    name: str
+    #: What changed: "core" (its version, a setup, or the department's goal),
+    #: "frame" (the department's frame but its tools), "tools", "skills",
+    #: "threshold" (its own approval threshold).
+    changes: list[str]
+    #: Its own approval threshold now (EUR), or None.
+    approval_threshold: Any
+    #: With "tools" or "threshold": every tool it may use now, as its grant
+    #: records it (the policy, plus `frame_extra`/`agent_extra`: fields the
+    #: policy does not read, such as a default login).
+    tools: dict[str, Any] | None = None
+    #: With "core": the setups its runs use now.
+    setup: list[ConfirmationSetupDTO] | None = None
+
+
+class ConfirmationDepartmentDTO(CamelModel):
+    """The department as the owner would confirm it."""
+
+    goal: str
+    #: Every frame key but the tools.
+    frame: dict[str, Any]
+    #: What the department's tools reset to.
+    frame_capa_defaults: dict[str, Any] | None
+
+
+class PersonalConfirmationDTO(CamelModel):
+    """What waits for the owner's confirmation in their personal department,
+    shown as it is now in full (Ruling T9-I2).
+
+    Each part shows what waits now, not a history: an administrator's later
+    write that only tightens the frame replaces an earlier held loosening, so
+    a loosening listed before may be gone without the owner confirming it."""
+
+    #: Whether anything waits at all.
+    needed: bool
+    #: Pins this summary: the confirm answers 409 `confirmation_changed` when
+    #: anything it would accept changed since, listed here or not.
+    token: str
+    #: The frame tools an administrator loosened; they apply once confirmed.
+    tools: list[ConfirmationToolDTO]
+    #: The skills held back from the agents until the owner confirms them.
+    skills: list[ConfirmationSkillDTO]
+    #: The agents whose earlier confirmation no longer holds.
+    agents: list[ConfirmationAgentDTO]
+    #: Set when an agent's change may come from the department ("core",
+    #: "frame"): its goal and frame as they are now.
+    department: ConfirmationDepartmentDTO | None
+
+
+class PersonalConfirmRequest(CamelModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: The `token` of the summary as the owner was shown it.
+    token: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+def _confirmation_dto(summary: PendingConfirmation) -> PersonalConfirmationDTO:
+    return PersonalConfirmationDTO(
+        needed=summary.needed,
+        token=summary.token,
+        tools=[
+            ConfirmationToolDTO(key=t.key, applied=t.applied, pending=t.pending)
+            for t in summary.tools
+        ],
+        skills=[
+            ConfirmationSkillDTO(name=s.name, description=s.description, status=s.status)
+            for s in summary.skills
+        ],
+        agents=[
+            ConfirmationAgentDTO(
+                agent_id=str(a.agent_id),
+                name=a.name,
+                changes=a.changes,
+                approval_threshold=a.approval_threshold,
+                tools=a.tools,
+                setup=(
+                    [
+                        ConfirmationSetupDTO(
+                            tool=v.tool,
+                            server_url=v.server_url,
+                            transport=v.transport,
+                            scopes=v.scopes,
+                            config_keys=v.config_keys,
+                            logins=[
+                                ConfirmationLoginDTO(name=x.name, owned_by_owner=x.owned_by_owner)
+                                for x in v.logins
+                            ],
+                        )
+                        for v in a.setup
+                    ]
+                    if a.setup is not None
+                    else None
+                ),
+            )
+            for a in summary.agents
+        ],
+        department=(
+            ConfirmationDepartmentDTO(
+                goal=summary.department.goal,
+                frame=summary.department.frame,
+                frame_capa_defaults=summary.department.frame_capa_defaults,
+            )
+            if summary.department is not None
+            else None
+        ),
+    )
+
+
+async def _own_department(
+    db: AsyncSession, principal: Principal
+) -> tuple[m.OrgMember, m.Department]:
+    """The caller's own personal department, or 404: an administrator, a
+    colleague -- anybody without one of their own -- reaches nothing here."""
+    member = await _caller_member(db, principal)
+    dept = await owned_personal_department(db, tenant_id=principal.tenant_id, member_id=member.id)
+    if dept is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no personal department")
+    return member, dept
+
+
+@router.get(
+    "/personal-department/confirmation",
+    response_model=PersonalConfirmationDTO,
+    dependencies=_OWN,
+)
+async def get_personal_confirmation(
+    db: DbSession, principal: CurrentPrincipal
+) -> PersonalConfirmationDTO:
+    """What waits for the caller's confirmation in their own personal
+    department (`departments.owner_confirmation`)."""
+    _member, dept = await _own_department(db, principal)
+    return _confirmation_dto(await pending_confirmation(db, dept))
+
+
+@router.post(
+    "/personal-department/confirm",
+    response_model=PersonalConfirmationDTO,
+    dependencies=_OWN,
+)
+async def confirm_personal_department(
+    body: PersonalConfirmRequest, db: DbSession, principal: CurrentPrincipal
+) -> PersonalConfirmationDTO:
+    """The owner confirms everything the summary with `token` showed them;
+    409 `confirmation_changed` when it changed since, with nothing applied."""
+    member, dept = await _own_department(db, principal)
+    try:
+        summary = await confirm_pending(db, dept, member=member, token=body.token)
+    except ConfirmationChanged as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": "confirmation_changed"}) from exc
+    except NotTheOwner as exc:  # pragma: no cover - `_own_department` is the owner's
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no personal department") from exc
+    except FrameChangeRefused as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, exc.detail) from exc
+    return _confirmation_dto(summary)
 
 
 # --- Administration -----------------------------------------------------------
@@ -295,7 +680,11 @@ class PersonalBudgetDefaults(CamelModel):
 
 
 class PersonalDepartmentAdminDTO(CamelModel):
-    """A personal department as an administrator sees it: metadata only."""
+    """A personal department as an administrator sees it: metadata only.
+
+    `pending_confirmation` covers held frame tools only (Ruling FR-I3): a
+    skill held back for the owner, or an agent whose owner confirmation no
+    longer holds, does not set it. The owner's card lists all of it."""
 
     id: str
     owner_member_id: str
@@ -307,6 +696,10 @@ class PersonalDepartmentAdminDTO(CamelModel):
     follows_default_frame: bool
     follows_default_budget: bool
     created_at: dt.datetime
+    #: An administrator's loosening of the frame tools waits for the owner to
+    #: confirm it (`departments.personal.apply_held_tools`). Only that it
+    #: waits: what waits is the owner's (`GET /personal-department/confirmation`).
+    pending_confirmation: bool
 
 
 def _admin_dto(row: PersonalDepartmentSummary) -> PersonalDepartmentAdminDTO:
@@ -319,6 +712,7 @@ def _admin_dto(row: PersonalDepartmentSummary) -> PersonalDepartmentAdminDTO:
         follows_default_frame=row.follows_default_frame,
         follows_default_budget=row.follows_default_budget,
         created_at=row.created_at,
+        pending_confirmation=row.pending_confirmation,
     )
 
 

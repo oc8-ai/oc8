@@ -424,6 +424,32 @@ async def binding_fingerprint(
         for a in assignments
     )
     dept = await db.get(m.Department, agent.department_id)
+    setup, shared = await _setup_parts(db, agent, dept, tool_key, with_shared=not legacy)
+    payload: dict[str, Any] = {
+        "version": str(version_id) if version_id else await snapshot_agent(db, agent),
+        "skills": skills,
+        "department": None if dept is None else [dept.goal, dept.frame, dept.frame_capa_defaults],
+        "setup": setup,
+    }
+    if shared:
+        # Only present when non-empty: an unconsolidated department's digest
+        # stays exactly what it was.
+        payload["shared"] = shared
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+async def _setup_parts(
+    db: AsyncSession,
+    agent: m.Agent,
+    dept: m.Department | None,
+    tool_key: str | None,
+    *,
+    with_shared: bool = True,
+) -> tuple[list[Any], list[Any]]:
+    """The department's setup of `tool_key` (every tool when None), as the
+    binding fingerprint hashes it: the rows the department owns (`setup`)
+    and what a consolidated tool's run uses (`shared`, `_shared_setup`;
+    empty without `with_shared`)."""
     # The rows the department owns, as before the one-row-per-tool change:
     # a stored confirmation (a trigger's, a binding's) must stay valid for
     # a tenant whose setups did not change. Consolidation re-stamps them.
@@ -435,19 +461,10 @@ async def binding_fingerprint(
         [str(c.id), str(c.credential_id), c.server_url, c.transport, c.scopes, c.config]
         for c in conns
     )
-    payload: dict[str, Any] = {
-        "version": str(version_id) if version_id else await snapshot_agent(db, agent),
-        "skills": skills,
-        "department": None if dept is None else [dept.goal, dept.frame, dept.frame_capa_defaults],
-        "setup": setup,
-    }
-    if not legacy:
-        # Only present when non-empty: an unconsolidated department's digest
-        # stays exactly what it was.
+    shared: list[Any] = []
+    if with_shared:
         shared = await _shared_setup(db, agent, dept, tool_key, owned={c.name for c in conns})
-        if shared:
-            payload["shared"] = shared
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+    return setup, shared
 
 
 def _frame_tools(dept: m.Department | None) -> list[str]:
@@ -573,7 +590,11 @@ async def schedule_confirmed(db: AsyncSession, run: m.AgentRun) -> bool:
     """A run a trigger started may use a person's own account only when it is
     the trigger's own agent and that agent is what its creator last saved
     (fingerprint stored on the trigger). A trigger saved before fingerprints
-    existed (NULL) never is; a delegated sub-run of another agent never is."""
+    existed (NULL) never is; a delegated sub-run of another agent never is.
+    An admin change since that only tightens keeps it (`trigger_confirmed`)."""
+    # Deferred: confirmation builds on this module.
+    from oc8.connections.confirmation import trigger_confirmed
+
     for raw in _trigger_ids(run):
         try:
             trigger = await db.get(m.Trigger, uuid.UUID(str(raw)))
@@ -587,8 +608,7 @@ async def schedule_confirmed(db: AsyncSession, run: m.AgentRun) -> bool:
             # A delegate (or a decision follow-up's agent) is not what the
             # creator saw: their own account stays with the trigger's agent.
             return False
-        current = await trigger_fingerprint(db, trigger, version_id=run.agent_version_id)
-        if current != trigger.access_fingerprint:
+        if not await trigger_confirmed(db, trigger, version_id=run.agent_version_id):
             return False
     return True
 
@@ -630,7 +650,8 @@ async def unconfirmed_reason(
     """Why a fixed binding is not (or no longer) confirmed, or None when it is.
     `not_confirmed`: neither an administrator nor (for a person's account) its
     owner chose it. `agent_changed`: a person's account, and the agent changed
-    since it was confirmed. A trigger's own conditions are per run, not here."""
+    since it was confirmed in more than a tightening (`confirmation_holds`).
+    A trigger's own conditions are per run, not here."""
     if owner is None:
         # An organisation account: an administrator chose it, or it still is
         # the department's own setup.
@@ -641,8 +662,17 @@ async def unconfirmed_reason(
     # the agent is unchanged since.
     if not (row.set_with_manage or row.set_by_member_id == owner):
         return "not_confirmed"
-    current = await binding_fingerprint(db, agent, tool_key, version_id=version_id)
-    if row.binding_fingerprint is None or row.binding_fingerprint != current:
+    # Deferred: confirmation builds on this module.
+    from oc8.connections.confirmation import confirmation_holds
+
+    if not await confirmation_holds(
+        db,
+        agent,
+        tool_key,
+        version_id=version_id,
+        digest=row.binding_fingerprint,
+        split=row.binding_split,
+    ):
         return "agent_changed"
     return None
 

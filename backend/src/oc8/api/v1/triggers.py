@@ -23,7 +23,13 @@ from oc8.authz.scope import scope_for_principal
 from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
-from oc8.connections.access import trigger_fingerprint
+from oc8.connections.confirmation import (
+    clear_trigger_stamp,
+    save_may_stamp,
+    stamp_trigger,
+    trigger_confirmed,
+    trigger_held,
+)
 from oc8.events.sources import LoginTarget
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
@@ -83,10 +89,23 @@ async def _needs_confirmation(
             continue
         if t.kind in ("webhook", "event") and not t.acts_for_creator:
             continue
-        current = await trigger_fingerprint(db, t)
-        if t.access_fingerprint is None or t.access_fingerprint != current:
+        if not await trigger_confirmed(db, t):
             out.add(t.id)
     return out
+
+
+async def _owned_agents(db: DbSession, triggers: list[m.Trigger]) -> set[uuid.UUID]:
+    """The agents of `triggers` whose department has an owner: their
+    triggers are confirmed on the owner's confirmation card (Ruling FR-C1)."""
+    ids = {t.agent_id for t in triggers}
+    if not ids:
+        return set()
+    rows = await db.execute(
+        select(m.Agent.id)
+        .join(m.Department, m.Department.id == m.Agent.department_id)
+        .where(m.Agent.id.in_(ids), m.Department.owner_member_id.is_not(None))
+    )
+    return set(rows.scalars())
 
 
 async def _poll_statuses(
@@ -149,6 +168,7 @@ async def _to_dto(db: DbSession, t: m.Trigger, caller: uuid.UUID | None) -> Trig
         await _owner_names(db, [t]),
         needs_confirmation=flagged,
         cursors=await _poll_statuses(db, [t]),
+        owned=await _owned_agents(db, [t]),
     )
 
 
@@ -158,6 +178,7 @@ def _dto_with(
     *,
     needs_confirmation: set[uuid.UUID],
     cursors: dict[uuid.UUID, m.EventSourceCursor],
+    owned: set[uuid.UUID],
 ) -> TriggerDTO:
     return TriggerDTO(
         id=str(t.id),
@@ -176,6 +197,7 @@ def _dto_with(
         created_by_name=names.get(t.created_by_member_id) if t.created_by_member_id else None,
         acts_for_creator=t.acts_for_creator,
         needs_confirmation=t.id in needs_confirmation,
+        owner_confirms=t.agent_id in owned,
         event_target_credential_id=(
             str(t.event_target_credential_id) if t.event_target_credential_id else None
         ),
@@ -356,7 +378,11 @@ async def create_agent_trigger(
         if body.kind == "event" and not named and body.event_source and body.event_type:
             # A polled event listens on the agent's fixed login for its tools.
             target = await polled_event_target(
-                db, agent_id=agent_id, event_source=body.event_source, event_type=body.event_type
+                db,
+                agent_id=agent_id,
+                event_source=body.event_source,
+                event_type=body.event_type,
+                creator=caller,
             )
         trigger = await create_trigger(
             db,
@@ -412,7 +438,10 @@ async def list_agent_triggers(
     names = await _owner_names(db, rows)
     flagged = await _needs_confirmation(db, rows, await _caller_member_id(db, principal))
     cursors = await _poll_statuses(db, rows)
-    return [_dto_with(t, names, needs_confirmation=flagged, cursors=cursors) for t in rows]
+    owned = await _owned_agents(db, rows)
+    return [
+        _dto_with(t, names, needs_confirmation=flagged, cursors=cursors, owned=owned) for t in rows
+    ]
 
 
 @router.patch(
@@ -441,6 +470,10 @@ async def update_agent_trigger(
             )
     caller = await _caller_member_id(db, principal)
     owner = trigger.created_by_member_id
+    # Ruling FR-C1: decided before the save changes anything.
+    trigger_agent = await db.get(m.Agent, trigger.agent_id)
+    held = None if trigger_agent is None else await trigger_held(db, trigger, trigger_agent)
+    may_stamp = trigger_agent is not None and await save_may_stamp(db, trigger_agent, held=held)
     if body.acts_for_creator is True and owner is not None and caller != owner:
         # Letting a trigger borrow the creator's account is the creator's
         # decision alone.
@@ -474,8 +507,16 @@ async def update_agent_trigger(
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     if caller is not None and updated.created_by_member_id == caller:
-        # Its creator saved it: they confirm the agent as it is now.
-        updated.access_fingerprint = await trigger_fingerprint(db, updated)
+        if may_stamp:
+            # Its creator saved it: they confirm the agent as it is now -- in
+            # a department with an owner only a confirmation that held before
+            # (`save_may_stamp`); the card confirms the rest.
+            await stamp_trigger(db, updated, confirmed_by=caller)
+        elif held is None or owner != caller:
+            # Not stamped, and the stamp it carries was not the caller's own
+            # confirmation (another creator's, or nobody's): it must not
+            # count as theirs now that the trigger is.
+            clear_trigger_stamp(updated)
         await db.flush()
     # The guard only matters when this update is turning the trigger ON
     # (`body.enabled is True`, whether that flips a disabled row or

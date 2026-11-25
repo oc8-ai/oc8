@@ -42,6 +42,7 @@ function row(over: Record<string, unknown> = {}) {
     id: "d1",
     ownerName: "Ada",
     ownerActive: true,
+    pendingConfirmation: false,
     ownerMemberId: "m1",
     agentCount: 2,
     followsDefaultFrame: false,
@@ -96,6 +97,26 @@ describe("PersonalDepartmentsAdminPanel", () => {
     await waitFor(() =>
       expect(postMock).toHaveBeenCalledWith("/personal-departments/d1/follow-default"),
     );
+  });
+
+  it("flags a department that waits for its owner", async () => {
+    list = [row({ pendingConfirmation: true })];
+    renderPanel();
+    expect(await screen.findByText(/waiting for the owner/i)).toBeInTheDocument();
+    expect(screen.queryByText(/no longer active/i)).not.toBeInTheDocument();
+  });
+
+  it("says the change stays held when the waiting owner has left", async () => {
+    list = [row({ pendingConfirmation: true, ownerActive: false })];
+    renderPanel();
+    expect(await screen.findByText(/waiting for the owner/i)).toBeInTheDocument();
+    expect(screen.getByText(/no longer active/i)).toBeInTheDocument();
+  });
+
+  it("shows no badge when nothing waits", async () => {
+    renderPanel();
+    await screen.findByText("Ada");
+    expect(screen.queryByText(/waiting for the owner/i)).not.toBeInTheDocument();
   });
 
   it("shows a neutral placeholder for an active owner without a name, never an id", async () => {

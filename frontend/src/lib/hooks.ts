@@ -1,6 +1,7 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
+import { errorCode } from "@/lib/hire-error";
 import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
 import {
   useInfiniteQuery,
@@ -961,6 +962,8 @@ export interface PersonalDepartmentAdminDTO {
   ownerName: string;
   /** False once the owner has left the organisation. */
   ownerActive: boolean;
+  /** Something an administrator changed waits for the owner's confirmation. */
+  pendingConfirmation: boolean;
   agentCount: number;
   followsDefaultFrame: boolean;
   followsDefaultBudget: boolean;
@@ -1047,11 +1050,51 @@ export interface PersonalDepartmentMineDTO {
   enabled: boolean;
   department: Department | null;
 }
+/** A capa a personal template connects to, and whether a hire may bind it now. */
+export interface TemplateConnectionDTO {
+  integration: string;
+  label: string;
+  /** "credential" or "oauth"; "" for a capa the organisation has not installed. */
+  kind: string;
+  provider: string | null;
+  credentialType: string | null;
+  available: boolean;
+}
+
+/** What a hire grants the agent: tool keys and skill names. */
+export interface HireGrantsDTO {
+  tools: string[];
+  skills: string[];
+}
+
 export interface PersonalTemplateDTO {
   capaId: string;
   name: string;
   label: string;
   summary: string;
+  /** Pins this offer; the hire answers 409 `hire_changed` once it changed. */
+  hireToken: string;
+  grants: HireGrantsDTO;
+  /** The member chooses a login for one of these at hire. */
+  connectionsAny: TemplateConnectionDTO[];
+  /** The member may add a login for each of these. */
+  connectionsOptional: TemplateConnectionDTO[];
+}
+
+/** The member's own login for one capa: a credential or an OAuth connection. */
+export interface HireConnectionBody {
+  integration: string;
+  credentialId?: string;
+  oauthConnectionId?: string;
+}
+
+export interface HirePersonalBody {
+  capaId: string;
+  hireToken: string;
+  name?: string;
+  connection?: HireConnectionBody;
+  optionalConnections?: HireConnectionBody[];
+  confirmShare?: boolean;
 }
 
 export function useMyPersonalDepartment(enabled = true) {
@@ -1070,11 +1113,81 @@ export function usePersonalTemplates(enabled = true) {
   });
 }
 
+/** A stored tool policy as the runtime reads it (snake_case keys), plus the
+ *  fields it does not read, such as `default_connection_id`. */
+export type ConfirmationPolicy = Record<string, unknown>;
+
+export interface PersonalConfirmationSetupDTO {
+  tool: string;
+  serverUrl: string | null;
+  transport: string | null;
+  scopes: unknown;
+  /** Names only, never values. */
+  configKeys: string[];
+  logins: { name: string; ownedByOwner: boolean }[];
+}
+
+export interface PersonalConfirmationDTO {
+  needed: boolean;
+  /** Pins what the owner was shown: the confirm answers 409 when it moved. */
+  token: string;
+  tools: { key: string; applied: ConfirmationPolicy | null; pending: ConfirmationPolicy | null }[];
+  skills: { name: string; description: string | null; status: "new" | "changed" }[];
+  agents: {
+    agentId: string;
+    name: string;
+    /** Any of core, frame, tools, skills, threshold. */
+    changes: string[];
+    approvalThreshold: number | string | null;
+    tools?: Record<string, ConfirmationPolicy> | null;
+    setup?: PersonalConfirmationSetupDTO[] | null;
+  }[];
+  department: {
+    goal: string;
+    frame: Record<string, unknown>;
+    frameCapaDefaults: Record<string, unknown> | null;
+  } | null;
+}
+
+export function usePersonalConfirmation(enabled = true) {
+  return useQuery({
+    queryKey: ["personal-department", "confirmation"],
+    queryFn: () => api.get<PersonalConfirmationDTO>("/personal-department/confirmation"),
+    enabled,
+  });
+}
+
+/** The owner confirms what the summary with `token` showed them. */
+export function useConfirmPersonal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) =>
+      api.post<PersonalConfirmationDTO>("/personal-department/confirm", { token }),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["personal-department"] }),
+        // Confirmed tools and bindings change what each agent may use.
+        qc.invalidateQueries({
+          queryKey: ["agents"],
+          predicate: (q) => q.queryKey[2] === "tool-access",
+        }),
+        qc.invalidateQueries({ queryKey: ["personal-departments"] }),
+      ]);
+    },
+  });
+}
+
 export function useHirePersonalTemplate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { capaId: string }) =>
+    mutationFn: (body: HirePersonalBody) =>
       api.post<{ agentId: string; departmentId: string }>("/personal-department/agents", body),
+    // The offer changed under the member: refetch it so the next hire sends
+    // the fresh `hireToken` (the one-click button and the dialog share this).
+    onError: (err) => {
+      if (errorCode(err) === "hire_changed")
+        void qc.invalidateQueries({ queryKey: ["personal-department", "templates"] });
+    },
     onSuccess: async (data) => {
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["personal-department"] }),
@@ -2649,6 +2762,10 @@ export interface TriggerDTO {
   //: trigger, so its runs no longer use their own accounts until they save
   //: it again.
   needsConfirmation: boolean;
+  //: Its agent is in a department with an owner: what changed is confirmed
+  //: on the owner's confirmation card (profile), never by saving the
+  //: trigger again.
+  ownerConfirms?: boolean;
   //: A polled event's trigger: the organisation login it listens on (the
   //: agent's fixed login for the event's tools) and its declared settings.
   eventTargetCredentialId?: string | null;
@@ -2673,6 +2790,8 @@ export interface TriggerPollStatus {
 
 /** The skip reason of a polled trigger the agent's login changed under. */
 export const EVENT_TARGET_CHANGED = "event_target_changed";
+/** A polled trigger held until the department's owner confirms the change. */
+export const NEEDS_CONFIRMATION = "needs_confirmation";
 
 export interface TriggerEventConfigField {
   key: string;

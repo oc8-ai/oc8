@@ -40,6 +40,20 @@ def _headers(tenant: uuid.UUID, subject: str = _SUBJECT, role: str = "member") -
     return {"Authorization": f"Bearer {token}"}
 
 
+async def _token(
+    http: AsyncClient, tenant: uuid.UUID, cid: uuid.UUID | str, subject: str = _SUBJECT
+) -> str:
+    """The `hireToken` the templates list shows for `cid`; a placeholder for
+    a template the list does not show (the hire refuses it before the token)."""
+    listed = await http.get(
+        "/api/v1/personal-department/templates", headers=_headers(tenant, subject)
+    )
+    if listed.status_code != 200:
+        return "unlisted"
+    found = [t["hireToken"] for t in listed.json() if t["capaId"] == str(cid)]
+    return str(found[0]) if found else "unlisted"
+
+
 @asynccontextmanager
 async def _http() -> AsyncIterator[AsyncClient]:
     app = create_app()
@@ -137,7 +151,7 @@ async def test_a_bare_member_hires_a_personal_template(app_session: AppSessionFa
     async with _http() as http:
         r = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid)},
+            json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid)},
             headers=_headers(tenant),
         )
         assert r.status_code == 201, r.text
@@ -210,19 +224,27 @@ async def test_the_member_names_the_agent_within_limits(app_session: AppSessionF
     async with _http() as http:
         named = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid), "name": "  Max  "},
+            json={
+                "capaId": str(cid),
+                "hireToken": await _token(http, tenant, cid),
+                "name": "  Max  ",
+            },
             headers=_headers(tenant),
         )
         assert named.status_code == 201, named.text
         blank = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid), "name": "   "},
+            json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid), "name": "   "},
             headers=_headers(tenant),
         )
         assert blank.status_code == 201, blank.text
         too_long = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid), "name": "x" * 201},
+            json={
+                "capaId": str(cid),
+                "hireToken": await _token(http, tenant, cid),
+                "name": "x" * 201,
+            },
             headers=_headers(tenant),
         )
         assert too_long.status_code == 422, too_long.text
@@ -241,7 +263,7 @@ async def test_a_non_personal_template_is_refused(app_session: AppSessionFactory
     async with _http() as http:
         r = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid)},
+            json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid)},
             headers=_headers(tenant),
         )
     assert r.status_code == 422, r.text
@@ -259,13 +281,13 @@ async def test_a_disabled_capa_is_not_offered_or_hireable(app_session: AppSessio
         assert listed.json() == []
         r = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid)},
+            json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid)},
             headers=_headers(tenant),
         )
         assert r.status_code == 404, r.text
         missing = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(uuid.uuid4())},
+            json={"capaId": str(uuid.uuid4()), "hireToken": "unlisted"},
             headers=_headers(tenant),
         )
         assert missing.status_code == 404, missing.text
@@ -281,7 +303,7 @@ async def test_disabled_refuses_new_hires_but_keeps_existing(
     async with _http() as http:
         first = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid)},
+            json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid)},
             headers=_headers(tenant),
         )
         assert first.status_code == 201, first.text
@@ -290,7 +312,7 @@ async def test_disabled_refuses_new_hires_but_keeps_existing(
 
         again = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid)},
+            json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid)},
             headers=_headers(tenant),
         )
         assert again.status_code == 403, again.text
@@ -313,7 +335,7 @@ async def test_disabled_refuses_a_first_hire(app_session: AppSessionFactory) -> 
     async with _http() as http:
         r = await http.post(
             "/api/v1/personal-department/agents",
-            json={"capaId": str(cid)},
+            json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid)},
             headers=_headers(tenant),
         )
         assert r.status_code == 403, r.text
@@ -345,14 +367,15 @@ async def test_templates_lists_only_personal_enabled_agent_templates(
     async with _http() as http:
         r = await http.get("/api/v1/personal-department/templates", headers=_headers(tenant))
     assert r.status_code == 200, r.text
-    assert r.json() == [
-        {
-            "capaId": str(personal),
-            "name": "mail_helper",
-            "label": "Mail Helper",
-            "summary": "mail_helper summary",
-        }
-    ]
+    (listed,) = r.json()
+    assert listed.pop("hireToken")
+    assert listed == {
+        "capaId": str(personal),
+        "name": "mail_helper",
+        "label": "Mail Helper",
+        "summary": "mail_helper summary",
+        "grants": {"tools": [], "skills": []},
+    }
 
 
 async def test_a_role_without_department_own_is_refused(app_session: AppSessionFactory) -> None:
@@ -376,7 +399,7 @@ async def test_a_role_without_department_own_is_refused(app_session: AppSessionF
         for method, path, body in (
             ("GET", "/api/v1/personal-department", None),
             ("GET", "/api/v1/personal-department/templates", None),
-            ("POST", "/api/v1/personal-department/agents", {"capaId": str(cid)}),
+            ("POST", "/api/v1/personal-department/agents", {"capaId": str(cid), "hireToken": "x"}),
         ):
             r = await http.request(method, path, json=body, headers=_headers(tenant))
             assert r.status_code == 403, (path, r.text)
@@ -388,7 +411,7 @@ async def _hire(
 ) -> Any:
     return await http.post(
         "/api/v1/personal-department/agents",
-        json={"capaId": str(cid)},
+        json={"capaId": str(cid), "hireToken": await _token(http, tenant, cid, subject)},
         headers=_headers(tenant, subject),
     )
 

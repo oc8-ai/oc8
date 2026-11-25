@@ -48,6 +48,14 @@ ALLOWED: dict[str, str] = {
     "api/v1/catalog.py": "a different permission (catalog:view), id-only reads",
     "api/v1/skills_write.py": "loads the agent it is about to assign a skill to",
     "metering/budget.py": "raises and reads its own tenant-scope incident; no human here",
+    "connections/access.py": (
+        "the binding and trigger fingerprints of an agent its caller already "
+        "holds (its department, a trigger's agent); digests, never shown to a person"
+    ),
+    "connections/confirmation.py": (
+        "a confirmation fingerprint of an agent its caller already holds (its "
+        "department, a trigger's agent); ids and digests, never shown to a person"
+    ),
     "connections/consolidate.py": (
         "the one-time fold of a tenant's tool setups (worker start, CLI): rewrites "
         "every agent's and department's pins; no human caller, nothing shown"
@@ -210,6 +218,10 @@ ALLOWED: dict[str, str] = {
     ),
     "collab/emit.py": "handoff department-name resolution, same rationale as api/v1/handoffs.py",
     "collab/intake.py": "handoff department-name and team-lead resolution, no human in this path",
+    "events/sources.py": (
+        "a background poller with no human caller, reading its own trigger's agent "
+        "to switch a trigger of an archived or missing agent off"
+    ),
     "evidence/sweep.py": "background retention sweep on its own tenant scope; no human here",
     "models/ops.py": (
         "sweep false-positive: 'department_id' is a column name inside index DDL text, "

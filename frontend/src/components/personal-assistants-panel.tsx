@@ -1,8 +1,10 @@
 import { Link } from "@tanstack/react-router";
 import { Loader2 } from "lucide-react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
-import { ApiError } from "@/lib/api";
+import { PersonalConfirmationNotice } from "@/components/personal-confirmation-notice";
+import { PersonalHireDialog } from "@/components/personal-hire-dialog";
 import { useMay } from "@/lib/governance-hooks";
 import {
   useAgents,
@@ -11,19 +13,7 @@ import {
   usePersonalTemplates,
 } from "@/lib/hooks";
 import { useT } from "@/lib/i18n";
-
-/** The machine code of a refused request. FastAPI wraps a dict `detail` as
- *  `{detail: {error}}`; `toError` in `lib/api.ts` keeps that body on the error. */
-function errorCode(err: unknown): string | null {
-  if (!(err instanceof ApiError)) return null;
-  const body = err.body as { detail?: unknown; error?: unknown } | undefined;
-  const detail = body?.detail;
-  if (detail !== null && typeof detail === "object") {
-    const code = (detail as { error?: unknown }).error;
-    if (typeof code === "string") return code;
-  }
-  return typeof body?.error === "string" ? body.error : null;
-}
+import { hireErrorText, needsHireDialog } from "@/lib/personal-hire";
 
 function MyAgents({ departmentId }: { departmentId: string }) {
   const t = useT();
@@ -62,37 +52,15 @@ export function PersonalAssistantsPanel() {
   const mine = useMyPersonalDepartment(allowed);
   const templates = usePersonalTemplates(allowed && !!mine.data?.enabled);
   const hire = useHirePersonalTemplate();
+  const [dialogFor, setDialogFor] = useState<string | null>(null);
 
   if (!allowed || !mine.data) return null;
   const { enabled, department } = mine.data;
   // Nothing to show: switched off and nothing hired before.
   if (!enabled && !department) return null;
 
-  const hireErrorText = (err: unknown): string => {
-    const code = errorCode(err);
-    if (code === "personal_agent_limit")
-      return t(
-        "You've reached the maximum number of personal assistants",
-        "Du hast die maximale Anzahl persönlicher Assistenten erreicht",
-      );
-    if (code === "personal_departments_disabled")
-      return t("Personal assistants are turned off", "Persönliche Assistenten sind ausgeschaltet");
-    if (code === "template_not_personal" || (err instanceof ApiError && err.status === 404))
-      return t("This assistant is not available", "Dieser Assistent ist nicht verfügbar");
-    if (code === "owner_left")
-      return t(
-        "Your account can no longer hire assistants",
-        "Dein Konto kann keine Assistenten mehr einstellen",
-      );
-    if (err instanceof ApiError && err.status === 400)
-      return t(
-        "This assistant isn't allowed by your organisation's rules",
-        "Dieser Assistent ist nach den Regeln deiner Organisation nicht erlaubt",
-      );
-    return t("Couldn't hire the assistant", "Assistent konnte nicht eingestellt werden");
-  };
-
   const list = Array.isArray(templates.data) ? templates.data : [];
+  const dialogTemplate = list.find((tpl) => tpl.capaId === dialogFor);
   const hiringId = hire.isPending ? hire.variables?.capaId : null;
 
   return (
@@ -100,6 +68,7 @@ export function PersonalAssistantsPanel() {
       <h2 className="text-sm font-medium">
         {t("My personal assistants", "Meine persönlichen Assistenten")}
       </h2>
+      {department && <PersonalConfirmationNotice enabled />}
       {department && <MyAgents departmentId={department.id} />}
       {!enabled ? (
         <p className="mt-3 text-sm text-muted-foreground">
@@ -134,14 +103,16 @@ export function PersonalAssistantsPanel() {
                     type="button"
                     disabled={hire.isPending}
                     onClick={() =>
-                      hire.mutate(
-                        { capaId: tpl.capaId },
-                        {
-                          onSuccess: () =>
-                            toast.success(t("Assistant hired", "Assistent eingestellt")),
-                          onError: (err) => toast.error(hireErrorText(err)),
-                        },
-                      )
+                      needsHireDialog(tpl)
+                        ? setDialogFor(tpl.capaId)
+                        : hire.mutate(
+                            { capaId: tpl.capaId, hireToken: tpl.hireToken },
+                            {
+                              onSuccess: () =>
+                                toast.success(t("Assistant hired", "Assistent eingestellt")),
+                              onError: (err) => toast.error(hireErrorText(err, t)),
+                            },
+                          )
                     }
                     className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-medium text-primary-foreground disabled:opacity-50"
                   >
@@ -153,6 +124,15 @@ export function PersonalAssistantsPanel() {
             </ul>
           )}
         </div>
+      )}
+      {dialogTemplate && (
+        <PersonalHireDialog
+          template={dialogTemplate}
+          open
+          onOpenChange={(o) => {
+            if (!o) setDialogFor(null);
+          }}
+        />
       )}
     </Panel>
   );

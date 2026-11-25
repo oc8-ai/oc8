@@ -431,3 +431,99 @@ async def oauth_polled_setup(
 
 def register_oauth(polled: OAuthPolled, fake: FakePoller) -> None:
     register_poller(polled.source, polled.event_type, fake)
+
+
+# --- a trigger on a login a department owner owns -------------------------------------
+
+#: The personal frame of the owned world: the test capa's tools, read and write.
+_OWNED_TOOLS: dict[str, Any] = {"enabled": True, "read": True, "modify": True}
+
+
+@dataclass
+class OwnedPolled:
+    """A personal department's agent fixed to its owner's own login of the
+    test capa, bound by the owner; `fake` answers its polls."""
+
+    tenant: uuid.UUID
+    member_id: uuid.UUID
+    subject: str
+    agent_id: uuid.UUID
+    credential_id: uuid.UUID
+    source: str
+    tool_key: str
+    fake: FakePoller
+    event_type: str = EVENT_TYPE
+
+
+async def bind_own_login(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    *,
+    agent_id: uuid.UUID,
+    member_id: uuid.UUID,
+    tool_key: str,
+    credential_id: uuid.UUID | None = None,
+    oauth_connection_id: uuid.UUID | None = None,
+) -> None:
+    """The owner fixes the agent's `tool_key` to their own login: their
+    confirmation of the binding."""
+    from oc8.connections.access_write import write_tool_access
+
+    async with app_session(tenant) as db:
+        live = await db.get(m.Agent, agent_id)
+        assert live is not None
+        await write_tool_access(
+            db,
+            agent=live,
+            tool_key=tool_key,
+            mode="fixed",
+            oauth_connection_id=oauth_connection_id,
+            credential_id=credential_id,
+            set_by_member_id=member_id,
+            set_with_manage=False,
+            actor_type="operator",
+            actor_id=member_id,
+        )
+
+
+async def owned_polled_setup(
+    app_session: AppSessionFactory,
+    *,
+    respond: Callable[[dict[str, str], dict[str, Any], dict[str, Any] | None], PollResult]
+    | None = None,
+) -> OwnedPolled:
+    """`owned_world` with the test capa installed, the owner's own login of
+    its type, the agent fixed to it by the owner and a fake poller
+    registered (finding nothing unless `respond` says otherwise)."""
+    from tests.departments.owned import owned_world
+
+    source = f"own_{uuid.uuid4().hex[:10]}"
+    tool_key = f"{source}_tools"
+    world = await owned_world(app_session, tools={tool_key: dict(_OWNED_TOOLS)})
+    assert world.agent_id is not None
+    await install_capa(app_session, world.tenant, source, tool_key)
+    credential_id = await login(app_session, world.tenant, owner=world.member_id)
+    await bind_own_login(
+        app_session,
+        world.tenant,
+        agent_id=world.agent_id,
+        member_id=world.member_id,
+        tool_key=tool_key,
+        credential_id=credential_id,
+    )
+    async with app_session(world.tenant) as db:
+        owner = await db.get(m.OrgMember, world.member_id)
+        assert owner is not None
+        subject = owner.subject
+    fake = FakePoller(respond or baseline_then(lambda _c: []))
+    register_poller(source, EVENT_TYPE, fake, credential_type=CREDENTIAL_TYPE)
+    return OwnedPolled(
+        world.tenant,
+        world.member_id,
+        subject,
+        world.agent_id,
+        credential_id,
+        source,
+        tool_key,
+        fake,
+    )

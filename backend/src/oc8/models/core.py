@@ -115,6 +115,9 @@ class Department(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # so a re-sync of the tenant defaults leaves that part alone.
     frame_overridden_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     budget_overridden_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    # The tool policy of a personal department held until its owner confirms
+    # it; only a personal department can carry one.
+    pending_frame_tools: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (
         CheckConstraint("kind IN ('standard','assistant','personal')", name="ck_department_kind"),
@@ -127,6 +130,10 @@ class Department(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
         CheckConstraint(
             "kind <> 'personal' OR COALESCE(frame->>'closed', '') = 'true'",
             name="ck_department_personal_frame_closed",
+        ),
+        CheckConstraint(
+            "pending_frame_tools IS NULL OR owner_member_id IS NOT NULL",
+            name="ck_department_pending_frame_owned",
         ),
         Index(
             "uq_department_personal_owner",
@@ -354,6 +361,11 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # a pre-migration row (backfilled to v1 by 0099) or a row from a partially
     # failed create can be null in production.
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    # The skill assignments the owner of this agent's department last
+    # confirmed (`connections.confirmation.held_skill_entries`): they keep
+    # waiting for the owner when every confirmation is gone. None: never
+    # confirmed by an owner.
+    confirmed_skills: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (
         CheckConstraint(

@@ -1804,6 +1804,10 @@ class TriggerDTO(CamelModel):
     #: trigger, so it no longer acts through their own account until they save
     #: it again (connection_required "schedule_needs_confirmation").
     needs_confirmation: bool = False
+    #: Its agent is in a department with an owner: what changed there is
+    #: confirmed on the owner's confirmation card, not by saving the trigger
+    #: again -- a save confirms nothing it did not hold before (Ruling FR-C1).
+    owner_confirms: bool = False
     #: kind='webhook' only -- the full POST /webhooks/{token} URL, built
     #: server-side from the same base URL external OAuth redirects use
     #: (oauth_redirect_base_url). Not one-time-reveal: unlike a password, an
