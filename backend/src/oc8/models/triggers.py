@@ -72,8 +72,9 @@ class Trigger(Base, PkMixin, TenantMixin, TimestampMixin):
     #: through the creator's own account only while it still matches; NULL
     #: (saved before migration 0110) never does.
     access_fingerprint: Mapped[str | None] = mapped_column(Text)
-    #: The policy snapshot the creator confirmed when this trigger's runs act
-    #: through more than one account; NULL when it does not split.
+    #: The split (`core`, `grant`) of what the creator confirmed
+    #: (`connections.confirmation`). Every stamp records one; NULL is a legacy
+    #: row stamped before the split existed, judged by its digest alone.
     access_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
     #: kind='event' on a polled event only (`oc8.events.sources`): the
     #: organisation login the event is polled from. It is always the login the

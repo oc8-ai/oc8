@@ -464,11 +464,6 @@ def min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
     return min(frame_eur, narrow_eur)
 
 
-# The old private names, kept for callers that still use them.
-_narrower_surface = narrower_surface
-_min_threshold = min_threshold
-
-
 #: Ordered narrowest-first. A future "company"/org-wide tier slots in
 #: between "department" and "capa_default" -- `tool_policy_source` walks an
 #: ordered list built from this shape rather than assuming exactly two

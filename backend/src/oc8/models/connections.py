@@ -38,8 +38,9 @@ class AgentToolAccess(Base, PkMixin, TenantMixin, TimestampMixin):
     #: What the confirming person saw (agent version, skills, department frame
     #: and setup); a personal target is only used while it is unchanged.
     binding_fingerprint: Mapped[str | None] = mapped_column(Text)
-    #: The policy snapshot the confirming person saw when this binding acts
-    #: through more than one account; NULL when it does not split.
+    #: The split (`core`, `grant`) of what the confirming person saw
+    #: (`connections.confirmation`). Every stamp records one; NULL is a legacy
+    #: row stamped before the split existed, judged by its digest alone.
     binding_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (

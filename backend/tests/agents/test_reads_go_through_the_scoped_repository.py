@@ -218,6 +218,10 @@ ALLOWED: dict[str, str] = {
     ),
     "collab/emit.py": "handoff department-name resolution, same rationale as api/v1/handoffs.py",
     "collab/intake.py": "handoff department-name and team-lead resolution, no human in this path",
+    "events/sources.py": (
+        "a background poller with no human caller, reading its own trigger's agent "
+        "to switch a trigger of an archived or missing agent off"
+    ),
     "evidence/sweep.py": "background retention sweep on its own tenant scope; no human here",
     "models/ops.py": (
         "sweep false-positive: 'department_id' is a column name inside index DDL text, "

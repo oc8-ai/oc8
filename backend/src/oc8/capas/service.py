@@ -767,8 +767,6 @@ async def instantiate_agent(
             bound={binding.integration.name for binding in bindings},
         )
         await _stamp_owner_hire(db, agent=agent, hired_by=hired_by, triggers=created)
-    elif bindings:
-        raise PluginError("only the owner's own hire binds logins")
     return agent
 
 

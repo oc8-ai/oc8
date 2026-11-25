@@ -680,7 +680,11 @@ class PersonalBudgetDefaults(CamelModel):
 
 
 class PersonalDepartmentAdminDTO(CamelModel):
-    """A personal department as an administrator sees it: metadata only."""
+    """A personal department as an administrator sees it: metadata only.
+
+    `pending_confirmation` covers held frame tools only (Ruling FR-I3): a
+    skill held back for the owner, or an agent whose owner confirmation no
+    longer holds, does not set it. The owner's card lists all of it."""
 
     id: str
     owner_member_id: str

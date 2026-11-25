@@ -480,6 +480,10 @@ class PersonalDepartmentSummary:
     follows_default_budget: bool
     created_at: dt.datetime
     #: An administrator's loosening of the frame tools waits for the owner.
+    #: Held frame tools only (Ruling FR-I3): a held skill or an agent whose
+    #: owner confirmation broke does not set it -- telling those apart would
+    #: cost a survey per department on the admin list. The owner's card
+    #: (`departments.owner_confirmation`) lists everything.
     pending_confirmation: bool = False
 
 
