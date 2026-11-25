@@ -491,7 +491,7 @@ async def test_a_late_answer_after_somebody_else_failed_the_run_is_not_recorded(
     turn, no second reply on the messenger."""
     from sqlalchemy import update
 
-    from oc8.runtime.executor import answer_failed_chat_end
+    from oc8.runtime.executor import _CHAT_RUN_FAILED, answer_failed_chat_end
     from oc8.runtime.run_inputs import lock_run_inputs
     from tests.runtime.test_executor import _RecordingChannels
 
@@ -526,7 +526,8 @@ async def test_a_late_answer_after_somebody_else_failed_the_run_is_not_recorded(
     assert [msg.role for msg in messages] == ["user", "assistant", "user"], "no late answer"
     assert "Es sind 3 offen." not in [msg.content for msg in messages]
     assert [i.consumed_step for i in inputs] == [CARRIED_OVER_STEP]
-    assert "Es sind 3 offen." not in [text for _ext, text in fake.said]
+    # The sender still hears that it failed, once, on the run's channel.
+    assert fake.said == [("stale", _CHAT_RUN_FAILED)]
 
 
 def _no_connection(monkeypatch: pytest.MonkeyPatch) -> None:

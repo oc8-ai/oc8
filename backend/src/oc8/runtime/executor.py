@@ -1819,6 +1819,22 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             channel_replies.append(
                                 (run.tenant_id, done_channel, done_external_id, result.output)
                             )
+                    elif run.source == "chat" and new_state in (RunState.DONE, RunState.FAILED):
+                        # Ended elsewhere (the reconciler, a reclaim) while the
+                        # runtime worked: that end answered the transcript but
+                        # tells no messenger, so the sender hears it failed
+                        # here, as on the crash path.
+                        failed_sender = await _current_chat_sender(db, run)
+                        if failed_sender is not None:
+                            failed_channel, failed_external_id = failed_sender
+                            channel_replies.append(
+                                (
+                                    run.tenant_id,
+                                    failed_channel,
+                                    failed_external_id,
+                                    _CHAT_RUN_FAILED,
+                                )
+                            )
                     if carry_over:
                         from oc8.chat.carry_over import stage_carried_over_turn
 
