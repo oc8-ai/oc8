@@ -270,15 +270,12 @@ async def test_a_personal_agent_is_readable_by_id_only_like_its_department(
             assert r.status_code == status, (path, r.text)
 
 
-@pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason="A4 content privacy: run_reach lands in PR 3"
-)
 async def test_an_operator_cannot_read_a_personal_agents_run_by_id(
     app_session: AppSessionFactory,
 ) -> None:
-    """The plan's "Known gap", narrowed by S2 to run content: `operator` holds
-    `run:view` tenant-wide, so `run_reach(...).every_agent` still reaches a
-    personal agent's run. PR 3 flips this."""
+    """The plan's "Known gap", closed in PR 3: `operator` holds `run:view`
+    tenant-wide, so `run_reach(...).every_agent` used to reach a personal
+    agent's run; `RunReach.private` now takes it out of that branch too."""
     t = await _setup(app_session)
     async with app_session(t.id) as db:
         run = m.AgentRun(tenant_id=t.id, agent_id=t.pia, state="done", context={})

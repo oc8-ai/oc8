@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import select
+from sqlalchemy import Select, select
 
 from oc8.models.core import (
     DEPARTMENT_KIND_PERSONAL,
@@ -37,17 +37,44 @@ def personal_reachable(
     return mine or manage_all
 
 
+def is_private_to(
+    scope: DepartmentScope, *, kind: str | None, department_id: uuid.UUID | None
+) -> bool:
+    """Whether what an agent of this department did is private to somebody
+    other than this caller (spec A4, ruling R1): its runs, run files, memory,
+    activity details and approval payloads. True for a `personal` department
+    the caller does not own (`scope.personal_owned`); always False for any
+    other kind.
+
+    The ONE predicate every content reader asks -- no tenant-wide grant, no
+    every-agent reach and no `decide_any` overrides it, because ownership is
+    `department.owner_member_id` and no role can make anybody the owner. It
+    fails closed: a department whose owner has left is owned by nobody, so it
+    is private to everybody. `private_department_ids` is the same rule as a
+    query, for readers that narrow a statement."""
+    return kind == DEPARTMENT_KIND_PERSONAL and department_id not in scope.personal_owned
+
+
+def private_department_ids(scope: DepartmentScope) -> Select[tuple[uuid.UUID]]:
+    """`is_private_to`, as a statement: the ids of every personal department
+    this caller does not own -- all of them when `scope.personal_owned` is
+    empty. Soft-deleted departments included: their agents' history stays
+    private after the department goes. Tenant-scoped by RLS."""
+    stmt = select(Department.id).where(Department.kind == DEPARTMENT_KIND_PERSONAL)
+    if scope.personal_owned:
+        stmt = stmt.where(Department.id.not_in(scope.personal_owned))
+    return stmt
+
+
 def personal_content_hidden(
     *, kind: str | None, department_id: uuid.UUID | None, scope: DepartmentScope
 ) -> bool:
     """Whether a caller who reached an agent sees its metadata only (spec
-    decision 3). True for an agent of a `personal` department read by anybody
-    but the owner's seat -- the one seat there, and the one that may write its
-    agents (`api.deps.authorize_agent_write` asks the same question). A
-    `department:manage` holder who got past `personal_reachable` sees name,
-    role, tools and status, never the mission, instructions or anything the
-    agent did. Any other department: always False."""
-    return kind == DEPARTMENT_KIND_PERSONAL and department_id not in scope.agent_manage_departments
+    decision 3): `is_private_to` under its PR 1 name, kept so every call site
+    asks the one rule. A `department:manage` holder who got past
+    `personal_reachable` sees name, role, tools and status, never the
+    mission, instructions or anything the agent did."""
+    return is_private_to(scope, kind=kind, department_id=department_id)
 
 
 async def visible_departments(
