@@ -36,12 +36,21 @@ Every `tool.call` event names the run it belongs to (and the chat, for Copilot
 chats). Each dispatched call also gets a `tool.result` event with its outcome
 (`ok` or `error`) and its duration.
 
-- A `tool.call` event stores the call's arguments. The exception is a call
-  to an edition tool: its `tool.call` event names only the tool, and its own
-  `edition_tool.called` event records the call without arguments or output.
+- A `tool.call` event stores the call's arguments. On in-process and
+  isolated runs, the model's `justification` for the call is removed from
+  them first. An approval card shows the justification instead. The exception
+  is a call to an edition tool: its `tool.call` event names only the tool, and
+  its own `edition_tool.called` event records the call without arguments or
+  output.
 - A built-in oc8 tool that runs (a knowledge search, a budget overview) is
   recorded as `allow` with its `tool.result`, also on a Copilot chat with no
   connection.
+- Such a tool can run although the connection frame refused it, because that
+  refusal concerns the run's connection, not the built-in tool. Its row
+  carries `basis: core_read_outside_frame`. The row also holds the frame's own
+  verdict under `pdp`, and its reason starts with
+  `core read run outside the connection frame`. That tells it apart from an
+  `allow` the policy gave.
 - A `tool.result` event never stores the tool's output or the call's
   arguments. It holds the tool, the run (and chat), the connection (omitted
   for oc8's built-in tools), the outcome and the duration in milliseconds.
