@@ -67,6 +67,14 @@ class DepartmentDTO(CamelModel):
     kpi_label_translations: dict[str, str] = {}
 
 
+class DepartmentDetailDTO(DepartmentDTO):
+    #: True when this reader sees a member's personal department without
+    #: being its owner (`departments.repo.personal_content_hidden`): its task
+    #: board and what its agents did are not theirs to see (the board answers
+    #: 404), so the page shows a notice instead of asking for it.
+    content_hidden: bool = False
+
+
 class TaskDTO(CamelModel):
     id: str
     department_id: str

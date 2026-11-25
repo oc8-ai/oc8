@@ -70,7 +70,7 @@ from oc8.departments.personal import (
 from oc8.departments.repo import is_private_to, visible_department, visible_departments
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.schemas.base import CamelModel
-from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDTO, TaskDTO
+from oc8.schemas.dto import AgentDTO, BoardDTO, DepartmentDetailDTO, DepartmentDTO, TaskDTO
 from oc8.schemas.paging import Page
 
 logger = logging.getLogger(__name__)
@@ -494,20 +494,24 @@ async def _visible_department_or_404(
 
 @router.get(
     "/departments/{dept_id}",
-    response_model=DepartmentDTO,
+    response_model=DepartmentDetailDTO,
 )
 async def get_department(
     dept_id: uuid.UUID,
     request: Request,
     db: DbSession,
     actor: Annotated[HumanActor, Depends(require_departmental(perm(DEPARTMENT, VIEW)))],
-) -> DepartmentDTO:
+) -> DepartmentDetailDTO:
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
     dept = await _visible_department_or_404(
         db, actor=actor, tenant_wide=tenant_wide, dept_id=dept_id, authority=authority
     )
-    return department_to_dto(dept)
+    return DepartmentDetailDTO(
+        **department_to_dto(dept).model_dump(),
+        # The board's own question (`get_board`), asked once more here.
+        content_hidden=is_private_to(actor.scope, kind=dept.kind, department_id=dept.id),
+    )
 
 
 @router.get(

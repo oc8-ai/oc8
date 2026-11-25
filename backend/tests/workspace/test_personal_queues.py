@@ -239,6 +239,27 @@ async def test_admin_does_not_see_personal_tasks_or_the_department_board(
         assert str(w.pia_task) in {t["id"] for t in owner_board.json()["tasks"]}
 
 
+async def test_the_department_detail_says_whether_its_content_is_hidden(
+    app_session: AppSessionFactory,
+) -> None:
+    """The department page asks `contentHidden` before it asks for the board:
+    an admin reading a member's personal department gets True (the board
+    would be a 404), the owner and every standard department False."""
+    w = await _world(app_session)
+    async with _http() as http:
+        admin = await http.get(f"/api/v1/departments/{w.personal}", headers=_admin(w))
+        assert admin.status_code == 200, admin.text
+        assert admin.json()["contentHidden"] is True
+
+        shared = await http.get(f"/api/v1/departments/{w.shared}", headers=_admin(w))
+        assert shared.status_code == 200, shared.text
+        assert shared.json()["contentHidden"] is False
+
+        owner = await http.get(f"/api/v1/departments/{w.personal}", headers=_owner(w))
+        assert owner.status_code == 200, owner.text
+        assert owner.json()["contentHidden"] is False
+
+
 async def test_admin_does_not_see_a_personal_agents_board_records(
     app_session: AppSessionFactory,
 ) -> None:
