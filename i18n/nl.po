@@ -1,5 +1,5 @@
 msgid ""
-msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-23 07:48+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
+msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-25 09:01+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
 
 msgid " (opens in a new tab)"
 msgstr " (opent in een nieuw tabblad)"
@@ -2596,7 +2596,6 @@ msgstr "Uit de store"
 msgid "From the connection's setup"
 msgstr "Vanaf de verbindingssetup"
 
-#, fuzzy
 msgid "from the department"
 msgstr "van de afdeling"
 
@@ -2604,195 +2603,150 @@ msgstr "van de afdeling"
 msgid "from their sign-in"
 msgstr "van hun inlog"
 
-#, fuzzy
 msgid "Full access to every screen and department. Off means a standard user, limited to their department seats."
 msgstr "Volledige toegang tot elk scherm en elke afdeling. Uit betekent een standaardgebruiker, beperkt tot de seats in zijn afdeling."
 
-#, fuzzy
 msgid "Full check"
 msgstr "Volledige controle"
 
-#, fuzzy
 msgid "Function"
 msgstr "Functie"
 
-#, fuzzy
 msgid "Further credentials"
 msgstr "Aanvullende inloggegevens"
 
-#, fuzzy
 msgid "General"
 msgstr "Algemeen"
 
-#, fuzzy
 msgid "Generate"
 msgstr "Genereren"
 
-#, fuzzy
 msgid "Generating…"
 msgstr "Genereren…"
 
 msgid "Get codes by email"
-msgstr ""
+msgstr "Ontvang codes per e-mail"
 
-#, fuzzy
 msgid "Get notified even when this tab isn't open."
-msgstr "Krijg meldingen, ook als dit tabblad niet open staat."
+msgstr "Krijg meldingen, ook als dit tabblad niet openstaat."
 
-#, fuzzy
 msgid "Git repository or archive"
 msgstr "Git-repository of archief"
 
-#, fuzzy
 msgid "Give a reason first — a rejection with none is a dead end for the agent that has to act on it"
 msgstr "Geef eerst een reden — een afwijzing zonder reden is een doodlopende weg voor de agent die ermee aan de slag moet"
 
-#, fuzzy
 msgid "Give each endpoint a name first."
 msgstr "Geef eerst elk endpoint een naam."
 
 msgid "Give this agent a mailbox first"
 msgstr "Geef deze agent eerst een mailbox"
 
-#, fuzzy
 msgid "Give this tool a name."
 msgstr "Geef deze tool een naam."
 
-#, fuzzy
 msgid "Go to my work"
 msgstr "Naar mijn werk"
 
-#, fuzzy
 msgid "Goal"
 msgstr "Doel"
 
-#, fuzzy
 msgid "Goal / OKR"
 msgstr "Doel / OKR"
 
-#, fuzzy
 msgid "Goes to the running answer"
 msgstr "Gaat naar het lopende antwoord"
 
-#, fuzzy
 msgid "Good answer"
 msgstr "Goed antwoord"
 
 msgid "Grace period (days)"
-msgstr ""
+msgstr "Wachttijd (dagen)"
 
-#, fuzzy
 msgid "Granted company-wide access"
 msgstr "Bedrijfsbrede toegang verleend"
 
-#, fuzzy
 msgid "grants nothing"
 msgstr "verleent niets"
 
-#, fuzzy
 msgid "Group by"
 msgstr "Groeperen op"
 
-#, fuzzy
 msgid "Guardrails"
 msgstr "Vangrails"
 
-#, fuzzy
 msgid "Guardrails (one per line)"
 msgstr "Vangrails (één per regel)"
 
-#, fuzzy
 msgid "Guardrails saved"
 msgstr "Vangrails opgeslagen"
 
-#, fuzzy
 msgid "Guided setup"
 msgstr "Begeleide setup"
 
-#, fuzzy
 msgid "Handed to another agent"
 msgstr "Overgedragen aan een andere agent"
 
-#, fuzzy
 msgid "Handed work to a colleague"
 msgstr "Werk aan een collega overgedragen"
 
-#, fuzzy
 msgid "Handing work to a colleague"
 msgstr "Werk aan een collega overdragen"
 
-#, fuzzy
 msgid "handoff"
 msgstr "overdracht"
 
-#, fuzzy
 msgid "Handoff type deleted"
 msgstr "Overdrachtstype verwijderd"
 
-#, fuzzy
 msgid "Handoff types"
 msgstr "Overdrachtstypen"
 
-#, fuzzy
 msgid "Handoff updated"
 msgstr "Overdracht bijgewerkt"
 
-#, fuzzy
 msgid "Handoffs"
 msgstr "Overdrachten"
 
-#, fuzzy
 msgid "Hands over:"
 msgstr "Geeft door:"
 
-#, fuzzy
 msgid "hard"
 msgstr "hard"
 
-#, fuzzy
 msgid "Hard limit exceeded"
 msgstr "Harde limiet overschreden"
 
-#, fuzzy
 msgid "Hard limit exceeded — new tasks are paused."
 msgstr "Harde limiet overschreden — nieuwe taken zijn gepauzeerd."
 
 msgid "Header"
 msgstr "Kop"
 
-#, fuzzy
 msgid "Held by"
 msgstr "Vastgehouden door"
 
-#, fuzzy
 msgid "hide"
 msgstr "verbergen"
 
-#, fuzzy
 msgid "Hide chats"
 msgstr "Chats verbergen"
 
-#, fuzzy
 msgid "Hide the text"
 msgstr "Tekst verbergen"
 
-#, fuzzy
 msgid "Hide work panel"
 msgstr "Werkpaneel verbergen"
 
-#, fuzzy
 msgid "Hire agent"
 msgstr "Agent inhuren"
 
-#, fuzzy
 msgid "Hire an agent into it from the Agents page."
 msgstr "Huur op de pagina Agents een agent in."
 
-#, fuzzy
 msgid "History"
 msgstr "Geschiedenis"
 
-#, fuzzy
 msgid "How do you describe the endpoints?"
 msgstr "Hoe beschrijf je de endpoints?"
 
@@ -2800,23 +2754,18 @@ msgstr "Hoe beschrijf je de endpoints?"
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr "Hoe grondig dit model nadenkt als chat noch agent een niveau instelt. Een aangepaste waarde gaat ongewijzigd naar de aanbieder."
 
-#, fuzzy
 msgid "How many tool-using steps this agent may take in one run before it stops. Blank inherits the framework default (currently high, not unlimited -- budget/token metering only checks once per run)."
 msgstr "Hoeveel stappen met tools de agent in één run mag zetten voordat hij stopt. Leeg neemt de standaard van het framework over (momenteel hoog, niet onbeperkt -- budget- en tokenmeting controleert maar één keer per run)."
 
-#, fuzzy
 msgid "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too."
 msgstr "Hoeveel de agent op het model per beurt mag schrijven voordat oc8 hem afkapt. Laat leeg voor de serverstandaard (4096, of OC8_DEFAULT_MAX_TOKENS). Verhoog dit bij redeneermodellen voor grote taken — verborgen redeneertokens tellen ook mee voor het budget."
 
-#, fuzzy
 msgid "How should I work on chats in this project?"
 msgstr "Hoe moet ik werken aan chats in dit project?"
 
-#, fuzzy
 msgid "How should this base get content?"
 msgstr "Hoe moet de kennisbank zijn inhoud krijgen?"
 
-#, fuzzy
 msgid "Human oversight"
 msgstr "Menselijk toezicht"
 
@@ -2824,147 +2773,111 @@ msgstr "Menselijk toezicht"
 msgid "human reviewer"
 msgstr "menselijke beoordelaar"
 
-#, fuzzy
 msgid "Human reviewer"
 msgstr "Menselijke beoordelaar"
 
-#, fuzzy
 msgid "I check it and tell you when it matters"
 msgstr "Ik controleer het en laat het je weten wanneer het ertoe doet"
 
-#, fuzzy
 msgid "I'm {name}. Tell me what to keep an eye on and I'll take it from there."
-msgstr "Ik ben {name}. Vertel me waar ik een oogje op moet houden, dan pak ik het daar op."
+msgstr "Ik ben {name}. Zeg me waar ik op moet letten, dan pak ik het vanaf daar op."
 
-#, fuzzy
 msgid "I've saved it"
 msgstr "Ik heb het opgeslagen"
 
-#, fuzzy
 msgid "I've saved these"
 msgstr "Ik heb deze opgeslagen"
 
-#, fuzzy
 msgid "Icon"
 msgstr "Pictogram"
 
-#, fuzzy
 msgid "If that email exists and a mail server is configured, a reset link was sent."
 msgstr "Als het e-mailadres bestaat en een mailserver is geconfigureerd, is er een resetlink verstuurd."
 
-#, fuzzy
 msgid "If this archive was taken on a different oc8 instance, restoring it also replaces every member and role this company has with the source instance's — including your own membership. Because those rows carry sign-in identities from the source instance's own login provider, this can remove your own access to this company."
 msgstr "Als het archief op een andere oc8-instantie is gemaakt, vervangt herstellen ook elk lid en elke rol van dit bedrijf van de broninstantie — inclusief je eigen lidmaatschap. Omdat rijen inlogidentiteiten van de loginprovider van de broninstantie bevatten, kan dit je eigen toegang tot het bedrijf verwijderen."
 
-#, fuzzy
 msgid "Import"
 msgstr "Importeren"
 
-#, fuzzy
 msgid "Import failed"
 msgstr "Importeren mislukt"
 
-#, fuzzy
 msgid "Import from a source"
-msgstr "Importbron"
+msgstr "Importeren vanuit een bron"
 
-#, fuzzy
 msgid "Import from source"
-msgstr "Importbron"
+msgstr "Importeren uit bron"
 
-#, fuzzy
 msgid "Importing…"
 msgstr "Importeren…"
 
-#, fuzzy
 msgid "In archive"
 msgstr "In archief"
 
-#, fuzzy
 msgid "In Progress"
 msgstr "In uitvoering"
 
-#, fuzzy
 msgid "In the user's context"
 msgstr "In de context van de gebruiker"
 
-#, fuzzy
 msgid "Included automatically: modifying requires read access."
 msgstr "Automatisch inbegrepen: wijzigen vereist leestoegang."
 
-#, fuzzy
 msgid "Index type"
 msgstr "Indextype"
 
-#, fuzzy
 msgid "info"
 msgstr "info"
 
-#, fuzzy
 msgid "Ingest sources into oc8"
-msgstr "Bronnen in oc8 inlezen"
+msgstr "Importeer bronnen in oc8"
 
-#, fuzzy
 msgid "Inherited"
 msgstr "Overgenomen"
 
-#, fuzzy
 msgid "Input"
 msgstr "Invoer"
 
-#, fuzzy
 msgid "Input / 1M"
 msgstr "Invoer / 1M"
 
-#, fuzzy
 msgid "Input tokens"
 msgstr "Invoertokens"
 
-#, fuzzy
 msgid "Insert into editor"
 msgstr "In editor invoegen"
 
-#, fuzzy
 msgid "Install"
 msgstr "Installeren"
 
-#, fuzzy
 msgid "Installation failed."
 msgstr "Installatie mislukt."
 
-#, fuzzy
 msgid "Installed"
 msgstr "Geïnstalleerd"
 
-#, fuzzy
 msgid "Installed, not available yet"
 msgstr "Geïnstalleerd, nog niet beschikbaar"
 
-#, fuzzy
 msgid "Installing…"
 msgstr "Installeren…"
 
-#, fuzzy
 msgid "Instance already initialized. Please log in."
 msgstr "De instantie is al geïnitialiseerd. Log in."
 
-#, fuzzy
 msgid "Instance not yet initialized. Please complete setup."
 msgstr "De instantie is nog niet geïnitialiseerd. Rond de setup af."
 
-#, fuzzy
 msgid "Instructions"
 msgstr "Instructies"
 
-#, fuzzy
 msgid "Instructions saved"
 msgstr "Instructies opgeslagen"
 
-#, fuzzy
 msgid "interrupted"
 msgstr "onderbroken"
 
-#, fuzzy
 msgid "Invalid"
 msgstr "Ongeldig"
 
@@ -2972,7 +2885,6 @@ msgstr "Ongeldig"
 msgid "Invalid code"
 msgstr "Ongeldige code"
 
-#, fuzzy
 msgid "Invite"
 msgstr "Uitnodigen"
 
@@ -2980,25 +2892,20 @@ msgid "It has not worked yet."
 msgstr "Het heeft nog niet gewerkt."
 
 msgid "It listens on the mailbox the agent uses for its tools. "
-msgstr ""
+msgstr "Het luistert naar de mailbox die de agent voor zijn tools gebruikt. "
 
-#, fuzzy
 msgid "its model configuration"
 msgstr "zijn modelconfiguratie"
 
-#, fuzzy
 msgid "Its open handoffs are rejected and agent runs working on them are asked to stop. A run waiting for an answer or an approval stops once it resumes. Completed stages stay as they are. This cannot be undone."
-msgstr "De open overdrachten worden afgewezen en agent-runs die eraan werken, wordt gevraagd te stoppen. Een run die op een antwoord of goedkeuring wacht, stopt zodra hij verdergaat. Voltooide fasen blijven zoals ze zijn. Dit kan niet ongedaan worden gemaakt."
+msgstr "De open overdrachten worden afgewezen en agent-runs die eraan werken, worden gevraagd te stoppen. Een run die op een antwoord of goedkeuring wacht, stopt zodra hij verdergaat. Voltooide fasen blijven zoals ze zijn. Dit kan niet ongedaan worden gemaakt."
 
-#, fuzzy
 msgid "Its runs then use the creator's personal accounts. Anyone who can reach this trigger can start them."
 msgstr "Zijn runs gebruiken dan de persoonlijke accounts van de maker. Iedereen die de trigger kan bereiken, kan ze starten."
 
-#, fuzzy
 msgid "Its scheduled follow-ups are switched off too."
 msgstr "Ook de geplande follow-ups zijn uitgezet."
 
-#, fuzzy
 msgid "Judge against this department's model"
 msgstr "Beoordelen tegen het model van de afdeling"
 
@@ -3082,7 +2989,7 @@ msgid "Last action"
 msgstr "Laatste actie"
 
 msgid "Last checked {time}"
-msgstr ""
+msgstr "Laatst gecontroleerd op {time}"
 
 #, fuzzy
 msgid "Last run"
@@ -6187,7 +6094,6 @@ msgstr "Tabel"
 msgid "Tamper-evident record of every decision."
 msgstr "Manipulatiebestendig overzicht van elke beslissing."
 
-#, fuzzy
 msgid "Target"
 msgstr "Doel"
 
