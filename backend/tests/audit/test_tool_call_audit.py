@@ -419,3 +419,38 @@ async def test_a_failing_result_audit_does_not_fail_the_call(
     assert status == "done"
     assert any("could not audit the result" in r.getMessage() for r in caplog.records)
     assert len(await _tool_events(app_session, tenant, "tool.call:read_a")) == 1
+
+
+async def test_a_gateway_replay_audits_the_replayed_outcome(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replayed write is audited as ok, and a replayed error as an error."""
+    from tests.api.test_mcp_gateway import _FakeMcp, _rpc, _seed, _token
+
+    from oc8.agent import mcp_pool
+    from oc8.agent.tool_idempotency import record_invocation
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    _FakeMcp.calls = []
+    tenant = uuid.uuid4()
+    failed = {"model": "sale.order", "qty": 1}
+    async with app_session(tenant) as db:
+        agent_id, run_id, task_id = await _seed(db, tenant)
+        await record_invocation(
+            db,
+            tenant_id=tenant,
+            task_id=task_id,
+            tool="create_record",
+            arguments=failed,
+            result="ERROR: SECRET-ROW-42 rejected",
+        )
+    token = _token(tenant, agent_id, run_id)
+    ok = {"model": "sale.order", "qty": 2}
+    for arguments in (ok, ok, failed):
+        await _rpc(token, "tools/call", {"name": "create_record", "arguments": arguments})
+    await mcp_pool.close_all()
+
+    assert len(_FakeMcp.calls) == 1, "the repeat and the recorded error were replayed"
+    results = await _tool_events(app_session, tenant, "tool.result:create_record")
+    assert [r.resource["outcome"] for r in results] == ["ok", "ok", "error"]
+    assert "SECRET-ROW-42" not in json.dumps([r.resource for r in results])

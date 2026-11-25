@@ -1296,7 +1296,14 @@ async def _call_tool(
                 arguments=tc.arguments,
                 output=replay,
             )
-            await _audit_result(db, run=run, agent=agent, conn=conn, tool=tc.name, ok=True)
+            await _audit_result(
+                db,
+                run=run,
+                agent=agent,
+                conn=conn,
+                tool=tc.name,
+                ok=not replay.startswith("ERROR:"),
+            )
             await db.commit()
             return _tool_result(replay)
 

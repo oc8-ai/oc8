@@ -1,8 +1,9 @@
 """Find a run's or a chat's tool calls in the audit log (spec §5.7).
 
-Tool events (`category = 'tool_action'`) now name `run_id` and, for a chat run,
-`chat_session_id` in `resource`; `GET /audit` filters on both. Two partial
-expression indexes keep that lookup off a scan of the whole log. Both are built
+Tool events now name `run_id` and, for a chat run, `chat_session_id` in
+`resource`; `GET /audit` filters every event on both (not only tool events, so
+the indexes are not partial). Two expression indexes keep that lookup off a
+scan of the whole log. Both are built
 CONCURRENTLY outside the migration transaction, without a statement timeout
 (the log only grows), so writers are never blocked.
 
@@ -63,8 +64,7 @@ def upgrade() -> None:
     for name, key in _INDEXES.items():
         _build_index_concurrently(
             name,
-            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {_TABLE} "
-            f"((resource->>'{key}')) WHERE category = 'tool_action'",
+            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {name} ON {_TABLE} ((resource->>'{key}'))",
         )
 
 

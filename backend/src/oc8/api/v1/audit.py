@@ -21,7 +21,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Select, func, select
+from sqlalchemy import ColumnElement, Select, Text, func, literal_column, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from oc8 import models as m
@@ -99,13 +99,20 @@ def _filtered(
         stmt = stmt.where(m.AuditEvent.ts >= from_ts)
     if to_ts:
         stmt = stmt.where(m.AuditEvent.ts <= to_ts)
-    # Every event of a run or chat, tool calls included (spec §5.7): they name
-    # it in `resource` (migration 0138 indexes the tool events' keys).
+    # Every event that names the run or chat in `resource`, tool calls
+    # included (spec §5.7).
     if run_id is not None:
-        stmt = stmt.where(m.AuditEvent.resource["run_id"].astext == str(run_id))
+        stmt = stmt.where(_resource_key("run_id") == str(run_id))
     if chat_session_id is not None:
-        stmt = stmt.where(m.AuditEvent.resource["chat_session_id"].astext == str(chat_session_id))
+        stmt = stmt.where(_resource_key("chat_session_id") == str(chat_session_id))
     return stmt
+
+
+def _resource_key(key: str) -> ColumnElement[str]:
+    """`resource ->> '<key>'` with the key as a literal, never a bound
+    parameter: only then is it the expression migration 0138 indexes, under a
+    generic prepared plan as well. `key` is one of this module's constants."""
+    return m.AuditEvent.resource.op("->>", return_type=Text)(literal_column(f"'{key}'"))
 
 
 @router.get("/audit", response_model=AuditPageDTO, dependencies=[Depends(_require_read)])
