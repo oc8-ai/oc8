@@ -458,14 +458,15 @@ function ConversationBody(props: ConversationProps) {
     : null;
   const { data: replySteering } = useRunSteering(replyRunId);
   const sendReplyInput = useSendRunInput(replyRunId);
+  // Ruling R10: while a question is open the composer answers it, even when
+  // another answer of the chat runs -- no steering, no queueing then.
   const steerReply =
-    !!replyRunId && !!replySteering?.mayWrite && replySteering.acceptsInputs && busy;
+    !pending && !!replyRunId && !!replySteering?.mayWrite && replySteering.acceptsInputs && busy;
   // Spec §5.5: in an ordinary chat a message can also wait for the running
   // answer and become the next one ("Send after") -- never a parallel turn.
-  // The Live tab keeps its own send. A question the run is parked on is not
-  // `busy`: the composer answers it instead (Ruling R10).
+  // The Live tab keeps its own send.
   const queueReply =
-    conv.session?.kind === "chat" && !!replyRunId && !!replySteering?.mayWrite && busy;
+    !pending && conv.session?.kind === "chat" && !!replyRunId && !!replySteering?.mayWrite && busy;
   // Ruling 51: a new chat's model is chosen before its first message. The
   // pick is held here and written right after the chat exists, before the
   // first message goes out (one after the other, never racing).
@@ -1383,7 +1384,7 @@ function ConversationBody(props: ConversationProps) {
           onModelPick={firstMessage ? setHeldModel : undefined}
           effortValue={heldEffort !== undefined ? heldEffort : (conv.session?.effort ?? null)}
           onEffortPick={firstMessage ? setHeldEffort : undefined}
-          sendWhileBusy={steerReply || !!props.sendWhileBusy}
+          sendWhileBusy={steerReply || !!pending || !!props.sendWhileBusy}
           onSendAfter={queueReply ? (s) => void onSendAfter(s) : undefined}
           agentItems={props.agentItems}
           onAddressAgent={props.onAddressAgent}

@@ -556,6 +556,30 @@ describe("writing to the own running answer (Ruling 52)", () => {
     expect(screen.getAllByText("then April")).toHaveLength(1);
   });
 
+  it("while a question is open the composer answers it: no steer or queue (Ruling R10)", async () => {
+    // Another run of the chat is busy, and the chat's run "rq" is parked on
+    // a question.
+    conv.session = detail({
+      activeRuns: [
+        { runId: "r1", replyToId: "u1", state: "running" },
+        { runId: "rq", replyToId: "u1", state: "waiting_for_input" },
+      ],
+      pendingQuestion: { clarificationId: "c1", runId: "rq", text: "Which month?", questions: [] },
+    });
+    conv.liveRunIds = ["r1", "rq"];
+    steering.value = { mayWrite: true, acceptsInputs: true, inputs: [] };
+    const post = vi.spyOn(api, "post").mockResolvedValue(undefined);
+    mount("s");
+    expect(screen.queryByRole("button", { name: "Steer now" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Send after" })).toBeNull();
+    expect(screen.queryByText("Goes to the running answer")).toBeNull();
+    type("March");
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith("/chat/sessions/s/questions/c1/answer", expect.anything()),
+    );
+    expect(post).not.toHaveBeenCalledWith("/runs/r1/inputs", expect.anything());
+  });
+
   it("the live tab keeps its own send", async () => {
     conv.session = detail({
       kind: "live",
