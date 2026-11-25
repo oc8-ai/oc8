@@ -439,9 +439,16 @@ function AgentDetail() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {/* The run list behind the run-state badge is the owner's alone
-                (a 404 for anybody else): they see the agent's own state. */}
+                (a 404 for anybody else); the current run's state is metadata
+                they keep (R2). */}
             {agent.contentHidden ? (
-              <StatusPill status={status} />
+              <HeaderStatusPill
+                agentId={agent.id}
+                status={status}
+                runId={agent.currentRunId ?? null}
+                metadataOnly
+                runState={agent.currentRunState ?? null}
+              />
             ) : (
               <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
             )}
@@ -2543,12 +2550,22 @@ export function HeaderStatusPill({
   agentId,
   status,
   runId,
+  metadataOnly = false,
+  runState = null,
 }: {
   agentId: string;
   status: import("@/lib/mock-data").AgentStatus;
   runId: string | null;
+  /** A personal agent read by anybody but its owner: `runId` is the agent's
+   *  current run and `runState` its state from the detail; no run is asked for. */
+  metadataOnly?: boolean;
+  runState?: string | null;
 }) {
-  const active = useAgentActiveRunState(agentId, runId);
+  const active = useAgentActiveRunState(
+    agentId,
+    runId,
+    metadataOnly ? { knownState: runState } : undefined,
+  );
   return active ? <RunStateBadge state={active} /> : <StatusPill status={status} />;
 }
 

@@ -14,6 +14,7 @@ Nora has the same three. `admin` is an `org_admin`.
 
 from __future__ import annotations
 
+import datetime as dt
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -29,6 +30,7 @@ from oc8 import models as m
 from oc8.auth import get_identity_provider
 from oc8.authz.permissions import SEAT_APPROVER
 from oc8.boards.sharing import board_audience
+from oc8.copilot.profile import offboard_member
 from oc8.main import create_app
 from tests.conftest import AppSessionFactory
 
@@ -258,6 +260,26 @@ async def test_the_department_detail_says_whether_its_content_is_hidden(
         owner = await http.get(f"/api/v1/departments/{w.personal}", headers=_owner(w))
         assert owner.status_code == 200, owner.text
         assert owner.json()["contentHidden"] is False
+
+
+async def test_a_departed_owners_department_stays_hidden_from_an_admin(
+    app_session: AppSessionFactory,
+) -> None:
+    """Offboarding the owner does not hand their department's content to an
+    admin: the detail still says `contentHidden`."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        owner = (
+            await db.execute(select(m.OrgMember).where(m.OrgMember.subject == "owner"))
+        ).scalar_one()
+        await offboard_member(db, tenant_id=w.tenant, member_id=owner.id)
+        owner.deleted_at = dt.datetime.now(tz=dt.UTC)
+        owner.subject = "owner#gone"
+        await db.flush()
+    async with _http() as http:
+        admin = await http.get(f"/api/v1/departments/{w.personal}", headers=_admin(w))
+        assert admin.status_code == 200, admin.text
+        assert admin.json()["contentHidden"] is True
 
 
 async def test_admin_does_not_see_a_personal_agents_board_records(

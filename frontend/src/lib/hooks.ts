@@ -2211,10 +2211,19 @@ const ACTIVE_RUN_RANK: Record<string, number> = {
  *  run this page just started, known before the list has caught up.
  *
  *  Each state is the run's live "run.status" word where one has arrived, laid
- *  over the listed state exactly as useRun does: the list can lag behind it. */
-export function useAgentActiveRunState(agentId: string, currentRunId: string | null) {
-  const runs = useAgentRuns(agentId, { limit: 20, offset: 0 });
-  const current = useRun(currentRunId);
+ *  over the listed state exactly as useRun does: the list can lag behind it.
+ *
+ *  `metadataOnly`: a personal agent read by anybody but its owner, whose runs
+ *  are a 404 for them. Neither the list nor the run is asked for; the state
+ *  is the detail's `currentRunState` for `currentRunId`, followed by its
+ *  "run.status" events (metadata, R2). */
+export function useAgentActiveRunState(
+  agentId: string,
+  currentRunId: string | null,
+  metadataOnly?: { knownState: string | null },
+) {
+  const runs = useAgentRuns(metadataOnly ? "" : agentId, { limit: 20, offset: 0 });
+  const current = useRun(metadataOnly ? null : currentRunId);
   const listed = (runs.data?.items ?? []).filter((r) => r.agentId === agentId);
   const ids = [...new Set([...(currentRunId ? [currentRunId] : []), ...listed.map((r) => r.id)])];
   // Observers only: the cache entry is written by the "run.status" patcher,
@@ -2229,6 +2238,7 @@ export function useAgentActiveRunState(agentId: string, currentRunId: string | n
   const states = ids.map((id, i) => {
     const fromEvent = (live[i]?.data as RunLiveState | null | undefined)?.state;
     if (fromEvent) return fromEvent;
+    if (id === currentRunId && metadataOnly) return metadataOnly.knownState ?? "";
     if (id === currentRunId && current.data) return current.data.state;
     return listed.find((r) => r.id === id)?.state ?? "";
   });

@@ -265,3 +265,32 @@ async def test_a_standard_agent_is_unchanged_for_an_admin(
         for path in ("instructions/history", "versions", "instruction-files", "triggers"):
             sub = await http.get(f"/api/v1/agents/{w.standard_agent}/{path}", headers=h)
             assert sub.status_code == 200, (path, sub.text)
+
+
+async def test_an_admin_keeps_a_personal_agents_run_state(
+    app_session: AppSessionFactory,
+) -> None:
+    """R2: the state of the run a personal agent is on is metadata. An admin
+    sees which run and that it waits for approval, never what it does."""
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        run = m.AgentRun(
+            tenant_id=w.tenant,
+            agent_id=w.personal_agent,
+            state="waiting_for_approval",
+            context={"task": _TASK},
+        )
+        db.add(run)
+        await db.flush()
+        run_id = run.id
+    async with _http() as http:
+        r = await http.get(
+            f"/api/v1/agents/{w.personal_agent}",
+            headers=_headers(w.tenant, "admin", "org_admin"),
+        )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["contentHidden"] is True
+    assert body["currentRunId"] == str(run_id)
+    assert body["currentRunState"] == "waiting_for_approval"
+    assert _TASK not in r.text

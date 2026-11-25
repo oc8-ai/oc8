@@ -148,6 +148,20 @@ describe("a personal agent's tabs for a reader who is not its owner", () => {
     expect(requested(`/agents/${AGENT_ID}/live`)).toBe(false);
   });
 
+  it("keeps the run state in the header without asking for a run", async () => {
+    serve({
+      ...AGENT,
+      status: "waiting_for_approval",
+      contentHidden: true,
+      currentRunState: "waiting_for_approval",
+    } as typeof AGENT & { contentHidden: boolean });
+    await openTab("overview");
+    expect(await screen.findByText(/waiting for approval/i)).toBeInTheDocument();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(requested(`/agents/${AGENT_ID}/runs`)).toBe(false);
+    expect(requested("/runs/")).toBe(false);
+  });
+
   it("owner sees the tabs as before", async () => {
     serve({ ...AGENT, contentHidden: false });
     await openTab("files");

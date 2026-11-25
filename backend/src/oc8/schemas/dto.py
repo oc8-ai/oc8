@@ -875,6 +875,10 @@ class AgentDetailDTO(AgentDTO):
     #: detail screen can only show a live log for a run started in that same
     #: browser tab, so a scheduled run happens invisibly.
     current_run_id: str | None = None
+    #: That run's state (`queued`, `running`, `waiting_for_approval`, ...), so
+    #: the header shows it on the first render. Metadata: kept for a reader
+    #: who sees a personal agent's metadata only (R2).
+    current_run_state: str | None = None
     #: Per-agent sampling overrides (agent.definition["model_params"]),
     #: narrowest-first ahead of the assigned ModelConfig's own defaults --
     #: see modelrouter/sampling.py's resolve_params(). None means "inherit
