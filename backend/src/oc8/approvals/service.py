@@ -527,7 +527,11 @@ async def _department_kind_or_none(
     hold the card uncommitted), else from a fresh tenant session (a caller that
     committed has lost its binding, and RLS would show it nothing or raise) --
     the pattern of `realtime.emit._audience_for`. A lookup that fails answers
-    None, and `publish_created` then publishes nothing."""
+    None, and `publish_created` then publishes nothing.
+
+    The caller's own pending writes are flushed first, OUTSIDE the guard: an
+    error there is the caller's to see, not a lookup that failed."""
+    await db.flush()
     try:
         if await _bound_to(db, tenant_id):
             # A savepoint, so a failed read does not abort the caller's

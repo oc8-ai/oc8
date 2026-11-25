@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -119,3 +120,55 @@ async def test_a_binding_cleared_by_a_commit_neither_crashes_nor_broadcasts(
         await db.execute(text("SELECT set_config('app.tenant_id', '', true)"))
         await publish_created(db, card)
     assert _created(bus) == []
+
+
+async def test_a_flush_error_of_the_callers_own_writes_surfaces(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The caller's pending writes are flushed before the lookup: their error
+    is the caller's, not "the department could not be read"."""
+    w = await _world(app_session)
+    card = await _load(app_session, w.tenant, w.shared_card)
+    bus, _channel = _spy(monkeypatch)
+    async with app_session(w.tenant) as db:
+        db.add(m.Department(tenant_id=w.tenant, name=None, frame={}))
+        with pytest.raises(IntegrityError):
+            await publish_created(db, card)
+        await db.rollback()
+    assert _created(bus) == []
+
+
+async def test_a_failed_read_in_the_callers_session_leaves_it_usable(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bound path reads in a savepoint: a database error there is rolled
+    back to it, the caller's transaction goes on, and nothing is published."""
+    w = await _world(app_session)
+    card = await _load(app_session, w.tenant, w.shared_card)
+    bus, _channel = _spy(monkeypatch)
+
+    async def _db_error(db: AsyncSession, *_a: Any, **_k: Any) -> Any:
+        await db.execute(text("SELECT 1/0"))
+
+    monkeypatch.setattr("oc8.approvals.service.card_department", _db_error)
+    async with app_session(w.tenant) as db:
+        await publish_created(db, card)
+        assert (await db.execute(text("SELECT 1"))).scalar_one() == 1
+        found = await db.scalar(
+            select(m.ApprovalRequest.id).where(m.ApprovalRequest.id == w.shared_card)
+        )
+        assert found == w.shared_card
+    assert _created(bus) == []
+
+
+async def test_an_unbound_session_still_publishes_a_standard_card(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fresh tenant session reads what the unbound one cannot: a standard
+    department's card is announced as before."""
+    w = await _world(app_session)
+    card = await _load(app_session, w.tenant, w.shared_card)
+    bus, _channel = _spy(monkeypatch)
+    async with _unbound() as db:
+        await publish_created(db, card)
+    assert _created(bus) == [str(w.shared_card)]
