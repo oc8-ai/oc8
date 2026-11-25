@@ -248,16 +248,17 @@ def _tool_req(model: str, reasoning: Any = None) -> CompletionRequest:
     return req
 
 
-@pytest.mark.parametrize("reasoning", [None, "thorough"])
 async def test_a_model_that_wants_no_reasoning_next_to_tools_gets_none(
-    monkeypatch: pytest.MonkeyPatch, reasoning: Any
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """gpt-6.2-sol and gpt-6-astra reason by default and refuse function tools
     on Chat Completions unless `reasoning_effort` is 'none' (issue #164). A
     request that sent no effort at all is refused too, so dropping the level
-    is not enough: the adapter sends 'none', as the provider asks."""
+    is not enough: the adapter sends 'none', as the provider asks. (With a
+    level asked for, the request moves to the Responses API instead -- see
+    below.)"""
     sent = _post_answering(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _OK))
-    result = await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol", reasoning))
+    result = await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol"))
     assert result.text == "hi"
     assert len(sent) == 2 and sent[1]["reasoning_effort"] == "none"
 
@@ -362,3 +363,112 @@ async def test_the_stream_reads_a_spent_answer_budget_as_length(
     adapter = AnthropicAdapter(api_key="sk-ant-test")
     chunks = [c async for c in adapter.stream(_req("anthropic", "claude-opus-5-5"))]
     assert chunks[-1].stop_reason == "length"
+
+
+# ------------------------------------------------ OpenAI Responses API
+
+
+_RESPONSES_OK = {
+    "output": [
+        {"type": "reasoning", "summary": []},
+        {"type": "message", "content": [{"type": "output_text", "text": "hi"}]},
+    ],
+    "usage": {"input_tokens": 3, "output_tokens": 2},
+    "status": "completed",
+}
+
+_RESPONSES_SSE = (
+    b'data: {"type":"response.output_text.delta","delta":"hi"}\n\n'
+    b'data: {"type":"response.completed","response":{"status":"completed",'
+    b'"usage":{"input_tokens":3,"output_tokens":2}}}\n\n'
+)
+
+
+@pytest.fixture(autouse=False)
+def _fresh_responses_models() -> Any:
+    from oc8.modelrouter.adapters import openai as openai_adapter
+
+    openai_adapter._RESPONSES_MODELS.clear()
+    yield
+    openai_adapter._RESPONSES_MODELS.clear()
+
+
+def _urls_and_payloads(monkeypatch: pytest.MonkeyPatch, *bodies: tuple[int, Any]) -> list[Any]:
+    sent: list[Any] = []
+
+    async def fake_post(
+        self: httpx.AsyncClient, url: str, json: Any = None, **kw: Any
+    ) -> httpx.Response:
+        sent.append((url, json))
+        status, body = bodies[min(len(sent), len(bodies)) - 1]
+        return httpx.Response(status, json=body, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+    return sent
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_a_level_with_tools_moves_to_the_responses_api_and_keeps_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gpt-6.2-sol reasons next to tools only on /v1/responses (issue #164).
+    With a level asked for, the adapter goes there instead of switching
+    reasoning off, and keeps the level."""
+    sent = _urls_and_payloads(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _RESPONSES_OK))
+    result = await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol", "thorough"))
+    assert result.text == "hi"
+    assert [url for url, _ in sent] == [
+        "https://api.openai.com/v1/chat/completions",
+        "https://api.openai.com/v1/responses",
+    ]
+    body = sent[1][1]
+    assert body["reasoning"] == {"effort": "high"}
+    assert body["tools"][0]["name"] == "ping"
+    assert body["max_output_tokens"] == 64 and body["store"] is False
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_the_next_call_for_that_model_goes_straight_to_responses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _urls_and_payloads(
+        monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _RESPONSES_OK), (200, _RESPONSES_OK)
+    )
+    adapter = OpenAIAdapter(api_key="sk-test")
+    await adapter.complete(_tool_req("gpt-6.2-sol", "thorough"))
+    await adapter.complete(_tool_req("gpt-6.2-sol", "thorough"))
+    assert [url.rsplit("/", 1)[-1] for url, _ in sent] == ["completions", "responses", "responses"]
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_without_a_level_chat_completions_stays_with_reasoning_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent = _urls_and_payloads(monkeypatch, (400, _TOOLS_NEED_REASONING_NONE), (200, _OK))
+    result = await OpenAIAdapter(api_key="sk-test").complete(_tool_req("gpt-6.2-sol"))
+    assert result.text == "hi"
+    assert [url.rsplit("/", 1)[-1] for url, _ in sent] == ["completions", "completions"]
+    assert sent[1][1]["reasoning_effort"] == "none"
+
+
+@pytest.mark.usefixtures("_fresh_responses_models")
+async def test_the_stream_moves_to_the_responses_api_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[Any] = []
+    bodies = [
+        (400, jsonlib.dumps(_TOOLS_NEED_REASONING_NONE).encode()),
+        (200, _RESPONSES_SSE),
+    ]
+
+    def fake_stream(self: httpx.AsyncClient, method: str, url: str, **kw: Any) -> _FakeStream:
+        sent.append((url, kw.get("json")))
+        status, body = bodies[min(len(sent), len(bodies)) - 1]
+        return _FakeStream(status, body)
+
+    monkeypatch.setattr(httpx.AsyncClient, "stream", fake_stream)
+    adapter = OpenAIAdapter(api_key="sk-test")
+    chunks = [c async for c in adapter.stream(_tool_req("gpt-6-astra", "thorough"))]
+    assert "".join(c.text or "" for c in chunks) == "hi"
+    assert sent[1][0] == "https://api.openai.com/v1/responses"
+    assert sent[1][1]["reasoning"] == {"effort": "high"}
