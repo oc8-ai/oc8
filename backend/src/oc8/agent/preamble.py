@@ -25,9 +25,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.agent.control_tools import (
     _acting_token_role,
+    _owner_claim,
     _resolve_agent_actor,
     copilot_person,
-    owner_token_role,
     person_token_role,
 )
 from oc8.agent.harness.caps import ModelCaps
@@ -469,9 +469,7 @@ async def build_run_preamble(
     # Resolved once for this run (spec A5): what the up-front retrieval reads
     # and what `has_knowledge` offers search_knowledge for cannot disagree.
     lenders = await lending_departments(
-        db,
-        agent=agent,
-        token_role=await owner_token_role(db, tenant_id=tenant_id, agent=agent, run_id=run_id),
+        db, agent=agent, owner_claim=_owner_claim(db, tenant_id=tenant_id, run_id=run_id)
     )
     kb_ctx, contains_restricted = await retrieve_kb_context(
         db,

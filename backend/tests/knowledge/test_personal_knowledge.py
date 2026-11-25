@@ -805,3 +805,152 @@ async def test_the_preamble_resolves_the_lenders_once(
         w = await _world(db, tenant)
         assert await _has_knowledge(db, w) is True
     assert calls == 1
+
+
+async def _wake_up(db: Any, w: _World, *, subject: str, role: str) -> uuid.UUID:
+    """A wake-up run with no claim of its own, after a delegated result: its
+    causal chain leads to `subject`'s web turn carrying `role`."""
+    web = await _chat_run(db, w, subject=subject, role=role)
+    sub = m.AgentRun(
+        tenant_id=w.tenant,
+        agent_id=w.pia.id,
+        source="delegation",
+        state="done",
+        context={"parent_task_id": str(w.task.id), "parent_run_id": str(web)},
+    )
+    db.add(sub)
+    await db.flush()
+    wake = m.AgentRun(
+        tenant_id=w.tenant,
+        agent_id=w.pia.id,
+        task_id=w.task.id,
+        source="delegation",
+        state="running",
+        context={
+            "parent_task_id": str(w.task.id),
+            "originating_operator": subject,
+            "wake_of_run_id": str(sub.id),
+        },
+    )
+    db.add(wake)
+    await db.flush()
+    return wake.id
+
+
+async def test_a_wake_up_borrows_with_the_owners_inherited_claim(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, assigned=False, last_token_role="member")
+        wake = await _wake_up(db, w, subject=w.owner.subject, role="operator")
+
+        assert _KB_TEXT in await _search(db, w, run_id=wake)
+        assert await _has_knowledge(db, w, run_id=wake) is True
+
+
+async def test_a_wake_up_never_borrows_with_somebody_elses_inherited_claim(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant, assigned=False, last_token_role="member")
+        wake = await _wake_up(db, w, subject="somebody-else", role="org_admin")
+
+        assert _KB_TEXT not in await _search(db, w, run_id=wake)
+        assert await _has_knowledge(db, w, run_id=wake) is False
+
+
+async def test_a_standard_agent_looks_its_owner_up_once(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A standard agent pays one owner lookup per search_knowledge call and
+    per preamble, and its run's claim is never read for borrowing."""
+    import oc8.agent.control_tools as control_tools
+    import oc8.knowledge.retrieval as retrieval
+
+    lookups: list[uuid.UUID] = []
+    from oc8.departments.personal import live_department_owner as real
+
+    async def counting(db: Any, agent_id: uuid.UUID) -> Any:
+        lookups.append(agent_id)
+        return await real(db, agent_id)
+
+    monkeypatch.setattr(retrieval, "live_department_owner", counting)
+    if hasattr(control_tools, "live_department_owner"):
+        monkeypatch.setattr(control_tools, "live_department_owner", counting)
+    claims: list[uuid.UUID | None] = []
+    real_claim = control_tools.owner_token_role
+
+    async def counting_claim(*a: Any, **kw: Any) -> Any:
+        claims.append(kw.get("run_id"))
+        return await real_claim(*a, **kw)
+
+    monkeypatch.setattr(control_tools, "owner_token_role", counting_claim)
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        w = await _world(db, tenant)
+        nora = m.Agent(
+            tenant_id=tenant,
+            department_id=w.dept.id,
+            name="Nora",
+            status="idle",
+            definition={},
+            presentation={},
+            narrowing={},
+        )
+        db.add(nora)
+        await db.flush()
+        task = m.Task(
+            tenant_id=tenant,
+            department_id=w.dept.id,
+            assigned_agent_id=nora.id,
+            title="Einkauf",
+            state="in_progress",
+            delegation_depth=0,
+        )
+        db.add(task)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=nora.id,
+            task_id=task.id,
+            state="running",
+            source="chat",
+            context={"operator_role": "operator", "originating_operator": "someone"},
+        )
+        db.add(run)
+        await db.flush()
+
+        outcome = await execute_control_tool(
+            db,
+            tenant_id=tenant,
+            agent=nora,
+            task=task,
+            tc=ToolCall(id="k1", name=SEARCH_KNOWLEDGE.name, arguments={"query": "Rahmenvertrag"}),
+            decision=Decision(Effect.ALLOW),
+            assigned_skills=[],
+            active_skills=[],
+            mcp_conn=None,
+            originating_operator=None,
+            run_id=run.id,
+        )
+        assert outcome is not None and _KB_TEXT in outcome.output
+        assert lookups == [nora.id]
+
+        lookups.clear()
+        await build_run_preamble(
+            db,
+            agent=nora,
+            tenant_id=tenant,
+            task_text="mach was",
+            frame={},
+            model_locality="eu",
+            caps=ModelCaps(),
+            max_steps=40,
+            task=task,
+            run_id=run.id,
+        )
+        assert lookups == [nora.id]
+    assert claims == []

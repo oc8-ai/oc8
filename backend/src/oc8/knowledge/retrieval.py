@@ -12,6 +12,7 @@ import datetime as dt
 import logging
 import math
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -67,10 +68,12 @@ async def _own_kb_ids(db: AsyncSession, *, agent: m.Agent) -> set[uuid.UUID]:
 
 #: kb id -> the departments lending it to a personal agent (`lending_departments`).
 Lenders = dict[uuid.UUID, list[m.Department]]
+#: The role claim the run carries for this owner, or None (`lending_departments`).
+OwnerClaim = Callable[[m.OrgMember], Awaitable[str | None]]
 
 
 async def lending_departments(
-    db: AsyncSession, *, agent: m.Agent, token_role: str | None = None
+    db: AsyncSession, *, agent: m.Agent, owner_claim: OwnerClaim | None = None
 ) -> Lenders:
     """Spec A5 / ruling R3: for an agent of a personal department, each
     knowledge base granted to a department where its owner holds a real seat
@@ -79,9 +82,11 @@ async def lending_departments(
     the owner's authority holds `knowledge:view`. Empty for every other agent
     and for a departed owner (fails closed).
 
-    The owner's authority (ruling U4): the assigned role; else `token_role`,
-    which the caller passes only when it is the OWNER's claim on this run;
-    else the role of the owner's last token (`last_token_role`); else nothing.
+    The owner's authority (ruling U4): the assigned role; else the run's claim
+    for the owner, asked of `owner_claim` (which answers only with the
+    OWNER's claim) only then; else the role of the owner's last token
+    (`last_token_role`); else nothing. The owner is looked up once: an agent
+    with no live owner costs one query and never asks `owner_claim`.
 
     Read on every call, never cached: a seat or a role taken away takes the
     bases with it on the agent's next lookup."""
@@ -91,9 +96,10 @@ async def lending_departments(
     owner = await db.get(m.OrgMember, owner_id, populate_existing=True)
     if owner is None or owner.deleted_at is not None:
         return {}
-    authority = await authority_for_member(
-        db, owner, token_role=token_role or owner.last_token_role
-    )
+    claim = None
+    if owner.role_id is None and owner_claim is not None:
+        claim = await owner_claim(owner)
+    authority = await authority_for_member(db, owner, token_role=claim or owner.last_token_role)
     if perm(KNOWLEDGE, VIEW) not in authority.tenant_wide:
         return {}
     departments = await member_departments(db, member=owner, seats_only=True)
@@ -115,11 +121,11 @@ async def lending_departments(
 
 
 async def borrowed_kb_sources(
-    db: AsyncSession, *, agent: m.Agent, token_role: str | None = None
+    db: AsyncSession, *, agent: m.Agent, owner_claim: OwnerClaim | None = None
 ) -> dict[uuid.UUID, set[uuid.UUID]]:
     """Each knowledge base a personal agent borrows from its owner's
     departments, mapped to the departments lending it (spec A5)."""
-    lenders = await lending_departments(db, agent=agent, token_role=token_role)
+    lenders = await lending_departments(db, agent=agent, owner_claim=owner_claim)
     return {kb_id: {d.id for d in depts} for kb_id, depts in lenders.items()}
 
 
@@ -127,14 +133,14 @@ async def granted_kb_ids(
     db: AsyncSession,
     *,
     agent: m.Agent,
-    token_role: str | None = None,
+    owner_claim: OwnerClaim | None = None,
     lenders: Lenders | None = None,
 ) -> set[uuid.UUID]:
     """The agent's own grants (to it and to its department) and, for a
     personal agent, the bases it borrows. `lenders` is an already resolved
     `lending_departments` for this run, so a caller asking twice resolves once."""
     if lenders is None:
-        lenders = await lending_departments(db, agent=agent, token_role=token_role)
+        lenders = await lending_departments(db, agent=agent, owner_claim=owner_claim)
     return await _own_kb_ids(db, agent=agent) | set(lenders)
 
 
@@ -320,7 +326,7 @@ async def retrieve_kb_context(
     only_kb_ids: frozenset[uuid.UUID] | None = None,
     released_kb_ids: frozenset[uuid.UUID] | None = None,
     skipped_local: list[str] | None = None,
-    token_role: str | None = None,
+    owner_claim: OwnerClaim | None = None,
     lenders: Lenders | None = None,
 ) -> tuple[str, bool]:
     """Returns (context, contains_restricted). `contains_restricted` is true
@@ -351,12 +357,12 @@ async def retrieve_kb_context(
     searched because the question must stay local and the base embeds with a
     cloud model.
 
-    `token_role` and `lenders` are `lending_departments`' inputs and answer:
-    the owner's claim on this run (only the owner's), or the lenders the
-    caller already resolved for this run."""
+    `owner_claim` and `lenders` are `lending_departments`' input and answer:
+    how to read the owner's claim on this run, or the lenders the caller
+    already resolved for this run."""
     own_kb_ids = await _own_kb_ids(db, agent=agent)
     if lenders is None:
-        lenders = await lending_departments(db, agent=agent, token_role=token_role)
+        lenders = await lending_departments(db, agent=agent, owner_claim=owner_claim)
     kb_ids = own_kb_ids | set(lenders)
     # A base the agent holds itself, or the member released, is judged by the
     # agent's frame alone; only a base it merely borrows must also be cleared
