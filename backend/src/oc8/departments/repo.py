@@ -9,6 +9,7 @@ and not `scope.is_unrestricted`. See that module's docstring; not restated here.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Select, select
@@ -60,9 +61,23 @@ def private_department_ids(scope: DepartmentScope) -> Select[tuple[uuid.UUID]]:
     this caller does not own -- all of them when `scope.personal_owned` is
     empty. Soft-deleted departments included: their agents' history stays
     private after the department goes. Tenant-scoped by RLS."""
+    return _personal_department_ids_except(scope.personal_owned)
+
+
+def private_department_ids_for_agent(department_id: uuid.UUID) -> Select[tuple[uuid.UUID]]:
+    """`private_department_ids` with an AGENT as the reader (`read_run_file`):
+    an agent stands where its department's owner stands, so its own department
+    counts as owned and every other personal department is private to it. For
+    an agent of a standard department that is every personal department."""
+    return _personal_department_ids_except((department_id,))
+
+
+def _personal_department_ids_except(
+    owned: Collection[uuid.UUID],
+) -> Select[tuple[uuid.UUID]]:
     stmt = select(Department.id).where(Department.kind == DEPARTMENT_KIND_PERSONAL)
-    if scope.personal_owned:
-        stmt = stmt.where(Department.id.not_in(scope.personal_owned))
+    if owned:
+        stmt = stmt.where(Department.id.not_in(owned))
     return stmt
 
 

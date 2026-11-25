@@ -355,3 +355,33 @@ async def test_reapplying_the_default_frame_replaces_only_its_tools(
         assert dept.frame["intakes"] == ["request"]
         assert dept.frame["default_connection_id"] == connection
         assert dept.frame["memory"] == {"department": ["read", "write"]}
+
+
+@pytest.mark.parametrize("how", ["created", "resync", "follow_default"])
+async def test_the_personal_frame_never_grants_the_company_memory_tier(
+    app_session: AppSessionFactory, how: str
+) -> None:
+    """Spec A4: a personal agent's memory is its department's own. The frame a
+    personal department starts with, and the one a re-sync or follow-default
+    copies over it, grants no `company` tier -- so nothing the agent recalls
+    or writes goes through the company store other agents read."""
+    assert "company" not in personal_frame({"x": {"enabled": True}})["memory"]
+    tenant, member_id = await _tenant(app_session, {ENABLED_KEY: True, FRAME_KEY: {}})
+    async with app_session(tenant) as db:
+        dept = await get_or_create_personal_department(db, member=await _member(db, member_id))
+        new_tools = {"docs.files": {"enabled": True, "read": True}}
+        if how == "resync":
+            assert await resync_frames(db, tenant_id=tenant, new_tools=new_tools) == 1
+        elif how == "follow_default":
+            dept.frame_overridden_at = dt.datetime.now(dt.UTC)
+            org = await db.get(m.Organization, tenant)
+            assert org is not None
+            org.settings = {**org.settings, FRAME_KEY: new_tools}
+            await db.flush()
+            assert await follow_default(db, tenant_id=tenant, department_id=dept.id) is not None
+        await db.flush()
+        await db.refresh(dept)
+        memory = (dept.frame or {}).get("memory")
+        assert isinstance(memory, dict)
+        assert "company" not in memory
+        assert memory == {"department": ["read", "write"]}

@@ -55,7 +55,12 @@ from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.config import get_settings
 from oc8.connections.causal import causal_ancestors
 from oc8.copilot.notes import member_behind_run_task
-from oc8.departments.repo import visible_department, visible_departments
+from oc8.departments.personal import withholds_content_from_trail
+from oc8.departments.repo import (
+    private_department_ids_for_agent,
+    visible_department,
+    visible_departments,
+)
 from oc8.edition.tools import (
     NO_EDITION_OFFER,
     EditionOffer,
@@ -2474,6 +2479,37 @@ async def _create_delegation(
     )
 
 
+@dataclass(frozen=True)
+class _LookupTrail:
+    """What a lookup tool (`search_memory`, `search_knowledge`) writes about
+    itself into the activity feed and the audit trail. `query` None: the
+    question is withheld, so no resource may carry it."""
+
+    message: str
+    detail: str | None
+    query: str | None
+
+
+async def _lookup_trail(
+    db: AsyncSession,
+    agent: m.Agent,
+    *,
+    line: str,
+    withheld_line: str,
+    query: str,
+    found: str | None,
+) -> _LookupTrail:
+    """The trail of one lookup. For a personal agent (spec A4,
+    `departments.personal.withholds_content_from_trail`) it says THAT the agent
+    looked something up, never what it asked or what came back: the rows are
+    read by administrators, and the question and the answer are the owner's
+    content. Every other agent's trail is `line` with `found` as its detail,
+    as it always was."""
+    if await withholds_content_from_trail(db, agent.id):
+        return _LookupTrail(message=withheld_line, detail=None, query=None)
+    return _LookupTrail(message=line, detail=found, query=query)
+
+
 async def _department_frame(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
     """The department's frame, which decides which classifications this agent
     may retrieve at all. Empty means the strictest default, not "anything"."""
@@ -3192,13 +3228,21 @@ async def execute_control_tool(
                     "keine Vorgeschichte."
                 )
             )
+        trail = await _lookup_trail(
+            db,
+            agent,
+            line=f"Erinnert sich an: {query}",
+            withheld_line="Erinnert sich",
+            query=query,
+            found=recalled[:500],
+        )
         await record_activity(
             db,
             tenant_id=tenant_id,
             agent_id=agent.id,
             status="info",
-            message=f"Erinnert sich an: {query}",
-            detail=recalled[:500],
+            message=trail.message,
+            detail=trail.detail,
         )
         return ControlOutcome(output=recalled)
 
@@ -3257,6 +3301,18 @@ async def execute_control_tool(
         # answerable afterwards. Without it I drew the wrong conclusion myself:
         # counted zero lookups and reported the knowledge base ignored, while the
         # answer quoted it word for word.
+        # Spec A4: a personal agent's question is its owner's content, so
+        # neither the audit resource nor the feed line repeats it, nor what was
+        # found (`_lookup_trail`). Whatever later changes how this tool
+        # retrieves keeps both.
+        trail = await _lookup_trail(
+            db,
+            agent,
+            line=f"Schlägt nach: {query}",
+            withheld_line="Schlägt nach",
+            query=query,
+            found=context[:500] or None,
+        )
         await append_event(
             db,
             tenant_id=tenant_id,
@@ -3267,7 +3323,7 @@ async def execute_control_tool(
             resource={
                 "agent_id": str(agent.id),
                 "task_id": str(task.id),
-                "query": query,
+                **({} if trail.query is None else {"query": trail.query}),
                 "found": bool(context.strip()),
                 "narrowed_to": sorted(
                     str(i)
@@ -3282,8 +3338,8 @@ async def execute_control_tool(
             tenant_id=tenant_id,
             agent_id=agent.id,
             status="info",
-            message=f"Schlägt nach: {query}",
-            detail=(context[:500] or None),
+            message=trail.message,
+            detail=trail.detail,
         )
         if not context.strip():
             refusal = (
@@ -3580,6 +3636,20 @@ async def execute_control_tool(
         # (see the design's Cross-agent read section). With no explicit
         # producer, prefer the active run's own file before the tenant-wide
         # newest-wins fallback; filenames are not unique within a tenant.
+        #
+        # Except a personal department's runs (spec A4): their files are read
+        # only by an agent of that same department. In the statement, so a
+        # hidden file neither answers with anything but the plain miss below
+        # (no oracle) nor shadows an older readable file of the same name.
+        conditions.append(
+            m.FileAttachment.owner_id.not_in(
+                select(m.AgentRun.id)
+                .join(m.Agent, m.Agent.id == m.AgentRun.agent_id)
+                .where(
+                    m.Agent.department_id.in_(private_department_ids_for_agent(agent.department_id))
+                )
+            )
+        )
         ordering: list[Any] = []
         if not run_id_arg and run_id is not None:
             ordering.append(case((m.FileAttachment.owner_id == run_id, 0), else_=1))

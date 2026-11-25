@@ -142,6 +142,21 @@ async def live_department_owner(db: AsyncSession, agent_id: uuid.UUID) -> uuid.U
     return owner
 
 
+async def withholds_content_from_trail(db: AsyncSession, agent_id: uuid.UUID) -> bool:
+    """Whether what this agent looked up, recalled or forgot stays out of the
+    rows an administrator reads -- activity lines, audit resources (spec A4:
+    "audit entries record that something happened, without the content").
+
+    True for an agent of a personal department, live owner or not, and for an
+    agent `db` cannot see (fails closed); False for every other agent, whose
+    rows stay as they are. Asks `realtime.audience.personal_audience`, the same
+    cached answer that keeps the agent's live events off the tenant feed, so
+    the trail and the feed cannot disagree about who is personal."""
+    from oc8.realtime.audience import personal_audience
+
+    return (await personal_audience(db, agent_id)).personal
+
+
 async def ensure_personal_capacity(db: AsyncSession, dept: m.Department) -> None:
     """Raise `PersonalOwnerLeft` when the department's owner has left, and
     `PersonalAgentLimit` when a personal department holds the tenant's cap of

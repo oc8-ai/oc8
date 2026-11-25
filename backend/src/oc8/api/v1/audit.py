@@ -171,9 +171,14 @@ async def _events_to_dtos(
         owners = {personal_agents[a] for a in agents if a in personal_agents}
         owners |= departments & personal_departments
         dto = _event_to_dto(ev)
-        if any(hides(d) for d in owners) and isinstance(dto.resource, dict):
-            stripped = _content_keys(ev.action)
-            dto.resource = {k: v for k, v in dto.resource.items() if k not in stripped}
+        if any(hides(d) for d in owners):
+            if isinstance(dto.resource, dict):
+                stripped = _content_keys(ev.action)
+                dto.resource = {k: v for k, v in dto.resource.items() if k not in stripped}
+            # A reason is free text, and a denial or a decision can quote what
+            # the agent tried: a backstop beside the content keys, kept off
+            # every reader but the owner. The decision itself stays.
+            dto.reason = None
         out.append(dto)
     return out
 
