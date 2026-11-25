@@ -232,6 +232,10 @@ ALLOWED: dict[str, str] = {
         "the clarification queue applies scope.viewable itself (see its own department_id."
         "in_(scope.viewable) filter) instead of going through the funnel"
     ),
+    "approvals/allow_rules.py": (
+        "names the agent of the caller's OWN always-allow rules (member_rules, filtered "
+        "on the caller's member id) for their profile list; name only, never content"
+    ),
 }
 
 #: Path -> why it is a PINNED, DISCLOSED gap rather than an ALLOWED exception.

@@ -58,6 +58,7 @@ from oc8.api.v1 import (
     settings,
     skills_write,
     tasks,
+    tool_allow_rules,
     totp,
     triggers,
     two_factor,
@@ -90,6 +91,7 @@ api_router.include_router(knowledge.router, tags=["knowledge"])
 api_router.include_router(feed.router, tags=["feed"])
 api_router.include_router(approvals.router, tags=["approvals"])
 api_router.include_router(clarifications.router, tags=["approvals"])
+api_router.include_router(tool_allow_rules.router, tags=["approvals"])
 api_router.include_router(tasks.router, tags=["tasks"])
 api_router.include_router(members.router, tags=["members"])
 api_router.include_router(mcp.router, tags=["mcp"])

@@ -18,6 +18,7 @@ from oc8.approvals import (
     UnknownOption,
     decide_approval,
 )
+from oc8.approvals.allow_rules import NotEligible, create_rule_from_approval, rule_eligible
 from oc8.approvals.repo import load_for_actor
 from oc8.authz.permissions import APPROVAL_DECIDE
 from oc8.authz.scope import HumanActor
@@ -32,6 +33,7 @@ router = APIRouter()
 #: the realtime socket (§10 item 5) -- so a route that told the two apart would
 #: let anyone holding ids off that socket ask which of them exist.
 _NOT_FOUND = "approval not found"
+_NOT_ELIGIBLE = "always allow covers only your own write-tier approval"
 
 
 @router.post("/approvals/{approval_id}/decision", response_model=ApprovalDTO)
@@ -46,6 +48,10 @@ async def decide(
     ar = await load_for_actor(db, approval_id, actor=actor)
     if ar is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _NOT_FOUND)
+    allow = body.always_allow and body.decision == "approve"
+    if allow and not rule_eligible(ar):
+        # Before deciding: a refused rule must not leave a decision behind.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _NOT_ELIGIBLE)
     try:
         result = await decide_approval(
             db,
@@ -81,6 +87,12 @@ async def decide(
         # its department gone). Raising rolls the request back: the approval
         # stays pending and the approver reads why.
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if allow:
+        try:
+            # Same transaction as the decision: both stand, or neither.
+            await create_rule_from_approval(db, approval=result.approval, member_id=actor.member.id)
+        except NotEligible as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, _NOT_ELIGIBLE) from exc
 
     dto = approval_to_dto(result.approval)
     # Only a tool_send decision suspends and resumes a run; the other action types

@@ -367,6 +367,35 @@ async def load_direct_access_card(
     return row
 
 
+async def pending_member_cards_of_run(
+    db: AsyncSession, *, task_id: uuid.UUID, run_id: uuid.UUID
+) -> list[ApprovalRequest]:
+    """The person's pending held-write cards (`tool_send`, `decider ==
+    "member"`) this run is parked on, oldest first, locked.
+
+    No actor: the executor asks right after the park, to let a person's own
+    "always allow" rule answer (`approvals.allow_rules.auto_decide_by_rules`),
+    which re-checks the owner itself. `SKIP LOCKED` because the executor
+    already holds the run row: a card somebody is deciding right now is
+    theirs to finish, and waiting on its lock here would invert the lock
+    order (approval row before agent_run) that `decide_approval` takes."""
+    stmt = (
+        select(ApprovalRequest)
+        .where(
+            ApprovalRequest.task_id == task_id,
+            ApprovalRequest.action_type == "tool_send",
+            ApprovalRequest.status == "pending",
+            ApprovalRequest.payload["run_id"].astext == str(run_id),
+            func.coalesce(ApprovalRequest.payload["direct_access"]["decider"].astext, "")
+            == "member",
+        )
+        .order_by(ApprovalRequest.created_at, ApprovalRequest.id)
+        .with_for_update(skip_locked=True)
+        .execution_options(populate_existing=True)
+    )
+    return list((await db.execute(stmt)).scalars().all())
+
+
 async def approved_awaiting_result(
     db: AsyncSession, *, tenant_id: uuid.UUID, task_id: uuid.UUID
 ) -> list[ApprovalRequest]:

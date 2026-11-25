@@ -263,6 +263,21 @@ class ApprovalDTO(CamelModel):
     #: The record produced by the approved call, set once it runs.
     #: NULL until the call has run, and for tools that return no link.
     result_url: str | None = None
+    #: The person's own write-tier card: it may offer "always allow for me"
+    #: (`approvals.allow_rules.rule_eligible`).
+    always_allow_offered: bool = False
+
+
+class ToolAllowRuleDTO(CamelModel):
+    """One of the caller's own "always allow" rules (`approvals.allow_rules`)."""
+
+    id: str
+    agent_id: str
+    agent_name: str
+    #: None for a core tool, and once the connection is gone.
+    connection_name: str | None = None
+    tool_key: str
+    created_at: str
 
 
 class QuestionOptionDTO(CamelModel):

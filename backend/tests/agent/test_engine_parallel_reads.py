@@ -225,6 +225,9 @@ async def test_destructive_gate_parks_with_preview_and_stripped_justification(
         # Raised after the B gate answered "ask": read-before-write had passed.
         "read_before_write_ok": True,
         "gate_connection": "things",
+        # An always-allow rule is keyed on these and refuses a destructive tier.
+        "risk_tier": "destructive",
+        "connection_id": str(conn.id),
     }
 
 

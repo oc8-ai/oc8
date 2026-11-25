@@ -318,6 +318,7 @@ def _chosen_agent(raw: Any) -> DirectAccessChosenAgentDTO | None:
 
 def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) -> ApprovalDTO:
     # Lazy import to avoid cycles: approvals -> records.links -> agent -> approvals
+    from oc8.approvals.allow_rules import rule_eligible
     from oc8.records.links import safe_url
 
     payload: dict[str, Any] = a.payload or {}
@@ -389,6 +390,7 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
             and (safe := safe_url(x.get("url")))
         ],
         result_url=safe_url(a.result_url),
+        always_allow_offered=a.status == "pending" and rule_eligible(a),
     )
 
 

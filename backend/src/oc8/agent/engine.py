@@ -78,7 +78,7 @@ from oc8.agent.harness.stages.b_direct_access import (
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
-from oc8.agent.harness.stages.b_risk_tier import classify_tier
+from oc8.agent.harness.stages.b_risk_tier import RiskTier, classify_tier
 from oc8.agent.harness.stages.c_errors import ToolError, classify_exception
 from oc8.agent.harness.stages.c_ledger import (
     ledger_fingerprint,
@@ -1111,6 +1111,26 @@ async def run_agent(
             raw_b5_grants = definition.get("b5_grants")
             b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
 
+            def _call_tier(
+                tc: ToolCall,
+                *,
+                scopes: dict[str, Any] | None,
+                config: dict[str, Any],
+                advertised: str | None = None,
+            ) -> RiskTier:
+                """The call's risk tier, as the B gate tiers it: also stored on
+                a held call's card, which is what "always allow" reads."""
+                shown = advertised or tc.name
+                offered = next((tool for tool in _offered() if tool.name == shown), None)
+                return classify_tier(
+                    tc.name,
+                    scopes=scopes,
+                    config=config,
+                    annotations=offered.annotations if offered is not None else None,
+                    arguments=tc.arguments,
+                    core=is_core_call(tc.name, routed=shown != tc.name),
+                )
+
             def _gate(
                 tc: ToolCall,
                 *,
@@ -1125,16 +1145,7 @@ async def run_agent(
                 # annotations) is listed under the name the model saw, which a
                 # route qualifies. A routed name that matches a core tool is
                 # tiered as the connection's tool it is, not by the core tier.
-                shown = advertised or tc.name
-                offered = next((tool for tool in _offered() if tool.name == shown), None)
-                tier = classify_tier(
-                    tc.name,
-                    scopes=scopes,
-                    config=config,
-                    annotations=offered.annotations if offered is not None else None,
-                    arguments=tc.arguments,
-                    core=is_core_call(tc.name, routed=shown != tc.name),
-                )
+                tier = _call_tier(tc, scopes=scopes, config=config, advertised=advertised)
                 identity = record_identity(tc.name, tc.arguments, spec)
                 return harness.gate(
                     tc,
@@ -2848,6 +2859,24 @@ async def run_agent(
                                             }
                                             if read_ok_at_hold
                                             else {}
+                                        ),
+                                        # What "always allow" reads
+                                        # (approvals.allow_rules): the call's
+                                        # tier and the connection, by id --
+                                        # None for a core tool.
+                                        "risk_tier": _call_tier(
+                                            auth_tc,
+                                            scopes=call_scopes,
+                                            config=call_config,
+                                            advertised=tc.name,
+                                        ),
+                                        "connection_id": (
+                                            None
+                                            if owner is None
+                                            or is_core_call(
+                                                auth_tc.name, routed=auth_tc.name != tc.name
+                                            )
+                                            else str(owner.id)
                                         ),
                                         **({"record_url": link} if link else {}),
                                         **(hold_terms[1] if hold_terms is not None else {}),

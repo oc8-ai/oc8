@@ -3,6 +3,7 @@
 from oc8.copilot.models import CopilotOperation, CopilotProposal
 from oc8.models.account import AccountVerificationToken
 from oc8.models.api_keys import ApiKey
+from oc8.models.approvals_rules import ToolAllowRule
 from oc8.models.attachments import FileAttachment
 from oc8.models.boards import (
     DataBoard,
@@ -170,6 +171,7 @@ __all__ = [
     "Task",
     "TenantDek",
     "TokenUsageRecord",
+    "ToolAllowRule",
     "ToolInvocation",
     "TotpCredential",
     "Trigger",

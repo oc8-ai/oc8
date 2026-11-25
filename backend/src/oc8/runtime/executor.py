@@ -317,6 +317,35 @@ async def requeue_if_already_decided(db: AsyncSession, *, run: m.AgentRun) -> bo
     return True
 
 
+async def _auto_decide_by_rules(db: AsyncSession, run: m.AgentRun) -> list[uuid.UUID]:
+    """`approvals.allow_rules.auto_decide_by_rules` on a just-parked run, in a
+    savepoint: whatever goes wrong rolls back to here, the cards stay pending
+    and the park stands. Returns the runs to publish after the commit.
+
+    Only a chat run can hold a person's own card (`direct_access_run`), so
+    every other run parks exactly as before, without a query."""
+    if run.task_id is None or run.source != "chat":
+        return []
+    run_id = run.id
+    resumed: list[uuid.UUID] = []
+    try:
+        from oc8.approvals.allow_rules import auto_decide_by_rules
+
+        # The park's own writes first: the decision re-reads this run row.
+        await db.flush()
+        async with db.begin_nested():
+            resumed = await auto_decide_by_rules(db, run=run)
+    except Exception:
+        logger.warning(
+            "run %s: always-allow rules could not be checked; the run waits", run_id, exc_info=True
+        )
+        resumed = []
+    # A rolled-back savepoint expires what it touched; the park reads the run
+    # again below (requeue_if_already_decided), so read it fresh now.
+    await db.refresh(run)
+    return resumed
+
+
 async def agent_has_own_login_binding(db: AsyncSession, agent: m.Agent) -> bool:
     """Whether this agent's OWN narrowing already claims a tool key that an
     inherited connection must never be allowed to shadow.
@@ -1740,11 +1769,22 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                     _CHAT_WAITING_FOR_APPROVAL,
                                 )
                             )
+                        # The person's own "always allow" rule answers their
+                        # card now, as they would (approvals.allow_rules). It
+                        # never fails the park: on any error the card stays
+                        # pending and the run waits, as without a rule.
+                        auto_resumed = await _auto_decide_by_rules(db, run)
+                        if auto_resumed:
+                            pending_runs.extend(auto_resumed)
+                            logger.info(
+                                "run %s: an always-allow rule decided the held call, re-queued",
+                                run_id,
+                            )
                         # Close the parking race (see requeue_if_already_decided):
                         # an operator may have decided the held call while this run
                         # was still parking. Publish only after the transition
                         # below commits, mirroring the approvals endpoint.
-                        if await requeue_if_already_decided(db, run=run):
+                        elif await requeue_if_already_decided(db, run=run):
                             pending_runs.append(run.id)
                             logger.info(
                                 "run %s: decision for the held call arrived while "

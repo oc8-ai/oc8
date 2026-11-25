@@ -400,6 +400,10 @@ class ApprovalDecisionRequest(CamelModel):
     #: On a direct-access offer: run this one of the card's agents instead of
     #: the direct grant. Only `decision="approve"` reads it.
     agent_id: uuid.UUID | None = None
+    #: "Always allow for me": with `decision="approve"` on the person's own
+    #: write-tier card, also let this tool run for them without asking again
+    #: (`approvals.allow_rules`). Refused (400) on any other card.
+    always_allow: bool = False
 
 
 class CreateMcpLoginRequest(CamelModel):
