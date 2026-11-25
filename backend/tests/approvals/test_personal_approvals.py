@@ -297,6 +297,7 @@ class _SpyBus:
         data: dict[str, Any],
         *,
         source: str,
+        push: bool = True,
     ) -> None:
         self.member_events.append((list(member_ids), type_, data))
 

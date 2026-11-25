@@ -59,9 +59,18 @@ MAX_LIMIT = 500
 DIRECT_ACCESS_ACTION = "direct_access"
 
 #: The cards a personal department files that stay with the admins (ruling
-#: R2): spend is metadata. Every other card a personal agent raises is its
-#: owner's alone (spec A4).
-ADMIN_KEPT_ACTIONS: frozenset[str] = frozenset({"budget_incident"})
+#: R2): what they say is metadata -- a budget incident's spend, a blast-radius
+#: alarm's title, record count, entity and record reference (ruling U3). They
+#: are seen, decided and announced like a standard department's card. Every
+#: other card a personal agent raises is its owner's alone (spec A4).
+ADMIN_KEPT_ACTIONS: frozenset[str] = frozenset({"budget_incident", "blast_radius"})
+
+#: The admin-kept cards a personal department's OWNER may decide too, in their
+#: own department (ruling U3): stopping or letting their own agent's run go on
+#: is theirs to say, while lifting a budget stays `budget:manage`. Read by
+#: `approvals.service._may_apply_the_effect` and by `raise_approval`, which
+#: tells the owner of one.
+OWNER_DECIDES_TOO: frozenset[str] = frozenset({"blast_radius"})
 
 
 def is_member_owned(approval: ApprovalRequest) -> bool:
@@ -155,9 +164,10 @@ def personal_owner_of(
 ) -> uuid.UUID | None:
     """The member who alone sees and decides this card because it is a
     personal department's (`is_personal_card`): the department's
-    `owner_member_id`. None for every other card -- and for a personal card
-    with no owner, which therefore nobody sees (fail closed, like an owned
-    card whose member cannot be read: `direct_access_owner`)."""
+    `owner_member_id`. None for every other card (an `ADMIN_KEPT_ACTIONS` one
+    included) -- and for a personal card with no owner, which therefore nobody
+    sees (fail closed, like an owned card whose member cannot be read:
+    `direct_access_owner`)."""
     if not is_personal_card(row.action_type, department_kind=department_kind):
         return None
     return owner_member_id

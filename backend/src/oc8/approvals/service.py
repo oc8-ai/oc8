@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.approvals.repo import (
+    OWNER_DECIDES_TOO,
     card_department,
     department_after_person,
     direct_access_owner,
@@ -39,6 +40,7 @@ from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
 from oc8.authz.scope import AgentActor, DecisionActor, HumanActor
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.notifications.events import on_approval_decided
 from oc8.realtime.emit import publish_after_commit, record_activity
 
@@ -177,6 +179,12 @@ EFFECT_PERMISSIONS: Final[dict[str, str | None]] = {
     # agent_manage toggle in the approval's own department -- see
     # `_may_apply_the_effect`, which checks the toggle first.
     "copilot.agent_builder": perm(AGENT, MANAGE),
+    # Lets a run that changed more records than a run should go on
+    # (`api.mcp_gateway._stop_for_blast_radius`): an admin's call, tenant-wide
+    # `approval:decide_any` -- OR the owner of the personal department the
+    # alarm is filed in (`OWNER_DECIDES_TOO`, ruling U3), see
+    # `_may_apply_the_effect`.
+    "blast_radius": APPROVAL_DECIDE_ANY,
     # None means "a seat is enough", and each one is a claim, not a default:
     #
     # `tool_send` resumes the run that is holding the call -- the 3000-EUR gate,
@@ -232,7 +240,21 @@ async def _may_apply_the_effect(
     the same toggle `authorize_agent_write` honours for creating an agent
     there directly. Without the toggle it falls back to the table's
     tenant-wide `agent:manage`.
+
+    `OWNER_DECIDES_TOO` (the blast-radius alarm) is the other: the owner of
+    the personal department the card is filed in applies it there, from the
+    screen or their own phone (`scope.personal_owned`, the ownership
+    `departments.repo.is_private_to` reads), never through the Copilot acting
+    as them -- an agent's assistant does not wave a runaway agent on. In any
+    other department it is the table's `approval:decide_any`.
     """
+    if (
+        action_type in OWNER_DECIDES_TOO
+        and not isinstance(actor, AgentActor)
+        and department_id is not None
+        and department_id in actor.scope.personal_owned
+    ):
+        return True
     if action_type == "copilot.agent_builder":
         if not isinstance(actor, HumanActor):
             return False
@@ -358,6 +380,11 @@ async def raise_approval(
     db.add(approval)
     await db.flush()
     personal = False
+    #: An admin-kept card its personal department's owner decides too
+    #: (`OWNER_DECIDES_TOO`): announced tenant-wide like any admin-kept card,
+    #: and to the owner's sockets, which the tenant-wide event reaches only
+    #: when the owner holds the feed.
+    owner_too: uuid.UUID | None = None
     if announce_to_member is None:
         # A personal agent's card is its owner's alone (spec A4), announced
         # the way a member-owned card is: to the owner's sockets and push
@@ -372,8 +399,21 @@ async def raise_approval(
             )
             if owner is not None and await _member_present(db, tenant_id, owner):
                 announce_to_member = owner
+        elif (
+            kind == DEPARTMENT_KIND_PERSONAL
+            and action_type in OWNER_DECIDES_TOO
+            and owner_member_id is not None
+            and await _member_present(db, tenant_id, owner_member_id)
+        ):
+            owner_too = owner_member_id
     if personal or announce_to_member is not None:
         inspect(approval).info[_ANNOUNCED_PRIVATELY] = True
+    member_event = {
+        "approval_id": str(approval.id),
+        "agent_id": str(agent_id),
+        "title": approval.title,
+        "detail": approval.detail,
+    }
     if announce_to_member is not None:
         # A member-owned card (copilot direct access): its title and detail name
         # the person and their private purpose. Neither the tenant-wide event,
@@ -385,13 +425,21 @@ async def raise_approval(
             tenant_id,
             [announce_to_member],
             "approval.created",
-            {
-                "approval_id": str(approval.id),
-                "agent_id": str(agent_id),
-                "title": approval.title,
-                "detail": approval.detail,
-            },
+            member_event,
             source=f"oc8/approval/{approval.id}",
+        )
+    elif owner_too is not None:
+        from oc8.realtime.bus import get_event_bus
+
+        # No push: the tenant-wide event's push reaches the owner's
+        # subscriptions already.
+        await get_event_bus().publish_member_event(
+            tenant_id,
+            [owner_too],
+            "approval.created",
+            member_event,
+            source=f"oc8/approval/{approval.id}",
+            push=False,
         )
     # The messenger: never for a member-owned card; for a personal one only
     # while its owner is present, and then to the owner's phone alone.

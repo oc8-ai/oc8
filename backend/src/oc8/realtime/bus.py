@@ -75,11 +75,15 @@ class EventBus:
         data: dict[str, Any],
         *,
         source: str,
+        push: bool = True,
     ) -> None:
         """An event for named members only (spec §2.4). Same tenant channel --
         one subscriber per tenant stays the isolation unit -- but the envelope
         carries its audience and `ConnectionManager` delivers it to those
-        members' sockets and nobody else's, feed sockets included."""
+        members' sockets and nobody else's, feed sockets included.
+
+        `push=False` for an `approval.created` that also goes out tenant-wide,
+        whose push already reaches these members' subscriptions."""
         if not member_ids:
             return
         env = build_envelope(tenant_id, type_, data, source, audience=member_ids)
@@ -89,7 +93,7 @@ class EventBus:
             logger.warning(
                 "member event publish failed (type=%s tenant=%s)", type_, tenant_id, exc_info=True
             )
-        if type_ == "approval.created":
+        if type_ == "approval.created" and push:
             # The push follows the envelope: an approval announced to named
             # members (a member-owned card, a personal agent's) reaches their
             # subscriptions only -- its title and detail are theirs (spec A4).

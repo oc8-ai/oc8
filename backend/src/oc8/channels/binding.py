@@ -262,7 +262,7 @@ async def recipients(
     buys a line that names the row and the fix.
 
     A personal department's card (`approvals.repo.is_personal_card`, so every
-    `action_type` but the budget incident, ruling R2) reaches its owner and
+    `action_type` but `ADMIN_KEPT_ACTIONS`, ruling R2) reaches its owner and
     nobody else -- not `all_departments` (spec A4). `action_type` is required
     for the same forcing reason as `department_id`.
     """
