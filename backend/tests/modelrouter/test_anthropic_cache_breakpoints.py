@@ -84,6 +84,21 @@ def test_unmarked_request_keeps_the_plain_system_string() -> None:
     assert _build_payload(_req(messages), prompt_caching=True)["system"] == "a\nb"
 
 
+def test_a_marked_request_sends_no_empty_system_block() -> None:
+    messages = [
+        NeutralMessage(role="system", content="rules"),
+        NeutralMessage(role="system", content=""),
+        NeutralMessage(role="system", content="catalog", cache_breakpoint=True),
+        NeutralMessage(role="system", content="", cache_breakpoint=True),
+        NeutralMessage(role="user", content="new turn"),
+    ]
+    payload = _build_payload(_req(messages), prompt_caching=True)
+    assert payload["system"] == [
+        {"type": "text", "text": "rules"},
+        {"type": "text", "text": "catalog", "cache_control": EPHEMERAL},
+    ]
+
+
 def test_at_most_four_cache_markers() -> None:
     messages = [
         NeutralMessage(

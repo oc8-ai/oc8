@@ -58,12 +58,17 @@ def prompt_cache_key(run_context: Mapping[str, Any] | None, run_id: uuid.UUID | 
     """The provider cache key of a run's completions. A chat turn shares its
     session's key, so the replayed prefix hits the cache across the turns of
     one chat (spec §5.2); the run context may name another; any other run
-    keeps its own id."""
+    keeps its own id, as does a chat run whose context cannot be read -- a
+    cache key never fails a step."""
     context = run_context or {}
     explicit = context.get("prompt_cache_key")
     if explicit:
         return str(explicit)
-    if chat_replay_of(context) is not None:
+    try:
+        is_chat_turn = chat_replay_of(context) is not None
+    except (TypeError, ValueError):
+        is_chat_turn = False
+    if is_chat_turn:
         return str(context["chat_session_id"])
     return str(run_id) if run_id is not None else None
 

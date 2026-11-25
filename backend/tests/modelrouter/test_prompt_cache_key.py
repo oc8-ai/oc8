@@ -1,7 +1,12 @@
 import uuid
 
 from oc8.modelrouter.adapters._openai_common import build_payload
-from oc8.modelrouter.types import CompletionRequest, ModelParams, NeutralMessage, with_prompt_cache_key
+from oc8.modelrouter.types import (
+    CompletionRequest,
+    ModelParams,
+    NeutralMessage,
+    with_prompt_cache_key,
+)
 
 
 def test_with_prompt_cache_key_stamps_extra_without_dropping_other_keys():
@@ -43,3 +48,14 @@ def test_other_runs_keep_run_id():
     assert prompt_cache_key(None, run) == str(run)
     assert prompt_cache_key({"chat_session_id": str(uuid.uuid4())}, run) == str(run)
     assert prompt_cache_key({}, None) is None
+
+
+def test_a_malformed_chat_context_keeps_the_run_id():
+    from oc8.chat.replay import prompt_cache_key
+
+    run = uuid.uuid4()
+    assert prompt_cache_key({"chat_session_id": "not-a-uuid", "transcript_until": None}, run) == (
+        str(run)
+    )
+    bad_until = {"chat_session_id": str(uuid.uuid4()), "transcript_until": "nope"}
+    assert prompt_cache_key(bad_until, run) == str(run)

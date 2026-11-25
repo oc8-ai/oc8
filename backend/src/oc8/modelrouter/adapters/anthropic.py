@@ -113,6 +113,10 @@ def _to_anthropic_messages(
             # system param is text-only.
             assert isinstance(msg.content, str)
             system_parts.append(msg.content)
+            if not msg.content:
+                # Anthropic rejects an empty text block (never marked either:
+                # `_marked_positions` skips empty messages).
+                continue
             block: dict[str, Any] = {"type": "text", "text": msg.content}
             if position in marked:
                 block["cache_control"] = dict(_CACHE_CONTROL)
