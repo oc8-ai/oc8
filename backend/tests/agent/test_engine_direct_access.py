@@ -1436,3 +1436,90 @@ async def test_the_repeated_call_is_denied_with_the_reason(
         "Adjust your approach instead of retrying the same call."
     ) in str(repeat["result"])
     assert [n for n, _s, _e in recorder.windows] == ["get_record", "get_record"]
+
+
+async def test_a_person_who_may_only_read_lets_the_copilot_load_a_skill(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading a skill only hands the model a procedure: the PEP decides it as
+    a read and an early ALLOW, and it reaches no connection. It used to fall
+    back to the run's opened connection and count as a direct call, whose
+    per-call check judged it a change -- refused for a person who may only
+    read, so the Copilot could not load its own skill."""
+    from oc8.skills.runtime import load_assigned_skills
+
+    recorder = _RecordingServer(delay_s=0)
+    _opened, _bus, stream = _patch(monkeypatch, recorder, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant, policy=READ_ONLY)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        skill = m.Skill(
+            id=uuid.uuid4(), tenant_id=tenant, name="Refunds", description="d", author="t"
+        )
+        db.add(skill)
+        await db.flush()
+        version = m.SkillVersion(
+            id=uuid.uuid4(),
+            tenant_id=tenant,
+            skill_id=skill.id,
+            semver="1.0.0",
+            definition={
+                "oc8_skill": 1,
+                "id": "sk-refunds",
+                "version": "1.0.0",
+                "instruction": "STEP ONE: check the refund policy.",
+                "requires": {"tools": [], "kbs": []},
+                "guardrails": [],
+            },
+            artifact_hash=b"\x00" * 32,
+        )
+        db.add(version)
+        await db.flush()
+        db.add(
+            m.SkillAssignment(
+                id=uuid.uuid4(),
+                tenant_id=tenant,
+                agent_id=agent.id,
+                skill_version_id=version.id,
+                enabled=True,
+            )
+        )
+        await db.flush()
+        (loaded,) = await load_assigned_skills(db, agent=agent, tenant_id=tenant)
+        stream.script.extend(
+            [_turn("", ToolCall(id="c1", name=loaded.tool_name, arguments={})), _turn("done")]
+        )
+        run = await chat_run(db, office)
+        result = await _run(db, office, agent, run)
+    # Read back once the run's session committed, like every audit test.
+    async with app_session(tenant) as db:
+        events = list(
+            (
+                await db.execute(
+                    select(m.AuditEvent)
+                    .where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action.in_(
+                            [f"tool.call:{loaded.tool_name}", f"tool.result:{loaded.tool_name}"]
+                        ),
+                    )
+                    .order_by(m.AuditEvent.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert result.status == "done"
+    (entry,) = [e for e in result.tool_calls if e["tool"] == loaded.tool_name]
+    assert "STEP ONE" in entry["result"], entry
+    # Not on the person's behalf: no connection was reached.
+    assert "actingMember" not in entry
+    call, outcome = events
+    assert call.action == f"tool.call:{loaded.tool_name}"
+    assert call.decision == "allow"
+    assert "basis" not in call.resource
+    assert outcome.action == f"tool.result:{loaded.tool_name}"
+    assert outcome.resource["outcome"] == "ok"
+    assert recorder.windows == []

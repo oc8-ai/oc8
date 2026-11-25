@@ -2558,11 +2558,21 @@ async def run_agent(
                     # Reloaded for EVERY call: a grant revoked or a seat lost
                     # since the last call bites now (§4, Review Focus 4).
                     direct_view = await _direct_view()
+                    # A skill load is no connection's call either: `authorize`
+                    # decides it as a read (an early ALLOW, as here: unrouted,
+                    # not an edition call). Its `call_key` is only the run's
+                    # fallback connection, which it never reaches.
+                    skill_load = (
+                        tc.name in skill_tool_names
+                        and auth_tc.name == tc.name
+                        and not edition.claims(tc.name)
+                    )
                     direct_call = (
                         direct_run is not None
                         and call_key is not None
                         and call_key in direct_view.granted
                         and not is_core_call(auth_tc.name, routed=auth_tc.name != tc.name)
+                        and not skill_load
                     )
                     direct_nudge = False
                     decision = _authorize(

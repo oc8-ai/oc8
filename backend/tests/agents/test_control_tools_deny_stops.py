@@ -610,25 +610,44 @@ async def test_any_other_denial_stops_a_reading_control_tool(app_session: Any) -
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("code", [None, "not_this_connection"])
-async def test_a_denied_skill_tool_is_never_loaded(app_session: Any, code: str | None) -> None:
-    """A skill tool is not a core tool: no denial lets it run, the routine
-    frame code included. `authorize` never hands a skill that code (a skill
-    call is an early ALLOW), but a later check can deny it with it -- the
-    Copilot's per-call direct-access check -- and that denial must hold."""
+@pytest.mark.parametrize("how", ["ask_mode", "not_this_connection"])
+async def test_a_denied_skill_tool_is_never_loaded(app_session: Any, how: str) -> None:
+    """A skill tool is not a core tool: no denial lets it run.
+
+    `ask_mode` is a real refusal, straight from the PEP (/ask withholds every
+    tool, a skill load included). `not_this_connection` is the routine frame
+    code under which only a reading CORE tool runs: no path hands it to a skill
+    today (`authorize` allows a skill early, and the engine never counts a
+    skill load as a direct call), so this pins the dispatcher's side -- a
+    future check that does must not make a skill run under it."""
     from tests.agents.test_control_tools import _skill
 
     tenant = uuid.uuid4()
     skill = _skill("skill_refunds", requires=[])
+    tc = ToolCall(id="c1", name="skill_refunds", arguments={})
     async with app_session(tenant) as db:
         agent, task, run = await _seed(db, tenant)
+        if how == "ask_mode":
+            decision = _authorize(
+                agent,
+                tc,
+                frame={},
+                tool_policies={},
+                connection_key=None,
+                tool_scopes=None,
+                skill_tool_names=frozenset({"skill_refunds"}),
+                chat_mode=MODES["ask"],
+            )
+        else:
+            decision = Decision(Effect.DENY, "not this connection", reason_code=how)
+        assert decision.effect is Effect.DENY
         outcome = await execute_control_tool(
             db,
             tenant_id=tenant,
             agent=agent,
             task=task,
-            tc=ToolCall(id="c1", name="skill_refunds", arguments={}),
-            decision=Decision(Effect.DENY, "not through this connection", reason_code=code),
+            tc=tc,
+            decision=decision,
             assigned_skills=[skill],
             active_skills=[],
             mcp_conn=None,
