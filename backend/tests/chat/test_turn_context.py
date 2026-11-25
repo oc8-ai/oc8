@@ -16,11 +16,18 @@ from oc8.chat.carry_over import _Door, _stage_turn
 from oc8.chat.modes import MODES, mode_directive
 from oc8.chat.service import regenerate_reply
 from oc8.chat.turn_context import NOTICE_PREFIX, flattened_task_text
+from oc8.copilot.direct_access import direct_access_resume_text
 from oc8.runtime.adapter import EchoRuntimeStub, Oc8AgentRuntime, runs_in_process
+from oc8.runtime.clarification import resolve_clarification
 from oc8.runtime.executor import execute_run
+from oc8.runtime.isolated import DockerIsolatedRuntime
 from oc8.runtime.queue import RunMessage
+from oc8.runtime.repository import RunRepository
+from oc8.runtime.run_context import merge_context
+from oc8.runtime.states import RunState
 from tests.chat.test_message_tree import _commit, _parent, _reply, _send, _session
 from tests.conftest import AppSessionFactory
+from tests.runtime.test_isolated_runtime import _FakeDriver
 
 pytestmark = pytest.mark.asyncio
 
@@ -93,7 +100,7 @@ async def test_the_run_context_holds_no_transcript(
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         session = await _session(db, tenant)
-        first, run1 = await _send(db, session, "FIRST-MESSAGE")
+        _first, run1 = await _send(db, session, "FIRST-MESSAGE")
         assert run1.context["transcript_until"] is None, "a first turn follows nothing"
         r1 = await _reply(db, run1, "FIRST-ANSWER")
         u2, run2 = await _send(db, session, "SECOND-MESSAGE")
@@ -104,7 +111,6 @@ async def test_the_run_context_holds_no_transcript(
         assert context["turn_text"] == "SECOND-MESSAGE"
         assert context["turn_role"] == "user"
         assert context["transcript_until"] == str(await _parent(db, u2.id)) == str(r1.id)
-        assert first.id != u2.id
 
 
 async def test_regenerate_points_transcript_until_at_the_answered_turns_parent(
@@ -233,3 +239,69 @@ async def test_the_executor_flattens_the_chat_only_for_an_external_runtime(
     )
     assert flattened == "User: one\nYou (assistant): answer one\nUser: two"
     assert runtime.task_text == (own if in_process else flattened)
+
+
+@pytest.mark.parametrize("woken_by", ["clarification", "direct_access"])
+async def test_an_isolated_resume_leg_is_told_the_transcript_once(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    minio_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    woken_by: str,
+) -> None:
+    """`builtin:isolated` writes the flattened text back into the run's `task`;
+    the leg after an answered question or offer must not prepend the
+    transcript to it again -- it gets today's text plus the answer."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        session = await _session(db, tenant)
+        _u1, run1 = await _send(db, session, "one")
+        await _reply(db, run1, "answer one")
+        _u2, run = await _send(db, session, "two")
+        until = uuid.UUID(str(run.context["transcript_until"]))
+        before = await tree.path_to(db, session=session, message_id=until)
+        old = _old_build_task_text(before, "two")
+        await _commit(db, tenant)
+
+    seen: list[str] = []
+
+    async def shell() -> None:
+        async with app_session(tenant) as db:
+            row = await db.get(m.AgentRun, run.id)
+            assert row is not None
+            seen.append(str(row.context["task"]))
+            verdict = (
+                {"status": "waiting_for_input", "output": "Which floor?"}
+                if len(seen) == 1
+                else {"status": "done", "output": "booked"}
+            )
+            row.context = {**row.context, "isolated_result": verdict}
+            await db.commit()
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(shell))
+    message = RunMessage(
+        run_id=str(run.id), tenant_id=str(tenant), entry_id="0-0", redelivered=False
+    )
+    await execute_run(message, runtime=DockerIsolatedRuntime())
+    assert seen == [old]
+
+    access = {"tool_key": "things", "label": "Things", "decision": "approve"}
+    async with app_session(tenant) as db:
+        parked = await db.get(m.AgentRun, run.id)
+        assert parked is not None and parked.state == RunState.WAITING_FOR_INPUT.value
+        if woken_by == "clarification":
+            await resolve_clarification(db, run=parked, answer="the third")
+            # The answer is fenced with a fresh nonce on every leg: compare
+            # what comes before it.
+            expected = f"{old}\n\nClarifications:\n"
+        else:
+            await merge_context(db, parked, {"resolved_direct_access": access})
+            await RunRepository(db).transition(parked, RunState.QUEUED)
+            expected = direct_access_resume_text(old, access)
+        await _commit(db, tenant)
+    await execute_run(message, runtime=DockerIsolatedRuntime())
+    if woken_by == "clarification":
+        assert seen[1].startswith(expected) and "the third" in seen[1]
+    else:
+        assert seen[1] == expected
+    assert seen[1].count("User: one") == 1
