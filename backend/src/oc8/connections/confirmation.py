@@ -34,6 +34,16 @@ digest equals the current one: strict, as before. A row with a split holds
 while its `core` matches and the current grant only tightens the stored one.
 The split decides even when the digest matches, because only the grant
 covers the agent's own threshold.
+
+In a department with an owner only the owner's confirmation card
+(`departments.owner_confirmation.confirm_pending`) confirms what an
+administrator changed, so only it stamps the raw skill set (Ruling FR-C1).
+Every other stamp is held back (`held_back=True`, the default), and an
+ordinary save -- a trigger created or edited, the owner's own tool access --
+stamps only where `save_may_stamp` allows it: a row whose confirmation held
+before the save (an owner editing a confirmed row consents to their own
+change), or a new row while every owner confirmation of the agent holds.
+Otherwise the save applies and the row stays unconfirmed, for the card.
 """
 
 from __future__ import annotations
@@ -300,9 +310,11 @@ async def held_skill_entries(db: AsyncSession, agent: m.Agent) -> dict[str, list
     [skill_version_id, overrides, name, description]}` as every split
     confirmation of the owner holds it identically; with none left (a
     trigger deleted, a binding switched to `user`, its login deleted), the
-    set the owner last confirmed (`agent.confirmed_skills`). None (every
-    enabled assignment runs, as stored live) only for a department without
-    an owner, or an agent its owner never confirmed with a split.
+    set the owner last confirmed (`agent.confirmed_skills`; the set it was
+    created with until a stamp records one, `record_created_skills`). None
+    (every enabled assignment runs, as stored live) only for a department
+    without an owner, or a legacy agent with neither a split nor a recorded
+    set.
 
     A skill added since, a moved version, changed overrides or a changed
     name or description would loosen the owner's confirmation
@@ -345,8 +357,9 @@ async def split_fingerprint(
     `core` (None: every tool's); `grant.tools` always covers every tool.
 
     `held_back`: the skills as the agent runs them (`held_skill_entries`),
-    for judging a stamp; a stamp itself always takes the raw set, which is
-    how the owner confirms what waited."""
+    for judging a stamp and for every stamp but the owner's confirmation
+    card, which alone takes the raw set: that is how the owner confirms
+    what waited (Ruling FR-C1)."""
     dept = await db.get(m.Department, agent.department_id)
     payload, which = await _version_view(db, agent, version_id)
     narrowing = _dict(payload.get("narrowing"))
@@ -463,6 +476,80 @@ async def confirmation_holds(
     return stored.core == current.core and not grant_loosenings(stored.grant, current.grant)
 
 
+async def _owner_confirmations_hold(db: AsyncSession, agent: m.Agent, owner: uuid.UUID) -> bool:
+    """Whether every confirmation of `owner` on `agent` still holds (none:
+    nothing is waiting for it)."""
+    version_id = agent.current_version_id
+    bindings, triggers = await owner_confirmations(db, agent, owner)
+    for row in bindings:
+        if not await confirmation_holds(
+            db,
+            agent,
+            row.tool_key,
+            version_id=version_id,
+            digest=row.binding_fingerprint,
+            split=row.binding_split,
+        ):
+            return False
+    for trigger in triggers:
+        if not await trigger_confirmed(db, trigger, version_id=version_id):
+            return False
+    return True
+
+
+async def save_may_stamp(db: AsyncSession, agent: m.Agent, *, held: bool | None) -> bool:
+    """Whether an ordinary save (not the owner's confirmation card) may stamp
+    its row as confirmed (Ruling FR-C1). Called before the save changes
+    anything. `held`: whether the saved row's own confirmation held before
+    the save; None for a row that is no confirmation yet (a new trigger, a
+    binding that becomes the owner's).
+
+    Outside a department with an owner, always: there the person saving is
+    the one who confirms. In one, a row that held may be stamped again (its
+    owner editing it consents to their own change), one that did not stays
+    unconfirmed: only the card confirms what changed meanwhile. A new row
+    may be stamped while every owner confirmation of the agent holds --
+    then nothing waits that the stamp could confirm unseen."""
+    owner = await _department_owner(db, agent)
+    if owner is None:
+        return True
+    if held is not None:
+        return held
+    return await _owner_confirmations_hold(db, agent, owner)
+
+
+async def binding_held(
+    db: AsyncSession, row: m.AgentToolAccess | None, agent: m.Agent
+) -> bool | None:
+    """`save_may_stamp`'s `held` for a save of `row` (None: not written yet):
+    whether it is the owner's own confirmation and holds; None when it is
+    no owner confirmation (no row, a department without an owner, a row
+    somebody else set)."""
+    owner = await _department_owner(db, agent)
+    if row is None or owner is None or not await _owner_binding(db, row, owner):
+        return None
+    return await confirmation_holds(
+        db,
+        agent,
+        row.tool_key,
+        version_id=agent.current_version_id,
+        digest=row.binding_fingerprint,
+        split=row.binding_split,
+    )
+
+
+async def record_created_skills(db: AsyncSession, agent: m.Agent) -> None:
+    """Ruling FR-I2: an agent created in a department with an owner (the
+    member's hire, an agent the owner creates) starts from the skill set it
+    was created with, so a skill an administrator adds later waits for the
+    owner even before any stamp recorded a confirmation. Leaves a recorded
+    set alone; nothing outside an owned department."""
+    if agent.confirmed_skills is not None or await _department_owner(db, agent) is None:
+        return
+    skills = await _grant_skills(db, agent, owned=True)
+    agent.confirmed_skills = json.loads(json.dumps(skills, default=str))
+
+
 def _record_confirmed(agent: m.Agent, split: SplitFingerprint) -> None:
     """Keep the skills of the owner's newest confirmation on the agent, for
     when every confirmation is gone (`held_skill_entries`). A held-back
@@ -477,15 +564,16 @@ async def stamp_binding(
     agent: m.Agent,
     *,
     confirmed_by: uuid.UUID | None,
-    held_back: bool = False,
+    held_back: bool = True,
 ) -> None:
     """Confirm the binding against the agent's published version as it is now.
     `confirmed_by`: the member who confirms (None: the system). Only the
     department owner confirming their own binding records the skills they
-    confirmed (`agent.confirmed_skills`). `held_back`: a stamp nobody
-    confirmed (a system write, the consolidation restamp) keeps the skills
-    that wait for the owner waiting (`held_skill_entries`); a person's own
-    stamp takes them all."""
+    confirmed (`agent.confirmed_skills`). `held_back` (the default): the
+    skills that wait for the owner keep waiting (`held_skill_entries`);
+    only the owner's confirmation card (`confirm_pending`) passes False and
+    takes them all (Ruling FR-C1). Outside a department with an owner
+    nothing is held back, so it changes nothing there."""
     version_id = agent.current_version_id
     row.binding_fingerprint = await binding_fingerprint(
         db, agent, row.tool_key, version_id=version_id
@@ -511,7 +599,7 @@ async def stamp_trigger(
     trigger: m.Trigger,
     *,
     confirmed_by: uuid.UUID | None,
-    held_back: bool = False,
+    held_back: bool = True,
 ) -> None:
     """Confirm the trigger's agent (every tool) as it is now; both None when
     the agent is gone. `confirmed_by` and `held_back` as for `stamp_binding`;

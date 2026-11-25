@@ -56,6 +56,7 @@ from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
+from oc8.connections.confirmation import record_created_skills
 from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.login import login_chosen
 from oc8.connections.tool_connection import not_retired
@@ -457,6 +458,9 @@ async def create_agent(
     # snapshot, and before the audit event below (skills_write.py's
     # create_skill follows the same create-and-publish-atomically shape).
     await publish_version(db, agent, published_by=actor.member.id, at_hire=True)
+    # Ruling FR-I2: in a department with an owner the agent starts from the
+    # skills it was created with; one an administrator adds later waits.
+    await record_created_skills(db, agent)
 
     if gated:
         await create_hire_request(db, agent=agent)

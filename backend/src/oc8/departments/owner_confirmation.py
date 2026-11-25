@@ -591,11 +591,12 @@ async def confirm_pending(
         await db.refresh(agent)
         bindings, triggers = await owner_confirmations(db, agent, member.id)
         for row in bindings:
-            await stamp_binding(db, row, agent, confirmed_by=member.id)
+            # The one stamp that takes the raw set (Ruling FR-C1).
+            await stamp_binding(db, row, agent, confirmed_by=member.id, held_back=False)
             if not _stamped_as_pinned(row.binding_split, pin, row.tool_key, changed):
                 raise ConfirmationChanged
         for trigger in triggers:
-            await stamp_trigger(db, trigger, confirmed_by=member.id)
+            await stamp_trigger(db, trigger, confirmed_by=member.id, held_back=False)
             if not _stamped_as_pinned(trigger.access_split, pin, None, changed):
                 raise ConfirmationChanged
     await db.flush()

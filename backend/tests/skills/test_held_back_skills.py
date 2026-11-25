@@ -111,11 +111,12 @@ async def _row(db: Any, w: OwnedWorld) -> m.AgentToolAccess:
 
 
 async def _confirm(app_session: AppSessionFactory, w: OwnedWorld) -> None:
-    """The owner confirms the binding again, as it is now."""
+    """The owner confirms the binding again, as it is now -- as their
+    confirmation card does, the one stamp that takes the raw set."""
     async with app_session(w.tenant) as db:
         agent = await db.get(m.Agent, w.agent_id)
         assert agent is not None
-        await stamp_binding(db, await _row(db, w), agent, confirmed_by=w.member_id)
+        await stamp_binding(db, await _row(db, w), agent, confirmed_by=w.member_id, held_back=False)
 
 
 async def _loaded(app_session: AppSessionFactory, tenant: uuid.UUID, agent_id: Any) -> list[Any]:
@@ -231,7 +232,7 @@ async def _owner_trigger(
         )
         db.add(trigger)
         await db.flush()
-        await stamp_trigger(db, trigger, confirmed_by=creator)
+        await stamp_trigger(db, trigger, confirmed_by=creator, held_back=False)
         return trigger.id
 
 

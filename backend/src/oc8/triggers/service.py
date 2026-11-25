@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.connections.confirmation import stamp_trigger
+from oc8.connections.confirmation import save_may_stamp, stamp_trigger
 from oc8.modelrouter.subscription_guard import assert_manual_only_compatible
 from oc8.models.core import Agent
 from oc8.models.credentials import Credential
@@ -343,6 +343,12 @@ async def create_trigger(
     # at 256 bits are cryptographically negligible; retrying past the
     # unique constraint on IntegrityError isn't worth the complexity.
     webhook_token = secrets.token_urlsafe(_WEBHOOK_TOKEN_BYTES) if kind == "webhook" else None
+    # Ruling FR-C1: whether the creator's stamp may confirm the agent, decided
+    # before the new trigger exists.
+    may_stamp = False
+    if created_by_member_id is not None:
+        agent = await db.get(Agent, agent_id)
+        may_stamp = agent is not None and await save_may_stamp(db, agent, held=None)
 
     trigger = Trigger(
         tenant_id=tenant_id,
@@ -381,9 +387,11 @@ async def create_trigger(
 
         # The first poll only records where the source is now.
         await reset_cursor(db, trigger)
-    if created_by_member_id is not None:
+    if may_stamp:
         # Its creator saves it: their own account may serve it while the
-        # agent stays as they see it now (connections.access.schedule_confirmed).
+        # agent stays as they see it now (connections.access.schedule_confirmed)
+        # -- in a department with an owner only while nothing waits for the
+        # owner's confirmation card, which confirms it otherwise.
         await stamp_trigger(db, trigger, confirmed_by=created_by_member_id)
     # The manual-trigger-only check for ChatGPT-subscription-backed models
     # (`oc8.modelrouter.subscription_guard`) lives HERE, not in the HTTP route,

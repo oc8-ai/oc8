@@ -611,7 +611,10 @@ async def _stamp_owner_hire(
 ) -> None:
     """Stamp the member's bindings and triggers against v1, once everything
     they confirm exists: a binding written after another changes what the
-    first one confirmed."""
+    first one confirmed. The hire token is the member's consent to all of
+    it (Ruling T8-I1), so every row is stamped -- held back like every stamp
+    but the owner's confirmation card (Ruling FR-C1), on the skill set the
+    hire recorded (`record_created_skills`)."""
     from oc8.connections.confirmation import stamp_binding, stamp_trigger
 
     rows = (
@@ -745,6 +748,11 @@ async def instantiate_agent(
     await publish_version(db, agent, at_hire=True)
     if member_hire:
         assert hired_by is not None
+        from oc8.connections.confirmation import record_created_skills
+
+        # Ruling FR-I2: the skills the member hired, before any stamp, so a
+        # skill added later waits even when nothing is stamped.
+        await record_created_skills(db, agent)
         await _bind_hire_logins(db, agent=agent, hired_by=hired_by, bindings=bindings)
         triggers = list(spec.get("triggers") or [])
         if spec.get("trigger"):

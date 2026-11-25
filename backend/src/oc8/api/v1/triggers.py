@@ -23,7 +23,7 @@ from oc8.authz.scope import scope_for_principal
 from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
-from oc8.connections.confirmation import stamp_trigger, trigger_confirmed
+from oc8.connections.confirmation import save_may_stamp, stamp_trigger, trigger_confirmed
 from oc8.events.sources import LoginTarget
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
@@ -88,6 +88,20 @@ async def _needs_confirmation(
     return out
 
 
+async def _owned_agents(db: DbSession, triggers: list[m.Trigger]) -> set[uuid.UUID]:
+    """The agents of `triggers` whose department has an owner: their
+    triggers are confirmed on the owner's confirmation card (Ruling FR-C1)."""
+    ids = {t.agent_id for t in triggers}
+    if not ids:
+        return set()
+    rows = await db.execute(
+        select(m.Agent.id)
+        .join(m.Department, m.Department.id == m.Agent.department_id)
+        .where(m.Agent.id.in_(ids), m.Department.owner_member_id.is_not(None))
+    )
+    return set(rows.scalars())
+
+
 async def _poll_statuses(
     db: DbSession, triggers: list[m.Trigger]
 ) -> dict[uuid.UUID, m.EventSourceCursor]:
@@ -148,6 +162,7 @@ async def _to_dto(db: DbSession, t: m.Trigger, caller: uuid.UUID | None) -> Trig
         await _owner_names(db, [t]),
         needs_confirmation=flagged,
         cursors=await _poll_statuses(db, [t]),
+        owned=await _owned_agents(db, [t]),
     )
 
 
@@ -157,6 +172,7 @@ def _dto_with(
     *,
     needs_confirmation: set[uuid.UUID],
     cursors: dict[uuid.UUID, m.EventSourceCursor],
+    owned: set[uuid.UUID],
 ) -> TriggerDTO:
     return TriggerDTO(
         id=str(t.id),
@@ -175,6 +191,7 @@ def _dto_with(
         created_by_name=names.get(t.created_by_member_id) if t.created_by_member_id else None,
         acts_for_creator=t.acts_for_creator,
         needs_confirmation=t.id in needs_confirmation,
+        owner_confirms=t.agent_id in owned,
         event_target_credential_id=(
             str(t.event_target_credential_id) if t.event_target_credential_id else None
         ),
@@ -415,7 +432,10 @@ async def list_agent_triggers(
     names = await _owner_names(db, rows)
     flagged = await _needs_confirmation(db, rows, await _caller_member_id(db, principal))
     cursors = await _poll_statuses(db, rows)
-    return [_dto_with(t, names, needs_confirmation=flagged, cursors=cursors) for t in rows]
+    owned = await _owned_agents(db, rows)
+    return [
+        _dto_with(t, names, needs_confirmation=flagged, cursors=cursors, owned=owned) for t in rows
+    ]
 
 
 @router.patch(
@@ -444,6 +464,11 @@ async def update_agent_trigger(
             )
     caller = await _caller_member_id(db, principal)
     owner = trigger.created_by_member_id
+    # Ruling FR-C1: decided before the save changes anything.
+    trigger_agent = await db.get(m.Agent, trigger.agent_id)
+    may_stamp = trigger_agent is not None and await save_may_stamp(
+        db, trigger_agent, held=await trigger_confirmed(db, trigger)
+    )
     if body.acts_for_creator is True and owner is not None and caller != owner:
         # Letting a trigger borrow the creator's account is the creator's
         # decision alone.
@@ -476,8 +501,10 @@ async def update_agent_trigger(
         )
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    if caller is not None and updated.created_by_member_id == caller:
-        # Its creator saved it: they confirm the agent as it is now.
+    if caller is not None and updated.created_by_member_id == caller and may_stamp:
+        # Its creator saved it: they confirm the agent as it is now -- in a
+        # department with an owner only a confirmation that held before
+        # (`save_may_stamp`); the card confirms the rest.
         await stamp_trigger(db, updated, confirmed_by=caller)
         await db.flush()
     # The guard only matters when this update is turning the trigger ON

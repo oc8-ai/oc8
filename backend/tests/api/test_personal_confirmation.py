@@ -147,7 +147,8 @@ async def _events(app_session: AppSessionFactory, tenant: uuid.UUID) -> list[m.A
 
 
 async def _restamp(app_session: AppSessionFactory, w: OwnedWorld) -> None:
-    """The owner confirms their binding again, as it is now."""
+    """The owner confirms their binding again, as it is now (the raw set,
+    as only their confirmation card stamps it)."""
     from oc8.connections.confirmation import stamp_binding
 
     async with app_session(w.tenant) as db:
@@ -156,7 +157,7 @@ async def _restamp(app_session: AppSessionFactory, w: OwnedWorld) -> None:
             select(m.AgentToolAccess).where(m.AgentToolAccess.agent_id == w.agent_id)
         )
         assert agent is not None and row is not None
-        await stamp_binding(db, row, agent, confirmed_by=w.member_id)
+        await stamp_binding(db, row, agent, confirmed_by=w.member_id, held_back=False)
 
 
 async def _describe(app_session: AppSessionFactory, tenant: uuid.UUID) -> None:

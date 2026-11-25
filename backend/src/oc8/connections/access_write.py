@@ -4,7 +4,8 @@ Every door that binds an agent to an account goes through `write_tool_access`:
 `PUT /agents/{id}/tool-access/{key}` and `POST /mcp/logins` after their own
 authorization checks, and the consolidation of old per-department setups as a
 system change. It writes the row, stamps the binding fingerprint and its split
-(`connections.confirmation.stamp_binding`), switches off
+(`connections.confirmation.stamp_binding`; in a department with an owner only
+where `save_may_stamp` allows it, Ruling FR-C1), switches off
 a polled trigger whose login the change takes away, and records the audit
 event. Flushes, never commits -- the caller owns the transaction.
 """
@@ -20,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.audit import append_event
 from oc8.auth import Principal
-from oc8.connections.confirmation import stamp_binding
+from oc8.connections.confirmation import binding_held, save_may_stamp, stamp_binding
 
 
 async def write_tool_access(
@@ -54,6 +55,11 @@ async def write_tool_access(
         "set_by_member_id": str(row.set_by_member_id) if row and row.set_by_member_id else None,
         "set_with_manage": row.set_with_manage if row else None,
     }
+    # A system write (consolidation pinning a row) confirms nothing: it keeps
+    # the skills that wait for a department owner waiting. A person's save
+    # stamps only where Ruling FR-C1 allows it, decided before the save.
+    system = actor_type == "system"
+    may_stamp = system or await save_may_stamp(db, agent, held=await binding_held(db, row, agent))
     if row is None:
         row = m.AgentToolAccess(
             tenant_id=agent.tenant_id, agent_id=agent.id, tool_key=tool_key, mode=mode
@@ -67,11 +73,9 @@ async def write_tool_access(
     # Flushed first: the fingerprint reads the agent's access rows, this one
     # included, and the session does not autoflush.
     await db.flush()
-    # A system write (consolidation pinning a row) confirms nothing: it keeps
-    # the skills that wait for a department owner waiting.
-    system = actor_type == "system"
-    await stamp_binding(db, row, agent, confirmed_by=None if system else actor_id, held_back=system)
-    await db.flush()
+    if may_stamp:
+        await stamp_binding(db, row, agent, confirmed_by=None if system else actor_id)
+        await db.flush()
     # A trigger polling the login this tool was fixed to stops when the agent's
     # login for it changes, rather than listening on an account the agent's
     # tools no longer reach.
