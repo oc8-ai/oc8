@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
-from oc8.notifications.push import send_push_for_tenant
+from oc8.notifications.push import send_push_for_tenant, send_push_to_members
 from oc8.realtime.envelope import build_envelope
 
 logger = logging.getLogger(__name__)
@@ -51,11 +51,7 @@ class EventBus:
                 "event publish failed (type=%s tenant=%s)", type_, tenant_id, exc_info=True
             )
         if type_ == "approval.created":
-            approval_id = data.get("approval_id")
-            if approval_id:
-                task = asyncio.create_task(self._send_push(tenant_id, str(approval_id), data))
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
+            self._schedule_push(tenant_id, data, member_ids=None)
 
     async def publish_member_event(
         self,
@@ -79,10 +75,38 @@ class EventBus:
             logger.warning(
                 "member event publish failed (type=%s tenant=%s)", type_, tenant_id, exc_info=True
             )
+        if type_ == "approval.created":
+            # The push follows the envelope: an approval announced to named
+            # members (a member-owned card, a personal agent's) reaches their
+            # subscriptions only -- its title and detail are theirs (spec A4).
+            self._schedule_push(tenant_id, data, member_ids=list(member_ids))
+
+    def _schedule_push(
+        self,
+        tenant_id: uuid.UUID,
+        data: dict[str, Any],
+        *,
+        member_ids: list[uuid.UUID] | None,
+    ) -> None:
+        approval_id = data.get("approval_id")
+        if not approval_id:
+            return
+        task = asyncio.create_task(
+            self._send_push(tenant_id, str(approval_id), data, member_ids=member_ids)
+        )
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
     async def _send_push(
-        self, tenant_id: uuid.UUID, approval_id: str, data: dict[str, Any]
+        self,
+        tenant_id: uuid.UUID,
+        approval_id: str,
+        data: dict[str, Any],
+        *,
+        member_ids: list[uuid.UUID] | None = None,
     ) -> None:
+        """To `member_ids`' subscriptions when the envelope named an audience,
+        to the whole tenant's otherwise."""
         # `publish_event` has no `db` of its own (its callers pass only
         # tenant_id/type_/data), so this opens a fresh tenant-scoped session
         # -- same pattern used throughout this codebase for work that runs
@@ -92,7 +116,12 @@ class EventBus:
                 payload = await self._push_payload(db, approval_id, data)
                 if payload is None:
                     return
-                await send_push_for_tenant(db, tenant_id=tenant_id, payload=payload)
+                if member_ids is None:
+                    await send_push_for_tenant(db, tenant_id=tenant_id, payload=payload)
+                else:
+                    await send_push_to_members(
+                        db, tenant_id=tenant_id, member_ids=member_ids, payload=payload
+                    )
         except Exception:
             logger.warning("push send failed for approval %s", approval_id, exc_info=True)
 

@@ -4,15 +4,21 @@ so callers get one call instead of duplicated inline construction."""
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from sqlalchemy import event as sa_event
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.db.session import tenant_session
+from oc8.realtime import audience
 from oc8.realtime.bus import get_event_bus
+
+logger = logging.getLogger(__name__)
 
 
 async def publish_agent_status(agent: m.Agent) -> None:
@@ -24,8 +30,70 @@ async def publish_agent_status(agent: m.Agent) -> None:
     )
 
 
+async def _bound_to(db: AsyncSession, tenant_id: uuid.UUID) -> bool:
+    """Whether `db`'s transaction carries this tenant's RLS binding. It is
+    transaction-local (`tenant_session`), so a caller that committed mid-way
+    (the isolated control plane publishes right after its commits) holds a
+    session that would see nothing -- and, on some tables, raise."""
+    setting = await db.scalar(text("SELECT current_setting('app.tenant_id', true)"))
+    return bool(setting == str(tenant_id))
+
+
+async def _audience_for(
+    db: AsyncSession | None, tenant_id: uuid.UUID, agent_id: uuid.UUID
+) -> audience.PersonalAudience:
+    """`audience.personal_audience`, from the cache when it can, else from the
+    caller's session when that is bound to the tenant (it may hold the agent
+    uncommitted: the in-process engine publishes inside its own transaction),
+    else from a fresh tenant session -- the same pattern as `EventBus._send_push`
+    for the emitters that run with no session (the containerized runtimes'
+    poll loops). A lookup that fails publishes nothing."""
+    hit = audience.cached(agent_id)
+    if hit is not None:
+        return hit
+    try:
+        if db is not None and await _bound_to(db, tenant_id):
+            return await audience.personal_audience(db, agent_id)
+        async with tenant_session(tenant_id) as fresh:
+            return await audience.personal_audience(fresh, agent_id)
+    except Exception:
+        logger.warning(
+            "could not resolve the live audience of agent %s; publishing nothing",
+            agent_id,
+            exc_info=True,
+        )
+        return audience.UNKNOWN
+
+
+async def publish_run_content(
+    db: AsyncSession | None,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    event: dict[str, Any],
+) -> None:
+    """The one door for what an agent's run SAYS (spec A4): `event` is
+    `{"type", "data", "source"}`. A standard agent's goes tenant-wide as it
+    always did; a personal agent's to its department's owner alone
+    (`publish_member_event`); a personal agent's whose owner has left, or an
+    agent the lookup cannot see, to nobody. Status events are metadata (R2)
+    and keep `publish_event`."""
+    who = await _audience_for(db, tenant_id, agent_id)
+    type_, data, source = str(event["type"]), dict(event["data"]), str(event["source"])
+    bus = get_event_bus()
+    if not who.personal:
+        await bus.publish_event(tenant_id, type_, data, source=source)
+    elif who.owner_member_id is not None:
+        await bus.publish_member_event(tenant_id, [who.owner_member_id], type_, data, source=source)
+
+
 async def publish_run_output_delta(
-    tenant_id: uuid.UUID, *, run_id: uuid.UUID, chunk: str
+    tenant_id: uuid.UUID,
+    *,
+    run_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    chunk: str,
+    db: AsyncSession | None = None,
 ) -> None:
     """One incremental slice of a run's live output (§8.1 containerized
     runtimes only): the newly-seen text `tail_new_lines()` just diffed out of
@@ -40,11 +108,15 @@ async def publish_run_output_delta(
     """
     if not chunk:
         return
-    await get_event_bus().publish_event(
-        tenant_id,
-        "run.output_delta",
-        {"run_id": str(run_id), "chunk": chunk},
-        source=f"oc8/run/{run_id}",
+    await publish_run_content(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        event={
+            "type": "run.output_delta",
+            "data": {"run_id": str(run_id), "chunk": chunk},
+            "source": f"oc8/run/{run_id}",
+        },
     )
 
 
@@ -98,7 +170,12 @@ async def publish_mcp_test_log(
 
 
 async def publish_run_token_delta(
-    tenant_id: uuid.UUID, *, run_id: uuid.UUID, text: str
+    tenant_id: uuid.UUID,
+    *,
+    run_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    text: str,
+    db: AsyncSession | None = None,
 ) -> None:
     """One text fragment of a model turn as it streams in (Stage 2 token
     streaming), so the Live Log shows an answer forming word by word instead
@@ -112,16 +189,26 @@ async def publish_run_token_delta(
     """
     if not text:
         return
-    await get_event_bus().publish_event(
-        tenant_id,
-        "run.token_delta",
-        {"run_id": str(run_id), "text": text},
-        source=f"oc8/run/{run_id}",
+    await publish_run_content(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        event={
+            "type": "run.token_delta",
+            "data": {"run_id": str(run_id), "text": text},
+            "source": f"oc8/run/{run_id}",
+        },
     )
 
 
 async def publish_run_reasoning_delta(
-    tenant_id: uuid.UUID, *, run_id: uuid.UUID, step: int, text: str
+    tenant_id: uuid.UUID,
+    *,
+    run_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    step: int,
+    text: str,
+    db: AsyncSession | None = None,
 ) -> None:
     """One fragment of the model's reasoning as it streams in, for the step
     numbered `step`. The `run.token_delta` of reasoning, with the same
@@ -130,16 +217,25 @@ async def publish_run_reasoning_delta(
     """
     if not text:
         return
-    await get_event_bus().publish_event(
-        tenant_id,
-        "run.reasoning_delta",
-        {"run_id": str(run_id), "step": step, "text": text},
-        source=f"oc8/run/{run_id}",
+    await publish_run_content(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        event={
+            "type": "run.reasoning_delta",
+            "data": {"run_id": str(run_id), "step": step, "text": text},
+            "source": f"oc8/run/{run_id}",
+        },
     )
 
 
 async def publish_run_tool_call(
-    tenant_id: uuid.UUID, *, run_id: uuid.UUID, call: dict[str, Any]
+    tenant_id: uuid.UUID,
+    *,
+    run_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    call: dict[str, Any],
+    db: AsyncSession | None = None,
 ) -> None:
     """One tool call the in-process engine just executed (§8.3), so an open
     Live Log tab appends it the instant it happens instead of only seeing
@@ -150,16 +246,25 @@ async def publish_run_tool_call(
     fresh mid-run still sees it; this only spares an already-open tab the
     wait for that reload.
     """
-    await get_event_bus().publish_event(
-        tenant_id,
-        "run.tool_call",
-        {"run_id": str(run_id), "call": call},
-        source=f"oc8/run/{run_id}",
+    await publish_run_content(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        event={
+            "type": "run.tool_call",
+            "data": {"run_id": str(run_id), "call": call},
+            "source": f"oc8/run/{run_id}",
+        },
     )
 
 
 async def publish_run_step_timing(
-    tenant_id: uuid.UUID, *, run_id: uuid.UUID, timing: dict[str, Any]
+    tenant_id: uuid.UUID,
+    *,
+    run_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    timing: dict[str, Any],
+    db: AsyncSession | None = None,
 ) -> None:
     """One step's finished latency record (`oc8.agent.harness.step_timing`),
     so an open timeline tab fills in that step's duration the moment the next
@@ -171,11 +276,15 @@ async def publish_run_step_timing(
     run's existing terminal/step-boundary context writes; this only spares an
     already-open tab the wait for that reload.
     """
-    await get_event_bus().publish_event(
-        tenant_id,
-        "run.step_timing",
-        {"run_id": str(run_id), "timing": timing},
-        source=f"oc8/run/{run_id}",
+    await publish_run_content(
+        db,
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        event={
+            "type": "run.step_timing",
+            "data": {"run_id": str(run_id), "timing": timing},
+            "source": f"oc8/run/{run_id}",
+        },
     )
 
 
@@ -199,10 +308,9 @@ async def record_activity(
     )
     db.add(row)
     await db.flush()
-    await get_event_bus().publish_event(
-        tenant_id,
-        "activity.logged",
-        {
+    event: dict[str, Any] = {
+        "type": "activity.logged",
+        "data": {
             "id": str(row.id),
             "agent_id": str(agent_id) if agent_id else None,
             "status": status,
@@ -210,8 +318,15 @@ async def record_activity(
             "detail": detail,
             "cacheHit": cache_hit,
         },
-        source=f"oc8/activity/{row.id}",
-    )
+        "source": f"oc8/activity/{row.id}",
+    }
+    if agent_id is None:
+        # No agent, nobody's personal content: the tenant's own line.
+        await get_event_bus().publish_event(
+            tenant_id, event["type"], event["data"], source=event["source"]
+        )
+    else:
+        await publish_run_content(db, tenant_id=tenant_id, agent_id=agent_id, event=event)
     return row
 
 

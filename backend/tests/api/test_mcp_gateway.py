@@ -1680,6 +1680,8 @@ async def test_rendering_a_component_without_any_grant_publishes_a_realtime_even
 
     monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)

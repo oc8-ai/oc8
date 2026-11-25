@@ -107,7 +107,7 @@ from oc8.copilot.door import chat_door
 from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
 from oc8.modelrouter import ToolCall
-from oc8.realtime.emit import note_focus, record_activity
+from oc8.realtime.emit import note_focus, publish_run_content, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.records.registry import link_scope
@@ -984,13 +984,15 @@ async def _call_tool(
             # inline (run_id + props) -- no consumer needs to look up a row
             # that isn't committed yet, so publishing before the request's
             # terminal commit is safe here.
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                run.tenant_id,
-                "run.component_rendered",
-                {"run_id": str(run.id), **outcome.rendered_component},
-                source=f"oc8/run/{run.id}",
+            await publish_run_content(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=run.agent_id,
+                event={
+                    "type": "run.component_rendered",
+                    "data": {"run_id": str(run.id), **outcome.rendered_component},
+                    "source": f"oc8/run/{run.id}",
+                },
             )
         return _tool_result(outcome.output, is_error=outcome.output.startswith("ERROR"))
 
