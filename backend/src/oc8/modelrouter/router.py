@@ -484,6 +484,8 @@ class ModelRouter:
 
         try:
             async with db.begin_nested():
+                # No member_id: an embedding (ingest, retrieval) has no person
+                # in scope here, so its usage stays unattributed.
                 await record_usage(
                     db,
                     tenant_id=tenant_id,

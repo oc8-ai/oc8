@@ -33,6 +33,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
 from oc8.metering import check_budget, record_usage
+from oc8.metering.usage import usage_member_id
 from oc8.modelrouter import (
     NeutralMessage,
     NeutralTool,
@@ -75,6 +76,9 @@ class GatewayCaller(BaseModel):
     #: `search_knowledge` lookup through the tool gateway marks it). Every
     #: completion carries it, so the router refuses a cloud model or fallback.
     contains_restricted: bool = False
+    #: The person the run acts for, whose budget line its usage is booked to.
+    #: Resolved with the request's session, before the bill detaches from it.
+    member_id: uuid.UUID | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
@@ -111,6 +115,7 @@ async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
         run_id=run_id,
         pinned=await resolve_version(db, run, agent),
         contains_restricted=bool((run.context or {}).get("contains_restricted", False)),
+        member_id=await usage_member_id(db, run),
     )
 
 
@@ -238,6 +243,7 @@ async def _bill(
     agent_id = caller.agent.id
     department_id = caller.agent.department_id
     tenant_id = caller.tenant_id
+    member_id = caller.member_id
     tokens_in, tokens_out = usage.tokens_in, usage.tokens_out
     cache_read, cache_write = usage.cache_read_tokens, usage.cache_write_tokens
 
@@ -255,6 +261,7 @@ async def _bill(
                 cache_write_tokens=cache_write,
                 agent_id=agent_id,
                 department_id=department_id,
+                member_id=member_id,
             )
 
     task = asyncio.ensure_future(_write())

@@ -13,13 +13,18 @@ price_as_of, called from api/v1/feed.py).
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8 import models as m
+from oc8.connections.acting import resolve_acting_person
 from oc8.models.ops import TokenUsageRecord
 from oc8.observability import record_token_usage
+
+logger = logging.getLogger(__name__)
 
 
 async def record_usage(
@@ -76,3 +81,24 @@ async def record_usage(
         tokens_in=tokens_in,
         tokens_out=tokens_out,
     )
+
+
+async def usage_member_id(session: AsyncSession, run: m.AgentRun | None) -> uuid.UUID | None:
+    """The member a run's token usage is attributed to: the person it acts for
+    (`resolve_acting_person`), or None.
+
+    Resolved by the caller once per run or request, never inside
+    `record_usage` (a single INSERT on the hot path). Attribution is
+    best-effort: a failed lookup leaves the usage unattributed instead of
+    failing the model call or the bill, and runs in a savepoint so the
+    caller's transaction stays usable."""
+    if run is None:
+        return None
+    try:
+        async with session.begin_nested():
+            return (await resolve_acting_person(session, run)).member_id
+    except Exception:
+        logger.warning(
+            "usage: could not resolve the acting person for run %s", run.id, exc_info=True
+        )
+        return None

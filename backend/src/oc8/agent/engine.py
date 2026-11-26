@@ -158,6 +158,7 @@ from oc8.hooks.executor import InProcessExecutor
 from oc8.hooks.types import HookCtx
 from oc8.memory.router import write_memory
 from oc8.metering import check_budget, record_usage, trigger_budget_hard_stop
+from oc8.metering.usage import usage_member_id
 from oc8.modelrouter import (
     NeutralMessage,
     NeutralTool,
@@ -695,6 +696,11 @@ async def run_agent(
         # present in (follow-up, messenger, trigger, delegation) gets none.
         direct_run = (
             _direct.direct_access_run(run_row, agent) if agent.is_tenant_assistant else None
+        )
+        # Whose budget line every completion of this call is booked to:
+        # resolved once here, not per completion (Cost Center per member).
+        usage_member = (
+            direct_run.member_id if direct_run is not None else await usage_member_id(db, run_row)
         )
         if agent.is_tenant_assistant and toolset is None:
             # One row per key, of the department granting the strongest
@@ -1944,6 +1950,7 @@ async def run_agent(
                             active_skills[-1].skill_version_id if active_skills else None
                         ),
                         creator_id=active_skills[-1].creator_id if active_skills else None,
+                        member_id=usage_member,
                     )
 
                 async def _compact(sampling_params: ModelParams = resolved_params) -> None:
@@ -2078,6 +2085,7 @@ async def run_agent(
                         cache_hit=True,
                         saved_tokens_in=result.usage.tokens_in,
                         saved_tokens_out=result.usage.tokens_out,
+                        member_id=usage_member,
                     )
                 else:
 

@@ -209,6 +209,7 @@ async def _model_title(db: AsyncSession, *, session: m.ChatSession, message: str
                 cache_write_tokens=result.usage.cache_write_tokens,
                 agent_id=agent.id,
                 department_id=agent.department_id,
+                member_id=session.member_id,
             )
     except Exception:
         logger.warning("chat title: could not record usage", exc_info=True)

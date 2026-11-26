@@ -127,6 +127,7 @@ from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.copilot.door import chat_door, door_of
 from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
+from oc8.metering.usage import usage_member_id
 from oc8.modelrouter import (
     NeutralMessage,
     NeutralTool,
@@ -1684,6 +1685,15 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             timing=timing,
         )
 
+    # The person this step's usage is booked to, resolved on the first record
+    # of the request and reused for the rest (Cost Center per member).
+    usage_member: list[uuid.UUID | None] = []
+
+    async def _usage_member() -> uuid.UUID | None:
+        if not usage_member:
+            usage_member.append(await usage_member_id(db, run))
+        return usage_member[0]
+
     async def _record(res: Any, req_id: uuid.UUID) -> None:
         await record_usage(
             db,
@@ -1697,6 +1707,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             cache_write_tokens=res.usage.cache_write_tokens,
             agent_id=agent.id,
             department_id=agent.department_id,
+            member_id=await _usage_member(),
         )
 
     async def _compact() -> None:
@@ -1850,6 +1861,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 cache_hit=True,
                 saved_tokens_in=result.usage.tokens_in,
                 saved_tokens_out=result.usage.tokens_out,
+                member_id=await _usage_member(),
             )
         else:
             result, request_id = await _complete_with_overflow_retry(
@@ -2751,6 +2763,7 @@ async def _dispatch_one_tool(
                 cache_write_tokens=clarify_result.usage.cache_write_tokens,
                 agent_id=agent.id,
                 department_id=agent.department_id,
+                member_id=await usage_member_id(db, run),
             )
             reply_text = clarify_result.text or ""
         except Exception:
