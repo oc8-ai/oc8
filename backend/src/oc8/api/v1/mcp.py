@@ -26,17 +26,21 @@ from oc8.capas.guardrails import GuardrailLibrary
 from oc8.capas.i18n import translations_for
 from oc8.capas.manifest import ManifestError, ToolPackConnection, parse_manifest
 from oc8.capas.service import _artifact_hash
+from oc8.connections.checks import classify_check_error
 from oc8.connections.credential_env import with_login
 from oc8.connections.integrations import integration_for_connection
 from oc8.connections.login import holds_copied_login
 from oc8.connections.tool_connection import not_retired
 from oc8.connections.usable import needs_department
+from oc8.credentials.errors import CredentialCheckFailed
 from oc8.credentials.registry import get_credential_type
 from oc8.credentials.service import (
+    CredentialFieldNotSet,
     CredentialNotFound,
     IncompleteCredential,
     get_credential,
     missing_required,
+    test_credential,
 )
 from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
 from oc8.realtime.emit import publish_mcp_test_log
@@ -56,6 +60,7 @@ from oc8.schemas.dto import (
     McpConnectionDTO,
     ModelLabelDTO,
     ToolLabelDTO,
+    UsageLimitDTO,
 )
 from oc8.schemas.requests import (
     CreateMcpConnectionRequest,
@@ -152,6 +157,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
                 approval_actions=p.approval_actions,
                 approval_eur=p.approval_eur,
                 only=p.only,
+                limits=[UsageLimitDTO(**lim.to_json()) for lim in p.limits],
             )
             for p in manifest_conn.guardrail_presets
         ]
@@ -172,6 +178,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
                 approval_eur=g.approval_eur,
                 approval_actions=sorted(g.approval_actions),
                 only=list(g.only),
+                limits=[UsageLimitDTO(**lim.to_json()) for lim in g.limits],
                 adjustable=[
                     GuardrailAdjustableDTO(
                         field=a.field,
@@ -211,6 +218,12 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
     # disk (or ships no tool pack) still reports which plugin created it,
     # rather than silently falling back to None like the guardrail fields do.
     plugin_name = cfg.get("_plugin_name")
+    # The same seam the risk tier reads (b_risk_tier): the tools that reach
+    # people outside, which ask even an autonomous agent without a grant.
+    raw_outward = cfg.get("outward_tools")
+    if not isinstance(raw_outward, list) and manifest_conn is not None:
+        raw_outward = manifest_conn.config.get("outward_tools")
+    outward_tools = [str(t) for t in raw_outward] if isinstance(raw_outward, list) else []
     return McpConnectionDTO(
         id=str(c.id),
         name=c.name,
@@ -227,6 +240,7 @@ def _to_dto(c: m.McpConnection) -> McpConnectionDTO:
         guardrail_library=library,
         guardrail_attributes=attributes,
         has_value_spec=has_value_spec,
+        outward_tools=outward_tools,
         plugin_name=plugin_name if isinstance(plugin_name, str) and plugin_name else None,
         credential_type=manifest_conn.credential_type or None if manifest_conn else None,
     )
@@ -497,6 +511,25 @@ async def test_connection(
     if credential_id is not None:
         cfg = await _with_test_login(db, principal.tenant_id, conn, credential_id)
     now = _utcnow_iso()
+    if credential_id is not None:
+        # The login's own check first -- the one Connections -> Test runs. A
+        # bridge comes up whatever the login holds, so without it a wrong
+        # password passed here and failed there (E2E F8).
+        refused = await _login_check_failure(db, principal.tenant_id, credential_id)
+        if refused is not None:
+            await publish_mcp_test_log(
+                principal.tenant_id,
+                connection_id=conn_id,
+                step="result",
+                message=f"Error: {refused}",
+            )
+            await db.commit()  # keeps the login's recorded test result
+            return _to_dto(conn).model_copy(
+                update={
+                    "connected": False,
+                    "health": {"status": "error", "checkedAt": now, "error": refused},
+                }
+            )
 
     _STEP_MESSAGES = {
         "spawn": "Starting session…",
@@ -567,6 +600,34 @@ async def test_connection(
         conn.health = failed
     await db.commit()
     return _to_dto(conn)
+
+
+_CHECK_REASONS = {
+    "auth": "The login was refused.",
+    "unreachable": "The service could not be reached with this login.",
+    "invalid": "The login is not valid.",
+}
+
+
+async def _login_check_failure(
+    db: DbSession, tenant_id: uuid.UUID, credential_id: uuid.UUID
+) -> str | None:
+    """Why the login type's check refused `credential_id`, or None when it
+    passed (or the type declares none). Records the result on the login, as
+    Connections -> Test does. Only text a validator worded for people is
+    shown; anything else is named by its class of failure."""
+    try:
+        await test_credential(
+            db, tenant_id=tenant_id, credential_id=credential_id, owner="organisation"
+        )
+    except CredentialFieldNotSet as exc:
+        return f"The login has no value for {exc.field_key!r}. Complete it first."
+    except CredentialCheckFailed as exc:
+        if exc.detail:
+            return exc.detail[:300]
+        reason = exc.reason or classify_check_error(exc.internal)
+        return _CHECK_REASONS.get(reason, _CHECK_REASONS["invalid"])
+    return None
 
 
 async def _default_test_login(db: DbSession, conn: m.McpConnection) -> uuid.UUID | None:

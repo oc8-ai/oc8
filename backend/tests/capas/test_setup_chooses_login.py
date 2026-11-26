@@ -392,6 +392,80 @@ async def test_testing_the_tool_with_a_chosen_login_leaves_its_row_to_the_others
     assert after.connected is True
 
 
+async def _refuse_the_token(values: dict[str, str]) -> None:
+    from oc8.credentials.errors import CredentialCheckFailed
+
+    raise CredentialCheckFailed("The token was refused.", reason="auth")
+
+
+async def test_save_and_test_runs_the_login_check_connections_runs(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E2E F8: Save & test only started the tool's bridge, which comes up
+    whatever the login holds, and answered "connected" for a wrong password
+    that Connections -> Test then refused. A login type that declares a check
+    is now checked first, the same check, and its answer is the test's."""
+    monkeypatch.setitem(
+        registry.CORE_CREDENTIAL_TYPES,
+        TYPE,
+        registry.CORE_CREDENTIAL_TYPES[TYPE].model_copy(
+            update={
+                "validate_entry_point": ("tests.capas.test_setup_chooses_login:_refuse_the_token")
+            }
+        ),
+    )
+    # The login's address is a made-up host; the outbound guard is not what
+    # this test is about.
+    monkeypatch.setattr("oc8.credentials.service._guard_url_fields", lambda *_: None)
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    login = await _login(app_session, tenant, name="Company system")
+    async with api() as c:
+        await install(c, admin, PLUGIN)
+        (row,) = await _tool_rows(app_session, tenant)
+        tested = await c.post(
+            f"/api/v1/mcp/connections/{row.id}/test",
+            params={"credentialId": str(login)},
+            headers=admin,
+        )
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["connected"] is False
+    assert tested.json()["health"]["status"] == "error"
+    assert "The token was refused." in tested.json()["health"]["error"]
+    async with app_session(tenant) as db:
+        cred = await db.get(m.Credential, login)
+        assert cred is not None
+        # Recorded as Connections -> Test records it.
+        assert cred.last_test_ok is False
+
+
+async def test_save_and_test_names_a_login_field_without_a_value(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of F8: a required field whose stored value is gone (its secret
+    deleted) made the login check raise past the test into a 500."""
+    from oc8.credentials.service import CredentialFieldNotSet
+
+    async def _field_gone(*_a: Any, **_k: Any) -> None:
+        raise CredentialFieldNotSet("Company system", "token")
+
+    monkeypatch.setattr("oc8.api.v1.mcp.test_credential", _field_gone)
+    tenant = uuid.uuid4()
+    admin = headers(tenant, "admin@acme.test", "org_admin")
+    login = await _login(app_session, tenant, name="Company system")
+    async with api() as c:
+        await install(c, admin, PLUGIN)
+        (row,) = await _tool_rows(app_session, tenant)
+        tested = await c.post(
+            f"/api/v1/mcp/connections/{row.id}/test",
+            params={"credentialId": str(login)},
+            headers=admin,
+        )
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["connected"] is False
+    assert "token" in tested.json()["health"]["error"]
+
+
 async def test_binding_a_new_login_to_an_agent_needs_the_right_to_edit_that_agent(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:

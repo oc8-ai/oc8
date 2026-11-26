@@ -199,6 +199,17 @@ export function fill(text: string, vars: Record<string, string>): string {
   return text.replace(/\{(\w+)\}/g, (whole, key: string) => vars[key] ?? whole);
 }
 
+/** An address field filled without https:// (E2E N4), by its label. */
+export function noSchemeText(t: T, field: string): string {
+  return fill(
+    t(
+      "{field} must start with https:// (for example https://api.example.com/v1).",
+      "{field} muss mit https:// beginnen (zum Beispiel https://api.example.com/v1).",
+    ),
+    { field },
+  );
+}
+
 /** "{name} is incomplete: {fields} missing", with the fields' labels. */
 export function incompleteText(t: T, name: string, fields: readonly string[]): string {
   return fill(

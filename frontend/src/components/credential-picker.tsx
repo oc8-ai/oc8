@@ -1,3 +1,4 @@
+import { LoginFieldInput } from "@/components/connections/login-field-input";
 import { useState } from "react";
 import { KeyRound } from "lucide-react";
 import { toast } from "sonner";
@@ -10,10 +11,16 @@ import {
   type CredentialDTO,
   type CredentialTypeFieldDTO,
 } from "@/lib/hooks";
-import { fill, incompleteText, usedByAgentsText } from "@/components/connections/texts";
+import {
+  fill,
+  incompleteText,
+  noSchemeText,
+  usedByAgentsText,
+} from "@/components/connections/texts";
 import {
   URL_PLACEHOLDER,
   emptyRequiredFields,
+  urlFieldsWithoutScheme,
   initialLoginValues,
   loginFieldLabel,
   loginFieldPlaceholder,
@@ -63,6 +70,7 @@ export function CredentialPicker({
   };
   const isEmpty = (field: CredentialTypeFieldDTO) => !(fieldValues[field.key] ?? "").trim();
   const emptyRequired = emptyRequiredFields(fields, fieldValues);
+  const noScheme = urlFieldsWithoutScheme(fields, fieldValues);
 
   const startCreating = () => {
     setFieldValues(initialLoginValues(fields));
@@ -71,7 +79,7 @@ export function CredentialPicker({
   };
 
   const submit = async () => {
-    if (!name.trim() || emptyRequired.length > 0) return;
+    if (!name.trim() || emptyRequired.length > 0 || noScheme.length > 0) return;
     try {
       const created = await createCredential.mutateAsync({
         name: name.trim(),
@@ -118,7 +126,10 @@ export function CredentialPicker({
           const label = loginFieldLabel(field, lang);
           const placeholder = loginFieldPlaceholder(field, lang);
           const help = resolveTranslation(field.help, field.help_translations, lang);
-          const invalid = (isEmpty(field) && field.required) || refused.includes(field.key);
+          const invalid =
+            (isEmpty(field) && field.required) ||
+            refused.includes(field.key) ||
+            noScheme.includes(field);
           return (
             <label key={field.key} className="block text-xs text-muted-foreground">
               <span className="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-muted-foreground">
@@ -126,15 +137,13 @@ export function CredentialPicker({
                 {label}
                 {field.required && <RequiredMark />}
               </span>
-              <input
-                type={
-                  field.kind === "password" ? "password" : field.kind === "url" ? "url" : "text"
-                }
+              <LoginFieldInput
+                field={field}
                 required={field.required}
                 aria-invalid={invalid || undefined}
                 value={fieldValues[field.key] ?? ""}
-                onChange={(e) => {
-                  setFieldValues((cur) => ({ ...cur, [field.key]: e.target.value }));
+                onChange={(next) => {
+                  setFieldValues((cur) => ({ ...cur, [field.key]: next }));
                   setRefused((cur) => cur.filter((k) => k !== field.key));
                 }}
                 placeholder={placeholder}
@@ -148,6 +157,11 @@ export function CredentialPicker({
             </label>
           );
         })}
+        {noScheme.map((field) => (
+          <p key={field.key} role="alert" className="text-xs text-amber-600 dark:text-amber-400">
+            {noSchemeText(t, loginFieldLabel(field, lang))}
+          </p>
+        ))}
         {refused.length > 0 && (
           <p role="alert" className="text-xs text-amber-600 dark:text-amber-400">
             {incompleteText(t, name.trim() || typeDisplayName, refused.map(labelOf))}
@@ -168,7 +182,12 @@ export function CredentialPicker({
           </button>
           <button
             type="button"
-            disabled={!name.trim() || emptyRequired.length > 0 || createCredential.isPending}
+            disabled={
+              !name.trim() ||
+              emptyRequired.length > 0 ||
+              noScheme.length > 0 ||
+              createCredential.isPending
+            }
             onClick={submit}
             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50"
           >
@@ -207,8 +226,10 @@ export function CredentialPicker({
           // <option>'s intrinsic width -- that forced the whole row (and the
           // "Create new" button with it) past a narrow parent's edge instead
           // of fitting inside it (live user report: half outside the Hire
-          // dialog's tool tile).
-          className={`min-w-0 flex-1 rounded-md border bg-background/40 px-3 py-2 text-sm text-foreground ${
+          // dialog's tool tile). The 12rem basis is the other half: on a
+          // narrow tile the button wraps below instead of squeezing the
+          // select down to "Anmel…" (E2E N10).
+          className={`min-w-0 flex-[1_1_12rem] rounded-md border bg-background/40 px-3 py-2 text-sm text-foreground ${
             chosenMissing.length > 0 ? "border-amber-500/70" : "border-border"
           }`}
         >
@@ -239,13 +260,19 @@ export function CredentialPicker({
       {chosen && (
         <p className="text-[11px] text-muted-foreground">
           {chosen.allDepartments
-            ? t("Enabled for all departments", "Für alle Abteilungen freigegeben")
+            ? t("Login usable in all departments", "Login in allen Abteilungen nutzbar")
             : enabledFor > 0
               ? fill(
-                  t("Enabled for {count} department(s)", "Für {count} Abteilung(en) freigegeben"),
+                  t(
+                    "Login usable in {count} department(s)",
+                    "Login in {count} Abteilung(en) nutzbar",
+                  ),
                   { count: String(enabledFor) },
                 )
-              : t("Not enabled for any department yet", "Noch für keine Abteilung freigegeben")}
+              : t(
+                  "Login not usable in any department yet",
+                  "Login noch in keiner Abteilung nutzbar",
+                )}
           {usedBy && ` · ${usedBy}`}
         </p>
       )}

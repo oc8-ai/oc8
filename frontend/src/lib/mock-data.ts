@@ -732,6 +732,11 @@ export interface Department {
   activity: number; // 0..100
   accent: string; // hue for tinting
   promptCachingEnabled: boolean;
+  /** `personal` is a member's own department (one per member). */
+  kind?: "standard" | "assistant" | "personal";
+  /** Detail read only: a member's personal department read by anybody but
+   *  its owner. Its task board is theirs alone (a 404 for this reader). */
+  contentHidden?: boolean;
   /** Set once the department is archived (`DELETE /departments/{id}`).
    * Mirrors `Agent.deletedAt` -- see Task 18's report. */
   deletedAt?: string | null;

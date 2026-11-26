@@ -1,3 +1,5 @@
+import { fill } from "@/components/connections/texts";
+import { frameConflicts, type FrameConflict } from "@/lib/guardrail-frame";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Check, Info, Maximize2, Plus, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
@@ -357,6 +359,33 @@ interface Suggestion {
   policy: GuardrailValue;
 }
 
+// How strongly a suggestion restricts its function: of several predefined
+// guardrails proposing a rule for the same function, the strictest one is
+// the row shown.
+const STRICTNESS: Record<FunctionMode, number> = { allow: 0, with_limits: 1, approval: 2, deny: 3 };
+
+// The capa's presets/library as whole-connection policies, in the order and
+// wording the "Apply a preset" picker offers them.
+function presetEntriesOf(
+  presets: GuardrailPreset[],
+  guardrailLibrary: GuardrailLibraryEntry[] | null,
+  lang: Lang,
+): Array<{ key: string; label: string; summary: string; policy: GuardrailValue }> {
+  return guardrailLibrary && guardrailLibrary.length > 0
+    ? guardrailLibrary.map((entry) => ({
+        key: entry.key,
+        label: resolveTranslation(entry.label, entry.labelTranslations, lang),
+        summary: resolveTranslation(entry.summary, entry.summaryTranslations, lang),
+        policy: libraryPolicyOf(entry),
+      }))
+    : presets.map((preset) => ({
+        key: preset.key,
+        label: resolveTranslation(preset.label, preset.labelTranslations, lang),
+        summary: resolveTranslation(preset.summary, preset.summaryTranslations, lang),
+        policy: policyOf(preset),
+      }));
+}
+
 // Decomposes a capa's presets/library (whole-connection policies) into the
 // same per-function shape this table already understands: for every entry,
 // walk the catalog (plus both base-right gates) through `modeOf` as if that
@@ -365,13 +394,11 @@ interface Suggestion {
 // guardrails end up as rows here rather than a second, separate picker --
 // see `ToolGuardrailEditorPanel`'s "aus einem Guss" fix.
 //
-// Deliberately NOT deduplicated across entries: two entries that both deny
-// `delete_record` with different explanations are two different predefined
-// guardrails and both must appear (design ask: "jede vordefinierte
-// Guardrail... soll auch in diesem Pattern sein" -- every one of them, not
-// just the first to claim a function). The `listed` filter in the component
-// below is what actually removes a suggestion once one of these rows -- or a
-// manual one -- is saved for that function.
+// One suggestion per function: several presets withholding the same function
+// showed it once per preset (E2E F4: "Mail Delete" three times). The
+// strictest proposal wins, the first one among equals. A whole preset --
+// limits included, which no per-function row can carry -- is applied through
+// the "Apply a preset" picker instead.
 function suggestionsFrom(
   presets: GuardrailPreset[],
   guardrailLibrary: GuardrailLibraryEntry[] | null,
@@ -379,40 +406,26 @@ function suggestionsFrom(
   guardrailAttributes: GuardrailAttribute[],
   lang: Lang,
 ): Suggestion[] {
-  const entries: Array<{ key: string; policy: GuardrailValue; text: string }> =
-    guardrailLibrary && guardrailLibrary.length > 0
-      ? guardrailLibrary.map((entry) => ({
-          key: entry.key,
-          policy: libraryPolicyOf(entry),
-          text:
-            resolveTranslation(entry.summary, entry.summaryTranslations, lang) ||
-            resolveTranslation(entry.label, entry.labelTranslations, lang),
-        }))
-      : presets.map((preset) => ({
-          key: preset.key,
-          policy: policyOf(preset),
-          text:
-            resolveTranslation(preset.summary, preset.summaryTranslations, lang) ||
-            resolveTranslation(preset.label, preset.labelTranslations, lang),
-        }));
-
+  const entries = presetEntriesOf(presets, guardrailLibrary, lang);
   const names = [...toolCatalog, ...GATES];
-  const out: Suggestion[] = [];
-  for (const { key, policy, text } of entries) {
+  const byName = new Map<string, Suggestion>();
+  for (const { key, policy, summary, label } of entries) {
     for (const name of names) {
       const mode = modeOf(policy, name, guardrailAttributes);
       if (mode === "allow") continue;
-      out.push({
+      const current = byName.get(name);
+      if (current && STRICTNESS[current.mode] >= STRICTNESS[mode]) continue;
+      byName.set(name, {
         id: `${key}::${name}`,
         name,
         mode,
         thresholdEur: policy.approvalEur,
-        definition: text,
+        definition: summary || label,
         policy,
       });
     }
   }
-  return out;
+  return [...byName.values()];
 }
 
 interface Row {
@@ -548,6 +561,7 @@ export function GuardrailFunctionRules({
   onChange,
   presets = [],
   guardrailLibrary = null,
+  ceiling = null,
 }: {
   agentId: string;
   connectionName: string;
@@ -568,6 +582,9 @@ export function GuardrailFunctionRules({
   onChange: (next: GuardrailValue) => void;
   presets?: GuardrailPreset[];
   guardrailLibrary?: GuardrailLibraryEntry[] | null;
+  /** The department frame for this tool: a preset looser than it is flagged
+   *  before it is saved (the server refuses it). */
+  ceiling?: GuardrailValue | null;
 }) {
   const t = useT();
   const { lang } = useLang();
@@ -593,6 +610,69 @@ export function GuardrailFunctionRules({
   // (it fell out of `ruled` on the very next render). Only cleared by the
   // row's own Remove button, never by the toggle that put it here.
   const [manuallyShown, setManuallyShown] = useState<Set<string>>(new Set());
+  const presetEntries = presetEntriesOf(presets, guardrailLibrary, lang);
+  const [appliedPresetKey, setAppliedPresetKey] = useState("");
+  const appliedPreset = presetEntries.find((entry) => entry.key === appliedPresetKey);
+  const presetConflicts = appliedPreset ? frameConflicts(appliedPreset.policy, ceiling) : [];
+
+  // The whole preset at once -- rights, approvals, `only` AND its usage
+  // limits -- replacing this tool's draft, as picking it on the department
+  // does. Row-level state from before no longer describes the draft.
+  function conflictText(conflict: FrameConflict): string {
+    switch (conflict.kind) {
+      case "read":
+        return t(
+          "It reads, which the department does not allow.",
+          "Sie liest, was die Abteilung nicht erlaubt.",
+        );
+      case "modify":
+        return t(
+          "It changes things, which the department does not allow.",
+          "Sie verändert etwas, was die Abteilung nicht erlaubt.",
+        );
+      case "approval":
+        return fill(
+          t(
+            "It asks no approval for {names}, which the department requires.",
+            "Sie fragt bei {names} nicht nach Freigabe, die die Abteilung verlangt.",
+          ),
+          { names: conflict.names.join(", ") },
+        );
+      case "threshold":
+        return fill(
+          t(
+            "Its approval threshold is above the department's {amount} €.",
+            "Ihre Freigabeschwelle liegt über den {amount} € der Abteilung.",
+          ),
+          { amount: String(conflict.frame) },
+        );
+      case "only":
+        return conflict.names.length > 0
+          ? fill(
+              t(
+                "It reaches functions the department does not offer: {names}.",
+                "Sie erreicht Funktionen, die die Abteilung nicht anbietet: {names}.",
+              ),
+              { names: conflict.names.join(", ") },
+            )
+          : t(
+              "It reaches all functions, including functions the department does not offer.",
+              "Sie erreicht alle Funktionen, auch solche, die die Abteilung nicht anbietet.",
+            );
+    }
+  }
+
+  function applyPreset(key: string) {
+    setAppliedPresetKey(key);
+    const entry = presetEntries.find((candidate) => candidate.key === key);
+    if (!entry) return;
+    onChange({ ...entry.policy, limits: [...(entry.policy.limits ?? [])] });
+    setManuallyShown(new Set());
+    setNewRows([]);
+    setDismissed(new Set());
+    setDefinitions({});
+    setPending({});
+  }
 
   const rightOf = (name: string): Right =>
     isGate(name) ? name : readTools.includes(name) ? "read" : "modify";
@@ -850,6 +930,57 @@ export function GuardrailFunctionRules({
 
   return (
     <div className="mt-4 overflow-hidden rounded-md border border-border/70">
+      {presetEntries.length > 0 && (
+        <div className="border-b border-border/70 bg-background/30 p-2.5">
+          <label className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <span className="uppercase tracking-wider">
+              {t("Apply a preset", "Vorlage übernehmen")}
+            </span>
+            <select
+              aria-label={t("Apply a preset", "Vorlage übernehmen")}
+              value={appliedPresetKey}
+              onChange={(e) => applyPreset(e.target.value)}
+              className="min-w-0 flex-1 rounded-md border border-border bg-background/40 px-2 py-1 text-xs text-foreground"
+            >
+              <option value="" disabled>
+                {t("Choose a preset…", "Vorlage wählen …")}
+              </option>
+              {presetEntries.map((entry) => (
+                <option key={entry.key} value={entry.key}>
+                  {entry.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {appliedPreset && (
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              {appliedPreset.summary}{" "}
+              {t(
+                "Applied to the draft below, limits included. Save to keep it.",
+                "In den Entwurf unten übernommen, mit Limits. Speichere, um sie zu behalten.",
+              )}
+            </p>
+          )}
+          {presetConflicts.length > 0 && (
+            <div
+              role="alert"
+              className="mt-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-xs"
+            >
+              <p>
+                {t(
+                  "This preset is looser than the department allows. Saving it will be refused until you change:",
+                  "Diese Vorlage ist lockerer, als die Abteilung erlaubt. Speichern wird abgelehnt, bis du Folgendes änderst:",
+                )}
+              </p>
+              <ul className="mt-1 list-disc pl-4">
+                {presetConflicts.map((conflict) => (
+                  <li key={conflict.kind}>{conflictText(conflict)}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2 border-b border-border/70 bg-background/30 p-2.5">
         {mayUseCopilot && (
           <button
@@ -914,8 +1045,13 @@ export function GuardrailFunctionRules({
                   ? modeFromDecision(pendingResult.result.decision)
                   : modeOf(value, row.name, guardrailAttributes);
             const right = rightOf(row.name);
-            const checked = mode !== "deny";
             const isSuggestion = row.kind === "suggestion";
+            // What applies now. A suggestion is only a proposal (E2E N5: a
+            // preset withholding sending showed "Not allowed" on an agent
+            // whose stored policy allows it), so its checkbox and a "Now"
+            // line show the live rule, and its label says it is a proposal.
+            const liveMode = modeOf(value, row.name, guardrailAttributes);
+            const checked = (isSuggestion ? liveMode : mode) !== "deny";
             const isPending = Boolean(pendingResult);
             const rowConditions =
               !isGateRow && mode === "with_limits"
@@ -1043,7 +1179,21 @@ export function GuardrailFunctionRules({
                       {humanizeName(row.name)}
                     </span>
                   )}
-                  {!isGateRow && mode !== "allow" && (
+                  {!isGateRow && isSuggestion && (
+                    <>
+                      <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {fill(t("Suggestion: {decision}", "Vorschlag: {decision}"), {
+                          decision: decisionLabel(t, mode),
+                        })}
+                      </div>
+                      <div className="text-[10px] uppercase tracking-wider text-muted-foreground/80">
+                        {fill(t("Now: {decision}", "Jetzt: {decision}"), {
+                          decision: decisionLabel(t, liveMode),
+                        })}
+                      </div>
+                    </>
+                  )}
+                  {!isGateRow && !isSuggestion && mode !== "allow" && (
                     <div className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">
                       {decisionLabel(t, mode)}
                     </div>

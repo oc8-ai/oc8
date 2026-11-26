@@ -15,7 +15,29 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
 const interpretMutateAsync = vi.fn();
 vi.mock("@/lib/hooks-agent-detail", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks-agent-detail")>();
-  return { ...actual, useInterpretGuardrail: () => ({ mutateAsync: interpretMutateAsync }) };
+  return {
+    ...actual,
+    useInterpretGuardrail: () => ({ mutateAsync: interpretMutateAsync }),
+    useAgentToolUsage: () => ({
+      data: [
+        {
+          toolKey: "odoo",
+          tools: ["merge_pr"],
+          per: "day",
+          used: 7,
+          resetsAt: "2026-11-23T00:00:00+00:00",
+        },
+        // Another tool's window must not show up under this one.
+        {
+          toolKey: "email",
+          tools: ["merge_pr"],
+          per: "day",
+          used: 40,
+          resetsAt: "2026-11-23T00:00:00+00:00",
+        },
+      ],
+    }),
+  };
 });
 
 // A preset that actually restricts something -- unlike a blanket "grants
@@ -226,5 +248,90 @@ describe("ToolGuardrailEditorPanel", () => {
     expect(screen.getByText("Merging needs approval")).toBeInTheDocument();
     expect(screen.getByText("Recommended")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /neue guardrail|new guardrail/i })).toBeNull();
+  });
+
+  it("shows the agent's usage of each limit on the agent view", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <ToolGuardrailEditorPanel
+          toolKey="odoo"
+          connection={odooConnection}
+          ceiling={null}
+          value={{
+            read: true,
+            modify: true,
+            approvalActions: [],
+            approvalEur: null,
+            only: [],
+            conditions: [],
+            limits: [{ tools: ["merge_pr"], max: 10, per: "day" }],
+          }}
+          onChange={vi.fn()}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          saving={false}
+          agentId="agent-1"
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText(/7 \/ 10/)).toBeInTheDocument();
+    expect(screen.queryByText(/40 \/ 10/)).toBeNull();
+  });
+
+  it("edits limits on the department view too, without usage", () => {
+    render(
+      <ToolGuardrailEditorPanel
+        toolKey="odoo"
+        connection={undefined}
+        ceiling={null}
+        value={{
+          read: true,
+          modify: true,
+          approvalActions: [],
+          approvalEur: null,
+          only: [],
+          conditions: [],
+          limits: [{ tools: ["merge_pr"], max: 10, per: "day" }],
+        }}
+        onChange={vi.fn()}
+        onCancel={vi.fn()}
+        onSave={vi.fn()}
+        saving={false}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: /remove limit|limit entfernen/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/used today|heute genutzt/i)).toBeNull();
+  });
+
+  it("shows the department's limit as the one in force on the agent view", () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const limitless = {
+      read: true,
+      modify: true,
+      approvalActions: [],
+      approvalEur: null,
+      only: [],
+      conditions: [],
+    };
+    render(
+      <QueryClientProvider client={qc}>
+        <ToolGuardrailEditorPanel
+          toolKey="odoo"
+          connection={odooConnection}
+          ceiling={{ ...limitless, limits: [{ tools: ["merge_pr"], max: 8, per: "day" }] }}
+          value={{ ...limitless, limits: [] }}
+          onChange={vi.fn()}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          saving={false}
+          agentId="agent-1"
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText(/7 \/ 8/)).toBeInTheDocument();
+    expect(screen.getAllByText(/set by department|von der abteilung festgelegt/i).length).toBe(1);
   });
 });

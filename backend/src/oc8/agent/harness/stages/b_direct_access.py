@@ -27,6 +27,7 @@ from oc8.authz.pdp import (
     authorize_tool_call,
     effective_tool_policies,
     frame_denial,
+    merge_limits,
     required_right,
 )
 
@@ -111,6 +112,25 @@ def _leaves_a_read(policy: ToolPolicy, read_tools: frozenset[str] | None) -> boo
     if policy.only is None:
         return True
     return bool(policy.only & read_tools) if read_tools is not None else bool(policy.only)
+
+
+def direct_limits(
+    view: DirectAccessView,
+    *,
+    connection_key: str,
+    narrowing: Mapping[str, Any] | None = None,
+) -> ToolPolicy | None:
+    """The usage limits that count a call through a grant: every limit any of
+    the departments behind the grant sets (narrowed by the Copilot's own),
+    counted against the Copilot. A policy only adds a gate, so all of them
+    apply; None when none sets one."""
+    limits = merge_limits(
+        *(
+            _narrowed(raw, connection_key, narrowing).limits
+            for _department, raw in view.granted.get(connection_key, ())
+        )
+    )
+    return ToolPolicy(enabled=True, limits=limits) if limits else None
 
 
 _RANK = {Effect.ALLOW: 0, Effect.REQUIRE_APPROVAL: 1, Effect.DENY: 2}

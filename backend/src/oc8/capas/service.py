@@ -6,13 +6,20 @@ import hashlib
 import json
 import re
 import uuid
-from typing import Any, cast
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, cast
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import Version
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8.agents.hire import (
+    create_hire_request,
+    hire_is_gated,
+    initial_status,
+    require_hire_approval,
+)
 from oc8.agents.versioning import publish_version
 from oc8.capas.discovery import DiscoveredPlugin, find_plugin
 from oc8.capas.manifest import (
@@ -20,13 +27,21 @@ from oc8.capas.manifest import (
     ManifestError,
     PluginSetupSpec,
     SetupFieldSpec,
+    check_manifest_limits,
     http_api_login_in_base_url,
     parse_manifest,
 )
 from oc8.capas.registry import enabled_capability_registry
 from oc8.constants import CORE_VERSION
+from oc8.departments.personal import (
+    PersonalFrameViolation,
+    enforce_personal_narrowing,
+    ensure_personal_capacity,
+)
+from oc8.departments.repo import live_department
 from oc8.models import (
     Agent,
+    AgentToolAccess,
     Capa,
     CapaInstallation,
     CapaVersion,
@@ -34,9 +49,14 @@ from oc8.models import (
     MemoryStore,
     Skill,
     SkillAssignment,
+    Trigger,
 )
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.triggers.service import InvalidTriggerConfig
 from oc8.triggers.service import create_trigger as create_trigger_row
+
+if TYPE_CHECKING:
+    from oc8.departments.personal_hire import HireBinding
 
 __all__ = [
     "CoreCompatError",
@@ -126,6 +146,11 @@ async def _load_installation_config(db: AsyncSession, *, capa_id: uuid.UUID) -> 
         await db.execute(select(CapaInstallation).where(CapaInstallation.capa_id == capa_id))
     ).scalar_one_or_none()
     return dict(installation.config) if installation is not None else {}
+
+
+#: The template's setup values a hire substitutes; part of what a member is
+#: shown before a personal hire (`departments.personal_hire.hire_offer`).
+load_installation_config = _load_installation_config
 
 
 def _check_core_compat(spec: str) -> None:
@@ -247,6 +272,7 @@ async def install_plugin(
     trust_level: str | None = None,
 ) -> CapaVersion:
     manifest = parse_manifest(manifest_data)
+    check_manifest_limits(manifest)
     _check_core_compat(manifest.core_compat)
     if (problem := http_api_login_in_base_url(manifest)) is not None:
         raise PluginError(problem)
@@ -449,6 +475,163 @@ async def _create_trigger_if_present(
         raise PluginError(f"invalid trigger in template: {exc}") from exc
 
 
+async def _checked_template_narrowing(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    frame: dict[str, Any],
+    narrowing: dict[str, Any],
+    agent_name: str,
+) -> dict[str, Any]:
+    """A template agent's narrowing, through the one check every writer of
+    an agent's narrowing goes through (`check_agent_narrowing`): refused
+    when it goes beyond the department or sets a threshold that would never
+    hold."""
+    from oc8.connections.value_spec import check_agent_narrowing
+
+    try:
+        checked = await check_agent_narrowing(
+            db, tenant_id=tenant_id, frame=frame, narrowing=narrowing, stored=None
+        )
+    except ValueError as exc:
+        raise PluginError(f"invalid narrowing for {agent_name!r}: {exc}") from exc
+    if checked.violations:
+        raise PluginError(
+            f"the narrowing of {agent_name!r} goes beyond its department: "
+            + "; ".join(str(v.__dict__) for v in checked.violations)
+        )
+    if checked.unenforceable:
+        raise PluginError(
+            f"the narrowing of {agent_name!r} sets an amount limit that would never hold on "
+            + ", ".join(checked.unenforceable)
+        )
+    return checked.narrowing
+
+
+async def _bind_hire_logins(
+    db: AsyncSession, *, agent: Agent, hired_by: uuid.UUID, bindings: Sequence[HireBinding]
+) -> None:
+    """Fix each bound integration's tools to the member's own login: their
+    own consent (plan Ruling 9), through the one writer of tool access."""
+    from oc8.connections.access_write import write_tool_access
+
+    for binding in bindings:
+        await write_tool_access(
+            db,
+            agent=agent,
+            tool_key=binding.integration.tool_key,
+            mode="fixed",
+            oauth_connection_id=binding.oauth_connection_id,
+            credential_id=binding.credential_id,
+            set_by_member_id=hired_by,
+            set_with_manage=False,
+            actor_type="operator",
+            actor_id=hired_by,
+            audit={
+                "consent": "owner",
+                "confirm_share": True,
+                "target_owner_member_id": str(hired_by),
+                "at_hire": True,
+            },
+        )
+
+
+async def _create_template_triggers(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    triggers: Sequence[dict[str, Any]],
+    config: dict[str, str],
+    hired_by: uuid.UUID,
+    bound: set[str],
+) -> list[Trigger]:
+    """A personal template's triggers, created by the member acting for
+    themselves (plan Ruling 11): every cron trigger, and an event trigger
+    only when its `source` is a capa the hire bound (Ruling 6). An event
+    trigger listens on the login the agent is now fixed to for that capa's
+    tools -- the member's own (`polled_event_target`). Each goes through
+    `create_trigger`, as `_create_trigger_if_present` does; `{{key}}` tokens
+    of the template's setup fill the task text and the cron expression."""
+    from oc8.triggers.service import polled_event_target
+
+    created: list[Trigger] = []
+    try:
+        for trig in triggers:
+            task_text = _substitute_template_values(str(trig.get("task_text", "")), config)
+            if trig.get("kind", "cron") == "cron":
+                created.append(
+                    await create_trigger_row(
+                        db,
+                        tenant_id=tenant_id,
+                        agent_id=agent_id,
+                        kind="cron",
+                        task_text=task_text,
+                        cron_expression=_substitute_template_values(
+                            str(trig.get("cron_expression", "")), config
+                        ),
+                        created_by_member_id=hired_by,
+                        acts_for_creator=True,
+                    )
+                )
+                continue
+            source = str(trig.get("source", ""))
+            if source not in bound:
+                continue
+            event_type = str(trig.get("event_type", ""))
+            target = await polled_event_target(
+                db,
+                agent_id=agent_id,
+                event_source=source,
+                event_type=event_type,
+                creator=hired_by,
+            )
+            created.append(
+                await create_trigger_row(
+                    db,
+                    tenant_id=tenant_id,
+                    agent_id=agent_id,
+                    kind="event",
+                    task_text=task_text,
+                    event_source=source,
+                    event_type=event_type,
+                    event_target=target,
+                    event_config=dict(trig.get("config") or {}) if target is not None else None,
+                    created_by_member_id=hired_by,
+                    acts_for_creator=True,
+                )
+            )
+    except InvalidTriggerConfig as exc:
+        raise PluginError(f"invalid trigger in template: {exc}") from exc
+    return created
+
+
+async def _stamp_owner_hire(
+    db: AsyncSession, *, agent: Agent, hired_by: uuid.UUID, triggers: Sequence[Trigger]
+) -> None:
+    """Stamp the member's bindings and triggers against v1, once everything
+    they confirm exists: a binding written after another changes what the
+    first one confirmed. The hire token is the member's consent to all of
+    it (Ruling T8-I1), so every row is stamped -- held back like every stamp
+    but the owner's confirmation card (Ruling FR-C1), on the skill set the
+    hire recorded (`record_created_skills`)."""
+    from oc8.connections.confirmation import stamp_binding, stamp_trigger
+
+    rows = (
+        await db.execute(select(AgentToolAccess).where(AgentToolAccess.agent_id == agent.id))
+    ).scalars()
+    for row in rows:
+        await stamp_binding(db, row, agent, confirmed_by=hired_by)
+    for trigger in triggers:
+        await stamp_trigger(db, trigger, confirmed_by=hired_by)
+    await db.flush()
+
+
+def template_scope(manifest: dict[str, Any]) -> str:
+    """Where an agent_template may be hired: "department" (default) or "personal"."""
+    return str((manifest.get("agent_template") or {}).get("scope") or "department")
+
+
 async def instantiate_agent(
     db: AsyncSession,
     *,
@@ -456,14 +639,58 @@ async def instantiate_agent(
     version: CapaVersion,
     department_id: uuid.UUID,
     name: str | None = None,
+    owner_hire: bool = False,
+    hired_by: uuid.UUID | None = None,
+    bindings: Sequence[HireBinding] = (),
 ) -> Agent:
+    """Hire one agent from an agent_template version into a live
+    department. add/flush only -- the endpoint owns the commit.
+
+    `owner_hire=True` is passed by one caller only, the member's own hire
+    (`POST /personal-department/agents`): it alone may target a personal
+    department. Any other caller -- the admin capa route -- gets "department
+    not found" for one, since a personal department's agents answer to its
+    owner alone (the same rule as `api.deps.authorize_agent_write`).
+
+    A hire into a personal department is exempt from the tenant's
+    `require_hire_approval` (plan ruling 4, `agents.hire.hire_is_gated`): the
+    administrator enabling the template's capa is the approval. Such a hire
+    raises no hire request and never starts `pending_approval`; otherwise the
+    owner, approver in their own department, would approve their own hire.
+
+    `hired_by` (the owner, with `owner_hire`) and `bindings` (checked by
+    `departments.personal_hire.resolve_hire_bindings`): a personal hire runs
+    plan Ruling 11's order -- the agent, v1, the member's bindings, the
+    template's triggers created as the member, then every stamp against v1.
+    """
     mf = version.manifest
     if mf.get("type", "agent_template") != "agent_template":
         raise PluginError("only agent_template plugins can be instantiated as agents")
-    config = await _load_installation_config(db, capa_id=version.capa_id)
+    dept = await live_department(db, tenant_id=tenant_id, department_id=department_id)
+    if dept is None:
+        raise PluginError("department not found")
+    is_personal_dept = dept.kind == DEPARTMENT_KIND_PERSONAL
+    if is_personal_dept and not owner_hire:
+        raise PluginError("department not found")
+    is_personal_template = template_scope(mf) == "personal"
+    if is_personal_template and not is_personal_dept:
+        raise PluginError("a personal template can only be hired into a personal department")
+    if not is_personal_template and is_personal_dept:
+        raise PluginError("a personal department can only hire a personal template")
     # Same shape as one entry under department_template.agents — when present,
     # mission/persona land on the Agent row. Absent = legacy thin instantiate.
     spec = dict(mf.get("agent_template") or {})
+    narrowing = dict(spec.get("narrowing") or {})
+    try:
+        enforce_personal_narrowing(dept, narrowing)
+    except PersonalFrameViolation as exc:
+        raise PluginError(
+            "the template grants tools the personal department does not allow"
+        ) from exc
+    # Raises `PersonalDepartmentRefused` (the cap, or the owner left), which
+    # the routes map to a 409.
+    await ensure_personal_capacity(db, dept)
+    config = await _load_installation_config(db, capa_id=version.capa_id)
     definition: dict[str, object] = {
         "plugin": mf.get("name", ""),
         "version": version.semver,
@@ -472,14 +699,24 @@ async def instantiate_agent(
     }
     if spec.get("max_steps"):
         definition["max_steps"] = int(spec["max_steps"])
+    # The tenant's hire gate holds a template's agents like any hire -- except
+    # in a personal department (see the docstring).
+    gated = await hire_is_gated(db, tenant_id=tenant_id, department=dept)
+    narrowing = await _checked_template_narrowing(
+        db,
+        tenant_id=tenant_id,
+        frame=dict(dept.frame or {}),
+        narrowing=narrowing,
+        agent_name=str(spec.get("name") or mf.get("name", "Agent")),
+    )
     agent = Agent(
         tenant_id=tenant_id,
         department_id=department_id,
         name=name or str(spec.get("name") or mf.get("name", "Agent")),
         role_title=_substitute_template_values(str(spec.get("role_title") or ""), config),
         mission=_substitute_template_values(str(spec.get("mission") or ""), config),
-        status="stopped",
-        narrowing=dict(spec.get("narrowing") or {}),
+        status=initial_status(gated=gated),
+        narrowing=narrowing,
         definition=definition,
         # `presentation` is the DISPLAY side of an agent (agent_to_dto reads it);
         # `definition` is the behavioural side. A prompt starter is a UI
@@ -488,23 +725,48 @@ async def instantiate_agent(
     )
     db.add(agent)
     await db.flush()
+    if gated:
+        await create_hire_request(db, agent=agent)
     db.add(MemoryStore(tenant_id=tenant_id, tier="agent", owner_id=agent.id))
     await db.flush()
     await _assign_named_skills(
         db, tenant_id=tenant_id, agent_id=agent.id, skill_names=list(spec.get("skills") or [])
     )
-    await _create_trigger_if_present(
-        db,
-        tenant_id=tenant_id,
-        agent_id=agent.id,
-        trigger=spec.get("trigger"),
-        config=config,
-    )
+    member_hire = owner_hire and is_personal_dept and hired_by is not None
+    if not member_hire:
+        await _create_trigger_if_present(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            trigger=spec.get("trigger"),
+            config=config,
+        )
     # v1 in the same transaction as the hire, after the skill assignments, so
     # the snapshot includes them -- same create-and-publish shape as
     # api/v1/agents_write.py::create_agent. Every run is pinned to a version;
     # an agent without one would run off its live row.
-    await publish_version(db, agent)
+    await publish_version(db, agent, at_hire=True)
+    if member_hire:
+        assert hired_by is not None
+        from oc8.connections.confirmation import record_created_skills
+
+        # Ruling FR-I2: the skills the member hired, before any stamp, so a
+        # skill added later waits even when nothing is stamped.
+        await record_created_skills(db, agent)
+        await _bind_hire_logins(db, agent=agent, hired_by=hired_by, bindings=bindings)
+        triggers = list(spec.get("triggers") or [])
+        if spec.get("trigger"):
+            triggers.append(dict(spec["trigger"]))
+        created = await _create_template_triggers(
+            db,
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            triggers=triggers,
+            config=config,
+            hired_by=hired_by,
+            bound={binding.integration.name for binding in bindings},
+        )
+        await _stamp_owner_hire(db, agent=agent, hired_by=hired_by, triggers=created)
     return agent
 
 
@@ -545,7 +807,16 @@ async def instantiate_department(
     await db.flush()
 
     lead_id: uuid.UUID | None = None
+    # The tenant's hire gate holds a template's agents like any hire.
+    gated = await require_hire_approval(db, tenant_id=tenant_id)
     for a in agent_defs:
+        narrowing = await _checked_template_narrowing(
+            db,
+            tenant_id=tenant_id,
+            frame=dict(dept.frame or {}),
+            narrowing=dict(a.get("narrowing", {})),
+            agent_name=str(a["name"]),
+        )
         agent = Agent(
             tenant_id=tenant_id,
             department_id=dept.id,
@@ -553,8 +824,8 @@ async def instantiate_department(
             role_title=_substitute_template_values(str(a.get("role_title", "")), config),
             mission=_substitute_template_values(str(a.get("mission", "")), config),
             is_team_lead=bool(a.get("is_team_lead", False)),
-            status="stopped",
-            narrowing=dict(a.get("narrowing", {})),
+            status=initial_status(gated=gated),
+            narrowing=narrowing,
             definition={
                 "plugin": mf.get("name", ""),
                 "version": version.semver,
@@ -567,6 +838,8 @@ async def instantiate_department(
         )
         db.add(agent)
         await db.flush()
+        if gated:
+            await create_hire_request(db, agent=agent)
         db.add(MemoryStore(tenant_id=tenant_id, tier="agent", owner_id=agent.id))
         await _assign_named_skills(
             db, tenant_id=tenant_id, agent_id=agent.id, skill_names=list(a.get("skills") or [])
@@ -584,7 +857,7 @@ async def instantiate_department(
                 db, tenant_id=tenant_id, plugin_name=runtime_name
             )
         # Per agent, after its skills and runtime -- see instantiate_agent.
-        await publish_version(db, agent)
+        await publish_version(db, agent, at_hire=True)
         if lead_id is None and agent.is_team_lead:
             lead_id = agent.id
 

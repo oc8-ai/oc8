@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import NoChangesToPublish, publish_version
+from oc8.models.core import DEPARTMENT_KIND_ASSISTANT
 
 ASSISTANT_NAME = "oc8 Assistant"
 ASSISTANT_DEPARTMENT_NAME = "oc8 Assistant"
@@ -438,7 +439,7 @@ async def get_or_create_assistant(db: AsyncSession, *, tenant_id: uuid.UUID) -> 
                 tenant_id=tenant_id,
                 name=ASSISTANT_DEPARTMENT_NAME,
                 goal="",
-                is_assistant_department=True,
+                kind=DEPARTMENT_KIND_ASSISTANT,
             )
             db.add(dept)
             await db.flush()

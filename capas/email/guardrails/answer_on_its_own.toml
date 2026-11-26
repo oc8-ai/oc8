@@ -2,8 +2,8 @@
 # without approval. It cannot start new conversations (mail_send), pass mail
 # on (mail_forward), or move or delete mail. A preset limits tools, not their
 # arguments, so a reply may go to everyone on the mail (reply_all).
-# There is no daily counter: the guardrail model has no per-day budget. What
-# bounds it is core's outward rule, one reply per mail in each task.
+# It has no daily counter (autonomous_with_limit has one). What bounds it is
+# core's outward rule, one reply per mail in each task.
 # Whoever writes gets an answer, so a stranger can ask it about anything it
 # can read; the summary says so and points sensitive mailboxes at
 # send_with_approval. A reply follows Reply-To only on the sender's own

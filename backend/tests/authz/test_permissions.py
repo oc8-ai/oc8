@@ -18,6 +18,8 @@ from oc8.authz.permissions import (
     BUILTIN_ROLE_PERMISSIONS,
     CONNECTION_OWN,
     COPILOT_USE,
+    DELEGATABLE_PERMISSIONS,
+    DEPARTMENT_OWN,
     DEPT_MANAGER,
     OPERATOR,
     ORG_ADMIN,
@@ -60,8 +62,10 @@ def test_the_role_that_guarded_a_route_still_grants_nothing_operationally() -> N
     or `:manage` permission tenant-wide, and `menber` (a typo) still resolves to
     truly nothing.
     """
-    assert BUILTIN_ROLE_PERMISSIONS["member"] == frozenset({CONNECTION_OWN, COPILOT_USE})
-    assert permissions_for("member") == frozenset({CONNECTION_OWN, COPILOT_USE})
+    assert BUILTIN_ROLE_PERMISSIONS["member"] == frozenset(
+        {CONNECTION_OWN, COPILOT_USE, DEPARTMENT_OWN}
+    )
+    assert permissions_for("member") == frozenset({CONNECTION_OWN, COPILOT_USE, DEPARTMENT_OWN})
     assert permissions_for("menber") == frozenset()
     assert not role_has("member", APPROVAL_DECIDE)
 
@@ -139,3 +143,12 @@ def test_deciding_an_approval_is_not_folded_into_managing_an_agent() -> None:
     # are separable, which is what lets a tenant hand them to different people.
     assert APPROVAL_DECIDE != "agent:manage"
     assert not role_has(AUDITOR, APPROVAL_DECIDE)
+
+
+def test_department_own_goes_wherever_connection_own_goes() -> None:
+    """Ruling 3: `department:own` is shaped like `connection:own` -- tenant-wide,
+    delegatable, and held by every built-in human role that holds that one."""
+    assert DEPARTMENT_OWN == "department:own"
+    assert DEPARTMENT_OWN in DELEGATABLE_PERMISSIONS
+    for role, granted in BUILTIN_ROLE_PERMISSIONS.items():
+        assert (DEPARTMENT_OWN in granted) == (CONNECTION_OWN in granted), role

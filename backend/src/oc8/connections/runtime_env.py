@@ -237,6 +237,7 @@ async def run_mcp_env(
     listing: bool = False,
     ctx: dict[str, Any] | None = None,
     right: Literal["read", "modify"] | None = None,
+    record: bool = True,
 ) -> McpLaunchEnv:
     """`tool`: the call this launch serves (audited). `listing`: only listing
     tools -- without a sign-in account the bridge starts without it, so the
@@ -248,12 +249,15 @@ async def run_mcp_env(
     incomplete or ambiguous login at a listing is recorded as a notice
     (`tool_notices`), not a connect prompt. `ctx`: a
     caller's in-request copy of the run context that it writes back whole
-    (the isolated-runtime step endpoint); the CTA is merged into it too."""
+    (the isolated-runtime step endpoint); the CTA is merged into it too.
+    `record=False`: raise a missing account without putting its call to
+    action on the run -- for a session opened before any tool is chosen, so a
+    connection the run never uses asks for nothing (E2E N3)."""
     cfg = _cfg(conn)
     try:
         await require_enabled(db, conn)
     except ConnectionRequired as exc:
-        if not listing:
+        if not listing and record:
             patch = {"connection_required": exc.as_context()}
             await merge_context(db, run, patch)
             if ctx is not None:
@@ -289,10 +293,11 @@ async def run_mcp_env(
                 connection_name=conn.name,
             )
             return McpLaunchEnv(env, reusable=False, right="read")
-        patch = {"connection_required": exc.as_context()}
-        await merge_context(db, run, patch)
-        if ctx is not None:
-            ctx.update(patch)
+        if record:
+            patch = {"connection_required": exc.as_context()}
+            await merge_context(db, run, patch)
+            if ctx is not None:
+                ctx.update(patch)
         raise
     effective = await _effective(db, cfg, access, run.tenant_id)
     try:
@@ -320,10 +325,11 @@ async def run_mcp_env(
                 connection_name=conn.name,
             )
             return McpLaunchEnv(env, reusable=False, right="read")
-        patch = {"connection_required": required.as_context()}
-        await merge_context(db, run, patch)
-        if ctx is not None:
-            ctx.update(patch)
+        if record:
+            patch = {"connection_required": required.as_context()}
+            await merge_context(db, run, patch)
+            if ctx is not None:
+                ctx.update(patch)
         raise required from None
     if not listing and access.integration is not None:
         await _clear_connection_required(db, run, access.integration.name, ctx)

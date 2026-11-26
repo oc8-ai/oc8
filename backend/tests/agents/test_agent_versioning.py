@@ -673,3 +673,26 @@ async def test_skill_and_knowledge_changes_are_live_so_never_unpublished(
         status = await draft_status(db, a)
         assert status.dirty is True
         assert status.changed_fields == ("mission",)
+
+
+async def test_nothing_is_published_over_a_pending_hire_but_its_own_v1(
+    app_session: AppSessionFactory,
+) -> None:
+    """Review of round 7: the refusal lived on one route and every other
+    publisher sidestepped it. `publish_version` itself refuses a publish
+    over a hire that awaits approval -- except the hire's own v1, created
+    with the agent, which is what the approver approves."""
+    from oc8.agents.versioning import AwaitingHireApproval
+
+    agent = await _draft_agent(app_session, status="pending_approval")
+    async with app_session(agent.tenant_id) as db:
+        agent = await db.get(m.Agent, agent.id)
+        assert agent is not None
+        with pytest.raises(AwaitingHireApproval):
+            await publish_version(db, agent)
+        v1 = await publish_version(db, agent, at_hire=True)
+        assert v1.version_no == 1
+        agent.mission = "something the approver never saw"
+        await db.flush()
+        with pytest.raises(AwaitingHireApproval):
+            await publish_version(db, agent)

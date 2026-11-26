@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from oc8.connections.access import trigger_fingerprint
+from oc8.connections.confirmation import save_may_stamp, stamp_trigger
 from oc8.modelrouter.subscription_guard import assert_manual_only_compatible
 from oc8.models.core import Agent
 from oc8.models.credentials import Credential
@@ -37,6 +37,10 @@ _WEBHOOK_TOKEN_BYTES = 32
 
 
 _ONE_POLLED_TRIGGER = "the agent already has a trigger on this polled event"
+_ORGANISATION_OR_OWN_LOGIN = (
+    "a polled event listens on an organisation login, "
+    "or on the department owner's own login acting for them"
+)
 _CAPA_NOT_ENABLED = "the event's capa is not enabled"
 
 
@@ -100,16 +104,30 @@ async def _check_polled_target(
     event_source: str,
     event_type: str,
     target: LoginTarget | None,
+    creator: uuid.UUID | None,
+    acts_for_creator: bool,
     existing: bool = False,
 ) -> PolledEventSpec | None:
     """For an event this tenant's capas declare as polled
-    (`oc8.events.sources`): refuse a target that is not the organisation login
-    the agent is fixed to for the capa's tools -- a credential of the poller's
-    type, or an OAuth connection of the capa's provider. Returns the polled
+    (`oc8.events.sources`): refuse a target that is not the login the agent
+    is fixed to for the capa's tools -- a credential of the poller's type, or
+    an OAuth connection of the capa's provider -- of the organisation, or
+    owned by `creator` when the trigger acts for them (`acts_for_creator`)
+    and they own the agent's department (`fixed_login`). Returns the polled
     event, None for a pushed one, which takes no target. `existing`:
     re-checking a polled trigger already saved, whose capa may have been
     switched off since."""
+    from oc8.departments.personal import live_department_owner
     from oc8.events.sources import fixed_login, polled_event_spec
+
+    async def own_login_refused(owner: uuid.UUID | None) -> bool:
+        if owner is None:
+            return False
+        return (
+            owner != creator
+            or not acts_for_creator
+            or await live_department_owner(db, agent_id) != creator
+        )
 
     spec = await polled_event_spec(db, event_source, event_type)
     if spec is None:
@@ -128,8 +146,8 @@ async def _check_polled_target(
         credential = await db.get(Credential, target.id)
         if credential is None:
             raise InvalidTriggerConfig("the login it listens on does not exist")
-        if credential.owner_member_id is not None:
-            raise InvalidTriggerConfig("a polled event listens on an organisation login only")
+        if await own_login_refused(credential.owner_member_id):
+            raise InvalidTriggerConfig(_ORGANISATION_OR_OWN_LOGIN)
         wanted = spec.registered.credential_type
         if wanted is None or credential.credential_type != wanted:
             raise InvalidTriggerConfig(
@@ -141,15 +159,16 @@ async def _check_polled_target(
         conn = await db.get(OAuthConnection, target.id)
         if conn is None:
             raise InvalidTriggerConfig("the login it listens on does not exist")
-        if conn.owner_member_id is not None:
-            raise InvalidTriggerConfig("a polled event listens on an organisation login only")
+        if await own_login_refused(conn.owner_member_id):
+            raise InvalidTriggerConfig(_ORGANISATION_OR_OWN_LOGIN)
         if spec.provider is None or conn.provider != spec.provider:
             raise InvalidTriggerConfig(
                 f"a polled event of this kind listens on a {spec.provider} connection"
                 if spec.provider
                 else "a polled event of this kind listens on a login, not an OAuth connection"
             )
-    if await fixed_login(db, agent_id, spec.tool_key) != target:
+    listener = creator if acts_for_creator else None
+    if await fixed_login(db, agent_id, spec.tool_key, creator=listener) != target:
         raise InvalidTriggerConfig(
             "a polled event listens on the login the agent is fixed to for its tools"
         )
@@ -178,7 +197,8 @@ async def _event_config(
     """The trigger's settings for `spec`: only the keys its event declares,
     each a string of at most `TRIGGER_CONFIG_VALUE_MAX` characters; one left
     out or blank is filled from its `default`, or from its `default_from` key
-    of the login's connection setup (`connection_setup_value`). A setting with
+    of the login's connection setup (`connection_setup_value`; a person's own
+    login reads only its own setup, never the organisation's). A setting with
     `allowed_from` only takes a value of that setup list (`setting_refusal`)."""
     from oc8.capas.manifest import TRIGGER_CONFIG_VALUE_MAX
     from oc8.events.sources import connection_setup_value, setting_refusal
@@ -212,19 +232,26 @@ async def _event_config(
 
 
 async def polled_event_target(
-    db: AsyncSession, *, agent_id: uuid.UUID, event_source: str, event_type: str
+    db: AsyncSession,
+    *,
+    agent_id: uuid.UUID,
+    event_source: str,
+    event_type: str,
+    creator: uuid.UUID | None = None,
 ) -> LoginTarget | None:
-    """The login a trigger of the agent on this event listens on: the
-    organisation login the agent is fixed to for the event capa's tools. None
-    for an event that is not polled; `PolledTargetMissing` when the agent has
-    no such login. For callers that do not name the target themselves (the
-    Copilot, and a trigger API request without one)."""
+    """The login a trigger of the agent on this event, created by `creator`,
+    listens on: the login the agent is fixed to for the event capa's tools,
+    the organisation's or -- for the department's owner as `creator` alone --
+    the owner's own (`fixed_login`). None for an event that is not polled;
+    `PolledTargetMissing` when the agent has no such login. For callers that
+    do not name the target themselves (the Copilot, and a trigger API request
+    without one)."""
     from oc8.events.sources import fixed_login, polled_event_spec
 
     spec = await polled_event_spec(db, event_source, event_type)
     if spec is None or spec.tool_key is None:
         return None
-    target = await fixed_login(db, agent_id, spec.tool_key)
+    target = await fixed_login(db, agent_id, spec.tool_key, creator=creator)
     if target is None:
         raise PolledTargetMissing(
             "this event listens on the login the agent is fixed to for the "
@@ -254,10 +281,12 @@ async def create_trigger(
     event_config: dict[str, Any] | None = None,
 ) -> Trigger:
     """The event target and `event_config` are for a polled event only: the
-    organisation login the agent is fixed to for the event capa's tools,
-    required -- named by its id (`event_target_credential_id` or
-    `event_target_oauth_connection_id`) or as `event_target` -- and the
-    poller's settings. An agent has at most one trigger per polled event."""
+    login the agent is fixed to for the event capa's tools -- the
+    organisation's, or the department owner's own when they create it acting
+    for themselves (`_check_polled_target`) -- required, named by its id
+    (`event_target_credential_id` or `event_target_oauth_connection_id`) or
+    as `event_target`; and the poller's settings. An agent has at most one
+    trigger per polled event."""
     target = event_target or _target(event_target_credential_id, event_target_oauth_connection_id)
     next_run_at = None
     polled = False
@@ -286,6 +315,8 @@ async def create_trigger(
             event_source=event_source,
             event_type=event_type,
             target=target,
+            creator=created_by_member_id,
+            acts_for_creator=acts_for_creator and created_by_member_id is not None,
         )
         polled = spec is not None
         if spec is not None:
@@ -312,6 +343,12 @@ async def create_trigger(
     # at 256 bits are cryptographically negligible; retrying past the
     # unique constraint on IntegrityError isn't worth the complexity.
     webhook_token = secrets.token_urlsafe(_WEBHOOK_TOKEN_BYTES) if kind == "webhook" else None
+    # Ruling FR-C1: whether the creator's stamp may confirm the agent, decided
+    # before the new trigger exists.
+    may_stamp = False
+    if created_by_member_id is not None:
+        agent = await db.get(Agent, agent_id)
+        may_stamp = agent is not None and await save_may_stamp(db, agent, held=None)
 
     trigger = Trigger(
         tenant_id=tenant_id,
@@ -350,10 +387,12 @@ async def create_trigger(
 
         # The first poll only records where the source is now.
         await reset_cursor(db, trigger)
-    if created_by_member_id is not None:
+    if may_stamp:
         # Its creator saves it: their own account may serve it while the
-        # agent stays as they see it now (connections.access.schedule_confirmed).
-        trigger.access_fingerprint = await trigger_fingerprint(db, trigger)
+        # agent stays as they see it now (connections.access.schedule_confirmed)
+        # -- in a department with an owner only while nothing waits for the
+        # owner's confirmation card, which confirms it otherwise.
+        await stamp_trigger(db, trigger, confirmed_by=created_by_member_id)
     # The manual-trigger-only check for ChatGPT-subscription-backed models
     # (`oc8.modelrouter.subscription_guard`) lives HERE, not in the HTTP route,
     # because this function is the one funnel every trigger creation goes
@@ -444,6 +483,8 @@ async def update_trigger(
             event_source=trigger.event_source,
             event_type=trigger.event_type,
             target=_saved_target(trigger),
+            creator=trigger.created_by_member_id,
+            acts_for_creator=trigger.acts_for_creator,
             existing=True,
         )
     ):
@@ -488,7 +529,8 @@ async def polled_settings(
 ) -> tuple[LoginTarget, dict[str, str]]:
     """What a polled trigger's target and settings would be after an update
     naming `event_config` and `target` (None keeps each): checked and filled
-    as on create, without changing the trigger. Lets a caller tell a real
+    as on create, for the trigger's creator and whether it acts for them as
+    they are on it now, without changing the trigger. Lets a caller tell a real
     change from the same settings written differently."""
     saved = _saved_target(trigger)
     if trigger.kind != "event" or trigger.event_source is None or trigger.event_type is None:
@@ -511,6 +553,8 @@ async def polled_settings(
         event_source=trigger.event_source,
         event_type=trigger.event_type,
         target=new_target,
+        creator=trigger.created_by_member_id,
+        acts_for_creator=trigger.acts_for_creator,
         existing=True,
     )
     assert spec is not None  # a saved target on an event no capa polls raised

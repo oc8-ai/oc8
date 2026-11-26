@@ -106,6 +106,7 @@ describe("GuardrailPresetPicker", () => {
       approvalEur: null,
       only: [],
       conditions: [],
+      limits: [],
     });
   });
 
@@ -378,6 +379,7 @@ describe("GuardrailPresetPicker -- guardrail library (grouped by use_case)", () 
       approvalEur: 3000,
       only: [],
       conditions: [],
+      limits: [],
     });
     const applied = onChange.mock.calls[0][0] as GuardrailValue;
 

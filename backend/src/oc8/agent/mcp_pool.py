@@ -49,6 +49,7 @@ from typing import Any
 
 from oc8.agent.http_tools import HttpLogin
 from oc8.agent.mcp_client import HttpToolSession, McpSession, open_tool_session
+from oc8.agent.run_files import RunFiles, bind_run_files
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,27 @@ class McpSessionFailed(RuntimeError):
     """A session could not be opened. A plain exception on purpose: the failure
     it replaces was a `CancelledError`, which is not an `Exception` and so
     escaped every handler between the pool and the request."""
+
+
+#: Set on an exception raised while a session was being OPENED -- before any
+#: tool call was sent. A usage limit gives a call's count back only for such a
+#: failure; one that reached the tool keeps it, since the far system may have
+#: acted before it failed (`oc8.agent.harness.stages.b_usage_limit`).
+_NOT_REACHED = "_oc8_tool_not_reached"
+
+
+def mark_not_reached(exc: BaseException) -> BaseException:
+    """Mark `exc` as raised before the tool was reached, and return it."""
+    try:
+        setattr(exc, _NOT_REACHED, True)
+    except (AttributeError, TypeError):  # an exception type that takes no attributes
+        pass
+    return exc
+
+
+def never_reached_the_tool(exc: BaseException) -> bool:
+    """True for a failure that happened before any tool call was sent."""
+    return bool(getattr(exc, _NOT_REACHED, False))
 
 
 @dataclass
@@ -129,6 +151,18 @@ async def _own(
 
 
 async def _start(
+    connection_id: uuid.UUID,
+    **kwargs: Any,
+) -> _Live:
+    """`_open`, with any failure marked as one that never reached a tool."""
+    try:
+        return await _open(connection_id, **kwargs)
+    except Exception as exc:
+        mark_not_reached(exc)
+        raise
+
+
+async def _open(
     connection_id: uuid.UUID,
     *,
     command: str,
@@ -260,8 +294,14 @@ async def call(
     login: HttpLogin | None = None,
     now: dt.datetime | None = None,
     reusable: bool = True,
+    files: RunFiles | None = None,
 ) -> str:
     """Run one tool call, reusing this connection's session where possible.
+
+    `files` is the run the call belongs to: binary content it returns becomes
+    that run's files, and file arguments resolve against them
+    (oc8.agent.run_files). The session is shared between runs, so this is
+    bound per call, never per session.
 
     Raises whatever the bridge raises, having first dropped the session so the
     next caller starts a fresh one. Callers already turn an exception here into
@@ -277,6 +317,40 @@ async def call(
     than the ~3s it saves, and a token-bearing bridge does no far-system
     authentication during startup anyway (that cost was Odoo's).
     """
+    with bind_run_files(files):
+        return await _call(
+            connection_id,
+            command=command,
+            args=args,
+            env=env,
+            tool=tool,
+            arguments=arguments,
+            transport=transport,
+            server_url=server_url,
+            headers=headers,
+            http_tools=http_tools,
+            login=login,
+            now=now,
+            reusable=reusable,
+        )
+
+
+async def _call(
+    connection_id: uuid.UUID,
+    *,
+    command: str,
+    args: list[str],
+    env: dict[str, str],
+    tool: str,
+    arguments: dict[str, Any],
+    transport: str,
+    server_url: str,
+    headers: dict[str, str] | None,
+    http_tools: list[dict[str, Any]] | None,
+    login: HttpLogin | None,
+    now: dt.datetime | None,
+    reusable: bool,
+) -> str:
     stamp = now or dt.datetime.now(tz=dt.UTC)
 
     if not reusable:

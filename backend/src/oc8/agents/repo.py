@@ -19,10 +19,10 @@ every other gate in this codebase uses, never `role_has(...)`.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
-from sqlalchemy import ColumnElement, Select, and_, false, select
+from sqlalchemy import ColumnElement, Select, and_, false, or_, select
 
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import (
@@ -34,7 +34,8 @@ from oc8.authz.permissions import (
     VIEW,
     perm,
 )
-from oc8.models.core import Agent
+from oc8.departments.repo import personal_reachable, private_department_ids
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Agent, Department
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastapi import Request
@@ -82,6 +83,10 @@ async def visible_agents(
     invited to try. Filtered here rather than on each screen because this
     function is the single funnel every one of those screens goes through
     (`tests/agents/test_reads_go_through_the_scoped_repository.py`).
+
+    An agent in a `personal` department is listed only when that department is
+    in `scope.viewable` -- its owner's seat -- and never merely because the
+    caller reads every department tenant-wide.
     """
     if not tenant_wide and not scope.viewable:
         return [], 0
@@ -94,6 +99,16 @@ async def visible_agents(
     from oc8.api.v1._listquery import apply_group_order, apply_search, paginate
 
     stmt = select(Agent).where(Agent.is_tenant_assistant.is_(False))
+    # Personal departments the caller holds no seat in. Applied always -- a
+    # tenant-wide read does not reach into somebody's personal department -- and
+    # before pagination, so `total_count` stays true. Fails closed: an empty
+    # `scope.viewable` renders `NOT IN` as always-true, which excludes EVERY
+    # personal department rather than none.
+    foreign_personal = select(Department.id).where(
+        Department.kind == DEPARTMENT_KIND_PERSONAL,
+        Department.id.not_in(scope.viewable),
+    )
+    stmt = stmt.where(Agent.department_id.not_in(foreign_personal))
     if not include_archived:
         stmt = stmt.where(Agent.deleted_at.is_(None))
     if not tenant_wide:
@@ -128,6 +143,8 @@ async def visible_agent(
     tenant_wide: bool,
     agent_id: uuid.UUID,
     include_tenant_assistant: bool = False,
+    member_id: uuid.UUID | None = None,
+    manage_all: bool = False,
 ) -> Agent | None:
     """One agent, or `None` for BOTH "no such row" and "exists outside scope".
 
@@ -150,14 +167,35 @@ async def visible_agent(
     tenant's Assistant. It is a parameter and not a second function
     so the sweep in `tests/agents/test_reads_go_through_the_scoped_repository.py`
     keeps covering the one door that can see it.
+
+    An agent in a `personal` department follows the same allowlist as
+    `departments.repo.visible_department` (S1/S2): it is returned only to a
+    caller seated there (`scope.viewable`, the owner's seat), to the owner
+    (`member_id`), or to a holder of tenant-wide `department:manage`
+    (`manage_all`). Tenant-wide READ alone never reaches it, and both
+    parameters default to "no", so a caller that passes neither fails closed.
     """
-    stmt = select(Agent).where(Agent.id == agent_id, Agent.deleted_at.is_(None))
+    stmt = (
+        select(Agent, Department.kind, Department.owner_member_id)
+        .join(Department, Department.id == Agent.department_id, isouter=True)
+        .where(Agent.id == agent_id, Agent.deleted_at.is_(None))
+    )
     if not include_tenant_assistant:
         stmt = stmt.where(Agent.is_tenant_assistant.is_(False))
-    row = (await db.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()
-    if row is None:
+    found = (await db.execute(stmt.execution_options(populate_existing=True))).one_or_none()
+    if found is None:
         return None
-    if tenant_wide or row.department_id in scope.viewable:
+    row: Agent = found[0]
+    kind: str | None = found[1]
+    owner_member_id: uuid.UUID | None = found[2]
+    if row.department_id in scope.viewable:
+        return row
+    if kind == DEPARTMENT_KIND_PERSONAL:
+        reachable = personal_reachable(
+            owner_member_id=owner_member_id, member_id=member_id, manage_all=manage_all
+        )
+        return row if reachable else None
+    if tenant_wide:
         return row
     return None
 
@@ -180,6 +218,20 @@ class RunReach:
 
     every_agent: bool
     departments: frozenset[uuid.UUID]
+    #: The personal departments private to this caller
+    #: (`departments.repo.is_private_to`): every one but those the caller
+    #: owns. Taken out of BOTH branches -- `every_agent` included -- by
+    #: `restrict_to_run_reach` and `run_reachable_agent`, because no
+    #: tenant-wide grant reads what a personal agent did (spec A4). Required,
+    #: never defaulted: a reach built without asking is a reach that forgot.
+    #: Empty only on the emergency-stop reach (`cancel_reach`, ruling U1).
+    private: frozenset[uuid.UUID]
+    #: Only on a START reach (`start_reach`): the personal departments whose
+    #: agents this caller may not start -- every one but the caller's own,
+    #: since only the owner acts on a personal agent. The same set as
+    #: `private`; kept apart so `agent_runnable_in` can refuse a reach that
+    #: was not built to start. None on a reach built to read or control runs.
+    personal_refused: frozenset[uuid.UUID] | None = None
 
 
 #: The permissions a run door asks for. None of them is a seat permission, and
@@ -213,11 +265,28 @@ def reads_every_run(authority: Authority, permission: str) -> bool:
     )
 
 
-def run_reach(*, authority: Authority, scope: DepartmentScope, permission: str) -> RunReach:
+def _base_reach(*, authority: Authority, scope: DepartmentScope, permission: str) -> RunReach:
+    """`run_reach` before the private departments are taken out (`private`
+    empty). Only `run_reach` and `cancel_reach` build on it."""
+    if reads_every_run(authority, permission):
+        return RunReach(every_agent=True, departments=frozenset(), private=frozenset())
+    held = permission in authority.tenant_wide
+    departments = scope.viewable if held else frozenset()
+    return RunReach(
+        every_agent=False,
+        departments=departments | scope.owner_departments_for(permission),
+        private=frozenset(),
+    )
+
+
+async def run_reach(
+    db: AsyncSession, *, authority: Authority, scope: DepartmentScope, permission: str
+) -> RunReach:
     """Whose runs this caller may reach with `permission`.
 
     Every agent's (`reads_every_run`): including the tenant Assistant's and
-    those of deleted agents, exactly as before this funnel existed.
+    those of deleted agents, exactly as before this funnel existed -- but
+    never a personal department's the caller does not own (`private`).
 
     Departmental: the caller holds `permission` (always tenant-wide, see
     `RUN_PERMISSIONS`) but does not read agents tenant-wide -- a composed role,
@@ -227,28 +296,75 @@ def run_reach(*, authority: Authority, scope: DepartmentScope, permission: str) 
     may see their department), the tenant Assistant never (`visible_agent`
     never shows it to a departmental caller either).
 
+    The owner's seat: a personal department's owner reaches their own agents'
+    runs with any run permission (`PERSONAL_OWNER_PERMISSIONS`) whether or not
+    their role holds it -- added to the departmental set, never widening it
+    past `scope.personal_owned`.
+
+    Private (spec A4, `departments.repo.is_private_to`): one query for the
+    tenant's personal departments the caller does not own, taken out of
+    either branch by every reader of this reach.
+
     Neither: nothing. Same fail-closed shape as `visible_agents`' early return.
     """
-    if reads_every_run(authority, permission):
-        return RunReach(every_agent=True, departments=frozenset())
-    held = permission in authority.tenant_wide
-    return RunReach(every_agent=False, departments=scope.viewable if held else frozenset())
+    base = _base_reach(authority=authority, scope=scope, permission=permission)
+    private = frozenset((await db.execute(private_department_ids(scope))).scalars())
+    return replace(base, private=private)
 
 
-def agent_runnable_in(reach: RunReach, agent: Agent | None) -> bool:
-    """What `POST /agents/{agent_id}/run` admits (`api/v1/run.py`): a live agent
-    not awaiting hire approval, inside the caller's `run:start` reach.
+def cancel_reach(*, authority: Authority, scope: DepartmentScope) -> RunReach:
+    """The `run:control` reach of the emergency stop (ruling U1): `run_reach`
+    WITHOUT the private departments, so an admin may still cancel a runaway
+    run of a personal agent. Only `POST /runs/{id}/cancel` builds it, and that
+    route answers a private run with no content and audits who stopped it.
+    Never a reach to read from."""
+    return _base_reach(authority=authority, scope=scope, permission=RUN_CONTROL)
 
-    The one answer to "may this caller start this agent" for code that already
-    holds a `RunReach` -- the boards listing's `may_run` and the Copilot's
-    agent match (`copilot/agent_match.py`) both ask it, so the two cannot drift
-    from each other or from the run route.
-    """
-    if agent is None or agent.deleted_at is not None or agent.status == "pending_approval":
+
+async def start_reach(
+    db: AsyncSession,
+    *,
+    authority: Authority,
+    scope: DepartmentScope,
+) -> RunReach:
+    """`run_reach` for `run:start`, plus the personal departments this caller
+    may not start agents in (`RunReach.personal_refused`) -- the private ones,
+    since only the owner acts on a personal agent. The only reach
+    `agent_runnable_in` answers from. Tenant-scoped by RLS, as
+    `private_department_ids` is."""
+    base = await run_reach(db, authority=authority, scope=scope, permission=RUN_START)
+    return replace(base, personal_refused=base.private)
+
+
+def in_start_reach(reach: RunReach, agent: Agent) -> bool:
+    """Whether `agent` lies inside the caller's `run:start` reach, whatever its
+    state: never a personal agent the caller does not own, otherwise every
+    agent or those of `reach.departments`. The run route asks this alone to
+    tell "not yours" (404) from "awaiting hire approval" (409)."""
+    if reach.personal_refused is None:
+        raise ValueError("a start question needs a start reach (agents.repo.start_reach)")
+    if agent.department_id in reach.personal_refused:
         return False
     if reach.every_agent:
         return True
     return agent.department_id in reach.departments and not agent.is_tenant_assistant
+
+
+def agent_runnable_in(reach: RunReach, agent: Agent | None) -> bool:
+    """What `POST /agents/{agent_id}/run` admits (`api/v1/run.py`): a live agent
+    not awaiting hire approval, inside the caller's `run:start` reach -- which
+    never holds a personal agent of somebody else (only the owner acts on one).
+
+    The one answer to "may this caller start this agent" for code that already
+    holds a start reach (`start_reach`) -- the run route, the boards listing's
+    `may_run`, and the Copilot's roster, delegation and agent match
+    (`copilot/agent_match.py`) all ask it, so none can drift from the others.
+    """
+    if reach.personal_refused is None:
+        raise ValueError("a start question needs a start reach (agents.repo.start_reach)")
+    if agent is None or agent.deleted_at is not None or agent.status == "pending_approval":
+        return False
+    return in_start_reach(reach, agent)
 
 
 async def resolve_run_reach(
@@ -256,7 +372,19 @@ async def resolve_run_reach(
 ) -> RunReach:
     """`run_reach` for an HTTP caller, with the request-memoised authority."""
     authority = await authority_for_principal(request, db, actor.principal)
-    return run_reach(authority=authority, scope=actor.scope, permission=permission)
+    return await run_reach(db, authority=authority, scope=actor.scope, permission=permission)
+
+
+async def resolve_cancel_reach(request: Request, db: AsyncSession, actor: HumanActor) -> RunReach:
+    """`cancel_reach` for an HTTP caller, with the request-memoised authority."""
+    authority = await authority_for_principal(request, db, actor.principal)
+    return cancel_reach(authority=authority, scope=actor.scope)
+
+
+async def resolve_start_reach(request: Request, db: AsyncSession, actor: HumanActor) -> RunReach:
+    """`start_reach` for an HTTP caller, with the request-memoised authority."""
+    authority = await authority_for_principal(request, db, actor.principal)
+    return await start_reach(db, authority=authority, scope=actor.scope)
 
 
 def restrict_to_run_reach[TP: tuple[Any, ...]](
@@ -266,23 +394,29 @@ def restrict_to_run_reach[TP: tuple[Any, ...]](
     runs `reach` admits -- in the SAME statement, so a page size, an offset
     and a count stay true. Never a Python filter over a page already cut.
 
-    Every-agent callers get `stmt` unchanged (no join), so a row naming an
-    agent that no longer exists, or none at all, stays theirs as before. A
-    departmental caller is inner-joined to `Agent`: such a row is not shown.
-    An empty department set short-circuits to `WHERE false`, never to a
-    skipped filter -- the `IN ()` trap `visible_agents` documents.
+    Every-agent callers get no join, so a row naming an agent that no longer
+    exists, or none at all, stays theirs as before; only rows naming an agent
+    of a private department (`reach.private`) are taken out, by a NOT IN over
+    those agents' ids. A departmental caller is inner-joined to `Agent`: such
+    a row is not shown, nor one of a private department. An empty department
+    set short-circuits to `WHERE false`, never to a skipped filter -- the
+    `IN ()` trap `visible_agents` documents.
     """
     if reach.every_agent:
-        return stmt
+        if not reach.private:
+            return stmt
+        private_agents = select(Agent.id).where(Agent.department_id.in_(reach.private))
+        return stmt.where(or_(agent_id.is_(None), agent_id.not_in(private_agents)))
     return stmt.join(Agent, Agent.id == agent_id).where(_departmental_agent(reach))
 
 
 def _departmental_agent(reach: RunReach) -> ColumnElement[bool]:
     """The `Agent` predicate for a caller who is not every-agent."""
-    if not reach.departments:
+    departments = reach.departments - reach.private
+    if not departments:
         return false()
     return and_(
-        Agent.department_id.in_(reach.departments),
+        Agent.department_id.in_(departments),
         Agent.is_tenant_assistant.is_(False),
     )
 
@@ -292,11 +426,15 @@ async def run_reachable_agent(
 ) -> Agent | None:
     """One agent whose runs `reach` admits, or `None` for both "no such row"
     and "exists outside reach" -- the caller 404s on either, as
-    `visible_agent` does. Deleted agents are included; the run routes that
-    must refuse one (starting a run) check `deleted_at` themselves.
+    `visible_agent` does; an agent of a private department (`reach.private`)
+    is outside every reach but `cancel_reach`. Deleted agents are included;
+    the run routes that must refuse one (starting a run) check `deleted_at`
+    themselves.
     """
     # The tenant is written out as well as left to RLS, as every run route does.
     stmt = select(Agent).where(Agent.id == agent_id, Agent.tenant_id == tenant_id)
     if not reach.every_agent:
         stmt = stmt.where(_departmental_agent(reach))
+    elif reach.private:
+        stmt = stmt.where(Agent.department_id.not_in(reach.private))
     return (await db.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()

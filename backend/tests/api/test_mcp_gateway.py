@@ -528,6 +528,37 @@ async def test_an_allowed_call_is_forwarded(
     assert _FakeMcp.calls[0][0] == "search_records"
 
 
+async def test_a_forwarded_call_carries_its_runs_files(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gateway binds the run to the call, so a file the tool takes resolves
+    among the run's files and a file it returns is kept for the run."""
+    from oc8.agent.run_files import RunFiles, current_run_files
+
+    seen: list[RunFiles | None] = []
+
+    class _Recording(_FakeMcp):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            seen.append(current_run_files())
+            return await super().call(name, arguments)
+
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _Recording)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant)
+
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "search_records", "arguments": {"model": "crm.lead"}},
+    )
+    assert code == 200, body
+    [files] = seen
+    assert files is not None
+    assert (files.tenant_id, files.run_id, files.agent_id) == (tenant, run_id, agent_id)
+
+
 async def test_a_denied_call_is_a_readable_tool_error_not_a_transport_error(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1085,10 +1116,210 @@ async def test_a_call_over_the_threshold_suspends_for_approval(
         ).scalar_one()
         assert ar.status == "pending"
         assert ar.action_type == "tool_send"
+        # E2E F6: the card names the run that raised it.
+        assert ar.payload["run_id"] == str(run_id)
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         # The verdict the runtime reads to park the run.
         assert run.context["isolated_result"]["status"] == "waiting_for_approval"
+
+
+async def _a_message_already_sent(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    amount: int,
+    approved: bool,
+    call: bool = True,
+) -> dict[str, Any]:
+    """E2E N1: a `send_email` to bob was already delivered in this task, and
+    the model sends bob another one -- `amount` decides whether it needs an
+    approval, `approved` whether a person approved this very call."""
+    from oc8.agent.engine import _call_sig
+    from oc8.agent.outward import outward_target, remember_delivery
+    from oc8.modelrouter import ToolCall
+
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    arguments = {"to": ["bob@example.com"], "subject": "Second", "amount_total": amount}
+    focus = {"outward_fields": {"send_email": ["to"]}}
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, task_id = await _seed(
+            db,
+            tenant,
+            config_extra={
+                "outward_tools": ["send_email"],
+                "focus_spec": focus,
+                "value_spec": {"direct_fields": ["amount_total"]},
+            },
+        )
+        earlier = outward_target(
+            "send_email", {"to": ["Bob@example.com"], "subject": "First"}, focus, ["send_email"]
+        )
+        assert earlier is not None
+        await remember_delivery(db, tenant_id=tenant, task_id=task_id, target=earlier)
+        if approved:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            sig = _call_sig(ToolCall(id="x", name="send_email", arguments=arguments))
+            run.context = {
+                **run.context,
+                "resolved_tool_approvals": [
+                    {
+                        "sig": sig,
+                        "tool": "send_email",
+                        "arguments": arguments,
+                        "decision": "approve",
+                    }
+                ],
+            }
+
+    _LAST_CALL["world"] = (tenant, agent_id, run_id)
+    _LAST_CALL["arguments"] = arguments
+    if not call:
+        return {}
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "send_email", "arguments": arguments},
+    )
+    assert code == 200, body
+    return dict(body["result"])
+
+
+#: The world `_a_message_already_sent` built, for a test that calls again.
+_LAST_CALL: dict[str, Any] = {}
+
+
+async def _rpc_again(app_session: AppSessionFactory) -> dict[str, Any]:
+    tenant, agent_id, run_id = _LAST_CALL["world"]
+    code, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "send_email", "arguments": _LAST_CALL["arguments"]},
+    )
+    assert code == 200, body
+    return dict(body["result"])
+
+
+async def test_an_unattended_repeat_to_the_same_recipient_is_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    result = await _a_message_already_sent(app_session, monkeypatch, amount=10, approved=False)
+    assert result["isError"] is True
+    assert "already sent" in result["content"][0]["text"]
+    assert _FakeMcp.calls == []
+
+
+async def test_a_repeat_that_needs_approval_is_asked_not_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The person decides: a call that will be asked about is not refused
+    before asking."""
+    result = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=False)
+    text = result["content"][0]["text"]
+    assert "already sent" not in text
+    assert "approval" in text.lower()
+    assert _FakeMcp.calls == []
+
+
+async def test_a_repeat_a_person_approved_goes_out(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """E2E N1: the second mail of a chat was refused after a person approved
+    it. An approved call is the person's decision; the guard never refuses it."""
+    result = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True)
+    assert result.get("isError") is not True, result
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+
+
+async def test_one_approval_covers_exactly_one_delivery(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security review of N1: the approval stays in the run context, so a
+    model repeating the identical approved call would ride on it forever. The
+    call that runs uses the approval up; the repeat is asked again."""
+    first = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True)
+    assert first.get("isError") is not True, first
+    again = await _rpc_again(app_session)
+    assert "approval" in again["content"][0]["text"].lower()
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+
+
+async def test_two_concurrent_identical_calls_on_one_approval_run_once(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of round 6: both requests read the approval as unused before
+    either had run, and both ran. The approval is claimed before the call;
+    the loser is asked again."""
+    import asyncio
+
+    await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True, call=False)
+    real_call = _FakeMcp.call
+
+    async def slow_call(self: _FakeMcp, name: str, arguments: dict[str, Any]) -> str:
+        await asyncio.sleep(0.3)  # the window both requests used to fit into
+        return await real_call(self, name, arguments)
+
+    monkeypatch.setattr(_FakeMcp, "call", slow_call)
+    results = await asyncio.gather(_rpc_again(app_session), _rpc_again(app_session))
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+    texts = sorted(r["content"][0]["text"].lower() for r in results)
+    assert sum("approval" in t for t in texts) == 1, texts
+
+
+async def test_an_approved_call_refused_before_dispatch_keeps_its_approval(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of round 7: the approval was claimed at decision time, so a
+    call then refused before it ran -- here its account needs connecting --
+    spent the person's "yes" on nothing. It is claimed just before dispatch;
+    the retry, once connected, runs on it."""
+    from oc8.api import mcp_gateway as gateway
+    from oc8.connections.access import ConnectionRequired
+
+    class _NeedsLogin(ConnectionRequired):
+        def __init__(self) -> None:
+            Exception.__init__(self, "connection_required: connect the mailbox first")
+
+    await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True, call=False)
+    real_env = gateway._env
+
+    async def needs_login(*_a: Any, **_k: Any) -> Any:
+        raise _NeedsLogin()
+
+    monkeypatch.setattr(gateway, "_env", needs_login)
+    refused = await _rpc_again(app_session)
+    assert refused["isError"] is True
+    assert "connection_required" in refused["content"][0]["text"]
+    tenant, _agent, run_id = _LAST_CALL["world"]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert not run.context.get("consumed_tool_approvals")
+
+    monkeypatch.setattr(gateway, "_env", real_env)
+    ran = await _rpc_again(app_session)
+    assert ran.get("isError") is not True, ran
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
+
+
+async def test_a_redelivered_call_does_not_send_twice(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A leg redelivered after a crash may carry the run context from before
+    the approval was used up; the delivery marker it left still stops it."""
+    first = await _a_message_already_sent(app_session, monkeypatch, amount=3900, approved=True)
+    assert first.get("isError") is not True, first
+    tenant, _agent, run_id = _LAST_CALL["world"]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {k: v for k, v in run.context.items() if k != "consumed_tool_approvals"}
+    again = await _rpc_again(app_session)
+    assert "approval" in again["content"][0]["text"].lower()
+    assert [name for name, _args in _FakeMcp.calls] == ["send_email"]
 
 
 async def test_an_unknown_method_is_a_jsonrpc_error(app_session: AppSessionFactory) -> None:
@@ -1457,6 +1688,8 @@ async def test_rendering_a_component_without_any_grant_publishes_a_realtime_even
 
     monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent_id, run_id, _t = await _seed(db, tenant)
@@ -2444,3 +2677,122 @@ async def test_a_malformed_structured_ask_is_a_model_error_not_a_park(
         run = await db.get(m.AgentRun, run_id)
         assert run is not None
         assert "isolated_result" not in run.context
+
+
+async def test_a_call_over_a_usage_limit_is_refused_by_the_gateway(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gateway the CLI runtimes call through counts like the engine does."""
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    tenant = uuid.uuid4()
+    frame = {
+        "tools": {
+            "odoo": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "limits": [{"tools": ["search_records"], "max": 1, "per": "hour"}],
+            }
+        }
+    }
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=frame)
+
+    token = _token(tenant, agent_id, run_id)
+    args = {"name": "search_records", "arguments": {"model": "crm.lead"}}
+    _c1, first = await _rpc(token, "tools/call", args)
+    _c2, second = await _rpc(token, "tools/call", args, rpc_id=2)
+    assert first["result"]["isError"] is False
+    assert second["result"]["isError"] is True
+    assert "Hourly limit of 1 reached for search_records" in second["result"]["content"][0]["text"]
+    assert [name for name, _ in _FakeMcp.calls] == ["search_records"]
+
+
+class _BrokenMcp(_FakeMcp):
+    """A bridge whose tool times out after it was reached."""
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> str:
+        type(self).calls.append((name, arguments))
+        raise TimeoutError("no answer in time")
+
+
+class _NeverStarts(_FakeMcp):
+    async def __aenter__(self) -> _FakeMcp:
+        raise RuntimeError("the bridge did not start")
+
+
+_LIMITED_FRAME = {
+    "tools": {
+        "odoo": {
+            "enabled": True,
+            "read": True,
+            "modify": True,
+            "limits": [{"tools": ["search_records"], "max": 1}],
+        }
+    }
+}
+
+
+async def test_a_gateway_call_that_timed_out_keeps_its_count(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _BrokenMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _BrokenMcp)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=_LIMITED_FRAME)
+    token = _token(tenant, agent_id, run_id)
+    args = {"name": "search_records", "arguments": {"model": "crm.lead"}}
+    await _rpc(token, "tools/call", args)
+    _c, second = await _rpc(token, "tools/call", args, rpc_id=2)
+    assert "Daily limit of 1 reached" in second["result"]["content"][0]["text"]
+    assert len(_BrokenMcp.calls) == 1
+
+
+async def test_a_gateway_bridge_that_never_started_gives_the_count_back(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _NeverStarts)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=_LIMITED_FRAME)
+    token = _token(tenant, agent_id, run_id)
+    args = {"name": "search_records", "arguments": {"model": "crm.lead"}}
+    await _rpc(token, "tools/call", args)
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    _c, second = await _rpc(token, "tools/call", args, rpc_id=2)
+    assert second["result"]["isError"] is False, second
+
+
+async def test_a_gateway_call_whose_limit_is_full_is_refused_not_parked(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeMcp.calls = []
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _FakeMcp)
+    frame = {
+        "tools": {
+            "odoo": {
+                "enabled": True,
+                "read": True,
+                "modify": True,
+                "approval_actions": ["modify"],
+                "limits": [{"tools": ["create_record"], "max": 0}],
+            }
+        }
+    }
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _t = await _seed(db, tenant, frame=frame)
+    _c, body = await _rpc(
+        _token(tenant, agent_id, run_id),
+        "tools/call",
+        {"name": "create_record", "arguments": {"model": "res.partner", "values": {}}},
+    )
+    text = body["result"]["content"][0]["text"]
+    assert "Daily limit of 0 reached for create_record" in text, body
+    async with app_session(tenant) as db:
+        held = (await db.execute(select(m.ApprovalRequest))).scalars().all()
+    assert held == []
+    assert _FakeMcp.calls == []

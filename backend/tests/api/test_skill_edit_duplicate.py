@@ -385,4 +385,6 @@ async def test_assignments_move_only_where_the_caller_may_change_agents(
         rows = {a.agent_id: a for a in (await db.execute(select(m.SkillAssignment))).scalars()}
         assert str(rows[home_agent].skill_version_id) == full["currentVersionId"]
         assert str(rows[foreign_agent].skill_version_id) == full["currentVersionId"]
-    assert v2 != full["currentVersionId"]
+    # Publishing the same content again adds no version; it only moves the
+    # assignments the first publish had to leave behind.
+    assert v2 == full["currentVersionId"]

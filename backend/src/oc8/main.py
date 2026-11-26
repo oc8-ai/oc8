@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from oc8 import __version__
 from oc8.config import Settings, get_settings
 from oc8.copilot.agent_templates import collect_edition_templates
-from oc8.credentials.service import IncompleteCredential
+from oc8.credentials.service import IncompleteCredential, UrlWithoutScheme
 from oc8.db.engine import dispose_engine
 from oc8.edition import EditionExtension
 from oc8.edition.runtime import (
@@ -153,6 +153,15 @@ def create_app(
         return JSONResponse(
             status_code=422,
             content={"detail": {"code": "credential_incomplete", "missing": exc.missing}},
+        )
+
+    @app.exception_handler(UrlWithoutScheme)
+    async def credential_url_scheme(request: Request, exc: UrlWithoutScheme) -> JSONResponse:
+        """A login whose address lacks https://: the same 422 from every route
+        that creates or edits one, naming the field keys."""
+        return JSONResponse(
+            status_code=422,
+            content={"detail": {"code": "credential_url_scheme", "fields": exc.fields}},
         )
 
     @app.exception_handler(RequestValidationError)

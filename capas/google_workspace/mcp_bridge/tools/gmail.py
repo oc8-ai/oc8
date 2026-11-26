@@ -6,13 +6,36 @@ Gmail's label model folds move/archive/mark-read into one operation --
 from __future__ import annotations
 
 import base64
+import re
 from collections.abc import Awaitable, Callable
 from email.message import EmailMessage
 from typing import Any
+from urllib.parse import quote
 
 from mcp.types import Tool
 
 from .. import google_api
+from ..files import ATTACHMENTS_SCHEMA, FileContent, attachment_files
+
+#: A Gmail message or thread id: base64url characters, short.
+_GMAIL_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+#: An attachment id is base64url too, but long (hundreds of characters).
+_ATTACHMENT_ID = re.compile(r"[A-Za-z0-9_-]{1,2048}")
+
+
+def _path_id(value: object, label: str, pattern: re.Pattern[str] = _GMAIL_ID) -> str:
+    """`value` as one URL path segment: checked to be a Gmail id, then quoted
+    with nothing left safe. An id is the model's word, and unchecked, `../x`
+    or `x?alt=media` would reach another endpoint of the same mailbox."""
+    text = value if isinstance(value, str) else ""
+    if not pattern.fullmatch(text):
+        raise RuntimeError(
+            f"`{label}` must be a Gmail id (letters, digits, - and _), "
+            "as gmail_search or gmail_get return it."
+        )
+    return quote(text, safe="")
 
 
 def _mailbox_schema_props() -> dict[str, Any]:
@@ -96,7 +119,7 @@ async def gmail_get(args: dict[str, Any]) -> Any:
     mailbox = args.get("mailbox") or "me"
     message = await google_api.get_json(
         google_api.API_GMAIL,
-        f"/users/{mailbox}/messages/{args['messageId']}",
+        f"/users/{mailbox}/messages/{_path_id(args.get('messageId'), 'messageId')}",
         token=token,
     )
     payload = message.get("payload", {})
@@ -109,7 +132,99 @@ async def gmail_get(args: dict[str, Any]) -> Any:
         "snippet": message.get("snippet", ""),
         "body": body,
         "bodyMimeType": body_mime_type,
+        "attachments": [
+            {
+                "partId": part.get("partId", ""),
+                "attachmentId": part["body"].get("attachmentId", ""),
+                "filename": part.get("filename", ""),
+                "mimeType": part.get("mimeType", ""),
+                "size": part["body"].get("size", 0),
+            }
+            for part in _attachment_parts(payload)
+        ],
     }
+
+
+def _attachment_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every part that is an attachment: one with a file name whose content
+    is behind an attachment id, or -- for a small one -- inline in
+    `body.data`."""
+    out: list[dict[str, Any]] = []
+    body = payload.get("body") or {}
+    if payload.get("filename") and (body.get("attachmentId") or body.get("data")):
+        out.append(payload)
+    for part in payload.get("parts", []) or []:
+        out.extend(_attachment_parts(part))
+    return out
+
+
+async def gmail_get_attachment(args: dict[str, Any]) -> Any:
+    """One attachment, as a file: core keeps it as a file of the run.
+
+    By `partId`, which stays the same across reads: the message is read for
+    the part's name, type and current attachment id (or its inline content).
+    By `attachmentId` alone: Gmail hands out a new one on every read, so one
+    from an earlier gmail_get matches nothing read now -- it is fetched as
+    given, once it is a well-formed id, and named by the part it matches, or
+    else the one part of its size."""
+    message_id = _path_id(args.get("messageId"), "messageId")
+    part_id = str(args.get("partId") or "")
+    wanted = str(args.get("attachmentId") or "")
+    if not part_id and not wanted:
+        raise RuntimeError("Name the attachment by its partId from gmail_get.")
+    direct = _path_id(wanted, "attachmentId", _ATTACHMENT_ID) if not part_id else ""
+    token = google_api.resolve_mailbox_token(args.get("mailbox"))
+    mailbox = args.get("mailbox") or "me"
+    message = await google_api.get_json(
+        google_api.API_GMAIL, f"/users/{mailbox}/messages/{message_id}", token=token
+    )
+    parts = _attachment_parts(message.get("payload", {}))
+    part: dict[str, Any] | None
+    if part_id:
+        part = next((p for p in parts if p.get("partId") == part_id), None)
+        if part is None:
+            raise RuntimeError(
+                "This message has no attachment with that partId; take it from gmail_get."
+            )
+        inline = str(part["body"].get("data") or "")
+        if inline and not part["body"].get("attachmentId"):
+            return _file(message, part, _decode_b64url(inline))
+        attachment_id = _path_id(part["body"]["attachmentId"], "attachmentId", _ATTACHMENT_ID)
+    else:
+        attachment_id = direct
+        part = None
+    body = await google_api.get_json(
+        google_api.API_GMAIL,
+        f"/users/{mailbox}/messages/{message_id}/attachments/{attachment_id}",
+        token=token,
+    )
+    raw = _decode_b64url(str(body.get("data") or ""))
+    if part is None:
+        part = next((p for p in parts if p["body"].get("attachmentId") == wanted), None)
+    if part is None:
+        sized = [p for p in parts if p["body"].get("size") == len(raw)]
+        part = sized[0] if len(sized) == 1 else {"body": {}}
+    return _file(message, part, raw)
+
+
+def _decode_b64url(data: str) -> bytes:
+    return base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))
+
+
+def _file(message: dict[str, Any], part: dict[str, Any], raw: bytes) -> FileContent:
+    name = str(part.get("filename") or "attachment")
+    mime = str(part.get("mimeType") or "application/octet-stream")
+    return FileContent(
+        name=name,
+        mime_type=mime,
+        data=raw,
+        details={
+            "messageId": message.get("id", ""),
+            "filename": name,
+            "mimeType": mime,
+            "size": len(raw),
+        },
+    )
 
 
 def _build_raw_message(
@@ -127,10 +242,14 @@ def _build_raw_message(
     msg.set_content(args.get("body", ""))
     for header, value in (extra_headers or {}).items():
         msg[header] = value
+    for name, mime, data in attachment_files(args.get("attachments")):
+        maintype, _, subtype = mime.partition("/")
+        msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
     return base64.urlsafe_b64encode(msg.as_bytes()).decode()
 
 
 async def gmail_send(args: dict[str, Any]) -> Any:
+    attachment_files(args.get("attachments"))
     token = google_api.resolve_mailbox_token(args.get("mailbox"))
     mailbox = args.get("mailbox") or "me"
     raw = _build_raw_message(args)
@@ -153,9 +272,9 @@ async def gmail_reply(args: dict[str, Any]) -> Any:
     place for older callers, but is only ever the message's id. The reply goes
     into the thread Gmail reports for that message -- a message id is not its
     thread id once the thread has more than one message."""
-    message = str(args.get("messageId") or args.get("threadId") or "")
-    if not message:
-        raise RuntimeError("gmail_reply needs messageId, the id of the message replied to")
+    label = "messageId" if args.get("messageId") else "threadId"
+    message = _path_id(args.get(label), "messageId")
+    attachment_files(args.get("attachments"))
     token = google_api.resolve_mailbox_token(args.get("mailbox"))
     mailbox = args.get("mailbox") or "me"
     original = await google_api.get_json(
@@ -177,15 +296,17 @@ async def gmail_reply(args: dict[str, Any]) -> Any:
         {"In-Reply-To": message_id, "References": message_id} if message_id else {}
     )
     raw = _build_raw_message(reply_args, extra_headers=extra_headers)
+    thread = original.get("threadId")
     return await google_api.post_json(
         google_api.API_GMAIL,
         f"/users/{mailbox}/messages/send",
         token=token,
-        json={"raw": raw, "threadId": str(original.get("threadId") or message)},
+        json={"raw": raw, "threadId": str(thread) if thread else message},
     )
 
 
 async def gmail_create_draft(args: dict[str, Any]) -> Any:
+    attachment_files(args.get("attachments"))
     token = google_api.resolve_mailbox_token(args.get("mailbox"))
     mailbox = args.get("mailbox") or "me"
     raw = _build_raw_message(args)
@@ -210,7 +331,7 @@ async def gmail_modify_labels(args: dict[str, Any]) -> Any:
     mailbox = args.get("mailbox") or "me"
     return await google_api.post_json(
         google_api.API_GMAIL,
-        f"/users/{mailbox}/messages/{args['messageId']}/modify",
+        f"/users/{mailbox}/messages/{_path_id(args.get('messageId'), 'messageId')}/modify",
         token=token,
         json={
             "addLabelIds": args.get("addLabelIds", []),
@@ -244,6 +365,27 @@ TOOLS: list[Tool] = [
         },
     ),
     Tool(
+        name="gmail_get_attachment",
+        description=(
+            "Fetch one attachment of a message, by the partId gmail_get lists. It is "
+            "kept as a file of this run, whose id the result names: pass that id to attach "
+            "it elsewhere."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "messageId": {"type": "string"},
+                "partId": {"type": "string", "description": "From gmail_get's attachments."},
+                "attachmentId": {
+                    "type": "string",
+                    "description": "Instead of partId; Gmail changes it on every read.",
+                },
+                **_mailbox_schema_props(),
+            },
+            "required": ["messageId"],
+        },
+    ),
+    Tool(
         name="gmail_send",
         description="Send a message. The tool builds the MIME message from these structured fields -- do not pass a pre-encoded raw message.",
         inputSchema={
@@ -257,6 +399,7 @@ TOOLS: list[Tool] = [
                 "cc": {"type": "array", "items": {"type": "string"}},
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
+                "attachments": ATTACHMENTS_SCHEMA,
                 **_mailbox_schema_props(),
             },
             "required": ["to", "subject", "body"],
@@ -283,6 +426,7 @@ TOOLS: list[Tool] = [
                     "description": "Optional; defaults to the original subject, Re:-prefixed.",
                 },
                 "body": {"type": "string"},
+                "attachments": ATTACHMENTS_SCHEMA,
                 **_mailbox_schema_props(),
             },
             "required": ["to", "body"],
@@ -298,6 +442,7 @@ TOOLS: list[Tool] = [
                 "cc": {"type": "array", "items": {"type": "string"}},
                 "subject": {"type": "string"},
                 "body": {"type": "string"},
+                "attachments": ATTACHMENTS_SCHEMA,
                 **_mailbox_schema_props(),
             },
             "required": ["to", "subject", "body"],
@@ -327,6 +472,7 @@ TOOLS: list[Tool] = [
 CALL_HANDLERS: dict[str, Callable[[dict[str, Any]], Awaitable[Any]]] = {
     "gmail_search": gmail_search,
     "gmail_get": gmail_get,
+    "gmail_get_attachment": gmail_get_attachment,
     "gmail_send": gmail_send,
     "gmail_reply": gmail_reply,
     "gmail_create_draft": gmail_create_draft,

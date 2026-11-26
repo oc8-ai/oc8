@@ -35,7 +35,7 @@ def _toml(relative: str) -> dict[str, Any]:
 def test_the_capa_is_a_tool_pack_at_version_one() -> None:
     manifest = _manifest()
     assert manifest.name == "email"
-    assert manifest.version == "1.0.0"
+    assert manifest.version == "1.1.0"
     assert manifest.type == "tool_pack"
     assert manifest.entry_points == {"event_sources": "events.source:register"}
 
@@ -131,6 +131,8 @@ def test_the_login_type_has_the_mail_account_fields_and_no_plain_text_option(
         "smtp_password",
         "from_address",
         "from_name",
+        "sent_folder",
+        "ca_certificate",
     ]
     assert fields["incoming_protocol"]["options"] == ["imap", "pop3"]
     assert fields["incoming_security"]["options"] == ["ssl", "starttls"]
@@ -138,7 +140,13 @@ def test_the_login_type_has_the_mail_account_fields_and_no_plain_text_option(
     secret = {k for k, f in fields.items() if f.get("kind") == "password"}
     assert secret == {"password", "smtp_password"}
     optional = {k for k, f in fields.items() if f.get("required") is False}
-    assert optional == {"smtp_username", "smtp_password", "from_name"}
+    assert optional == {
+        "smtp_username",
+        "smtp_password",
+        "from_name",
+        "sent_folder",
+        "ca_certificate",
+    }
     assert spec["validate_entry_point"] == "credential:validate_mail_account"
     # Every field reaches the bridge under the name the bridge reads.
     manifest = _manifest()
@@ -168,6 +176,7 @@ def test_presets_default_to_approval_before_sending() -> None:
         "read_only",
         "send_with_approval",
         "answer_on_its_own",
+        "autonomous_with_limit",
         "no_deletions",
     }
     assert [k for k, p in presets.items() if p.recommended] == ["send_with_approval"]
@@ -191,6 +200,42 @@ def test_presets_default_to_approval_before_sending() -> None:
     assert "no daily" in answer.summary
     assert "anyone who writes" in answer.summary
     assert "Approval before sending" in answer.summary
+
+
+def test_autonomous_with_limit_sends_at_most_fifty_mails_a_day() -> None:
+    manifest = _manifest()
+    assert manifest.tool_pack is not None
+    presets = {p.key: p for p in manifest.tool_pack.connections[0].guardrail_presets}
+    capped = presets["autonomous_with_limit"]
+    assert capped.label == "Autonomous, max 50 mails a day"
+    assert not capped.recommended
+    assert (capped.read, capped.modify, capped.approval_actions) == (True, True, [])
+    assert sorted(capped.only) == sorted(
+        [
+            "mail_list_folders",
+            "mail_search",
+            "mail_get",
+            "mail_get_attachment",
+            "mail_send",
+            "mail_reply",
+            "mail_forward",
+            "mail_mark_read",
+        ]
+    )
+    assert "mail_delete" not in capped.only and "mail_move" not in capped.only
+    assert [lim.to_json() for lim in capped.limits] == [
+        {"tools": ["mail_send", "mail_reply", "mail_forward"], "max": 50, "per": "day"}
+    ]
+    # Honest about what it allows: new mail to anyone, up to the cap -- which
+    # is per agent, counts calls that reached the mail server even if it
+    # refused them, and is per mail, not per recipient.
+    assert "anyone" in capped.summary
+    assert "per agent" in capped.summary
+    assert "up to 50 recipients" in capped.summary
+    assert (
+        "A mail counts once it was handed to the mail tool, even if sending then failed."
+        in capped.summary
+    )
 
 
 def test_every_shown_string_has_a_german_translation() -> None:

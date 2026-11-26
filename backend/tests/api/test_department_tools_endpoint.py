@@ -108,6 +108,7 @@ async def test_well_formed_payload_is_accepted_and_echoed_back(
                 "approval_actions": ["send"],
                 "only": ["search_records", "post_message"],
                 "conditions": [],
+                "limits": [],
                 "default_connection_id": None,
             }
         },
@@ -485,15 +486,21 @@ async def test_get_department_tools_reports_deviation_counts(
         dept = await db.get(m.Department, dept_id)
         dept.frame = {"tools": {"github": {"enabled": True, "read": True, "modify": True}}}
         agent_a = m.Agent(
-            tenant_id=tenant, department_id=dept_id, name="A",
+            tenant_id=tenant,
+            department_id=dept_id,
+            name="A",
             narrowing_overridden_keys=["github"],
         )
         agent_b = m.Agent(
-            tenant_id=tenant, department_id=dept_id, name="B",
+            tenant_id=tenant,
+            department_id=dept_id,
+            name="B",
             narrowing_overridden_keys=[],
         )
         agent_c = m.Agent(
-            tenant_id=tenant, department_id=dept_id, name="C",
+            tenant_id=tenant,
+            department_id=dept_id,
+            name="C",
             narrowing_overridden_keys=["github"],
         )
         db.add_all([agent_a, agent_b, agent_c])
@@ -517,7 +524,9 @@ async def test_put_department_tools_also_reports_deviation_counts(
     tenant, dept_id = await _seed_department(app_session)
     async with app_session(tenant) as db:
         agent = m.Agent(
-            tenant_id=tenant, department_id=dept_id, name="A",
+            tenant_id=tenant,
+            department_id=dept_id,
+            name="A",
             narrowing_overridden_keys=["odoo"],
         )
         db.add(agent)

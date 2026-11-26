@@ -1,0 +1,25 @@
+# The agent works the mailbox on its own, without approval: it reads, writes
+# new mail, replies, forwards and marks mail read. It cannot move or delete
+# mail. What bounds it is a count, not an approval: core allows at most 50
+# sends, replies and forwards together per agent and UTC day -- a mail counts
+# once it was handed to the mail tool, even if sending then failed --
+# and refuses the 51st with a clear message. Each mail may have up to 50
+# recipients, so the count is of mails, not of people reached. A preset limits tools, not their
+# arguments, so the agent can write to ANY address -- the summary says so.
+kind = "preset"
+connection = "primary"
+key = "autonomous_with_limit"
+label = "Autonomous, max 50 mails a day"
+summary = "Reads mail and works on its own, without approval: it can write new mail to anyone, reply, forward and mark mail read, up to 50 mails a day per agent (sends, replies and forwards together; each mail up to 50 recipients; the count resets at 00:00 UTC). A mail counts once it was handed to the mail tool, even if sending then failed. It cannot move or delete mail. For a mailbox with sensitive mail, choose Approval before sending."
+recommended = false
+read = true
+modify = true
+approval_actions = []
+approval_eur = ""
+only = [
+    "mail_list_folders", "mail_search", "mail_get", "mail_get_attachment",
+    "mail_send", "mail_reply", "mail_forward", "mail_mark_read",
+]
+limits = [
+    { tools = ["mail_send", "mail_reply", "mail_forward"], max = 50, per = "day" },
+]

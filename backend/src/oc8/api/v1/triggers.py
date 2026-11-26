@@ -6,17 +6,30 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 
 from oc8 import models as m
-from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
+from oc8.api.deps import (
+    CurrentPrincipal,
+    DbSession,
+    authorize_in_department,
+    refuse_personal_agent_content,
+    refuse_personal_agent_write,
+    require_departmental,
+)
 from oc8.authz.permissions import MANAGE, TRIGGER, VIEW, perm
 from oc8.authz.scope import scope_for_principal
 from oc8.automation.catalogue import list_installed_automation_events
 from oc8.capas.i18n import translations_for
 from oc8.config import get_settings
-from oc8.connections.access import trigger_fingerprint
+from oc8.connections.confirmation import (
+    clear_trigger_stamp,
+    save_may_stamp,
+    stamp_trigger,
+    trigger_confirmed,
+    trigger_held,
+)
 from oc8.events.sources import LoginTarget
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
@@ -54,10 +67,14 @@ async def _owner_names(db: DbSession, triggers: list[m.Trigger]) -> dict[uuid.UU
         return {}
     rows = (
         await db.execute(
-            select(m.OrgMember.id, m.OrgMember.display_name).where(m.OrgMember.id.in_(ids))
+            select(
+                m.OrgMember.id, m.OrgMember.display_name, m.OrgMember.email, m.OrgMember.subject
+            ).where(m.OrgMember.id.in_(ids))
         )
     ).all()
-    return {r.id: r.display_name for r in rows}
+    # A member without a display name (the dev admin's is empty) is named by
+    # their email, else their login: "Created by" with no name says nothing.
+    return {r.id: (r.display_name or r.email or r.subject) for r in rows}
 
 
 async def _needs_confirmation(
@@ -72,10 +89,23 @@ async def _needs_confirmation(
             continue
         if t.kind in ("webhook", "event") and not t.acts_for_creator:
             continue
-        current = await trigger_fingerprint(db, t)
-        if t.access_fingerprint is None or t.access_fingerprint != current:
+        if not await trigger_confirmed(db, t):
             out.add(t.id)
     return out
+
+
+async def _owned_agents(db: DbSession, triggers: list[m.Trigger]) -> set[uuid.UUID]:
+    """The agents of `triggers` whose department has an owner: their
+    triggers are confirmed on the owner's confirmation card (Ruling FR-C1)."""
+    ids = {t.agent_id for t in triggers}
+    if not ids:
+        return set()
+    rows = await db.execute(
+        select(m.Agent.id)
+        .join(m.Department, m.Department.id == m.Agent.department_id)
+        .where(m.Agent.id.in_(ids), m.Department.owner_member_id.is_not(None))
+    )
+    return set(rows.scalars())
 
 
 async def _poll_statuses(
@@ -126,6 +156,8 @@ def _poll_status(
         last_ok_at=_iso(row.last_ok_at),
         last_error=row.last_error,
         last_error_at=_iso(row.last_error_at),
+        last_skipped=row.last_skipped,
+        last_skipped_at=_iso(row.last_skipped_at),
     )
 
 
@@ -136,6 +168,7 @@ async def _to_dto(db: DbSession, t: m.Trigger, caller: uuid.UUID | None) -> Trig
         await _owner_names(db, [t]),
         needs_confirmation=flagged,
         cursors=await _poll_statuses(db, [t]),
+        owned=await _owned_agents(db, [t]),
     )
 
 
@@ -145,6 +178,7 @@ def _dto_with(
     *,
     needs_confirmation: set[uuid.UUID],
     cursors: dict[uuid.UUID, m.EventSourceCursor],
+    owned: set[uuid.UUID],
 ) -> TriggerDTO:
     return TriggerDTO(
         id=str(t.id),
@@ -163,6 +197,7 @@ def _dto_with(
         created_by_name=names.get(t.created_by_member_id) if t.created_by_member_id else None,
         acts_for_creator=t.acts_for_creator,
         needs_confirmation=t.id in needs_confirmation,
+        owner_confirms=t.agent_id in owned,
         event_target_credential_id=(
             str(t.event_target_credential_id) if t.event_target_credential_id else None
         ),
@@ -225,7 +260,11 @@ def _translations(i18n: dict[str, dict[str, str]], text: str) -> dict[str, str]:
 @router.get(
     "/trigger-events",
     response_model=list[TriggerEventDTO],
-    dependencies=[Depends(require_permission(perm(TRIGGER, VIEW)))],
+    # Departmental: the trigger editor on a personal department owner's agent
+    # page reads it too. It is the catalogue of events this organisation's
+    # capas offer -- no department's data -- so admitting the owner's seat at
+    # the door needs no narrowing behind it.
+    dependencies=[Depends(require_departmental(perm(TRIGGER, VIEW)))],
 )
 async def list_trigger_events(db: DbSession, principal: CurrentPrincipal) -> list[TriggerEventDTO]:
     """The events a trigger may listen on, from core and this organisation's
@@ -279,18 +318,56 @@ async def list_trigger_events(db: DbSession, principal: CurrentPrincipal) -> lis
     return out
 
 
+async def _authorize_trigger_write(
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
+    department_id: uuid.UUID | None,
+    not_found: HTTPException,
+) -> None:
+    """May this caller change a trigger of an agent in `department_id`?
+    `trigger:manage` for that department -- tenant-wide, or the owner's seat in
+    this personal department (`authorize_in_department`); and in a personal
+    department only the owner (`refuse_personal_agent_write`)."""
+    await authorize_in_department(
+        request, db, principal, perm(TRIGGER, MANAGE), department_id, not_found=not_found
+    )
+    await refuse_personal_agent_write(db, principal, department_id, not_found=not_found)
+
+
+async def _refuse_foreign_personal_trigger(
+    request: Request, db: DbSession, principal: CurrentPrincipal, trigger: m.Trigger
+) -> None:
+    """A trigger is part of its agent: changed by whoever may change that
+    agent's triggers (`_authorize_trigger_write`)."""
+    agent = await db.get(m.Agent, trigger.agent_id)
+    await _authorize_trigger_write(
+        request,
+        db,
+        principal,
+        agent.department_id if agent is not None else None,
+        HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found"),
+    )
+
+
 @router.post(
     "/agents/{agent_id}/triggers",
     response_model=TriggerDTO,
     status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(require_permission(perm(TRIGGER, MANAGE)))],
+    dependencies=[Depends(require_departmental(perm(TRIGGER, MANAGE)))],
 )
 async def create_agent_trigger(
-    agent_id: uuid.UUID, body: CreateTriggerRequest, db: DbSession, principal: CurrentPrincipal
+    agent_id: uuid.UUID,
+    body: CreateTriggerRequest,
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
 ) -> TriggerDTO:
     agent = await db.get(m.Agent, agent_id)
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     if agent is None or agent.deleted_at is not None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+        raise not_found
+    await _authorize_trigger_write(request, db, principal, agent.department_id, not_found)
     caller = await _caller_member_id(db, principal)
     named = (
         body.event_target_credential_id is not None
@@ -301,7 +378,11 @@ async def create_agent_trigger(
         if body.kind == "event" and not named and body.event_source and body.event_type:
             # A polled event listens on the agent's fixed login for its tools.
             target = await polled_event_target(
-                db, agent_id=agent_id, event_source=body.event_source, event_type=body.event_type
+                db,
+                agent_id=agent_id,
+                event_source=body.event_source,
+                event_type=body.event_type,
+                creator=caller,
             )
         trigger = await create_trigger(
             db,
@@ -337,29 +418,48 @@ async def create_agent_trigger(
 @router.get(
     "/agents/{agent_id}/triggers",
     response_model=list[TriggerDTO],
-    dependencies=[Depends(require_permission(perm(TRIGGER, VIEW)))],
+    dependencies=[Depends(require_departmental(perm(TRIGGER, VIEW)))],
 )
 async def list_agent_triggers(
-    agent_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+    agent_id: uuid.UUID, request: Request, db: DbSession, principal: CurrentPrincipal
 ) -> list[TriggerDTO]:
+    # `trigger:view` for this agent's department (tenant-wide, or the owner's
+    # seat). A trigger's task text is the agent's content: a personal agent's
+    # triggers are its owner's alone, and anybody else gets the 404 a missing
+    # agent would.
+    agent = await db.get(m.Agent, agent_id)
+    department_id = agent.department_id if agent is not None else None
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    await authorize_in_department(
+        request, db, principal, perm(TRIGGER, VIEW), department_id, not_found=not_found
+    )
+    await refuse_personal_agent_content(db, principal, department_id, not_found=not_found)
     rows = list(await list_triggers_for_agent(db, agent_id=agent_id))
     names = await _owner_names(db, rows)
     flagged = await _needs_confirmation(db, rows, await _caller_member_id(db, principal))
     cursors = await _poll_statuses(db, rows)
-    return [_dto_with(t, names, needs_confirmation=flagged, cursors=cursors) for t in rows]
+    owned = await _owned_agents(db, rows)
+    return [
+        _dto_with(t, names, needs_confirmation=flagged, cursors=cursors, owned=owned) for t in rows
+    ]
 
 
 @router.patch(
     "/triggers/{trigger_id}",
     response_model=TriggerDTO,
-    dependencies=[Depends(require_permission(perm(TRIGGER, MANAGE)))],
+    dependencies=[Depends(require_departmental(perm(TRIGGER, MANAGE)))],
 )
 async def update_agent_trigger(
-    trigger_id: uuid.UUID, body: UpdateTriggerRequest, db: DbSession, principal: CurrentPrincipal
+    trigger_id: uuid.UUID,
+    body: UpdateTriggerRequest,
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
 ) -> TriggerDTO:
     trigger = await get_trigger(db, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
+    await _refuse_foreign_personal_trigger(request, db, principal, trigger)
     if body.enabled is True:
         # Like creating one: an archived agent gets no live trigger (the next
         # fire would only turn it off again). Restoring the agent comes first.
@@ -370,6 +470,10 @@ async def update_agent_trigger(
             )
     caller = await _caller_member_id(db, principal)
     owner = trigger.created_by_member_id
+    # Ruling FR-C1: decided before the save changes anything.
+    trigger_agent = await db.get(m.Agent, trigger.agent_id)
+    held = None if trigger_agent is None else await trigger_held(db, trigger, trigger_agent)
+    may_stamp = trigger_agent is not None and await save_may_stamp(db, trigger_agent, held=held)
     if body.acts_for_creator is True and owner is not None and caller != owner:
         # Letting a trigger borrow the creator's account is the creator's
         # decision alone.
@@ -403,8 +507,16 @@ async def update_agent_trigger(
     except InvalidTriggerConfig as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     if caller is not None and updated.created_by_member_id == caller:
-        # Its creator saved it: they confirm the agent as it is now.
-        updated.access_fingerprint = await trigger_fingerprint(db, updated)
+        if may_stamp:
+            # Its creator saved it: they confirm the agent as it is now -- in
+            # a department with an owner only a confirmation that held before
+            # (`save_may_stamp`); the card confirms the rest.
+            await stamp_trigger(db, updated, confirmed_by=caller)
+        elif held is None or owner != caller:
+            # Not stamped, and the stamp it carries was not the caller's own
+            # confirmation (another creator's, or nobody's): it must not
+            # count as theirs now that the trigger is.
+            clear_trigger_stamp(updated)
         await db.flush()
     # The guard only matters when this update is turning the trigger ON
     # (`body.enabled is True`, whether that flips a disabled row or
@@ -432,12 +544,13 @@ async def update_agent_trigger(
 @router.delete(
     "/triggers/{trigger_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission(perm(TRIGGER, MANAGE)))],
+    dependencies=[Depends(require_departmental(perm(TRIGGER, MANAGE)))],
 )
 async def delete_agent_trigger(
-    trigger_id: uuid.UUID, db: DbSession, principal: CurrentPrincipal
+    trigger_id: uuid.UUID, request: Request, db: DbSession, principal: CurrentPrincipal
 ) -> None:
     trigger = await get_trigger(db, trigger_id=trigger_id)
     if trigger is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "trigger not found")
+    await _refuse_foreign_personal_trigger(request, db, principal, trigger)
     await delete_trigger(db, trigger)

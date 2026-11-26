@@ -36,6 +36,7 @@ from oc8.authz.permissions import (
     CONNECTION_OWN,
     COPILOT_USE,
     DELEGATABLE_PERMISSIONS,
+    DEPARTMENT_OWN,
     DEPARTMENT_SCOPABLE,
     MANAGE,
     NEVER_DELEGATABLE,
@@ -134,6 +135,7 @@ def test_a_delegatable_permission_changes_no_configuration() -> None:
         AUDIT_VERIFY,
         COPILOT_USE,
         CONNECTION_OWN,
+        DEPARTMENT_OWN,
     }
     strange = sorted(
         p for p in DELEGATABLE_PERMISSIONS if not p.endswith(f":{VIEW}") and p not in verbs

@@ -78,6 +78,7 @@ from oc8.models.run import (
     RunCancellation,
     RunMessage,
     ToolInvocation,
+    ToolUsageCounter,
 )
 from oc8.models.run_input import RunInput
 from oc8.models.secrets import Secret, TenantDek
@@ -170,6 +171,7 @@ __all__ = [
     "TenantDek",
     "TokenUsageRecord",
     "ToolInvocation",
+    "ToolUsageCounter",
     "TotpCredential",
     "Trigger",
 ]

@@ -33,6 +33,7 @@ department and decides in none, which is two flags here and not one.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import uuid
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ from oc8.authz.permissions import (
     APPROVAL_DECIDE,
     APPROVAL_DECIDE_ANY,
     APPROVAL_VIEW_ANY,
+    PERSONAL_OWNER_PERMISSIONS,
     SEAT_APPROVER,
     SEAT_PERMISSIONS,
     SEAT_VIEWER,
@@ -57,13 +59,14 @@ from oc8.authz.permissions import (
 )
 from oc8.db.base import uuid7
 from oc8.models.channels import ApprovalChannelBinding
-from oc8.models.core import Department
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL, Department
 from oc8.models.identity import OrgMember, OrgMemberDepartment
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from oc8.auth.principal import Principal
+    from oc8.authz.authority import Authority
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +161,11 @@ class DepartmentScope:
     #: STRUCTURAL subset of `_departments` (see `_scope_from_seats`), not a
     #: coincidence of today's seat vocabulary.
     _agent_manage: frozenset[uuid.UUID]
+    #: The personal departments this person OWNS and holds a live seat in --
+    #: where `PERSONAL_OWNER_PERMISSIONS` apply (`owner_holds`). Ownership is
+    #: `department.owner_member_id`, never a seat role: any seat role can be
+    #: given out in a standard department, an owner exists only here.
+    _personal_owned: frozenset[uuid.UUID]
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         raise TypeError(
@@ -202,6 +210,11 @@ class DepartmentScope:
         here admitted him at `POST /approvals/{id}/decision` -- the one door the
         role exists to be kept away from.
         """
+        if permission in PERSONAL_OWNER_PERMISSIONS and self._personal_owned:
+            # The owner's seat in their personal department: admitted at the
+            # door, and narrowed behind it to `personal_owned` by the run
+            # reach or `holds_in_department` -- never anywhere else.
+            return True
         if permission not in _VIEW_LEVEL and permission not in _DECIDE_LEVEL:
             return False
         if permission in _DECIDE_LEVEL:
@@ -278,6 +291,46 @@ class DepartmentScope:
         is a SEPARATE check against `Authority.tenant_wide`, not this property."""
         return self._agent_manage
 
+    @property
+    def personal_owned(self) -> frozenset[uuid.UUID]:
+        """The personal departments this person owns and is seated in. Empty
+        for everybody else, unrestricted callers included: no tenant-wide
+        grant makes anybody the owner of somebody's personal department."""
+        return self._personal_owned
+
+    def owner_holds(self, permission: str, department_id: uuid.UUID | None) -> bool:
+        """Does the owner's seat carry `permission` in exactly this department?
+        True only for one of `PERSONAL_OWNER_PERMISSIONS` in a personal
+        department this person owns."""
+        if department_id is None:
+            return False
+        return department_id in self.owner_departments_for(permission)
+
+    def owner_departments_for(self, permission: str) -> frozenset[uuid.UUID]:
+        """Where the owner's seat carries `permission`: `personal_owned` for one
+        of `PERSONAL_OWNER_PERMISSIONS`, otherwise nowhere. The set a reach
+        built on `permission` (`agents.repo.run_reach`) adds to its own."""
+        if permission not in PERSONAL_OWNER_PERMISSIONS:
+            return frozenset()
+        return self._personal_owned
+
+
+def holds_in_department(
+    authority: Authority,
+    scope: DepartmentScope,
+    permission: str,
+    department_id: uuid.UUID | None,
+) -> bool:
+    """Does this caller hold `permission` for something in `department_id`?
+
+    Held tenant-wide, or carried by the owner's seat in that very personal
+    department (`DepartmentScope.owner_holds`). The per-resource question
+    behind a `require_departmental` door that may have admitted the caller on
+    the owner's seat alone (`holds_anywhere`): the door asks "anywhere", this
+    asks "here", and a route that admits on an owner permission must ask both.
+    """
+    return permission in authority.tenant_wide or scope.owner_holds(permission, department_id)
+
 
 def _resolved_scope(
     *,
@@ -286,6 +339,7 @@ def _resolved_scope(
     departments: frozenset[uuid.UUID],
     decide: frozenset[uuid.UUID],
     agent_manage: frozenset[uuid.UUID] = frozenset(),
+    personal_owned: frozenset[uuid.UUID] = frozenset(),
 ) -> DepartmentScope:
     """The only way a `DepartmentScope` comes into existence.
 
@@ -306,6 +360,7 @@ def _resolved_scope(
     object.__setattr__(scope, "_departments", departments)
     object.__setattr__(scope, "_decide", decide)
     object.__setattr__(scope, "_agent_manage", agent_manage)
+    object.__setattr__(scope, "_personal_owned", personal_owned)
     return scope
 
 
@@ -417,7 +472,11 @@ async def _member_by_subject(
 
 
 async def _upsert_member(
-    db: AsyncSession, tenant_id: uuid.UUID, subject: str, email: str | None = None
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    subject: str,
+    email: str | None = None,
+    token_role: str | None = None,
 ) -> OrgMember:
     """SELECT, then INSERT ... ON CONFLICT DO NOTHING, then SELECT again (§1).
 
@@ -442,6 +501,9 @@ async def _upsert_member(
     The token's `email` claim, when there is one, is copied onto the row only
     when it differs, so a returning person's request writes nothing and takes
     no row lock. It is display data and never part of the lookup.
+
+    The token's `role` claim is kept the same way (`last_token_role`): a run
+    with no token behind it reads it for this person (ruling U4).
     """
     existing = await _member_by_subject(db, tenant_id, subject)
     if existing is not None:
@@ -451,6 +513,9 @@ async def _upsert_member(
             from oc8.auth.second_factors import sign_in_address_changed
 
             await sign_in_address_changed(db, existing)
+        if token_role and existing.last_token_role != token_role:
+            existing.last_token_role = token_role
+            existing.last_token_role_at = dt.datetime.now(dt.UTC)
         return existing
 
     await db.execute(
@@ -461,6 +526,8 @@ async def _upsert_member(
             subject=subject,
             subject_uuid=subject_uuid_for(subject),
             email=email,
+            last_token_role=token_role or None,
+            last_token_role_at=dt.datetime.now(dt.UTC) if token_role else None,
         )
         # Untargeted on purpose: `org_member` carries TWO partial unique indexes
         # (subject and subject_uuid) and either can be the one that fires.
@@ -502,6 +569,8 @@ async def _scope_from_seats(
                 OrgMemberDepartment.department_id,
                 OrgMemberDepartment.seat_role,
                 OrgMemberDepartment.agent_manage,
+                Department.kind,
+                Department.owner_member_id,
             )
             # INNER, and on `deleted_at IS NULL`. There is no foreign key here --
             # a seat outlives an archived department on purpose, so the members
@@ -534,7 +603,8 @@ async def _scope_from_seats(
     departments: set[uuid.UUID] = set()
     decide: set[uuid.UUID] = set()
     agent_manage: set[uuid.UUID] = set()
-    for department_id, seat_role, may_manage in rows:
+    personal_owned: set[uuid.UUID] = set()
+    for department_id, seat_role, may_manage, kind, owner_member_id in rows:
         # Through `seat_permissions_for` rather than `seat_role == SEAT_APPROVER`:
         # the vocabulary is defined in exactly one place, and an unrecognised
         # seat_role (a future migration this code predates) carries nothing
@@ -553,6 +623,8 @@ async def _scope_from_seats(
             decide.add(department_id)
         if may_manage:
             agent_manage.add(department_id)
+        if kind == DEPARTMENT_KIND_PERSONAL and owner_member_id == member.id:
+            personal_owned.add(department_id)
 
     return _resolved_scope(
         unrestricted=unrestricted,
@@ -560,6 +632,7 @@ async def _scope_from_seats(
         departments=frozenset(departments),
         decide=frozenset(decide),
         agent_manage=frozenset(agent_manage),
+        personal_owned=frozenset(personal_owned),
     )
 
 
@@ -588,7 +661,7 @@ async def scope_for_principal(
 
     if upsert:
         member: OrgMember | None = await _upsert_member(
-            db, principal.tenant_id, principal.subject, principal.email
+            db, principal.tenant_id, principal.subject, principal.email, principal.role
         )
     else:
         member = await _member_by_subject(db, principal.tenant_id, principal.subject)

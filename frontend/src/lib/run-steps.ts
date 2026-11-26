@@ -22,7 +22,14 @@ export const RESULT_CAP = 300;
 
 const TERMINAL_RUN_STATES = ["done", "failed", "interrupted"];
 
-export type StepState = "running" | "done" | "failed" | "denied" | "awaiting_approval";
+export type StepState =
+  | "running"
+  | "done"
+  | "failed"
+  | "denied"
+  | "awaiting_approval"
+  // A held call a person approved that the resumed run did not carry out.
+  | "approved";
 
 export interface RunStepRow {
   /** Stable enough for a React key: position plus step plus tool. */
@@ -87,7 +94,8 @@ function rowState(call: Record<string, unknown>): StepState {
     recorded === "done" ||
     recorded === "failed" ||
     recorded === "denied" ||
-    recorded === "awaiting_approval"
+    recorded === "awaiting_approval" ||
+    recorded === "approved"
   ) {
     return recorded;
   }
@@ -113,14 +121,20 @@ function toRow(
   const connection = str(call.connection);
   const step = num(call.step);
   const result = str(call.result);
+  const state = rowState(call);
   return {
     key: `${index}-${step ?? "x"}-${tool}`,
     step,
     tool,
     connection,
     args,
-    label: label({ tool, arguments: args, connection }),
-    state: rowState(call),
+    label: label({
+      tool,
+      arguments: args,
+      connection,
+      awaitingApproval: state === "awaiting_approval",
+    }),
+    state,
     durationMs: num(call.durationMs) ?? (step !== null ? (wallByStep.get(step) ?? null) : null),
     result,
     resultShortened: (result?.length ?? 0) >= RESULT_CAP,

@@ -1221,7 +1221,7 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
         approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
         # Leg 3: a fresh leg for the same run, the approval still on record.
         await db.refresh(run)
-        assert run.context["waived_read_before_write"] == ["things\n" + approved]
+        assert [c["sig"] for c in run.context["consumed_tool_approvals"]] == [approved]
         # Leg 3's own script: its first call is the same write, unread.
         stream.script[:] = [
             _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
@@ -1324,7 +1324,7 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
     """The record was read, then the department's policy held the write: the
     person approves, then the department. Nothing runs before both; the
     resumed leg runs the write once without re-reading (the proof travelled
-    to the department's card); the next leg's unread repeat is refused."""
+    to the department's card); the next leg's repeat is asked again."""
     from oc8.agent.harness.calls import call_sig
 
     recorder = _RecordingServer(delay_s=0)
@@ -1363,7 +1363,7 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
         assert leg2.status == "done"
         assert [n for n, _s, _e in recorder.windows] == ["get_record", "update_record"]
         await db.refresh(run)
-        assert run.context["waived_read_before_write"] == ["things\n" + approved]
+        assert [c["sig"] for c in run.context["consumed_tool_approvals"]] == [approved]
         stream.script[:] = [
             _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
             *[_turn("done") for _ in range(8)],
@@ -1376,6 +1376,34 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
             run_id=run.id,
             pre_decided=pre,
         )
-    (entry3,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
-    assert "have not read" in str(entry3["result"])
+    # The approval covered leg 2's run, so the repeat is asked again --
+    # never run on it a second time.
+    assert leg3.status == "waiting_for_approval"
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
+
+
+async def test_a_direct_call_over_the_departments_usage_limit_is_refused(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Through a grant, the department's policy decides the call -- and its
+    usage limit counts it, against the Copilot."""
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="search_records", arguments={"q": "a"})),
+            _turn("", ToolCall(id="c2", name="search_records", arguments={"q": "b"})),
+            _turn("done"),
+        ],
+    )
+    tenant = uuid.uuid4()
+    limited = {**READ_WRITE, "limits": [{"tools": ["search_records"], "max": 1}]}
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant, policy=limited)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        result = await _run(db, office, agent, await chat_run(db, office))
+    assert [name for name, _s, _e in recorder.windows] == ["search_records"]
+    refused = [e for e in result.tool_calls if e["tool"] == "search_records"][1]
+    assert "Daily limit of 1 reached for search_records" in str(refused["result"])

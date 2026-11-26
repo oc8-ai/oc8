@@ -107,6 +107,53 @@ describe("agent header status pill", () => {
   });
 });
 
+// A personal agent read by someone else (`contentHidden`): its run list and
+// runs are the owner's (a 404), but which run it is on and where that run
+// stands is metadata the reader keeps (R2). The header starts from the
+// detail's `currentRunState` and follows "run.status" events, without asking
+// for a run.
+describe("agent header status pill, metadata only", () => {
+  beforeEach(() => {
+    listed = [summary("r1", "running")];
+    getMock.mockReset();
+    getMock.mockImplementation(route);
+  });
+
+  function renderHidden() {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={qc}>
+        <HeaderStatusPill
+          agentId="a1"
+          status="paused"
+          runId="r9"
+          metadataOnly
+          runState="waiting_for_approval"
+        />
+      </QueryClientProvider>,
+    );
+    return qc;
+  }
+
+  it("shows a hidden agent's waiting run without asking for its runs", async () => {
+    renderHidden();
+    expect(pill().textContent).toMatch(/waiting for approval/i);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const asked = getMock.mock.calls.map(([url]) => String(url));
+    expect(asked.filter((u) => u.startsWith("/agents/a1/runs") || u.startsWith("/runs/"))).toEqual(
+      [],
+    );
+  });
+
+  it("follows a later run.status event", async () => {
+    const qc = renderHidden();
+    act(() => applyEvent(qc, status("r9", "running")));
+    await waitFor(() => expect(pill().textContent).toBe("running"));
+    act(() => applyEvent(qc, status("r9", "done")));
+    await waitFor(() => expect(screen.getByText("paused")).toBeTruthy());
+  });
+});
+
 describe("run state colours", () => {
   it("are the same wherever a state is shown", () => {
     const expected: Record<string, string> = {

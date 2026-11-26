@@ -302,50 +302,200 @@ describe("GuardrailFunctionRules", () => {
     expect(onChange).toHaveBeenCalledWith(baseValue({ modify: false }));
   });
 
-  it("shows every predefined guardrail restricting the same function as its own row, not just the first", () => {
+  it("suggests each function once, however many presets restrict it (E2E F4)", () => {
+    const entry = (key: string, label: string, summary: string, only: string[]) => ({
+      key,
+      label,
+      labelTranslations: {},
+      summary,
+      summaryTranslations: {},
+      useCase: "cross_cutting",
+      read: true,
+      modify: true,
+      approvalEur: null,
+      approvalActions: [],
+      only,
+      adjustable: [],
+    });
     render(
       <GuardrailFunctionRules
         agentId="a1"
         connectionName="odoo"
-        toolCatalog={["post_message", "delete_record"]}
+        toolCatalog={["post_message", "delete_record", "move_record"]}
         value={baseValue()}
         onChange={vi.fn()}
         guardrailLibrary={[
+          entry("cross_never_deletes", "Never delete", "delete_record is never available.", [
+            "post_message",
+            "move_record",
+          ]),
+          entry("finance_no_deletions", "Finance", "Withheld for the audit trail.", [
+            "post_message",
+          ]),
+          entry("support", "Support", "Only replies.", ["post_message"]),
+        ]}
+      />,
+    );
+    expect(screen.getAllByText("Delete Record")).toHaveLength(1);
+    expect(screen.getAllByText("Move Record")).toHaveLength(1);
+    // The first preset that proposes it speaks for the row.
+    expect(screen.getByDisplayValue("delete_record is never available.")).toBeInTheDocument();
+  });
+
+  it("shows a suggestion as a proposal, never as the rule in force (E2E N5)", () => {
+    // The agent runs a preset that allows sending; another preset of the capa
+    // withholds it. That other preset is a suggestion only: the row must not
+    // read "Not allowed" as if it were the stored policy.
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_send", "mail_get"]}
+        value={baseValue({ only: ["mail_send", "mail_get"] })}
+        onChange={vi.fn()}
+        presets={[
           {
-            key: "cross_never_deletes",
-            label: "Never delete",
+            key: "read_only",
+            label: "Read only",
             labelTranslations: {},
-            summary: "delete_record is never available.",
+            summary: "Reads mail, sends nothing.",
             summaryTranslations: {},
-            useCase: "cross_cutting",
+            recommended: false,
             read: true,
             modify: true,
-            approvalEur: null,
             approvalActions: [],
-            only: ["post_message"],
-            adjustable: [],
-          },
-          {
-            key: "finance_no_deletions",
-            label: "Work finance, never delete",
-            labelTranslations: {},
-            summary: "delete_record is withheld for the audit trail.",
-            summaryTranslations: {},
-            useCase: "finance",
-            read: true,
-            modify: true,
             approvalEur: null,
-            approvalActions: [],
-            only: ["post_message"],
-            adjustable: [],
+            only: ["mail_get"],
+            limits: [],
           },
         ]}
       />,
     );
-    expect(screen.getByDisplayValue("delete_record is never available.")).toBeInTheDocument();
-    expect(
-      screen.getByDisplayValue("delete_record is withheld for the audit trail."),
-    ).toBeInTheDocument();
+    const row = screen.getByText("Mail Send").closest("tr")!;
+    expect(within(row).getByText("Suggestion: Not allowed")).toBeInTheDocument();
+    expect(within(row).getByText("Now: Self-sufficient")).toBeInTheDocument();
+    expect(within(row).getByRole("checkbox", { name: /modify/i })).toBeChecked();
+  });
+
+  it("applies a whole preset, its usage limit included (E2E F4)", () => {
+    const onChange = vi.fn();
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_get", "mail_send", "mail_delete"]}
+        value={baseValue()}
+        onChange={onChange}
+        presets={[
+          {
+            key: "send_with_approval",
+            label: "Send with approval",
+            labelTranslations: {},
+            summary: "Every mail waits for approval.",
+            summaryTranslations: {},
+            recommended: true,
+            read: true,
+            modify: true,
+            approvalActions: ["mail_send"],
+            approvalEur: null,
+            only: [],
+            limits: [],
+          },
+          {
+            key: "autonomous_with_limit",
+            label: "Autonomous, max 50 mails a day",
+            labelTranslations: { de: "Selbstständig, max. 50 Mails am Tag" },
+            summary: "Works on its own, up to 50 mails a day.",
+            summaryTranslations: {},
+            recommended: false,
+            read: true,
+            modify: true,
+            approvalActions: [],
+            approvalEur: null,
+            only: ["mail_get", "mail_send"],
+            limits: [{ tools: ["mail_send"], max: 50, per: "day" }],
+          },
+        ]}
+      />,
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: /apply a preset/i }), {
+      target: { value: "autonomous_with_limit" },
+    });
+    expect(onChange).toHaveBeenCalledWith(
+      baseValue({
+        only: ["mail_get", "mail_send"],
+        limits: [{ tools: ["mail_send"], max: 50, per: "day" }],
+      }),
+    );
+  });
+
+  it("warns which rules of a preset the department does not allow (review of F4)", () => {
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_get", "mail_send", "mail_delete"]}
+        value={baseValue()}
+        onChange={vi.fn()}
+        ceiling={baseValue({ approvalActions: ["mail_send"], only: ["mail_get", "mail_send"] })}
+        presets={[
+          {
+            key: "everything_unasked",
+            label: "Everything, unasked",
+            labelTranslations: {},
+            summary: "No approvals.",
+            summaryTranslations: {},
+            recommended: false,
+            read: true,
+            modify: true,
+            approvalActions: [],
+            approvalEur: null,
+            only: [],
+            limits: [],
+          },
+        ]}
+      />,
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: /apply a preset/i }), {
+      target: { value: "everything_unasked" },
+    });
+    const warning = screen.getByRole("alert");
+    expect(warning).toHaveTextContent(/looser than the department allows/i);
+    expect(warning).toHaveTextContent(/mail_send/);
+    expect(warning).toHaveTextContent(/functions the department does not offer/i);
+  });
+
+  it("does not warn when the preset stays within the department", () => {
+    render(
+      <GuardrailFunctionRules
+        agentId="a1"
+        connectionName="email"
+        toolCatalog={["mail_get", "mail_send"]}
+        value={baseValue()}
+        onChange={vi.fn()}
+        ceiling={baseValue()}
+        presets={[
+          {
+            key: "send_with_approval",
+            label: "Send with approval",
+            labelTranslations: {},
+            summary: "Every mail waits for approval.",
+            summaryTranslations: {},
+            recommended: true,
+            read: true,
+            modify: true,
+            approvalActions: ["mail_send"],
+            approvalEur: null,
+            only: [],
+            limits: [],
+          },
+        ]}
+      />,
+    );
+    fireEvent.change(screen.getByRole("combobox", { name: /apply a preset/i }), {
+      target: { value: "send_with_approval" },
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("dismisses a suggested row without touching the shared value", () => {

@@ -121,6 +121,7 @@ async def announce(
                 # tool call on every phone in the company before anybody decided
                 # anything.
                 department_id=approval.department_id,
+                action_type=approval.action_type,
             )
             sent: dict[str, str] = {}
             for person in people:
@@ -188,6 +189,7 @@ async def close_out(
                 tenant_id=approval.tenant_id,
                 channel=channel_id,
                 department_id=approval.department_id,
+                action_type=approval.action_type,
             )
             known = by_channel.get(channel_id) or {}
             for person in people:

@@ -18,6 +18,7 @@ function preferredPreset(connection: McpConnection): GuardrailValue | null {
       approvalEur: entry.approvalEur,
       only: entry.only,
       conditions: [],
+      limits: entry.limits ?? [],
     };
   }
   const recommended =
@@ -30,6 +31,7 @@ function preferredPreset(connection: McpConnection): GuardrailValue | null {
     approvalEur: recommended.approvalEur,
     only: recommended.only,
     conditions: [],
+    limits: recommended.limits ?? [],
   };
 }
 

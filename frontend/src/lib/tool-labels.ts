@@ -60,6 +60,8 @@ export interface LabelledCall {
   connection?: string | null;
   /** Ask for the present-participle form ("Looking up deals"). */
   running?: boolean;
+  /** Held for a person's approval: nothing has happened yet. */
+  awaitingApproval?: boolean;
 }
 
 /** Plugin data changes only when a plugin folder changes on disk, so this is
@@ -249,15 +251,28 @@ export function resolveToolLabel(
 
   const where = call.connection ?? "";
   if (where && catalogue) {
+    // A `{connection}` placeholder, filled after translation: a catalog
+    // holds the template, never one string per connection name.
+    const at = (text: string) => text.replaceAll("{connection}", where);
     if (catalogue.read.includes(call.tool)) {
-      return call.running
-        ? t(`Reading from ${where}`, `Liest aus ${where}`)
-        : t(`Read from ${where}`, `In ${where} nachgesehen`);
+      return at(
+        call.running
+          ? t("Reading from {connection}", "Liest aus {connection}")
+          : t("Read from {connection}", "In {connection} nachgesehen"),
+      );
     }
     if (catalogue.modify.includes(call.tool)) {
-      return call.running
-        ? t(`Changing something in ${where}`, `Ändert etwas in ${where}`)
-        : t(`Changed something in ${where}`, `Etwas in ${where} geändert`);
+      if (call.awaitingApproval) {
+        // Held for approval: saying it "changed" something would be untrue.
+        return at(
+          t("Wants to change something in {connection}", "Will etwas in {connection} ändern"),
+        );
+      }
+      return at(
+        call.running
+          ? t("Changing something in {connection}", "Ändert etwas in {connection}")
+          : t("Changed something in {connection}", "Etwas in {connection} geändert"),
+      );
     }
   }
 

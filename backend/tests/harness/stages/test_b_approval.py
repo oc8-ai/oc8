@@ -60,3 +60,18 @@ def test_preview_falls_back_to_neutral_question() -> None:
         )
         == "Allow records to run change_record on Customer #7?"
     )
+
+
+def test_preview_without_a_record_does_not_end_on_nothing() -> None:
+    """E2E F13: a send has no record, and the card asked "Allow email to run
+    mail_reply on ?"."""
+    assert (
+        render_preview(
+            tool="mail_reply",
+            connection="email",
+            arguments={"uid": 1},
+            template=None,
+            record="",
+        )
+        == "Allow email to run mail_reply?"
+    )

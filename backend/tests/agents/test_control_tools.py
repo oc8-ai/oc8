@@ -1843,6 +1843,8 @@ async def test_run_agent_publishes_a_rendered_component(
             published.append((type_, data))
 
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
 
     class _RendersThenStops:
         def __init__(self) -> None:
@@ -1924,6 +1926,8 @@ async def test_run_agent_publishes_todos(app_session: Any, monkeypatch: pytest.M
             published.append((type_, data))
 
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
 
     class _WritesTodoThenStops:
         def __init__(self) -> None:
@@ -1992,6 +1996,8 @@ async def test_run_agent_returns_rendered_components_durably(
             return None
 
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _NoopBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _NoopBus())
 
     class _RendersThenStops:
         def __init__(self) -> None:

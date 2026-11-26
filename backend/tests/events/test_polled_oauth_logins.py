@@ -566,3 +566,59 @@ async def test_the_list_is_read_from_the_logins_own_setup_only(
         own.config = {k: v for k, v in own.config.items() if k != "oauth_connection_id"}
     with pytest.raises(InvalidTriggerConfig, match="delegated_mailboxes"):
         await _trigger(app_session, polled, {"mailbox": "info@acme.test"})
+
+
+@pytest.mark.parametrize(
+    ("directory", "fresh"),
+    [
+        ("contoso.onmicrosoft.com", False),
+        (" Contoso.OnMicrosoft.com ", False),
+        ("fabrikam.onmicrosoft.com", True),
+    ],
+    ids=["same directory", "same directory, other spelling", "another directory"],
+)
+async def test_an_app_login_moved_to_another_directory_takes_a_fresh_baseline(
+    app_session: AppSessionFactory, directory: str, fresh: bool
+) -> None:
+    """An app-only login is kept by its app id; submitted again for another
+    directory, the same row now reaches other mailboxes."""
+    import httpx
+
+    from oc8.oauth import http as oauth_http
+    from oc8.oauth.provisioning import _provision_microsoft
+
+    polled = await oauth_polled_setup(
+        app_session,
+        provider="microsoft",
+        grant_type="client_credentials",
+        config=[{"key": "folder", "label": "Folder", "default": "in"}],
+    )
+    trigger_id = await _trigger(app_session, polled)
+    await poll_tick()
+    _, before = await _row(app_session, polled.tenant, trigger_id)
+    assert before.cursor is not None
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "login.microsoftonline.com" in str(request.url):
+            return httpx.Response(200, json={"access_token": "at1", "expires_in": 3600})
+        return httpx.Response(200, json={"value": []})
+
+    oauth_http.set_transport_override(httpx.MockTransport(handler))
+    try:
+        async with app_session(polled.tenant) as db:
+            conn = await db.get(m.OAuthConnection, polled.connection_id)
+            assert conn is not None
+            await _provision_microsoft(
+                db,
+                polled.tenant,
+                {
+                    "azure_tenant_id": directory,
+                    "client_id": conn.account_label,
+                    "client_secret": "rotated",
+                },
+            )
+    finally:
+        oauth_http.set_transport_override(None)
+
+    _, after = await _row(app_session, polled.tenant, trigger_id)
+    assert (after.cursor is None) is fresh

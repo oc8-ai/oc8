@@ -41,11 +41,7 @@ async def _seed_agent_with_narrowing(
         dept = m.Department(
             tenant_id=tenant,
             name="General",
-            frame={
-                "tools": {
-                    "odoo": {"enabled": True, "read": True, "modify": True}
-                }
-            },
+            frame={"tools": {"odoo": {"enabled": True, "read": True, "modify": True}}},
         )
         db.add(dept)
         await db.flush()
@@ -90,6 +86,7 @@ async def test_narrowing_tools_reflects_the_agents_own_stored_narrowing(
                 "only": None,
                 "connectionId": None,
                 "conditions": [],
+                "limits": [],
             }
 
 

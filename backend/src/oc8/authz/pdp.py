@@ -29,6 +29,9 @@ Frame / narrowing JSON shape (stored on ``department.frame`` / ``agent.narrowing
           "conditions": [  # generic "with limits" rules -- see `Condition` below
             {"attribute": "order_value", "datatype": "number", "operator": ">",
              "value": 5000, "then": "require_approval"}
+          ],
+          "limits": [  # usage limits -- see `UsageLimit` below
+            {"tools": ["mail_send", "mail_reply"], "max": 50, "per": "day"}
           ]
         }
       },
@@ -136,6 +139,86 @@ class Condition:
         }
 
 
+#: The windows a usage limit may count in: a UTC calendar day or a UTC clock
+#: hour. Calendar windows, not rolling ones, so "resets at 00:00 UTC" is a
+#: sentence the model and the admin can both act on.
+LIMIT_PERIODS = ("day", "hour")
+
+
+@dataclass(frozen=True)
+class UsageLimit:
+    """At most `max` calls of `tools` per `per` -- "50 mails a day". A call
+    counts once it reached the tool, even if the tool reported an error.
+
+    Counted per agent and connection (tool key), across all of the agent's
+    runs and tasks, by `oc8.agent.usage_limits`. This module only carries the
+    rule; the count needs the database and is taken at dispatch, after every
+    other gate has let the call through, so a refused or held call never
+    counts.
+
+    `tools` keeps its declared order for the sentence the model is told;
+    `key` is order-free so two levels limiting the same tools share a counter.
+    """
+
+    tools: tuple[str, ...]
+    max: int
+    per: str = "day"
+
+    @property
+    def key(self) -> str:
+        return "/".join(sorted(self.tools))
+
+    def covers(self, tool: str) -> bool:
+        return tool in self.tools
+
+    @classmethod
+    def from_json(cls, data: Mapping[str, Any]) -> UsageLimit:
+        if not isinstance(data, Mapping):
+            raise ValueError("a usage limit is an object with tools, max and per")
+        unknown = set(data) - {"tools", "max", "per"}
+        if unknown:
+            raise ValueError(f"a usage limit has no field(s) {sorted(unknown)}")
+        raw_tools = data.get("tools")
+        if not isinstance(raw_tools, (list, tuple)) or not raw_tools:
+            raise ValueError("a usage limit names at least one tool")
+        tools = tuple(dict.fromkeys(str(t) for t in raw_tools))
+        if any(not t for t in tools):
+            raise ValueError("a usage limit's tool names must not be empty")
+        raw_max = data.get("max")
+        if isinstance(raw_max, bool) or not isinstance(raw_max, int) or raw_max < 0:
+            raise ValueError("a usage limit's max is a whole number of at least 0")
+        per = str(data.get("per", "day"))
+        if per not in LIMIT_PERIODS:
+            raise ValueError(f"a usage limit counts per {' or '.join(LIMIT_PERIODS)}")
+        return cls(tools=tools, max=raw_max, per=per)
+
+    def to_json(self) -> dict[str, Any]:
+        return {"tools": list(self.tools), "max": self.max, "per": self.per}
+
+
+def _parse_limits(raw: Any) -> tuple[UsageLimit, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise ValueError("limits is a list of { tools, max, per }")
+    return tuple(UsageLimit.from_json(lim) for lim in raw)
+
+
+_CLOSED_LOGGED: set[str] = set()
+
+
+def _log_closed_once(raw: Any) -> None:
+    sig = repr(raw)
+    if sig in _CLOSED_LOGGED:
+        return
+    if len(_CLOSED_LOGGED) < 1000:
+        _CLOSED_LOGGED.add(sig)
+    logger.warning(
+        "a stored tool policy has a malformed usage limit %r; its tool is denied until it is fixed",
+        raw,
+    )
+
+
 @dataclass(frozen=True)
 class ToolPolicy:
     enabled: bool = False
@@ -177,15 +260,32 @@ class ToolPolicy:
     # design. Frame-level policies never set this (a department default has
     # no login of its own); only agent-level narrowing does.
     connection_id: str | None = None
+    #: Usage limits ("at most 50 mail_send a day") -- see `UsageLimit`. A
+    #: tighten-only field like `conditions`: `effective_tool_policies` unions a
+    #: frame's and a narrowing's limits, so an agent can add one but never
+    #: drop one its department set.
+    limits: tuple[UsageLimit, ...] = ()
 
     @classmethod
-    def from_json(cls, data: dict[str, Any] | None) -> ToolPolicy:
+    def from_json(cls, data: dict[str, Any] | None, *, strict: bool = False) -> ToolPolicy:
+        """The stored policy. A malformed usage limit raises with `strict`
+        (every write path: refuse it with a 422) and otherwise CLOSES this one
+        policy -- a disabled tool, logged once -- so a bad row already stored
+        denies its own tool key instead of failing every run that reads it."""
         if not data:
             return cls()
         raw_only = data.get("only")
         raw_actions = data.get("approval_actions")
         raw_conditions = data.get("conditions")
+        try:
+            limits = _parse_limits(data.get("limits"))
+        except ValueError:
+            if strict:
+                raise
+            _log_closed_once(data.get("limits"))
+            return cls()
         return cls(
+            limits=limits,
             enabled=bool(data.get("enabled", False)),
             read=bool(data.get("read", False)),
             modify=bool(data.get("modify", False)),
@@ -208,6 +308,7 @@ class ToolPolicy:
             "only": sorted(self.only) if self.only is not None else None,
             "connection_id": self.connection_id,
             "conditions": [c.to_json() for c in self.conditions],
+            "limits": [lim.to_json() for lim in self.limits],
         }
 
     def has_right(self, action: str) -> bool:
@@ -255,6 +356,20 @@ def _tools(frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return frame.get("tools", {}) if frame else {}
 
 
+def frame_is_closed(frame: dict[str, Any] | None) -> bool:
+    """A closed frame (a personal department's, `departments.personal.
+    personal_frame`) grants only the tools it lists: a narrowing key it lacks
+    is not an agent-exclusive grant, it grants nothing."""
+    return bool(frame) and (frame or {}).get("closed") is True
+
+
+def frame_allows_key(frame: dict[str, Any] | None, key: str) -> bool:
+    """Whether an agent's narrowing may take effect for `key` under this frame:
+    always, except on a closed frame that does not list it. The one rule the PDP
+    and the runtime's connection resolution share."""
+    return not frame_is_closed(frame) or key in _tools(frame or {})
+
+
 def effective_tool_policies(
     frame: dict[str, Any],
     narrowing: dict[str, Any],
@@ -266,7 +381,7 @@ def effective_tool_policies(
     The frame and the narrowing intersect: each can only tighten, never widen.
     A tool the frame withholds cannot be granted by the narrowing; a right the
     frame denies cannot be granted by the narrowing. The intersection is taken
-    rather than the union, for the same reason `_narrower_surface` gives.
+    rather than the union, for the same reason `narrower_surface` gives.
     """
     frame_tools = _tools(frame)
     narrow_tools = _tools(narrowing)
@@ -279,9 +394,9 @@ def effective_tool_policies(
             enabled=f.enabled and (no.enabled if no else True),
             read=f.read and (no.read if no else True),
             modify=f.modify and (no.modify if no else True),
-            approval_eur=_min_threshold(f.approval_eur, no.approval_eur if no else None),
+            approval_eur=min_threshold(f.approval_eur, no.approval_eur if no else None),
             approval_actions=f.approval_actions | (no.approval_actions if no else frozenset()),
-            only=_narrower_surface(f.only, no.only if no else None),
+            only=narrower_surface(f.only, no.only if no else None),
             # Narrowing-only, unlike every field above: a `connection_id` pin
             # is an AGENT-level login selection (Task 4/6, agent tool login
             # selection design) with no frame-level counterpart to intersect
@@ -294,14 +409,20 @@ def effective_tool_policies(
             # frame did -- so the effective rule set is everything either
             # level named, not just what both agree on.
             conditions=f.conditions + (no.conditions if no else ()),
+            # Union, like `conditions`: an agent may count tighter, never
+            # stop counting what its department counts.
+            limits=merge_limits(f.limits, no.limits if no else ()),
         )
     # Agent-exclusive grants: a narrowing key with no frame counterpart at
     # all. There is nothing to intersect against, so the narrowing term IS
     # the policy outright. `narrowing_within_frame` is what allows this key to
     # reach here in the first place (its `key not in frame_tools` branch no
     # longer flags it); this loop is where that grant actually takes effect.
+    # A CLOSED frame (a personal department's, `departments.personal.
+    # personal_frame`) has no such grants: a key it lacks grants nothing, so a
+    # pinned or drafted narrowing written before the frame tightened is inert.
     for key, raw in narrow_tools.items():
-        if key in frame_tools:
+        if key in frame_tools or not frame_allows_key(frame, key):
             continue
         exclusive = ToolPolicy.from_json(raw)
         out[key] = ToolPolicy(
@@ -313,11 +434,12 @@ def effective_tool_policies(
             only=exclusive.only,
             connection_id=exclusive.connection_id,
             conditions=exclusive.conditions,
+            limits=exclusive.limits,
         )
     return out
 
 
-def _narrower_surface(
+def narrower_surface(
     frame_only: frozenset[str] | None, narrow_only: frozenset[str] | None
 ) -> frozenset[str] | None:
     """An agent may only ever tighten the surface, never widen it.
@@ -333,7 +455,7 @@ def _narrower_surface(
     return frame_only & narrow_only
 
 
-def _min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
+def min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
     # A lower threshold is stricter; None means "no threshold" (least strict).
     if frame_eur is None:
         return narrow_eur
@@ -570,7 +692,9 @@ def narrowing_within_frame(
     for key, raw in _tools(narrowing).items():
         if key not in frame_tools:
             continue
-        n = ToolPolicy.from_json(raw)
+        # The narrowing being written is held to the strict parse; the stored
+        # frame is read as the runtime reads it.
+        n = ToolPolicy.from_json(raw, strict=True)
         f = ToolPolicy.from_json(frame_tools.get(key))
         if n.enabled and not f.enabled:
             violations.append(SubsetViolation(key, "tool disabled in department frame"))
@@ -585,6 +709,20 @@ def narrowing_within_frame(
             violations.append(SubsetViolation(key, "approval threshold higher (looser) than frame"))
         if f.approval_eur is not None and n.approval_eur is None:
             violations.append(SubsetViolation(key, "narrowing removes a frame approval threshold"))
+        # A narrowing may tighten a limit, never loosen it: the tighter max is
+        # the one counted (`merge_limits`), so a higher one here would show an
+        # admin a number nobody enforces.
+        frame_limits = {(lim.key, lim.per): lim for lim in f.limits}
+        for lim in n.limits:
+            ceiling = frame_limits.get((lim.key, lim.per))
+            if ceiling is not None and lim.max > ceiling.max:
+                violations.append(
+                    SubsetViolation(
+                        key,
+                        f"The department allows at most {ceiling.max} per {ceiling.per} "
+                        f"for {'/'.join(ceiling.tools)}",
+                    )
+                )
     return violations
 
 
@@ -698,6 +836,39 @@ def frame_denial(
             context=terms,
         )
     return None
+
+
+def merge_limits(*groups: tuple[UsageLimit, ...]) -> tuple[UsageLimit, ...]:
+    """The union of several policies' limits, one per counted window: the
+    same tools and period (in any order) is ONE counter, so it appears once,
+    with the tightest `max` -- a narrowing may tighten a frame's limit, never
+    loosen it, and repeating it must not count each call twice."""
+    merged: dict[tuple[str, str], UsageLimit] = {}
+    for group in groups:
+        for lim in group:
+            seen = merged.get((lim.key, lim.per))
+            if seen is None:
+                merged[(lim.key, lim.per)] = lim
+            elif lim.max < seen.max:
+                merged[(lim.key, lim.per)] = UsageLimit(tools=seen.tools, max=lim.max, per=seen.per)
+    return tuple(merged.values())
+
+
+def usage_limits_for(policy: ToolPolicy | None, tool: str) -> tuple[UsageLimit, ...]:
+    """The usage limits that count a call of `tool` under `policy`."""
+    if policy is None:
+        return ()
+    return merge_limits(tuple(lim for lim in policy.limits if lim.covers(tool)))
+
+
+def has_usage_limit(
+    policies: Mapping[str, ToolPolicy], *, connection_key: str | None, tool: str
+) -> bool:
+    """Whether a call is counted at all. A counted call is never prefetched in a
+    parallel read batch: the count is taken at dispatch, one call at a time."""
+    if connection_key is None:
+        return False
+    return bool(usage_limits_for(policies.get(connection_key), tool))
 
 
 def offers_tool(

@@ -14,8 +14,9 @@ Rules that hold everywhere:
 
 * **Encrypted only.** `ssl` (implicit TLS) or `starttls`. A server that does
   not offer STARTTLS is refused before any login is sent. Certificates are
-  verified against the system trust store, host name included
-  (`tls_context`).
+  verified against the system trust store (which `SSL_CERT_FILE` and
+  `SSL_CERT_DIR` may point elsewhere) plus the login's own CA certificate,
+  if it has one, host name included (`tls_context`). Never skipped.
 * **Only where it may go.** A server's name is resolved once and checked
   (`Guard`); the socket then goes only to the addresses checked, while TLS
   still checks the certificate against the name, so a second DNS answer
@@ -67,6 +68,7 @@ from email.utils import (
     getaddresses,
     make_msgid,
     parseaddr,
+    parsedate_to_datetime,
 )
 from html.parser import HTMLParser
 from typing import Any
@@ -94,8 +96,10 @@ POP3_SEEN_CAP = 5_000
 PROTOCOLS = ("imap", "pop3")
 SECURITY = ("ssl", "starttls")
 #: Marks everything this capa sends, so other systems' loop protection (and
-#: ours) recognises it.
-AUTO_SUBMITTED = "auto-replied"
+#: ours) recognises it (RFC 3834): a reply answers a mail, a new mail or a
+#: forward is generated.
+AUTO_REPLIED = "auto-replied"
+AUTO_GENERATED = "auto-generated"
 #: The bridge's allowlist for mail servers on internal addresses: networks
 #: (CIDR) and exact host names, comma-separated. Core passes `OC8_MCP_*`
 #: variables to the bridge; deriving this from core's own
@@ -120,6 +124,8 @@ ENV_FIELDS: dict[str, str] = {
     "MAIL_SMTP_PASSWORD": "smtp_password",
     "MAIL_FROM_ADDRESS": "from_address",
     "MAIL_FROM_NAME": "from_name",
+    "MAIL_SENT_FOLDER": "sent_folder",
+    "MAIL_CA_CERTIFICATE": "ca_certificate",
 }
 
 logger = logging.getLogger(__name__)
@@ -155,12 +161,46 @@ class NotOnPop3(MailError):
 Guard = Callable[[str], "str | Sequence[str]"]
 
 
-def tls_context(host: str) -> ssl.SSLContext:
-    """The TLS policy for every connection: the system trust store, host name
-    checked, TLS 1.2 at least. `host` is the server we are about to verify."""
+def tls_context(host: str, ca_certificate: str = "") -> ssl.SSLContext:
+    """The TLS policy for every connection: the system trust store (its
+    default paths, so `SSL_CERT_FILE`/`SSL_CERT_DIR` are honoured), plus the
+    login's own CA certificate (PEM) when it has one; host name checked, TLS
+    1.2 at least. `host` is the server we are about to verify."""
     context = ssl.create_default_context()
+    if ca_certificate:
+        context.load_verify_locations(cadata=ca_certificate)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     return context
+
+
+_PEM_CERT = re.compile(r"-----BEGIN CERTIFICATE-----(.*?)-----END CERTIFICATE-----", re.S)
+#: The most a login's CA certificate field may hold (a short chain).
+MAX_CA_CERTIFICATE = 64 * 1024
+
+
+def ca_certificate_pem(value: str) -> str:
+    """The login's CA certificate field as PEM, its line breaks restored (a
+    one-line form field drops them), checked to load. Empty for empty.
+    Raises `MailError` for anything that is not one or more certificates."""
+    value = value.strip()
+    if not value:
+        return ""
+    bodies = _PEM_CERT.findall(value) if len(value) <= MAX_CA_CERTIFICATE else []
+    pem = ""
+    for body in bodies:
+        b64 = "".join(body.split())
+        lines = "\n".join(b64[i : i + 64] for i in range(0, len(b64), 64))
+        pem += f"-----BEGIN CERTIFICATE-----\n{lines}\n-----END CERTIFICATE-----\n"
+    try:
+        if not pem:
+            raise ValueError
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=pem)
+    except (ValueError, ssl.SSLError):
+        raise MailError(
+            "The CA certificate must be one or more PEM certificates "
+            "(-----BEGIN CERTIFICATE----- ...)."
+        ) from None
+    return pem
 
 
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
@@ -341,6 +381,11 @@ class Account:
     smtp_password: str
     from_address: str
     from_name: str
+    #: Where sent mail is kept (IMAP); empty means found by SPECIAL-USE or name.
+    sent_folder: str = ""
+    #: The organisation's own CA (PEM) the servers' certificates come from,
+    #: trusted besides the system trust store; empty for none.
+    ca_certificate: str = ""
 
     def __repr__(self) -> str:
         return f"Account({self.username!r} at {self.incoming_host!r})"
@@ -400,6 +445,8 @@ class Account:
             smtp_password=str(values.get("smtp_password") or "") or password,
             from_address=from_address,
             from_name=_one_line(get("from_name")),
+            sent_folder=_one_line(get("sent_folder"), 200),
+            ca_certificate=ca_certificate_pem(get("ca_certificate")),
         )
 
 
@@ -900,6 +947,15 @@ def parse_headers(raw: bytes) -> EmailMessage:
     return msg
 
 
+#: `skip_reason` -> what the trigger shows for it (`PollResult.skipped`).
+SKIP_TEXT: dict[str, str] = {
+    "own address": "mail sent from this mailbox",
+    "auto-submitted": "automatic mail (Auto-Submitted)",
+    "bulk": "bulk or list mail",
+    "delivery report": "delivery report",
+}
+
+
 def skip_reason(msg: EmailMessage, account: Account) -> str | None:
     """Why the poller must not start the agent for this mail (loop
     protection), or None. Mail from the mailbox itself, automatic mail
@@ -1034,7 +1090,7 @@ def imap_session(account: Account, guard: Guard | None = None) -> Iterator[imapl
     host, port = account.incoming_host, account.incoming_port
     addresses = _vet(host, guard)
     try:
-        context = tls_context(host)
+        context = tls_context(host, account.ca_certificate)
         conn: imaplib.IMAP4
         if account.incoming_security == "ssl":
             conn = _PinnedImapSsl(host, port, addresses, context)
@@ -1227,7 +1283,11 @@ def _imap_search(
 
 def _list_folders(account: Account, guard: Guard | None) -> list[dict[str, Any]]:
     with imap_session(account, guard) as conn:
-        data = _ok(*conn.list(), "The server refused to list folders.")
+        return _folders(conn)
+
+
+def _folders(conn: imaplib.IMAP4) -> list[dict[str, Any]]:
+    data = _ok(*conn.list(), "The server refused to list folders.")
     out: list[dict[str, Any]] = []
     pattern = re.compile(r'^\((?P<flags>[^)]*)\) (?P<delim>"(?:[^"\\]|\\.)*"|NIL) (?P<name>.*)$')
     pending: str | None = None
@@ -1259,6 +1319,36 @@ def _list_folders(account: Account, guard: Guard | None) -> list[dict[str, Any]]
 
 _SPECIAL_USE = {"\\all", "\\archive", "\\drafts", "\\flagged", "\\junk", "\\sent", "\\trash"}
 
+#: What a Sent folder is called where the server does not mark it (RFC 6154
+#: SPECIAL-USE), compared without case: the common English names, Dovecot's
+#: and Courier's INBOX-prefixed ones, and the German ones.
+_SENT_NAMES = (
+    "sent",
+    "sent items",
+    "sent messages",
+    "sent mail",
+    "inbox.sent",
+    "inbox/sent",
+    "inbox.sent items",
+    "inbox.sent messages",
+    "gesendet",
+    "gesendete elemente",
+    "gesendete objekte",
+)
+
+
+def sent_folder_of(folders: Sequence[Mapping[str, Any]]) -> str | None:
+    """The mailbox's Sent folder: the one marked \\Sent, else the first with
+    a common Sent name, else None."""
+    for folder in folders:
+        if any(str(f).lower() == "\\sent" for f in folder.get("special_use") or []):
+            return str(folder["name"])
+    by_name = {str(f["name"]).lower(): str(f["name"]) for f in folders}
+    for name in _SENT_NAMES:
+        if name in by_name:
+            return by_name[name]
+    return None
+
 
 # --- POP3 ---------------------------------------------------------------------
 
@@ -1271,7 +1361,7 @@ def pop3_session(account: Account, guard: Guard | None = None) -> Iterator[popli
     host, port = account.incoming_host, account.incoming_port
     addresses = _vet(host, guard)
     try:
-        context = tls_context(host)
+        context = tls_context(host, account.ca_certificate)
         conn: poplib.POP3
         if account.incoming_security == "ssl":
             conn = _PinnedPop3Ssl(host, port, addresses, context)
@@ -1544,7 +1634,8 @@ def get(account: Account, mail_id: str, *, guard: Guard | None = None) -> dict[s
 def get_attachment(
     account: Account, mail_id: str, attachment_id: str, *, guard: Guard | None = None
 ) -> dict[str, Any]:
-    """One attachment's content: as text for a text type, else base64."""
+    """One attachment: its details, its bytes (`data`), and for a text type
+    also its text, cut like a mail's (`text`, `text_truncated`)."""
     raw, _, _ = _with_message(account, guard, mail_id)
     msg = parse(raw)
     parts = _attachment_parts(msg)
@@ -1571,16 +1662,16 @@ def get_attachment(
         "name": _attachment_name(part, index),
         "type": mime,
         "size": len(data),
+        "data": data,
     }
     if part.get_content_maintype() == "text" or mime in _TEXT_TYPES:
-        # The whole attachment, which is capped by MAX_ATTACHMENT_BYTES, but
-        # only with a real text encoding.
+        # Only with a real text encoding; the whole file travels as `data`.
         try:
             content = data.decode(_codec(part.get_content_charset()), "replace")
         except (UnicodeError, LookupError, ValueError):
             content = data.decode("utf-8", "replace")
-        return {**result, "encoding": "text", "content": content}
-    return {**result, "encoding": "base64", "content": base64.b64encode(data).decode()}
+        result["text"], result["text_truncated"] = truncate(content)
+    return result
 
 
 def _need_imap(account: Account, what: str) -> None:
@@ -1703,7 +1794,7 @@ def smtp_session(account: Account, guard: Guard | None = None) -> Iterator[smtpl
     host, port = account.smtp_host, account.smtp_port
     addresses = _vet(host, guard)
     try:
-        context = tls_context(host)
+        context = tls_context(host, account.ca_certificate)
         conn: smtplib.SMTP
         if account.smtp_security == "ssl":
             conn = _PinnedSmtpSsl(host, port, addresses, context)
@@ -1793,33 +1884,44 @@ _MEDIA_TYPE = re.compile(
 )
 
 
-def _attachment_data(items: Sequence[Mapping[str, Any]] | None) -> list[tuple[str, str, bytes]]:
-    """`(name, type, bytes)` for each attachment the agent passes: `name`
-    plus either `text` or `content_base64`, optionally `type`."""
+def _attachment_data(
+    items: Sequence[Mapping[str, Any]] | None,
+) -> list[tuple[str, str, bytes]]:
+    """`(name, type, bytes)` for each attachment the agent passes: a run file
+    (`file`, which core has already turned into the file itself), or `name`
+    plus `text` or `content_base64`; `type` is optional either way."""
     out: list[tuple[str, str, bytes]] = []
     total = 0
     for item in items or []:
         if not isinstance(item, Mapping):
-            raise MailError("Each attachment needs a name and text or content_base64.")
-        name = _one_line(str(item.get("name") or ""), 200).replace("/", "_").replace("\\", "_")
+            raise MailError("Each attachment needs a file, or a name and text or content_base64.")
+        file = item.get("file")
+        if file is not None and not isinstance(file, Mapping):
+            raise MailError(
+                "An attachment's `file` is a file id that oc8 turns into the file; "
+                "this one reached the mail tool unresolved."
+            )
+        given_name = item.get("name") or (file or {}).get("name") or ""
+        name = _one_line(str(given_name), 200).replace("/", "_").replace("\\", "_")
         if not name:
             raise MailError("Each attachment needs a name.")
-        if isinstance(item.get("text"), str):
+        encoded = (file or {}).get("content_base64", item.get("content_base64"))
+        if file is None and isinstance(item.get("text"), str):
             data = item["text"].encode("utf-8")
-        elif isinstance(item.get("content_base64"), str):
+        elif isinstance(encoded, str):
             try:
-                data = base64.b64decode(item["content_base64"], validate=True)
+                data = base64.b64decode(encoded, validate=True)
             except (binascii.Error, ValueError):
                 raise MailError(f"The content of {name!r} is not valid base64.") from None
         else:
-            raise MailError(f"The attachment {name!r} needs text or content_base64.")
+            raise MailError(f"The attachment {name!r} needs a file, text or content_base64.")
         total += len(data)
         if len(data) > MAX_ATTACHMENT_BYTES or total > MAX_ATTACHMENT_BYTES:
             raise MailError(
                 f"Attachments may be at most {_size(MAX_ATTACHMENT_BYTES)} together; "
                 f"{name!r} goes over that."
             )
-        given = item.get("type")
+        given = item.get("type") or (file or {}).get("mime_type")
         if given not in (None, "") and not (
             isinstance(given, str) and _MEDIA_TYPE.fullmatch(given)
         ):
@@ -1837,6 +1939,7 @@ def _new_message(
     *,
     in_reply_to: str = "",
     references: str = "",
+    auto_submitted: str = AUTO_GENERATED,
 ) -> EmailMessage:
     if "\r" in subject or "\n" in subject:
         raise MailError("The subject contains a line break.")
@@ -1857,7 +1960,7 @@ def _new_message(
         msg["In-Reply-To"] = in_reply_to
     if references:
         msg["References"] = references
-    msg["Auto-Submitted"] = AUTO_SUBMITTED
+    msg["Auto-Submitted"] = auto_submitted
     msg.set_content(body or "")
     return msg
 
@@ -1873,11 +1976,72 @@ def _deliver(
 ) -> dict[str, Any]:
     with smtp_session(account, guard) as conn:
         conn.send_message(msg, from_addr=account.from_address, to_addrs=recipients.everyone)
-    return {
+    result: dict[str, Any] = {
         "status": "sent",
         "message_id": str(msg["Message-ID"]),
         "recipients": len(recipients.everyone),
     }
+    folder, note = _keep_sent(account, guard, msg, recipients.bcc)
+    if folder:
+        result["sent_folder"] = folder
+    if note:
+        result["note"] = note
+    return result
+
+
+#: `sent_folder` set to this keeps no copy at all.
+NO_SENT_COPY = "-"
+#: The note on a sent mail when the mailbox has no folder for its copy.
+NO_SENT_FOLDER_NOTE = "No Sent folder found; no copy kept. Set sent_folder on the login."
+#: SMTP hosts whose provider files every mail it sends in Sent itself
+#: (Gmail, Microsoft 365, Outlook.com): a copy of ours would be a second one.
+AUTO_SAVING_SMTP_HOSTS = frozenset(
+    {"smtp.gmail.com", "smtp.googlemail.com", "smtp.office365.com", "smtp-mail.outlook.com"}
+)
+#: Seconds any one step of keeping the copy may take once connected: the
+#: mail is already sent, and the agent should not wait long for a copy.
+SENT_COPY_TIMEOUT_SECONDS = 10.0
+
+
+def _keep_sent(
+    account: Account, guard: Guard | None, msg: EmailMessage, bcc: Sequence[str]
+) -> tuple[str | None, str]:
+    """Put a sent mail in the Sent folder, marked read, as a mail program
+    does: SMTP alone keeps no copy. `(folder, "")` when it was kept, `(None,
+    "")` when there is nowhere to keep it (POP3, the copy turned off, a
+    provider that keeps one itself), `(None, note)` when the mailbox has no
+    Sent folder or keeping it failed. Never raises: the mail is already sent.
+
+    The copy names the Bcc recipients, as a mail program's does; the mail
+    that went out never carries them."""
+    if account.incoming_protocol != "imap" or account.sent_folder == NO_SENT_COPY:
+        return None, ""
+    if account.smtp_host.strip().rstrip(".").lower() in AUTO_SAVING_SMTP_HOSTS:
+        return None, ""
+    copy = msg
+    if bcc:
+        copy = email.message_from_bytes(msg.as_bytes(), policy=email.policy.default)
+        copy["Bcc"] = ", ".join(bcc)
+    folder: str | None = account.sent_folder or None
+    try:
+        with imap_session(account, guard) as conn:
+            conn.sock.settimeout(SENT_COPY_TIMEOUT_SECONDS)
+            folder = folder or sent_folder_of(_folders(conn))
+            if folder is None:
+                return None, NO_SENT_FOLDER_NOTE
+            typ, _ = conn.append(
+                _folder_arg(folder),
+                "(\\Seen)",
+                imaplib.Time2Internaldate(time.time()),
+                copy.as_bytes(),
+            )
+    except Exception as exc:
+        logger.info("keeping a sent mail failed: %s", type(exc).__name__)
+        typ = "NO"
+    if typ != "OK":
+        where = f"the folder {folder!r}" if folder else "the Sent folder"
+        return None, f"The mail was sent, but no copy could be kept in {where}."
+    return folder, ""
 
 
 def send(
@@ -1914,6 +2078,13 @@ def _references(previous: str, message_id: str) -> str:
     if len(ids) > _REFERENCES_KEPT + 1:
         ids = [ids[0], *ids[-_REFERENCES_KEPT:]]
     return " ".join(ids)
+
+
+def _parses_as_date(value: str) -> bool:
+    try:
+        return bool(value) and parsedate_to_datetime(value) is not None
+    except (TypeError, ValueError, IndexError):
+        return False
 
 
 def _prefixed(prefix: str, subject: str) -> str:
@@ -1959,7 +2130,9 @@ def reply(
     references = _references(_header(original, "References", limit=20_000), message_id)
     quoted, _ = truncate(body_text(original))
     quote_lines = "\n".join(f"> {line}" if line else ">" for line in quoted.splitlines())
-    header = f"On {_header(original, 'Date')}, {_header(original, 'From')} wrote:"
+    header = f"{_header(original, 'From')} wrote:"
+    if _parses_as_date(_header(original, "Date")):
+        header = f"On {_header(original, 'Date')}, {header}"
     msg = _new_message(
         account,
         recipients,
@@ -1967,11 +2140,12 @@ def reply(
         f"{body}\n\n{header}\n{quote_lines}\n",
         in_reply_to=message_id,
         references=references,
+        auto_submitted=AUTO_REPLIED,
     )
     _attach(msg, _attachment_data(attachments))
     result = _deliver(account, guard, msg, recipients)
     if note:
-        result["note"] = note
+        result["note"] = " ".join(n for n in (note, result.get("note")) if n)
     return result
 
 
@@ -2009,16 +2183,26 @@ def forward(
     to: Sequence[str],
     body: str = "",
     cc: Sequence[str] | None = None,
+    attachments: Sequence[Mapping[str, Any]] | None = None,
     guard: Guard | None = None,
 ) -> dict[str, Any]:
-    """Send a mail on, attached whole (message/rfc822) below `body`."""
+    """Send a mail on, attached whole (message/rfc822) below `body`, with any
+    further `attachments` after it."""
     recipients = _recipients(to, cc, None)
+    files = _attachment_data(attachments)
     raw, _, _ = _with_message(account, guard, mail_id)
     if len(raw) > MAX_ATTACHMENT_BYTES:
         raise MailError(f"This mail is {_size(len(raw))}, too large to forward.")
+    extra = sum(len(data) for _, _, data in files)
+    if len(raw) + extra > MAX_ATTACHMENT_BYTES:
+        raise MailError(
+            f"The forwarded mail ({_size(len(raw))}) and the further attachments "
+            f"({_size(extra)}) may be at most {_size(MAX_ATTACHMENT_BYTES)} together."
+        )
     original = parse(raw)
     msg = _new_message(account, recipients, _prefixed("Fwd:", _header(original, "Subject")), body)
     msg.add_attachment(original)
+    _attach(msg, files)
     return _deliver(account, guard, msg, recipients)
 
 
@@ -2062,6 +2246,7 @@ def poll(
     cursor: Mapping[str, Any] | None,
     limit: int,
     guard: Guard | None = None,
+    skipped: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """`(next_cursor, events)` for the new mail, at most `limit`, oldest
     first; each event is `{delivery_id, payload, summary}` (`mail_event`). A
@@ -2082,9 +2267,9 @@ def poll(
     # last one ran out of time before its first mail (see `_out_of_time`).
     starved = isinstance(cursor, Mapping) and cursor.get("starved") is True
     if account.incoming_protocol == "pop3":
-        return _poll_pop3(account, cursor, limit, guard, deadline, starved)
+        return _poll_pop3(account, cursor, limit, guard, deadline, starved, skipped)
     folder = canonical_folder(folder or "INBOX")
-    return _poll_imap(account, folder, cursor, limit, guard, deadline, starved)
+    return _poll_imap(account, folder, cursor, limit, guard, deadline, starved, skipped)
 
 
 def _out_of_time(deadline: float, done: int, starved: bool) -> bool:
@@ -2110,6 +2295,7 @@ def _poll_imap(
     guard: Guard | None,
     deadline: float,
     starved: bool,
+    skipped: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with imap_session(account, guard) as conn:
         uidvalidity = _select(conn, folder)
@@ -2133,7 +2319,7 @@ def _poll_imap(
             if _out_of_time(deadline, count, starved):
                 break
             fetched = _imap_event_mail(conn, ImapId(folder, uidvalidity, uid))
-            if fetched is not None and (event := _safe_event(fetched, account)) is not None:
+            if fetched is not None and (event := _safe_event(fetched, account, skipped)):
                 events.append(event)
             done, count = uid, count + 1
         next_cursor: dict[str, Any] = {
@@ -2232,6 +2418,7 @@ def _poll_pop3(
     guard: Guard | None,
     deadline: float,
     starved: bool,
+    skipped: list[str] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     with pop3_session(account, guard) as conn:
         listing = _pop3_listing(conn)
@@ -2249,7 +2436,7 @@ def _poll_pop3(
             complete = size <= MAX_EVENT_FETCH_BYTES
             raw = _pop3_raw(conn, number, headers_only=not complete)
             fetched = Fetched(uidl, None, raw, size, complete=complete)
-            if (event := _safe_event(fetched, account)) is not None:
+            if (event := _safe_event(fetched, account, skipped)) is not None:
                 events.append(event)
             done += 1
         if done < len(new):
@@ -2262,12 +2449,15 @@ def _poll_pop3(
 # --- the event ------------------------------------------------------------------
 
 
-def _safe_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+def _safe_event(
+    fetched: Fetched, account: Account, skipped: list[str] | None = None
+) -> dict[str, Any] | None:
     """`mail_event`, and when that fails for any reason, an event from the
     headers alone; when even those cannot be read, none. Never raises, so
-    one bad mail cannot hold up the mail after it."""
+    one bad mail cannot hold up the mail after it. A mail loop protection
+    skips adds why to `skipped`."""
     try:
-        return mail_event(fetched, account)
+        return mail_event(fetched, account, skipped)
     except Exception as exc:
         # The class name and our id only: the error text may quote the mail.
         logger.warning(
@@ -2276,15 +2466,18 @@ def _safe_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
             type(exc).__name__,
         )
     try:
-        return _header_event(fetched, account)
+        return _header_event(fetched, account, skipped)
     except Exception:
         return None
 
 
-def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+def mail_event(
+    fetched: Fetched, account: Account, skipped: list[str] | None = None
+) -> dict[str, Any] | None:
     """`{delivery_id, payload, summary}` for a new mail, or None when loop
-    protection skips it. The delivery id is the mailbox's own id for the
-    mail, never its Message-ID, which the sender chooses."""
+    protection skips it (and why is added to `skipped`). The delivery id is
+    the mailbox's own id for the mail, never its Message-ID, which the sender
+    chooses."""
     if fetched.complete:
         msg = parse(fetched.raw)
         text = body_text(msg)
@@ -2304,7 +2497,7 @@ def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
                 f"(This mail is {_size(fetched.size)}; only the start of its text was read, "
                 "and the attachment sizes are estimates. Open it with mail_get.)"
             ]
-    if skip_reason(msg, account):
+    if _skipped(msg, account, skipped):
         return None
     payload = _payload(fetched, msg, listed)
     return {
@@ -2314,9 +2507,18 @@ def mail_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
     }
 
 
-def _header_event(fetched: Fetched, account: Account) -> dict[str, Any] | None:
+def _skipped(msg: EmailMessage, account: Account, skipped: list[str] | None) -> bool:
+    reason = skip_reason(msg, account)
+    if reason is not None and skipped is not None:
+        skipped.append(SKIP_TEXT.get(reason, reason))
+    return reason is not None
+
+
+def _header_event(
+    fetched: Fetched, account: Account, skipped: list[str] | None = None
+) -> dict[str, Any] | None:
     msg = parse_headers(fetched.raw)
-    if skip_reason(msg, account):
+    if _skipped(msg, account, skipped):
         return None
     payload = _payload(fetched, msg, [])
     note = (
