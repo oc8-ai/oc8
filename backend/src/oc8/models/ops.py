@@ -266,7 +266,15 @@ class TokenUsageRecord(Base, PkMixin, TenantMixin):
     creator_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     skill_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     skill_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: The org_member the call was made for (migration 0139); NULL for rows
+    #: before it and for calls made for nobody. No foreign key: usage records
+    #: are immutable and must survive the member's deletion.
+    member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     request_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True)
+
+    __table_args__ = (
+        Index("ix_token_usage_record_tenant_member_ts", "tenant_id", "member_id", "ts"),
+    )
 
 
 class Budget(Base, PkMixin, TenantMixin, TimestampMixin):
