@@ -2267,6 +2267,37 @@ export function useUsage(
   });
 }
 
+export type UsageRange = "24h" | "7d" | "30d";
+
+/** One stacked series of GET /usage/timeseries: a member, everyone beyond
+ *  the top ten (`others`), or usage no person is attached to (`none`). */
+export interface UsageSeriesDTO {
+  key: string;
+  memberId: string | null;
+  /** null when the member row is gone or has no display name. */
+  name: string | null;
+  total: number;
+  /** points[i] belongs to buckets[i]. */
+  points: number[];
+}
+
+export interface UsageTimeseriesDTO {
+  range: UsageRange;
+  bucket: "hour" | "day";
+  /** Organisation time zone the bucket boundaries are cut in. */
+  timezone: string;
+  /** ISO start of each bucket; the count varies across a DST switch. */
+  buckets: string[];
+  series: UsageSeriesDTO[];
+}
+
+export function useUsageTimeseries(range: UsageRange) {
+  return useQuery({
+    queryKey: ["usage-timeseries", range],
+    queryFn: () => api.get<UsageTimeseriesDTO>(`/usage/timeseries?range=${range}`),
+  });
+}
+
 export interface BudgetDTO {
   id: string;
   departmentId: string | null;

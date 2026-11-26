@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   Building2,
   Bell,
@@ -15,9 +16,18 @@ import {
   Trash2,
   Sparkles,
   Users,
+  UserRound,
   Wallet,
 } from "lucide-react";
 import { Panel } from "@/components/app-shell";
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import type { Agent, Department } from "@/lib/mock-data";
 import {
   convert,
@@ -33,7 +43,7 @@ import {
   type LimitAction,
 } from "@/lib/costs";
 import { cn } from "@/lib/utils";
-import { useT } from "@/lib/i18n";
+import { useLang, useT } from "@/lib/i18n";
 import {
   useAgents,
   useBudgets,
@@ -42,9 +52,12 @@ import {
   useSecrets,
   useSetBudget,
   useUsage,
+  useUsageTimeseries,
   type BudgetDTO,
   type UsageDTO,
   type UsagePeriod,
+  type UsageRange,
+  type UsageSeriesDTO,
 } from "@/lib/hooks";
 import { useReconciliation, useRefreshReconciliation } from "@/lib/reconciliation-hooks";
 import { downloadUsageExport } from "@/lib/usage-export";
@@ -53,7 +66,7 @@ export const Route = createFileRoute("/costs")({
   component: CostsPage,
 });
 
-type Tab = "overview" | "agents" | "departments" | "limits";
+type Tab = "overview" | "agents" | "departments" | "members" | "limits";
 type Currency = "EUR" | "USD";
 
 // Real per-agent / per-department spend, derived from the platform's metered
@@ -183,6 +196,7 @@ function CostsPage() {
     { id: "overview", label: t("Overview", "Übersicht"), icon: Coins },
     { id: "agents", label: t("By Agent", "Pro Agent"), icon: Users },
     { id: "departments", label: t("By Department", "Pro Abteilung"), icon: Building2 },
+    { id: "members", label: t("Per employee", "Pro Mitarbeiter"), icon: UserRound },
     { id: "limits", label: t("Limits", "Limits"), icon: ShieldAlert },
   ];
 
@@ -341,6 +355,7 @@ function CostsPage() {
       {tab === "departments" && (
         <DeptTab deptRows={deptRows} agentRows={agentRows} currency={currency} />
       )}
+      {tab === "members" && <MembersTab />}
       {tab === "limits" && <LimitsTab currency={currency} />}
     </div>
   );
@@ -750,6 +765,217 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
           })}
         </div>
       )}
+    </Panel>
+  );
+}
+
+/** Who spent the tokens over time: one stacked area per person (top ten,
+ *  then everyone else, then usage no person is attached to), bucketed in
+ *  the organisation's time zone, plus the range totals per person. */
+export function MembersTab() {
+  const t = useT();
+  const { lang } = useLang();
+  const [range, setRange] = useState<UsageRange>("7d");
+  const { data, isLoading, isError } = useUsageTimeseries(range);
+
+  const rangeOptions: { id: UsageRange; label: string }[] = [
+    { id: "24h", label: t("24 h", "24 h") },
+    { id: "7d", label: t("7 days", "7 Tage") },
+    { id: "30d", label: t("30 days", "30 Tage") },
+  ];
+
+  const seriesLabel = (s: UsageSeriesDTO) => {
+    if (s.key === "none") return t("No person", "Ohne Person");
+    if (s.key === "others") return t("Others", "Andere");
+    return s.name || t("Unknown person", "Unbekannte Person");
+  };
+
+  // Recharts data keys stay positional (`s0`, `s1`, ...) so a member uuid
+  // never has to double as a CSS variable or property path.
+  const series = (data?.series ?? []).map((s, i) => ({
+    dataKey: `s${i}`,
+    label: seriesLabel(s),
+    total: s.total,
+    points: s.points,
+    // Only five palette tokens exist; the next rounds of the cycle fade so
+    // twelve stacked areas stay tellable apart.
+    color: `var(--chart-${(i % 5) + 1})`,
+    fillOpacity: [0.6, 0.35, 0.15][Math.floor(i / 5)] ?? 0.15,
+  }));
+
+  const chartConfig: ChartConfig = Object.fromEntries(
+    series.map((s) => [s.dataKey, { label: s.label, color: s.color }]),
+  );
+
+  const buckets = data?.buckets ?? [];
+  const chartRows = buckets.map((bucket, i) => ({
+    bucket,
+    ...Object.fromEntries(series.map((s) => [s.dataKey, s.points[i] ?? 0])),
+  }));
+
+  const timeZone = data?.timezone;
+  const hourly = data?.bucket === "hour";
+  const tickFormat = new Intl.DateTimeFormat(
+    lang,
+    hourly
+      ? range === "24h"
+        ? { hour: "2-digit", minute: "2-digit", timeZone }
+        : { weekday: "short", hour: "2-digit", timeZone }
+      : { day: "2-digit", month: "2-digit", timeZone },
+  );
+  const tooltipFormat = new Intl.DateTimeFormat(
+    lang,
+    hourly
+      ? {
+          weekday: "short",
+          day: "2-digit",
+          month: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone,
+        }
+      : { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric", timeZone },
+  );
+  const formatBucket = (fmt: Intl.DateTimeFormat, iso: unknown) =>
+    typeof iso === "string" ? fmt.format(new Date(iso)) : "";
+
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            {t("Tokens per employee", "Token pro Mitarbeiter")}
+          </div>
+          <div className="font-serif text-base">{t("Usage over time", "Verbrauch über Zeit")}</div>
+          {timeZone && (
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              {t("Times in", "Zeiten in")} {timeZone}
+            </div>
+          )}
+        </div>
+        <div className="inline-flex rounded-md border border-border bg-background/40 p-0.5 text-xs">
+          {rangeOptions.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              aria-pressed={range === o.id}
+              onClick={() => setRange(o.id)}
+              className={cn(
+                "rounded px-2.5 py-1 font-medium transition",
+                range === o.id
+                  ? "bg-primary/20 text-primary"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+          {t("Loading…", "Wird geladen…")}
+        </div>
+      ) : isError ? (
+        <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+          {t("Usage could not be loaded.", "Verbrauch konnte nicht geladen werden.")}
+        </div>
+      ) : series.length === 0 ? (
+        <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+          {t("No token usage in this period.", "Keine Token-Nutzung in diesem Zeitraum.")}
+        </div>
+      ) : (
+        <>
+          <div className="px-5 pt-4">
+            <ChartContainer className="aspect-auto h-72 w-full" config={chartConfig}>
+              <AreaChart data={chartRows}>
+                <CartesianGrid vertical={false} />
+                <XAxis
+                  dataKey="bucket"
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={24}
+                  tickFormatter={(v) => formatBucket(tickFormat, v)}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  width={48}
+                  tickFormatter={(v: number) => formatTokens(v)}
+                />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(_, payload) =>
+                        formatBucket(tooltipFormat, payload?.[0]?.payload?.bucket)
+                      }
+                      formatter={(value, name, item) => (
+                        <div className="flex w-full items-center gap-2">
+                          <span
+                            className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
+                            style={{ background: item.color }}
+                          />
+                          <span className="flex-1 text-muted-foreground">
+                            {chartConfig[String(name)]?.label ?? name}
+                          </span>
+                          <span className="font-mono font-medium tabular-nums text-foreground">
+                            {formatTokens(Number(value))}
+                          </span>
+                        </div>
+                      )}
+                    />
+                  }
+                />
+                <ChartLegend content={<ChartLegendContent className="flex-wrap" />} />
+                {series.map((s) => (
+                  <Area
+                    key={s.dataKey}
+                    dataKey={s.dataKey}
+                    type="monotone"
+                    stackId="usage"
+                    stroke={s.color}
+                    fill={s.color}
+                    fillOpacity={s.fillOpacity}
+                  />
+                ))}
+              </AreaChart>
+            </ChartContainer>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="px-5 py-3 font-medium">{t("Person", "Person")}</th>
+                  <th className="px-5 py-3 font-medium text-right">{t("Tokens", "Token")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {series.map((s) => (
+                  <tr key={s.dataKey} className="border-b border-border/60 last:border-none">
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-2">
+                        <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
+                        <span className="font-medium">{s.label}</span>
+                      </div>
+                    </td>
+                    <td className="px-5 py-3 text-right font-mono text-xs">
+                      {formatTokens(s.total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <p className="border-t border-border px-5 py-3 text-[11px] text-muted-foreground">
+        {t(
+          "Per-person data is recorded from version 0.20.0 on; older usage appears as “No person”.",
+          "Personenbezogene Daten werden ab Version 0.20.0 erfasst; ältere Nutzung erscheint als „Ohne Person“.",
+        )}
+      </p>
     </Panel>
   );
 }
