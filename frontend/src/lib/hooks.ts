@@ -3,6 +3,7 @@
 
 import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQueries,
@@ -2295,6 +2296,8 @@ export function useUsageTimeseries(range: UsageRange) {
   return useQuery({
     queryKey: ["usage-timeseries", range],
     queryFn: () => api.get<UsageTimeseriesDTO>(`/usage/timeseries?range=${range}`),
+    // Switching the range keeps the previous chart up until the new one lands.
+    placeholderData: keepPreviousData,
   });
 }
 

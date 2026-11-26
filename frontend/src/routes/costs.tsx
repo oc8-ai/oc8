@@ -23,17 +23,18 @@ import { Panel } from "@/components/app-shell";
 import {
   ChartContainer,
   ChartLegend,
-  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
 import type { Agent, Department } from "@/lib/mock-data";
 import {
+  bucketFormatters,
   convert,
   currentSpendForLimit,
   formatMoney,
   formatTokens,
+  resolveTimeZone,
   usePricing,
   useLimits,
   FX_USD_EUR,
@@ -769,6 +770,38 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
   );
 }
 
+interface SeriesStyle {
+  color: string;
+  fillOpacity: number;
+  /** Set for the dashed rounds; their swatches are drawn as rings. */
+  strokeDasharray?: string;
+}
+
+/** Five palette tokens cover the members (a second round of the same hues is
+ *  dashed and lighter); "others" and "none" are neutral so they never pass
+ *  for a person. */
+function seriesStyle(key: string, memberIndex: number): SeriesStyle {
+  if (key === "others") return { color: "var(--muted-foreground)", fillOpacity: 0.35 };
+  if (key === "none") {
+    return { color: "var(--muted-foreground)", fillOpacity: 0.12, strokeDasharray: "2 2" };
+  }
+  const color = `var(--chart-${(memberIndex % 5) + 1})`;
+  return memberIndex < 5
+    ? { color, fillOpacity: 0.6 }
+    : { color, fillOpacity: 0.25, strokeDasharray: "5 3" };
+}
+
+function SeriesSwatch({ style }: { style: SeriesStyle }) {
+  return (
+    <span
+      className="h-2.5 w-2.5 shrink-0 rounded-full"
+      style={
+        style.strokeDasharray ? { border: `2px solid ${style.color}` } : { background: style.color }
+      }
+    />
+  );
+}
+
 /** Who spent the tokens over time: one stacked area per person (top ten,
  *  then everyone else, then usage no person is attached to), bucketed in
  *  the organisation's time zone, plus the range totals per person. */
@@ -776,7 +809,7 @@ export function MembersTab() {
   const t = useT();
   const { lang } = useLang();
   const [range, setRange] = useState<UsageRange>("7d");
-  const { data, isLoading, isError } = useUsageTimeseries(range);
+  const { data, isPending, isError } = useUsageTimeseries(range);
 
   const rangeOptions: { id: UsageRange; label: string }[] = [
     { id: "24h", label: t("24 h", "24 h") },
@@ -792,19 +825,18 @@ export function MembersTab() {
 
   // Recharts data keys stay positional (`s0`, `s1`, ...) so a member uuid
   // never has to double as a CSS variable or property path.
+  // Members come first in the response, so their position is their index.
   const series = (data?.series ?? []).map((s, i) => ({
     dataKey: `s${i}`,
     label: seriesLabel(s),
     total: s.total,
     points: s.points,
-    // Only five palette tokens exist; the next rounds of the cycle fade so
-    // twelve stacked areas stay tellable apart.
-    color: `var(--chart-${(i % 5) + 1})`,
-    fillOpacity: [0.6, 0.35, 0.15][Math.floor(i / 5)] ?? 0.15,
+    style: seriesStyle(s.key, i),
   }));
+  const styleOf = Object.fromEntries(series.map((s) => [s.dataKey, s.style]));
 
   const chartConfig: ChartConfig = Object.fromEntries(
-    series.map((s) => [s.dataKey, { label: s.label, color: s.color }]),
+    series.map((s) => [s.dataKey, { label: s.label, color: s.style.color }]),
   );
 
   const buckets = data?.buckets ?? [];
@@ -813,31 +845,12 @@ export function MembersTab() {
     ...Object.fromEntries(series.map((s) => [s.dataKey, s.points[i] ?? 0])),
   }));
 
-  const timeZone = data?.timezone;
-  const hourly = data?.bucket === "hour";
-  const tickFormat = new Intl.DateTimeFormat(
-    lang,
-    hourly
-      ? range === "24h"
-        ? { hour: "2-digit", minute: "2-digit", timeZone }
-        : { weekday: "short", hour: "2-digit", timeZone }
-      : { day: "2-digit", month: "2-digit", timeZone },
-  );
-  const tooltipFormat = new Intl.DateTimeFormat(
-    lang,
-    hourly
-      ? {
-          weekday: "short",
-          day: "2-digit",
-          month: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          timeZone,
-        }
-      : { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric", timeZone },
-  );
-  const formatBucket = (fmt: Intl.DateTimeFormat, iso: unknown) =>
-    typeof iso === "string" ? fmt.format(new Date(iso)) : "";
+  const timeZone = data ? resolveTimeZone(data.timezone) : undefined;
+  // Format by the range the data is for: while a new range loads, the
+  // previous chart (and its range) stays up.
+  const formatBucket = data
+    ? bucketFormatters(lang, data.bucket, data.range, timeZone ?? "UTC")
+    : undefined;
 
   return (
     <Panel className="overflow-hidden">
@@ -873,15 +886,15 @@ export function MembersTab() {
         </div>
       </div>
 
-      {isLoading ? (
+      {isPending ? (
         <div className="px-5 py-10 text-center text-sm text-muted-foreground">
           {t("Loading…", "Wird geladen…")}
         </div>
-      ) : isError ? (
+      ) : isError && !data ? (
         <div className="px-5 py-10 text-center text-sm text-muted-foreground">
           {t("Usage could not be loaded.", "Verbrauch konnte nicht geladen werden.")}
         </div>
-      ) : series.length === 0 ? (
+      ) : series.length === 0 || !formatBucket ? (
         <div className="px-5 py-10 text-center text-sm text-muted-foreground">
           {t("No token usage in this period.", "Keine Token-Nutzung in diesem Zeitraum.")}
         </div>
@@ -896,7 +909,7 @@ export function MembersTab() {
                   tickLine={false}
                   axisLine={false}
                   minTickGap={24}
-                  tickFormatter={(v) => formatBucket(tickFormat, v)}
+                  tickFormatter={formatBucket.tick}
                 />
                 <YAxis
                   tickLine={false}
@@ -908,14 +921,11 @@ export function MembersTab() {
                   content={
                     <ChartTooltipContent
                       labelFormatter={(_, payload) =>
-                        formatBucket(tooltipFormat, payload?.[0]?.payload?.bucket)
+                        formatBucket.tooltip(payload?.[0]?.payload?.bucket)
                       }
                       formatter={(value, name, item) => (
                         <div className="flex w-full items-center gap-2">
-                          <span
-                            className="h-2.5 w-2.5 shrink-0 rounded-[2px]"
-                            style={{ background: item.color }}
-                          />
+                          <SeriesSwatch style={styleOf[String(name)]} />
                           <span className="flex-1 text-muted-foreground">
                             {chartConfig[String(name)]?.label ?? name}
                           </span>
@@ -927,16 +937,28 @@ export function MembersTab() {
                     />
                   }
                 />
-                <ChartLegend content={<ChartLegendContent className="flex-wrap" />} />
+                <ChartLegend
+                  content={() => (
+                    <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-3">
+                      {series.map((s) => (
+                        <div key={s.dataKey} className="flex items-center gap-1.5">
+                          <SeriesSwatch style={s.style} />
+                          {s.label}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                />
                 {series.map((s) => (
                   <Area
                     key={s.dataKey}
                     dataKey={s.dataKey}
-                    type="monotone"
+                    type="linear"
                     stackId="usage"
-                    stroke={s.color}
-                    fill={s.color}
-                    fillOpacity={s.fillOpacity}
+                    stroke={s.style.color}
+                    strokeDasharray={s.style.strokeDasharray}
+                    fill={s.style.color}
+                    fillOpacity={s.style.fillOpacity}
                   />
                 ))}
               </AreaChart>
@@ -955,7 +977,7 @@ export function MembersTab() {
                   <tr key={s.dataKey} className="border-b border-border/60 last:border-none">
                     <td className="px-5 py-3">
                       <div className="flex items-center gap-2">
-                        <span className="h-2 w-2 rounded-full" style={{ background: s.color }} />
+                        <SeriesSwatch style={s.style} />
                         <span className="font-medium">{s.label}</span>
                       </div>
                     </td>

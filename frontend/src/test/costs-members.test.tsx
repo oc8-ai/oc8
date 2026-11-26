@@ -14,6 +14,7 @@ vi.mock("@/lib/api", async (importOriginal) => ({
   api: { get: (path: string) => get(path) },
 }));
 
+import { bucketFormatters, resolveTimeZone } from "@/lib/costs";
 import { useUsageTimeseries } from "@/lib/hooks";
 import { MembersTab } from "@/routes/costs";
 
@@ -37,6 +38,10 @@ function timeseriesWithPeople() {
 
 function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
+}
+
+function noRetryClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false } } });
 }
 
 beforeEach(() => {
@@ -78,5 +83,70 @@ describe("MembersTab", () => {
     render(<MembersTab />, { wrapper });
     expect(await screen.findByText("No token usage in this period.")).toBeInTheDocument();
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("says the usage could not be loaded when the first request fails", async () => {
+    get.mockImplementation(() => Promise.reject(new Error("boom")));
+    const client = noRetryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <MembersTab />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByText("Usage could not be loaded.")).toBeInTheDocument();
+  });
+
+  it("keeps the chart data when a later refetch fails", async () => {
+    get.mockImplementation(() => Promise.resolve(timeseriesWithPeople()));
+    const client = noRetryClient();
+    render(
+      <QueryClientProvider client={client}>
+        <MembersTab />
+      </QueryClientProvider>,
+    );
+    await screen.findByRole("table");
+
+    get.mockImplementation(() => Promise.reject(new Error("boom")));
+    await client.refetchQueries({ queryKey: ["usage-timeseries", "7d"] });
+
+    await waitFor(() =>
+      expect(client.getQueryState(["usage-timeseries", "7d"])?.status).toBe("error"),
+    );
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.queryByText("Usage could not be loaded.")).not.toBeInTheDocument();
+  });
+
+  it("falls back to UTC when the browser does not know the organisation's time zone", async () => {
+    get.mockImplementation(() =>
+      Promise.resolve({ ...timeseriesWithPeople(), timezone: "Mars/Olympus_Mons" }),
+    );
+    render(<MembersTab />, { wrapper });
+    expect(await screen.findByText("Times in UTC")).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+  });
+});
+
+describe("bucket time labels", () => {
+  // Midnight in Berlin is 08:00 in Tokyo and 23:00 UTC: whatever zone the
+  // test runner sits in, the label must follow the zone the response names.
+  const berlinMidnight = "2026-11-26T00:00:00+01:00";
+
+  it("shows hours in the response's time zone", () => {
+    expect(bucketFormatters("de", "hour", "24h", "Asia/Tokyo").tick(berlinMidnight)).toBe("08:00");
+    expect(bucketFormatters("de", "hour", "24h", "Europe/Berlin").tick(berlinMidnight)).toBe(
+      "00:00",
+    );
+  });
+
+  it("shows the day in the response's time zone", () => {
+    expect(bucketFormatters("de", "day", "30d", "Europe/Berlin").tick(berlinMidnight)).toBe(
+      "26.11.",
+    );
+    expect(bucketFormatters("de", "day", "30d", "UTC").tick(berlinMidnight)).toBe("25.11.");
+  });
+
+  it("keeps a known zone and replaces an unknown one with UTC", () => {
+    expect(resolveTimeZone("Asia/Tokyo")).toBe("Asia/Tokyo");
+    expect(resolveTimeZone("Mars/Olympus_Mons")).toBe("UTC");
   });
 });

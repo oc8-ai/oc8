@@ -1,5 +1,6 @@
 import { agents, departments, type Agent } from "./mock-data";
 import { useSyncExternalStore } from "react";
+import type { UsageRange } from "./hooks";
 
 // USD price per 1,000,000 tokens. Prices are mock, roughly aligned with
 // publicly known list prices — editable in the UI to demonstrate the flow.
@@ -192,4 +193,48 @@ export function currentSpendForLimit(limit: CostLimit, pricing: ModelPricing[]):
       .reduce((s, r) => s + r.total, 0);
   }
   return limit.period === "daily" ? monthly / 30 : monthly;
+}
+
+/** The org time zone when the browser knows it, otherwise UTC. */
+export function resolveTimeZone(timeZone: string | undefined): string {
+  if (!timeZone) return "UTC";
+  try {
+    new Intl.DateTimeFormat("en", { timeZone });
+    return timeZone;
+  } catch {
+    return "UTC";
+  }
+}
+
+/** Axis and tooltip labels for the bucket starts, in the given time zone. */
+export function bucketFormatters(
+  lang: string,
+  bucket: "hour" | "day",
+  range: UsageRange,
+  timeZone: string,
+) {
+  const tick = new Intl.DateTimeFormat(
+    lang,
+    bucket === "hour"
+      ? range === "24h"
+        ? { hour: "2-digit", minute: "2-digit", timeZone }
+        : { weekday: "short", hour: "2-digit", timeZone }
+      : { day: "2-digit", month: "2-digit", timeZone },
+  );
+  const tooltip = new Intl.DateTimeFormat(
+    lang,
+    bucket === "hour"
+      ? {
+          weekday: "short",
+          day: "2-digit",
+          month: "2-digit",
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone,
+        }
+      : { weekday: "short", day: "2-digit", month: "2-digit", year: "numeric", timeZone },
+  );
+  const format = (fmt: Intl.DateTimeFormat) => (iso: unknown) =>
+    typeof iso === "string" ? fmt.format(new Date(iso)) : "";
+  return { tick: format(tick), tooltip: format(tooltip) };
 }
