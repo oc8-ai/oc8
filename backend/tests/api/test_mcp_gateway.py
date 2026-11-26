@@ -1291,6 +1291,14 @@ async def test_calling_a_skill_tool_returns_its_procedure_and_records_it(
         assert run is not None
         assert str(version_id) in [str(s) for s in run.context.get("active_skill_ids", [])]
 
+    # Called again (its first result masked or compacted away): the procedure
+    # comes back, not just "already active".
+    code, again = await _rpc(tok, "tools/call", {"name": skill_tool, "arguments": {}})
+    assert code == 200, again
+    repeat = again["result"]["content"][0]["text"]
+    assert "already active" in repeat
+    assert "Sprich den Kunden mit Namen an." in repeat and "Erstattung" in repeat
+
 
 async def test_request_decision_is_offered_and_works_through_the_gateway(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch

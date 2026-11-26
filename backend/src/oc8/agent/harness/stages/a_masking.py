@@ -8,6 +8,7 @@ from dataclasses import replace
 from oc8.agent.harness.stages.c_spill import SPILL_THRESHOLD_CHARS, spill_filename
 from oc8.agent.harness.state import Ledger, MaskRef
 from oc8.modelrouter import NeutralMessage
+from oc8.skills.runtime import SKILL_TOOL_PREFIX
 
 MASK_AGE_STEPS = 6
 MASK_MIN_CHARS = 2_000
@@ -31,6 +32,11 @@ def mask_observations(
 
     for index, message in enumerate(messages):
         if message.role != "tool" or not isinstance(message.content, str):
+            continue
+        # A skill's result IS its procedure, and invoking it again only returns
+        # "already active". Masking it would leave the model with the first
+        # 400 chars of its instructions for the rest of the run.
+        if (message.name or "").startswith(SKILL_TOOL_PREFIX):
             continue
         match = _STAMP.match(message.content)
         if match is None:

@@ -1502,7 +1502,10 @@ async def test_invoking_a_skill_activates_it(app_session: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_re_invoking_an_active_skill_is_a_harmless_no_op(app_session: Any) -> None:
+async def test_re_invoking_an_active_skill_returns_its_procedure_again(app_session: Any) -> None:
+    """Masking or compaction can drop the first result from the transcript;
+    a second call is how the agent gets its procedure back. It activates
+    nothing new and records no second invocation."""
     tenant = uuid.uuid4()
     skill = _skill("skill_x", requires=["read_record"])
     async with app_session(tenant) as db:
@@ -1522,6 +1525,9 @@ async def test_re_invoking_an_active_skill_is_a_harmless_no_op(app_session: Any)
         assert outcome is not None
     assert outcome.activated_skill is None
     assert "already active" in outcome.output
+    from oc8.skills.runtime import instruction_block
+
+    assert instruction_block(skill) in outcome.output
 
 
 @pytest.mark.asyncio

@@ -59,3 +59,22 @@ def test_a_malformed_chat_context_keeps_the_run_id():
     )
     bad_until = {"chat_session_id": str(uuid.uuid4()), "transcript_until": "nope"}
     assert prompt_cache_key(bad_until, run) == str(run)
+
+
+def test_anthropic_payload_never_carries_the_openai_cache_key():
+    """Every run stamps `prompt_cache_key` (an OpenAI field) into `extra`, and
+    Anthropic refuses unknown top-level fields with a 400 ("Extra inputs are
+    not permitted"), so no Claude model answered at all. Claude caches through
+    `cache_control` instead."""
+    from oc8.modelrouter.adapters.anthropic import _build_payload
+
+    req = CompletionRequest(
+        provider="anthropic",
+        model="claude-sonnet-5-5",
+        messages=[NeutralMessage(role="user", content="hi")],
+        params=with_prompt_cache_key(ModelParams(extra={"top_k": 5}), "run-1"),
+    )
+    for caching in (False, True):
+        payload = _build_payload(req, prompt_caching=caching)
+        assert "prompt_cache_key" not in payload
+        assert payload["top_k"] == 5

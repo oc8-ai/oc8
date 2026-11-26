@@ -315,16 +315,40 @@ _MAX_TOKENS_REFUSED = re.compile(
     re.IGNORECASE,
 )
 _TEMPERATURE_REFUSED = re.compile(r"temperature", re.IGNORECASE)
+#: A model that reasons by default and takes function tools on Chat Completions
+#: only with reasoning switched off (gpt-6.2-sol, gpt-6-astra: "set
+#: reasoning_effort to 'none'"). Sending no effort at all is refused as well,
+#: so it has to be sent as 'none', not dropped.
+_REASONING_NONE_ASKED = re.compile(
+    r"reasoning_effort\W+to\W+none|tools with reasoning_effort are not supported",
+    re.IGNORECASE,
+)
 #: Only a malformed or unprocessable request can be a refused parameter.
 _PARAM_REFUSAL_STATUSES = frozenset({400, 422})
 
 
-def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, Any] | None:
+def asks_for_responses_api(exc: Exception) -> bool:
+    """A model that reasons next to function tools only on the Responses API."""
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return False
+    if exc.response.status_code not in _PARAM_REFUSAL_STATUSES:
+        return False
+    try:
+        text = exc.response.text
+    except Exception:
+        text = str(exc).split(": ", 1)[-1]
+    return bool(_REASONING_NONE_ASKED.search(text))
+
+
+def adapt_refused_payload(
+    payload: dict[str, Any], exc: Exception, *, reasoning_none: bool = True
+) -> dict[str, Any] | None:
     """`payload` without the parameter the provider just refused, or None if
     this error is not that. Read from the provider's own words, like the
     reasoning retry in router.py: no list of model names could keep up with
     which server wants `max_completion_tokens` or refuses `temperature`.
-    Each call removes one key, so retrying on it always ends."""
+    Each call removes one key or sets `reasoning_effort` to 'none' once, so
+    retrying on it always ends."""
     if not isinstance(exc, httpx.HTTPStatusError):
         return None
     if exc.response.status_code not in _PARAM_REFUSAL_STATUSES:
@@ -333,6 +357,13 @@ def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, 
         text = exc.response.text
     except Exception:
         text = str(exc).split(": ", 1)[-1]
+    if (
+        reasoning_none
+        and payload.get("tools")
+        and payload.get("reasoning_effort") != "none"
+        and _REASONING_NONE_ASKED.search(text)
+    ):
+        return {**payload, "reasoning_effort": "none"}
     if "max_tokens" in payload and _MAX_TOKENS_REFUSED.search(text):
         adapted = {k: v for k, v in payload.items() if k != "max_tokens"}
         adapted["max_completion_tokens"] = payload["max_tokens"]
@@ -343,7 +374,7 @@ def adapt_refused_payload(payload: dict[str, Any], exc: Exception) -> dict[str, 
 
 
 async def post_completion(
-    url: str, payload: dict[str, Any], headers: dict[str, str]
+    url: str, payload: dict[str, Any], headers: dict[str, str], *, reasoning_none: bool = True
 ) -> dict[str, Any]:
     """POST the completion, once more per parameter the provider refuses."""
     async with httpx.AsyncClient(timeout=180.0) as client:
@@ -352,7 +383,7 @@ async def post_completion(
             try:
                 raise_for_status_with_body(resp)
             except httpx.HTTPStatusError as exc:
-                adapted = adapt_refused_payload(payload, exc)
+                adapted = adapt_refused_payload(payload, exc, reasoning_none=reasoning_none)
                 if adapted is None:
                     raise
                 payload = adapted
@@ -362,7 +393,7 @@ async def post_completion(
 
 
 async def stream_completion(
-    url: str, payload: dict[str, Any], headers: dict[str, str]
+    url: str, payload: dict[str, Any], headers: dict[str, str], *, reasoning_none: bool = True
 ) -> AsyncIterator[CompletionChunk]:
     """`stream_openai_sse`, once more per parameter the provider refuses. A
     refusal arrives before any SSE line, so nothing has reached the caller;
@@ -375,7 +406,11 @@ async def stream_completion(
                 yield chunk
             return
         except httpx.HTTPStatusError as exc:
-            adapted = None if emitted else adapt_refused_payload(payload, exc)
+            adapted = (
+                None
+                if emitted
+                else adapt_refused_payload(payload, exc, reasoning_none=reasoning_none)
+            )
             if adapted is None:
                 raise
             payload = adapted

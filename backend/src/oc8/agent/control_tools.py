@@ -4681,7 +4681,16 @@ async def execute_control_tool(
     if tc.name in skill_by_tool:
         skill = skill_by_tool[tc.name]
         if skill in active_skills:
-            return ControlOutcome(output=f"Skill '{skill.name}' is already active.")
+            # The procedure again, not only "already active": masking or a
+            # compaction may have dropped the first result, and calling the
+            # skill again is how the agent gets it back. Nothing is recorded
+            # or activated twice.
+            return ControlOutcome(
+                output=(
+                    f"Skill '{skill.name}' is already active. Its procedure:\n\n"
+                    f"{instruction_block(skill)}"
+                )
+            )
         await append_event(
             db,
             tenant_id=tenant_id,

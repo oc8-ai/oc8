@@ -272,3 +272,26 @@ async def test_the_retry_drops_an_openrouter_reasoning_object(
     await _router(monkeypatch, adapter).complete(_req(ModelParams(extra=extra)))
     assert len(adapter.requests) == 2
     assert adapter.requests[1].params.extra == {"top_p": 0.9}
+
+
+async def test_an_openai_model_refusing_reasoning_with_tools_still_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gpt-6.2-sol and gpt-6-astra take no `reasoning_effort` next to function
+    tools on Chat Completions (issue #164). The run answers without the level
+    instead of failing."""
+    body = (
+        '{"error": {"message": "Function tools with reasoning_effort are not supported '
+        "for gpt-6.2-sol in /v1/chat/completions. To use function tools, use "
+        '/v1/responses or set reasoning_effort to \'none\'.", "type": '
+        '"invalid_request_error", "param": "reasoning_effort", "code": null}}'
+    )
+    for call in ("complete", "stream"):
+        adapter = _FailsOnce(_rejection(body))
+        router = _router(monkeypatch, adapter)
+        if call == "complete":
+            assert (await router.complete(_req(ModelParams(reasoning="thorough")))).text == "ok"
+        else:
+            chunks = [c async for c in router.stream(_req(ModelParams(reasoning="thorough")))]
+            assert "".join(c.text or "" for c in chunks) == "ok"
+        assert adapter.requests[-1].params.reasoning is None
