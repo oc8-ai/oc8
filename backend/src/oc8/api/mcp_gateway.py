@@ -82,7 +82,7 @@ from oc8.agent.tool_semantics import (
 )
 from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
-from oc8.approvals import raise_approval
+from oc8.approvals import publish_created, raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -107,7 +107,7 @@ from oc8.copilot.door import chat_door
 from oc8.edition.tools import EditionOffer, edition_offer
 from oc8.memory.policy import authorize_memory_write
 from oc8.modelrouter import ToolCall
-from oc8.realtime.emit import note_focus, record_activity
+from oc8.realtime.emit import note_focus, publish_run_content, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.records.registry import link_scope
@@ -665,23 +665,7 @@ async def _stop_for_blast_radius(
     )
     await db.commit()
     await _rebind_tenant(db, run.tenant_id)
-    from oc8.realtime.bus import get_event_bus
-
-    await get_event_bus().publish_event(
-        run.tenant_id,
-        "approval.created",
-        {
-            "approval_id": str(ar.id),
-            "action_type": ar.action_type,
-            "status": ar.status,
-            # title/detail travel in the envelope so the push hook never has to
-            # re-read this row from a fresh, uncommitted-blind session (see
-            # EventBus._push_payload).
-            "title": ar.title,
-            "detail": ar.detail,
-        },
-        source=f"oc8/approval/{ar.id}",
-    )
+    await publish_created(db, ar)
     return _tool_result(blast_refusal(touched, limit), is_error=True)
 
 
@@ -984,13 +968,15 @@ async def _call_tool(
             # inline (run_id + props) -- no consumer needs to look up a row
             # that isn't committed yet, so publishing before the request's
             # terminal commit is safe here.
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                run.tenant_id,
-                "run.component_rendered",
-                {"run_id": str(run.id), **outcome.rendered_component},
-                source=f"oc8/run/{run.id}",
+            await publish_run_content(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=run.agent_id,
+                event={
+                    "type": "run.component_rendered",
+                    "data": {"run_id": str(run.id), **outcome.rendered_component},
+                    "source": f"oc8/run/{run.id}",
+                },
             )
         return _tool_result(outcome.output, is_error=outcome.output.startswith("ERROR"))
 
@@ -1172,23 +1158,7 @@ async def _call_tool(
         )
         await db.commit()
         await _rebind_tenant(db, run.tenant_id)
-        from oc8.realtime.bus import get_event_bus
-
-        await get_event_bus().publish_event(
-            run.tenant_id,
-            "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
-            source=f"oc8/approval/{ar.id}",
-        )
+        await publish_created(db, ar)
         return _tool_result(
             f"This action needs human approval ({decision.reason or 'threshold reached'}). "
             "The run is parked; it continues once an operator decides. "

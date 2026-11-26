@@ -114,7 +114,7 @@ async def member_run_reach(
         return None
     authority = await authority_for_member(db, member, token_role=token_role)
     scope = await scope_for_member(db, member, token_role=token_role)
-    return await start_reach(db, authority=authority, scope=scope, tenant_id=tenant_id)
+    return await start_reach(db, authority=authority, scope=scope)
 
 
 def runnable_with(reach: RunReach | None, agent: m.Agent) -> bool:

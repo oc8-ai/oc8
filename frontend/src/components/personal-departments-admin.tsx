@@ -105,7 +105,7 @@ function SwitchSection({ canManage }: { canManage: boolean }) {
       <div className="flex items-center gap-3">
         <Switch
           aria-label={t("Personal departments", "Persönliche Abteilungen")}
-          checked={data?.enabled ?? false}
+          checked={data?.enabled ?? true}
           disabled={!canManage || !data || update.isPending}
           onCheckedChange={(enabled) => {
             if (data) void save({ enabled, maxAgents: data.maxAgents });

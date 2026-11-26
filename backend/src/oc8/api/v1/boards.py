@@ -91,9 +91,7 @@ async def _summaries(
         if agent_ids
         else {}
     )
-    reach = await start_reach(
-        db, authority=authority, scope=actor.scope, tenant_id=actor.principal.tenant_id
-    )
+    reach = await start_reach(db, authority=authority, scope=actor.scope)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
     out: list[BoardSummaryDTO] = []
     for b in boards:

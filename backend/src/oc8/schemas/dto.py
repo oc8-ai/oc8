@@ -67,6 +67,14 @@ class DepartmentDTO(CamelModel):
     kpi_label_translations: dict[str, str] = {}
 
 
+class DepartmentDetailDTO(DepartmentDTO):
+    #: True when this reader sees a member's personal department without
+    #: being its owner (`departments.repo.personal_content_hidden`): its task
+    #: board and what its agents did are not theirs to see (the board answers
+    #: 404), so the page shows a notice instead of asking for it.
+    content_hidden: bool = False
+
+
 class TaskDTO(CamelModel):
     id: str
     department_id: str
@@ -867,6 +875,10 @@ class AgentDetailDTO(AgentDTO):
     #: detail screen can only show a live log for a run started in that same
     #: browser tab, so a scheduled run happens invisibly.
     current_run_id: str | None = None
+    #: That run's state (`queued`, `running`, `waiting_for_approval`, ...), so
+    #: the header shows it on the first render. Metadata: kept for a reader
+    #: who sees a personal agent's metadata only (R2).
+    current_run_state: str | None = None
     #: Per-agent sampling overrides (agent.definition["model_params"]),
     #: narrowest-first ahead of the assigned ModelConfig's own defaults --
     #: see modelrouter/sampling.py's resolve_params(). None means "inherit
@@ -1018,6 +1030,14 @@ class PrincipalUsageDTO(CamelModel):
     #: cache; `provider_cost_micros` already bills them at the cache rates.
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    #: The group's display name (the agent's or the department's), and for an
+    #: agent row its department. Metadata an admin keeps (R2) even where the
+    #: agent and department lists leave a member's personal ones out, so the
+    #: Costs page names every row without a second lookup. `None` for the
+    #: "unassigned" bucket.
+    name: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
 
 
 class TokenUsageExportRowDTO(CamelModel):

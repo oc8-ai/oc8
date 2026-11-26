@@ -33,6 +33,7 @@ department and decides in none, which is two flags here and not one.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import uuid
 from dataclasses import dataclass
@@ -471,7 +472,11 @@ async def _member_by_subject(
 
 
 async def _upsert_member(
-    db: AsyncSession, tenant_id: uuid.UUID, subject: str, email: str | None = None
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    subject: str,
+    email: str | None = None,
+    token_role: str | None = None,
 ) -> OrgMember:
     """SELECT, then INSERT ... ON CONFLICT DO NOTHING, then SELECT again (§1).
 
@@ -496,6 +501,9 @@ async def _upsert_member(
     The token's `email` claim, when there is one, is copied onto the row only
     when it differs, so a returning person's request writes nothing and takes
     no row lock. It is display data and never part of the lookup.
+
+    The token's `role` claim is kept the same way (`last_token_role`): a run
+    with no token behind it reads it for this person (ruling U4).
     """
     existing = await _member_by_subject(db, tenant_id, subject)
     if existing is not None:
@@ -505,6 +513,9 @@ async def _upsert_member(
             from oc8.auth.second_factors import sign_in_address_changed
 
             await sign_in_address_changed(db, existing)
+        if token_role and existing.last_token_role != token_role:
+            existing.last_token_role = token_role
+            existing.last_token_role_at = dt.datetime.now(dt.UTC)
         return existing
 
     await db.execute(
@@ -515,6 +526,8 @@ async def _upsert_member(
             subject=subject,
             subject_uuid=subject_uuid_for(subject),
             email=email,
+            last_token_role=token_role or None,
+            last_token_role_at=dt.datetime.now(dt.UTC) if token_role else None,
         )
         # Untargeted on purpose: `org_member` carries TWO partial unique indexes
         # (subject and subject_uuid) and either can be the one that fires.
@@ -648,7 +661,7 @@ async def scope_for_principal(
 
     if upsert:
         member: OrgMember | None = await _upsert_member(
-            db, principal.tenant_id, principal.subject, principal.email
+            db, principal.tenant_id, principal.subject, principal.email, principal.role
         )
     else:
         member = await _member_by_subject(db, principal.tenant_id, principal.subject)

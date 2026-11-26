@@ -221,9 +221,13 @@ CONNECTION_OWN: Final = perm(CONNECTION, "own")
 #: first hire), and `copilot:use` would misname the right.
 DEPARTMENT_OWN: Final = perm(DEPARTMENT, "own")
 
-#: A readable copy of the whole tenant (transcripts, knowledge, and with a
-#: passphrase every credential) and the ability to replace it wholesale from
-#: an uploaded one. Neither is a `:view`/`:manage` pair -- `backup:view`
+#: A readable copy of the whole tenant (transcripts, knowledge, the content of
+#: personal departments that no other admin may read, and with a passphrase
+#: every credential) and the ability to replace it wholesale from an uploaded
+#: one. The export is deliberately complete, personal content included, so
+#: `backup:export` belongs to the organisation administrator role (`org_admin`)
+#: alone: it is in NEVER_DELEGATABLE and no other built-in role holds it.
+#: Neither is a `:view`/`:manage` pair -- `backup:view`
 #: would suggest a reversible look, and `backup:manage` would suggest a
 #: configuration change, when what these two verbs actually do is copy
 #: everything out and delete everything in.
@@ -482,7 +486,8 @@ NEVER_DELEGATABLE: Final[dict[str, str]] = {
     # ---- the whole tenant, out or in, at once
     BACKUP_EXPORT: (
         "an export is a readable copy of every transcript, every knowledge "
-        "chunk and, with a passphrase, every credential the company holds"
+        "chunk, the content of every personal department and, with a "
+        "passphrase, every credential the company holds"
     ),
     BACKUP_RESTORE: (
         "replaces every agent, run and knowledge chunk in the company with "

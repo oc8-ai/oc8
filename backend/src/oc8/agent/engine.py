@@ -124,7 +124,7 @@ from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
-from oc8.approvals import DERIVE, raise_approval
+from oc8.approvals import DERIVE, publish_created, raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     NOT_THIS_CONNECTION,
@@ -199,6 +199,7 @@ from oc8.modelrouter.types import ImagePart, ModelParams, with_prompt_cache_key
 from oc8.observability import get_tracer, record_budget_exceeded, record_tool_call
 from oc8.realtime.emit import (
     note_focus,
+    publish_run_content,
     publish_run_reasoning_delta,
     publish_run_step_timing,
     publish_run_token_delta,
@@ -1190,7 +1191,9 @@ async def run_agent(
             if run_id is None or run_row is None:
                 return
             await append_tool_call(db, run_row, entry)
-            await publish_run_tool_call(tenant_id, run_id=run_id, call=entry)
+            await publish_run_tool_call(
+                tenant_id, run_id=run_id, agent_id=agent.id, call=entry, db=db
+            )
 
         async def _finish_step_timing(rec: dict[str, Any], tool_wait_ms: int) -> None:
             # note_tools/finish_step are dev's own capture
@@ -1206,7 +1209,13 @@ async def run_agent(
             finish_step(rec)
             if run_id is None:
                 return
-            await publish_run_step_timing(tenant_id, run_id=run_id, timing=step_timing_dto(rec))
+            await publish_run_step_timing(
+                tenant_id,
+                run_id=run_id,
+                agent_id=agent.id,
+                timing=step_timing_dto(rec),
+                db=db,
+            )
 
         async def _live_token_delta(text: str) -> None:
             # No DB write here, unlike _live_tool_call above -- the full text
@@ -1216,7 +1225,9 @@ async def run_agent(
             # fragments. Same no-run no-op as _live_tool_call.
             if run_id is None:
                 return
-            await publish_run_token_delta(tenant_id, run_id=run_id, text=text)
+            await publish_run_token_delta(
+                tenant_id, run_id=run_id, agent_id=agent.id, text=text, db=db
+            )
 
         async def _live_reasoning_delta(text: str) -> None:
             # Same no-DB-write rule as _live_token_delta: the step's reasoning
@@ -1224,7 +1235,12 @@ async def run_agent(
             if run_id is None:
                 return
             await publish_run_reasoning_delta(
-                tenant_id, run_id=run_id, step=live_step["no"], text=text
+                tenant_id,
+                run_id=run_id,
+                agent_id=agent.id,
+                step=live_step["no"],
+                text=text,
+                db=db,
             )
 
         startup_unavailable: list[dict[str, Any]] = []
@@ -1668,23 +1684,7 @@ async def run_agent(
                                 "merged": True,
                             }
                             parked.context = parked_ctx
-                            from oc8.realtime.bus import get_event_bus
-
-                            # A member-owned card was announced to its member
-                            # alone (raise_approval); never tenant-wide.
-                            if held_terms is None or "announce_to_member" not in held_terms[2]:
-                                await get_event_bus().publish_event(
-                                    held_ar.tenant_id,
-                                    "approval.created",
-                                    {
-                                        "approval_id": str(held_ar.id),
-                                        "action_type": held_ar.action_type,
-                                        "status": held_ar.status,
-                                        "title": held_ar.title,
-                                        "detail": held_ar.detail,
-                                    },
-                                    source=f"oc8/approval/{held_ar.id}",
-                                )
+                            await publish_created(db, held_ar)
                             task.state = "waiting_for_approval"
                             # Not over a pause or stop somebody made during the run: the
                             # executor no longer holds the agent row (oc8.runtime.agent_status).
@@ -3132,27 +3132,7 @@ async def run_agent(
                                     ),
                                 )
 
-                            from oc8.realtime.bus import get_event_bus
-
-                            # A member-owned card was announced to its member
-                            # alone (raise_approval); never tenant-wide (R22).
-                            if hold_terms is None or "announce_to_member" not in hold_terms[2]:
-                                await get_event_bus().publish_event(
-                                    ar.tenant_id,
-                                    "approval.created",
-                                    {
-                                        "approval_id": str(ar.id),
-                                        "action_type": ar.action_type,
-                                        "status": ar.status,
-                                        # Carried in the envelope on purpose: the
-                                        # executor commits, not us, so a fresh
-                                        # session reading this row would see
-                                        # nothing (see EventBus._push_payload).
-                                        "title": ar.title,
-                                        "detail": ar.detail,
-                                    },
-                                    source=f"oc8/approval/{ar.id}",
-                                )
+                            await publish_created(db, ar)
                             tool_trace.append(
                                 {
                                     "tool": tc.name,
@@ -3358,14 +3338,19 @@ async def run_agent(
                                 # see execute_control_tool.
                                 active_skills.append(control.activated_skill)
                             if control.rendered_component is not None and run_id is not None:
-                                from oc8.realtime.bus import get_event_bus
-
                                 rendered_components.append(control.rendered_component)
-                                await get_event_bus().publish_event(
-                                    tenant_id,
-                                    "run.component_rendered",
-                                    {"run_id": str(run_id), **control.rendered_component},
-                                    source=f"oc8/run/{run_id}",
+                                await publish_run_content(
+                                    db,
+                                    tenant_id=tenant_id,
+                                    agent_id=agent.id,
+                                    event={
+                                        "type": "run.component_rendered",
+                                        "data": {
+                                            "run_id": str(run_id),
+                                            **control.rendered_component,
+                                        },
+                                        "source": f"oc8/run/{run_id}",
+                                    },
                                 )
                             if control.todos is not None:
                                 # Slice-assign (not `todos = control.todos`): this
@@ -3381,13 +3366,18 @@ async def run_agent(
                                     # is otherwise stuck with whatever todos existed
                                     # at its initial GET fetch, since nothing else
                                     # refetches or polls it.
-                                    from oc8.realtime.bus import get_event_bus
-
-                                    await get_event_bus().publish_event(
-                                        tenant_id,
-                                        "run.todos_updated",
-                                        {"run_id": str(run_id), "todos": control.todos},
-                                        source=f"oc8/run/{run_id}",
+                                    await publish_run_content(
+                                        db,
+                                        tenant_id=tenant_id,
+                                        agent_id=agent.id,
+                                        event={
+                                            "type": "run.todos_updated",
+                                            "data": {
+                                                "run_id": str(run_id),
+                                                "todos": control.todos,
+                                            },
+                                            "source": f"oc8/run/{run_id}",
+                                        },
                                     )
                             if (
                                 tool_error is None

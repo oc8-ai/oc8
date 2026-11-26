@@ -209,9 +209,19 @@ async def test_a_personal_agent_ref_is_metadata_only_for_a_manager(
         )
         db.add(personal)
         await db.flush()
-        owner = await _member(
-            db, tenant, "pia-seat", token_role="member", seat_in=personal, manages=True
+        # The owner's own seat: "private to" is ownership (ruling R1,
+        # `scope.personal_owned`), and `grant_seat` refuses anybody else one.
+        db.add(
+            m.OrgMemberDepartment(
+                tenant_id=tenant,
+                member_id=owner_row.id,
+                department_id=personal.id,
+                seat_role=SEAT_VIEWER,
+                agent_manage=True,
+            )
         )
+        await db.flush()
+        owner = await viewer_for_member(db, owner_row, token_role="member")
         pia = m.Agent(
             tenant_id=tenant,
             department_id=personal.id,

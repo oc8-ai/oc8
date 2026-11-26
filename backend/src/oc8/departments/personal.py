@@ -142,6 +142,21 @@ async def live_department_owner(db: AsyncSession, agent_id: uuid.UUID) -> uuid.U
     return owner
 
 
+async def withholds_content_from_trail(db: AsyncSession, agent_id: uuid.UUID) -> bool:
+    """Whether what this agent looked up, recalled or forgot stays out of the
+    rows an administrator reads -- activity lines, audit resources (spec A4:
+    "audit entries record that something happened, without the content").
+
+    True for an agent of a personal department, live owner or not, and for an
+    agent `db` cannot see (fails closed); False for every other agent, whose
+    rows stay as they are. Asks `realtime.audience.personal_audience`, the same
+    cached answer that keeps the agent's live events off the tenant feed, so
+    the trail and the feed cannot disagree about who is personal."""
+    from oc8.realtime.audience import personal_audience
+
+    return (await personal_audience(db, agent_id)).personal
+
+
 async def ensure_personal_capacity(db: AsyncSession, dept: m.Department) -> None:
     """Raise `PersonalOwnerLeft` when the department's owner has left, and
     `PersonalAgentLimit` when a personal department holds the tenant's cap of
@@ -282,13 +297,15 @@ def _limit(value: Any) -> int | None:
 async def personal_defaults(db: AsyncSession, *, tenant_id: uuid.UUID) -> PersonalDefaults:
     """The tenant's defaults for personal departments.
 
-    The feature is an administrator's opt-in: with the enabled key absent (or
-    anything but `true`) it reads as disabled. A missing org row or a
-    malformed value reads as the default -- disabled, no tools, no limits.
+    The feature is on by default now that a personal department's content is
+    private to its owner (spec A1, switched in PR 3): only an explicit `false`
+    -- an administrator who turned it off -- reads as disabled. A missing org
+    row or a malformed value reads as the default -- enabled, no tools, no
+    limits.
     """
     org = await db.get(m.Organization, tenant_id)
     settings: dict[str, Any] = org.settings if org is not None and org.settings else {}
-    enabled = settings.get(ENABLED_KEY) is True
+    enabled = settings.get(ENABLED_KEY) is not False
     tools = settings.get(FRAME_KEY)
     budget = settings.get(BUDGET_KEY)
     if not isinstance(budget, dict):
@@ -743,6 +760,29 @@ async def follow_default(
     return dept
 
 
+def _announce_departure_after_commit(
+    db: AsyncSession, tenant_id: uuid.UUID, member_id: uuid.UUID
+) -> None:
+    """Once the offboarding commits -- not before: a lookup in between would
+    still see the owner and cache them again --
+
+    - drop this process's cached live audience naming the member
+      (`realtime.audience`, R5; other processes re-read within its TTL), and
+    - tell every replica to close the member's open sockets
+      (`EventBus.publish_member_gone`): the socket checks `deleted_at` only at
+      connect, and a departed member must receive nothing more.
+    """
+    from oc8.realtime import bus
+    from oc8.realtime.audience import forget_owner
+    from oc8.realtime.emit import publish_after_commit
+
+    async def _announce() -> None:
+        forget_owner(member_id)
+        await bus.get_event_bus().publish_member_gone(tenant_id, member_id)
+
+    publish_after_commit(db, _announce)
+
+
 async def stop_departments_owned_by(
     db: AsyncSession, *, tenant_id: uuid.UUID, member_id: uuid.UUID
 ) -> int:
@@ -771,6 +811,7 @@ async def stop_departments_owned_by(
     # gone. Without the lock a hire committing after this select would leave
     # a live agent behind.
     owned = await lock_departments_owned_by(db, tenant_id=tenant_id, member_id=member_id)
+    _announce_departure_after_commit(db, tenant_id, member_id)
     agent_ids = list(
         (
             await db.execute(

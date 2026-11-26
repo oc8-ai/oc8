@@ -207,6 +207,10 @@ const TAB_IDS = [
 ] as const;
 type TabId = (typeof TAB_IDS)[number];
 
+/** The tabs that are nothing but what a personal agent did: its runs (Live,
+ *  Live log, History), its files and its memory. */
+const PRIVATE_TABS: ReadonlySet<TabId> = new Set(["live", "livelog", "history", "files", "memory"]);
+
 /** The agent page's tabs. The Live Log ("livelog") is no tab of its own: it
  *  is the Live tab's technical view, opened from its "Technical view" link
  *  (`?tab=livelog&runId=...`), so while it is open the Live tab is current. */
@@ -434,7 +438,20 @@ function AgentDetail() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
+            {/* The run list behind the run-state badge is the owner's alone
+                (a 404 for anybody else); the current run's state is metadata
+                they keep (R2). */}
+            {agent.contentHidden ? (
+              <HeaderStatusPill
+                agentId={agent.id}
+                status={status}
+                runId={agent.currentRunId ?? null}
+                metadataOnly
+                runState={agent.currentRunState ?? null}
+              />
+            ) : (
+              <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
+            )}
             <DeleteAgentButton agent={agent} mayManage={mayManage} />
             <AgentStartActions
               agent={agent}
@@ -526,7 +543,12 @@ function AgentDetail() {
           asked for -- but a run started by a schedule or another operator is
           followed too, which is what makes a cron-driven agent watchable at
           all. */}
-      {tab === "livelog" && (
+      {/* A personal agent's runs, files, memory and activity are its owner's
+          alone (the API answers each with a 404): anybody else gets the
+          notice, and none of these tabs asks for what it would be refused. */}
+      {agent.contentHidden && PRIVATE_TABS.has(tab) && <PrivateContentNotice />}
+
+      {tab === "livelog" && !agent.contentHidden && (
         <LiveLog
           agentId={agent.id}
           runId={runId ?? agent.currentRunId ?? null}
@@ -535,7 +557,7 @@ function AgentDetail() {
         />
       )}
 
-      {tab === "live" && (
+      {tab === "live" && !agent.contentHidden && (
         <LiveTimeline
           key={agent.id}
           agentId={agent.id}
@@ -544,7 +566,7 @@ function AgentDetail() {
         />
       )}
 
-      {tab === "files" && <WorkspaceFilesPanel agentId={agent.id} />}
+      {tab === "files" && !agent.contentHidden && <WorkspaceFilesPanel agentId={agent.id} />}
 
       {tab === "config" && (
         <div className="grid gap-4 md:grid-cols-2">
@@ -616,9 +638,11 @@ function AgentDetail() {
         </Panel>
       )}
 
-      {tab === "memory" && <AgentMemoryTab agentId={agent.id} mayManage={mayManage} />}
+      {tab === "memory" && !agent.contentHidden && (
+        <AgentMemoryTab agentId={agent.id} mayManage={mayManage} />
+      )}
 
-      {tab === "history" && (
+      {tab === "history" && !agent.contentHidden && (
         <AgentRunHistory agentId={agent.id} onOpenVersions={() => setTab("versions")} />
       )}
 
@@ -639,13 +663,13 @@ function AgentDetail() {
 }
 
 /** In place of a tab whose content belongs to a personal agent's owner alone:
- *  the API answers it with a 404, and an empty editor would read as "this
- *  agent has no instructions". */
+ *  the API answers it with a 404, and an empty editor or list would read as
+ *  "this agent has no instructions" or "never ran". */
 export function PrivateContentNotice({ inline = false }: { inline?: boolean }) {
   const t = useT();
   const words = t(
-    "This is a personal agent. Only its owner sees its instructions, versions and files.",
-    "Das ist ein persönlicher Agent. Seine Anweisungen, Versionen und Dateien sieht nur sein Besitzer.",
+    "This agent belongs to a member's personal department. Only that member can see its runs, files, memory and activity. You see its state and cost.",
+    "Dieser Agent gehört zur persönlichen Abteilung eines Mitglieds. Nur dieses Mitglied sieht seine Läufe, Dateien, Erinnerungen und Aktivitäten. Du siehst Zustand und Kosten.",
   );
   // `inline` inside a panel that already frames it (a trigger, the last action).
   if (inline) return <p className="mt-4 text-sm text-muted-foreground">{words}</p>;
@@ -2526,12 +2550,22 @@ export function HeaderStatusPill({
   agentId,
   status,
   runId,
+  metadataOnly = false,
+  runState = null,
 }: {
   agentId: string;
   status: import("@/lib/mock-data").AgentStatus;
   runId: string | null;
+  /** A personal agent read by anybody but its owner: `runId` is the agent's
+   *  current run and `runState` its state from the detail; no run is asked for. */
+  metadataOnly?: boolean;
+  runState?: string | null;
 }) {
-  const active = useAgentActiveRunState(agentId, runId);
+  const active = useAgentActiveRunState(
+    agentId,
+    runId,
+    metadataOnly ? { knownState: runState } : undefined,
+  );
   return active ? <RunStateBadge state={active} /> : <StatusPill status={status} />;
 }
 

@@ -14,6 +14,7 @@ import {
   api,
   ApiError,
   deleteFile,
+  retryUnlessRefused,
   fetchCapaIcon,
   listInstructionFiles,
   previewBackup,
@@ -660,6 +661,8 @@ export const useAgentWorkspaceFiles = (agentId: string) =>
     queryKey: ["agents", agentId, "workspace", "files"],
     queryFn: () => api.get<WorkspaceFilesDTO>(`/agents/${agentId}/workspace/files`),
     enabled: !!agentId,
+    // A personal agent's files are its owner's: anybody else gets a final 404.
+    retry: retryUnlessRefused,
   });
 
 export interface Board {
@@ -670,8 +673,9 @@ export interface Board {
 }
 
 // `limit` is per column, so a busy "done" column cannot crowd out the two tasks
-// actually in progress.
-export const useDepartmentBoard = (id: string, limit = 25) => {
+// actually in progress. `enabled` false for a member's personal department
+// read by anybody else (`contentHidden`): its board is a 404 for them.
+export const useDepartmentBoard = (id: string, limit = 25, enabled = true) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: [...keys.board(id), limit],
@@ -680,7 +684,8 @@ export const useDepartmentBoard = (id: string, limit = 25) => {
       ...board,
       tasks: board.tasks.map((t) => localizeTask(t, lang)),
     }),
-    enabled: !!id,
+    enabled: !!id && enabled,
+    retry: retryUnlessRefused,
   });
 };
 
@@ -1941,6 +1946,7 @@ export function useAgentMemory(agentId: string) {
   return useQuery({
     queryKey: ["agents", agentId, "memory"],
     queryFn: () => api.get<MemoryList>(`/agents/${agentId}/memory`),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -2125,6 +2131,9 @@ export function useRun(runId: string | null) {
       return mergePolledRun(previous, fresh, live);
     },
     enabled: !!runId,
+    // A run the reader may not read (a personal agent's) answers 404, which
+    // is final: never asked again, so the caller can say so at once.
+    retry: retryUnlessRefused,
     // Live runs only: keeps `updatedAt` fresh enough for the staleness
     // indicator (see the field's comment above) without polling a run
     // that's already finished.
@@ -2181,6 +2190,9 @@ export function useAgentRuns(agentId: string, opts: { limit: number; offset: num
         `/agents/${agentId}/runs?limit=${opts.limit}&offset=${opts.offset}`,
       ),
     enabled: !!agentId,
+    // A personal agent's runs are its owner's: anybody else gets a final 404
+    // (the page header asks for them too).
+    retry: retryUnlessRefused,
     // Keep the current page on screen while the next one loads -- but never
     // another agent's page.
     placeholderData: (previous, previousQuery) =>
@@ -2202,10 +2214,19 @@ const ACTIVE_RUN_RANK: Record<string, number> = {
  *  run this page just started, known before the list has caught up.
  *
  *  Each state is the run's live "run.status" word where one has arrived, laid
- *  over the listed state exactly as useRun does: the list can lag behind it. */
-export function useAgentActiveRunState(agentId: string, currentRunId: string | null) {
-  const runs = useAgentRuns(agentId, { limit: 20, offset: 0 });
-  const current = useRun(currentRunId);
+ *  over the listed state exactly as useRun does: the list can lag behind it.
+ *
+ *  `metadataOnly`: a personal agent read by anybody but its owner, whose runs
+ *  are a 404 for them. Neither the list nor the run is asked for; the state
+ *  is the detail's `currentRunState` for `currentRunId`, followed by its
+ *  "run.status" events (metadata, R2). */
+export function useAgentActiveRunState(
+  agentId: string,
+  currentRunId: string | null,
+  metadataOnly?: { knownState: string | null },
+) {
+  const runs = useAgentRuns(metadataOnly ? "" : agentId, { limit: 20, offset: 0 });
+  const current = useRun(metadataOnly ? null : currentRunId);
   const listed = (runs.data?.items ?? []).filter((r) => r.agentId === agentId);
   const ids = [...new Set([...(currentRunId ? [currentRunId] : []), ...listed.map((r) => r.id)])];
   // Observers only: the cache entry is written by the "run.status" patcher,
@@ -2220,6 +2241,7 @@ export function useAgentActiveRunState(agentId: string, currentRunId: string | n
   const states = ids.map((id, i) => {
     const fromEvent = (live[i]?.data as RunLiveState | null | undefined)?.state;
     if (fromEvent) return fromEvent;
+    if (id === currentRunId && metadataOnly) return metadataOnly.knownState ?? "";
     if (id === currentRunId && current.data) return current.data.state;
     return listed.find((r) => r.id === id)?.state ?? "";
   });
@@ -2523,6 +2545,12 @@ export interface UsageDTO {
   /** The parts of tokensIn read from / written to the provider's prompt cache. */
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** The group's display name (agent or department) and, for an agent row, its
+   *  department. Set even for a member's personal agent, which the admin's
+   *  agent and department lists leave out (its name stays visible, R2). */
+  name?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
 }
 
 /** `month` is the current calendar month on the organisation's clock. */

@@ -6386,6 +6386,9 @@ msgstr ""
 msgid "This address is not allowed."
 msgstr ""
 
+msgid "This agent belongs to a member's personal department. Only that member can see its runs, files, memory and activity. You see its state and cost."
+msgstr ""
+
 msgid "This agent has no published versions yet."
 msgstr ""
 
@@ -6524,7 +6527,10 @@ msgstr ""
 msgid "This integration is not available yet."
 msgstr ""
 
-msgid "This is a personal agent. Only its owner sees its instructions, versions and files."
+msgid "This is a member's personal department. Only that member can see and hire its agents."
+msgstr ""
+
+msgid "This is a member's personal department. Only that member can see its tasks."
 msgstr ""
 
 msgid "This is no longer a personal department, or its owner has left."
@@ -6603,6 +6609,9 @@ msgid "This run failed."
 msgstr ""
 
 msgid "This run has no acting person, so the agent cannot pick an account. Give the agent a fixed access."
+msgstr ""
+
+msgid "This run's steps aren't available to you."
 msgstr ""
 
 msgid "This runtime can't be used here:"

@@ -32,6 +32,7 @@ from oc8.api.v1._export_utils import (
 from oc8.api.v1._export_utils import (
     parse_date_bound as _parse_bound,
 )
+from oc8.approvals.repo import ADMIN_KEPT_ACTIONS, admin_kept_approval_ids
 from oc8.audit.integrity import (
     BATCH as BATCH,  # re-exported: tests monkeypatch this name
 )
@@ -166,16 +167,56 @@ async def _events_to_dtos(
             personal_departments.add(department_id)
             if agent_id is not None:
                 personal_agents[agent_id] = department_id
+    kept_reasons = await _admin_kept_reasons(db, events)
     out: list[AuditEventDTO] = []
     for ev, (agents, departments) in zip(events, subjects, strict=True):
         owners = {personal_agents[a] for a in agents if a in personal_agents}
         owners |= departments & personal_departments
         dto = _event_to_dto(ev)
-        if any(hides(d) for d in owners) and isinstance(dto.resource, dict):
-            stripped = _content_keys(ev.action)
-            dto.resource = {k: v for k, v in dto.resource.items() if k not in stripped}
+        if any(hides(d) for d in owners):
+            if isinstance(dto.resource, dict):
+                stripped = _content_keys(ev.action)
+                dto.resource = {k: v for k, v in dto.resource.items() if k not in stripped}
+            # A reason is free text, and a denial or a decision can quote what
+            # the agent tried: a backstop beside the content keys, kept off
+            # every reader but the owner. The decision itself stays -- and so
+            # does the reason of an event about what the admins keep (T4-4).
+            if ev.id not in kept_reasons:
+                dto.reason = None
         out.append(dto)
     return out
+
+
+async def _admin_kept_reasons(db: DbSession, events: Sequence[m.AuditEvent]) -> set[uuid.UUID]:
+    """The events of one page whose `reason` stays visible to an admin although
+    their agent is personal (ruling T4-4): what the admins see and decide
+    themselves (ruling R2, U3) -- a budget event, and the decision of an
+    `ADMIN_KEPT_ACTIONS` card (budget incident, blast radius), whose reason
+    is often the admin's own. The card's kind is read from the decision's
+    resource, or, for a line written before it carried one, from the card in
+    one query per page. A card that resolves to nothing keeps its reason
+    stripped (fail closed)."""
+    kept: set[uuid.UUID] = set()
+    lookup: dict[uuid.UUID, uuid.UUID] = {}
+    for ev in events:
+        if ev.category == "budget":
+            kept.add(ev.id)
+            continue
+        if not ev.action.startswith("approval."):
+            continue
+        resource = ev.resource if isinstance(ev.resource, dict) else {}
+        action_type = resource.get("action_type")
+        if isinstance(action_type, str):
+            if action_type in ADMIN_KEPT_ACTIONS:
+                kept.add(ev.id)
+            continue
+        approval_id = _as_uuid(resource.get("approval_id"))
+        if approval_id is not None:
+            lookup[ev.id] = approval_id
+    if lookup:
+        found = await admin_kept_approval_ids(db, set(lookup.values()))
+        kept |= {ev_id for ev_id, approval_id in lookup.items() if approval_id in found}
+    return kept
 
 
 def _event_to_dto(ev: m.AuditEvent) -> AuditEventDTO:

@@ -73,6 +73,7 @@ from oc8.departments.personal import (
     PersonalFrameViolation,
     enforce_personal_narrowing,
     ensure_personal_capacity,
+    withholds_content_from_trail,
 )
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
@@ -1210,8 +1211,9 @@ async def delete_agent_memory(
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "memory record not found")
     resource = {"agent_id": str(agent_id), "record_id": str(record_id)}
-    if not agent.is_tenant_assistant:
-        # Never a Copilot note's content in the audit trail: it is personal.
+    if not agent.is_tenant_assistant and not await withholds_content_from_trail(db, agent.id):
+        # Never a Copilot note's content in the audit trail, nor a personal
+        # agent's memory (spec A4): both are personal.
         resource["content_snippet"] = record.content[:200]
     resource["by"] = principal.subject
     await db.delete(record)

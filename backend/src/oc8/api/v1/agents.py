@@ -625,9 +625,11 @@ async def _agent_detail_dto(
     # dead worker can sit in `running` indefinitely and the one worth watching is
     # the latest; queued counts, so a scheduled fire is visible before its
     # container is even up.
+    # Its state rides along: which run and where it stands is metadata an
+    # admin keeps for a personal agent too (R2), unlike the run itself.
     current_run = (
         await db.execute(
-            select(m.AgentRun.id)
+            select(m.AgentRun.id, m.AgentRun.state)
             .where(
                 m.AgentRun.agent_id == agent.id,
                 m.AgentRun.state.notin_([s.value for s in TERMINAL]),
@@ -638,7 +640,7 @@ async def _agent_detail_dto(
             .order_by(m.AgentRun.created_at.desc(), m.AgentRun.id.desc())
             .limit(1)
         )
-    ).scalar_one_or_none()
+    ).one_or_none()
     detail = AgentDetailDTO(
         **base,
         mission=agent.mission,
@@ -649,7 +651,8 @@ async def _agent_detail_dto(
         narrowing_overridden_keys=list(agent.narrowing_overridden_keys or []),
         tool_policy_sources=tool_policy_sources,
         runtime_ref=agent.runtime_ref,
-        current_run_id=str(current_run) if current_run else None,
+        current_run_id=str(current_run.id) if current_run else None,
+        current_run_state=current_run.state if current_run else None,
         temperature=model_params.get("temperature"),
         max_tokens=model_params.get("max_tokens"),
         effort=model_params.get("effort"),

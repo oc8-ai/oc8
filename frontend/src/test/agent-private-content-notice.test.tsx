@@ -73,7 +73,9 @@ function wrap(ui: ReactElement) {
 describe("private content notice", () => {
   it("says the content belongs to the owner, without an editor", () => {
     render(<PrivateContentNotice />);
-    expect(screen.getByText(/only its owner sees its instructions/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/only that member can see its runs, files, memory and activity/i),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
   });
 });
@@ -93,7 +95,9 @@ describe("only the owner acts on a personal agent", () => {
 
   it("shows the notice instead of the trigger editor", () => {
     wrap(<AgentTriggerPanel agent={HIDDEN} />);
-    expect(screen.getByText(/only its owner sees its instructions/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/only that member can see its runs, files, memory and activity/i),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /cron/i })).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();
   });
@@ -101,12 +105,16 @@ describe("only the owner acts on a personal agent", () => {
   it("says the last action is private instead of leaving it empty", () => {
     wrap(<OverviewTab agent={HIDDEN} />);
     expect(screen.getByText("Last action")).toBeInTheDocument();
-    expect(screen.getByText(/only its owner sees its instructions/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/only that member can see its runs, files, memory and activity/i),
+    ).toBeInTheDocument();
   });
 
   it("keeps the owner's last action", () => {
     wrap(<OverviewTab agent={AGENT} />);
     expect(screen.getByText("Drafted a reply to the landlord")).toBeInTheDocument();
-    expect(screen.queryByText(/only its owner sees its instructions/i)).toBeNull();
+    expect(
+      screen.queryByText(/only that member can see its runs, files, memory and activity/i),
+    ).toBeNull();
   });
 });

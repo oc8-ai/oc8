@@ -26,13 +26,24 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.approvals.repo import department_after_person, direct_access_owner, is_member_owned
+from oc8.approvals.repo import (
+    OWNER_DECIDES_TOO,
+    card_department,
+    department_after_person,
+    direct_access_owner,
+    is_member_owned,
+    is_personal_card,
+    personal_owner_of,
+    private_card,
+)
 from oc8.audit import append_event
 from oc8.authz.authority import granted_for_member
 from oc8.authz.permissions import AGENT, APPROVAL_DECIDE_ANY, BUDGET, MANAGE, perm
 from oc8.authz.scope import AgentActor, DecisionActor, HumanActor
+from oc8.db.session import tenant_session
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.notifications.events import on_approval_decided
-from oc8.realtime.emit import publish_after_commit, record_activity
+from oc8.realtime.emit import _bound_to, publish_after_commit, record_activity
 
 Verdict = Literal["approve", "reject"]
 
@@ -169,6 +180,12 @@ EFFECT_PERMISSIONS: Final[dict[str, str | None]] = {
     # agent_manage toggle in the approval's own department -- see
     # `_may_apply_the_effect`, which checks the toggle first.
     "copilot.agent_builder": perm(AGENT, MANAGE),
+    # Lets a run that changed more records than a run should go on
+    # (`api.mcp_gateway._stop_for_blast_radius`): an admin's call, tenant-wide
+    # `approval:decide_any` -- OR the owner of the personal department the
+    # alarm is filed in (`OWNER_DECIDES_TOO`, ruling U3), see
+    # `_may_apply_the_effect`.
+    "blast_radius": APPROVAL_DECIDE_ANY,
     # None means "a seat is enough", and each one is a claim, not a default:
     #
     # `tool_send` resumes the run that is holding the call -- the 3000-EUR gate,
@@ -224,7 +241,21 @@ async def _may_apply_the_effect(
     the same toggle `authorize_agent_write` honours for creating an agent
     there directly. Without the toggle it falls back to the table's
     tenant-wide `agent:manage`.
+
+    `OWNER_DECIDES_TOO` (the blast-radius alarm) is the other: the owner of
+    the personal department the card is filed in applies it there, from the
+    screen or their own phone (`scope.personal_owned`, the ownership
+    `departments.repo.is_private_to` reads), never through the Copilot acting
+    as them -- an agent's assistant does not wave a runaway agent on. In any
+    other department it is the table's `approval:decide_any`.
     """
+    if (
+        action_type in OWNER_DECIDES_TOO
+        and not isinstance(actor, AgentActor)
+        and department_id is not None
+        and department_id in actor.scope.personal_owned
+    ):
+        return True
     if action_type == "copilot.agent_builder":
         if not isinstance(actor, HumanActor):
             return False
@@ -349,6 +380,39 @@ async def raise_approval(
     )
     db.add(approval)
     await db.flush()
+    personal = False
+    #: An admin-kept card its personal department's owner decides too
+    #: (`OWNER_DECIDES_TOO`): announced tenant-wide like any admin-kept card,
+    #: and to the owner's sockets, which the tenant-wide event reaches only
+    #: when the owner holds the feed.
+    owner_too: uuid.UUID | None = None
+    if announce_to_member is None:
+        # A personal agent's card is its owner's alone (spec A4), announced
+        # the way a member-owned card is: to the owner's sockets and push
+        # subscriptions, and on the messenger to the owner's phone only
+        # (`channels.binding.recipients`). A departed owner is told nothing,
+        # and neither is anybody else; the row is kept.
+        kind, owner_member_id = await card_department(db, department_id)
+        personal = is_personal_card(action_type, department_kind=kind)
+        if personal:
+            owner = personal_owner_of(
+                approval, department_kind=kind, owner_member_id=owner_member_id
+            )
+            if owner is not None and await _member_present(db, tenant_id, owner):
+                announce_to_member = owner
+        elif (
+            kind == DEPARTMENT_KIND_PERSONAL
+            and action_type in OWNER_DECIDES_TOO
+            and owner_member_id is not None
+            and await _member_present(db, tenant_id, owner_member_id)
+        ):
+            owner_too = owner_member_id
+    member_event = {
+        "approval_id": str(approval.id),
+        "agent_id": str(agent_id),
+        "title": approval.title,
+        "detail": approval.detail,
+    }
     if announce_to_member is not None:
         # A member-owned card (copilot direct access): its title and detail name
         # the person and their private purpose. Neither the tenant-wide event,
@@ -360,17 +424,139 @@ async def raise_approval(
             tenant_id,
             [announce_to_member],
             "approval.created",
-            {
-                "approval_id": str(approval.id),
-                "agent_id": str(agent_id),
-                "title": approval.title,
-                "detail": approval.detail,
-            },
+            member_event,
             source=f"oc8/approval/{approval.id}",
         )
-    else:
+    elif owner_too is not None:
+        from oc8.realtime.bus import get_event_bus
+
+        # No push: the tenant-wide event's push reaches the owner's
+        # subscriptions already.
+        await get_event_bus().publish_member_event(
+            tenant_id,
+            [owner_too],
+            "approval.created",
+            member_event,
+            source=f"oc8/approval/{approval.id}",
+            push=False,
+        )
+    # The messenger: never for a member-owned card; for a personal one only
+    # while its owner is present, and then to the owner's phone alone.
+    if personal:
+        if announce_to_member is not None:
+            await _announce(db, approval)
+    elif announce_to_member is None:
         await _announce(db, approval)
     return approval
+
+
+async def publish_created(
+    db: AsyncSession,
+    approval: m.ApprovalRequest,
+    *,
+    data: dict[str, Any] | None = None,
+    after_commit: bool = False,
+) -> None:
+    """The tenant-wide `approval.created` event, and the push to every
+    subscriber behind it -- the one place that sends it for a raised card.
+
+    Silent for a card that is not the tenant's to hear of, read off the ROW
+    so a freshly loaded instance answers the same as the one `raise_approval`
+    returned: a member-owned card (`is_member_owned`) and a personal
+    department's (`is_personal_card`), which `raise_approval` announced to
+    their member alone, or to nobody once a personal department's owner has
+    left. Their title and detail are that person's (spec A4).
+
+    `data` is the envelope when the caller's differs from the usual one.
+    `title`/`detail` travel in it so the push never has to re-read a row a
+    fresh session may not see yet (`EventBus._push_payload`). `after_commit`
+    publishes once the caller's transaction commits (`publish_after_commit`);
+    the decision who hears of it is made now, on this session.
+    """
+    if is_member_owned(approval):
+        return
+    tenant_id, approval_id = approval.tenant_id, approval.id
+    kind: str | None = None
+    if approval.department_id is not None:
+        kind = await _department_kind_or_none(db, tenant_id, approval.department_id)
+        if kind is None:
+            # Unreadable is not "no department": it could be a personal one.
+            logger.warning(
+                "could not read the department of approval %s; publishing nothing", approval_id
+            )
+            return
+    if is_personal_card(approval.action_type, department_kind=kind):
+        return
+    event = (
+        data
+        if data is not None
+        else {
+            "approval_id": str(approval_id),
+            "action_type": approval.action_type,
+            "status": approval.status,
+            "title": approval.title,
+            "detail": approval.detail,
+        }
+    )
+
+    async def _publish() -> None:
+        from oc8.realtime.bus import get_event_bus
+
+        await get_event_bus().publish_event(
+            tenant_id, "approval.created", event, source=f"oc8/approval/{approval_id}"
+        )
+
+    if not after_commit:
+        await _publish()
+        return
+
+    async def _publish_quietly() -> None:
+        try:
+            await _publish()
+        except Exception:
+            logger.warning("could not announce approval %s", approval_id, exc_info=True)
+
+    publish_after_commit(db, _publish_quietly)
+
+
+async def _department_kind_or_none(
+    db: AsyncSession, tenant_id: uuid.UUID, department_id: uuid.UUID
+) -> str | None:
+    """The kind of the department a card is filed in, or None when it cannot
+    be read: from the caller's session while it is bound to the tenant (it may
+    hold the card uncommitted), else from a fresh tenant session (a caller that
+    committed has lost its binding, and RLS would show it nothing or raise) --
+    the pattern of `realtime.emit._audience_for`. A lookup that fails answers
+    None, and `publish_created` then publishes nothing.
+
+    The caller's own pending writes are flushed first, OUTSIDE the guard: an
+    error there is the caller's to see, not a lookup that failed."""
+    await db.flush()
+    try:
+        if await _bound_to(db, tenant_id):
+            # A savepoint, so a failed read does not abort the caller's
+            # transaction.
+            async with db.begin_nested():
+                return (await card_department(db, department_id))[0]
+        async with tenant_session(tenant_id) as fresh:
+            return (await card_department(fresh, department_id))[0]
+    except Exception:
+        logger.warning("department %s lookup failed", department_id, exc_info=True)
+        return None
+
+
+async def _member_present(db: AsyncSession, tenant_id: uuid.UUID, member_id: uuid.UUID) -> bool:
+    """The member row is live in this tenant (not offboarded). Read from the
+    database, never the identity map, like `departments.personal.
+    ensure_owner_present`."""
+    found = await db.scalar(
+        select(m.OrgMember.id).where(
+            m.OrgMember.id == member_id,
+            m.OrgMember.tenant_id == tenant_id,
+            m.OrgMember.deleted_at.is_(None),
+        )
+    )
+    return found is not None
 
 
 async def _department_of(
@@ -590,26 +776,7 @@ async def _raise_department_stage(db: AsyncSession, approval: m.ApprovalRequest)
         record_url=approval.record_url,
         related_links=list(approval.related_links or []),
     )
-    tenant_id, stage_id = stage.tenant_id, stage.id
-    event = {
-        "approval_id": str(stage.id),
-        "action_type": stage.action_type,
-        "status": stage.status,
-        "title": stage.title,
-        "detail": stage.detail,
-    }
-
-    async def _publish() -> None:
-        try:
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                tenant_id, "approval.created", event, source=f"oc8/approval/{stage_id}"
-            )
-        except Exception:
-            logger.warning("could not announce approval %s", stage_id, exc_info=True)
-
-    publish_after_commit(db, _publish)
+    await publish_created(db, stage, after_commit=True)
 
 
 async def decide_approval(
@@ -659,6 +826,12 @@ async def decide_approval(
             # The Copilot's decide_approval acts AS the owner; letting it would
             # let the model approve its own request.
             raise NotYourSayAtAll("a direct-access approval is decided by the person, in oc8")
+    elif await private_card(db, approval, actor=actor):
+        # A personal agent's card is decided by its owner alone (spec A4):
+        # checked before `may_decide`, which `decide_everywhere`
+        # (`approval:decide_any`, `all_departments`) answers True for. Same
+        # sentence as a missing row.
+        raise NotYourDepartment("this approval belongs to another department")
     elif not actor.scope.may_decide(approval.department_id):
         raise NotYourDepartment("this approval belongs to another department")
     elif isinstance(actor, AgentActor) and isinstance(
@@ -818,6 +991,9 @@ async def decide_approval(
         resource={
             "approval_id": str(approval.id),
             "agent_id": str(approval.agent_id),
+            # What kind of card: the audit reader keeps the reason of an
+            # admin-kept one (`ADMIN_KEPT_ACTIONS`) visible to admins.
+            "action_type": approval.action_type,
             # Whose queue this was in, and whose task it belonged to. Both are on
             # the row and neither was in the trail: "who may decide this" is the
             # first question asked about a decision afterwards.

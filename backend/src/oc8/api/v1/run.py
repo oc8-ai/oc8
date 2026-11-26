@@ -16,6 +16,7 @@ from oc8 import models as m
 from oc8.agents.repo import (
     RunReach,
     in_start_reach,
+    resolve_cancel_reach,
     resolve_run_reach,
     resolve_start_reach,
     restrict_to_run_reach,
@@ -27,7 +28,7 @@ from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.questions import QuestionError
 from oc8.chat.service import record_answer_turn
-from oc8.departments.repo import personal_content_hidden
+from oc8.departments.repo import is_private_to
 from oc8.runtime.cancellation import record_operator_cancel
 from oc8.runtime.clarification import AnswerRefused, resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
@@ -72,8 +73,17 @@ async def _reachable_run(
 
 async def _refuse_personal_run(db: DbSession, actor: HumanActor, run_row: m.AgentRun) -> None:
     """Only the owner acts on a personal agent: resuming or steering one of its
-    runs is refused to anybody else with the same 404 as no run at all. Reading
-    it is run reach, a separate rule (PR 3)."""
+    runs is refused to anybody else with the same 404 as no run at all. The
+    read reach already leaves such a run out (`RunReach.private`); this stays
+    as the door's own answer, asked of the run it was handed."""
+    if await _private_to_caller(db, actor, run_row):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+
+
+async def _private_to_caller(db: DbSession, actor: HumanActor, run_row: m.AgentRun) -> bool:
+    """Whether `run_row`'s agent lies in a department private to this caller
+    (`departments.repo.is_private_to`) -- the one question `cancel_run` asks
+    after a reach that deliberately does not."""
     located = (
         await db.execute(
             select(m.Agent.department_id, m.Department.kind)
@@ -81,10 +91,9 @@ async def _refuse_personal_run(db: DbSession, actor: HumanActor, run_row: m.Agen
             .where(m.Agent.id == run_row.agent_id)
         )
     ).one_or_none()
-    if located is not None and personal_content_hidden(
-        kind=located.kind, department_id=located.department_id, scope=actor.scope
-    ):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+    return located is not None and is_private_to(
+        actor.scope, kind=located.kind, department_id=located.department_id
+    )
 
 
 class AnswerRequest(BaseModel):
@@ -574,10 +583,17 @@ async def cancel_run(
     409 if the run is already terminal; 404 if missing, cross-tenant (RLS), or
     a run of an agent the caller may not see.
     Idempotent: a second cancel adds no duplicate row.
+
+    A run of a personal agent the caller does not own (ruling U1): the stop
+    is still theirs -- an emergency stop, so its reach (`cancel_reach`) keeps
+    the private departments -- but nothing of the run comes back: the answer
+    is `_stopped_dto`, ids and state only, and the `run.cancel` audit entry
+    names who stopped it (`actor_id`) and the run, never what it did.
     """
     principal = actor.principal
-    reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
+    reach = await resolve_cancel_reach(request, db, actor)
     run_row = await _reachable_run(db, reach, actor, run_id)
+    private = await _private_to_caller(db, actor, run_row)
 
     current = RunState(run_row.state)
     if current in TERMINAL:
@@ -585,10 +601,23 @@ async def cancel_run(
 
     # The same unlocked run_cancellation row the chat's Stop writes; see
     # oc8.runtime.cancellation.
-    await record_operator_cancel(db, run=run_row, principal=principal, actor_id=None)
+    await record_operator_cancel(db, run=run_row, principal=principal, actor_id=actor.member.id)
     # A parked run was re-queued by the cancel: report that state, read back
     # while the tenant binding of this transaction still holds.
     await db.refresh(run_row)
-    dto = run_to_dto(run_row)
+    dto = _stopped_dto(run_row) if private else run_to_dto(run_row)
     await db.commit()
     return dto
+
+
+def _stopped_dto(run: m.AgentRun) -> RunDTO:
+    """What a stop of a private run answers (U1): the metadata an admin keeps
+    (R2) -- ids, state, phase, heartbeat -- and none of the content: no task,
+    output, failure text, tool calls, question or rendered output."""
+    return RunDTO(
+        id=str(run.id),
+        agent_id=str(run.agent_id),
+        state=run.state,
+        phase=run.phase,
+        updated_at=run.updated_at.isoformat(),
+    )

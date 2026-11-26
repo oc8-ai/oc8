@@ -81,7 +81,7 @@ async def reaches_agent_runs(
     """Whether this caller reaches `agent`'s runs with `permission` -- the run
     doors' rule (`agents.repo.run_reach`), asked for a run that is NOT the
     caller's own conversation: an autonomous run, or a colleague's."""
-    reach = run_reach(authority=authority, scope=scope, permission=permission)
+    reach = await run_reach(db, authority=authority, scope=scope, permission=permission)
     reachable = await run_reachable_agent(
         db, reach=reach, tenant_id=agent.tenant_id, agent_id=agent.id
     )

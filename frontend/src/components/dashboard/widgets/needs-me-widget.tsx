@@ -199,7 +199,19 @@ export function NeedsMeWidgetBody({
  *  current, so an open row stays live. */
 function RowTimeline({ runId }: { runId: string }) {
   const t = useT();
-  const { data: run } = useRun(runId);
+  const { data: run, isError } = useRun(runId);
+  // A run behind a card the reader may decide but not read (a personal
+  // agent's blast_radius card, U3) is a 404: say so, never load for ever.
+  if (!run && isError) {
+    return (
+      <p className="px-3 text-muted-foreground">
+        {t(
+          "This run's steps aren't available to you.",
+          "Die Schritte dieses Laufs sind für dich nicht verfügbar.",
+        )}
+      </p>
+    );
+  }
   if (!run) {
     return (
       <p className="px-3 text-muted-foreground">{t("Loading the steps…", "Lädt die Schritte …")}</p>
