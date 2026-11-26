@@ -986,6 +986,36 @@ class PrincipalUsageDTO(CamelModel):
     cache_write_tokens: int = 0
 
 
+class UsageSeriesDTO(CamelModel):
+    """One person's tokens (in + out) per bucket of a `UsageTimeseriesDTO`.
+
+    `key` is the member's uuid, `"none"` for usage no person is attached to
+    (everything recorded before member attribution existed) or `"others"` for
+    the members beyond the top ten, summed. `name` is None when the member has
+    no display name or no longer exists -- the screen says so rather than
+    printing a raw uuid."""
+
+    key: str
+    member_id: uuid.UUID | None
+    name: str | None
+    total: int
+    #: Aligned index for index with `UsageTimeseriesDTO.buckets`.
+    points: list[int]
+
+
+class UsageTimeseriesDTO(CamelModel):
+    """`GET /usage/timeseries`: token usage per person over a recent range,
+    bucketed on the organisation's clock. `buckets` are the bucket starts with
+    the zone's offset at that instant, so the two 02:00 hours of an autumn
+    clock change stay two distinct labels."""
+
+    range: Literal["24h", "7d", "30d"]
+    bucket: Literal["hour", "day"]
+    timezone: str
+    buckets: list[datetime]
+    series: list[UsageSeriesDTO]
+
+
 class TokenUsageExportRowDTO(CamelModel):
     """One `token_usage_record` row for `GET /usage/export` -- one row per
     metered request, unlike `PrincipalUsageDTO`'s per-day/per-group rollup.
@@ -998,6 +1028,10 @@ class TokenUsageExportRowDTO(CamelModel):
     agent_name: str | None
     department_id: str | None
     department_name: str | None
+    #: The person the request was spent for; None for usage recorded before
+    #: member attribution existed or made on nobody's behalf.
+    member_id: str | None
+    member_name: str | None
     model: str
     provider: str
     tokens_in: int
