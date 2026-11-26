@@ -299,10 +299,13 @@ async def test_timeseries_unknown_member_has_no_name(
     gone = uuid.uuid4()
     async with app_session(tenant) as db:
         unnamed = _member(tenant, "")
-        db.add(unnamed)
+        mailed = _member(tenant, "")
+        mailed.email = "ben@example.test"
+        db.add_all([unnamed, mailed])
         await db.flush()
         db.add(_usage(tenant, dt.datetime(2026, 11, 20, 12, tzinfo=dt.UTC), gone, 9))
         db.add(_usage(tenant, dt.datetime(2026, 11, 20, 12, tzinfo=dt.UTC), unnamed.id, 8))
+        db.add(_usage(tenant, dt.datetime(2026, 11, 20, 12, tzinfo=dt.UTC), mailed.id, 7))
         await db.commit()
 
     body = await _get(tenant, "24h")
@@ -312,6 +315,8 @@ async def test_timeseries_unknown_member_has_no_name(
     assert by_key[str(gone)]["total"] == 9
     # An empty display name is no name either, not "".
     assert by_key[str(unnamed.id)]["name"] is None
+    # Without a display name the member's email names the series.
+    assert by_key[str(mailed.id)]["name"] == "ben@example.test"
 
 
 async def test_timeseries_empty_range(

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Select, and_, func, literal_column, or_, select
+from sqlalchemy import ColumnElement, Select, and_, func, literal_column, or_, select
 
 from oc8 import models as m
 from oc8.agents.repo import resolve_run_reach, restrict_to_run_reach
@@ -267,6 +267,14 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _member_label() -> ColumnElement[str | None]:
+    """A member's name for usage reports: the display name, else the email
+    (people created by SSO or dev login may have no display name yet)."""
+    return func.coalesce(
+        func.nullif(m.OrgMember.display_name, ""), func.nullif(m.OrgMember.email, "")
+    )
+
+
 def _usage_buckets(
     unit: Literal["hour", "day"], count: int, zone: ZoneInfo, now: datetime
 ) -> list[datetime]:
@@ -371,7 +379,7 @@ async def usage_timeseries(
     names: dict[uuid.UUID, str] = {}
     if top:
         found = await db.execute(
-            select(m.OrgMember.id, m.OrgMember.display_name).where(m.OrgMember.id.in_(top))
+            select(m.OrgMember.id, _member_label()).where(m.OrgMember.id.in_(top))
         )
         names = {member: name for member, name in found.all() if name}
 
@@ -501,7 +509,7 @@ async def export_usage(
     from_ts = _parse_bound(from_, field="from", end_of_day=False)
     to_ts = _parse_bound(to, field="to", end_of_day=True)
     base = _usage_filtered(
-        select(m.TokenUsageRecord, m.Agent.name, m.Department.name, m.OrgMember.display_name)
+        select(m.TokenUsageRecord, m.Agent.name, m.Department.name, _member_label())
         .outerjoin(m.Agent, m.Agent.id == m.TokenUsageRecord.agent_id)
         .outerjoin(m.Department, m.Department.id == m.TokenUsageRecord.department_id)
         .outerjoin(m.OrgMember, m.OrgMember.id == m.TokenUsageRecord.member_id),
