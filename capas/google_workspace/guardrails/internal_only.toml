@@ -14,7 +14,7 @@ approval_eur = ""
 # preset an operator picked BECAUSE nothing may reach outsiders is exactly the
 # mismatch this list exists to prevent.
 only = [
-    "gmail_search", "gmail_get", "gmail_list_labels", "gmail_modify_labels",
+    "gmail_search", "gmail_get", "gmail_get_attachment", "gmail_list_labels", "gmail_modify_labels",
     "calendar_list_events", "calendar_get_event", "calendar_check_free_busy",
     "drive_list", "drive_get_content", "drive_search", "drive_upload", "drive_update_content",
     "docs_get_text", "docs_replace_text", "docs_create_from_template",

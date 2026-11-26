@@ -17,11 +17,12 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ColumnElement, and_, exists, false, or_, select, true
+from sqlalchemy import ColumnElement, and_, exists, false, not_, or_, select
 from sqlalchemy.orm import aliased
 
 from oc8 import models as m
 from oc8.authz.permissions import AGENT, MANAGE, perm
+from oc8.departments.repo import is_private_to, private_department_ids
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -66,11 +67,15 @@ def board_visibility(
     Never `department_id IN ()`: an empty scope contributes `false()`, not a
     skipped filter (which would fail open).
     """
-    if tenant_wide:
-        return true()
+    # A personal agent's board is its owner's (spec A4): neither tenant-wide
+    # `agent:view` nor a seat reaches it for anybody else. A share still
+    # does -- the owner chose to give that one board to that person.
+    not_private = not_(m.DataBoard.department_id.in_(private_department_ids(scope)))
     terms: list[ColumnElement[bool]] = []
-    if scope.viewable:
-        terms.append(m.DataBoard.department_id.in_(scope.viewable))
+    if tenant_wide:
+        terms.append(not_private)
+    elif scope.viewable:
+        terms.append(and_(m.DataBoard.department_id.in_(scope.viewable), not_private))
     if member_id is not None:
         terms.append(_shared_with(member_id))
     return or_(*terms) if terms else false()
@@ -129,7 +134,11 @@ async def visible_board(
     if row is None:
         return None
     if tenant_wide or row.department_id in scope.viewable:
-        return row
+        kind = await db.scalar(
+            select(m.Department.kind).where(m.Department.id == row.department_id)
+        )
+        if not is_private_to(scope, kind=kind, department_id=row.department_id):
+            return row
     if member_id is not None and await is_shared_with(db, board_id=row.id, member_id=member_id):
         return row
     return None

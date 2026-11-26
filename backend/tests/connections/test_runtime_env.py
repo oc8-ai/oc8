@@ -464,3 +464,243 @@ async def test_a_disabled_plugin_is_refused_on_every_launch_path(
         with pytest.raises(ConnectionRequired):
             await run_mcp_env(db, run=run, conn=conn, tool="mail_send")
     assert minted == []
+
+
+async def test_a_session_opened_at_startup_asks_for_nothing(
+    app_session: AppSessionFactory,
+) -> None:
+    """E2E N3: the in-process engine opens a session for every connection the
+    agent has, before the model picks a tool. An account missing for one the
+    run never uses must not put "Connect now" on an email-only run: the
+    startup open raises without recording a call to action."""
+    from oc8.agent import engine
+
+    tenant, _anna, conn_id, run_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired):
+            await engine._open_mcp_session(
+                db, tenant_id=tenant, mcp_conn=conn, run=run, record=False
+            )
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert not (run.context or {}).get("connection_required")
+
+
+async def test_startup_records_the_call_to_action_only_when_nothing_opened(
+    app_session: AppSessionFactory,
+) -> None:
+    """When no connection of the run could be opened, the agent has nothing to
+    work with: then the first missing account is asked for, as before."""
+    from oc8.agent import engine
+
+    tenant, _anna, conn_id, run_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired) as missing:
+            await engine._open_mcp_session(
+                db, tenant_id=tenant, mcp_conn=conn, run=run, record=False
+            )
+        await engine._ask_for_startup_accounts(db, run, [missing.value], opened_any=True)
+        assert not (run.context or {}).get("connection_required")
+        await engine._ask_for_startup_accounts(db, run, [missing.value], opened_any=False)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["connection_required"]["reason"] == "not_connected"
+
+
+# ------------------------------------------- asked when it is needed (review)
+
+
+async def _missing_at_startup(
+    app_session: AppSessionFactory,
+) -> tuple[uuid.UUID, uuid.UUID, ConnectionRequired]:
+    from oc8.agent import engine
+
+    tenant, _anna, conn_id, run_id = await _world(app_session)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        conn = await db.get(m.McpConnection, conn_id)
+        assert run is not None and conn is not None
+        with pytest.raises(ConnectionRequired) as missing:
+            await engine._open_mcp_session(
+                db, tenant_id=tenant, mcp_conn=conn, run=run, record=False
+            )
+    return tenant, run_id, missing.value
+
+
+async def _asked(app_session: AppSessionFactory, tenant: uuid.UUID, run_id: uuid.UUID) -> Any:
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        return (run.context or {}).get("connection_required")
+
+
+async def test_an_account_to_reconnect_is_always_asked_for(
+    app_session: AppSessionFactory,
+) -> None:
+    """Review of N3: an expired login is not "an account this run may never
+    use" -- it is broken, and the person must reconnect it, whatever else
+    opened."""
+    from oc8.agent import engine
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    expired = ConnectionRequired(missing.integration, "needs_reauth")
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [expired], opened_any=True)
+    assert (await _asked(app_session, tenant, run_id))["reason"] == "needs_reauth"
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        pytest.param("find_tools", {"query": "send a mail with microsoft365"}, id="find names it"),
+        pytest.param(
+            "find_tools", {"query": "mail", "connection": "microsoft365"}, id="find scoped"
+        ),
+        pytest.param("microsoft365.mail_send", {"to": ["a@x.com"]}, id="a call routed to it"),
+    ],
+)
+async def test_an_account_the_model_reaches_for_is_asked_for(
+    app_session: AppSessionFactory, name: str, arguments: dict[str, Any]
+) -> None:
+    """Quiet at startup, but once the model reaches for the connection the
+    person is asked to connect it -- else the run just says "unavailable"."""
+    from oc8.agent import engine
+    from oc8.modelrouter import ToolCall
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry("microsoft365", missing)]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [missing], opened_any=True)
+        assert not (run.context or {}).get("connection_required")
+        await engine._ask_when_reached(
+            db, run, unavailable, ToolCall(id="c1", name=name, arguments=arguments)
+        )
+    assert (await _asked(app_session, tenant, run_id))["reason"] == "not_connected"
+
+
+async def test_a_run_that_never_needs_the_account_stays_quiet(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent import engine
+    from oc8.modelrouter import ToolCall
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry("microsoft365", missing)]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        for call in (
+            ToolCall(id="c1", name="email.mail_send", arguments={"to": ["a@x.com"]}),
+            ToolCall(id="c2", name="find_tools", arguments={"query": "calendar"}),
+            ToolCall(id="c3", name="mail_send", arguments={}),
+        ):
+            await engine._ask_when_reached(db, run, unavailable, call)
+    assert await _asked(app_session, tenant, run_id) is None
+
+
+_OK = {"tool": "imap.send", "connection": "imap", "state": "done"}
+_FAILED = {"tool": "imap.send", "connection": "imap", "state": "failed"}
+_DENIED = {"tool": "imap.delete", "connection": "imap", "state": "denied"}
+_CORE = {"tool": "update_todos", "connection": None, "state": "done"}
+_FIND = {"tool": "find_tools", "connection": None, "state": "done"}
+
+
+@pytest.mark.parametrize(
+    ("status", "calls", "output", "asked"),
+    [
+        pytest.param("done", [], "You're welcome!", False, id="a tool-less chat turn"),
+        pytest.param("done", [_CORE], "Here is the summary.", False, id="core tools only"),
+        pytest.param("done", [_OK, _FAILED], "Sent.", False, id="succeeded with another tool"),
+        pytest.param("done", [_FAILED, _DENIED], "It did not work.", True, id="every call failed"),
+        pytest.param("done", [_FIND], "I found nothing for that.", True, id="searched for tools"),
+        pytest.param(
+            "done",
+            [],
+            "Microsoft 365 is not available to me right now.",
+            True,
+            id="the answer names the connection",
+        ),
+        pytest.param("waiting_for_approval", [_FAILED], "", False, id="not ended yet"),
+        pytest.param("failed", [_FAILED], "boom", False, id="a failed run"),
+        pytest.param("interrupted", [_FIND], "", False, id="an interrupted run"),
+    ],
+)
+async def test_a_run_that_tried_and_got_nowhere_asks_for_the_missing_account(
+    app_session: AppSessionFactory,
+    status: str,
+    calls: list[dict[str, Any]],
+    output: str,
+    asked: bool,
+) -> None:
+    """Review of rounds 7 and 8: quiet at startup, the prompt stayed hidden
+    when the run then got nowhere -- but asking at the end of EVERY run that
+    used no connection brought back the original complaint ("Connect now" on
+    a "thanks"). A finished run asks only when it tried and got nowhere:
+    every call failed or was refused, it searched for tools, or its answer
+    names the missing connection."""
+    from oc8.agent import engine
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry("microsoft365", missing)]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [missing], opened_any=True)
+        await engine._ask_after_idle_run(
+            db, run, unavailable, status=status, calls=calls, output=output
+        )
+    result = await _asked(app_session, tenant, run_id)
+    assert (result is not None) is asked
+
+
+@pytest.mark.parametrize(
+    ("name", "calls", "output", "asked"),
+    [
+        pytest.param(
+            "microsoft365",
+            [_OK],
+            "I used your email tools instead of Microsoft 365.",
+            False,
+            id="named after a successful send",
+        ),
+        pytest.param(
+            "microsoft365",
+            [],
+            "microsoft365 is not available to me.",
+            True,
+            id="named as one word",
+        ),
+        pytest.param("git", [], "I put the digits together for you.", False, id="inside a word"),
+        pytest.param("git", [], "Git is not available to me.", True, id="as a word"),
+    ],
+)
+async def test_an_answer_names_the_connection_only_as_a_word_and_only_when_nothing_worked(
+    app_session: AppSessionFactory,
+    name: str,
+    calls: list[dict[str, Any]],
+    output: str,
+    asked: bool,
+) -> None:
+    """Review of round 9: a run that got its work done may still mention the
+    connection it did without, and a short name must not match inside
+    another word."""
+    from oc8.agent import engine
+
+    tenant, run_id, missing = await _missing_at_startup(app_session)
+    unavailable = [engine._startup_entry(name, missing)]
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        await engine._ask_for_startup_accounts(db, run, [missing], opened_any=True)
+        await engine._ask_after_idle_run(
+            db, run, unavailable, status="done", calls=calls, output=output
+        )
+    result = await _asked(app_session, tenant, run_id)
+    assert (result is not None) is asked

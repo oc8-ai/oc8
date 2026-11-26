@@ -41,6 +41,7 @@ from oc8.approvals import (
     UnknownDecision,
     UnknownOption,
     decide_approval,
+    publish_created,
     raise_approval,
 )
 from oc8.approvals.repo import load_for_actor, visible_approvals
@@ -54,7 +55,12 @@ from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
 from oc8.config import get_settings
 from oc8.connections.causal import causal_ancestors
 from oc8.copilot.notes import member_behind_run_task
-from oc8.departments.repo import visible_department, visible_departments
+from oc8.departments.personal import withholds_content_from_trail
+from oc8.departments.repo import (
+    private_department_ids_for_agent,
+    visible_department,
+    visible_departments,
+)
 from oc8.edition.tools import (
     NO_EDITION_OFFER,
     EditionOffer,
@@ -64,7 +70,7 @@ from oc8.edition.tools import (
     edition_tool_writes,
     registered_edition_tool,
 )
-from oc8.knowledge.retrieval import retrieve_kb_context
+from oc8.knowledge.retrieval import OwnerClaim, retrieve_kb_context
 from oc8.kpis.aggregate import compute_kpis
 from oc8.memory.router import MemoryWriteError, retrieve_context, write_memory
 from oc8.metering.budget import current_month_tokens, get_budget
@@ -1936,6 +1942,40 @@ async def person_token_role(
     return None
 
 
+async def owner_token_role(
+    db: AsyncSession, *, tenant_id: uuid.UUID, owner: m.OrgMember, run_id: uuid.UUID | None
+) -> str | None:
+    """The role claim this run carries for `owner`, the owner of the agent's
+    personal department, or None: what a personal agent borrows knowledge
+    with when its owner has no assigned role (spec A5, ruling U4). Asked by
+    `knowledge.retrieval.lending_departments` through `owner_claim`, once it
+    has found the owner.
+
+    Only the OWNER's claim: the run's own claim counts when the run's
+    `originating_operator` is the owner (`chat.audience._role_for`'s shape),
+    otherwise the claim inherited along the causal chain (`person_token_role`,
+    which checks the subject itself). Anybody else's claim lends nothing."""
+    if run_id is None:
+        return None
+    claim = await _acting_token_role(db, tenant_id=tenant_id, run_id=run_id)
+    if claim is not None:
+        run = await db.get(m.AgentRun, run_id)
+        acting = (run.context or {}).get("originating_operator") if run is not None else None
+        return claim if acting == owner.subject else None
+    return await person_token_role(db, tenant_id=tenant_id, run_id=run_id, person=owner)
+
+
+def _owner_claim(db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID | None) -> OwnerClaim:
+    """`owner_token_role` for this run, in the shape `lending_departments`
+    asks it: only when there is an owner, and only one without an assigned
+    role."""
+
+    async def claim(owner: m.OrgMember) -> str | None:
+        return await owner_token_role(db, tenant_id=tenant_id, owner=owner, run_id=run_id)
+
+    return claim
+
+
 async def _context_kb_ids(
     db: AsyncSession, *, tenant_id: uuid.UUID, run_id: uuid.UUID | None
 ) -> frozenset[uuid.UUID] | None:
@@ -2471,6 +2511,37 @@ async def _create_delegation(
     return await RunRepository(db).create(
         tenant_id=tenant_id, agent_id=target.id, context=context, source="delegation"
     )
+
+
+@dataclass(frozen=True)
+class _LookupTrail:
+    """What a lookup tool (`search_memory`, `search_knowledge`) writes about
+    itself into the activity feed and the audit trail. `query` None: the
+    question is withheld, so no resource may carry it."""
+
+    message: str
+    detail: str | None
+    query: str | None
+
+
+async def _lookup_trail(
+    db: AsyncSession,
+    agent: m.Agent,
+    *,
+    line: str,
+    withheld_line: str,
+    query: str,
+    found: str | None,
+) -> _LookupTrail:
+    """The trail of one lookup. For a personal agent (spec A4,
+    `departments.personal.withholds_content_from_trail`) it says THAT the agent
+    looked something up, never what it asked or what came back: the rows are
+    read by administrators, and the question and the answer are the owner's
+    content. Every other agent's trail is `line` with `found` as its detail,
+    as it always was."""
+    if await withholds_content_from_trail(db, agent.id):
+        return _LookupTrail(message=withheld_line, detail=None, query=None)
+    return _LookupTrail(message=line, detail=found, query=query)
 
 
 async def _department_frame(db: AsyncSession, agent: m.Agent) -> dict[str, Any]:
@@ -3191,13 +3262,21 @@ async def execute_control_tool(
                     "keine Vorgeschichte."
                 )
             )
+        trail = await _lookup_trail(
+            db,
+            agent,
+            line=f"Erinnert sich an: {query}",
+            withheld_line="Erinnert sich",
+            query=query,
+            found=recalled[:500],
+        )
         await record_activity(
             db,
             tenant_id=tenant_id,
             agent_id=agent.id,
             status="info",
-            message=f"Erinnert sich an: {query}",
-            detail=recalled[:500],
+            message=trail.message,
+            detail=trail.detail,
         )
         return ControlOutcome(output=recalled)
 
@@ -3246,6 +3325,9 @@ async def execute_control_tool(
             # What the member pinned to the chat or its project: their release.
             released_kb_ids=released,
             skipped_local=skipped_local,
+            # A personal agent borrows its owner's departments' bases with the
+            # owner's authority, and this turn's claim only if it is theirs.
+            owner_claim=_owner_claim(db, tenant_id=tenant_id, run_id=run_id),
         )
         # A base that could not be searched with this model is said, once, in
         # a fixed line the chat shows the member under the answer's steps --
@@ -3256,6 +3338,18 @@ async def execute_control_tool(
         # answerable afterwards. Without it I drew the wrong conclusion myself:
         # counted zero lookups and reported the knowledge base ignored, while the
         # answer quoted it word for word.
+        # Spec A4: a personal agent's question is its owner's content, so
+        # neither the audit resource nor the feed line repeats it, nor what was
+        # found (`_lookup_trail`). Whatever later changes how this tool
+        # retrieves keeps both.
+        trail = await _lookup_trail(
+            db,
+            agent,
+            line=f"Schlägt nach: {query}",
+            withheld_line="Schlägt nach",
+            query=query,
+            found=context[:500] or None,
+        )
         await append_event(
             db,
             tenant_id=tenant_id,
@@ -3266,7 +3360,7 @@ async def execute_control_tool(
             resource={
                 "agent_id": str(agent.id),
                 "task_id": str(task.id),
-                "query": query,
+                **({} if trail.query is None else {"query": trail.query}),
                 "found": bool(context.strip()),
                 "narrowed_to": sorted(
                     str(i)
@@ -3281,8 +3375,8 @@ async def execute_control_tool(
             tenant_id=tenant_id,
             agent_id=agent.id,
             status="info",
-            message=f"Schlägt nach: {query}",
-            detail=(context[:500] or None),
+            message=trail.message,
+            detail=trail.detail,
         )
         if not context.strip():
             refusal = (
@@ -3535,7 +3629,9 @@ async def execute_control_tool(
             status="info",
             message=f"Produced file: {filename}",
         )
-        return ControlOutcome(output=f"Saved '{filename}' ({attachment.size_bytes} bytes).")
+        return ControlOutcome(
+            output=f"Saved '{filename}' ({attachment.size_bytes} bytes), file id {attachment.id}."
+        )
 
     if tc.name == RUN_SHELL.name:
         # isolated_shell.py already ran this locally before the call ever
@@ -3577,6 +3673,20 @@ async def execute_control_tool(
         # (see the design's Cross-agent read section). With no explicit
         # producer, prefer the active run's own file before the tenant-wide
         # newest-wins fallback; filenames are not unique within a tenant.
+        #
+        # Except a personal department's runs (spec A4): their files are read
+        # only by an agent of that same department. In the statement, so a
+        # hidden file neither answers with anything but the plain miss below
+        # (no oracle) nor shadows an older readable file of the same name.
+        conditions.append(
+            m.FileAttachment.owner_id.not_in(
+                select(m.AgentRun.id)
+                .join(m.Agent, m.Agent.id == m.AgentRun.agent_id)
+                .where(
+                    m.Agent.department_id.in_(private_department_ids_for_agent(agent.department_id))
+                )
+            )
+        )
         ordering: list[Any] = []
         if not run_id_arg and run_id is not None:
             ordering.append(case((m.FileAttachment.owner_id == run_id, 0), else_=1))
@@ -3722,12 +3832,10 @@ async def execute_control_tool(
             message=f"Entscheidung angefragt: {question}",
             detail=context[:500],
         )
-        from oc8.realtime.bus import get_event_bus
-
-        await get_event_bus().publish_event(
-            tenant_id,
-            "approval.created",
-            {
+        await publish_created(
+            db,
+            approval,
+            data={
                 "approval_id": str(approval.id),
                 "agent_id": str(agent.id),
                 # Carried in the envelope on purpose: the executor commits, not
@@ -3736,7 +3844,6 @@ async def execute_control_tool(
                 "title": approval.title,
                 "detail": approval.detail,
             },
-            source=f"oc8/approval/{approval.id}",
         )
         # Deliberately NOT a suspend: a queue behind this agent must not wait on
         # a human's lunch break. The decision comes back later as its own run.

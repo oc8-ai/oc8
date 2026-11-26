@@ -84,7 +84,7 @@ interface DeptSpendRow {
   savedCostUSD: number;
 }
 
-function buildAgentRows(
+export function buildAgentRows(
   usage: UsageDTO[] | undefined,
   agentList: Agent[] | undefined,
   deptList: Department[] | undefined,
@@ -96,15 +96,17 @@ function buildAgentRows(
       ? deptList?.find((d) => d.id === agent.departmentId)
       : undefined;
     const isUnassigned = !r.group || r.group === "unassigned";
+    // The usage row names the agent and its department itself: a member's
+    // personal agent is not in the admin's agent list, but its name is.
     return {
       id: r.group,
-      name: agent?.name ?? (isUnassigned ? unassignedLabel : r.group),
+      name: agent?.name ?? r.name ?? (isUnassigned ? unassignedLabel : r.group),
       role: agent?.role ?? null,
       llm: agent?.llm ?? null,
       provider: agent?.provider ?? null,
       avatarColor: agent?.avatarColor ?? "var(--muted-foreground)",
-      departmentId: agent?.departmentId ?? null,
-      departmentName: dept?.name ?? null,
+      departmentId: agent?.departmentId ?? r.departmentId ?? null,
+      departmentName: dept?.name ?? r.departmentName ?? null,
       tokensIn: r.tokensIn,
       tokensOut: r.tokensOut,
       costUSD: r.providerCostMicros / 1_000_000,
@@ -122,7 +124,7 @@ export function buildDeptRows(
     const isUnassigned = !r.group || r.group === "unassigned";
     return {
       id: r.group,
-      name: dept?.name ?? (isUnassigned ? unassignedLabel : r.group),
+      name: dept?.name ?? r.name ?? (isUnassigned ? unassignedLabel : r.group),
       accent: dept?.accent ?? "var(--muted-foreground)",
       tokensIn: r.tokensIn,
       tokensOut: r.tokensOut,
@@ -787,8 +789,8 @@ function AgentsTab({ agentRows, currency }: { agentRows: AgentSpendRow[]; curren
                     <div>
                       <div className="font-medium">{r.name}</div>
                       <div className="text-[11px] text-muted-foreground">
-                        {r.role ?? t("unassigned agent", "nicht zugeordneter Agent")}
-                        {r.departmentName && ` · ${r.departmentName}`}
+                        {[r.role, r.departmentName].filter(Boolean).join(" · ") ||
+                          t("unassigned agent", "nicht zugeordneter Agent")}
                       </div>
                     </div>
                   </div>

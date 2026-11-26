@@ -11,11 +11,13 @@ from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agents.versioning import version_meta, version_payload
+from oc8.authz.permissions import PERSONAL_OWNER_PERMISSIONS
 from oc8.capas.i18n import translations_for
 from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
+from oc8.models.core import DEPARTMENT_KIND_STANDARD
 from oc8.schemas.dto import (
     ActivityDTO,
     AgentDTO,
@@ -110,6 +112,7 @@ def agent_to_dto(a: m.Agent) -> AgentDTO:
         llm=p.get("llm", ""),
         provider=p.get("provider", ""),
         status=AGENT_STATUS_TO_UI.get(a.status, "running"),
+        awaiting_hire_approval=a.status == "pending_approval",
         tools=p.get("tools", []),
         last_action=p.get("last_action", ""),
         last_run=p.get("last_run", ""),
@@ -131,6 +134,32 @@ def agent_to_dto(a: m.Agent) -> AgentDTO:
     )
 
 
+#: What a reader who is not the owner's seat never sees of a personal agent
+#: (`departments.repo.personal_content_hidden`): its instructions and what it
+#: did. Everything else -- name, role, status, tools and policy, autonomy,
+#: version numbers, sampling knobs -- is metadata and stays.
+_AGENT_CONTENT_BLANKS: dict[str, object] = {
+    "last_action": "",
+    "last_action_translations": {},
+    "last_run": "",
+    "last_run_translations": {},
+    "prompt_starters": [],
+    "guardrails": [],
+    "guardrails_translations": {},
+    "mission_translations": {},
+}
+
+
+def without_agent_content[D: AgentDTO](dto: D) -> D:
+    """`dto` with the agent's content fields blank -- `mission` too, on the
+    detail DTO that carries it. The one blanking every reader of a personal
+    agent's metadata goes through."""
+    update = dict(_AGENT_CONTENT_BLANKS)
+    if "mission" in type(dto).model_fields:
+        update["mission"] = ""
+    return dto.model_copy(update=update)
+
+
 def department_to_dto(d: m.Department) -> DepartmentDTO:
     p: dict[str, Any] = d.presentation or {}
     i18n = p.get("i18n")
@@ -145,6 +174,7 @@ def department_to_dto(d: m.Department) -> DepartmentDTO:
         activity=p.get("activity", 0),
         accent=p.get("accent", ""),
         prompt_caching_enabled=d.prompt_caching_enabled,
+        kind=d.kind or DEPARTMENT_KIND_STANDARD,
         deleted_at=d.deleted_at.isoformat() if d.deleted_at else None,
         name_translations=_i18n_str(i18n, "name"),
         goal_translations=_i18n_str(i18n, "goal"),
@@ -205,6 +235,10 @@ class ApprovalNames:
     #: queue must sort by how much work they block. One batched query like
     #: every other field here, never one per row.
     runs: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
+    #: raising run id (the payload's `run_id`) -> the message that run
+    #: answers. Every turn of a chat runs on one task titled after the first
+    #: message; the card quotes the turn that asked (E2E N8).
+    turns: dict[str, str] = field(default_factory=dict)
 
 
 _NO_NAMES = ApprovalNames()
@@ -219,7 +253,9 @@ async def resolve_approval_names(
     `approvals/repo.py`, which is the security boundary, and widening it into a
     four-way join to decorate a screen is how a `WHERE` clause acquires a shape
     nobody can read. This runs afterwards, over rows the scope has already
-    admitted, so it can see nothing the caller could not.
+    admitted, so it can see nothing the caller could not -- a personal agent's
+    card is admitted to its owner alone (`approvals.repo.private_card`), and
+    the run excerpt and run id are read only for runs of the cards' own agents.
     """
     if not rows:
         return _NO_NAMES
@@ -235,6 +271,44 @@ async def resolve_approval_names(
         found = (await db.execute(select(column, label).where(column.in_(ids)))).all()
         return {row[0]: row[1] or "" for row in found}
 
+    async def _turns() -> dict[str, str]:
+        """The message each raising run answers, in two batched queries."""
+        run_ids: set[uuid.UUID] = set()
+        for a in rows:
+            raw = (a.payload or {}).get("run_id")
+            try:
+                run_ids.add(uuid.UUID(str(raw)))
+            except ValueError:
+                continue
+        if not run_ids:
+            return {}
+        replies = (
+            await db.execute(
+                select(m.AgentRun.id, m.AgentRun.context["reply_to_message_id"].astext).where(
+                    m.AgentRun.id.in_(run_ids),
+                    # The raising agent's own run only: the card was admitted,
+                    # so its agent is one the caller may see the content of.
+                    m.AgentRun.agent_id.in_(agent_ids),
+                )
+            )
+        ).all()
+        message_of: dict[uuid.UUID, str] = {}
+        for run_id, raw_message in replies:
+            try:
+                message_of[uuid.UUID(str(raw_message))] = str(run_id)
+            except ValueError:
+                continue
+        if not message_of:
+            return {}
+        found = (
+            await db.execute(
+                select(m.ChatMessage.id, m.ChatMessage.content).where(
+                    m.ChatMessage.id.in_(set(message_of))
+                )
+            )
+        ).all()
+        return {message_of[mid]: (content or "")[:200] for mid, content in found if content}
+
     async def _runs(ids: set[uuid.UUID]) -> dict[uuid.UUID, uuid.UUID]:
         """task_id -> run_id. Ordered so a task with more than one run (a
         resumed run opens no new one, but a re-run of the same task does)
@@ -245,7 +319,7 @@ async def resolve_approval_names(
         rows = (
             await db.execute(
                 select(m.AgentRun.task_id, m.AgentRun.id)
-                .where(m.AgentRun.task_id.in_(ids))
+                .where(m.AgentRun.task_id.in_(ids), m.AgentRun.agent_id.in_(agent_ids))
                 .order_by(m.AgentRun.updated_at.asc())
             )
         ).all()
@@ -260,6 +334,7 @@ async def resolve_approval_names(
         # raw uuid printed under "entschieden von" is worse than a blank.
         members=await _names(m.OrgMember.id, m.OrgMember.display_name, member_ids),
         runs=await _runs(task_ids),
+        turns=await _turns(),
     )
 
 
@@ -355,7 +430,8 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
         department_name=(resolved.departments.get(a.department_id, "") if a.department_id else ""),
         agent_name=resolved.agents.get(a.agent_id, ""),
         task_id=str(a.task_id) if a.task_id else None,
-        task_title=resolved.tasks.get(a.task_id, "") if a.task_id else "",
+        task_title=resolved.turns.get(str(payload.get("run_id") or ""))
+        or (resolved.tasks.get(a.task_id, "") if a.task_id else ""),
         # The raiser's own run first: a Copilot conversation runs every turn
         # on one task, so the task's run is only a guess there.
         run_id=(
@@ -460,6 +536,7 @@ def seat_to_dto(seat: Seat) -> SeatDTO:
         department_name=seat.department_name,
         seat_role=seat.seat_role,
         agent_manage=seat.agent_manage,
+        owner_permissions=sorted(PERSONAL_OWNER_PERMISSIONS) if seat.personal_owner else [],
     )
 
 

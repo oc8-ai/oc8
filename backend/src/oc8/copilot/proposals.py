@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from oc8 import models as m
+from oc8.agents.hire import create_hire_request
 from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz.scope import scope_for_principal
@@ -128,12 +130,19 @@ async def apply_proposal(db: AsyncSession, proposal_id: uuid.UUID, actor: Princi
     actor_member_id = actor_member.id if actor_member is not None else None
     try:
         for operation in operations:
-            await apply_operation(
+            created = await apply_operation(
                 db,
                 tenant_id=actor.tenant_id,
                 data=operation.configuration,
                 actor_member_id=actor_member_id,
             )
+            if operation.operation_type == "agent.create" and created is not None:
+                agent = await db.get(m.Agent, created)
+                if agent is not None and agent.status == "pending_approval":
+                    # The tenant's hire gate held it (`apply_operation` read the
+                    # flag): raise its hire request, as the agent-create route
+                    # and the builder do -- or nobody could ever approve it.
+                    await create_hire_request(db, agent=agent)
     except InvalidOperation as exc:
         proposal.status = "rejected"
         await db.flush()

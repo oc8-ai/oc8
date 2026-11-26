@@ -11,4 +11,4 @@ read = true
 modify = true
 approval_actions = []
 approval_eur = ""
-only = ["mail_search", "mail_get", "mail_list_folders", "mail_create_draft", "mail_move", "mail_mark_read"]
+only = ["mail_search", "mail_get", "mail_list_folders", "mail_list_attachments", "mail_get_attachment", "mail_create_draft", "mail_move", "mail_mark_read"]

@@ -34,6 +34,15 @@ function build(over: Partial<RunStepsInput> = {}) {
 }
 
 describe("rows", () => {
+  it("keeps an approved call the resumed run did not carry out as approved", () => {
+    // Review of F10: a held call a person approved, recorded with its
+    // `decision` still `require_approval`, must not read as still waiting.
+    const steps = build({
+      toolCalls: [call({ state: "approved", decision: "require_approval", result: undefined })],
+    });
+    expect(steps.rows[0].state).toBe("approved");
+  });
+
   it("maps one row per recorded call, in recorded order", () => {
     const steps = build({
       toolCalls: [call({ tool: "search_records" }), call({ tool: "create_record", step: 2 })],

@@ -161,6 +161,33 @@ describe("tier 3 — the right", () => {
     ).toBe("Changed something in odoo");
   });
 
+  it("asks the catalog with a placeholder, not a filled-in string (review of F15)", () => {
+    // A translator's catalog has "Changed something in {connection}"; a key
+    // with the connection already filled in ("... in email") matches nothing.
+    const catalog: Record<string, string> = {
+      "Changed something in {connection}": "A modifié quelque chose dans {connection}",
+      "Read from {connection}": "A consulté {connection}",
+    };
+    const french = (en: string) => catalog[en] ?? en;
+    expect(
+      resolveToolLabel({ tool: "delete_record", connection: "odoo" }, catalogue, french, "fr"),
+    ).toBe("A modifié quelque chose dans odoo");
+    expect(
+      resolveToolLabel({ tool: "search_records", connection: "odoo" }, catalogue, french, "fr"),
+    ).toBe("A consulté odoo");
+  });
+
+  it("does not say a change happened while it waits for approval (E2E F13)", () => {
+    expect(
+      resolveToolLabel(
+        { tool: "delete_record", connection: "odoo", awaitingApproval: true },
+        catalogue,
+        t,
+        "en",
+      ),
+    ).toBe("Wants to change something in odoo");
+  });
+
   it("never shows a raw name when the right is known", () => {
     for (const tool of [...catalogue.read, ...catalogue.modify]) {
       const label = resolveToolLabel({ tool, connection: "odoo" }, catalogue, t, "en");

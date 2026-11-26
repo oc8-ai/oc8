@@ -6,7 +6,11 @@ from __future__ import annotations
 import base64
 import email
 import email.policy
-from collections.abc import Callable
+import json
+import re
+import uuid
+from collections.abc import Callable, Iterator
+from email.message import EmailMessage
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -128,12 +132,23 @@ async def test_attachment_round_trip(
     ]
     assert "line one" not in mail["text"]
 
+    # Every attachment comes back as a file (core keeps it as a file of the
+    # run); a text one is also readable in place.
     text = await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="1")
-    assert text["encoding"] == "text" and text["content"] == "line one\nline two\n"
+    assert (text.name, text.mime_type, text.data) == (
+        "notes.txt",
+        "text/plain",
+        b"line one\nline two\n",
+    )
+    assert text.details["content"] == "line one\nline two\n"
     binary = await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="2")
-    assert binary["name"] == "invoice.pdf" and binary["size"] == len(pdf)
-    assert binary["encoding"] == "base64"
-    assert base64.b64decode(binary["content"]) == pdf
+    assert (binary.name, binary.mime_type, binary.data) == (
+        "invoice.pdf",
+        "application/pdf",
+        pdf,
+    )
+    assert binary.details["size"] == len(pdf) and "content" not in binary.details
+    assert base64.b64encode(pdf).decode()[:40] not in json.dumps(binary.details)
 
     with pytest.raises(Exception, match="no attachment 3"):
         await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="3")
@@ -223,7 +238,8 @@ async def test_send_with_an_attachment(
     assert msg["From"] == "Agent Smith <agent@example.com>"
     assert msg["To"] == "alice@example.com"
     assert msg["Cc"] == "Bob <bob@example.com>"
-    assert msg["Auto-Submitted"] == "auto-replied"
+    # A new mail is generated, not a reply (RFC 3834).
+    assert msg["Auto-Submitted"] == "auto-generated"
     assert msg["Message-ID"] == result["message_id"]
     body = msg.get_body(preferencelist=("plain",))
     assert body is not None and body.get_content().strip() == "Here it is."
@@ -262,6 +278,7 @@ async def test_reply_keeps_the_thread_and_marks_itself_automatic(
     assert body is not None
     text = body.get_content()
     assert text.startswith("Answer.")
+    assert "On Fri, 20 Nov 2026 10:00:00 +0000, Alice <alice@example.com> wrote:" in text
     assert "> please have a look." in text
 
 
@@ -277,10 +294,386 @@ async def test_forward_attaches_the_original(
     [raw] = greenmail.messages(user={"login": "bob", "password": "bob-pw-123"})
     msg = parsed(raw)
     assert msg["Subject"] == "Fwd: FYI"
-    assert msg["Auto-Submitted"] == "auto-replied"
+    assert msg["Auto-Submitted"] == "auto-generated"
     [original] = [p for p in msg.iter_attachments() if p.get_content_type() == "message/rfc822"]
     inner = original.get_content()
     assert inner["Subject"] == "FYI"
+
+
+@pytest.mark.parametrize("date", [None, "not a date"])
+async def test_a_reply_to_a_mail_without_a_usable_date_quotes_only_the_sender(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+    date: str | None,
+) -> None:
+    raw = re.sub(rb"(?m)^Date: .*\r?\n", b"", make_mail(subject="Question"))
+    if date is not None:
+        raw = f"Date: {date}\n".encode() + raw
+    greenmail.append(raw)
+    [hit] = await call(tools, "mail_search")
+    await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    [sent] = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    body = parsed(sent).get_body(preferencelist=("plain",))
+    assert body is not None
+    text = body.get_content().replace("\r\n", "\n")
+    assert "\n\nAlice <alice@example.com> wrote:\n> Hi agent," in text
+    assert "On " not in text
+
+
+async def test_what_this_capa_sends_is_never_news_to_another_listener(
+    tools: ModuleType,
+    mailbox: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+) -> None:
+    """A new mail, a reply and a forward are all marked automatic, so a
+    second agent's mailbox (or ours) does not start a run for them."""
+    greenmail.append(make_mail())
+    [hit] = await call(tools, "mail_search")
+    await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    await call(tools, "mail_forward", id=hit["id"], to=["alice@example.com"])
+    received = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    assert len(received) == 3
+    alice = {"login": "alice", "password": "alice-pw-123", "address": "alice@example.com"}
+    other = mailbox.Account.from_fields(greenmail.fields(user=alice))
+    assert [mailbox.skip_reason(parsed(raw), other) for raw in received] == ["auto-submitted"] * 3
+
+
+def _run_file(name: str, mime: str, data: bytes) -> dict[str, Any]:
+    """An attachment as core hands it over once it resolved a run file id
+    (oc8.agent.run_files): the bridge never sees oc8's storage."""
+    return {
+        "file_id": "0190f0aa-0000-7000-8000-000000000001",
+        "name": name,
+        "mime_type": mime,
+        "size": len(data),
+        "content_base64": base64.b64encode(data).decode(),
+    }
+
+
+async def test_send_reply_and_forward_attach_run_files(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+) -> None:
+    pdf = b"%PDF-1.4 \x00\x01 quarterly" * 20
+    alice = {"login": "alice", "password": "alice-pw-123"}
+    await call(
+        tools,
+        "mail_send",
+        to=["alice@example.com"],
+        subject="Q3",
+        body="Attached.",
+        attachments=[
+            {"file": _run_file("q3.pdf", "application/pdf", pdf)},
+            # A name of its own wins over the file's.
+            {"file": _run_file("x.pdf", "application/pdf", pdf), "name": "renamed.pdf"},
+        ],
+    )
+    greenmail.append(make_mail(subject="Question", message_id="<q1@example.com>"))
+    [hit] = await call(tools, "mail_search")
+    await call(
+        tools,
+        "mail_reply",
+        id=hit["id"],
+        body="See the file.",
+        attachments=[{"file": _run_file("answer.pdf", "application/pdf", pdf)}],
+    )
+    await call(
+        tools,
+        "mail_forward",
+        id=hit["id"],
+        to=["alice@example.com"],
+        attachments=[{"file": _run_file("extra.pdf", "application/pdf", pdf)}],
+    )
+    sent, replied, forwarded = (parsed(raw) for raw in greenmail.messages(user=alice))
+    files = {p.get_filename(): p for p in sent.iter_attachments()}
+    assert set(files) == {"q3.pdf", "renamed.pdf"}
+    assert files["q3.pdf"].get_content_type() == "application/pdf"
+    assert files["q3.pdf"].get_payload(decode=True) == pdf
+    [answer] = replied.iter_attachments()
+    assert answer.get_filename() == "answer.pdf" and answer.get_payload(decode=True) == pdf
+    names = sorted(p.get_filename() or p.get_content_type() for p in forwarded.iter_attachments())
+    assert names == ["extra.pdf", "message/rfc822"]
+
+
+async def test_an_unresolved_file_reference_is_refused(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    """Only core can turn a file id into a file; a bare id reaching the bridge
+    means nothing resolved it, and nothing is sent."""
+    with pytest.raises(Exception, match="file id"):
+        await call(
+            tools,
+            "mail_send",
+            to=["alice@example.com"],
+            subject="s",
+            body="b",
+            attachments=[{"file": "0190f0aa-0000-7000-8000-000000000001"}],
+        )
+    assert greenmail.messages(user={"login": "alice", "password": "alice-pw-123"}) == []
+
+
+def test_attachment_parameters_take_run_files(tools: ModuleType) -> None:
+    """The marker core looks for (oc8.agent.run_files.FILE_MARKER)."""
+    by_name = {t.name: t for t in tools.TOOLS}
+    for name in ("mail_send", "mail_reply", "mail_forward"):
+        items = by_name[name].input_schema["properties"]["attachments"]["items"]
+        assert items["properties"]["file"]["x-oc8-file"] is True, name
+
+
+# --- the Sent folder -----------------------------------------------------------
+
+
+def _flags(greenmail: Any, folder: str) -> list[bytes]:
+    conn = greenmail.imap()
+    try:
+        typ, _ = conn.select(f'"{folder}"')
+        assert typ == "OK"
+        _, data = conn.uid("FETCH", "1:*", "(FLAGS)")
+        return [line if isinstance(line, bytes) else line[0] for line in data if line]
+    finally:
+        conn.logout()
+
+
+@pytest.fixture
+def folders(greenmail: Any) -> Iterator[Callable[[str], None]]:
+    """Creates folders for one test and deletes them after: purging GreenMail
+    empties mailboxes but keeps their folders."""
+    made: list[str] = []
+
+    def create(folder: str) -> None:
+        conn = greenmail.imap()
+        try:
+            typ, data = conn.create(f'"{folder}"')
+            assert typ == "OK", data
+        finally:
+            conn.logout()
+        made.append(folder)
+
+    yield create
+    # Renamed away rather than deleted: GreenMail drops the connection on
+    # DELETE of a folder that has held mail. The new name matches no Sent name.
+    for folder in made:
+        conn = greenmail.imap()
+        try:
+            typ, data = conn.rename(f'"{folder}"', f'"zz-{uuid.uuid4().hex}"')
+            assert typ == "OK", data
+        finally:
+            conn.logout()
+
+
+async def test_a_sent_mail_is_kept_in_the_sent_folder_as_read(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    result = await call(
+        tools,
+        "mail_send",
+        to=["alice@example.com"],
+        subject="Kept",
+        body="A copy, please.",
+    )
+    assert result["status"] == "sent" and result["sent_folder"] == "Sent"
+    assert "note" not in result
+    [copy] = greenmail.messages(folder="Sent")
+    assert parsed(copy)["Message-ID"] == result["message_id"]
+    assert all(b"\\Seen" in flags for flags in _flags(greenmail, "Sent"))
+    # A reply and a forward are kept too.
+    greenmail.append(make_mail())
+    [hit] = await call(tools, "mail_search")
+    await call(tools, "mail_reply", id=hit["id"], body="Answer.")
+    await call(tools, "mail_forward", id=hit["id"], to=["bob@example.com"])
+    assert len(greenmail.messages(folder="Sent")) == 3
+
+
+async def test_the_configured_sent_folder_wins(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    folders("Outbox-Archive")
+    mail_env(sent_folder="Outbox-Archive")
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["sent_folder"] == "Outbox-Archive"
+    assert len(greenmail.messages(folder="Outbox-Archive")) == 1
+    assert greenmail.messages(folder="Sent") == []
+
+
+async def test_without_a_sent_folder_the_mail_is_only_sent(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent"
+    assert "sent_folder" not in result
+    assert result["note"] == ("No Sent folder found; no copy kept. Set sent_folder on the login.")
+    assert len(greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})) == 1
+
+
+async def test_a_failed_copy_does_not_fail_the_send(
+    tools: ModuleType, greenmail: Any, mail_env: Callable[..., dict[str, str]]
+) -> None:
+    mail_env(sent_folder="No Such Folder")
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent"
+    assert "sent_folder" not in result
+    assert "No Such Folder" in result["note"] and "sent" in result["note"]
+    assert len(greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})) == 1
+
+
+async def test_pop3_keeps_no_copy(
+    tools: ModuleType,
+    mailbox: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    mail_env(protocol="pop3")
+
+    def no_imap(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("POP3 must not open IMAP")
+
+    monkeypatch.setattr(mailbox, "imap_session", no_imap)
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent" and "sent_folder" not in result and "note" not in result
+    assert greenmail.messages(folder="Sent") == []
+
+
+async def test_a_dash_turns_the_copy_off(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    mail_env(sent_folder="-")
+    result = await call(tools, "mail_send", to=["alice@example.com"], subject="s", body="b")
+    assert result["status"] == "sent" and "sent_folder" not in result and "note" not in result
+    assert greenmail.messages(folder="Sent") == []
+
+
+def _account(mailbox: ModuleType, **changes: Any) -> Any:
+    import dataclasses
+
+    base = mailbox.Account(
+        incoming_protocol="imap",
+        incoming_host="imap.example.com",
+        incoming_port=993,
+        incoming_security="ssl",
+        smtp_host="smtp.example.com",
+        smtp_port=465,
+        smtp_security="ssl",
+        username="agent",
+        password="pw",
+        smtp_username="agent",
+        smtp_password="pw",
+        from_address="agent@example.com",
+        from_name="",
+    )
+    return dataclasses.replace(base, **changes)
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["smtp.gmail.com", "smtp.googlemail.com", "SMTP.Office365.com", "smtp-mail.outlook.com."],
+)
+def test_a_provider_that_keeps_sent_mail_itself_gets_no_second_copy(
+    mailbox: ModuleType, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    def no_imap(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the provider keeps the copy itself")
+
+    monkeypatch.setattr(mailbox, "imap_session", no_imap)
+    msg = EmailMessage()
+    msg["Subject"] = "s"
+    assert mailbox._keep_sent(_account(mailbox, smtp_host=host), None, msg, []) == (None, "")
+
+
+class _SlowImap:
+    """An IMAP connection whose APPEND never answers."""
+
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+        self.sock = self
+
+    def settimeout(self, value: float) -> None:
+        self.timeouts.append(value)
+
+    def append(self, *args: Any) -> Any:
+        raise TimeoutError("timed out")
+
+
+def test_a_copy_the_server_does_not_take_in_time_is_only_a_note(
+    mailbox: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    conn = _SlowImap()
+
+    @contextmanager
+    def slow_session(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        yield conn
+
+    monkeypatch.setattr(mailbox, "imap_session", slow_session)
+    msg = EmailMessage()
+    msg["Subject"] = "s"
+    folder, note = mailbox._keep_sent(_account(mailbox, sent_folder="Sent"), None, msg, [])
+    assert folder is None and "was sent" in note and "Sent" in note
+    assert conn.timeouts and max(conn.timeouts) <= mailbox.SENT_COPY_TIMEOUT_SECONDS <= 15
+
+
+async def test_bcc_is_named_in_the_sent_copy_only(
+    tools: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    folders: Callable[[str], None],
+) -> None:
+    folders("Sent")
+    result = await call(
+        tools,
+        "mail_send",
+        to=["alice@example.com"],
+        bcc=["bob@example.com"],
+        subject="Quiet",
+        body="b",
+    )
+    assert result["sent_folder"] == "Sent"
+    [copy] = greenmail.messages(folder="Sent")
+    assert "bob@example.com" in str(parsed(copy)["Bcc"])
+    [delivered] = greenmail.messages(user={"login": "alice", "password": "alice-pw-123"})
+    assert parsed(delivered)["Bcc"] is None
+    assert b"bob@example.com" not in delivered
+
+
+@pytest.mark.parametrize(
+    ("listing", "expected"),
+    [
+        # SPECIAL-USE wins over any name.
+        ([("Sent", []), ("Gesendete Elemente", ["\\Sent"])], "Gesendete Elemente"),
+        ([("INBOX", []), ("Sent Items", [])], "Sent Items"),
+        ([("INBOX", []), ("INBOX.Sent", [])], "INBOX.Sent"),
+        ([("inbox", []), ("sent messages", [])], "sent messages"),
+        ([("INBOX", []), ("Drafts", ["\\Drafts"])], None),
+    ],
+)
+def test_which_folder_is_the_sent_folder(
+    mailbox: ModuleType, listing: list[tuple[str, list[str]]], expected: str | None
+) -> None:
+    folders = [{"name": name, "special_use": use} for name, use in listing]
+    assert mailbox.sent_folder_of(folders) == expected
 
 
 async def test_recipient_and_size_limits(
@@ -321,6 +714,25 @@ async def test_a_too_large_attachment_is_not_read(
         await call(tools, "mail_get_attachment", id=hit["id"], attachment_id="1")
 
 
+async def test_a_forward_counts_the_mail_and_its_extra_files_together(
+    tools: ModuleType,
+    mailbox: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    greenmail.append(make_mail())
+    [hit] = await call(tools, "mail_search")
+    [stored] = greenmail.messages()
+    # Room for the mail, and for the extra file, but not for both.
+    monkeypatch.setattr(mailbox, "MAX_ATTACHMENT_BYTES", len(stored) + 100)
+    extra = [{"name": "notes.txt", "text": "x" * 200}]
+    with pytest.raises(Exception, match="together"):
+        await call(tools, "mail_forward", id=hit["id"], to=["bob@example.com"], attachments=extra)
+    assert greenmail.messages(user={"login": "bob", "password": "bob-pw-123"}) == []
+
+
 # --- POP3 ---------------------------------------------------------------------
 
 
@@ -336,7 +748,7 @@ async def test_pop3_reads_searches_and_deletes_by_uidl(
     mail = await call(tools, "mail_get", id=found[0]["id"])
     assert mail["subject"] == "Pop one" and mail["folder"] is None
     att = await call(tools, "mail_get_attachment", id=found[0]["id"], attachment_id="1")
-    assert att["content"] == "hi"
+    assert att.details["content"] == "hi" and att.data == b"hi"
     assert len(await call(tools, "mail_search", text="look")) == 2
 
     await call(tools, "mail_delete", id=found[0]["id"])
@@ -384,6 +796,38 @@ async def test_the_bridge_reports_a_tool_error_as_an_error_result(
 
     listed = await bridge._on_list_tools(None, None)
     assert len(listed.tools) == 10
+
+
+async def test_the_bridge_returns_an_attachment_as_binary_content(
+    bridge: ModuleType,
+    greenmail: Any,
+    mail_env: Callable[..., dict[str, str]],
+    make_mail: Any,
+) -> None:
+    from mcp import types
+
+    pdf = b"%PDF-1.4 \x00\x01" * 30
+    greenmail.append(make_mail(attachments=[("März bericht.pdf", "application/pdf", pdf)]))
+    listed = await bridge._on_call_tool(
+        None, types.CallToolRequestParams(name="mail_search", arguments={})
+    )
+    mail_id = json.loads(listed.content[0].text)[0]["id"]
+    result = await bridge._on_call_tool(
+        None,
+        types.CallToolRequestParams(
+            name="mail_get_attachment", arguments={"id": mail_id, "attachment_id": "1"}
+        ),
+    )
+    assert not result.is_error
+    details, blob = result.content
+    assert json.loads(details.text)["name"] == "März bericht.pdf"
+    assert isinstance(blob, types.EmbeddedResource)
+    assert blob.resource.mime_type == "application/pdf"
+    assert base64.b64decode(blob.resource.blob) == pdf
+    # The name core files it under is the URI's last segment.
+    from urllib.parse import unquote, urlparse
+
+    assert unquote(urlparse(str(blob.resource.uri)).path).rsplit("/", 1)[-1] == "März bericht.pdf"
 
 
 async def test_the_bridge_starts_the_way_core_launches_it(
@@ -509,7 +953,9 @@ async def test_a_reply_to_on_the_senders_domain_is_followed(
     greenmail.append(make_mail(headers={"Reply-To": "Bob <bob@example.com>"}))
     [hit] = await call(tools, "mail_search")
     result = await call(tools, "mail_reply", id=hit["id"], body="Answer.")
-    assert "note" not in result
+    # The Reply-To was followed, so the only note is the one about the copy
+    # (this mailbox has no Sent folder).
+    assert result["note"] == ("No Sent folder found; no copy kept. Set sent_folder on the login.")
     assert greenmail.messages(user={"login": "alice", "password": "alice-pw-123"}) == []
     [raw] = greenmail.messages(user={"login": "bob", "password": "bob-pw-123"})
     assert parsed(raw)["To"] == "Bob <bob@example.com>"

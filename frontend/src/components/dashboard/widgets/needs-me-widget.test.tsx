@@ -26,11 +26,13 @@ function mock({
   clarifications = [],
   parked = [],
   run = undefined,
+  runError = false,
 }: {
   approvals?: unknown[];
   clarifications?: unknown[];
   parked?: unknown[];
   run?: unknown;
+  runError?: boolean;
 }) {
   vi.spyOn(hooks, "useApprovals").mockReturnValue({ data: approvals, isPending: false } as never);
   vi.spyOn(hooks, "useClarifications").mockReturnValue({
@@ -38,7 +40,11 @@ function mock({
     isPending: false,
   } as never);
   vi.spyOn(hooks, "useRuns").mockReturnValue({ data: parked, isPending: false } as never);
-  vi.spyOn(hooks, "useRun").mockReturnValue({ data: run, isPending: false } as never);
+  vi.spyOn(hooks, "useRun").mockReturnValue({
+    data: run,
+    isPending: false,
+    isError: runError,
+  } as never);
 }
 
 describe("NeedsMeWidget", () => {
@@ -125,6 +131,19 @@ describe("NeedsMeWidget", () => {
     fireEvent.click(screen.getByText("Approve the Acme offer"));
     expect(screen.getByTestId("run-step-timeline")).toBeInTheDocument();
     expect(screen.getByText("Made a note")).toBeInTheDocument();
+  });
+
+  // A personal agent's blast_radius card reaches an admin (U3), its run does
+  // not (a 404): the row says so instead of loading for ever.
+  it("says the steps are unavailable when the run can't be read", () => {
+    mock({
+      approvals: [{ id: "ap1", title: "Check the blast radius", runId: "r1", createdAt: "" }],
+      runError: true,
+    });
+    render(<NeedsMeWidget config={{}} onConfigChange={vi.fn()} />, { wrapper });
+    fireEvent.click(screen.getByText("Check the blast radius"));
+    expect(screen.getByText(/this run's steps aren't available to you/i)).toBeInTheDocument();
+    expect(screen.queryByText(/loading the steps/i)).not.toBeInTheDocument();
   });
 
   it("fetches no run for a collapsed row", () => {

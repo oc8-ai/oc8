@@ -140,7 +140,9 @@ async def _order_spies(
         await original_commit(self, *a, **kw)
         order.append("commit")
 
-    async def _spy_publish(tenant_id: Any, *, run_id: Any, timing: dict[str, Any]) -> None:
+    async def _spy_publish(
+        tenant_id: Any, *, run_id: Any, timing: dict[str, Any], **kw: Any
+    ) -> None:
         order.append("publish")
         published.append(timing)
 

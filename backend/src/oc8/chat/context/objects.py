@@ -46,14 +46,19 @@ from oc8 import models as m
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.approvals.repo import load_for_actor
 from oc8.authz.authority import tenant_wide_read
-from oc8.authz.permissions import AGENT, COPILOT_USE, DEPARTMENT, VIEW, perm
+from oc8.authz.permissions import AGENT, COPILOT_USE, DEPARTMENT, MANAGE, VIEW, perm
 from oc8.authz.scope import APPROVAL_VIEW, AgentActor
 from oc8.chat.context.base import ContextPage, Viewer
 from oc8.chat.context.registry import register
 from oc8.chat.context.sources import DEFAULT_CLASSIFICATION
 from oc8.chat.reach import reachable_chat_agent, reaches_agent_runs
 from oc8.copilot.redaction import redact_text
-from oc8.departments.repo import visible_department, visible_departments
+from oc8.departments.repo import (
+    department_kind,
+    personal_content_hidden,
+    visible_department,
+    visible_departments,
+)
 from oc8.runtime.person import whose_run
 from oc8.runtime.run_inputs import may_manage_agent
 
@@ -91,6 +96,10 @@ class Scoped[T]:
 
     id: uuid.UUID
     row: T | None = None
+    #: Set by `authorize` when this viewer may see the object's metadata but
+    #: not its content -- a personal agent reached as a `department:manage`
+    #: holder (`departments.repo.personal_content_hidden`).
+    metadata_only: bool = False
 
     def loaded(self) -> T:
         if self.row is None:
@@ -126,10 +135,19 @@ class AgentResolver(_Summarized):
             scope=viewer.scope,
             tenant_wide=tenant_wide_read(viewer.authority, perm(AGENT, VIEW)),
             agent_id=obj.id,
+            member_id=viewer.member.id,
+            manage_all=tenant_wide_read(viewer.authority, perm(DEPARTMENT, MANAGE)),
         )
         if row is None or row.tenant_id != viewer.member.tenant_id:
             return False
         obj.row = row
+        if row.department_id is not None:
+            kind = await department_kind(
+                db, tenant_id=row.tenant_id, department_id=row.department_id
+            )
+            obj.metadata_only = personal_content_hidden(
+                kind=kind, department_id=row.department_id, scope=viewer.scope
+            )
         return True
 
     def ref_id(self, obj: Any) -> str:
@@ -140,10 +158,10 @@ class AgentResolver(_Summarized):
 
     async def summary(self, db: AsyncSession, obj: Any) -> str:
         agent = obj.loaded()
-        return _compact(
-            f"Agent {agent.name} ({agent.role_title or 'no role title'}), status "
-            f"{agent.status}. Mission: {agent.mission or 'none'}"
-        )
+        head = f"Agent {agent.name} ({agent.role_title or 'no role title'}), status {agent.status}."
+        if obj.metadata_only:
+            return _compact(head)
+        return _compact(f"{head} Mission: {agent.mission or 'none'}")
 
     def deep_link(self, obj: Any) -> str | None:
         return f"/agents/{obj.id}"
@@ -179,6 +197,8 @@ class DepartmentResolver(_Summarized):
             scope=viewer.scope,
             tenant_wide=tenant_wide_read(viewer.authority, perm(DEPARTMENT, VIEW)),
             department_id=obj.id,
+            member_id=viewer.member.id,
+            manage_all=tenant_wide_read(viewer.authority, perm(DEPARTMENT, MANAGE)),
         )
         if row is None or row.tenant_id != viewer.member.tenant_id:
             return False

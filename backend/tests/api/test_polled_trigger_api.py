@@ -121,6 +121,8 @@ async def test_create_listens_on_the_agents_fixed_login(
         "lastOkAt": None,
         "lastError": None,
         "lastErrorAt": None,
+        "lastSkipped": None,
+        "lastSkippedAt": None,
     }
     assert body["lastSkipReason"] is None
     async with app_session(polled.tenant) as db:
@@ -159,6 +161,8 @@ async def test_the_poll_status_and_skip_reason_show_on_the_trigger(
         cursor.last_polled_at = failed_at
         cursor.last_error = "LoginFailed: login failed"
         cursor.last_error_at = failed_at
+        cursor.last_skipped = "auto-submitted"
+        cursor.last_skipped_at = failed_at
         trigger = await db.get(m.Trigger, uuid.UUID(created["id"]))
         assert trigger is not None
         trigger.enabled = False
@@ -183,6 +187,8 @@ async def test_the_poll_status_and_skip_reason_show_on_the_trigger(
     assert dt.datetime.fromisoformat(status["lastErrorAt"]) == failed_at
     assert dt.datetime.fromisoformat(status["lastPolledAt"]) == failed_at
     assert status["lastOkAt"] is None
+    assert status["lastSkipped"] == "auto-submitted"
+    assert dt.datetime.fromisoformat(status["lastSkippedAt"]) == failed_at
     assert by_kind["event"]["lastSkipReason"] == EVENT_TARGET_CHANGED
     assert by_kind["cron"]["pollStatus"] is None
     assert by_kind["cron"]["eventConfig"] == {}

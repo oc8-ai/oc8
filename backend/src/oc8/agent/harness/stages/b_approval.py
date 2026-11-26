@@ -18,6 +18,12 @@ def autonomy_of(definition: dict[str, Any] | None) -> str:
     return raw if raw in {"conservative", "default", "autonomous"} else "default"
 
 
+def autonomy_grants_of(definition: dict[str, Any] | None) -> list[str]:
+    """The risk tiers an autonomous agent may act on unasked (`b5_grants`)."""
+    raw = (definition or {}).get("b5_grants")
+    return [str(tier) for tier in raw] if isinstance(raw, list) else []
+
+
 def posture(
     tier: str, autonomy: str, *, granted: bool, always_ask_writes: bool = False
 ) -> ApprovalPosture:
@@ -51,7 +57,12 @@ def render_preview(
     template: str | None,
     record: str,
 ) -> str:
-    text = template or "Allow {connection} to run {tool} on {record}?"
+    # A call with no record (a send) would read "... on ?".
+    text = template or (
+        "Allow {connection} to run {tool} on {record}?"
+        if record.strip()
+        else "Allow {connection} to run {tool}?"
+    )
     values = _Safe({key: str(value) for key, value in arguments.items()})
     values.update(connection=connection, tool=tool, record=record)
     return text.format_map(values)

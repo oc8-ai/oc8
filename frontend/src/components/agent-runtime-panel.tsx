@@ -93,7 +93,7 @@ export function AgentRuntimePanel({
       {
         onSuccess: () => {
           setPickerOpen(false);
-          toast.success(t("Runtime updated", "Runtime aktualisiert"));
+          toast.success(t("Runtime updated", "Laufzeitumgebung aktualisiert"));
         },
         onError: (error: Error) => {
           const parsed = parseRuntimeViolations(error.message);
@@ -101,9 +101,12 @@ export function AgentRuntimePanel({
             setViolations(parsed);
             return;
           }
-          toast.error(t("Couldn't update runtime", "Runtime konnte nicht aktualisiert werden"), {
-            description: error.message,
-          });
+          toast.error(
+            t("Couldn't update runtime", "Laufzeitumgebung konnte nicht aktualisiert werden"),
+            {
+              description: error.message,
+            },
+          );
         },
       },
     );
@@ -122,13 +125,19 @@ export function AgentRuntimePanel({
       {
         onSuccess: () => {
           toast.success(
-            t("Runtime reset to the built-in default", "Runtime auf Standard zurückgesetzt"),
+            t(
+              "Runtime reset to the built-in default",
+              "Laufzeitumgebung auf Standard zurückgesetzt",
+            ),
           );
         },
         onError: (error: Error) => {
-          toast.error(t("Couldn't reset runtime", "Runtime konnte nicht zurückgesetzt werden"), {
-            description: error.message,
-          });
+          toast.error(
+            t("Couldn't reset runtime", "Laufzeitumgebung konnte nicht zurückgesetzt werden"),
+            {
+              description: error.message,
+            },
+          );
         },
       },
     );
@@ -141,7 +150,7 @@ export function AgentRuntimePanel({
           <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
             {t("execution environment", "Ausführungsumgebung")}
           </div>
-          <h3 className="mt-0.5 font-serif text-lg">{t("Runtime", "Runtime")}</h3>
+          <h3 className="mt-0.5 font-serif text-lg">{t("Runtime", "Laufzeitumgebung")}</h3>
         </div>
         <button
           type="button"
@@ -181,7 +190,10 @@ export function AgentRuntimePanel({
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[color:var(--status-warning)]" />
           <div className="flex-1">
             <p className="text-foreground/90">
-              {t("This runtime is no longer available.", "Diese Runtime ist nicht mehr verfügbar.")}
+              {t(
+                "This runtime is no longer available.",
+                "Diese Laufzeitumgebung ist nicht mehr verfügbar.",
+              )}
             </p>
             <code className="mt-1 block font-mono text-muted-foreground">{runtimeRef}</code>
             {mayManage && (
@@ -217,7 +229,10 @@ export function AgentRuntimePanel({
 
       {runtimesQuery.isSuccess && runtimes.length === 0 && (
         <p className="mt-4 text-sm text-muted-foreground">
-          {t("No runtimes are available right now.", "Derzeit sind keine Runtimes verfügbar.")}
+          {t(
+            "No runtimes are available right now.",
+            "Derzeit sind keine Laufzeitumgebungen verfügbar.",
+          )}
         </p>
       )}
 
@@ -233,9 +248,11 @@ export function AgentRuntimePanel({
             <div className="flex items-center justify-between border-b border-border px-5 py-4">
               <div>
                 <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
-                  {t("Runtime", "Runtime")}
+                  {t("Runtime", "Laufzeitumgebung")}
                 </div>
-                <h2 className="font-serif text-xl">{t("Change runtime", "Runtime ändern")}</h2>
+                <h2 className="font-serif text-xl">
+                  {t("Change runtime", "Laufzeitumgebung ändern")}
+                </h2>
               </div>
               <button
                 type="button"

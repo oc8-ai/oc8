@@ -14,7 +14,7 @@
 // with the API and show a Publish button that 409s.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/api";
+import { api, ApiError } from "@/lib/api";
 import type { Page } from "@/lib/hooks";
 
 /** Mirrors backend `AgentVersionSummaryDTO`. No `payload`: the list would
@@ -113,11 +113,14 @@ export function useAgentVersionDiff(agentId: string, from: number | null, to?: n
  *  query: thirteen write endpoints move it and a publish clears it, and
  *  invalidating it must not drag the agent's whole effective-tools computation
  *  along. */
-export function useAgentDraftStatus(agentId: string) {
+export function useAgentDraftStatus(
+  agentId: string,
+  { enabled = true }: { enabled?: boolean } = {},
+) {
   return useQuery({
     queryKey: agentVersionKeys.draftStatus(agentId),
     queryFn: () => api.get<AgentDraftStatus>(`/agents/${agentId}/draft-status`),
-    enabled: !!agentId,
+    enabled: enabled && !!agentId,
   });
 }
 
@@ -146,6 +149,32 @@ export function usePublishAgentVersion(agentId: string) {
     mutationFn: (input: PublishAgentVersionInput) =>
       api.post<AgentVersion>(`/agents/${agentId}/versions`, input),
     onSuccess: () => invalidateAfterPublish(qc, agentId),
+  });
+}
+
+/** Publishes what a hire wrote after its v1 -- the wizard's login pins and
+ *  agent-only grants -- so a brand-new agent starts with no unpublished
+ *  changes (E2E N9). Nothing to publish (409) is the usual case and fine. */
+export function usePublishHireFollowUps() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      agentId,
+      expectedCurrentVersionNo,
+    }: {
+      agentId: string;
+      expectedCurrentVersionNo: number | null;
+    }) => {
+      try {
+        await api.post<AgentVersion>(`/agents/${encodeURIComponent(agentId)}/versions`, {
+          note: "Hired",
+          expectedCurrentVersionNo,
+        });
+      } catch (err) {
+        if (!(err instanceof ApiError && err.status === 409)) throw err;
+      }
+    },
+    onSuccess: (_data, { agentId }) => invalidateAfterPublish(qc, agentId),
   });
 }
 

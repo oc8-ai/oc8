@@ -142,10 +142,12 @@ _PROSE: Final[dict[str, tuple[str, str, str, str]]] = {
     "backup:export": (
         "Sicherung exportieren",
         "Lädt eine vollständige Kopie des Mandanten herunter -- jedes Protokoll, jeden "
-        "Wissens-Baustein und, mit einer Passphrase, jedes hinterlegte Zugangsdatum.",
+        "Wissens-Baustein, die Inhalte persönlicher Abteilungen und, mit einer "
+        "Passphrase, jedes hinterlegte Zugangsdatum.",
         "Export a backup",
         "Downloads a complete copy of the tenant -- every transcript, every knowledge "
-        "chunk and, with a passphrase, every credential the company holds.",
+        "chunk, the content of personal departments and, with a passphrase, every "
+        "credential the company holds.",
     ),
     "backup:restore": (
         "Sicherung wiederherstellen",
@@ -313,6 +315,14 @@ _PROSE: Final[dict[str, tuple[str, str, str, str]]] = {
         "Manage own connections",
         "Connects and disconnects the caller's own accounts (e.g. Microsoft, Google, Odoo) "
         "-- only their own.",
+    ),
+    "department:own": (
+        "Eigene persönliche Abteilung nutzen",
+        "Sieht die eigene persönliche Abteilung und stellt dort persönliche Vorlagen ein, "
+        "die ein Admin freigegeben hat -- nur in der eigenen.",
+        "Use own personal department",
+        "Sees the caller's own personal department and hires personal templates an admin "
+        "has enabled into it -- only their own.",
     ),
     "plugin:manage": (
         "Erweiterungen installieren",

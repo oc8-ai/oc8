@@ -28,7 +28,12 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _agent_and_task(db: Any, tenant: uuid.UUID) -> tuple[m.Agent, m.Task]:
-    agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Sina")
+    # A real (standard) department: an agent whose department cannot be found
+    # is treated like a personal one, and its trail withheld (spec A4).
+    dept = m.Department(tenant_id=tenant, name="Kundendienst", frame={})
+    db.add(dept)
+    await db.flush()
+    agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Sina")
     db.add(agent)
     await db.flush()
     task = m.Task(

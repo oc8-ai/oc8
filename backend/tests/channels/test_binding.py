@@ -147,7 +147,12 @@ async def test_a_revoked_binding_can_no_longer_decide_and_is_still_on_record(
         # `department_id` is required since the fan-out became department-scoped;
         # None asks for the tenant-wide audience, which is the widest one there
         # is -- so an empty answer here is the strongest form of this assertion.
-        assert await recipients(db, tenant_id=tenant, channel=CHANNEL, department_id=None) == []
+        assert (
+            await recipients(
+                db, tenant_id=tenant, channel=CHANNEL, department_id=None, action_type="tool_send"
+            )
+            == []
+        )
         still_there = await db.get(m.ApprovalChannelBinding, bound.id)
         assert still_there is not None and still_there.revoked_at is not None
 
@@ -183,7 +188,9 @@ async def test_a_binding_that_names_nobody_is_skipped_out_loud(
         await db.flush()
 
         with caplog.at_level(logging.WARNING, logger="oc8.channels.binding"):
-            told = await recipients(db, tenant_id=tenant, channel=CHANNEL, department_id=None)
+            told = await recipients(
+                db, tenant_id=tenant, channel=CHANNEL, department_id=None, action_type="tool_send"
+            )
 
     assert told == [], "a binding nobody stands behind was told about an approval"
     warnings = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
@@ -225,7 +232,9 @@ async def test_a_healthy_fan_out_says_nothing(
         await db.flush()
 
         with caplog.at_level(logging.WARNING, logger="oc8.channels.binding"):
-            told = await recipients(db, tenant_id=tenant, channel=CHANNEL, department_id=None)
+            told = await recipients(
+                db, tenant_id=tenant, channel=CHANNEL, department_id=None, action_type="tool_send"
+            )
 
     assert [b.external_id for b in told] == ["chat-boss"]
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []

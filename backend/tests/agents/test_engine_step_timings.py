@@ -183,7 +183,7 @@ async def test_live_step_timings_publish_once_per_finished_step(
     published: list[dict[str, Any]] = []
 
     async def _fake_publish(
-        tenant_id: uuid.UUID, *, run_id: uuid.UUID, timing: dict[str, Any]
+        tenant_id: uuid.UUID, *, run_id: uuid.UUID, timing: dict[str, Any], **kw: Any
     ) -> None:
         published.append(timing)
 

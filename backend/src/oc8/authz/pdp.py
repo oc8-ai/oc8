@@ -356,6 +356,20 @@ def _tools(frame: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return frame.get("tools", {}) if frame else {}
 
 
+def frame_is_closed(frame: dict[str, Any] | None) -> bool:
+    """A closed frame (a personal department's, `departments.personal.
+    personal_frame`) grants only the tools it lists: a narrowing key it lacks
+    is not an agent-exclusive grant, it grants nothing."""
+    return bool(frame) and (frame or {}).get("closed") is True
+
+
+def frame_allows_key(frame: dict[str, Any] | None, key: str) -> bool:
+    """Whether an agent's narrowing may take effect for `key` under this frame:
+    always, except on a closed frame that does not list it. The one rule the PDP
+    and the runtime's connection resolution share."""
+    return not frame_is_closed(frame) or key in _tools(frame or {})
+
+
 def effective_tool_policies(
     frame: dict[str, Any],
     narrowing: dict[str, Any],
@@ -367,7 +381,7 @@ def effective_tool_policies(
     The frame and the narrowing intersect: each can only tighten, never widen.
     A tool the frame withholds cannot be granted by the narrowing; a right the
     frame denies cannot be granted by the narrowing. The intersection is taken
-    rather than the union, for the same reason `_narrower_surface` gives.
+    rather than the union, for the same reason `narrower_surface` gives.
     """
     frame_tools = _tools(frame)
     narrow_tools = _tools(narrowing)
@@ -380,9 +394,9 @@ def effective_tool_policies(
             enabled=f.enabled and (no.enabled if no else True),
             read=f.read and (no.read if no else True),
             modify=f.modify and (no.modify if no else True),
-            approval_eur=_min_threshold(f.approval_eur, no.approval_eur if no else None),
+            approval_eur=min_threshold(f.approval_eur, no.approval_eur if no else None),
             approval_actions=f.approval_actions | (no.approval_actions if no else frozenset()),
-            only=_narrower_surface(f.only, no.only if no else None),
+            only=narrower_surface(f.only, no.only if no else None),
             # Narrowing-only, unlike every field above: a `connection_id` pin
             # is an AGENT-level login selection (Task 4/6, agent tool login
             # selection design) with no frame-level counterpart to intersect
@@ -404,8 +418,11 @@ def effective_tool_policies(
     # the policy outright. `narrowing_within_frame` is what allows this key to
     # reach here in the first place (its `key not in frame_tools` branch no
     # longer flags it); this loop is where that grant actually takes effect.
+    # A CLOSED frame (a personal department's, `departments.personal.
+    # personal_frame`) has no such grants: a key it lacks grants nothing, so a
+    # pinned or drafted narrowing written before the frame tightened is inert.
     for key, raw in narrow_tools.items():
-        if key in frame_tools:
+        if key in frame_tools or not frame_allows_key(frame, key):
             continue
         exclusive = ToolPolicy.from_json(raw)
         out[key] = ToolPolicy(
@@ -422,7 +439,7 @@ def effective_tool_policies(
     return out
 
 
-def _narrower_surface(
+def narrower_surface(
     frame_only: frozenset[str] | None, narrow_only: frozenset[str] | None
 ) -> frozenset[str] | None:
     """An agent may only ever tighten the surface, never widen it.
@@ -438,7 +455,7 @@ def _narrower_surface(
     return frame_only & narrow_only
 
 
-def _min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
+def min_threshold(frame_eur: int | None, narrow_eur: int | None) -> int | None:
     # A lower threshold is stricter; None means "no threshold" (least strict).
     if frame_eur is None:
         return narrow_eur

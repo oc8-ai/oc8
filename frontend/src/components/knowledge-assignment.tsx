@@ -2,7 +2,8 @@ import { BookOpen, Info, Lock, ShieldAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { useCreateGrant } from "@/lib/hooks";
-import { sensitivityMeta, type KnowledgeBase } from "@/lib/mock-data";
+import { useT } from "@/lib/i18n";
+import { sensitivityMeta, type KnowledgeBase, type SensitivityLevel } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 
 type Mode = "department" | "agent";
@@ -49,6 +50,7 @@ export function KnowledgeAssignment({
   departmentEnabled,
   readOnly = false,
 }: Props) {
+  const t = useT();
   const createGrant = useCreateGrant();
   const granteeId = mode === "department" ? departmentId : agentId;
 
@@ -60,19 +62,33 @@ export function KnowledgeAssignment({
             <BookOpen className="h-4 w-4" />
           </div>
           <div>
-            <div className="font-serif text-lg leading-tight">Knowledge</div>
+            <div className="font-serif text-lg leading-tight">{t("Knowledge", "Wissen")}</div>
             <p className="mt-0.5 text-xs text-muted-foreground">
               {readOnly
-                ? `Knowledge bases linked to ${agentName ?? "this agent"}. Read-only — managed via knowledge grants.`
+                ? t(
+                    `Knowledge bases linked to ${agentName ?? "this agent"}. Read-only — managed via knowledge grants.`,
+                    `Mit ${agentName ?? "diesem Agenten"} verknüpfte Wissensdatenbanken. Nur lesbar — verwaltet über Wissensfreigaben.`,
+                  )
                 : mode === "department"
-                  ? "Assign knowledge bases to this department. Agents inherit these and can only tighten access, never expand it."
-                  : `Assign knowledge bases directly to ${agentName ?? "this agent"}. Bases inherited from the department are marked and always active.`}
+                  ? t(
+                      "Assign knowledge bases to this department. Agents inherit these and can only tighten access, never expand it.",
+                      "Weise dieser Abteilung Wissensdatenbanken zu. Agenten erben sie und können den Zugriff nur einschränken, nie erweitern.",
+                    )
+                  : t(
+                      `Assign knowledge bases directly to ${agentName ?? "this agent"}. Bases inherited from the department are marked and always active.`,
+                      `Weise ${agentName ?? "diesem Agenten"} Wissensdatenbanken direkt zu. Von der Abteilung geerbte sind markiert und immer aktiv.`,
+                    )}
             </p>
           </div>
         </div>
         <div className="hidden items-center gap-1.5 rounded-md border border-border bg-background/40 px-2 py-1 text-[10px] text-muted-foreground sm:inline-flex">
           <Info className="h-3 w-3" />
-          {readOnly ? "Read-only" : "Department = inherited · Agent = additional"}
+          {readOnly
+            ? t("Read-only", "Nur lesbar")
+            : t(
+                "Department = inherited · Agent = additional",
+                "Abteilung = geerbt · Agent = zusätzlich",
+              )}
         </div>
       </header>
 
@@ -103,7 +119,7 @@ export function KnowledgeAssignment({
                   <SensitivityBadge kb={kb} />
                   {inheritedFromDept && (
                     <span className="inline-flex items-center gap-1 rounded-full border border-primary/50 bg-primary/15 px-1.5 py-0.5 text-[10px] uppercase tracking-widest text-primary">
-                      inherited from dept
+                      {t("inherited from dept", "von der Abteilung geerbt")}
                     </span>
                   )}
                   {kb.localOnly && (
@@ -115,12 +131,15 @@ export function KnowledgeAssignment({
                         background: `color-mix(in oklab, ${sens.color} 10%, transparent)`,
                       }}
                     >
-                      <Lock className="h-2.5 w-2.5" /> local model
+                      <Lock className="h-2.5 w-2.5" /> {t("local model", "lokales Modell")}
                     </span>
                   )}
                 </div>
                 <p className="mt-0.5 truncate text-xs text-muted-foreground">
-                  {kb.docs.toLocaleString()} docs · roles: {kb.roles.join(", ")}
+                  {t(
+                    `${kb.docs.toLocaleString()} docs · roles: ${kb.roles.join(", ")}`,
+                    `${kb.docs.toLocaleString()} Dokumente · Rollen: ${kb.roles.join(", ")}`,
+                  )}
                 </p>
               </div>
               <ToggleSwitch
@@ -139,19 +158,28 @@ export function KnowledgeAssignment({
                 title={
                   readOnly
                     ? on
-                      ? "Enabled — read-only"
-                      : "Disabled — read-only"
+                      ? t("Enabled — read-only", "Aktiv — nur lesbar")
+                      : t("Disabled — read-only", "Inaktiv — nur lesbar")
                     : inheritedFromDept
-                      ? "Inherited from the department — manage it there"
+                      ? t(
+                          "Inherited from the department — manage it there",
+                          "Von der Abteilung geerbt — dort verwalten",
+                        )
                       : on
-                        ? "Removing a grant is not yet supported"
-                        : "Enable knowledge base"
+                        ? t(
+                            "Removing a grant is not yet supported",
+                            "Eine Freigabe zu entfernen wird noch nicht unterstützt",
+                          )
+                        : t("Enable knowledge base", "Wissensdatenbank aktivieren")
                 }
                 onClick={() => {
                   if (readOnly || on) return;
                   if (inheritedFromDept) {
-                    toast("Inherited from the department", {
-                      description: `${kb.name} is enabled at the department level. Manage it there to remove.`,
+                    toast(t("Inherited from the department", "Von der Abteilung geerbt"), {
+                      description: t(
+                        `${kb.name} is enabled at the department level. Manage it there to remove.`,
+                        `${kb.name} ist auf Abteilungsebene aktiv. Entfernen kannst du es dort.`,
+                      ),
                     });
                     return;
                   }
@@ -163,11 +191,20 @@ export function KnowledgeAssignment({
                         onToggle?.(kb.id, true);
                         toast.success(
                           mode === "department"
-                            ? `${kb.name} linked to department`
-                            : `${kb.name} enabled for ${agentName ?? "agent"}`,
+                            ? t(
+                                `${kb.name} linked to department`,
+                                `${kb.name} mit der Abteilung verknüpft`,
+                              )
+                            : t(
+                                `${kb.name} enabled for ${agentName ?? "agent"}`,
+                                `${kb.name} für ${agentName ?? "den Agenten"} aktiviert`,
+                              ),
                         );
                       },
-                      onError: () => toast.error("Couldn't grant access", { description: kb.name }),
+                      onError: () =>
+                        toast.error(t("Couldn't grant access", "Zugriff nicht freigegeben"), {
+                          description: kb.name,
+                        }),
                     },
                   );
                 }}
@@ -181,7 +218,14 @@ export function KnowledgeAssignment({
 }
 
 function SensitivityBadge({ kb }: { kb: KnowledgeBase }) {
+  const t = useT();
   const sens = sensitivityMeta[kb.sensitivity];
+  const labels: Record<SensitivityLevel, string> = {
+    public: t("Public", "Öffentlich"),
+    internal: t("Internal", "Intern"),
+    confidential: t("Confidential", "Vertraulich"),
+    restricted: t("Restricted", "Streng vertraulich"),
+  };
   const isRestricted = kb.sensitivity === "restricted";
   return (
     <span
@@ -193,7 +237,7 @@ function SensitivityBadge({ kb }: { kb: KnowledgeBase }) {
       }}
     >
       {isRestricted && <ShieldAlert className="h-2.5 w-2.5" />}
-      {sens.label}
+      {labels[kb.sensitivity] ?? sens.label}
     </span>
   );
 }

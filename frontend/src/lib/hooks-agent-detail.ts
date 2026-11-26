@@ -29,6 +29,10 @@ export interface AgentDetail {
   modelConfigId: string | null;
   isLead: boolean;
   mission: string;
+  /** A personal agent read by someone other than its owner: metadata only.
+   *  The mission and the other content fields are blank because they are
+   *  private, not because the agent has none. */
+  contentHidden?: boolean;
   departmentName: string | null;
   // Inherited from AgentDTO (backend/src/oc8/schemas/dto.py) -- opening
   // questions the composer offers on an empty conversation (§5.3). Was
@@ -56,6 +60,8 @@ export interface AgentDetail {
   // log can only follow a run started in this browser tab, so a scheduled run
   // happens invisibly.
   currentRunId: string | null;
+  /** That run's state, metadata a reader of a personal agent keeps (R2). */
+  currentRunState?: string | null;
   // Per-agent sampling overrides (resolve_params's narrowest-first source,
   // backend/src/oc8/modelrouter/sampling.py). null means "inherit the
   // assigned model's own value", not "use a framework default directly".
@@ -67,6 +73,11 @@ export interface AgentDetail {
   // null means "inherit settings.agent_max_steps", not a literal framework
   // default value.
   maxSteps: number | null;
+  // How far the agent acts before asking, and the risk tiers it may then act
+  // on unasked (definition.autonomy / b5_grants, b_approval.posture). Optional
+  // so fixtures that predate them read as the default.
+  autonomy?: AgentAutonomy;
+  autonomyGrants?: string[];
   /** Last successful Auto-router tier for this agent (fast|balanced|strong). */
   autoRouterAffinityTier?: string | null;
   // The version that actually runs. Mirrors lib/skills.ts's thin shape -- an id
@@ -76,6 +87,8 @@ export interface AgentDetail {
   currentVersionId: string | null;
   currentVersionNo: number | null;
 }
+
+export type AgentAutonomy = "conservative" | "default" | "autonomous";
 
 // Reuses the ["agents", id] key already invalidated by the "agent.status"
 // live patcher in live/apply-event.ts, so this query stays live.
@@ -115,6 +128,20 @@ export function useUpdateNarrowing(agentId: string) {
     mutationFn: (body: { narrowing: Record<string, unknown> }) =>
       api.put<AgentDetail>(`/agents/${agentId}/narrowing`, body),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agents", agentId] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+// The same PUT for a caller that only learns the agent's id after mounting --
+// the hire dialog, granting a tool right after the agent was created.
+export function useSetAgentNarrowing() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ agentId, narrowing }: { agentId: string; narrowing: Record<string, unknown> }) =>
+      api.put<AgentDetail>(`/agents/${encodeURIComponent(agentId)}/narrowing`, { narrowing }),
+    onSuccess: (_data, { agentId }) => {
       qc.invalidateQueries({ queryKey: ["agents", agentId] });
       qc.invalidateQueries({ queryKey: ["agents"] });
     },
@@ -175,6 +202,21 @@ export function useUpdateAgentRuntime(agentId: string) {
   return useMutation({
     mutationFn: (body: { runtimePluginId: string | null }) =>
       api.put<AgentDetail>(`/agents/${agentId}/runtime`, body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["agents", agentId] });
+      qc.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+// PUT /agents/{id}/autonomy expects { autonomy, grants } (AutonomyRequest in
+// backend/src/oc8/schemas/requests.py). Grants are kept only under
+// "autonomous"; the backend drops them for any other level.
+export function useSetAgentAutonomy(agentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { autonomy: AgentAutonomy; grants: string[] }) =>
+      api.put<AgentDetail>(`/agents/${encodeURIComponent(agentId)}/autonomy`, body),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["agents", agentId] });
       qc.invalidateQueries({ queryKey: ["agents"] });
