@@ -40,16 +40,21 @@ totals table for the range below it.
 - **Ranges:** 24 h and 7 days in hourly steps, 30 days in daily steps
   (default 7 days). Steps are cut in the organisation's time zone, shown
   under the heading; the last step contains "now".
-- **Who is counted:** usage counts for the person a chat belongs to, the
-  person an agent run acts for, or the member calling the LLM gateway.
+- **Who is counted:** usage counts for the person a chat belongs to or the
+  person an agent run acts for — also when the run's agent calls models
+  through the LLM gateway.
 - **Top 10:** the ten people with the most tokens in the range get their own
   series; everyone else is summed up as **Others**.
 - **No person:** usage no person is attached to — anything recorded before
   version 0.20.0, and usage without a person such as embeddings and
   knowledge-base indexing.
-- **Unknown person:** a member whose account was removed or has no display
-  name; their usage still shows.
+- **Names:** a person is shown by display name; a removed member keeps the
+  name they had. A member without a display name is shown by email to
+  viewers who also hold `member:view`, otherwise as **Unknown person** (as is
+  usage of a member that no longer exists at all). Their usage always shows.
 - **Access:** needs the `budget:view` permission, like the rest of Costs.
+- **Export:** *Export CSV* includes the columns `memberId` and `memberName`,
+  named by the same rules.
 
 ## What you do here
 

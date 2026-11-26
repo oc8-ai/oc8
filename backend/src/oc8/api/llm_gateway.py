@@ -83,7 +83,9 @@ class GatewayCaller(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
 
-async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
+async def _caller(
+    db: DbSession, principal: CurrentPrincipal, *, bills: bool = True
+) -> GatewayCaller:
     """Resolve the calling agent, or refuse.
 
     Only a `kind=agent` token scoped to a run may use the gateway. An operator
@@ -115,7 +117,9 @@ async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
         run_id=run_id,
         pinned=await resolve_version(db, run, agent),
         contains_restricted=bool((run.context or {}).get("contains_restricted", False)),
-        member_id=await usage_member_id(db, run),
+        # Resolved here, before any bill is detached from the request session;
+        # skipped for a call that bills nothing (the model list).
+        member_id=await usage_member_id(db, run) if bills else None,
     )
 
 
@@ -1277,7 +1281,7 @@ async def list_models(db: DbSession, principal: CurrentPrincipal) -> dict[str, A
     """
     from sqlalchemy import select
 
-    caller = await _caller(db, principal)
+    caller = await _caller(db, principal, bills=False)
     rows = (
         (await db.execute(select(m.ModelConfig).where(m.ModelConfig.tenant_id == caller.tenant_id)))
         .scalars()

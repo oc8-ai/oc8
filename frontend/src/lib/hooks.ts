@@ -2275,7 +2275,7 @@ export type UsageRange = "24h" | "7d" | "30d";
 export interface UsageSeriesDTO {
   key: string;
   memberId: string | null;
-  /** null when the member row is gone or has no display name. */
+  /** Display name, else the email (only for `member:view` holders); null otherwise. */
   name: string | null;
   total: number;
   /** points[i] belongs to buckets[i]. */

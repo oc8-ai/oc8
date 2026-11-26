@@ -991,9 +991,10 @@ class UsageSeriesDTO(CamelModel):
 
     `key` is the member's uuid, `"none"` for usage no person is attached to
     (everything recorded before member attribution existed) or `"others"` for
-    the members beyond the top ten, summed. `name` is None when the member has
-    no display name or no longer exists -- the screen says so rather than
-    printing a raw uuid."""
+    the members beyond the top ten, summed. `name` is the display name (kept
+    for a removed member), else the email for a caller holding `member:view`,
+    else None -- the screen then says "Unknown person" rather than printing a
+    raw uuid."""
 
     key: str
     member_id: uuid.UUID | None
