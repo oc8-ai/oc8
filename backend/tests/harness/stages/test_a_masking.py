@@ -123,3 +123,23 @@ def test_unstamped_result_is_kept() -> None:
 
     assert outgoing == [original]
     assert masked == {}
+
+
+def test_old_long_skill_result_is_never_masked() -> None:
+    original = _tool_result("x" * 9_000, tool="skill_sasse_ticket_triage")
+
+    outgoing, masked = mask_observations([original], step_no=30, ledger=Ledger())
+
+    assert outgoing == [original]
+    assert masked == {}
+
+
+def test_skill_result_is_kept_while_other_old_results_are_masked() -> None:
+    skill = _tool_result("s" * 3_000, step=1, tool="skill_ticket_triage")
+    lookup = _tool_result("x" * 3_000, step=2, tool="lookup")
+
+    outgoing, masked = mask_observations([skill, lookup], step_no=20, ledger=Ledger())
+
+    assert outgoing[0] is skill
+    assert "masked to save context" in outgoing[1].content
+    assert list(masked) == ["call-2"]
