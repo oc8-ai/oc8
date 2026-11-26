@@ -26,7 +26,8 @@ from oc8.approvals.repo import DEFAULT_LIMIT, visible_approvals
 from oc8.audit.integrity import (
     BATCH as BATCH,  # re-exported: tests monkeypatch this name, same as audit.py
 )
-from oc8.authz.permissions import BUDGET, RUN, VIEW, perm
+from oc8.authz.authority import authority_for_principal
+from oc8.authz.permissions import BUDGET, MEMBER, RUN, VIEW, perm
 from oc8.authz.scope import APPROVAL_VIEW, HumanActor
 from oc8.metering.budget import month_start
 from oc8.metering.pricing import active_price_rows, cost_micros_from_price, price_as_of
@@ -267,12 +268,22 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-def _member_label() -> ColumnElement[str | None]:
-    """A member's name for usage reports: the display name, else the email
-    (people created by SSO or dev login may have no display name yet)."""
-    return func.coalesce(
-        func.nullif(m.OrgMember.display_name, ""), func.nullif(m.OrgMember.email, "")
-    )
+def _member_label(*, with_email: bool) -> ColumnElement[str | None]:
+    """A member's name for usage reports: the display name, else -- only for a
+    caller who may see the member list -- the email (people created by SSO or
+    dev login may have no display name yet). `budget:view` alone does not
+    reveal email addresses."""
+    name = func.nullif(m.OrgMember.display_name, "")
+    if not with_email:
+        return name
+    return func.coalesce(name, func.nullif(m.OrgMember.email, ""))
+
+
+async def _may_see_member_emails(
+    request: Request, db: DbSession, principal: CurrentPrincipal
+) -> bool:
+    authority = await authority_for_principal(request, db, principal)
+    return perm(MEMBER, VIEW) in authority.tenant_wide
 
 
 def _usage_buckets(
@@ -314,6 +325,7 @@ def _usage_buckets(
     dependencies=[Depends(require_permission(perm(BUDGET, VIEW)))],
 )
 async def usage_timeseries(
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
     range_: Annotated[UsageRange, Query(alias="range")] = "7d",
@@ -379,7 +391,10 @@ async def usage_timeseries(
     names: dict[uuid.UUID, str] = {}
     if top:
         found = await db.execute(
-            select(m.OrgMember.id, _member_label()).where(m.OrgMember.id.in_(top))
+            select(
+                m.OrgMember.id,
+                _member_label(with_email=await _may_see_member_emails(request, db, principal)),
+            ).where(m.OrgMember.id.in_(top))
         )
         names = {member: name for member, name in found.all() if name}
 
@@ -476,7 +491,9 @@ def _usage_filtered(
 
 @router.get("/usage/export", dependencies=[Depends(require_permission(perm(BUDGET, VIEW)))])
 async def export_usage(
+    request: Request,
     db: DbSession,
+    principal: CurrentPrincipal,
     format: Literal["csv", "jsonl"] = "csv",
     from_: Annotated[str | None, Query(alias="from")] = None,
     to: Annotated[str | None, Query(alias="to")] = None,
@@ -509,7 +526,12 @@ async def export_usage(
     from_ts = _parse_bound(from_, field="from", end_of_day=False)
     to_ts = _parse_bound(to, field="to", end_of_day=True)
     base = _usage_filtered(
-        select(m.TokenUsageRecord, m.Agent.name, m.Department.name, _member_label())
+        select(
+            m.TokenUsageRecord,
+            m.Agent.name,
+            m.Department.name,
+            _member_label(with_email=await _may_see_member_emails(request, db, principal)),
+        )
         .outerjoin(m.Agent, m.Agent.id == m.TokenUsageRecord.agent_id)
         .outerjoin(m.Department, m.Department.id == m.TokenUsageRecord.department_id)
         .outerjoin(m.OrgMember, m.OrgMember.id == m.TokenUsageRecord.member_id),

@@ -352,3 +352,35 @@ async def test_timeseries_rejects_unknown_range(app_session: AppSessionFactory) 
     async with _http() as http:
         resp = await http.get("/api/v1/usage/timeseries?range=1y", headers=_headers(tenant))
     assert resp.status_code == 422, resp.text
+
+
+async def test_timeseries_hides_emails_from_a_budget_viewer_without_member_view(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`budget:view` alone does not reveal a member's email: without
+    `member:view` an unnamed member stays nameless instead."""
+    from oc8.authz.permissions import BUDGET, BUILTIN_ROLE_PERMISSIONS, VIEW, perm
+
+    monkeypatch.setitem(BUILTIN_ROLE_PERMISSIONS, "member", frozenset({perm(BUDGET, VIEW)}))
+    tenant = uuid.uuid4()
+    _freeze(monkeypatch, dt.datetime(2026, 11, 20, 12, 30, tzinfo=dt.UTC))
+    async with app_session(tenant) as db:
+        mailed = _member(tenant, "")
+        mailed.email = "ben@example.test"
+        db.add(mailed)
+        await db.flush()
+        db.add(_usage(tenant, dt.datetime(2026, 11, 20, 12, tzinfo=dt.UTC), mailed.id, 7))
+        await db.commit()
+
+    async with _http() as http:
+        resp = await http.get(
+            "/api/v1/usage/timeseries?range=24h", headers=_headers(tenant, "member")
+        )
+        export = await http.get(
+            "/api/v1/usage/export?format=jsonl", headers=_headers(tenant, "member")
+        )
+    assert resp.status_code == 200, resp.text
+    (series,) = resp.json()["series"]
+    assert series["name"] is None
+    assert export.status_code == 200, export.text
+    assert "ben@example.test" not in export.text
