@@ -1,5 +1,5 @@
 msgid ""
-msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-26 15:01+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
+msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-26 16:38+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
 
 msgid " (opens in a new tab)"
 msgstr " (opent in een nieuw tabblad)"
@@ -29,7 +29,7 @@ msgid "(requires settings:manage)"
 msgstr "(vereist settings:manage)"
 
 msgid "{connection} reports no amount, so a euro threshold above €0 never applies to it"
-msgstr "{connection} geeft geen bedrag door; een drempelwaarde in euro's boven de €0 is daarom nooit van toepassing."
+msgstr "{connection} geeft geen bedrag door; een drempelwaarde in euro's boven de €0 is daarom nooit van toepassing"
 
 msgid "{count} departments"
 msgstr "{count} afdelingen"
@@ -3131,7 +3131,7 @@ msgid "Inherited from the department"
 msgstr "Overgenomen van de afdeling"
 
 msgid "Inherited from the department — manage it there"
-msgstr "Overgenomen van de afdeling. Beheer dit bij de afdeling."
+msgstr "Overgenomen van de afdeling. Beheer dit bij de afdeling"
 
 msgid "Input"
 msgstr "Invoer"
@@ -5555,7 +5555,7 @@ msgid "Setup it uses"
 msgstr "Gebruikte configuratie"
 
 msgid "Several logins are enabled — choose one for this agent"
-msgstr "Er zijn meerdere aanmeldopties ingeschakeld. Kies er één voor deze agent."
+msgstr "Er zijn meerdere aanmeldopties ingeschakeld. Kies er één voor deze agent"
 
 msgid "several logins are enabled for this department and the agent has none chosen."
 msgstr "er zijn meerdere aanmeldopties ingeschakeld voor deze afdeling, maar voor de agent is er nog geen gekozen."
@@ -6182,7 +6182,7 @@ msgid "The link doesn't fill the code in for you — type or paste it yourself."
 msgstr "De link vult de code niet voor je in — typ of plak hem zelf."
 
 msgid "The login chosen for this agent is not confirmed — runs refuse it"
-msgstr "De gekozen aanmeldgegevens voor deze agent zijn nog niet bevestigd. De agent kan ze tijdens een run niet gebruiken."
+msgstr "De gekozen aanmeldgegevens voor deze agent zijn nog niet bevestigd. De agent kan ze tijdens een run niet gebruiken"
 
 msgid "The login is incomplete: fill in every field and the secret."
 msgstr "De login is onvolledig: vul elk veld en het geheim in."
@@ -6581,7 +6581,7 @@ msgid "This proposal is no longer open."
 msgstr "Dit voorstel is niet meer open."
 
 msgid "This provider needs a completion key before its agents can run."
-msgstr "Deze provider heeft een API-sleutel voor modelantwoorden nodig voordat agents kunnen draaien."
+msgstr "Deze provider heeft een voltooiingssleutel nodig voordat de bijbehorende agents kunnen worden uitgevoerd."
 
 msgid "This question needs an answer."
 msgstr "Deze vraag heeft een antwoord nodig."
@@ -7028,7 +7028,7 @@ msgid "Uses the department's earlier setup"
 msgstr "Gebruikt de eerdere instellingen van de afdeling"
 
 msgid "Uses the login of the person in the chat — you have none yet"
-msgstr "Gebruikt de aanmeldgegevens van de persoon in het gesprek. Je hebt er nog geen ingesteld."
+msgstr "Gebruikt de aanmeldgegevens van de persoon in het gesprek. Je hebt er nog geen ingesteld"
 
 msgid "Uses your own login {name} in your chats"
 msgstr "Gebruikt in je gesprekken je eigen aanmeldgegevens ({name})"
