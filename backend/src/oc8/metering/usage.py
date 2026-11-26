@@ -91,14 +91,20 @@ async def usage_member_id(session: AsyncSession, run: m.AgentRun | None) -> uuid
     `record_usage` (a single INSERT on the hot path). Attribution is
     best-effort: a failed lookup leaves the usage unattributed instead of
     failing the model call or the bill, and runs in a savepoint so the
-    caller's transaction stays usable."""
+    caller's transaction stays usable. Only the lookup is guarded: the
+    caller's pending writes flush first, outside it, so a broken one raises
+    here instead of passing for "no person"."""
     if run is None:
         return None
+    await session.flush()
+    savepoint = await session.begin_nested()
     try:
-        async with session.begin_nested():
-            return (await resolve_acting_person(session, run)).member_id
+        member_id = (await resolve_acting_person(session, run)).member_id
     except Exception:
+        await savepoint.rollback()
         logger.warning(
             "usage: could not resolve the acting person for run %s", run.id, exc_info=True
         )
         return None
+    await savepoint.commit()
+    return member_id

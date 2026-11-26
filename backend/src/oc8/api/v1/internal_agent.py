@@ -2384,6 +2384,11 @@ async def _dispatch_one_tool(
     principal: CurrentPrincipal,
     precomputed: tuple[str, ToolError | None, int] | None = None,
 ) -> ToolResult:
+    """Run one tool call of a /tool or /tools request.
+
+    Its clarification call is billed to a person resolved here, per dispatch
+    and only when that call runs: most dispatches bill nothing, so a lookup
+    for the whole batch up front would cost every batch for the rare one."""
     tc = ToolCall(id=body.id, name=body.name, arguments=body.arguments)
     from oc8.api.mcp_gateway import _connections
 
