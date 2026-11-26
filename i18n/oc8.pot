@@ -26,6 +26,9 @@ msgstr ""
 msgid "(no longer allowed by your organisation)"
 msgstr ""
 
+msgid "(no task)"
+msgstr ""
+
 msgid "(optional)"
 msgstr ""
 
@@ -3962,6 +3965,9 @@ msgstr ""
 msgid "Open responsibilities and follow-ups"
 msgstr ""
 
+msgid "Open Schedule"
+msgstr ""
+
 msgid "Open the agent"
 msgstr ""
 
@@ -6420,6 +6426,9 @@ msgid "What came back"
 msgstr ""
 
 msgid "What does it do?"
+msgstr ""
+
+msgid "What every scheduled run is told to do. A scheduled run gets this task on its own, without the conversation you are reading — change it under Schedule on the Configuration tab."
 msgstr ""
 
 msgid "What happens if you agree"
