@@ -607,6 +607,9 @@ export function useLiveTimeline(agentId: string, allRuns: boolean) {
     // until the other timeline has loaded.
     placeholderData: keepPreviousData,
     enabled: !!agentId,
+    // A personal agent's timeline is its owner's: anybody else gets a 404,
+    // which is final.
+    retry: retryUnlessRefused,
     refetchInterval: (query) => liveTimelineRefetchInterval(query.state.data),
   });
   return {

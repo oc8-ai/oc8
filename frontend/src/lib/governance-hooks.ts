@@ -189,6 +189,38 @@ export function useMayManageAgent(): (departmentId: string | null | undefined) =
   );
 }
 
+/** "May the caller do `permission` for something in THIS department?" — the
+ * department-scoped counterpart to `useMay()`, for a permission a seat can
+ * carry in one department (the owner's seat in their personal department:
+ * `Seat.ownerPermissions`).
+ *
+ * Two grants reconciled in one place, matching the backend's
+ * `holds_in_department`:
+ *   1. the permission held tenant-wide, from `callerPermissions` — admits
+ *      everywhere, `departmentId` unconsulted;
+ *   2. a live seat in exactly `departmentId` whose `ownerPermissions` name it.
+ *
+ * Fails closed while `useGovernance` is pending or has errored, like `useMay()`:
+ * a Run now or Publish button that is live for a moment and then 403s is the
+ * failure this exists to prevent.
+ */
+export function useMayInDepartment(): (
+  permission: string,
+  departmentId: string | null | undefined,
+) => boolean {
+  const { data } = useGovernance();
+  return useCallback(
+    (permission: string, departmentId: string | null | undefined) => {
+      if (data?.callerPermissions?.includes(permission)) return true;
+      if (!departmentId) return false;
+      return !!data?.seats?.some(
+        (s) => s.departmentId === departmentId && !!s.ownerPermissions?.includes(permission),
+      );
+    },
+    [data],
+  );
+}
+
 /** What the caller's role is CALLED, resolved — the name to put under their own
  *  avatar and nowhere else.
  *

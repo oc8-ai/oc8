@@ -502,7 +502,7 @@ async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_va
     threshold on a connection that reports no amount never fires, and copied
     it goes stale when the department changes its value -- the frame's own
     applies anyway (`connections.value_spec`). €0 is enforced and copied."""
-    from oc8.api.v1.departments import _cascade_department_tools_change
+    from oc8.departments.frames import cascade_department_tools_change
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
@@ -520,7 +520,7 @@ async def test_cascade_copies_no_positive_threshold_onto_a_connection_without_va
         db.add_all([agent, conn])
         await db.flush()
         policy = {"enabled": True, "read": True, "modify": True, "approval_eur": frame_eur}
-        await _cascade_department_tools_change(
+        await cascade_department_tools_change(
             db, old_tools={}, new_tools={"microsoft365": policy}, agents=[agent]
         )
         copied = agent.narrowing["tools"]["microsoft365"]
@@ -616,3 +616,74 @@ async def test_a_cascade_publishes_nothing_over_a_pending_hire(
         pinned = await resolve_version(db, None, reloaded_pending)
         assert pinned["narrowing"]["tools"]["Odoo"]["enabled"] is False
         assert (await draft_status(db, reloaded_pending)).dirty is True
+
+
+@pytest.mark.parametrize("how", ["put", "reset"])
+async def test_the_cascade_publishes_a_ready_agent_but_not_one_awaiting_hire_approval(
+    app_session: AppSessionFactory, how: str
+) -> None:
+    """An agent still `pending_approval` is not live: the department change reaches
+    its working copy and publishes nothing; a clean, ready colleague is published."""
+    from sqlalchemy import func, select
+
+    from oc8.agents.versioning import publish_version
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(
+            tenant_id=tenant,
+            name="Sales",
+            frame={"tools": {"Odoo": {"enabled": True}}},
+            frame_capa_defaults={"tools": {"Odoo": {"enabled": False}}},
+        )
+        db.add(dept)
+        await db.flush()
+        ready = m.Agent(tenant_id=tenant, department_id=dept.id, name="Ready", narrowing={})
+        pending = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="Pending",
+            narrowing={},
+            status="pending_approval",
+        )
+        db.add_all([ready, pending])
+        await db.flush()
+        await publish_version(db, ready, note="v1")
+        await publish_version(db, pending, note="v1", at_hire=True)
+        dept_id, ready_id, pending_id = dept.id, ready.id, pending.id
+
+    app = create_app()
+    async with LifespanManager(app):
+        async with _client(app) as c:
+            if how == "put":
+                r = await c.put(
+                    f"/api/v1/departments/{dept_id}/tools",
+                    json={"tools": {"Odoo": {"enabled": False}}},
+                    headers=_headers(tenant),
+                )
+            else:
+                r = await c.post(
+                    f"/api/v1/departments/{dept_id}/tools/Odoo/reset", headers=_headers(tenant)
+                )
+            assert r.status_code == 200, r.text
+
+    async with app_session(tenant) as db:
+
+        async def versions(agent_id: uuid.UUID) -> int:
+            return int(
+                (
+                    await db.execute(
+                        select(func.count())
+                        .select_from(m.AgentVersion)
+                        .where(m.AgentVersion.agent_id == agent_id)
+                    )
+                ).scalar_one()
+            )
+
+        ready_row = await db.get(m.Agent, ready_id)
+        pending_row = await db.get(m.Agent, pending_id)
+        assert ready_row is not None and pending_row is not None
+        assert ready_row.narrowing["tools"]["Odoo"]["enabled"] is False
+        assert pending_row.narrowing["tools"]["Odoo"]["enabled"] is False
+        assert await versions(ready_id) == 2
+        assert await versions(pending_id) == 1

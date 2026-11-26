@@ -115,7 +115,7 @@ from oc8.agent.tool_routing import build_routes
 from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_identity
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
-from oc8.approvals import raise_approval
+from oc8.approvals import publish_created, raise_approval
 from oc8.audit import append_event
 from oc8.authz.pdp import (
     Decision,
@@ -155,6 +155,7 @@ from oc8.modelrouter.trim import overflow_tokens
 from oc8.modelrouter.types import ImagePart, ModelParams, TextPart, with_prompt_cache_key
 from oc8.realtime.emit import (
     note_focus,
+    publish_run_content,
     publish_run_reasoning_delta,
     publish_run_step_timing,
     publish_run_token_delta,
@@ -996,20 +997,7 @@ async def _park_held_call(
     ctx["pending_elicitation"] = {**pending, "arguments": arguments, "merged": True}
     ctx["isolated_result"] = {"status": "waiting_for_approval", "output": reason}
     run.context = ctx
-    from oc8.realtime.bus import get_event_bus
-
-    await get_event_bus().publish_event(
-        run.tenant_id,
-        "approval.created",
-        {
-            "approval_id": str(ar.id),
-            "action_type": ar.action_type,
-            "status": ar.status,
-            "title": ar.title,
-            "detail": ar.detail,
-        },
-        source=f"oc8/approval/{ar.id}",
-    )
+    await publish_created(db, ar)
 
 
 async def _finish_elicitation(
@@ -1382,7 +1370,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         await db.commit()
         if closed_step_timing is not None:
             await publish_run_step_timing(
-                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+                run.tenant_id,
+                run_id=run.id,
+                agent_id=run.agent_id,
+                db=db,
+                timing=step_timing_dto(closed_step_timing),
             )
         return StepResult(done=True, text=reason, status_override="interrupted")
 
@@ -1425,7 +1417,11 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             # all, the same ordering `publish_run_tool_call`'s own call site
             # already gets right.
             await publish_run_step_timing(
-                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+                run.tenant_id,
+                run_id=run.id,
+                agent_id=run.agent_id,
+                db=db,
+                timing=step_timing_dto(closed_step_timing),
             )
         return StepResult(done=True, text="Reached step limit.", status_override="done")
 
@@ -1718,7 +1714,9 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # (agent/engine.py's _live_token_delta) -- transient, no DB write,
         # since the full text still lands durably below once the turn
         # completes (ctx["transcript"] + the final db.commit()).
-        await publish_run_token_delta(run.tenant_id, run_id=run.id, text=text)
+        await publish_run_token_delta(
+            run.tenant_id, run_id=run.id, agent_id=run.agent_id, db=db, text=text
+        )
 
     # The step a live reasoning fragment belongs to; set as each step opens.
     live_step = {"no": 0}
@@ -1727,7 +1725,12 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # Same no-DB-write rule as _live_token_delta: the step's reasoning
         # lands on its stepTimings entry (note_reasoning) when it ends.
         await publish_run_reasoning_delta(
-            run.tenant_id, run_id=run.id, step=live_step["no"], text=text
+            run.tenant_id,
+            run_id=run.id,
+            agent_id=run.agent_id,
+            db=db,
+            step=live_step["no"],
+            text=text,
         )
 
     async def _complete(
@@ -2066,7 +2069,13 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
     # earlier (right when finish_step ran, above) could hand out a live
     # event for a step this request then failed to commit at all.
     for timing in finished_step_timings:
-        await publish_run_step_timing(run.tenant_id, run_id=run.id, timing=step_timing_dto(timing))
+        await publish_run_step_timing(
+            run.tenant_id,
+            run_id=run.id,
+            agent_id=run.agent_id,
+            db=db,
+            timing=step_timing_dto(timing),
+        )
 
     # Reaching here with no tool call and open todos means the round cap (or
     # the step budget) was hit, not that everything got done -- say so in the
@@ -2745,29 +2754,21 @@ async def _dispatch_one_tool(
             "reason": decision.reason,
         }
         await append_tool_call(db, run, parked_call)
+        # Decided while the tenant is still bound (the commit unbinds it, and
+        # the card's department is read under RLS), sent once it commits.
+        await publish_created(db, ar, after_commit=True)
         await db.commit()
-        await publish_run_tool_call(run.tenant_id, run_id=run.id, call=parked_call)
+        await publish_run_tool_call(
+            run.tenant_id, run_id=run.id, agent_id=run.agent_id, db=db, call=parked_call
+        )
         if closed_step_timing is not None:
             await publish_run_step_timing(
-                run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_step_timing)
+                run.tenant_id,
+                run_id=run.id,
+                agent_id=run.agent_id,
+                db=db,
+                timing=step_timing_dto(closed_step_timing),
             )
-        from oc8.realtime.bus import get_event_bus
-
-        await get_event_bus().publish_event(
-            run.tenant_id,
-            "approval.created",
-            {
-                "approval_id": str(ar.id),
-                "action_type": ar.action_type,
-                "status": ar.status,
-                # title/detail travel in the envelope so the push hook never
-                # has to re-read this row from a fresh, uncommitted-blind
-                # session (see EventBus._push_payload).
-                "title": ar.title,
-                "detail": ar.detail,
-            },
-            source=f"oc8/approval/{ar.id}",
-        )
         return ToolResult(status="waiting_for_approval", output=decision.reason or "")
 
     definition = pinned["definition"] if isinstance(pinned["definition"], dict) else {}
@@ -2980,13 +2981,15 @@ async def _dispatch_one_tool(
             # inline (run_id + props) -- no consumer needs to look up a row
             # that isn't committed yet, so publishing before the request's
             # terminal commit is safe here.
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                run.tenant_id,
-                "run.component_rendered",
-                {"run_id": str(run.id), **control.rendered_component},
-                source=f"oc8/run/{run.id}",
+            await publish_run_content(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=run.agent_id,
+                event={
+                    "type": "run.component_rendered",
+                    "data": {"run_id": str(run.id), **control.rendered_component},
+                    "source": f"oc8/run/{run.id}",
+                },
             )
         if control.todos is not None:
             # Whole-list replace, unlike rendered_components above -- this IS
@@ -2998,13 +3001,15 @@ async def _dispatch_one_tool(
             # already-open Live Log would show a stale or empty list until the
             # viewer navigated away and back. Same "durable copy + live event"
             # split as rendered_component above.
-            from oc8.realtime.bus import get_event_bus
-
-            await get_event_bus().publish_event(
-                run.tenant_id,
-                "run.todos_updated",
-                {"run_id": str(run.id), "todos": control.todos},
-                source=f"oc8/run/{run.id}",
+            await publish_run_content(
+                db,
+                tenant_id=run.tenant_id,
+                agent_id=run.agent_id,
+                event={
+                    "type": "run.todos_updated",
+                    "data": {"run_id": str(run.id), "todos": control.todos},
+                    "source": f"oc8/run/{run.id}",
+                },
             )
     elif decision.effect is Effect.DENY:
         reason = decision.reason or "denied"
@@ -3397,10 +3402,16 @@ async def _dispatch_one_tool(
         )
     await append_tool_call(db, run, live_call)
     await db.commit()
-    await publish_run_tool_call(run.tenant_id, run_id=run.id, call=live_call)
+    await publish_run_tool_call(
+        run.tenant_id, run_id=run.id, agent_id=run.agent_id, db=db, call=live_call
+    )
     if closed_suspend_timing is not None:
         await publish_run_step_timing(
-            run.tenant_id, run_id=run.id, timing=step_timing_dto(closed_suspend_timing)
+            run.tenant_id,
+            run_id=run.id,
+            agent_id=run.agent_id,
+            db=db,
+            timing=step_timing_dto(closed_suspend_timing),
         )
 
     if suspend is not None:

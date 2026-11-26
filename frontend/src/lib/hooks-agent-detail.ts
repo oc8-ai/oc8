@@ -29,6 +29,10 @@ export interface AgentDetail {
   modelConfigId: string | null;
   isLead: boolean;
   mission: string;
+  /** A personal agent read by someone other than its owner: metadata only.
+   *  The mission and the other content fields are blank because they are
+   *  private, not because the agent has none. */
+  contentHidden?: boolean;
   departmentName: string | null;
   // Inherited from AgentDTO (backend/src/oc8/schemas/dto.py) -- opening
   // questions the composer offers on an empty conversation (§5.3). Was
@@ -56,6 +60,8 @@ export interface AgentDetail {
   // log can only follow a run started in this browser tab, so a scheduled run
   // happens invisibly.
   currentRunId: string | null;
+  /** That run's state, metadata a reader of a personal agent keeps (R2). */
+  currentRunState?: string | null;
   // Per-agent sampling overrides (resolve_params's narrowest-first source,
   // backend/src/oc8/modelrouter/sampling.py). null means "inherit the
   // assigned model's own value", not "use a framework default directly".

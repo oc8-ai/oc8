@@ -24,6 +24,18 @@ def _token(tenant_id: uuid.UUID) -> str:
     return get_identity_provider().mint(subject="op@test", tenant_id=tenant_id, role="org_admin")
 
 
+@pytest.fixture
+def standard_audience(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These plumbing checks publish for an agent with no row: resolve it as a
+    standard agent (tenant-wide), which `test_personal_audience` covers."""
+    from oc8.realtime import audience, emit
+
+    async def _standard(*args: object) -> audience.PersonalAudience:
+        return audience.STANDARD
+
+    monkeypatch.setattr(emit, "_audience_for", _standard)
+
+
 @pytest.mark.asyncio
 async def test_ws_delivers_only_own_tenant_events(redis_url: str) -> None:
     app = create_app()
@@ -60,7 +72,9 @@ async def test_ws_delivers_only_own_tenant_events(redis_url: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ws_delivers_run_output_delta(redis_url: str) -> None:
+async def test_ws_delivers_run_output_delta(
+    redis_url: str, standard_audience: None
+) -> None:
     """The Part B plumbing check: `publish_run_output_delta` (called from
     each containerized runtime's poll loop -- opencode_runtime/codex_runtime/
     claude_code_runtime's runtime.py) rides the exact same EventBus -> Redis
@@ -74,7 +88,12 @@ async def test_ws_delivers_run_output_delta(redis_url: str) -> None:
     with TestClient(app) as client:
         with client.websocket_connect(f"/api/v1/events/ws?token={_token(tenant)}") as ws:
             assert ws.receive_json()["type"] == "realtime.connected"
-            await publish_run_output_delta(tenant, run_id=run_id, chunk="hello from the sandbox")
+            await publish_run_output_delta(
+                tenant,
+                run_id=run_id,
+                agent_id=uuid.uuid4(),
+                chunk="hello from the sandbox",
+            )
             got = ws.receive_json()
             assert got["type"] == "run.output_delta"
             assert got["tenantid"] == str(tenant)
@@ -82,7 +101,9 @@ async def test_ws_delivers_run_output_delta(redis_url: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ws_delivers_run_tool_call(redis_url: str) -> None:
+async def test_ws_delivers_run_tool_call(
+    redis_url: str, standard_audience: None
+) -> None:
     """Same plumbing check as test_ws_delivers_run_output_delta, for the
     in-process engine's per-tool-call live event (publish_run_tool_call,
     called from agent/engine.py's step loop right after the same entry is
@@ -98,7 +119,12 @@ async def test_ws_delivers_run_tool_call(redis_url: str) -> None:
     with TestClient(app) as client:
         with client.websocket_connect(f"/api/v1/events/ws?token={_token(tenant)}") as ws:
             assert ws.receive_json()["type"] == "realtime.connected"
-            await publish_run_tool_call(tenant, run_id=run_id, call=call)
+            await publish_run_tool_call(
+                tenant,
+                run_id=run_id,
+                agent_id=uuid.uuid4(),
+                call=call,
+            )
             got = ws.receive_json()
             assert got["type"] == "run.tool_call"
             assert got["tenantid"] == str(tenant)
@@ -106,7 +132,9 @@ async def test_ws_delivers_run_tool_call(redis_url: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ws_delivers_run_step_timing(redis_url: str) -> None:
+async def test_ws_delivers_run_step_timing(
+    redis_url: str, standard_audience: None
+) -> None:
     """Same plumbing check as test_ws_delivers_run_tool_call, for the run step
     timeline plan's own live event (publish_run_step_timing, called from both
     runtimes right alongside their existing step-timing capture -- see
@@ -127,7 +155,12 @@ async def test_ws_delivers_run_step_timing(redis_url: str) -> None:
     with TestClient(app) as client:
         with client.websocket_connect(f"/api/v1/events/ws?token={_token(tenant)}") as ws:
             assert ws.receive_json()["type"] == "realtime.connected"
-            await publish_run_step_timing(tenant, run_id=run_id, timing=timing)
+            await publish_run_step_timing(
+                tenant,
+                run_id=run_id,
+                agent_id=uuid.uuid4(),
+                timing=timing,
+            )
             got = ws.receive_json()
             assert got["type"] == "run.step_timing"
             assert got["tenantid"] == str(tenant)
@@ -135,7 +168,9 @@ async def test_ws_delivers_run_step_timing(redis_url: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ws_delivers_run_token_delta(redis_url: str) -> None:
+async def test_ws_delivers_run_token_delta(
+    redis_url: str, standard_audience: None
+) -> None:
     """Same plumbing check as test_ws_delivers_run_output_delta and
     test_ws_delivers_run_tool_call, for Stage 2's model-token live event
     (publish_run_token_delta, called from both engines' streaming
@@ -148,7 +183,12 @@ async def test_ws_delivers_run_token_delta(redis_url: str) -> None:
     with TestClient(app) as client:
         with client.websocket_connect(f"/api/v1/events/ws?token={_token(tenant)}") as ws:
             assert ws.receive_json()["type"] == "realtime.connected"
-            await publish_run_token_delta(tenant, run_id=run_id, text="Hal")
+            await publish_run_token_delta(
+                tenant,
+                run_id=run_id,
+                agent_id=uuid.uuid4(),
+                text="Hal",
+            )
             got = ws.receive_json()
             assert got["type"] == "run.token_delta"
             assert got["tenantid"] == str(tenant)

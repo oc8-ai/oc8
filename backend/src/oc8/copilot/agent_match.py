@@ -28,11 +28,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.repo import RunReach, agent_runnable_in, run_reach
+from oc8.agents.repo import RunReach, agent_runnable_in, start_reach
 from oc8.agents.versioning import resolve_version
 from oc8.authz.authority import authority_for_member
 from oc8.authz.pdp import effective_tool_policies
-from oc8.authz.permissions import RUN_START
 from oc8.authz.scope import scope_for_member
 from oc8.config import get_settings
 from oc8.knowledge.embedding_policy import LOCAL_AGENT_REASON, agent_runs_locally
@@ -115,7 +114,7 @@ async def member_run_reach(
         return None
     authority = await authority_for_member(db, member, token_role=token_role)
     scope = await scope_for_member(db, member, token_role=token_role)
-    return run_reach(authority=authority, scope=scope, permission=RUN_START)
+    return await start_reach(db, authority=authority, scope=scope)
 
 
 def runnable_with(reach: RunReach | None, agent: m.Agent) -> bool:

@@ -77,6 +77,7 @@ from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
 )
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.notifications.events import on_board_created
 from oc8.runtime.registry import (
     RuntimeCapabilityError,
@@ -497,6 +498,39 @@ def operation_references(data: dict[str, Any]) -> dict[str, str]:
     return refs
 
 
+#: The fields an operation names an agent by.
+_AGENT_FIELDS = ("agentId",)
+
+
+async def refuse_personal_agent(db: AsyncSession, operation: Operation) -> None:
+    """Fail closed: no operation may reach an agent of a personal department
+    (archived ones included, so a restore is covered), nor hand a board to one.
+    A board is reached through its own agent. One explicit select; RLS binds the
+    tenant on the session."""
+    agent_ids: set[uuid.UUID] = {
+        value
+        for field in _AGENT_FIELDS
+        if isinstance(value := getattr(operation, field, None), uuid.UUID)
+    }
+    board_id = getattr(operation, "boardId", None)
+    if isinstance(board_id, uuid.UUID):
+        board_agent = await db.scalar(
+            select(m.DataBoard.agent_id).where(m.DataBoard.id == board_id)
+        )
+        if board_agent is not None:
+            agent_ids.add(board_agent)
+    if not agent_ids:
+        return
+    personal = await db.scalar(
+        select(m.Department.id)
+        .join(m.Agent, m.Agent.department_id == m.Department.id)
+        .where(m.Agent.id.in_(agent_ids), m.Department.kind == DEPARTMENT_KIND_PERSONAL)
+        .limit(1)
+    )
+    if personal is not None:
+        raise InvalidOperation("a personal agent cannot be edited")
+
+
 async def target_revision(
     db: AsyncSession, operation: Operation, *, lock_for_apply: bool = False
 ) -> str | None:
@@ -512,6 +546,7 @@ async def target_revision(
     `AgentCreate.departmentId` exists at apply time, which is the one thing
     that actually could have changed underneath it.
     """
+    await refuse_personal_agent(db, operation)
     if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall, BoardCreate)):
         return None
     if isinstance(operation, BoardUpdate):
@@ -678,6 +713,13 @@ async def _publish_copilot_change(
         raise InvalidOperation() from exc
 
 
+def _refuse_personal(dept: m.Department) -> None:
+    """Personal departments are not the Copilot's to edit, delete, restore or
+    hire into before it owns that surface; fail closed."""
+    if dept.kind == DEPARTMENT_KIND_PERSONAL:
+        raise InvalidOperation("a personal department cannot be edited")
+
+
 async def apply_operation(
     db: AsyncSession,
     *,
@@ -697,6 +739,7 @@ async def apply_operation(
     after its last step (`apply_builder_proposal`: the person's "Create" is
     one decision, so the new agent's first version holds all of it)."""
     operation = parse_operations([data])[0]
+    await refuse_personal_agent(db, operation)
     if isinstance(operation, MissionSet):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -720,6 +763,7 @@ async def apply_operation(
                     agent_id=operation.agentId,
                     event_source=operation.eventSource,
                     event_type=operation.eventType,
+                    creator=actor_member_id,
                 )
             await create_trigger(
                 db,
@@ -842,6 +886,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         if operation.name is not None:
             dept.name = operation.name
         if operation.goal is not None:
@@ -854,6 +899,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         live_agents = (
             (
                 await db.execute(
@@ -888,6 +934,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         dept.deleted_at = None
         await restore_department_boards(db, department_id=dept.id)
         await db.flush()
@@ -896,6 +943,7 @@ async def apply_operation(
         target_dept = await db.get(m.Department, operation.departmentId)
         if target_dept is None or target_dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(target_dept)
         # Deliberately minimal (name/department/mission only, no narrowing,
         # no model, no runtime override): the Copilot bootstraps a starting
         # point, same as everywhere else in this module -- a human fills in

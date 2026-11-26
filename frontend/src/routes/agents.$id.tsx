@@ -146,10 +146,15 @@ import { StatCard } from "@/components/stat-card";
 import { formatMs } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { useLang, useT } from "@/lib/i18n";
-import { useMayManageAgent } from "@/lib/governance-hooks";
+import { useMayInDepartment, useMayManageAgent } from "@/lib/governance-hooks";
 import { thresholdField, valueSpecByName } from "@/lib/value-spec";
 import { useConfirm } from "@/hooks/use-confirm";
 import { AgentAutonomyPanel } from "@/components/agent-autonomy-panel";
+
+// One empty list for a reader who may not list knowledge bases (403): a
+// fresh `[]` per render would re-run the knowledge seeding effect below on
+// every render, for ever.
+const NO_BASES: KnowledgeBase[] = [];
 
 // Mirrors mapAgentStatus in src/lib/live/apply-event.ts (not exported there).
 // Handles BOTH vocabularies: the WS "agent.status" event carries the raw
@@ -201,6 +206,10 @@ const TAB_IDS = [
   "versions",
 ] as const;
 type TabId = (typeof TAB_IDS)[number];
+
+/** The tabs that are nothing but what a personal agent did: its runs (Live,
+ *  Live log, History), its files and its memory. */
+const PRIVATE_TABS: ReadonlySet<TabId> = new Set(["live", "livelog", "history", "files", "memory"]);
 
 /** The agent page's tabs. The Live Log ("livelog") is no tab of its own: it
  *  is the Live tab's technical view, opened from its "Technical view" link
@@ -256,7 +265,7 @@ function AgentDetail() {
   }, [id]);
   // KB-assignment picker for this agent, not a paginated list view.
   const { data: allBasesPage } = useKnowledgeBases({ pageSize: 200 });
-  const allBases = allBasesPage?.items ?? [];
+  const allBases = allBasesPage?.items ?? NO_BASES;
   const runAgent = useRunAgent();
   const { data: models = [] } = useModels();
   // WRITE authority for THIS agent — tenant-wide `agent:manage`, OR a live seat
@@ -264,7 +273,12 @@ function AgentDetail() {
   // is the `agent:view` that put the page on the screen. Gates all three
   // agent:manage-reachable controls below: the narrowing editor's Save, the
   // skill-assign button, and the model select.
-  const mayManage = useMayManageAgent()(agent?.departmentId);
+  //
+  // Never for a personal agent read by someone other than its owner
+  // (`contentHidden`): only the owner's seat may write there, whatever the
+  // caller holds tenant-wide, so every write control would 404.
+  const mayManageDept = useMayManageAgent()(agent?.departmentId);
+  const mayManage = mayManageDept && !agent?.contentHidden;
   const renameAgent = useRenameAgent();
   const search = Route.useSearch();
   const [tab, setTab] = useState<TabId>(search.tab ?? "overview");
@@ -424,18 +438,27 @@ function AgentDetail() {
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
+            {/* The run list behind the run-state badge is the owner's alone
+                (a 404 for anybody else); the current run's state is metadata
+                they keep (R2). */}
+            {agent.contentHidden ? (
+              <HeaderStatusPill
+                agentId={agent.id}
+                status={status}
+                runId={agent.currentRunId ?? null}
+                metadataOnly
+                runState={agent.currentRunState ?? null}
+              />
+            ) : (
+              <HeaderStatusPill agentId={agent.id} status={status} runId={runId} />
+            )}
             <DeleteAgentButton agent={agent} mayManage={mayManage} />
-            <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
-            <button
-              type="button"
-              onClick={() => setRunPickerOpen(true)}
-              disabled={status === "running" || runAgent.isPending}
-              title={status === "running" ? t("Already running", "Läuft bereits") : undefined}
-              className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Play className="h-4 w-4" /> {t("Run now", "Jetzt ausführen")}
-            </button>
+            <AgentStartActions
+              agent={agent}
+              running={status === "running"}
+              busy={runAgent.isPending}
+              onRunNow={() => setRunPickerOpen(true)}
+            />
           </div>
         </div>
       </Panel>
@@ -443,9 +466,14 @@ function AgentDetail() {
       {/* Above the tabs, not inside one: an edit made on the Guardrails tab has
           to be publishable from wherever the operator ends up, and a bar that
           lives inside a tab is a bar half the people who need it never see. */}
-      <AgentPublishBar agentId={agent.id} mayManage={mayManage} />
+      <AgentPublishBar
+        agentId={agent.id}
+        departmentId={agent.departmentId}
+        mayManage={mayManage}
+        contentHidden={agent.contentHidden ?? false}
+      />
 
-      {runPickerOpen && (
+      {runPickerOpen && !agent.contentHidden && (
         <div
           className="fixed inset-0 z-40 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
           onClick={() => setRunPickerOpen(false)}
@@ -515,7 +543,12 @@ function AgentDetail() {
           asked for -- but a run started by a schedule or another operator is
           followed too, which is what makes a cron-driven agent watchable at
           all. */}
-      {tab === "livelog" && (
+      {/* A personal agent's runs, files, memory and activity are its owner's
+          alone (the API answers each with a 404): anybody else gets the
+          notice, and none of these tabs asks for what it would be refused. */}
+      {agent.contentHidden && PRIVATE_TABS.has(tab) && <PrivateContentNotice />}
+
+      {tab === "livelog" && !agent.contentHidden && (
         <LiveLog
           agentId={agent.id}
           runId={runId ?? agent.currentRunId ?? null}
@@ -524,7 +557,7 @@ function AgentDetail() {
         />
       )}
 
-      {tab === "live" && (
+      {tab === "live" && !agent.contentHidden && (
         <LiveTimeline
           key={agent.id}
           agentId={agent.id}
@@ -533,7 +566,7 @@ function AgentDetail() {
         />
       )}
 
-      {tab === "files" && <WorkspaceFilesPanel agentId={agent.id} />}
+      {tab === "files" && !agent.contentHidden && <WorkspaceFilesPanel agentId={agent.id} />}
 
       {tab === "config" && (
         <div className="grid gap-4 md:grid-cols-2">
@@ -559,13 +592,7 @@ function AgentDetail() {
             runtimeRef={agent.runtimeRef}
             mayManage={mayManage}
           />
-          <Panel className="p-5">
-            <ConfigSectionHeader
-              hint={t("when this agent runs", "wann dieser Agent läuft")}
-              title={t("Schedule / trigger", "Zeitplan / Auslöser")}
-            />
-            <TriggerEditor initial={agent.schedule} agentName={agent.name} agentId={agent.id} />
-          </Panel>
+          <AgentTriggerPanel agent={agent} />
           <div className="md:col-span-2">
             <AgentKnowledgeSection
               agentId={agent.id}
@@ -579,7 +606,8 @@ function AgentDetail() {
         </div>
       )}
 
-      {tab === "instructions" && (
+      {tab === "instructions" && agent.contentHidden && <PrivateContentNotice />}
+      {tab === "instructions" && !agent.contentHidden && (
         <AgentInstructionsPanel
           agentId={agent.id}
           agentName={agent.name}
@@ -590,6 +618,7 @@ function AgentDetail() {
 
       {tab === "guardrails" && agent.departmentId && (
         <>
+          {agent.contentHidden && <PrivateContentNotice />}
           <AgentGuardrailsPanel agent={agent} mayManage={mayManage} />
           <AgentToolAccessPanel
             agentId={agent.id}
@@ -609,9 +638,11 @@ function AgentDetail() {
         </Panel>
       )}
 
-      {tab === "memory" && <AgentMemoryTab agentId={agent.id} mayManage={mayManage} />}
+      {tab === "memory" && !agent.contentHidden && (
+        <AgentMemoryTab agentId={agent.id} mayManage={mayManage} />
+      )}
 
-      {tab === "history" && (
+      {tab === "history" && !agent.contentHidden && (
         <AgentRunHistory agentId={agent.id} onOpenVersions={() => setTab("versions")} />
       )}
 
@@ -619,8 +650,86 @@ function AgentDetail() {
         <AgentSkillsTab agentId={agent.id} agentName={agent.name} mayManage={mayManage} />
       )}
 
-      {tab === "versions" && <AgentVersionsTab agentId={agent.id} mayManage={mayManage} />}
+      {tab === "versions" && agent.contentHidden && <PrivateContentNotice />}
+      {tab === "versions" && !agent.contentHidden && (
+        <AgentVersionsTab
+          agentId={agent.id}
+          departmentId={agent.departmentId}
+          mayManage={mayManage}
+        />
+      )}
     </div>
+  );
+}
+
+/** In place of a tab whose content belongs to a personal agent's owner alone:
+ *  the API answers it with a 404, and an empty editor or list would read as
+ *  "this agent has no instructions" or "never ran". */
+export function PrivateContentNotice({ inline = false }: { inline?: boolean }) {
+  const t = useT();
+  const words = t(
+    "This agent belongs to a member's personal department. Only that member can see its runs, files, memory and activity. You see its state and cost.",
+    "Dieser Agent gehört zur persönlichen Abteilung eines Mitglieds. Nur dieses Mitglied sieht seine Läufe, Dateien, Erinnerungen und Aktivitäten. Du siehst Zustand und Kosten.",
+  );
+  // `inline` inside a panel that already frames it (a trigger, the last action).
+  if (inline) return <p className="mt-4 text-sm text-muted-foreground">{words}</p>;
+  return <Panel className="p-5 text-sm text-muted-foreground">{words}</Panel>;
+}
+
+/** The Config tab's schedule / trigger panel. A personal agent's triggers
+ *  (their task text) belong to its owner: anybody else gets the notice, never
+ *  an editor that would save into a 404. */
+export function AgentTriggerPanel({ agent }: { agent: AgentDetailData }) {
+  const t = useT();
+  return (
+    <Panel className="p-5">
+      <ConfigSectionHeader
+        hint={t("when this agent runs", "wann dieser Agent läuft")}
+        title={t("Schedule / trigger", "Zeitplan / Auslöser")}
+      />
+      {agent.contentHidden ? (
+        <PrivateContentNotice inline />
+      ) : (
+        <TriggerEditor initial={agent.schedule} agentName={agent.name} agentId={agent.id} />
+      )}
+    </Panel>
+  );
+}
+
+/** "Discuss with Copilot" and "Run now" in the page header. Only the owner
+ *  acts on a personal agent: for anybody else (`contentHidden`) the API
+ *  refuses both, so neither is offered. */
+export function AgentStartActions({
+  agent,
+  running,
+  busy,
+  onRunNow,
+}: {
+  agent: AgentDetailData;
+  running: boolean;
+  busy: boolean;
+  onRunNow: () => void;
+}) {
+  const t = useT();
+  // `run:start` for THIS agent's department: tenant-wide, or the owner's seat
+  // in a personal department -- the question `POST /agents/{id}/run` asks.
+  const mayRun = useMayInDepartment()("run:start", agent.departmentId);
+  if (agent.contentHidden) return null;
+  return (
+    <>
+      <DiscussWithCopilot kind="agent" id={agent.id} label={agent.name} />
+      {mayRun && (
+        <button
+          type="button"
+          onClick={onRunNow}
+          disabled={running || busy}
+          title={running ? t("Already running", "Läuft bereits") : undefined}
+          className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <Play className="h-4 w-4" /> {t("Run now", "Jetzt ausführen")}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -739,8 +848,14 @@ export function OverviewTab({ agent }: { agent: AgentDetailData }) {
         <div className="mb-2 text-xs uppercase tracking-wider text-muted-foreground">
           {t("Last action", "Letzte Aktion")}
         </div>
-        <p className="text-sm">{agent.lastAction}</p>
-        <div className="mt-3 text-xs text-muted-foreground">{agent.lastRun}</div>
+        {agent.contentHidden ? (
+          <PrivateContentNotice inline />
+        ) : (
+          <>
+            <p className="text-sm">{agent.lastAction}</p>
+            <div className="mt-3 text-xs text-muted-foreground">{agent.lastRun}</div>
+          </>
+        )}
       </Panel>
       <AgentBoardsSection agentId={agent.id} className="md:col-span-3" />
     </div>
@@ -2435,12 +2550,22 @@ export function HeaderStatusPill({
   agentId,
   status,
   runId,
+  metadataOnly = false,
+  runState = null,
 }: {
   agentId: string;
   status: import("@/lib/mock-data").AgentStatus;
   runId: string | null;
+  /** A personal agent read by anybody but its owner: `runId` is the agent's
+   *  current run and `runState` its state from the detail; no run is asked for. */
+  metadataOnly?: boolean;
+  runState?: string | null;
 }) {
-  const active = useAgentActiveRunState(agentId, runId);
+  const active = useAgentActiveRunState(
+    agentId,
+    runId,
+    metadataOnly ? { knownState: runState } : undefined,
+  );
   return active ? <RunStateBadge state={active} /> : <StatusPill status={status} />;
 }
 

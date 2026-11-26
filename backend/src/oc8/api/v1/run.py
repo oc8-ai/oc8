@@ -15,7 +15,10 @@ from sqlalchemy import func, select
 from oc8 import models as m
 from oc8.agents.repo import (
     RunReach,
+    in_start_reach,
+    resolve_cancel_reach,
     resolve_run_reach,
+    resolve_start_reach,
     restrict_to_run_reach,
     run_reachable_agent,
 )
@@ -25,6 +28,7 @@ from oc8.authz.permissions import RUN, RUN_CONTROL, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.questions import QuestionError
 from oc8.chat.service import record_answer_turn
+from oc8.departments.repo import is_private_to
 from oc8.runtime.cancellation import record_operator_cancel
 from oc8.runtime.clarification import AnswerRefused, resolve_clarification
 from oc8.runtime.intake import enqueue_run, publish_run
@@ -65,6 +69,31 @@ async def _reachable_run(
     if run_row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
     return run_row
+
+
+async def _refuse_personal_run(db: DbSession, actor: HumanActor, run_row: m.AgentRun) -> None:
+    """Only the owner acts on a personal agent: resuming or steering one of its
+    runs is refused to anybody else with the same 404 as no run at all. The
+    read reach already leaves such a run out (`RunReach.private`); this stays
+    as the door's own answer, asked of the run it was handed."""
+    if await _private_to_caller(db, actor, run_row):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "run not found")
+
+
+async def _private_to_caller(db: DbSession, actor: HumanActor, run_row: m.AgentRun) -> bool:
+    """Whether `run_row`'s agent lies in a department private to this caller
+    (`departments.repo.is_private_to`) -- the one question `cancel_run` asks
+    after a reach that deliberately does not."""
+    located = (
+        await db.execute(
+            select(m.Agent.department_id, m.Department.kind)
+            .join(m.Department, m.Department.id == m.Agent.department_id)
+            .where(m.Agent.id == run_row.agent_id)
+        )
+    ).one_or_none()
+    return located is not None and is_private_to(
+        actor.scope, kind=located.kind, department_id=located.department_id
+    )
 
 
 class AnswerRequest(BaseModel):
@@ -335,11 +364,14 @@ async def run(
     actor: _RunStarter,
 ) -> RunDTO:
     principal = actor.principal
-    reach = await resolve_run_reach(request, db, actor, RUN_START)
+    # The start reach (`agents.repo.start_reach`) is what the boards, the
+    # Copilot's roster, delegation and agent match ask too: never a personal
+    # agent the caller does not own, answered with the same 404 as no agent.
+    reach = await resolve_start_reach(request, db, actor)
     agent = await run_reachable_agent(
         db, reach=reach, tenant_id=actor.principal.tenant_id, agent_id=agent_id
     )
-    if agent is None or agent.deleted_at is not None:
+    if agent is None or agent.deleted_at is not None or not in_start_reach(reach, agent):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     if agent.status == "pending_approval":
         raise HTTPException(status.HTTP_409_CONFLICT, "agent awaiting hire approval")
@@ -438,6 +470,7 @@ async def answer_run(
     # 404 as no run at all, before any lock or answer is looked at.
     reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
     run_row = await _reachable_run(db, reach, actor, run_id)
+    await _refuse_personal_run(db, actor, run_row)
     # The same lock the inbox and chat doors take, on the CLARIFICATION rows
     # (never the run, which a running executor holds): two answers to the same
     # question serialise, and the second finds it already answered.
@@ -508,6 +541,7 @@ async def message_run(
     principal = actor.principal
     reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
     run_row = await _reachable_run(db, reach, actor, run_id)
+    await _refuse_personal_run(db, actor, run_row)
     if run_row.state in TERMINAL:
         raise HTTPException(status.HTTP_409_CONFLICT, "run has already finished")
     db.add(
@@ -549,10 +583,17 @@ async def cancel_run(
     409 if the run is already terminal; 404 if missing, cross-tenant (RLS), or
     a run of an agent the caller may not see.
     Idempotent: a second cancel adds no duplicate row.
+
+    A run of a personal agent the caller does not own (ruling U1): the stop
+    is still theirs -- an emergency stop, so its reach (`cancel_reach`) keeps
+    the private departments -- but nothing of the run comes back: the answer
+    is `_stopped_dto`, ids and state only, and the `run.cancel` audit entry
+    names who stopped it (`actor_id`) and the run, never what it did.
     """
     principal = actor.principal
-    reach = await resolve_run_reach(request, db, actor, RUN_CONTROL)
+    reach = await resolve_cancel_reach(request, db, actor)
     run_row = await _reachable_run(db, reach, actor, run_id)
+    private = await _private_to_caller(db, actor, run_row)
 
     current = RunState(run_row.state)
     if current in TERMINAL:
@@ -560,10 +601,23 @@ async def cancel_run(
 
     # The same unlocked run_cancellation row the chat's Stop writes; see
     # oc8.runtime.cancellation.
-    await record_operator_cancel(db, run=run_row, principal=principal, actor_id=None)
+    await record_operator_cancel(db, run=run_row, principal=principal, actor_id=actor.member.id)
     # A parked run was re-queued by the cancel: report that state, read back
     # while the tenant binding of this transaction still holds.
     await db.refresh(run_row)
-    dto = run_to_dto(run_row)
+    dto = _stopped_dto(run_row) if private else run_to_dto(run_row)
     await db.commit()
     return dto
+
+
+def _stopped_dto(run: m.AgentRun) -> RunDTO:
+    """What a stop of a private run answers (U1): the metadata an admin keeps
+    (R2) -- ids, state, phase, heartbeat -- and none of the content: no task,
+    output, failure text, tool calls, question or rendered output."""
+    return RunDTO(
+        id=str(run.id),
+        agent_id=str(run.agent_id),
+        state=run.state,
+        phase=run.phase,
+        updated_at=run.updated_at.isoformat(),
+    )

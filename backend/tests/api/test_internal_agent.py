@@ -1901,6 +1901,8 @@ async def test_the_internal_endpoint_publishes_a_rendered_component(
             published.append((type_, data))
 
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)
@@ -1948,6 +1950,8 @@ async def test_the_internal_endpoint_publishes_todos(
             published.append((type_, data))
 
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)

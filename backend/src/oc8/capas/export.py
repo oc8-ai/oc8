@@ -26,6 +26,7 @@ from oc8.capas.manifest import (
     TemplateAgentTrigger,
     parse_manifest,
 )
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 
 __all__ = [
     "ExportValidationError",
@@ -155,11 +156,7 @@ def _sanitize_policy(key: str, policy: object, warnings: list[str]) -> object:
             "that pin is tenant-specific and was dropped from the export; the target tenant "
             "must choose its own connection for this tool after install"
         )
-    return {
-        k: v
-        for k, v in policy.items()
-        if k not in _NON_PORTABLE_POLICY_KEYS and v is not None
-    }
+    return {k: v for k, v in policy.items() if k not in _NON_PORTABLE_POLICY_KEYS and v is not None}
 
 
 async def _local_skill_names_for_agent(
@@ -264,6 +261,16 @@ async def build_skill_export(
     )
 
 
+async def _in_personal_department(db: AsyncSession, department_id: uuid.UUID | None) -> bool:
+    """A personal department and its agents are their owner's alone (mission,
+    persona, starters, trigger text): never rendered into a capa, for anybody.
+    The export answers such an id exactly as an unknown one."""
+    if department_id is None:
+        return False
+    kind = await db.scalar(select(m.Department.kind).where(m.Department.id == department_id))
+    return kind == DEPARTMENT_KIND_PERSONAL
+
+
 async def build_agent_export(
     db: AsyncSession,
     *,
@@ -275,7 +282,11 @@ async def build_agent_export(
 ) -> ExportedCapa:
     _check_capa_name(capa_name)
     agent = await db.get(m.Agent, agent_id)
-    if agent is None or agent.tenant_id != tenant_id:
+    if (
+        agent is None
+        or agent.tenant_id != tenant_id
+        or await _in_personal_department(db, agent.department_id)
+    ):
         raise ExportValidationError(f"agent {agent_id} not found")
 
     warnings: list[str] = []
@@ -347,7 +358,7 @@ async def build_department_export(
 ) -> ExportedCapa:
     _check_capa_name(capa_name)
     dept = await db.get(m.Department, department_id)
-    if dept is None or dept.tenant_id != tenant_id:
+    if dept is None or dept.tenant_id != tenant_id or dept.kind == DEPARTMENT_KIND_PERSONAL:
         raise ExportValidationError(f"department {department_id} not found")
 
     agents = (

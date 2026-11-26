@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.hire import create_hire_request, initial_status, require_hire_approval
+from oc8.agents.hire import create_hire_request, hire_is_gated, initial_status
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
@@ -42,8 +42,9 @@ from oc8.agents.versioning import (
 from oc8.api.deps import (
     DbSession,
     authorize_agent_write,
+    authorize_in_department,
     require_agent_write,
-    require_permission,
+    require_departmental,
 )
 from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto
 from oc8.api.v1.agents import _agent_detail_dto
@@ -55,6 +56,7 @@ from oc8.authz.permissions import AGENT_VERSION_PUBLISH, KNOWLEDGE, MANAGE, perm
 from oc8.authz.scope import HumanActor
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.capas.manifest import GuardrailAttribute
+from oc8.connections.confirmation import record_created_skills
 from oc8.connections.limit_tools import unknown_limit_tools
 from oc8.connections.login import login_chosen
 from oc8.connections.tool_connection import not_retired
@@ -65,10 +67,19 @@ from oc8.copilot.guardrail_interpret import (
     interpret_guardrail_definition,
     interpret_guardrails_from_instruction,
 )
+from oc8.departments.frames import clip_narrowing_to_frame
+from oc8.departments.personal import (
+    PersonalDepartmentRefused,
+    PersonalFrameViolation,
+    enforce_personal_narrowing,
+    ensure_personal_capacity,
+    withholds_content_from_trail,
+)
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
 )
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.runtime.registry import (
     RuntimeCapabilityError,
     RuntimeNotExecutableError,
@@ -103,6 +114,67 @@ from oc8.schemas.requests import (
 )
 
 router = APIRouter()
+
+
+def _refuse_personal_narrowing(dept: m.Department | None, narrowing: Any) -> None:
+    """422 when a personal department's frame does not allow the narrowing
+    (`departments.personal.enforce_personal_narrowing`); no-op elsewhere."""
+    if dept is None:
+        return
+    try:
+        enforce_personal_narrowing(dept, narrowing if isinstance(narrowing, dict) else {})
+    except PersonalFrameViolation as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            # No `violations`: the frontend explains a refusal from that list,
+            # and there is no single tool the frame objects to here.
+            {"error": "narrowing_exceeds_frame"},
+        ) from exc
+
+
+async def _clip_restored_narrowing(
+    db: DbSession, agent: m.Agent, dept: m.Department, actor: HumanActor
+) -> None:
+    """Restoring an agent into a personal department drops the tools its
+    narrowing holds that the frame no longer allows (the frame cascade skips
+    archived agents). Published like the cascade does: only a clean agent, so
+    an operator's pending draft is never pushed live -- the clip joins it."""
+    if dept.kind != DEPARTMENT_KIND_PERSONAL:
+        return
+    frame_tools = (dept.frame or {}).get("tools") or {}
+    clipped = clip_narrowing_to_frame(frame_tools, agent.narrowing)
+    if clipped is None:
+        return
+    clean = not (await draft_status(db, agent)).dirty
+    agent.narrowing = clipped
+    agent.narrowing_overridden_keys = sorted(
+        set(agent.narrowing_overridden_keys or []) & set(clipped.get("tools", {}))
+    )
+    await db.flush()
+    if not clean:
+        return
+    try:
+        await publish_version(
+            db,
+            agent,
+            note="restored within the personal department's frame",
+            published_by=actor.member.id,
+        )
+    except NoChangesToPublish:
+        return
+    except PublishHookFailed as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"error": "publish_hook_rejected", "hook": exc.hook_name, "reason": str(exc.cause)},
+        ) from exc
+
+
+async def _ensure_personal_capacity(db: DbSession, dept: m.Department) -> None:
+    """409 when a personal department is at the tenant's agent cap."""
+    try:
+        await ensure_personal_capacity(db, dept)
+    except PersonalDepartmentRefused as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, {"error": exc.error}) from exc
 
 
 def _violation_body(violations: list[Any]) -> dict[str, Any]:
@@ -302,9 +374,11 @@ async def create_agent(
         not_found=HTTPException(status.HTTP_400_BAD_REQUEST, "unknown department"),
     )
 
+    await _ensure_personal_capacity(db, dept)
     narrowing: dict[str, Any] = {}
     if body.narrowing:
         reject_malformed_policies(body.narrowing)
+        _refuse_personal_narrowing(dept, body.narrowing)
         await reject_unknown_limit_tools(db, actor.principal.tenant_id, body.narrowing)
         # The same check as PUT /agents/{id}/narrowing (`connections.value_spec`).
         checked = await check_agent_narrowing(
@@ -326,7 +400,7 @@ async def create_agent(
         narrowing = checked.narrowing
 
     principal = actor.principal
-    gated = await require_hire_approval(db, tenant_id=principal.tenant_id)
+    gated = await hire_is_gated(db, tenant_id=principal.tenant_id, department=dept)
     agent = m.Agent(
         id=uuid.uuid4(),
         tenant_id=principal.tenant_id,
@@ -385,6 +459,9 @@ async def create_agent(
     # snapshot, and before the audit event below (skills_write.py's
     # create_skill follows the same create-and-publish-atomically shape).
     await publish_version(db, agent, published_by=actor.member.id, at_hire=True)
+    # Ruling FR-I2: in a department with an owner the agent starts from the
+    # skills it was created with; one an administrator adds later waits.
+    await record_created_skills(db, agent)
 
     if gated:
         await create_hire_request(db, agent=agent)
@@ -398,7 +475,7 @@ async def create_agent(
         resource={"agent_id": str(agent.id), "name": agent.name, "by": principal.subject},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.post(
@@ -488,6 +565,7 @@ async def set_narrowing(
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
     reject_malformed_policies(body.narrowing)
+    _refuse_personal_narrowing(dept, body.narrowing)
     await reject_unknown_limit_tools(db, principal.tenant_id, body.narrowing)
     # A threshold on a connection with no value_spec is judged against the
     # frame and then dropped, never refused (E2E F3): see `value_spec`.
@@ -528,7 +606,7 @@ async def set_narrowing(
         resource={"agent_id": str(agent.id), "by": principal.subject},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.post(
@@ -594,7 +672,7 @@ async def reset_agent_narrowing(
         resource={"agent_id": str(agent.id), "key": key, "by": principal.subject},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 async def _connection_guardrail_attributes(
@@ -801,7 +879,7 @@ async def assign_agent_runtime(
             status.HTTP_422_UNPROCESSABLE_ENTITY, _violation_body(exc.violations)
         ) from exc
 
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.patch(
@@ -954,7 +1032,7 @@ async def set_autonomy(
         },
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.patch(
@@ -999,7 +1077,7 @@ async def update_instructions(
         },
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.patch(
@@ -1035,7 +1113,7 @@ async def rename_agent(
         resource={"agent_id": str(agent.id), "before": before, "after": agent.name},
         principal=principal,
     )
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=None)
 
 
 @router.post(
@@ -1133,8 +1211,9 @@ async def delete_agent_memory(
     if record is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "memory record not found")
     resource = {"agent_id": str(agent_id), "record_id": str(record_id)}
-    if not agent.is_tenant_assistant:
-        # Never a Copilot note's content in the audit trail: it is personal.
+    if not agent.is_tenant_assistant and not await withholds_content_from_trail(db, agent.id):
+        # Never a Copilot note's content in the audit trail, nor a personal
+        # agent's memory (spec A4): both are personal.
         resource["content_snippet"] = record.content[:200]
     resource["by"] = principal.subject
     await db.delete(record)
@@ -1300,16 +1379,39 @@ async def _current_version_no(db: DbSession, agent: m.Agent) -> int | None:
     return current.version_no if current is not None else None
 
 
+async def _authorize_publish(
+    request: Request, db: DbSession, actor: HumanActor, agent: m.Agent
+) -> None:
+    """Publish and rollback's per-agent narrow, in one place: write authority
+    over the agent (`authorize_agent_write`), then `agent_version:publish` for
+    ITS department -- tenant-wide, or the owner's seat in this personal
+    department (`authorize_in_department`). The door admits the owner on the
+    seat alone; this is what keeps that seat out of every other department."""
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    await authorize_agent_write(request, db, actor, agent.department_id, not_found=not_found)
+    await authorize_in_department(
+        request,
+        db,
+        actor.principal,
+        AGENT_VERSION_PUBLISH,
+        agent.department_id,
+        not_found=not_found,
+        scope=actor.scope,
+    )
+
+
 @router.post(
     "/agents/{agent_id}/versions",
     response_model=AgentVersionDTO,
     status_code=status.HTTP_201_CREATED,
-    # TWO gates, and both are needed. This one is the tenant-wide
-    # `agent_version:publish` -- the governed act (spec §6): an editor may change
-    # a draft with `agent:manage` and still not be able to put it into
-    # production. `require_agent_write` below is the department door, and
+    # TWO gates, and both are needed. This one is `agent_version:publish` --
+    # the governed act (spec §6): an editor may change a draft with
+    # `agent:manage` and still not be able to put it into production. Held
+    # tenant-wide, or by the owner's seat in a personal department, which
+    # `_authorize_publish` narrows to the agent's own department.
+    # `require_agent_write` below is the department door, and
     # `authorize_agent_write` in the body is the per-agent narrow.
-    dependencies=[Depends(require_permission(AGENT_VERSION_PUBLISH))],
+    dependencies=[Depends(require_departmental(AGENT_VERSION_PUBLISH))],
 )
 async def publish_agent_version(
     agent_id: uuid.UUID,
@@ -1340,13 +1442,7 @@ async def publish_agent_version(
     # reads `agent.narrowing` -- exactly the frame-derived shape a wrong-
     # department caller must not learn from a response. Same ordering rule as
     # every other route in this module; see the module docstring.
-    await authorize_agent_write(
-        request,
-        db,
-        actor,
-        agent.department_id,
-        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
-    )
+    await _authorize_publish(request, db, actor, agent)
 
     current_no = await _current_version_no(db, agent)
     if body.expected_current_version_no != current_no:
@@ -1380,7 +1476,7 @@ async def publish_agent_version(
     # `agent_version:publish`, not a permission of its own: a rollback IS a
     # publish (spec §2.7, §6). Two names for one authority would mean the first
     # tenant to grant one without the other discovers they are the same thing.
-    dependencies=[Depends(require_permission(AGENT_VERSION_PUBLISH))],
+    dependencies=[Depends(require_departmental(AGENT_VERSION_PUBLISH))],
 )
 async def rollback_agent_version(
     agent_id: uuid.UUID,
@@ -1440,13 +1536,7 @@ async def rollback_agent_version(
     agent = await _load_agent(db, agent_id)
     # Before the target is even loaded, and long before `dept.frame` is read:
     # the 422 below carries violations derived from that frame.
-    await authorize_agent_write(
-        request,
-        db,
-        actor,
-        agent.department_id,
-        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
-    )
+    await _authorize_publish(request, db, actor, agent)
     principal = actor.principal
 
     target = (
@@ -1486,6 +1576,7 @@ async def rollback_agent_version(
             )
     dept = await db.get(m.Department, agent.department_id)
     frame = dept.frame if dept else {}
+    _refuse_personal_narrowing(dept, payload.get("narrowing") or {})
     violations = (
         await check_agent_narrowing(
             db,
@@ -1653,6 +1744,12 @@ async def restore_agent(
         )
     except SubscriptionModelNotManualOnly as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+    dept = await db.get(m.Department, agent.department_id)
+    if dept is not None:
+        # An archived agent is skipped by the department's frame cascade, so its
+        # narrowing may predate a tighter frame; and it takes a place again.
+        await _ensure_personal_capacity(db, dept)
+        await _clip_restored_narrowing(db, agent, dept, actor)
     principal = actor.principal
     agent.deleted_at = None
     await db.flush()

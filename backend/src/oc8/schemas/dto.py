@@ -58,11 +58,21 @@ class DepartmentDTO(CamelModel):
     activity: int
     accent: str
     prompt_caching_enabled: bool
+    #: `standard`, `assistant` or `personal` (`DEPARTMENT_KIND_*`).
+    kind: Literal["standard", "assistant", "personal"] = "standard"
     deleted_at: str | None = None
     name_translations: dict[str, str] = {}
     goal_translations: dict[str, str] = {}
     okr_translations: dict[str, str] = {}
     kpi_label_translations: dict[str, str] = {}
+
+
+class DepartmentDetailDTO(DepartmentDTO):
+    #: True when this reader sees a member's personal department without
+    #: being its owner (`departments.repo.personal_content_hidden`): its task
+    #: board and what its agents did are not theirs to see (the board answers
+    #: 404), so the page shows a notice instead of asking for it.
+    content_hidden: bool = False
 
 
 class TaskDTO(CamelModel):
@@ -368,6 +378,11 @@ class SeatDTO(CamelModel):
     #: seat_role. Never a resource:action string -- see
     #: `OrgMemberDepartment.agent_manage`.
     agent_manage: bool
+    #: What this seat carries beyond its `seat_role`, in this department alone:
+    #: `PERSONAL_OWNER_PERMISSIONS` for the owner's seat in their personal
+    #: department, empty for every other seat. The screen gates Run now and
+    #: Publish per department on it, the way it reads `agent_manage`.
+    owner_permissions: list[str] = []
 
 
 class MemberDTO(CamelModel):
@@ -824,6 +839,10 @@ class ToolPolicyDTO(CamelModel):
 
 class AgentDetailDTO(AgentDTO):
     mission: str = ""
+    #: True when this reader sees a personal agent's metadata only (spec
+    #: decision 3): the content fields are blank because they are not theirs
+    #: to see, not because the agent has none.
+    content_hidden: bool = False
     department_name: str | None = None
     effective_tools: dict[str, ToolPolicyDTO] = {}
     department_frame_tools: dict[str, ToolPolicyDTO] = {}
@@ -843,7 +862,7 @@ class AgentDetailDTO(AgentDTO):
     #: key, touched or not, so a key can appear there without ever having been
     #: deliberately changed. This is the authoritative "has this agent
     #: diverged from the department default for this tool" answer -- the same
-    #: one `departments.py`'s `_deviation_counts` (§ Abweichungen) uses.
+    #: one `departments/frames.py`'s `deviation_counts` (§ Abweichungen) uses.
     narrowing_overridden_keys: list[str] = []
     #: Per-`effective_tools` key, which level actually produced that key's
     #: current value -- "agent" / "department" / "capa_default" (see
@@ -856,6 +875,10 @@ class AgentDetailDTO(AgentDTO):
     #: detail screen can only show a live log for a run started in that same
     #: browser tab, so a scheduled run happens invisibly.
     current_run_id: str | None = None
+    #: That run's state (`queued`, `running`, `waiting_for_approval`, ...), so
+    #: the header shows it on the first render. Metadata: kept for a reader
+    #: who sees a personal agent's metadata only (R2).
+    current_run_state: str | None = None
     #: Per-agent sampling overrides (agent.definition["model_params"]),
     #: narrowest-first ahead of the assigned ModelConfig's own defaults --
     #: see modelrouter/sampling.py's resolve_params(). None means "inherit
@@ -1007,6 +1030,14 @@ class PrincipalUsageDTO(CamelModel):
     #: cache; `provider_cost_micros` already bills them at the cache rates.
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    #: The group's display name (the agent's or the department's), and for an
+    #: agent row its department. Metadata an admin keeps (R2) even where the
+    #: agent and department lists leave a member's personal ones out, so the
+    #: Costs page names every row without a second lookup. `None` for the
+    #: "unassigned" bucket.
+    name: str | None = None
+    department_id: str | None = None
+    department_name: str | None = None
 
 
 class TokenUsageExportRowDTO(CamelModel):
@@ -1793,6 +1824,10 @@ class TriggerDTO(CamelModel):
     #: trigger, so it no longer acts through their own account until they save
     #: it again (connection_required "schedule_needs_confirmation").
     needs_confirmation: bool = False
+    #: Its agent is in a department with an owner: what changed there is
+    #: confirmed on the owner's confirmation card, not by saving the trigger
+    #: again -- a save confirms nothing it did not hold before (Ruling FR-C1).
+    owner_confirms: bool = False
     #: kind='webhook' only -- the full POST /webhooks/{token} URL, built
     #: server-side from the same base URL external OAuth redirects use
     #: (oauth_redirect_base_url). Not one-time-reveal: unlike a password, an

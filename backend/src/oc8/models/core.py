@@ -27,6 +27,10 @@ from sqlalchemy.orm import Mapped, mapped_column
 from oc8.db.base import Base, TimestampMixin
 from oc8.models._mixins import PkMixin, SoftDeleteMixin, TenantMixin
 
+DEPARTMENT_KIND_STANDARD = "standard"
+DEPARTMENT_KIND_ASSISTANT = "assistant"
+DEPARTMENT_KIND_PERSONAL = "personal"
+
 
 class Organization(Base, PkMixin, TimestampMixin):
     """The tenant boundary (tech-spec §4.1). Not tenant-scoped itself."""
@@ -90,14 +94,54 @@ class Department(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     config_revision: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
-    # The department the tenant's oc8 Assistant lives in -- auto-provisioned by
-    # `agent.assistant.get_or_create_assistant`, never configured by anyone.
-    # Mirrors `Agent.is_tenant_assistant`, and for the same reason: the two
-    # scoped repositories (`departments/repo.py`, `agents/repo.py`) filter this
-    # pair out of every user-facing list, and an explicit flag is cheaper and
-    # clearer than joining back through `team_lead_agent_id` on every read.
-    is_assistant_department: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, server_default=text("false")
+    # What the department is for. `standard` is an ordinary shared department.
+    # `assistant` is the one the tenant's oc8 Assistant lives in --
+    # auto-provisioned by `agent.assistant.get_or_create_assistant`, never
+    # configured by anyone; it mirrors `Agent.is_tenant_assistant`, and for the
+    # same reason. `personal` belongs to one member (`owner_member_id`).
+    # The two scoped repositories (`departments/repo.py`, `agents/repo.py`)
+    # filter everything but `standard` out of the user-facing lists, and an
+    # explicit column is cheaper and clearer than joining back through
+    # `team_lead_agent_id` on every read. `visible_department` by id follows an
+    # allowlist: `standard` by scope, `personal` only to its owner or a
+    # tenant-wide `department:manage` holder (never to read access alone).
+    kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default=DEPARTMENT_KIND_STANDARD, server_default="standard"
+    )
+    # The member a personal department belongs to; set exactly when `kind` is
+    # `personal` (`ck_department_personal_owner`).
+    owner_member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    # Stamped when someone edits a personal department's tools / budget by hand,
+    # so a re-sync of the tenant defaults leaves that part alone.
+    frame_overridden_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    budget_overridden_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+    # The tool policy of a personal department held until its owner confirms
+    # it; only a personal department can carry one.
+    pending_frame_tools: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('standard','assistant','personal')", name="ck_department_kind"),
+        CheckConstraint(
+            "(kind = 'personal') = (owner_member_id IS NOT NULL)",
+            name="ck_department_personal_owner",
+        ),
+        # The PDP ignores an agent-exclusive grant on a closed frame
+        # (`authz.pdp.frame_allows_key`); a personal frame must always be one.
+        CheckConstraint(
+            "kind <> 'personal' OR COALESCE(frame->>'closed', '') = 'true'",
+            name="ck_department_personal_frame_closed",
+        ),
+        CheckConstraint(
+            "pending_frame_tools IS NULL OR owner_member_id IS NOT NULL",
+            name="ck_department_pending_frame_owned",
+        ),
+        Index(
+            "uq_department_personal_owner",
+            "tenant_id",
+            "owner_member_id",
+            unique=True,
+            postgresql_where=text("kind = 'personal' AND deleted_at IS NULL"),
+        ),
     )
 
 
@@ -317,6 +361,11 @@ class Agent(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     # a pre-migration row (backfilled to v1 by 0099) or a row from a partially
     # failed create can be null in production.
     current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    # The skill assignments the owner of this agent's department last
+    # confirmed (`connections.confirmation.held_skill_entries`): they keep
+    # waiting for the owner when every confirmation is gone. None: never
+    # confirmed by an owner.
+    confirmed_skills: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (
         CheckConstraint(

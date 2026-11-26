@@ -11,8 +11,10 @@ payload: an identity binding takes effect, and is revoked, at once.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import Boolean, CheckConstraint, Text, UniqueConstraint, Uuid
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -36,6 +38,10 @@ class AgentToolAccess(Base, PkMixin, TenantMixin, TimestampMixin):
     #: What the confirming person saw (agent version, skills, department frame
     #: and setup); a personal target is only used while it is unchanged.
     binding_fingerprint: Mapped[str | None] = mapped_column(Text)
+    #: The split (`core`, `grant`) of what the confirming person saw
+    #: (`connections.confirmation`). Every stamp records one; NULL is a legacy
+    #: row stamped before the split existed, judged by its digest alone.
+    binding_split: Mapped[dict[str, Any] | None] = mapped_column(JSONB(none_as_null=True))
 
     __table_args__ = (
         UniqueConstraint("agent_id", "tool_key", name="uq_agent_tool_access"),

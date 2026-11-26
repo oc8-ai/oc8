@@ -95,7 +95,9 @@ async def member_may_open_attachment(
         if agent is None:
             return False
         if row.owner_type == "agent_run":
-            reach = run_reach(authority=authority, scope=scope, permission=perm(RUN, VIEW))
+            reach = await run_reach(
+                db, authority=authority, scope=scope, permission=perm(RUN, VIEW)
+            )
             reachable = await run_reachable_agent(
                 db, reach=reach, tenant_id=tenant_id, agent_id=agent_id
             )

@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from oc8.departments.repo import personal_content_hidden, private_department_ids
 from oc8.models.core import Agent, Department
 from oc8.models.run import AgentRun, Clarification
 from oc8.runtime.clarification import resolve_clarification
@@ -135,6 +136,10 @@ async def open_clarifications(
         stmt = stmt.where(Agent.department_id.in_(scope.viewable))
     else:
         return []
+    # A personal agent's question is its owner's alone (spec A4), whatever the
+    # branch above admitted: no unrestricted caller sees it. `Agent.department_id`
+    # is NOT NULL, so `NOT IN` never meets a NULL here.
+    stmt = stmt.where(Agent.department_id.not_in(private_department_ids(scope)))
 
     # `id` breaks the tie, and it is not decoration: `created_at` defaults to
     # `now()`, which in Postgres is TRANSACTION start time -- two questions asked
@@ -201,7 +206,19 @@ async def answer_clarification(
     if row is None:
         return None
 
-    department_id = await db.scalar(select(Agent.department_id).where(Agent.id == row.agent_id))
+    located = (
+        await db.execute(
+            select(Agent.department_id, Department.kind)
+            .join(Department, Department.id == Agent.department_id, isouter=True)
+            .where(Agent.id == row.agent_id)
+        )
+    ).one_or_none()
+    department_id, kind = located if located is not None else (None, None)
+    # Only the owner acts on a personal agent: answering its question resumes
+    # its work, so anybody else gets the same None as a question that is not
+    # there.
+    if personal_content_hidden(kind=kind, department_id=department_id, scope=actor.scope):
+        return None
     # `may_decide`, not `may_view`: `clarification:answer` is the decide-level
     # half of the seat vocabulary (`SEAT_PERMISSIONS`), so a `dept_viewer` reads
     # this queue and cannot empty it.

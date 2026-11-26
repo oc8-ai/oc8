@@ -13,6 +13,7 @@ import { TriggerOwner } from "@/components/connections/trigger-owner";
 import { type AgentToolAccess, useAgentToolAccess } from "@/lib/connections";
 import {
   EVENT_TARGET_CHANGED,
+  NEEDS_CONFIRMATION,
   type TriggerDTO,
   type TriggerEventDTO,
   useCreateAgentTrigger,
@@ -283,6 +284,7 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
   const { lang } = useLang();
   const status = trigger.pollStatus;
   const changed = !trigger.enabled && trigger.lastSkipReason === EVENT_TARGET_CHANGED;
+  const waiting = trigger.lastSkipReason === NEEDS_CONFIRMATION;
   const failing =
     !!status?.lastError &&
     !!status.lastErrorAt &&
@@ -302,6 +304,14 @@ function PollStatusLine({ trigger }: { trigger: TriggerDTO }) {
               )
             : t("Not checked yet", "Noch nicht geprüft")}
       </p>
+      {waiting && (
+        <p role="status">
+          {t(
+            "Waiting for the owner's confirmation before it listens again.",
+            "Wartet auf die Bestätigung der Person, bevor es wieder zuhört.",
+          )}
+        </p>
+      )}
       {failing && status?.lastErrorAt && (
         <p
           role="alert"
