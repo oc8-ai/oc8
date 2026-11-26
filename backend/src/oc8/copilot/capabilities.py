@@ -28,11 +28,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
-from oc8.agents.hire import require_hire_approval
+from oc8.agents.hire import initial_status, require_hire_approval
 from oc8.agents.presentation import show_model
 from oc8.agents.publish_hooks import PublishHookFailed
 from oc8.agents.retire import delete_or_archive_agent
-from oc8.agents.versioning import NoChangesToPublish, draft_status, publish_version
+from oc8.agents.versioning import (
+    AwaitingHireApproval,
+    NoChangesToPublish,
+    draft_status,
+    publish_version,
+)
 from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz import pdp
@@ -49,7 +54,6 @@ from oc8.boards.spec import (
     parse_board_spec,
 )
 from oc8.capas.discovery import (
-    connection_supports_value_spec,
     find_plugin,
     resolve_tool_pack_connection,
 )
@@ -63,6 +67,7 @@ from oc8.capas.service import (
 )
 from oc8.connections.limit_tools import connection_tool_names, unknown_limit_tools
 from oc8.connections.tool_connection import not_retired
+from oc8.connections.value_spec import check_agent_narrowing
 from oc8.copilot.guardrail_interpret import (
     GuardrailNotUnderstood,
     attributes_for_function,
@@ -72,6 +77,7 @@ from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
 )
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.notifications.events import on_board_created
 from oc8.runtime.registry import (
     RuntimeCapabilityError,
@@ -492,6 +498,39 @@ def operation_references(data: dict[str, Any]) -> dict[str, str]:
     return refs
 
 
+#: The fields an operation names an agent by.
+_AGENT_FIELDS = ("agentId",)
+
+
+async def refuse_personal_agent(db: AsyncSession, operation: Operation) -> None:
+    """Fail closed: no operation may reach an agent of a personal department
+    (archived ones included, so a restore is covered), nor hand a board to one.
+    A board is reached through its own agent. One explicit select; RLS binds the
+    tenant on the session."""
+    agent_ids: set[uuid.UUID] = {
+        value
+        for field in _AGENT_FIELDS
+        if isinstance(value := getattr(operation, field, None), uuid.UUID)
+    }
+    board_id = getattr(operation, "boardId", None)
+    if isinstance(board_id, uuid.UUID):
+        board_agent = await db.scalar(
+            select(m.DataBoard.agent_id).where(m.DataBoard.id == board_id)
+        )
+        if board_agent is not None:
+            agent_ids.add(board_agent)
+    if not agent_ids:
+        return
+    personal = await db.scalar(
+        select(m.Department.id)
+        .join(m.Agent, m.Agent.department_id == m.Department.id)
+        .where(m.Agent.id.in_(agent_ids), m.Department.kind == DEPARTMENT_KIND_PERSONAL)
+        .limit(1)
+    )
+    if personal is not None:
+        raise InvalidOperation("a personal agent cannot be edited")
+
+
 async def target_revision(
     db: AsyncSession, operation: Operation, *, lock_for_apply: bool = False
 ) -> str | None:
@@ -507,6 +546,7 @@ async def target_revision(
     `AgentCreate.departmentId` exists at apply time, which is the one thing
     that actually could have changed underneath it.
     """
+    await refuse_personal_agent(db, operation)
     if isinstance(operation, (DepartmentCreate, AgentCreate, CapaInstall, BoardCreate)):
         return None
     if isinstance(operation, BoardUpdate):
@@ -664,10 +704,20 @@ async def _publish_copilot_change(
         return
     try:
         await publish_version(db, agent, note=f"Copilot: {what}")
+    except AwaitingHireApproval:
+        # Held in the working copy: the approver approves the hire's v1.
+        logger.info("copilot change held for a pending hire: agent=%s what=%s", agent.id, what)
     except NoChangesToPublish:
         pass
     except PublishHookFailed as exc:
         raise InvalidOperation() from exc
+
+
+def _refuse_personal(dept: m.Department) -> None:
+    """Personal departments are not the Copilot's to edit, delete, restore or
+    hire into before it owns that surface; fail closed."""
+    if dept.kind == DEPARTMENT_KIND_PERSONAL:
+        raise InvalidOperation("a personal department cannot be edited")
 
 
 async def apply_operation(
@@ -689,6 +739,7 @@ async def apply_operation(
     after its last step (`apply_builder_proposal`: the person's "Create" is
     one decision, so the new agent's first version holds all of it)."""
     operation = parse_operations([data])[0]
+    await refuse_personal_agent(db, operation)
     if isinstance(operation, MissionSet):
         agent = await db.get(m.Agent, operation.agentId)
         if agent is None or agent.deleted_at is not None:
@@ -712,6 +763,7 @@ async def apply_operation(
                     agent_id=operation.agentId,
                     event_source=operation.eventSource,
                     event_type=operation.eventType,
+                    creator=actor_member_id,
                 )
             await create_trigger(
                 db,
@@ -834,6 +886,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         if operation.name is not None:
             dept.name = operation.name
         if operation.goal is not None:
@@ -846,6 +899,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         live_agents = (
             (
                 await db.execute(
@@ -880,6 +934,7 @@ async def apply_operation(
         dept = await db.get(m.Department, operation.departmentId)
         if dept is None or dept.deleted_at is None:
             raise InvalidOperation()
+        _refuse_personal(dept)
         dept.deleted_at = None
         await restore_department_boards(db, department_id=dept.id)
         await db.flush()
@@ -888,6 +943,7 @@ async def apply_operation(
         target_dept = await db.get(m.Department, operation.departmentId)
         if target_dept is None or target_dept.deleted_at is not None:
             raise InvalidOperation()
+        _refuse_personal(target_dept)
         # Deliberately minimal (name/department/mission only, no narrowing,
         # no model, no runtime override): the Copilot bootstraps a starting
         # point, same as everywhere else in this module -- a human fills in
@@ -901,7 +957,7 @@ async def apply_operation(
             name=operation.name,
             role_title=operation.roleTitle,
             mission=operation.mission,
-            status="pending_approval" if gated else "stopped",
+            status=initial_status(gated=gated),
             trust_level="first_party",
             definition={"oc8_agent": 1, "name": operation.name, "mission": operation.mission},
         )
@@ -913,7 +969,7 @@ async def apply_operation(
         # path (api/v1/agents_write.py::create_agent): runs are pinned to a
         # version, and an agent without one would run off its live row.
         if publish:
-            await publish_version(db, agent, note="created by the Copilot")
+            await publish_version(db, agent, note="created by the Copilot", at_hire=True)
         return agent.id
     if isinstance(operation, AgentRename):
         agent = await db.get(m.Agent, operation.agentId)
@@ -958,50 +1014,30 @@ async def apply_operation(
             raise InvalidOperation()
         dept = await db.get(m.Department, agent.department_id)
         frame = dept.frame if dept else {}
+        # The same check as PUT /agents/{id}/narrowing: a threshold on a
+        # connection with no value_spec is judged against the frame and then
+        # dropped, never refused (E2E F3) -- see `connections.value_spec`.
         try:
-            outside = pdp.narrowing_within_frame(frame, operation.narrowing)
+            checked = await check_agent_narrowing(
+                db,
+                tenant_id=tenant_id,
+                frame=frame,
+                narrowing=operation.narrowing,
+                stored=agent.narrowing,
+            )
         except ValueError as exc:  # e.g. a malformed usage limit
             raise InvalidOperation() from exc
-        if outside:
+        if checked.violations:
             raise InvalidOperation("system_outside_frame")
+        if checked.unenforceable:
+            raise InvalidOperation("system_no_amount_limit")
+        narrowing = checked.narrowing
         if await unknown_limit_tools(
             db,
             tenant_id=agent.tenant_id,
-            tools=operation.narrowing.get("tools", {})
-            if isinstance(operation.narrowing, dict)
-            else {},
+            tools=narrowing.get("tools", {}) if isinstance(narrowing, dict) else {},
         ):
             raise InvalidOperation()
-        raw_tools = (
-            operation.narrowing.get("tools", {}) if isinstance(operation.narrowing, dict) else {}
-        )
-        if isinstance(raw_tools, dict):
-            for key, raw in raw_tools.items():
-                if not isinstance(raw, dict) or raw.get("approval_eur") is None:
-                    continue
-                mcp_conn = (
-                    await db.execute(
-                        select(m.McpConnection)
-                        .where(
-                            m.McpConnection.tenant_id == tenant_id,
-                            m.McpConnection.name == key,
-                            m.McpConnection.credential_id.is_(None),
-                            not_retired(),
-                        )
-                        .order_by(m.McpConnection.created_at)
-                        .limit(1)
-                    )
-                ).scalar_one_or_none()
-                cfg = (
-                    mcp_conn.config
-                    if mcp_conn is not None and isinstance(mcp_conn.config, dict)
-                    else {}
-                )
-                manifest_conn = resolve_tool_pack_connection(
-                    str(cfg.get("_plugin_name", "")), str(cfg.get("_connection_key", ""))
-                )
-                if not connection_supports_value_spec(manifest_conn):
-                    raise InvalidOperation("system_no_amount_limit")
         # Deferred import: `oc8.api.v1`'s package __init__ eagerly aggregates
         # every route module for the router, including `copilot.py`, which
         # imports back from this module -- a top-level import here would make
@@ -1019,11 +1055,11 @@ async def apply_operation(
         had_no_draft = await _has_no_draft(db, agent)
         try:
             await enforce_narrowing_logins(
-                db, tenant_id=tenant_id, agent=agent, narrowing=operation.narrowing, frame=frame
+                db, tenant_id=tenant_id, agent=agent, narrowing=narrowing, frame=frame
             )
         except HTTPException as exc:
             raise InvalidOperation("system_login_needed") from exc
-        agent.narrowing = operation.narrowing
+        agent.narrowing = narrowing
         await db.flush()
         await _publish_copilot_change(
             db, agent, had_no_draft=had_no_draft, what="tool access", publish=publish
@@ -1493,12 +1529,17 @@ async def _apply_guardrail_set(
     tools[operation.connectionName] = updated.to_json()
     narrowing["tools"] = tools
 
-    violations = pdp.narrowing_within_frame(frame, narrowing)
-    if violations:
+    # The same check as PUT /agents/{id}/narrowing (`connections.value_spec`):
+    # a stored narrowing carries no threshold on a connection without a value
+    # spec, and its absence must not read as removing the frame's.
+    checked = await check_agent_narrowing(
+        db, tenant_id=agent.tenant_id, frame=frame, narrowing=narrowing, stored=agent.narrowing
+    )
+    if checked.violations or checked.unenforceable:
         raise InvalidOperation()
 
     had_no_draft = await _has_no_draft(db, agent)
-    agent.narrowing = narrowing
+    agent.narrowing = checked.narrowing
     overridden = list(agent.narrowing_overridden_keys or [])
     if operation.connectionName not in overridden:
         overridden.append(operation.connectionName)

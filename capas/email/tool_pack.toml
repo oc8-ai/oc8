@@ -61,6 +61,13 @@ PYTHONPATH = "/app/capas/email"
 id_fields = ["id"]
 search_tools = ["mail_search"]
 
+# Who a send or forward reaches: core keys the one-per-task guard on these
+# people, so a reworded mail to the same person is refused and one to somebody
+# else is not. A reply has no such field; it is keyed by the mail it answers.
+[connections.config.focus_spec.outward_fields]
+mail_send = ["to", "cc", "bcc"]
+mail_forward = ["to", "cc"]
+
 [connections.config.focus_spec.tool_entities]
 mail_get = "mail"
 mail_get_attachment = "mail"

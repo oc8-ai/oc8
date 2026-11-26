@@ -91,6 +91,12 @@ entity_lookup_tools = ["gmail_search", "calendar_list_events"]
 [connections.config.focus_spec]
 id_fields = ["eventId", "start"]
 
+# Who a mail reaches: core keys the one-per-task guard on these people, so a
+# reworded mail to the same person is refused and one to somebody else is not.
+[connections.config.focus_spec.outward_fields]
+gmail_send = ["to", "cc"]
+gmail_reply = ["to", "cc"]
+
 [connections.config.focus_spec.tool_entities]
 calendar_create_event = "calendar_event"
 calendar_update_event = "calendar_event"

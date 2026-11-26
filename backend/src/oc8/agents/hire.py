@@ -10,6 +10,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.approvals import raise_approval
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
+
+#: What a new agent starts as -- hired, installed from a template or created
+#: by the Copilot: ready for work. Not "stopped", which reads as paused, and
+#: nobody paused it (E2E N9); only a deliberate pause or stop shows as one.
+HIRED_STATUS = "idle"
+
+
+def initial_status(*, gated: bool) -> str:
+    """A new agent's status: waiting for its hire approval, or ready."""
+    return "pending_approval" if gated else HIRED_STATUS
 
 
 async def require_hire_approval(db: AsyncSession, *, tenant_id: uuid.UUID) -> bool:
@@ -19,6 +30,20 @@ async def require_hire_approval(db: AsyncSession, *, tenant_id: uuid.UUID) -> bo
     if org is None:
         return False
     return bool(org.settings.get("require_hire_approval", False))
+
+
+async def hire_is_gated(
+    db: AsyncSession, *, tenant_id: uuid.UUID, department: m.Department
+) -> bool:
+    """Whether a new agent in `department` waits for hire approval: the
+    tenant's flag, except in a personal department. There the owner's own
+    seat, the personal frame and the agent cap are the approval -- gating it
+    would make the owner approve their own hire, and would put their agent's
+    mission into a hire request the approvers read. One rule for every way an
+    agent is made (`POST /agents`, a template hire)."""
+    if department.kind == DEPARTMENT_KIND_PERSONAL:
+        return False
+    return await require_hire_approval(db, tenant_id=tenant_id)
 
 
 async def set_require_hire_approval(
@@ -61,15 +86,15 @@ async def create_hire_request(db: AsyncSession, *, agent: m.Agent) -> m.Approval
 async def resolve_hire_agent(
     db: AsyncSession, *, approval_request: m.ApprovalRequest, decision: str
 ) -> None:
-    """approve => activate the agent (pending_approval -> stopped, the normal
-    post-creation state the operator then starts). reject => soft-delete it. The
+    """approve => activate the agent (pending_approval -> idle, ready for work
+    like any fresh hire). reject => soft-delete it. The
     agent may be gone already (a concurrent delete) -- then it is a no-op."""
     agent = await db.get(m.Agent, approval_request.agent_id)
     if agent is None:
         return
     if decision == "approve":
         if agent.status == "pending_approval":
-            agent.status = "stopped"
+            agent.status = HIRED_STATUS
     else:  # reject
         agent.status = "stopped"
         agent.deleted_at = dt.datetime.now(tz=dt.UTC)

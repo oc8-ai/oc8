@@ -30,6 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
+from oc8.agent.harness.stages.b_approval import autonomy_grants_of, autonomy_of
 from oc8.agent.usage_limits import current_usage
 from oc8.agents.repo import visible_agent, visible_agents
 from oc8.agents.versioning import (
@@ -39,13 +40,19 @@ from oc8.agents.versioning import (
     snapshot_agent,
     version_payload,
 )
-from oc8.api.deps import DbSession, require_departmental
-from oc8.api.v1._serializers import agent_to_dto, agent_version_to_dto, agent_version_to_summary_dto
+from oc8.api.deps import DbSession, authorize_in_department, require_departmental
+from oc8.api.v1._serializers import (
+    agent_to_dto,
+    agent_version_to_dto,
+    agent_version_to_summary_dto,
+    without_agent_content,
+)
 from oc8.api.v1.files import _attachment_dto
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
 from oc8.authz.pdp import ToolPolicy, effective_tool_policies, tool_policy_source
-from oc8.authz.permissions import AGENT, AGENT_VERSION, VIEW, perm
-from oc8.authz.scope import HumanActor
+from oc8.authz.permissions import AGENT, AGENT_VERSION, DEPARTMENT, MANAGE, VIEW, perm
+from oc8.authz.scope import DepartmentScope, HumanActor
+from oc8.departments.repo import department_kind, personal_content_hidden
 from oc8.runtime.states import TERMINAL
 from oc8.schemas.dto import (
     AgentDetailDTO,
@@ -116,10 +123,17 @@ async def get_agent(
 ) -> AgentDetailDTO:
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
-    return await _agent_detail_dto(db, agent)
+    return await _agent_detail_dto(db, agent, reader_scope=actor.scope)
 
 
 _HISTORY_MAX_LIMIT = 100
@@ -140,7 +154,14 @@ async def get_agent_tool_usage(
     counted against yet has no row: the browser shows it as 0 used."""
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     usage = await current_usage(db, tenant_id=agent.tenant_id, agent_id=agent.id)
@@ -170,9 +191,17 @@ async def get_agent_instruction_history(
 ) -> AgentInstructionHistoryDTO:
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    await _refuse_personal_content(db, actor, agent)
     limit = max(1, min(limit, _HISTORY_MAX_LIMIT))
     where = (
         m.AuditEvent.action == "agent.instructions.updated",
@@ -228,9 +257,17 @@ async def list_instruction_files(
     file by id must not get a 403 for merely listing them."""
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    await _refuse_personal_content(db, actor, agent)
     rows = (
         (
             await db.execute(
@@ -249,8 +286,28 @@ async def list_instruction_files(
     return [_attachment_dto(row) for row in rows]
 
 
+async def _refuse_personal_content(db: DbSession, actor: HumanActor, agent: m.Agent) -> None:
+    """404 -- the same answer as a missing agent -- for a content read
+    (instructions, versions, instruction files) of a personal agent by anybody
+    but the owner's seat. Such a reader got here as a `department:manage`
+    holder, who sees the agent's metadata and nothing it holds
+    (`departments.repo.personal_content_hidden`)."""
+    if agent.department_id is None:
+        return
+    kind = await department_kind(
+        db, tenant_id=actor.principal.tenant_id, department_id=agent.department_id
+    )
+    if personal_content_hidden(kind=kind, department_id=agent.department_id, scope=actor.scope):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+
+
 async def _visible_agent_or_404(
-    request: Request, db: DbSession, actor: HumanActor, agent_id: uuid.UUID
+    request: Request,
+    db: DbSession,
+    actor: HumanActor,
+    agent_id: uuid.UUID,
+    *,
+    content: bool = True,
 ) -> m.Agent:
     """The read gate every version route repeats, in one place.
 
@@ -258,12 +315,39 @@ async def _visible_agent_or_404(
     visible_agent, 404) sequence against `agent_version:view`. Written out four
     times, the fourth copy is where somebody eventually asks
     `tenant_wide_read` about the wrong permission.
+
+    A version payload is the agent's content, so a personal agent read by
+    anybody but its owner's seat is a 404 too. `content=False` is for
+    draft-status alone: a count of changed field names, no content.
+
+    The door admits a personal department's owner on their seat alone, so
+    `agent_version:view` is asked again for THIS agent's department
+    (`authorize_in_department`): the owner's seat reaches their own agents'
+    versions, never those of a department they merely see.
     """
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT_VERSION, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    await authorize_in_department(
+        request,
+        db,
+        actor.principal,
+        perm(AGENT_VERSION, VIEW),
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+        scope=actor.scope,
+    )
+    if content:
+        await _refuse_personal_content(db, actor, agent)
     return agent
 
 
@@ -455,7 +539,7 @@ async def get_agent_draft_status(
     agent drifted from what is running" is a statement about the version
     history, and spec §6 makes reading that its own grant.
     """
-    agent = await _visible_agent_or_404(request, db, actor, agent_id)
+    agent = await _visible_agent_or_404(request, db, actor, agent_id, content=False)
     status_ = await draft_status(db, agent)
     return AgentDraftStatusDTO(
         dirty=status_.dirty,
@@ -464,7 +548,9 @@ async def get_agent_draft_status(
     )
 
 
-async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
+async def _agent_detail_dto(
+    db: DbSession, agent: m.Agent, *, reader_scope: DepartmentScope | None
+) -> AgentDetailDTO:
     """The DTO body for an agent already loaded and already authorized.
 
     Split out of `get_agent` so `agents_write.py`'s four internal re-serializes
@@ -473,8 +559,20 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
     `require_departmental` would need a fresh `HumanActor`/`Request` shape
     `agents_write.py`'s routes have no reason to carry twice, and the agent is
     already known-visible: the write that just happened proved it.
+
+    `reader_scope` is the reading caller's scope; for a personal agent read by
+    anybody but the owner's seat, the content fields come back blank
+    (`_serializers.without_agent_content`) and `content_hidden` is set.
+    Required, so a new read caller has to decide. The write routes pass None:
+    in a personal department only the owner's seat gets past
+    `authorize_agent_write`, so the content is theirs to see.
     """
     dept = await db.get(m.Department, agent.department_id)
+    hide_content = reader_scope is not None and personal_content_hidden(
+        kind=dept.kind if dept else None,
+        department_id=agent.department_id,
+        scope=reader_scope,
+    )
     frame = dept.frame if dept else {}
     dept_name = dept.name if dept else None
 
@@ -527,9 +625,11 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
     # dead worker can sit in `running` indefinitely and the one worth watching is
     # the latest; queued counts, so a scheduled fire is visible before its
     # container is even up.
+    # Its state rides along: which run and where it stands is metadata an
+    # admin keeps for a personal agent too (R2), unlike the run itself.
     current_run = (
         await db.execute(
-            select(m.AgentRun.id)
+            select(m.AgentRun.id, m.AgentRun.state)
             .where(
                 m.AgentRun.agent_id == agent.id,
                 m.AgentRun.state.notin_([s.value for s in TERMINAL]),
@@ -540,8 +640,8 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
             .order_by(m.AgentRun.created_at.desc(), m.AgentRun.id.desc())
             .limit(1)
         )
-    ).scalar_one_or_none()
-    return AgentDetailDTO(
+    ).one_or_none()
+    detail = AgentDetailDTO(
         **base,
         mission=agent.mission,
         department_name=dept_name,
@@ -551,7 +651,8 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
         narrowing_overridden_keys=list(agent.narrowing_overridden_keys or []),
         tool_policy_sources=tool_policy_sources,
         runtime_ref=agent.runtime_ref,
-        current_run_id=str(current_run) if current_run else None,
+        current_run_id=str(current_run.id) if current_run else None,
+        current_run_state=current_run.state if current_run else None,
         temperature=model_params.get("temperature"),
         max_tokens=model_params.get("max_tokens"),
         effort=model_params.get("effort"),
@@ -559,12 +660,17 @@ async def _agent_detail_dto(db: DbSession, agent: m.Agent) -> AgentDetailDTO:
         # Top-level key, unlike the four sampling fields above -- see
         # engine._max_steps and switch_model in agents_write.py.
         max_steps=(agent.definition or {}).get("max_steps"),
+        autonomy=autonomy_of(agent.definition),
+        autonomy_grants=autonomy_grants_of(agent.definition),
         current_version_id=(
             str(agent.current_version_id) if agent.current_version_id is not None else None
         ),
         current_version_no=(current_version.version_no if current_version is not None else None),
         auto_router_affinity_tier=_auto_affinity_tier(agent),
     )
+    if hide_content:
+        return without_agent_content(detail).model_copy(update={"content_hidden": True})
+    return detail
 
 
 def _auto_affinity_tier(agent: m.Agent) -> str | None:

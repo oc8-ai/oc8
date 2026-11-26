@@ -1,6 +1,7 @@
 // TanStack Query hooks over the oc8 control-plane API. Return shapes match the
 // existing TypeScript interfaces so screens swap mock imports for these hooks.
 
+import { errorCode } from "@/lib/hire-error";
 import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
 import {
   useInfiniteQuery,
@@ -13,6 +14,7 @@ import {
   api,
   ApiError,
   deleteFile,
+  retryUnlessRefused,
   fetchCapaIcon,
   listInstructionFiles,
   previewBackup,
@@ -76,6 +78,10 @@ export interface AgentDetail extends Agent {
   effectiveTools: Record<string, ToolPolicy>;
   departmentFrameTools: Record<string, ToolPolicy>;
   missionTranslations?: Record<string, string>;
+  /** The published version a run executes; v1 from the hire on. */
+  currentVersionNo?: number | null;
+  /** Hired, but the hire awaits its approval: nothing is published on top. */
+  awaitingHireApproval?: boolean;
 }
 
 export interface ApprovalOption {
@@ -218,6 +224,11 @@ export interface Seat {
    *  never folded into a permission string: it never appears in
    *  `callerPermissions`. See `useMayManageAgent` (governance-hooks.ts). */
   agentManage: boolean;
+  /** What this seat carries beyond its `seatRole`, in THIS department only:
+   *  the owner's seat in their personal department lists the run, version,
+   *  trigger and skill permissions it holds there; every other seat lists
+   *  nothing. Never in `callerPermissions`. See `useMayInDepartment`. */
+  ownerPermissions?: string[];
 }
 
 export interface McpConnection {
@@ -250,6 +261,10 @@ export interface McpConnection {
   // an approval-euro threshold can ever affect a decision for this
   // connection.
   hasValueSpec: boolean;
+  // The tools that reach people outside (the connection's `outward_tools`
+  // seam). Even an autonomous agent asks before these unless it was granted
+  // the outward tier. Optional so fixtures that predate it read as none.
+  outwardTools?: string[];
   // The plugin this connection was set up from (matched server-side via the
   // config["_plugin_name"] stamp `CapaSetupDialog`'s flow writes) -- null
   // for a connection created by hand via "Add connection", never through a
@@ -646,6 +661,8 @@ export const useAgentWorkspaceFiles = (agentId: string) =>
     queryKey: ["agents", agentId, "workspace", "files"],
     queryFn: () => api.get<WorkspaceFilesDTO>(`/agents/${agentId}/workspace/files`),
     enabled: !!agentId,
+    // A personal agent's files are its owner's: anybody else gets a final 404.
+    retry: retryUnlessRefused,
   });
 
 export interface Board {
@@ -656,8 +673,9 @@ export interface Board {
 }
 
 // `limit` is per column, so a busy "done" column cannot crowd out the two tasks
-// actually in progress.
-export const useDepartmentBoard = (id: string, limit = 25) => {
+// actually in progress. `enabled` false for a member's personal department
+// read by anybody else (`contentHidden`): its board is a 404 for them.
+export const useDepartmentBoard = (id: string, limit = 25, enabled = true) => {
   const { lang } = useLang();
   return useQuery({
     queryKey: [...keys.board(id), limit],
@@ -666,7 +684,8 @@ export const useDepartmentBoard = (id: string, limit = 25) => {
       ...board,
       tasks: board.tasks.map((t) => localizeTask(t, lang)),
     }),
-    enabled: !!id,
+    enabled: !!id && enabled,
+    retry: retryUnlessRefused,
   });
 };
 
@@ -926,6 +945,263 @@ export function useUpdateCopilotSettings() {
     mutationFn: (body: CopilotSettingsDTO) =>
       api.put<CopilotSettingsDTO>("/settings/copilot", body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["settings", "copilot"] }),
+  });
+}
+
+// ---- Personal departments (admin) ----
+export interface PersonalDepartmentsSettingDTO {
+  enabled: boolean;
+  maxAgents: number;
+}
+
+export interface PersonalBudgetDefaultsDTO {
+  softLimitTokens: number | null;
+  hardLimitTokens: number | null;
+}
+
+/** Metadata only: never the agents, chats or files inside a personal department. */
+export interface PersonalDepartmentAdminDTO {
+  id: string;
+  ownerMemberId: string;
+  /** May be "" for a member with no display name. */
+  ownerName: string;
+  /** False once the owner has left the organisation. */
+  ownerActive: boolean;
+  /** Something an administrator changed waits for the owner's confirmation. */
+  pendingConfirmation: boolean;
+  agentCount: number;
+  followsDefaultFrame: boolean;
+  followsDefaultBudget: boolean;
+  createdAt: string;
+}
+
+const PERSONAL_KEY = ["personal-departments"] as const;
+
+export function usePersonalDepartmentsSetting(enabled = true) {
+  return useQuery({
+    queryKey: ["settings", "personal-departments"],
+    queryFn: () => api.get<PersonalDepartmentsSettingDTO>("/settings/personal-departments"),
+    enabled,
+  });
+}
+
+export function useUpdatePersonalDepartmentsSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { enabled: boolean; maxAgents?: number }) =>
+      api.put<PersonalDepartmentsSettingDTO>("/settings/personal-departments", body),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: ["settings", "personal-departments"] });
+      await qc.invalidateQueries({ queryKey: PERSONAL_KEY });
+    },
+  });
+}
+
+export function usePersonalDefaultFrame(enabled = true) {
+  return useQuery({
+    queryKey: [...PERSONAL_KEY, "default-frame"],
+    queryFn: () => api.get<DepartmentToolsDTO>("/personal-departments/default-frame"),
+    enabled,
+  });
+}
+
+export function useSetPersonalDefaultFrame() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (tools: Record<string, Record<string, unknown>>) =>
+      api.put<DepartmentToolsDTO>("/personal-departments/default-frame", { tools }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: PERSONAL_KEY }),
+  });
+}
+
+export function usePersonalDefaultBudget(enabled = true) {
+  return useQuery({
+    queryKey: [...PERSONAL_KEY, "default-budget"],
+    queryFn: () => api.get<PersonalBudgetDefaultsDTO>("/personal-departments/default-budget"),
+    enabled,
+  });
+}
+
+export function useSetPersonalDefaultBudget() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PersonalBudgetDefaultsDTO) =>
+      api.put<PersonalBudgetDefaultsDTO>("/personal-departments/default-budget", body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: PERSONAL_KEY }),
+  });
+}
+
+export function usePersonalDepartments(enabled = true) {
+  return useQuery({
+    queryKey: PERSONAL_KEY,
+    queryFn: () => api.get<PersonalDepartmentAdminDTO[]>("/personal-departments"),
+    enabled,
+  });
+}
+
+export function useFollowPersonalDefault(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post<PersonalDepartmentAdminDTO>(
+        `/personal-departments/${encodeURIComponent(id)}/follow-default`,
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: PERSONAL_KEY }),
+  });
+}
+
+// ---- Personal departments (member) ----
+export interface PersonalDepartmentMineDTO {
+  enabled: boolean;
+  department: Department | null;
+}
+/** A capa a personal template connects to, and whether a hire may bind it now. */
+export interface TemplateConnectionDTO {
+  integration: string;
+  label: string;
+  /** "credential" or "oauth"; "" for a capa the organisation has not installed. */
+  kind: string;
+  provider: string | null;
+  credentialType: string | null;
+  available: boolean;
+}
+
+/** What a hire grants the agent: tool keys and skill names. */
+export interface HireGrantsDTO {
+  tools: string[];
+  skills: string[];
+}
+
+export interface PersonalTemplateDTO {
+  capaId: string;
+  name: string;
+  label: string;
+  summary: string;
+  /** Pins this offer; the hire answers 409 `hire_changed` once it changed. */
+  hireToken: string;
+  grants: HireGrantsDTO;
+  /** The member chooses a login for one of these at hire. */
+  connectionsAny: TemplateConnectionDTO[];
+  /** The member may add a login for each of these. */
+  connectionsOptional: TemplateConnectionDTO[];
+}
+
+/** The member's own login for one capa: a credential or an OAuth connection. */
+export interface HireConnectionBody {
+  integration: string;
+  credentialId?: string;
+  oauthConnectionId?: string;
+}
+
+export interface HirePersonalBody {
+  capaId: string;
+  hireToken: string;
+  name?: string;
+  connection?: HireConnectionBody;
+  optionalConnections?: HireConnectionBody[];
+  confirmShare?: boolean;
+}
+
+export function useMyPersonalDepartment(enabled = true) {
+  return useQuery({
+    queryKey: ["personal-department"],
+    queryFn: () => api.get<PersonalDepartmentMineDTO>("/personal-department"),
+    enabled,
+  });
+}
+
+export function usePersonalTemplates(enabled = true) {
+  return useQuery({
+    queryKey: ["personal-department", "templates"],
+    queryFn: () => api.get<PersonalTemplateDTO[]>("/personal-department/templates"),
+    enabled,
+  });
+}
+
+/** A stored tool policy as the runtime reads it (snake_case keys), plus the
+ *  fields it does not read, such as `default_connection_id`. */
+export type ConfirmationPolicy = Record<string, unknown>;
+
+export interface PersonalConfirmationSetupDTO {
+  tool: string;
+  serverUrl: string | null;
+  transport: string | null;
+  scopes: unknown;
+  /** Names only, never values. */
+  configKeys: string[];
+  logins: { name: string; ownedByOwner: boolean }[];
+}
+
+export interface PersonalConfirmationDTO {
+  needed: boolean;
+  /** Pins what the owner was shown: the confirm answers 409 when it moved. */
+  token: string;
+  tools: { key: string; applied: ConfirmationPolicy | null; pending: ConfirmationPolicy | null }[];
+  skills: { name: string; description: string | null; status: "new" | "changed" }[];
+  agents: {
+    agentId: string;
+    name: string;
+    /** Any of core, frame, tools, skills, threshold. */
+    changes: string[];
+    approvalThreshold: number | string | null;
+    tools?: Record<string, ConfirmationPolicy> | null;
+    setup?: PersonalConfirmationSetupDTO[] | null;
+  }[];
+  department: {
+    goal: string;
+    frame: Record<string, unknown>;
+    frameCapaDefaults: Record<string, unknown> | null;
+  } | null;
+}
+
+export function usePersonalConfirmation(enabled = true) {
+  return useQuery({
+    queryKey: ["personal-department", "confirmation"],
+    queryFn: () => api.get<PersonalConfirmationDTO>("/personal-department/confirmation"),
+    enabled,
+  });
+}
+
+/** The owner confirms what the summary with `token` showed them. */
+export function useConfirmPersonal() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (token: string) =>
+      api.post<PersonalConfirmationDTO>("/personal-department/confirm", { token }),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["personal-department"] }),
+        // Confirmed tools and bindings change what each agent may use.
+        qc.invalidateQueries({
+          queryKey: ["agents"],
+          predicate: (q) => q.queryKey[2] === "tool-access",
+        }),
+        qc.invalidateQueries({ queryKey: ["personal-departments"] }),
+      ]);
+    },
+  });
+}
+
+export function useHirePersonalTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: HirePersonalBody) =>
+      api.post<{ agentId: string; departmentId: string }>("/personal-department/agents", body),
+    // The offer changed under the member: refetch it so the next hire sends
+    // the fresh `hireToken` (the one-click button and the dialog share this).
+    onError: (err) => {
+      if (errorCode(err) === "hire_changed")
+        void qc.invalidateQueries({ queryKey: ["personal-department", "templates"] });
+    },
+    onSuccess: async (data) => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["personal-department"] }),
+        // The admin's list counts each personal department's agents.
+        qc.invalidateQueries({ queryKey: ["personal-departments"] }),
+        qc.invalidateQueries({ queryKey: keys.agents }),
+        qc.invalidateQueries({ queryKey: ["departments", data.departmentId, "agents"] }),
+      ]);
+    },
   });
 }
 
@@ -1670,6 +1946,7 @@ export function useAgentMemory(agentId: string) {
   return useQuery({
     queryKey: ["agents", agentId, "memory"],
     queryFn: () => api.get<MemoryList>(`/agents/${agentId}/memory`),
+    retry: retryUnlessRefused,
   });
 }
 
@@ -1854,6 +2131,9 @@ export function useRun(runId: string | null) {
       return mergePolledRun(previous, fresh, live);
     },
     enabled: !!runId,
+    // A run the reader may not read (a personal agent's) answers 404, which
+    // is final: never asked again, so the caller can say so at once.
+    retry: retryUnlessRefused,
     // Live runs only: keeps `updatedAt` fresh enough for the staleness
     // indicator (see the field's comment above) without polling a run
     // that's already finished.
@@ -1910,6 +2190,9 @@ export function useAgentRuns(agentId: string, opts: { limit: number; offset: num
         `/agents/${agentId}/runs?limit=${opts.limit}&offset=${opts.offset}`,
       ),
     enabled: !!agentId,
+    // A personal agent's runs are its owner's: anybody else gets a final 404
+    // (the page header asks for them too).
+    retry: retryUnlessRefused,
     // Keep the current page on screen while the next one loads -- but never
     // another agent's page.
     placeholderData: (previous, previousQuery) =>
@@ -1931,10 +2214,19 @@ const ACTIVE_RUN_RANK: Record<string, number> = {
  *  run this page just started, known before the list has caught up.
  *
  *  Each state is the run's live "run.status" word where one has arrived, laid
- *  over the listed state exactly as useRun does: the list can lag behind it. */
-export function useAgentActiveRunState(agentId: string, currentRunId: string | null) {
-  const runs = useAgentRuns(agentId, { limit: 20, offset: 0 });
-  const current = useRun(currentRunId);
+ *  over the listed state exactly as useRun does: the list can lag behind it.
+ *
+ *  `metadataOnly`: a personal agent read by anybody but its owner, whose runs
+ *  are a 404 for them. Neither the list nor the run is asked for; the state
+ *  is the detail's `currentRunState` for `currentRunId`, followed by its
+ *  "run.status" events (metadata, R2). */
+export function useAgentActiveRunState(
+  agentId: string,
+  currentRunId: string | null,
+  metadataOnly?: { knownState: string | null },
+) {
+  const runs = useAgentRuns(metadataOnly ? "" : agentId, { limit: 20, offset: 0 });
+  const current = useRun(metadataOnly ? null : currentRunId);
   const listed = (runs.data?.items ?? []).filter((r) => r.agentId === agentId);
   const ids = [...new Set([...(currentRunId ? [currentRunId] : []), ...listed.map((r) => r.id)])];
   // Observers only: the cache entry is written by the "run.status" patcher,
@@ -1949,6 +2241,7 @@ export function useAgentActiveRunState(agentId: string, currentRunId: string | n
   const states = ids.map((id, i) => {
     const fromEvent = (live[i]?.data as RunLiveState | null | undefined)?.state;
     if (fromEvent) return fromEvent;
+    if (id === currentRunId && metadataOnly) return metadataOnly.knownState ?? "";
     if (id === currentRunId && current.data) return current.data.state;
     return listed.find((r) => r.id === id)?.state ?? "";
   });
@@ -2252,6 +2545,12 @@ export interface UsageDTO {
   /** The parts of tokensIn read from / written to the provider's prompt cache. */
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** The group's display name (agent or department) and, for an agent row, its
+   *  department. Set even for a member's personal agent, which the admin's
+   *  agent and department lists leave out (its name stays visible, R2). */
+  name?: string | null;
+  departmentId?: string | null;
+  departmentName?: string | null;
 }
 
 /** `month` is the current calendar month on the organisation's clock. */
@@ -2491,6 +2790,10 @@ export interface TriggerDTO {
   //: trigger, so its runs no longer use their own accounts until they save
   //: it again.
   needsConfirmation: boolean;
+  //: Its agent is in a department with an owner: what changed is confirmed
+  //: on the owner's confirmation card (profile), never by saving the
+  //: trigger again.
+  ownerConfirms?: boolean;
   //: A polled event's trigger: the organisation login it listens on (the
   //: agent's fixed login for the event's tools) and its declared settings.
   eventTargetCredentialId?: string | null;
@@ -2515,6 +2818,8 @@ export interface TriggerPollStatus {
 
 /** The skip reason of a polled trigger the agent's login changed under. */
 export const EVENT_TARGET_CHANGED = "event_target_changed";
+/** A polled trigger held until the department's owner confirms the change. */
+export const NEEDS_CONFIRMATION = "needs_confirmation";
 
 export interface TriggerEventConfigField {
   key: string;
@@ -3065,11 +3370,13 @@ export function useUnassignSkill() {
 export interface CredentialTypeFieldDTO {
   key: string;
   label: string;
-  kind: "text" | "url" | "password" | "department" | "credential";
+  kind: "text" | "url" | "password" | "department" | "credential" | "select";
   required: boolean;
   default: string;
   placeholder: string;
   help: string;
+  /** The fixed choices of a `select` field, in order. */
+  options?: string[];
   // Each field is passed through from the owning capa's manifest as a raw
   // dict (see CredentialTypeDTO.fields on the backend), not through a
   // CamelModel -- so, like PluginSetupField's snake_case passthrough above,

@@ -7,13 +7,16 @@ names `event_sources`, with `contrib.add_poller(event_type, poller,
 credential_type=...)`. Its source is the capa's name. Core code and tests can
 register one directly with `register_poller`.
 
-A trigger on such an event names its target: the organisation login the agent
-is fixed to for the capa's tools (`oc8.triggers.service.create_trigger` checks
-it), of either kind `AgentToolAccess` holds -- a credential or an OAuth
-connection (`LoginTarget`). Every tick, each enabled targeted trigger that is
-due gets polled with that login's fields (`_login_fields`: a credential's
-values, or a fresh access token of an OAuth connection), in its own tenant
-session:
+A trigger on such an event names its target: the login the agent is fixed to
+for the capa's tools (`oc8.triggers.service.create_trigger` checks it), of
+either kind `AgentToolAccess` holds -- a credential or an OAuth connection
+(`LoginTarget`). It is the organisation's, or the department owner's own when
+the owner created the trigger acting for themselves (`fixed_login`); such a
+trigger is polled only while the owner's confirmation of the agent holds
+(`NEEDS_CONFIRMATION`), and the organisation's setup never fills its settings.
+Every tick, each enabled targeted trigger that is due gets polled with that
+login's fields (`_login_fields`: a credential's values, or a fresh access
+token of an OAuth connection), in its own tenant session:
 
 * its `event_source_cursor` row is locked with `FOR UPDATE SKIP LOCKED`, so a
   second scheduler replica skips it instead of polling twice;
@@ -80,6 +83,10 @@ logger = logging.getLogger(__name__)
 #: Why a polled trigger was switched off: the agent's fixed login for the
 #: event's tools is no longer the trigger's target (changed, or deleted).
 EVENT_TARGET_CHANGED: Final = "event_target_changed"
+#: Why a polled trigger on a login its department's owner owns was not
+#: polled this tick: the owner's confirmation of its agent is pending. It
+#: stays on and keeps its position (`_poll_trigger`).
+NEEDS_CONFIRMATION: Final = "needs_confirmation"
 
 #: Seconds one poll may take before it counts as failed.
 POLL_TIMEOUT_SECONDS: float = 60.0
@@ -135,8 +142,8 @@ class RegisteredPoller:
 
 @dataclass(frozen=True)
 class LoginTarget:
-    """The organisation login a polled trigger listens on: a `Credential` or
-    an `OAuthConnection`, exactly as `AgentToolAccess` holds either."""
+    """The login a polled trigger listens on: a `Credential` or an
+    `OAuthConnection`, exactly as `AgentToolAccess` holds either."""
 
     kind: Literal["credential", "oauth"]
     id: uuid.UUID
@@ -321,13 +328,17 @@ async def connection_setup_value(
     OAuth connection is never read for this one. A field that is not plain (a
     password, a login, a department) is never read, whatever the manifest says
     (it refuses that already). `own_only` reads the login's own row alone:
-    for an `allowed_from` list, which names whom that login may act as."""
+    for an `allowed_from` list, which names whom that login may act as. A
+    login a person owns always reads its own row alone: the organisation's
+    setup never fills a personal trigger's settings."""
     from oc8.capas.manifest import PLAIN_SETUP_FIELD_KINDS
     from oc8.connections.tool_connection import not_retired
 
     env_name = spec.setup_env.get(key)
     if env_name is None or spec.setup_kinds.get(key) not in PLAIN_SETUP_FIELD_KINDS:
         return ""
+    if not own_only and await login_owner(db, target) is not None:
+        own_only = True
     rows = (
         (
             await db.execute(
@@ -456,9 +467,17 @@ def refused_setting(
     return None
 
 
-async def fixed_login(db: AsyncSession, agent_id: uuid.UUID, tool_key: str) -> LoginTarget | None:
-    """The organisation login the agent is fixed to for `tool_key`, if any: a
-    credential or an OAuth connection, neither of them a person's own."""
+async def fixed_login(
+    db: AsyncSession, agent_id: uuid.UUID, tool_key: str, *, creator: uuid.UUID | None = None
+) -> LoginTarget | None:
+    """The login the agent is fixed to for `tool_key` that a polled trigger
+    created by `creator` may listen on, if any: a credential or an OAuth
+    connection of the organisation; or one a person owns, only when that
+    person is `creator` and the live owner of the agent's live department
+    (`live_department_owner`) and bound it themselves. Without a `creator`,
+    a person's own login is never one."""
+    from oc8.departments.personal import live_department_owner
+
     row = await db.scalar(
         select(m.AgentToolAccess).where(
             m.AgentToolAccess.agent_id == agent_id, m.AgentToolAccess.tool_key == tool_key
@@ -466,16 +485,42 @@ async def fixed_login(db: AsyncSession, agent_id: uuid.UUID, tool_key: str) -> L
     )
     if row is None or row.mode != "fixed":
         return None
+    login: m.Credential | m.OAuthConnection | None = None
+    target: LoginTarget | None = None
     if row.credential_id is not None:
-        cred = await db.get(m.Credential, row.credential_id)
-        if cred is not None and cred.owner_member_id is None:
-            return LoginTarget("credential", cred.id)
+        login = await db.get(m.Credential, row.credential_id)
+        target = LoginTarget("credential", row.credential_id)
+    elif row.oauth_connection_id is not None:
+        login = await db.get(m.OAuthConnection, row.oauth_connection_id)
+        target = LoginTarget("oauth", row.oauth_connection_id)
+    if login is None:
         return None
-    if row.oauth_connection_id is not None:
-        conn = await db.get(m.OAuthConnection, row.oauth_connection_id)
-        if conn is not None and conn.owner_member_id is None:
-            return LoginTarget("oauth", conn.id)
+    owner = login.owner_member_id
+    if owner is None:
+        return target
+    # A person's own login also needs the binding to be theirs: set by them,
+    # as their confirmation is (`connections.confirmation._owner_binding`).
+    if creator is not None and owner == creator and row.set_by_member_id == creator:
+        if await live_department_owner(db, agent_id) == creator:
+            return target
     return None
+
+
+async def login_owner(db: AsyncSession, target: LoginTarget) -> uuid.UUID | None:
+    """The member who owns the login `target`; None for an organisation's
+    login, or one that is gone."""
+    login: m.Credential | m.OAuthConnection | None = (
+        await db.get(m.Credential, target.id)
+        if target.kind == "credential"
+        else await db.get(m.OAuthConnection, target.id)
+    )
+    return login.owner_member_id if login is not None else None
+
+
+def listening_creator(trigger: m.Trigger) -> uuid.UUID | None:
+    """Whose own login the trigger may listen on (`fixed_login`): its creator,
+    only when it acts for them; otherwise nobody's."""
+    return trigger.created_by_member_id if trigger.acts_for_creator else None
 
 
 async def disable_triggers_on_login(
@@ -536,7 +581,8 @@ async def disable_off_target_triggers(
 ) -> None:
     """Switch off the agent's polled triggers whose capa's tools are
     `tool_key` and whose target is no longer the login the agent is fixed to
-    for them. Called by the one writer of tool access
+    for them, as each trigger may listen on it (`fixed_login` for its
+    `listening_creator`). Called by the one writer of tool access
     (`oc8.connections.access_write.write_tool_access`); never retargets."""
     triggers = (
         (
@@ -554,8 +600,8 @@ async def disable_off_target_triggers(
     )
     if not triggers:
         return
-    fixed = await fixed_login(db, agent_id, tool_key)
     for trigger in triggers:
+        fixed = await fixed_login(db, agent_id, tool_key, creator=listening_creator(trigger))
         if LoginTarget.of_trigger(trigger) == fixed:
             continue
         assert trigger.event_source is not None and trigger.event_type is not None
@@ -608,14 +654,17 @@ async def _login_fields(
     target: LoginTarget,
     spec: PolledEventSpec,
     config: dict[str, Any],
+    *,
+    owner: uuid.UUID | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """What the poller signs in with, and every spelling of its secrets, to
     keep them out of anything recorded: a credential's values, secrets
     resolved; or an OAuth connection's fresh access token with the facts
-    about it a poller needs (`_oauth_login_fields`)."""
+    about it a poller needs (`_oauth_login_fields`). The login is the
+    organisation's or `owner`'s own, never anyone else's."""
     if target.kind == "oauth":
-        return await _oauth_login_fields(tenant_id, target.id, spec, config)
-    return await _credential_fields(db, tenant_id, target.id)
+        return await _oauth_login_fields(tenant_id, target.id, spec, config, owner=owner)
+    return await _credential_fields(db, tenant_id, target.id, owner=owner)
 
 
 async def _oauth_login_fields(
@@ -623,13 +672,16 @@ async def _oauth_login_fields(
     connection_id: uuid.UUID,
     spec: PolledEventSpec,
     config: dict[str, Any],
+    *,
+    owner: uuid.UUID | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """`access_token`, refreshed or re-minted as core does for the tools
     (`oc8.oauth.tokens`), plus `account_label`, `grant_type`, `provider` and,
     when set, `azure_tenant_id`. A login that delegates (a service account)
     gets a token for the value of the trigger's `acts_as` setting instead of
     its own, with the setup's delegated scope -- that value was checked
-    against the setup's list before (`refused_setting`).
+    against the setup's list before (`refused_setting`). The connection is
+    the organisation's or `owner`'s own.
 
     In a session of its own, committed before the poller runs: a refresh
     locks the connection row (`FOR UPDATE`), and the tools and other polls on
@@ -642,7 +694,7 @@ async def _oauth_login_fields(
     token = ""
     async with tenant_session(tenant_id) as db:
         conn = await db.get(m.OAuthConnection, connection_id)
-        if conn is None or conn.owner_member_id is not None:
+        if conn is None or conn.owner_member_id not in (None, owner):
             raise PollLoginUnavailable("the login this trigger listens on is gone")
         if conn.status != "active":
             raise PollLoginUnavailable(
@@ -686,9 +738,14 @@ async def _oauth_login_fields(
 
 
 async def _credential_fields(
-    db: AsyncSession, tenant_id: uuid.UUID, credential_id: uuid.UUID
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    credential_id: uuid.UUID,
+    *,
+    owner: uuid.UUID | None = None,
 ) -> tuple[dict[str, str], list[str]]:
-    """Every value of the credential, secrets resolved; and the secret values."""
+    """Every value of the credential, secrets resolved; and the secret values.
+    The credential is the organisation's or `owner`'s own."""
     from oc8.credentials.service import (
         CredentialFieldNotSet,
         get_credential,
@@ -696,6 +753,8 @@ async def _credential_fields(
     )
 
     cred = await get_credential(db, tenant_id=tenant_id, credential_id=credential_id)
+    if cred.owner_member_id not in (None, owner):
+        raise PollLoginUnavailable("the login this trigger listens on is gone")
     fields: dict[str, str] = {}
     for key in [*cred.field_values, *(k for k in cred.secret_refs if k not in cred.field_values)]:
         try:
@@ -843,6 +902,21 @@ def _record_failure(cursor_row: m.EventSourceCursor, error: str) -> None:
     cursor_row.next_poll_at = now + timedelta(seconds=backoff_seconds(cursor_row.failures))
 
 
+async def _agent_retired(db: AsyncSession, trigger: m.Trigger) -> bool:
+    """Whether the trigger's agent is archived or gone: then it is switched
+    off, as the scheduler's `fire_trigger` does, before its login is read."""
+    from oc8.agents.retire import AGENT_MISSING
+    from oc8.runtime.cancellation import AGENT_ARCHIVED
+
+    agent = await db.get(m.Agent, trigger.agent_id)
+    if agent is not None and agent.deleted_at is None:
+        return False
+    trigger.enabled = False
+    trigger.last_skip_reason = AGENT_MISSING if agent is None else AGENT_ARCHIVED
+    logger.info("polled trigger %s switched off: %s", trigger.id, trigger.last_skip_reason)
+    return True
+
+
 async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: float) -> int:
     """Poll one trigger, holding its cursor row for the whole poll. Returns
     how many events it was handed."""
@@ -867,6 +941,8 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
         trigger = await db.get(m.Trigger, trigger_id)
         if trigger is None or not trigger.enabled:
             return 0
+        if await _agent_retired(db, trigger):
+            return 0
         assert trigger.event_source is not None and trigger.event_type is not None
         spec = await polled_event_spec(db, trigger.event_source, trigger.event_type)
         if spec is None:
@@ -883,11 +959,32 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             logger.warning("polled trigger %s skipped: poller unavailable", trigger_id)
             return 0
         target = LoginTarget.of_trigger(trigger)
-        if target is None or await fixed_login(db, trigger.agent_id, spec.tool_key) != target:
+        creator = listening_creator(trigger)
+        if (
+            target is None
+            or await fixed_login(db, trigger.agent_id, spec.tool_key, creator=creator) != target
+        ):
             trigger.enabled = False
             trigger.last_skip_reason = EVENT_TARGET_CHANGED
             logger.info("polled trigger %s switched off: its login changed", trigger_id)
             return 0
+        # The owner's own login (`fixed_login` checked it is the creator's,
+        # and they own the department): polled only while their confirmation
+        # of the agent holds. A pending or revoked confirmation is not the
+        # trigger's end: it stays on, keeps its position and is tried again
+        # a tick later, then catches up on what arrived meanwhile, at most
+        # `MAX_EVENTS_PER_TICK` a tick.
+        owner = await login_owner(db, target)
+        if owner is not None:
+            from oc8.connections.confirmation import trigger_confirmed
+
+            if not await trigger_confirmed(db, trigger):
+                trigger.last_skip_reason = NEEDS_CONFIRMATION
+                cursor_row.next_poll_at = now + timedelta(seconds=interval)
+                logger.info("polled trigger %s skipped: its confirmation is pending", trigger_id)
+                return 0
+        if trigger.last_skip_reason == NEEDS_CONFIRMATION:
+            trigger.last_skip_reason = None
 
         cursor_row.last_polled_at = now
         config = dict(trigger.event_config or {})
@@ -902,7 +999,12 @@ async def _poll_trigger(tenant_id: uuid.UUID, trigger_id: uuid.UUID, interval: f
             return 0
         secret_forms: list[str] = []
         try:
-            login, secret_forms = await _login_fields(db, tenant_id, target, spec, config)
+            # Signed in as the organisation's login or the creator's own: the
+            # creator `fixed_login` checked above, not the login's owner read
+            # back from the login itself.
+            login, secret_forms = await _login_fields(
+                db, tenant_id, target, spec, config, owner=creator
+            )
             # The lists themselves, so a poller can check again on its own.
             login.update({f"allowed_{key}": ",".join(v) for key, v in allowed.items()})
             result = await asyncio.wait_for(

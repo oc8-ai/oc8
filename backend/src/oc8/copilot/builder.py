@@ -856,7 +856,9 @@ async def _publish_new_agent(
     if agent is None:
         raise InvalidOperation()
     try:
-        await publish_version(db, agent, note="created by the Copilot", published_by=published_by)
+        await publish_version(
+            db, agent, note="created by the Copilot", published_by=published_by, at_hire=True
+        )
     except NoChangesToPublish:
         pass
     except PublishHookFailed as exc:

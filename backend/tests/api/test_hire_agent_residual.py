@@ -183,4 +183,4 @@ async def test_a_tenant_wide_agent_manage_holder_can_resolve_it(
 
     async with app_session(tenant) as db:
         activated: Any = await db.get(m.Agent, uuid.UUID(agent_id))
-        assert activated is not None and activated.status == "stopped"
+        assert activated is not None and activated.status == "idle"

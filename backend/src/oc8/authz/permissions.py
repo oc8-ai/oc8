@@ -213,9 +213,21 @@ COPILOT_USE: Final = perm(COPILOT, "use")
 #: one's own mailbox is what every employee does, not an administrator's act.
 CONNECTION_OWN: Final = perm(CONNECTION, "own")
 
-#: A readable copy of the whole tenant (transcripts, knowledge, and with a
-#: passphrase every credential) and the ability to replace it wholesale from
-#: an uploaded one. Neither is a `:view`/`:manage` pair -- `backup:view`
+#: Read the caller's OWN personal department, list the personal agent templates
+#: an administrator has enabled, and hire one into it -- never anybody else's
+#: department. Shaped exactly like `connection:own`: tenant-wide, delegatable and
+#: held by every built-in human role that holds that one. `require_departmental`
+#: would refuse a member who holds no seat yet (the department is created on the
+#: first hire), and `copilot:use` would misname the right.
+DEPARTMENT_OWN: Final = perm(DEPARTMENT, "own")
+
+#: A readable copy of the whole tenant (transcripts, knowledge, the content of
+#: personal departments that no other admin may read, and with a passphrase
+#: every credential) and the ability to replace it wholesale from an uploaded
+#: one. The export is deliberately complete, personal content included, so
+#: `backup:export` belongs to the organisation administrator role (`org_admin`)
+#: alone: it is in NEVER_DELEGATABLE and no other built-in role holds it.
+#: Neither is a `:view`/`:manage` pair -- `backup:view`
 #: would suggest a reversible look, and `backup:manage` would suggest a
 #: configuration change, when what these two verbs actually do is copy
 #: everything out and delete everything in.
@@ -284,6 +296,7 @@ ALL_PERMISSIONS: Final[frozenset[str]] = frozenset(
         CLARIFICATION_ANSWER,
         COPILOT_USE,
         CONNECTION_OWN,
+        DEPARTMENT_OWN,
         AUDIT_VERIFY,
         TOOL_READ,
         TOOL_WRITE,
@@ -351,6 +364,7 @@ DELEGATABLE_PERMISSIONS: Final[frozenset[str]] = frozenset(
         perm(PLUGIN, VIEW),
         # The caller's own rows only; safe tenant-wide by construction.
         CONNECTION_OWN,
+        DEPARTMENT_OWN,
         # A read of aggregate numbers, same sensitivity class as `audit:view`
         # above (also delegatable, also tenant-wide-only): a tenant-defined
         # role holding it sees run counts and durations, never a transcript,
@@ -472,7 +486,8 @@ NEVER_DELEGATABLE: Final[dict[str, str]] = {
     # ---- the whole tenant, out or in, at once
     BACKUP_EXPORT: (
         "an export is a readable copy of every transcript, every knowledge "
-        "chunk and, with a passphrase, every credential the company holds"
+        "chunk, the content of every personal department and, with a "
+        "passphrase, every credential the company holds"
     ),
     BACKUP_RESTORE: (
         "replaces every agent, run and knowledge chunk in the company with "
@@ -611,6 +626,7 @@ _OPERATOR: Final[frozenset[str]] = _VIEW_EVERYTHING | {
     CLARIFICATION_ANSWER,
     COPILOT_USE,
     CONNECTION_OWN,
+    DEPARTMENT_OWN,
 }
 
 #: Everything an operator has, plus authority over the department's own shape:
@@ -648,6 +664,7 @@ _AUDITOR: Final[frozenset[str]] = _VIEW_EVERYTHING | {
     APPROVAL_VIEW_ANY,
     COPILOT_USE,
     CONNECTION_OWN,
+    DEPARTMENT_OWN,
 }
 
 #: An agent token is refused by the operator API as a whole
@@ -672,7 +689,7 @@ BUILTIN_ROLE_PERMISSIONS: Final[dict[str, frozenset[str]]] = {
     # see COPILOT_USE's own docstring. This is the one thing that keeps
     # `member` from being the empty set: a bare member still holds nothing
     # that lets them see or change the OFFICE, but they can talk to it.
-    MEMBER_ROLE: frozenset({COPILOT_USE, CONNECTION_OWN}),
+    MEMBER_ROLE: frozenset({COPILOT_USE, CONNECTION_OWN, DEPARTMENT_OWN}),
 }
 
 
@@ -769,6 +786,36 @@ SEAT_PERMISSIONS: Final[dict[str, frozenset[str]]] = {
 #: tenant-defined role holding it holds it everywhere.
 DEPARTMENT_SCOPABLE: Final[frozenset[str]] = frozenset(
     p for granted in SEAT_PERMISSIONS.values() for p in granted
+)
+
+
+#: What the OWNER's seat carries in their own personal department, on top of
+#: what its seat role carries -- and nowhere else.
+#:
+#: A personal department's owner is usually a plain `member`, who holds none of
+#: these tenant-wide, and without them the owner's own agent page answers 403 on
+#: Run now, History, Versions and Publish. Widening `member` would hand every
+#: employee these rights over every agent they can see; the seat is the term in
+#: which "their own department, and not the whole company's" can be said.
+#:
+#: Kept apart from `SEAT_PERMISSIONS` on purpose: those are what ANY seat of a
+#: role carries in ANY department, and a `dept_approver` in Sales must not start
+#: Sales' agents because a personal department's seat shares its role name. They
+#: apply in `DepartmentScope.personal_owned` alone, and only a route that
+#: narrows to the target's department may admit on them: the run reach
+#: (`agents.repo.run_reach`) and `api.deps.authorize_in_department`.
+PERSONAL_OWNER_PERMISSIONS: Final[frozenset[str]] = frozenset(
+    {
+        perm(RUN, VIEW),
+        RUN_START,
+        RUN_CONTROL,
+        perm(AGENT_VERSION, VIEW),
+        AGENT_VERSION_PUBLISH,
+        perm(TRIGGER, VIEW),
+        perm(TRIGGER, MANAGE),
+        perm(SKILL, VIEW),
+        perm(SKILL, MANAGE),
+    }
 )
 
 

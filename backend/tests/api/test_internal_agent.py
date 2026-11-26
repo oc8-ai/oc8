@@ -441,6 +441,7 @@ async def _post_tool(
     tenant: uuid.UUID, agent_id: uuid.UUID, run_id: uuid.UUID,
     name: str, arguments: dict[str, Any],
     local_result: dict[str, Any] | None = None,
+    call_id: str = "c1",
 ) -> tuple[int, dict[str, Any]]:
     from asgi_lifespan import LifespanManager
     from httpx import ASGITransport, AsyncClient
@@ -448,7 +449,7 @@ async def _post_tool(
     from oc8.main import create_app
 
     token = _agent_token(tenant, agent_id, run_id)
-    body: dict[str, Any] = {"id": "c1", "name": name, "arguments": arguments}
+    body: dict[str, Any] = {"id": call_id, "name": name, "arguments": arguments}
     if local_result is not None:
         body["local_result"] = local_result
     app = create_app()
@@ -1167,6 +1168,71 @@ async def test_resolved_b5_ask_does_not_park_again_on_internal_tool(
 
 
 @pytest.mark.asyncio
+async def test_one_approval_runs_its_call_once_on_internal_tool(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Security review of N1, isolated runtime: the approved call runs and
+    uses its approval up; the identical call again is asked again, also when
+    the run context was written back from a copy that predates the use (a
+    leg redelivered after a crash) -- the approval's marker still stops it."""
+    from oc8 import models as m
+    from oc8.agent.harness.calls import call_sig
+
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class _RecordingSession(_EmptySchemaSession):
+        async def call(self, name: str, arguments: dict[str, Any]) -> str:
+            calls.append((name, arguments))
+            return "deleted"
+
+    monkeypatch.setattr("oc8.agent.mcp_client.McpSession", _RecordingSession)
+
+    tenant = uuid.uuid4()
+    resolved_call = ToolCall(id="resolved", name="create_record", arguments={"id": 7})
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(
+            db,
+            tenant,
+            destructive_tools=["create_record"],
+            approval_templates={"create_record": "Allow deleting record {id}?"},
+        )
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_sig(resolved_call),
+                    "tool": "create_record",
+                    "arguments": {"id": 7},
+                    "decision": "approve",
+                    "approval_id": "a1",
+                }
+            ],
+        }
+
+    args = {"id": 7, "justification": "Duplicate record"}
+    code, body = await _post_tool(tenant, agent_id, run_id, "create_record", args)
+    assert (code, body["status"]) == (200, "ok"), body
+    code, body = await _post_tool(tenant, agent_id, run_id, "create_record", args)
+    assert body["status"] == "waiting_for_approval", body
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        assert [c["key"] for c in run.context["consumed_tool_approvals"]] == ["a1"]
+        run.context = {
+            k: v
+            for k, v in run.context.items()
+            if k not in ("consumed_tool_approvals", "isolated_result")
+        }
+        run.state = "running"
+    code, body = await _post_tool(tenant, agent_id, run_id, "create_record", args)
+    assert body["status"] == "waiting_for_approval", body
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_a_dispatched_call_records_started_at_and_duration(
     app_session: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1835,6 +1901,8 @@ async def test_the_internal_endpoint_publishes_a_rendered_component(
             published.append((type_, data))
 
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)
@@ -1882,6 +1950,8 @@ async def test_the_internal_endpoint_publishes_todos(
             published.append((type_, data))
 
     monkeypatch.setattr("oc8.realtime.bus.get_event_bus", lambda: _SpyBus())
+    # Content events go through `emit.publish_run_content` (spec A4).
+    monkeypatch.setattr("oc8.realtime.emit.get_event_bus", lambda: _SpyBus())
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:  # type: ignore[operator]
         agent, _task, run = await _plain_agent_run(db, tenant)
@@ -2438,6 +2508,7 @@ async def _step_with_scripted_turns(
         if definition is not None:
             lead.definition = definition
         lead_id, run_id = lead.id, run.id
+    _LAST_STEP["world"] = (tenant, lead_id, run_id)
 
     script = list(turns)
     completions = {"n": 0}
@@ -2471,6 +2542,8 @@ async def _step_with_scripted_turns(
 
 
 _LS = ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})
+#: The world `_step_with_scripted_turns` built, for a test that posts on.
+_LAST_STEP: dict[str, Any] = {}
 
 
 @pytest.mark.asyncio
@@ -2510,6 +2583,8 @@ async def test_step_never_hands_the_shell_a_local_call_the_mode_withholds(
         ("conservative", None, []),
         ("conservative", "approve", ["run_shell"]),
         ("conservative", "reject", []),
+        # An approval its call already used up approves nothing more.
+        ("conservative", "used", []),
     ],
 )
 async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
@@ -2532,9 +2607,12 @@ async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
                 "sig": call_signature("run_shell", {"command": "ls"}),
                 "tool": "run_shell",
                 "arguments": {"command": "ls"},
-                "decision": pre_decided,
+                "decision": "approve" if pre_decided == "used" else pre_decided,
+                "approval_id": "a1",
             }
         ]
+        if pre_decided == "used":
+            context["consumed_tool_approvals"] = [{"sig": "x", "key": "a1"}]
     body, _n, _ctx = await _step_with_scripted_turns(
         app_session,
         monkeypatch,
@@ -2544,6 +2622,91 @@ async def test_local_execution_waits_for_an_approval_the_b_gate_would_ask_for(
     )
     assert body["local_allowed"] == expected
     assert [c["name"] for c in body["tool_calls"]] == ["run_shell"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("approvals", "allowed"), [(1, ["c1"]), (2, ["c1", "c2"])])
+async def test_two_identical_local_calls_on_one_approval_let_only_one_run(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, approvals: int, allowed: list[str]
+) -> None:
+    """Review of round 6: the pre-verdict let a tool run whenever ITS call
+    had an approval, so two identical run_shell calls both ran on one. Each
+    call now claims an approval before the shell runs it."""
+    from oc8.runtime.approval_resume import call_signature
+
+    sig = call_signature("run_shell", {"command": "ls"})
+    context: dict[str, Any] = {
+        "resolved_tool_approvals": [
+            {
+                "sig": sig,
+                "tool": "run_shell",
+                "arguments": {"command": "ls"},
+                "decision": "approve",
+                "approval_id": f"a{n}",
+            }
+            for n in range(1, approvals + 1)
+        ]
+    }
+    twice = [_LS, ToolCall(id="c2", name="run_shell", arguments={"command": "ls"})]
+    body, _n, ctx = await _step_with_scripted_turns(
+        app_session, monkeypatch, [twice], context=context,
+        definition={"autonomy": "conservative"},
+    )
+    assert body["local_allowed_calls"] == allowed
+    # An older shell matches on the name: it is listed only when every call
+    # of it may run.
+    assert body["local_allowed"] == (["run_shell"] if approvals == 2 else [])
+    assert [c.get("call_id") for c in ctx["consumed_tool_approvals"]] == allowed
+
+    # /tool: the call the shell ran on its claimed approval is approved;
+    # a second one posted with a result anyway is not.
+    tenant, agent_id, run_id = _LAST_STEP["world"]
+    ran = {"stdout": "x", "stderr": "", "exit_code": 0}
+    code, first = await _post_tool(
+        tenant, agent_id, run_id, "run_shell", {"command": "ls"}, local_result=ran
+    )
+    assert (code, first["status"]) == (200, "ok"), first
+    if approvals == 1:
+        _code, second = await _post_tool(
+            tenant, agent_id, run_id, "run_shell", {"command": "ls"},
+            local_result=ran, call_id="c2",
+        )
+        assert second["status"] == "waiting_for_approval", second
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved_first", [True, False])
+async def test_duplicate_call_ids_in_one_step_borrow_no_go_ahead(
+    app_session: object, monkeypatch: pytest.MonkeyPatch, approved_first: bool
+) -> None:
+    """Security scan: two calls sharing one id -- one approved, one not.
+    The second is renamed before anything is booked, so only the approved
+    call may run, under its own id; the other never runs on its allow."""
+    from oc8.runtime.approval_resume import call_signature
+
+    context: dict[str, Any] = {
+        "resolved_tool_approvals": [
+            {
+                "sig": call_signature("run_shell", {"command": "ls"}),
+                "tool": "run_shell",
+                "arguments": {"command": "ls"},
+                "decision": "approve",
+                "approval_id": "a1",
+            }
+        ]
+    }
+    ls = ToolCall(id="c1", name="run_shell", arguments={"command": "ls"})
+    rm = ToolCall(id="c1", name="run_shell", arguments={"command": "rm -rf x"})
+    turn = [ls, rm] if approved_first else [rm, ls]
+    body, _n, _ctx = await _step_with_scripted_turns(
+        app_session, monkeypatch, [turn], context=context,
+        definition={"autonomy": "conservative"},
+    )
+    ids = [c["id"] for c in body["tool_calls"]]
+    assert ids == ["c1", "c1_dup1"]
+    ls_id = ids[0] if approved_first else ids[1]
+    assert body["local_allowed_calls"] == [ls_id]
+    assert body["local_allowed"] == []
 
 
 # --------------------------------------------------- parallel reads under caps
@@ -3182,6 +3345,15 @@ async def test_a_routed_core_name_is_tiered_as_the_connections_write(
     assert code == 200, body
     assert body["status"] == "waiting_for_approval", body
     assert calls == []
+    # E2E F6: the card names the run that raised it -- every turn of a chat
+    # runs on one task, so the task alone does not say which run to resume.
+    from sqlalchemy import select
+
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        card = (
+            await db.execute(select(m.ApprovalRequest).where(m.ApprovalRequest.tenant_id == tenant))
+        ).scalar_one()
+        assert card.payload["run_id"] == str(run_id)
 
 
 @pytest.mark.parametrize(("chat_mode", "prefetched"), [(None, 2), ("ask", 0)])
@@ -3797,6 +3969,8 @@ async def test_a_parked_held_call_runs_exactly_once_after_its_approval(
         run = (
             await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant))
         ).scalar_one()
+        # E2E F6: the held call's card names the run that raised it.
+        assert approval.payload["run_id"] == str(run.id)
         run.state = "waiting_for_approval"
         await db.flush()
         await resolve_tool_approval(db, approval=approval, decision="approve")
@@ -3810,12 +3984,12 @@ async def test_a_parked_held_call_runs_exactly_once_after_its_approval(
     merged = {"model": "sale.order", "elicitation_answer": "ACME"}
     assert reached == [merged]
 
-    # The approval holds for the whole run: only replay-safety stops the model
-    # repeating the merged call from writing a second time.
+    # The approval covered that one run of the call (security review of N1):
+    # the model repeating the merged call is asked again, not let through.
     code, repeated = await _post_tool(tenant, agent_id, run_id, "create_record", merged)
     assert code == 200, repeated
-    assert reached == [merged], "replayed, not executed again"
-    assert "replay" in repeated["output"]
+    assert reached == [merged], "asked again, not executed again"
+    assert repeated["status"] == "waiting_for_approval", repeated
     async with app_session(tenant) as db:  # type: ignore[operator]
         row = await db.get(m.AgentRun, run_id)
         assert row is not None

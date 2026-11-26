@@ -59,7 +59,7 @@ async def test_instantiate_creates_department_and_stopped_agents(
             .all()
         )
         assert len(agents) == 3
-        assert all(a.status == "stopped" for a in agents)
+        assert all(a.status == "idle" for a in agents)
         lead = next(a for a in agents if a.is_team_lead)
         assert lead.name == "Head of Sales"
         assert dept.team_lead_agent_id == lead.id

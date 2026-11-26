@@ -282,7 +282,7 @@ async def test_apply_creates_the_whole_agent_once(app_session: AppSessionFactory
         agent_id = await _apply(db, office, proposal.id)
         agent = await db.get(m.Agent, agent_id)
         assert agent is not None and agent.model_config_id == office.model_id
-        assert agent.status == "stopped"
+        assert agent.status == "idle"
         assignments = (
             (
                 await db.execute(

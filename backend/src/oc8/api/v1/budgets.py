@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import BUDGET, MANAGE, VIEW, perm
+from oc8.departments.personal import stamp_budget_override
 from oc8.metering.budget import (
     convert_dollars_to_tokens,
     current_month_tokens,
@@ -64,6 +65,10 @@ async def upsert_budget(
         soft_limit_tokens=soft,
         hard_limit_tokens=hard,
     )
+    if body.department_id is not None:
+        await stamp_budget_override(
+            db, tenant_id=principal.tenant_id, department_id=body.department_id
+        )
     if body.dollar_budget_usd is not None:
         budget.dollar_budget_usd = body.dollar_budget_usd
         budget.dollar_reference_provider = dollar_provider

@@ -32,10 +32,11 @@ from oc8 import models as m
 from oc8.agents.repo import visible_agent
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.authz.authority import authority_for_principal, tenant_wide_read
-from oc8.authz.permissions import AGENT, DEPARTMENT, STATISTICS, VIEW, perm
+from oc8.authz.permissions import AGENT, DEPARTMENT, MANAGE, STATISTICS, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.departments.repo import visible_department
 from oc8.kpis.aggregate import KPIResult, compute_kpis
+from oc8.models.core import DEPARTMENT_KIND_STANDARD
 from oc8.schemas.kpi import KPIDTO, KPIGroupRowDTO
 
 router = APIRouter()
@@ -171,6 +172,11 @@ def _group_id_query(
             m.Agent.tenant_id == tenant_id,
             m.Agent.deleted_at.is_(None),
             m.Agent.is_tenant_assistant.is_(False),
+            # Only agents of a `standard` department, matching the department
+            # breakdown below: a personal department's agents get no row here.
+            m.Agent.department_id.in_(
+                select(m.Department.id).where(m.Department.kind == DEPARTMENT_KIND_STANDARD)
+            ),
         )
         if agent_id is not None:
             stmt = stmt.where(m.Agent.id == agent_id)
@@ -180,7 +186,7 @@ def _group_id_query(
     dept_stmt = select(m.Department.id).where(
         m.Department.tenant_id == tenant_id,
         m.Department.deleted_at.is_(None),
-        m.Department.is_assistant_department.is_(False),
+        m.Department.kind == DEPARTMENT_KIND_STANDARD,
     )
     if department_id is not None:
         dept_stmt = dept_stmt.where(m.Department.id == department_id)
@@ -236,7 +242,14 @@ async def agent_kpis(
     parsed_to = _parse_bound(date_to, field="dateTo", end_of_day=True)
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(AGENT, VIEW))
-    agent = await visible_agent(db, scope=actor.scope, tenant_wide=tenant_wide, agent_id=agent_id)
+    agent = await visible_agent(
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        agent_id=agent_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
+    )
     if agent is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
     result = await compute_kpis(
@@ -266,7 +279,12 @@ async def department_kpis(
     authority = await authority_for_principal(request, db, actor.principal)
     tenant_wide = tenant_wide_read(authority, perm(DEPARTMENT, VIEW))
     dept = await visible_department(
-        db, scope=actor.scope, tenant_wide=tenant_wide, department_id=dept_id
+        db,
+        scope=actor.scope,
+        tenant_wide=tenant_wide,
+        department_id=dept_id,
+        member_id=actor.member.id,
+        manage_all=tenant_wide_read(authority, perm(DEPARTMENT, MANAGE)),
     )
     if dept is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")

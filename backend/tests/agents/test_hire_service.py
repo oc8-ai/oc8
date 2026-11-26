@@ -77,5 +77,5 @@ async def test_resolve_approve_activates_and_reject_soft_deletes(
         r2 = await create_hire_request(s, agent=a2)
         await resolve_hire_agent(s, approval_request=r1, decision="approve")
         await resolve_hire_agent(s, approval_request=r2, decision="reject")
-        assert a1.status == "stopped" and a1.deleted_at is None
+        assert a1.status == "idle" and a1.deleted_at is None
         assert a2.deleted_at is not None

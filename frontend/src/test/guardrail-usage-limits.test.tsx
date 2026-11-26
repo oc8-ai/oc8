@@ -62,20 +62,26 @@ describe("GuardrailUsageLimits", () => {
     expect(onChange).toHaveBeenCalledWith({ ...base, limits: [] });
   });
 
-  it("adds a limit on a real tool, never an empty one", () => {
+  it("adds a limit on the function picked, with none picked in advance", () => {
+    // Review of F4: "Add limit" put the catalog's first function on the new
+    // limit -- for the email tool that was mail_delete, not what anyone meant
+    // to count. The function is now chosen; nothing is added until it is.
     const onChange = vi.fn();
     render(
       <GuardrailUsageLimits
         value={{ ...base, limits: [] }}
         onChange={onChange}
-        toolCatalog={catalog}
+        toolCatalog={["mail_delete", ...catalog]}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /add limit|limit hinzufügen/i }));
-    const next = onChange.mock.calls[0][0] as GuardrailValue;
-    expect(next.limits).toHaveLength(1);
-    expect(next.limits[0].tools.length).toBeGreaterThan(0);
-    expect(catalog).toContain(next.limits[0].tools[0]);
+    const add = screen.getByRole("combobox", { name: /add a limit|limit hinzufügen/i });
+    expect((add as HTMLSelectElement).value).toBe("");
+    expect(onChange).not.toHaveBeenCalled();
+    fireEvent.change(add, { target: { value: "mail_send" } });
+    expect(onChange).toHaveBeenCalledWith({
+      ...base,
+      limits: [{ tools: ["mail_send"], max: 50, per: "day" }],
+    });
   });
 
   it("adds another tool to a limit and removes one", () => {
@@ -104,7 +110,9 @@ describe("GuardrailUsageLimits", () => {
         toolCatalog={catalog}
       />,
     );
-    expect(screen.getByRole("button", { name: /add limit|limit hinzufügen/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("combobox", { name: /add a limit|limit hinzufügen/i }),
+    ).toBeInTheDocument();
   });
 
   it("shows the department's max as the one in force when it is lower", () => {

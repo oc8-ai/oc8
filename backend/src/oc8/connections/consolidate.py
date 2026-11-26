@@ -56,6 +56,13 @@ from oc8.connections.access import (
     trigger_fingerprint,
 )
 from oc8.connections.access_write import write_tool_access
+from oc8.connections.confirmation import (
+    confirmation_holds,
+    stamp_binding,
+    stamp_trigger,
+    stored_split,
+    trigger_confirmed,
+)
 from oc8.connections.credential_env import credential_env_targets
 from oc8.connections.integrations import Integration, integration_for_connection
 from oc8.connections.login import enabled_anywhere
@@ -304,7 +311,12 @@ class _Stamps:
         """A confirmation is valid when it equals the current digest; the
         digest as stored before consolidated tools were part of it (legacy)
         is accepted only for agents whose department's rows this pass folds
-        -- the one pass that changes what their digest covers."""
+        -- the one pass that changes what their digest covers. Both only for
+        a row without a split. A row with a split is valid only when it holds
+        (`confirmation_holds` / `trigger_confirmed`, Ruling T3-C2): the
+        digest misses parts of `core` (the payload as it runs) and the
+        agent's own threshold, so a digest match never restamps one. This
+        runs before the pass folds anything, so an unchanged split holds."""
         for trigger in (
             await db.execute(select(m.Trigger).where(m.Trigger.access_fingerprint.is_not(None)))
         ).scalars():
@@ -318,7 +330,11 @@ class _Stamps:
                         db, agent, None, version_id=agent.current_version_id, legacy=True
                     )
                 )
-            if trigger.access_fingerprint in accepted:
+            if stored_split(trigger.access_split) is None:
+                valid = trigger.access_fingerprint in accepted
+            else:
+                valid = await trigger_confirmed(db, trigger)
+            if valid:
                 self.triggers.append(trigger)
         for row in (
             await db.execute(
@@ -335,7 +351,18 @@ class _Stamps:
                 )
                 for legacy in legacy_too
             }
-            if row.binding_fingerprint in accepted:
+            if stored_split(row.binding_split) is None:
+                valid = row.binding_fingerprint in accepted
+            else:
+                valid = await confirmation_holds(
+                    db,
+                    agent,
+                    row.tool_key,
+                    version_id=agent.current_version_id,
+                    digest=row.binding_fingerprint,
+                    split=row.binding_split,
+                )
+            if valid:
                 self.bindings.append(row)
 
     async def restamp(
@@ -345,9 +372,13 @@ class _Stamps:
         wrote) again; each change is audited (system, ids only)."""
         count = 0
         for trigger in self.triggers:
-            current = await trigger_fingerprint(db, trigger)
-            if current is not None and current != trigger.access_fingerprint:
-                trigger.access_fingerprint = current
+            agent = await db.get(m.Agent, trigger.agent_id)
+            if agent is None or agent.tenant_id != trigger.tenant_id:
+                continue  # its agent is gone: leave the stamp as it was
+            before = trigger.access_fingerprint
+            # Held back: the pass confirms nothing the owner has not.
+            await stamp_trigger(db, trigger, confirmed_by=None, held_back=True)
+            if trigger.access_fingerprint != before:
                 count += 1
                 await _audit_restamp(
                     db,
@@ -358,11 +389,9 @@ class _Stamps:
             agent = await db.get(m.Agent, row.agent_id)
             if agent is None:
                 continue
-            current = await binding_fingerprint(
-                db, agent, row.tool_key, version_id=agent.current_version_id
-            )
-            if current != row.binding_fingerprint:
-                row.binding_fingerprint = current
+            before = row.binding_fingerprint
+            await stamp_binding(db, row, agent, confirmed_by=None, held_back=True)
+            if row.binding_fingerprint != before:
                 count += 1
                 await _audit_restamp(
                     db,
@@ -720,6 +749,14 @@ class _Pass:
             frame, count = _rewrite(dept.frame, "default_connection_id", moved)
             if count:
                 dept.frame = frame
+                self.report.pins_rewritten += count
+            # A change held for the owner too: confirming it later must not
+            # bring back a removed row.
+            held, count = _rewrite(
+                {"tools": dept.pending_frame_tools}, "default_connection_id", moved
+            )
+            if count:
+                dept.pending_frame_tools = held["tools"]
                 self.report.pins_rewritten += count
         await self.db.flush()
 

@@ -17,6 +17,7 @@ import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -47,10 +48,48 @@ def _slugify(value: str) -> str:
     return out or "skill"
 
 
+async def _held_rows(
+    db: AsyncSession,
+    rows: Sequence[tuple[m.SkillAssignment, m.SkillVersion | None, m.Skill | None]],
+    entries: dict[str, list[Any]],
+    tenant_id: uuid.UUID,
+) -> list[tuple[m.SkillAssignment, m.SkillVersion | None, m.Skill | None]]:
+    """`rows` as the owner confirmed them (`held_skill_entries`): an
+    assignment they did not confirm is left out, one whose version moved
+    since runs the confirmed version. `SkillVersion` rows never change, so
+    the confirmed one, read by id, is exactly what they confirmed."""
+    kept = [(a, v, s) for a, v, s in rows if str(a.id) in entries]
+    wanted = {uuid.UUID(entries[str(a.id)][0]) for a, _v, _s in kept}
+    moved = wanted - {a.skill_version_id for a, _v, _s in kept}
+    confirmed: dict[uuid.UUID, tuple[m.SkillVersion, m.Skill | None]] = {}
+    if moved:
+        found = await db.execute(
+            select(m.SkillVersion, m.Skill)
+            .outerjoin(m.Skill, m.Skill.id == m.SkillVersion.skill_id)
+            .where(m.SkillVersion.tenant_id == tenant_id, m.SkillVersion.id.in_(moved))
+        )
+        confirmed = {version.id: (version, skill) for version, skill in found.tuples()}
+    out: list[tuple[m.SkillAssignment, m.SkillVersion | None, m.Skill | None]] = []
+    for assignment, version, skill in kept:
+        version_id = uuid.UUID(entries[str(assignment.id)][0])
+        if version_id != assignment.skill_version_id:
+            version, skill = confirmed.get(version_id, (None, None))
+        out.append((assignment, version, skill))
+    return out
+
+
 async def load_assigned_skills(
     db: AsyncSession, *, agent: m.Agent, tenant_id: uuid.UUID
 ) -> list[LoadedSkill]:
-    rows = (
+    """The agent's enabled skills, narrowest assignment first. An agent in a
+    department with an owner runs on the skills the owner confirmed
+    (`connections.confirmation.held_skill_entries`), with the name and
+    description they confirmed: a newer assignment, version or text waits
+    for them, a removal applies at once."""
+    # Deferred: confirmation reaches the agent package, which imports this module.
+    from oc8.connections.confirmation import held_skill_entries
+
+    rows: Sequence[tuple[m.SkillAssignment, m.SkillVersion | None, m.Skill | None]] = (
         (
             await db.execute(
                 select(m.SkillAssignment, m.SkillVersion, m.Skill)
@@ -84,6 +123,9 @@ async def load_assigned_skills(
         .tuples()
         .all()
     )
+    entries = await held_skill_entries(db, agent)
+    if entries is not None:
+        rows = await _held_rows(db, rows, entries, tenant_id)
 
     out: list[LoadedSkill] = []
     used: set[str] = set()
@@ -99,7 +141,8 @@ async def load_assigned_skills(
             # There is no FK on skill_assignment.skill_version_id, so an
             # assignment can outlive the version it points at (e.g. the
             # version's skill was deleted). Skip it -- with a warning --
-            # rather than fail a run that is otherwise fine.
+            # rather than fail a run that is otherwise fine. A held version
+            # (`_held_rows`) that cannot be read is skipped the same way.
             logger.warning(
                 "skipping assignment %s: skill version %s not found",
                 assignment.id,
@@ -111,7 +154,15 @@ async def load_assigned_skills(
         except SkillDefinitionError as exc:
             logger.warning("skipping skill %s (version %s): %s", skill.id, version.id, exc)
             continue
-        base = f"{SKILL_TOOL_PREFIX}{_slugify(definition.slug or skill.name)}"
+        # What the model reads of the skill: as the owner confirmed it, for
+        # an agent whose skills are held (`held_skill_entries`).
+        name, description = skill.name, skill.description
+        if entries is not None:
+            name, description = entries[str(assignment.id)][2:4]
+            if name is None:
+                logger.warning("skipping assignment %s: confirmed without a name", assignment.id)
+                continue
+        base = f"{SKILL_TOOL_PREFIX}{_slugify(definition.slug or name)}"
         tool_name = base
         suffix = 2
         while tool_name in used:
@@ -123,8 +174,8 @@ async def load_assigned_skills(
             LoadedSkill(
                 skill_id=skill.id,
                 skill_version_id=version.id,
-                name=skill.name,
-                description=skill.description or skill.name,
+                name=name,
+                description=description or name,
                 tool_name=tool_name,
                 definition=definition,
                 creator_id=skill.owner_user_id,
@@ -164,9 +215,7 @@ def catalog_block(skills: Sequence[LoadedSkill], *, prefix: str = "") -> str:
     )
 
 
-def instruction_block(
-    skill: LoadedSkill, satisfied: frozenset[str] | None = None
-) -> str:
+def instruction_block(skill: LoadedSkill, satisfied: frozenset[str] | None = None) -> str:
     parts = [f"[Skill: {skill.name}]", skill.definition.instruction]
     if skill.definition.prose_guardrails:
         rules = "\n".join(f"- {g}" for g in skill.definition.prose_guardrails)

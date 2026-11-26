@@ -359,6 +359,203 @@ async def test_setting_approval_eur_for_a_connection_with_a_value_spec_is_accept
             assert r.status_code == 200, r.text
 
 
+async def _put_narrowing_under_a_frame_threshold(
+    app_session: AppSessionFactory,
+    inherited_eur: float | None,
+    *,
+    frame_eur: float | None = 200,
+    saved_eur: float | None = None,
+) -> tuple[int, str, uuid.UUID]:
+    """An agent in a department whose frame puts a `frame_eur` threshold on a
+    connection without a value_spec (microsoft365), saving a second tool while
+    sending `inherited_eur` for the inherited one -- the payload the agent
+    page's REPLACE save sends for every key it didn't edit. `saved_eur` is a
+    threshold the agent's narrowing already holds from an earlier save."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    frame_policy: dict[str, object] = {"enabled": True, "read": True, "modify": True}
+    if frame_eur is not None:
+        frame_policy["approval_eur"] = frame_eur
+    async with app_session(tenant) as db:
+        department = m.Department(
+            tenant_id=tenant,
+            name=f"D-{uuid.uuid4().hex}",
+            frame={"tools": {"microsoft365": frame_policy}},
+        )
+        db.add(department)
+        await db.flush()
+        saved: dict[str, object] = {}
+        if saved_eur is not None:
+            saved = {"tools": {"microsoft365": {**frame_policy, "approval_eur": saved_eur}}}
+        agent = m.Agent(
+            tenant_id=tenant, department_id=department.id, name="Probe", narrowing=saved
+        )
+        conn = m.McpConnection(
+            tenant_id=tenant,
+            name="microsoft365",
+            server_url="",
+            transport="stdio",
+            config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+        )
+        db.add_all([agent, conn])
+        await db.flush()
+        agent_id = agent.id
+
+    sent: dict[str, object] = {"enabled": True, "read": True, "modify": True}
+    if inherited_eur is not None:
+        sent["approval_eur"] = inherited_eur
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            headers = {"Authorization": f"Bearer {_token(tenant)}"}
+            r = await client.put(
+                f"/api/v1/agents/{agent_id}/narrowing",
+                json={
+                    "narrowing": {
+                        "tools": {
+                            "microsoft365": sent,
+                            "github": {"enabled": True, "read": True, "modify": False},
+                        }
+                    }
+                },
+                headers=headers,
+            )
+            return r.status_code, r.text, agent_id
+
+
+async def _stored_microsoft365(app_session: AppSessionFactory, agent_id: uuid.UUID) -> dict:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        stored = agent.narrowing["tools"]["microsoft365"]
+        assert isinstance(stored, dict)
+        return stored
+
+
+async def test_echoing_an_inherited_frame_threshold_is_accepted(
+    app_session: AppSessionFactory,
+) -> None:
+    """Regression (E2E F3): the frame check REQUIRES the narrowing to keep the
+    frame's threshold ("narrowing removes a frame approval threshold"), while
+    the value_spec check rejected that very value for a connection with no
+    value_spec -- so no agent in such a department could save any guardrail
+    or add any tool."""
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(app_session, 200)
+    assert status_code == 200, text
+    # Not stored: the connection has no value to compare it against, and the
+    # department's own threshold applies through the frame anyway.
+    assert "approval_eur" not in await _stored_microsoft365(app_session, agent_id)
+
+
+async def test_a_save_after_the_department_raised_its_threshold_still_works(
+    app_session: AppSessionFactory,
+) -> None:
+    """Review of F3: the frame went from 200 to 300 after the agent's narrowing
+    was saved with 200. Accepting only the frame's exact value made every save
+    of that agent a 422 -- with the threshold field hidden, so nothing the
+    person could change. The stored 200 never fired (no amount to compare),
+    so the unchanged legacy value is dropped and the frame's 300 applies."""
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+        app_session, 200, frame_eur=300, saved_eur=200
+    )
+    assert status_code == 200, text
+    assert "approval_eur" not in await _stored_microsoft365(app_session, agent_id)
+    assert '"approvalEur":300' in text.replace(" ", "")
+
+
+async def test_a_new_tighter_threshold_nothing_can_enforce_is_refused_by_name(
+    app_session: AppSessionFactory,
+) -> None:
+    """The connection reports no amount, so a positive threshold never fires:
+    stored, it would be shown as a guardrail that never holds; dropped, the
+    person would never learn why. Refused, saying what makes sense."""
+    status_code, text, _agent = await _put_narrowing_under_a_frame_threshold(app_session, 50)
+    assert status_code == 422, text
+    assert "value_spec_not_supported" in text
+    assert "only 0" in text
+
+
+async def test_a_zero_threshold_is_kept_because_it_is_enforced(
+    app_session: AppSessionFactory,
+) -> None:
+    """Security review: a missing amount counts as zero, so €0 asks for every
+    modify even on a connection without a value spec. Dropping it would
+    loosen the agent's guardrail to the department's."""
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(app_session, 0)
+    assert status_code == 200, text
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
+
+
+async def test_a_stored_zero_threshold_sent_back_unchanged_is_kept(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+        app_session, 0, frame_eur=300, saved_eur=0
+    )
+    assert status_code == 200, text
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
+
+
+async def test_a_zero_threshold_where_the_department_sets_none_is_kept(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+        app_session, 0, frame_eur=None
+    )
+    assert status_code == 200, text
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
+
+
+async def test_leaving_out_an_inherited_frame_threshold_is_accepted(
+    app_session: AppSessionFactory,
+) -> None:
+    """The page no longer sends a threshold for a connection without a value
+    spec; the frame's still applies, so leaving it out removes nothing."""
+    status_code, text, _agent = await _put_narrowing_under_a_frame_threshold(app_session, None)
+    assert status_code == 200, text
+    assert '"approvalEur":200' in text.replace(" ", "")
+
+
+@pytest.mark.parametrize("inherited_eur", [200, None])
+async def test_an_unchanged_inherited_tool_is_not_marked_narrowed(
+    app_session: AppSessionFactory, inherited_eur: float | None
+) -> None:
+    """E2E N6: saving another tool's guardrail stored microsoft365 without the
+    department's €200 (nothing there can compare an amount), and the badge
+    then said "Narrowed". What the agent may do there is exactly the
+    department's: compared as the effective policy, nothing diverged."""
+    status_code, text, agent_id = await _put_narrowing_under_a_frame_threshold(
+        app_session, inherited_eur
+    )
+    assert status_code == 200, text
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        assert "microsoft365" not in (agent.narrowing_overridden_keys or [])
+
+
+async def test_loosening_an_inherited_frame_threshold_is_still_rejected(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text, _agent = await _put_narrowing_under_a_frame_threshold(app_session, 500)
+    assert status_code == 422, text
+    assert "narrowing_exceeds_frame" in text
+
+
+async def test_an_agent_own_threshold_where_the_department_sets_none_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """A positive threshold the department never set, on a connection with
+    nothing to compare it against, would be a guardrail that never holds."""
+    status_code, text, _agent = await _put_narrowing_under_a_frame_threshold(
+        app_session, 100, frame_eur=None
+    )
+    assert status_code == 422, text
+    assert "value_spec_not_supported" in text
+
+
 async def test_resetting_an_overridden_key_drops_it_and_clears_the_override_flag(
     app_session: AppSessionFactory,
 ) -> None:
@@ -429,3 +626,148 @@ async def test_resetting_an_untracked_key_404s(app_session: AppSessionFactory) -
                 f"/api/v1/agents/{agent_id}/narrowing/github/reset", headers=headers
             )
             assert r.status_code == 404, r.text
+
+
+async def _hire_under_a_frame_threshold(
+    app_session: AppSessionFactory, sent_eur: float | None
+) -> tuple[int, str]:
+    """Hiring into a department with a €200 threshold on microsoft365 (no
+    value_spec), granting it with `sent_eur` -- the hire wizard no longer sends
+    the department's threshold for such a connection."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    policy: dict[str, object] = {"enabled": True, "read": True, "modify": True}
+    async with app_session(tenant) as db:
+        department = m.Department(
+            tenant_id=tenant,
+            name=f"D-{uuid.uuid4().hex}",
+            frame={"tools": {"microsoft365": {**policy, "approval_eur": 200}}},
+        )
+        db.add(department)
+        db.add(
+            m.McpConnection(
+                tenant_id=tenant,
+                name="microsoft365",
+                server_url="",
+                transport="stdio",
+                config={"_plugin_name": "microsoft365", "_connection_key": "primary"},
+            )
+        )
+        await db.flush()
+        department_id = department.id
+
+    sent = dict(policy)
+    if sent_eur is not None:
+        sent["approval_eur"] = sent_eur
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.post(
+                "/api/v1/agents",
+                json={
+                    "departmentId": str(department_id),
+                    "name": f"A-{uuid.uuid4().hex[:8]}",
+                    "roleTitle": "Tester",
+                    "mission": "m",
+                    "narrowing": {"tools": {"microsoft365": sent}},
+                },
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+            return r.status_code, r.text
+
+
+async def test_hiring_without_the_department_threshold_on_a_connection_without_value_spec(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text = await _hire_under_a_frame_threshold(app_session, None)
+    assert status_code == 201, text
+
+
+async def test_hiring_with_a_looser_threshold_than_the_department_is_rejected(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text = await _hire_under_a_frame_threshold(app_session, 500)
+    assert status_code == 422, text
+    assert "narrowing_exceeds_frame" in text
+
+
+async def test_hiring_with_a_zero_threshold_keeps_it(app_session: AppSessionFactory) -> None:
+    import json
+
+    status_code, text = await _hire_under_a_frame_threshold(app_session, 0)
+    assert status_code == 201, text
+    agent_id = uuid.UUID(json.loads(text)["id"])
+    assert (await _stored_microsoft365(app_session, agent_id))["approval_eur"] == 0
+
+
+async def test_hiring_with_a_new_tighter_threshold_nothing_can_enforce_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    status_code, text = await _hire_under_a_frame_threshold(app_session, 50)
+    assert status_code == 422, text
+    assert "value_spec_not_supported" in text
+
+
+async def _pin_login(
+    app_session: AppSessionFactory, *, frame_login: str | None, own_login: str
+) -> list[str]:
+    """An agent saves Odoo exactly as its department grants it, except for
+    the login it pins; returns the keys recorded as overridden."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    frame_policy: dict[str, object] = {"enabled": True, "read": True, "modify": True}
+    if frame_login is not None:
+        frame_policy["default_connection_id"] = frame_login
+    async with app_session(tenant) as db:
+        department = m.Department(
+            tenant_id=tenant, name=f"D-{uuid.uuid4().hex}", frame={"tools": {"Odoo": frame_policy}}
+        )
+        db.add(department)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=department.id, name="Probe")
+        db.add(agent)
+        await db.flush()
+        agent_id = agent.id
+    app = create_app()
+    async with LifespanManager(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as client:
+            r = await client.put(
+                f"/api/v1/agents/{agent_id}/narrowing",
+                json={
+                    "narrowing": {
+                        "tools": {
+                            "Odoo": {
+                                "enabled": True,
+                                "read": True,
+                                "modify": True,
+                                "connection_id": own_login,
+                            }
+                        }
+                    }
+                },
+                headers={"Authorization": f"Bearer {_token(tenant)}"},
+            )
+            assert r.status_code == 200, r.text
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        return list(agent.narrowing_overridden_keys or [])
+
+
+async def test_pinning_another_login_than_the_department_is_an_override(
+    app_session: AppSessionFactory,
+) -> None:
+    """Security review of N6: a login is the agent's own choice. Not marked
+    overridden, a department change would rewrite the key and swap the
+    account the agent acts through."""
+    login = str(uuid.uuid4())
+    assert await _pin_login(app_session, frame_login=None, own_login=login) == ["Odoo"]
+    other = str(uuid.uuid4())
+    assert await _pin_login(app_session, frame_login=other, own_login=login) == ["Odoo"]
+
+
+async def test_the_department_default_login_is_no_override(
+    app_session: AppSessionFactory,
+) -> None:
+    login = str(uuid.uuid4())
+    assert await _pin_login(app_session, frame_login=login, own_login=login) == []

@@ -51,7 +51,7 @@ export function EffortField({
     <div className="space-y-2">
       <select
         id={id}
-        aria-label={t("Effort", "Effort")}
+        aria-label={t("Effort", "Denkaufwand")}
         value={choice}
         disabled={disabled}
         onChange={(e) => {

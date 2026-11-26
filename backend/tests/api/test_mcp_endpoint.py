@@ -336,3 +336,33 @@ async def test_get_connection_tool_names_for_an_unknown_connection_is_empty(
             )
             assert resp.status_code == 200, resp.text
             assert resp.json()["names"] == []
+
+
+async def test_a_connection_lists_its_outward_tools(app_session: AppSessionFactory) -> None:
+    """The UI tells a preset meant for an autonomous agent (outward tools
+    allowed unasked) by these: such a preset only works once the agent is
+    autonomous with the outward tier granted (E2E F2)."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        plain_id = await _custom_mcp_connection(db, tenant)
+        mail = m.McpConnection(
+            tenant_id=tenant,
+            name="mail",
+            server_url="",
+            transport="stdio",
+            scopes=[],
+            config={"command": "true", "args": [], "outward_tools": ["mail_send"]},
+            connected=False,
+        )
+        db.add(mail)
+        await db.flush()
+        mail_id = mail.id
+        await db.commit()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            resp = await c.get("/api/v1/mcp/connections", headers=_h(tenant))
+            assert resp.status_code == 200, resp.text
+            by_id = {x["id"]: x for x in resp.json()}
+            assert by_id[str(mail_id)]["outwardTools"] == ["mail_send"]
+            assert by_id[str(plain_id)]["outwardTools"] == []

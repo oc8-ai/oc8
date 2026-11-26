@@ -289,7 +289,7 @@ async def test_an_org_admin_still_resolves_both_kinds(app_session: AppSessionFac
         assert budget.override_until is not None
         assert budget.override_until > dt.datetime.now(tz=dt.UTC)
     agent = await _reload(app_session, office.tenant, m.Agent, office.pending_agent)
-    assert agent is not None and agent.status == "stopped"
+    assert agent is not None and agent.status == "idle"
 
 
 def test_every_action_type_the_funnel_dispatches_on_is_classified() -> None:

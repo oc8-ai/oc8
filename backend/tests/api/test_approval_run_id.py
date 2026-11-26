@@ -124,3 +124,64 @@ async def test_the_single_row_door_still_works_without_names(
         dto = approval_to_dto(approval)
 
     assert dto.run_id is None
+
+
+async def test_a_chat_approval_quotes_the_turn_that_asked(
+    app_session: AppSessionFactory,
+) -> None:
+    """E2E N8: every turn of a chat runs on one task, titled after its first
+    message, so the card quoted that instead of the turn asking for the send.
+    The run that raised the card answers one message: that is the context."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Support", frame={})
+        db.add(dept)
+        await db.flush()
+        agent = m.Agent(tenant_id=tenant, department_id=dept.id, name="Mailbot")
+        db.add(agent)
+        await db.flush()
+        task = m.Task(
+            tenant_id=tenant,
+            department_id=dept.id,
+            assigned_agent_id=agent.id,
+            title="How many mails are in your INBOX?",
+            state="in_progress",
+        )
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=uuid.uuid4())
+        db.add_all([task, session])
+        await db.flush()
+        asked = m.ChatMessage(
+            tenant_id=tenant,
+            session_id=session.id,
+            role="user",
+            content="Send the invoice 4711 summary to the customer.",
+        )
+        db.add(asked)
+        await db.flush()
+        run = m.AgentRun(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            source="chat",
+            task_id=task.id,
+            state="waiting_for_approval",
+            context={"reply_to_message_id": str(asked.id)},
+        )
+        db.add(run)
+        await db.flush()
+        approval = m.ApprovalRequest(
+            tenant_id=tenant,
+            agent_id=agent.id,
+            department_id=dept.id,
+            task_id=task.id,
+            action_type="tool_send",
+            payload={"tool": "mail_send", "arguments": {}, "run_id": str(run.id)},
+            status="pending",
+            title="Mailbot wants to call mail_send",
+            detail="",
+        )
+        db.add(approval)
+        await db.flush()
+
+        dto = approval_to_dto(approval, await resolve_approval_names(db, [approval]))
+
+    assert dto.task_title == "Send the invoice 4711 summary to the customer."

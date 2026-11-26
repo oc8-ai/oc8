@@ -21,6 +21,7 @@ from oc8 import models as m
 from oc8.audit import append_event
 from oc8.authz.permissions import SEAT_PERMISSIONS
 from oc8.db.session import owner_session, tenant_session
+from oc8.departments.personal import PersonalDepartmentSeatRefused
 from oc8.roles.service import (
     RoleRefused,
     assign_role,
@@ -150,6 +151,9 @@ async def cmd_member_grant(
         except UnknownSeatRole as exc:  # pragma: no cover - guarded above
             _err(f"error: {exc}")
             return EXIT_BAD_INPUT
+        except PersonalDepartmentSeatRefused as exc:
+            _err(f"error: {exc}")
+            return EXIT_BAD_INPUT
         if changed:
             await append_event(
                 db,
@@ -199,9 +203,13 @@ async def cmd_member_revoke(*, slug: str, subject: str, department: str) -> int:
         if member is None:
             _err(f"error: this tenant knows no member with subject {subject!r}")
             return EXIT_BAD_INPUT
-        seat = await revoke_seat(
-            db, tenant_id=tenant_id, member_id=member.id, department_id=dept.id
-        )
+        try:
+            seat = await revoke_seat(
+                db, tenant_id=tenant_id, member_id=member.id, department_id=dept.id
+            )
+        except PersonalDepartmentSeatRefused as exc:
+            _err(f"error: {exc}")
+            return EXIT_BAD_INPUT
         if seat is None:
             _err(f"error: {subject} holds no live seat in {dept.name}")
             return EXIT_BAD_INPUT
@@ -584,7 +592,7 @@ async def cmd_member_import(*, slug: str, path: str) -> int:
             async with tenant_session(tenant_id) as db:
                 await _import_one(db, tenant_id, row)
             applied += 1
-        except (RoleRefused, UnknownSeatRole, ValueError) as exc:
+        except (RoleRefused, UnknownSeatRole, PersonalDepartmentSeatRefused, ValueError) as exc:
             failures.append(f"line {line} ({row.get('subject')}): {exc}")
 
     for failure in failures:

@@ -19,11 +19,14 @@ from typing import Any
 import pytest
 
 from oc8 import models as m
+from oc8.agent.harness.stages.b_outward import check_outward
 from oc8.agent.outward import (
     already_delivered,
+    is_unparsable,
     outward_target,
     remember_delivery,
 )
+from oc8.modelrouter import ToolCall
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -119,6 +122,52 @@ def test_a_call_that_names_no_record_still_has_a_target() -> None:
     assert outward_target("post_message", {}, FOCUS_SPEC, OUTWARD) is not None
 
 
+def test_a_call_without_declared_recipients_stays_once_per_task() -> None:
+    """Fail closed: nothing says who an undeclared call reaches, so any two of
+    them may reach the same person -- one per task, whatever the arguments."""
+    first = outward_target("post_message", {"to": "a", "body": "x"}, FOCUS_SPEC, OUTWARD)
+    second = outward_target("post_message", {"to": "b", "body": "y"}, FOCUS_SPEC, OUTWARD)
+    assert first == second == "post_message#"
+
+
+SEND_SPEC: dict[str, Any] = {
+    **FOCUS_SPEC,
+    "outward_fields": {"post_message": ["to", "cc", "bcc"], "forward": ["to"]},
+}
+SENDS = ["post_message", "forward"]
+
+
+def _send(**arguments: Any) -> str | None:
+    return outward_target("post_message", arguments, SEND_SPEC, SENDS)
+
+
+def test_declared_recipients_are_the_target_whatever_the_subject() -> None:
+    """E2E N1 under the security ruling: the key is who a call reaches, so a
+    reworded subject to the same person is the repeat the guard exists for,
+    and another person is another target."""
+    first = _send(to=["bob@example.com"], subject="Offer", body="x")
+    assert _send(to=["bob@example.com"], subject="Offer, again", body="y") == first
+    assert _send(to=["ann@example.com"], subject="Offer", body="x") != first
+
+
+def test_the_recipient_key_ignores_case_order_duplicates_and_the_field() -> None:
+    first = _send(to=["Bob@Example.com ", "ann@example.com"], cc=[])
+    assert _send(to=["ann@example.com"], cc=["bob@example.com", "BOB@example.com"]) == first
+    assert _send(to="Ann <ann@example.com>, bob@example.com") == first
+
+
+def test_declared_tools_share_one_recipient_key() -> None:
+    """Forwarding to the person a message was already sent to reaches them a
+    second time just the same."""
+    assert outward_target(
+        "forward", {"to": ["bob@example.com"]}, SEND_SPEC, SENDS
+    ) == _send(to=["bob@example.com"])
+
+
+def test_a_declared_call_naming_nobody_falls_back_to_once_per_task() -> None:
+    assert _send(subject="no recipients") == "post_message#"
+
+
 # ------------------------------------------------------------------ the memory
 
 async def test_the_second_message_to_one_record_is_refused(
@@ -181,3 +230,104 @@ async def test_remembering_twice_does_not_raise(app_session: AppSessionFactory) 
         assert await already_delivered(
             db, tenant_id=tenant, task_id=task.id, target="helpdesk.ticket#73"
         )
+
+
+# ------------------------------------------------- recipients, one by one (review)
+
+
+def test_a_display_name_with_a_comma_is_one_person() -> None:
+    """`"Doe, Ann" <ann@x.com>` is Ann, not "Doe" plus Ann: a split on the
+    comma made it a different key from `ann@x.com`, so a second mail to Ann
+    passed the guard."""
+    assert _send(to='"Doe, Ann" <ann@x.com>') == _send(to=["ann@x.com"])
+    assert _send(to=['"Doe, Ann" <ANN@X.COM>']) == _send(to=["ann@x.com"])
+
+
+def test_a_malformed_recipient_next_to_a_valid_one_fails_closed() -> None:
+    """Security scan: dropping what does not parse let one bad item shrink
+    the key -- or empty it -- while the mailer may still deliver to it. A
+    recipient the guard cannot read makes the call unreadable as a whole."""
+    target = _send(to=["not an address", "ann@x.com"])
+    assert target is not None and is_unparsable(target)
+    assert is_unparsable(_send(to="ann@x.com, garbage") or "")
+    assert is_unparsable(_send(to="Doe, Ann <ann@x.com>") or "")
+
+
+def test_an_unparsable_string_fails_closed() -> None:
+    for raw in ("nobody", "ann@x.com <<<", "@", "ann@"):
+        target = _send(to=raw)
+        assert target is not None and is_unparsable(target), raw
+
+
+def test_a_nested_list_or_a_non_string_fails_closed() -> None:
+    for value in ([["ann@x.com"]], [42], [{"address": "ann@x.com"}], 42):
+        target = _send(to=value)
+        assert target is not None and is_unparsable(target), value
+
+
+def test_empty_or_blank_recipients_fall_back_to_once_per_task() -> None:
+    for value in ("", "   ", [], ["", "  "], None):
+        assert _send(to=value) == "post_message#", value
+    assert _send(to=["", "ann@x.com"]) == _send(to=["ann@x.com"])
+
+
+def test_a_trailing_dot_domain_is_the_same_domain() -> None:
+    assert _send(to=["ann@x.com."]) == _send(to=["ann@x.com"])
+
+
+def test_plus_addressing_is_another_mailbox() -> None:
+    assert _send(to=["ann+billing@x.com"]) != _send(to=["ann@x.com"])
+
+
+def test_an_international_domain_is_one_domain() -> None:
+    assert _send(to=["ann@bücher.de"]) == _send(to=["ann@xn--bcher-kva.de"])
+
+
+async def _reached(db: Any, tenant: uuid.UUID, task: m.Task, **arguments: Any) -> bool:
+    target = _send(**arguments)
+    assert target is not None
+    return await already_delivered(db, tenant_id=tenant, task_id=task.id, target=target)
+
+
+async def _deliver(db: Any, tenant: uuid.UUID, task: m.Task, **arguments: Any) -> None:
+    target = _send(**arguments)
+    assert target is not None
+    await remember_delivery(db, tenant_id=tenant, task_id=task.id, target=target)
+
+
+async def test_a_send_reaching_anybody_already_reached_is_a_repeat(
+    app_session: AppSessionFactory,
+) -> None:
+    """One marker per person: `[a]` then `[a, b]` reaches a a second time,
+    and so does `to: a` then `cc: a` -- whatever else the second send names."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        task = await _task(db, tenant)
+        await _deliver(db, tenant, task, to=["ann@x.com"])
+        assert await _reached(db, tenant, task, to=["ann@x.com", "bob@x.com"])
+        assert await _reached(db, tenant, task, to=["carl@x.com"], cc=["ANN@x.com"])
+        assert await _reached(db, tenant, task, to='"Doe, Ann" <Ann@X.com>')
+        assert not await _reached(db, tenant, task, to=["bob@x.com"])
+        assert not await _reached(db, tenant, task, to=["ann+other@x.com"])
+
+
+async def test_an_unattended_send_to_an_unreadable_recipient_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """Refused even on its first send, and with no task: nobody can tell who
+    it reaches. A person who approved it saw the raw value, so theirs runs."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        task = await _task(db, tenant)
+        tc = ToolCall(id="c1", name="post_message", arguments={"to": ["x", "ann@x.com"]})
+        for task_id in (task.id, None):
+            check = await check_outward(
+                db, tenant_id=tenant, task_id=task_id, tc=tc,
+                focus_spec=SEND_SPEC, outward_tools=SENDS,
+            )
+            assert check.refusal is not None and "could not be read" in check.refusal
+        approved = await check_outward(
+            db, tenant_id=tenant, task_id=task.id, tc=tc,
+            focus_spec=SEND_SPEC, outward_tools=SENDS, approved=True,
+        )
+        assert approved.refusal is None

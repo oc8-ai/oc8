@@ -22,14 +22,9 @@ import { AgentAvatar } from "@/components/agent-avatar";
 import { Panel, StatusPill } from "@/components/app-shell";
 import { InlineRename } from "@/components/inline-rename";
 import { NewAgentDialog } from "@/components/new-agent-dialog";
+import { FrameGuardrailsEditor } from "@/components/frame-guardrails-editor";
 import { MemoryEditor } from "@/components/memory-editor";
 import { KnowledgeAssignment } from "@/components/knowledge-assignment";
-import type { Condition, GuardrailValue, UsageLimit } from "@/components/guardrail-preset-picker";
-import {
-  ToolGuardrailTable,
-  type ToolGuardrailRow,
-  describeGuardrailSaveError,
-} from "@/components/tool-guardrail-table";
 import { StatCard } from "@/components/stat-card";
 import { ContractBindingsPanel } from "@/components/contract-bindings-panel";
 import { initialDepartmentTab, type DepartmentTab } from "@/lib/department-tabs";
@@ -45,7 +40,6 @@ import {
   useDepartmentTools,
   useSetDepartmentTools,
   useKnowledgeBases,
-  useMcpConnections,
   useSetDepartmentContracts,
   useUpdateDepartment,
   type DepartmentContractsDTO,
@@ -118,12 +112,6 @@ function DepartmentDetail() {
   // `dept.id`, until the guards confirm `dept` is defined.
   const { data: dept, isLoading } = useDepartment(id);
   const { data: members = [] } = useDepartmentAgents(id);
-  // Fetch up to the backend's per-column cap once; pagination below is
-  // client-side over that set rather than re-fetching a growing window.
-  const BOARD_FETCH_LIMIT = 200;
-  const BOARD_PAGE_SIZE = 8;
-  const [boardPage, setBoardPage] = useState(0);
-  const { data: board } = useDepartmentBoard(id, BOARD_FETCH_LIMIT);
   // KB grants for this department, not a paginated list view.
   const { data: allBasesPage } = useKnowledgeBases({ pageSize: 200 });
   const allBases = allBasesPage?.items ?? [];
@@ -131,20 +119,6 @@ function DepartmentDetail() {
   const [tab, setTab] = useState<DepartmentTab>(initialDepartmentTab);
   const [hireOpen, setHireOpen] = useState(false);
   const updateDepartment = useUpdateDepartment(id);
-
-  const taskState = board?.tasks ?? [];
-  const boardTotals = board?.totals ?? {};
-  const totalTasks = Object.values(boardTotals).reduce((a, b) => a + b, 0);
-  // Every column paginates on the same page index, sized to whichever
-  // column has the most fetched items — short columns just show fewer
-  // cards on later pages rather than getting their own page count.
-  const boardColumnCounts = ["backlog", "in_progress", "waiting", "done"].map(
-    (col) => taskState.filter((task) => task.column === col).length,
-  );
-  const boardPageCount = Math.max(
-    1,
-    Math.ceil(Math.max(...boardColumnCounts, 0) / BOARD_PAGE_SIZE),
-  );
 
   // Live feed (seeded once from each member's last action; not a live stream)
   type FeedItem = { id: string; time: string; text: string; agent: string };
@@ -200,17 +174,13 @@ function DepartmentDetail() {
     );
   }
 
-  const COLUMNS: { id: TaskColumn; label: string }[] = [
-    { id: "backlog", label: t("Backlog", "Backlog") },
-    { id: "in_progress", label: t("In Progress", "In Bearbeitung") },
-    { id: "waiting", label: t("Awaiting Approval", "Wartet auf Freigabe") },
-    { id: "done", label: t("Done", "Erledigt") },
-  ];
   // Backend presentation.icon is a free-form string (e.g. a freshly
   // provisioned tenant's default department uses "building"), so it can fall
   // outside the fixed icon set below — fall back rather than render undefined.
   const Icon = iconMap[dept.icon as keyof typeof iconMap] ?? Building2;
   const lead = members.find((m) => m.isLead);
+  // A member's personal department read by anybody but its owner.
+  const contentHidden = dept.contentHidden ?? false;
 
   return (
     <div className="space-y-6">
@@ -244,25 +214,29 @@ function DepartmentDetail() {
               <Icon className="h-7 w-7" />
             </div>
             <div>
-              <InlineRename
-                value={dept.name}
-                label={t("Rename department", "Abteilung umbenennen")}
-                headingClassName="font-serif text-3xl leading-tight"
-                onSave={(name) =>
-                  updateDepartment.mutateAsync(
-                    { name },
-                    {
-                      onError: () =>
-                        toast.error(
-                          t(
-                            "Couldn't rename the department",
-                            "Abteilung konnte nicht umbenannt werden",
+              {dept.kind === "personal" ? (
+                <h1 className="font-serif text-3xl leading-tight">{dept.name}</h1>
+              ) : (
+                <InlineRename
+                  value={dept.name}
+                  label={t("Rename department", "Abteilung umbenennen")}
+                  headingClassName="font-serif text-3xl leading-tight"
+                  onSave={(name) =>
+                    updateDepartment.mutateAsync(
+                      { name },
+                      {
+                        onError: () =>
+                          toast.error(
+                            t(
+                              "Couldn't rename the department",
+                              "Abteilung konnte nicht umbenannt werden",
+                            ),
                           ),
-                        ),
-                    },
-                  )
-                }
-              />
+                      },
+                    )
+                  }
+                />
+              )}
               <p className="mt-1 text-sm text-muted-foreground">{dept.goal}</p>
               <p className="mt-1 text-xs text-muted-foreground">
                 {t("Goal", "Ziel")}: {dept.okr}
@@ -352,203 +326,140 @@ function DepartmentDetail() {
           <section>
             <div className="mb-3 flex items-center justify-between">
               <h3 className="font-serif text-lg">{t("Team roster", "Team-Übersicht")}</h3>
-              <button
-                type="button"
-                onClick={() => setHireOpen(true)}
-                className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal"
-              >
-                <UserPlus className="h-4 w-4" /> {t("Hire agent", "Agent einstellen")}
-              </button>
+              {/* A member's personal department read by anybody but its owner:
+                  its agents answer to the owner alone (the API refuses this
+                  reader's hire), and the agent list leaves them out, so the
+                  roster would only ever be empty. */}
+              {!contentHidden && (
+                <button
+                  type="button"
+                  onClick={() => setHireOpen(true)}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal"
+                >
+                  <UserPlus className="h-4 w-4" /> {t("Hire agent", "Agent einstellen")}
+                </button>
+              )}
             </div>
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-              {members.map((m) => (
-                <Link key={m.id} to="/agents/$id" params={{ id: m.id }} className="group">
-                  <Panel className="p-4 transition hover:border-primary/40">
-                    <div className="flex items-center gap-3">
-                      <div className="relative">
-                        <AgentAvatar seed={m.id} size={40} title={m.name} />
-                        {lead?.id === m.id && (
-                          <Crown
-                            className="absolute -top-2 -right-1 h-3.5 w-3.5 text-[color:var(--status-warning)]"
-                            fill="currentColor"
-                          />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate font-medium">{m.name}</div>
-                        <div className="truncate text-xs text-muted-foreground">{m.role}</div>
-                      </div>
-                      <StatusPill status={m.status} />
-                    </div>
-                    <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
-                      <span className="rounded border border-border bg-background/40 px-1.5 py-0.5 font-mono">
-                        {m.llm}
-                      </span>
-                      <span>{m.lastRun}</span>
-                    </div>
-                    <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
-                      {m.lastAction}
-                    </p>
-                  </Panel>
-                </Link>
-              ))}
-            </div>
-          </section>
-
-          {/* Kanban */}
-          <section>
-            <div className="mb-3 flex items-center justify-between">
-              <h3 className="font-serif text-lg">{t("Task board", "Aufgaben-Board")}</h3>
-              <div className="flex items-center gap-3">
-                <span className="text-xs text-muted-foreground">
-                  {totalTasks} {t("tasks", "Aufgaben")}
-                </span>
-                {boardPageCount > 1 && (
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      disabled={boardPage === 0}
-                      onClick={() => setBoardPage((n) => Math.max(0, n - 1))}
-                      aria-label={t("Previous page", "Vorherige Seite")}
-                      className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
-                    >
-                      <ChevronLeft className="h-3.5 w-3.5" />
-                    </button>
-                    <span className="min-w-[64px] text-center text-xs text-muted-foreground">
-                      {t(
-                        `Page ${boardPage + 1} / ${boardPageCount}`,
-                        `Seite ${boardPage + 1} / ${boardPageCount}`,
-                      )}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={boardPage >= boardPageCount - 1}
-                      onClick={() => setBoardPage((n) => Math.min(boardPageCount - 1, n + 1))}
-                      aria-label={t("Next page", "Nächste Seite")}
-                      className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
-                    >
-                      <ChevronRight className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
+            {contentHidden ? (
+              <Panel className="p-5 text-sm text-muted-foreground">
+                {t(
+                  "This is a member's personal department. Only that member can see and hire its agents.",
+                  "Das ist die persönliche Abteilung eines Mitglieds. Nur dieses Mitglied sieht ihre Agenten und stellt welche ein.",
                 )}
+              </Panel>
+            ) : (
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                {members.map((m) => (
+                  <Link key={m.id} to="/agents/$id" params={{ id: m.id }} className="group">
+                    <Panel className="p-4 transition hover:border-primary/40">
+                      <div className="flex items-center gap-3">
+                        <div className="relative">
+                          <AgentAvatar seed={m.id} size={40} title={m.name} />
+                          {lead?.id === m.id && (
+                            <Crown
+                              className="absolute -top-2 -right-1 h-3.5 w-3.5 text-[color:var(--status-warning)]"
+                              fill="currentColor"
+                            />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-medium">{m.name}</div>
+                          <div className="truncate text-xs text-muted-foreground">{m.role}</div>
+                        </div>
+                        <StatusPill status={m.status} />
+                      </div>
+                      <div className="mt-3 flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span className="rounded border border-border bg-background/40 px-1.5 py-0.5 font-mono">
+                          {m.llm}
+                        </span>
+                        <span>{m.lastRun}</span>
+                      </div>
+                      <p className="mt-2 line-clamp-2 text-xs text-muted-foreground">
+                        {m.lastAction}
+                      </p>
+                    </Panel>
+                  </Link>
+                ))}
               </div>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              {COLUMNS.map((col) => {
-                const columnItems = taskState.filter((t) => t.column === col.id);
-                const items = columnItems.slice(
-                  boardPage * BOARD_PAGE_SIZE,
-                  boardPage * BOARD_PAGE_SIZE + BOARD_PAGE_SIZE,
-                );
-                const isWaiting = col.id === "waiting";
-                return (
-                  <div
-                    key={col.id}
-                    className={cn(
-                      "flex min-h-[220px] flex-col rounded-lg border bg-panel/60 p-3",
-                      isWaiting
-                        ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5"
-                        : "border-border",
-                    )}
-                  >
-                    <div className="mb-2 flex items-center justify-between">
-                      <span
-                        className={cn(
-                          "text-[10px] uppercase tracking-widest",
-                          isWaiting
-                            ? "text-[color:var(--status-warning)]"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        {col.label}
-                      </span>
-                      <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
-                        {(boardTotals[col.id] ?? columnItems.length) > columnItems.length
-                          ? `${columnItems.length}/${boardTotals[col.id]}`
-                          : columnItems.length}
-                      </span>
-                    </div>
-                    <div className="flex-1 space-y-2">
-                      {items.map((t) => (
-                        <TaskCard key={t.id} task={t} members={members} />
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+            )}
           </section>
 
-          {/* Knowledge + Feed */}
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <Panel className="p-5">
-              <div className="mb-3 flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <BookOpen className="h-4 w-4" style={{ color: dept.accent }} />
-                  <h3 className="font-serif text-lg">
-                    {t("Department knowledge", "Abteilungswissen")}
-                  </h3>
+          <DepartmentTaskBoard departmentId={id} contentHidden={contentHidden} members={members} />
+
+          {/* Knowledge + Feed: the department's shared notes and its agents'
+              last actions are the owner's content, so a reader the content is
+              hidden from gets neither (the board above already says why). */}
+          {!contentHidden && (
+            <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+              <Panel className="p-5">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <BookOpen className="h-4 w-4" style={{ color: dept.accent }} />
+                    <h3 className="font-serif text-lg">
+                      {t("Department knowledge", "Abteilungswissen")}
+                    </h3>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {t("Team shared", "Team-geteilt")}
+                  </span>
                 </div>
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Team shared", "Team-geteilt")}
-                </span>
-              </div>
-              <p className="mb-3 text-xs text-muted-foreground">
-                {t(
-                  `All agents in ${dept.name} read and write this store.`,
-                  `Alle Agenten in ${dept.name} lesen und schreiben in diesen Speicher.`,
-                )}{" "}
-                {t(
-                  'For personal notes, open an agent and switch to the "Memory" tab.',
-                  'Für persönliche Notizen einen Agenten öffnen und zum Tab „Gedächtnis" wechseln.',
-                )}
-              </p>
-              {/* No backend for department-shared notes yet — seed empty
+                <p className="mb-3 text-xs text-muted-foreground">
+                  {t(
+                    `All agents in ${dept.name} read and write this store.`,
+                    `Alle Agenten in ${dept.name} lesen und schreiben in diesen Speicher.`,
+                  )}{" "}
+                  {t(
+                    'For personal notes, open an agent and switch to the "Memory" tab.',
+                    'Für persönliche Notizen einen Agenten öffnen und zum Tab „Gedächtnis" wechseln.',
+                  )}
+                </p>
+                {/* No backend for department-shared notes yet — seed empty
                   rather than the old fixed mock snippets (they weren't even
                   scoped per department, so they'd misrepresent real ones). */}
-              <MemoryEditor
-                scope={dept.name}
-                seed={[]}
-                accent={dept.accent}
-                emptyLabel={t(
-                  `No shared knowledge in ${dept.name} yet.`,
-                  `Noch kein geteiltes Wissen in ${dept.name}.`,
-                )}
-              />
-            </Panel>
+                <MemoryEditor
+                  scope={dept.name}
+                  seed={[]}
+                  accent={dept.accent}
+                  emptyLabel={t(
+                    `No shared knowledge in ${dept.name} yet.`,
+                    `Noch kein geteiltes Wissen in ${dept.name}.`,
+                  )}
+                />
+              </Panel>
 
-            <Panel className="flex max-h-[520px] flex-col p-0">
-              <header className="flex items-center justify-between border-b border-border px-4 py-3">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-primary" />
-                  <h3 className="font-serif text-base">Live feed</h3>
-                </div>
-                <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
-                  {t("Recent", "Zuletzt")}
-                </span>
-              </header>
-              <ol className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-xs">
-                {feed.map((f, idx) => (
-                  <li
-                    key={f.id}
-                    className={cn(
-                      "border-l border-border pl-3",
-                      idx === 0 &&
-                        f.id.startsWith("live-") &&
-                        "animate-in fade-in slide-in-from-top-2 duration-500",
-                    )}
-                  >
-                    <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-                      <span className="font-medium text-foreground">{f.agent}</span>
-                      <span>·</span>
-                      <span>{f.time}</span>
-                    </div>
-                    <p className="mt-0.5 text-foreground/90">{f.text}</p>
-                  </li>
-                ))}
-              </ol>
-            </Panel>
-          </div>
+              <Panel className="flex max-h-[520px] flex-col p-0">
+                <header className="flex items-center justify-between border-b border-border px-4 py-3">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-primary" />
+                    <h3 className="font-serif text-base">Live feed</h3>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {t("Recent", "Zuletzt")}
+                  </span>
+                </header>
+                <ol className="flex-1 space-y-3 overflow-y-auto px-4 py-3 text-xs">
+                  {feed.map((f, idx) => (
+                    <li
+                      key={f.id}
+                      className={cn(
+                        "border-l border-border pl-3",
+                        idx === 0 &&
+                          f.id.startsWith("live-") &&
+                          "animate-in fade-in slide-in-from-top-2 duration-500",
+                      )}
+                    >
+                      <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                        <span className="font-medium text-foreground">{f.agent}</span>
+                        <span>·</span>
+                        <span>{f.time}</span>
+                      </div>
+                      <p className="mt-0.5 text-foreground/90">{f.text}</p>
+                    </li>
+                  ))}
+                </ol>
+              </Panel>
+            </div>
+          )}
 
           {/* Knowledge bases assignment — enabling POSTs a real grant
               (POST /knowledge/grants) and invalidates useKnowledgeBases, so
@@ -563,7 +474,9 @@ function DepartmentDetail() {
         </>
       )}
 
-      <NewAgentDialog open={hireOpen} onOpenChange={setHireOpen} defaultDepartmentId={dept.id} />
+      {!contentHidden && (
+        <NewAgentDialog open={hireOpen} onOpenChange={setHireOpen} defaultDepartmentId={dept.id} />
+      )}
     </div>
   );
 }
@@ -797,7 +710,6 @@ function DeleteDepartmentModal({
 export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: string }) {
   const t = useT();
   const { data: existing, isLoading, isError } = useDepartmentTools(departmentId);
-  const { data: connections = [] } = useMcpConnections();
   const setTools = useSetDepartmentTools(departmentId);
 
   if (isLoading) {
@@ -818,126 +730,156 @@ export function DepartmentGuardrailsPanel({ departmentId }: { departmentId: stri
     );
   }
 
-  const tools = existing?.tools ?? {};
-  const deviationCounts = existing?.deviationCounts ?? {};
-  const agentCount = existing?.agentCount ?? 0;
-  const toolKeys = Object.keys(tools);
-  const connectionByName = new Map(connections.map((c) => [c.name, c] as const));
-  // A key that exists but is disabled is not a row above, so it must stay
-  // addable here -- otherwise a once-disabled tool can never come back.
-  const addableNames = connections.map((c) => c.name).filter((n) => !tools[n]?.enabled);
-
-  function toGuardrailValue(key: string): GuardrailValue {
-    const raw = (tools[key] ?? {}) as Record<string, unknown>;
-    return {
-      read: raw.read !== undefined ? Boolean(raw.read) : true,
-      modify: Boolean(raw.modify),
-      approvalActions: Array.isArray(raw.approval_actions)
-        ? (raw.approval_actions as string[])
-        : [],
-      approvalEur: typeof raw.approval_eur === "number" ? (raw.approval_eur as number) : null,
-      only: Array.isArray(raw.only) ? (raw.only as string[]) : [],
-      conditions: Array.isArray(raw.conditions) ? (raw.conditions as Condition[]) : [],
-      limits: Array.isArray(raw.limits) ? (raw.limits as UsageLimit[]) : [],
-    };
-  }
-
-  function persistOne(key: string, next: GuardrailValue): Promise<boolean> {
-    const merged = {
-      ...tools,
-      [key]: {
-        // Spread the tool's own previous entry first -- fields this panel
-        // doesn't model (default_connection_id, the department's own default
-        // login for agents with no pin of their own) must survive an edit
-        // here, not silently disappear. A fixed literal deletes any field
-        // it forgets, the same class of bug `toDepartmentFrame`'s own doc
-        // comment used to warn about before this panel replaced it.
-        ...((tools[key] ?? {}) as Record<string, unknown>),
-        enabled: true,
-        read: next.read,
-        modify: next.modify,
-        approval_eur: next.approvalEur,
-        approval_actions: next.approvalActions,
-        only: next.only,
-        conditions: next.conditions,
-        limits: next.limits,
-      },
-    };
-    return new Promise((resolve) => {
-      setTools.mutate(merged, {
-        onSuccess: () => {
-          toast.success(t("Guardrails saved", "Guardrails gespeichert"), { description: key });
-          resolve(true);
-        },
-        onError: (error) => {
-          toast.error(describeGuardrailSaveError(error, t));
-          resolve(false);
-        },
-      });
-    });
-  }
-
-  function addTool(name: string, policy: GuardrailValue | null) {
-    persistOne(
-      name,
-      policy ?? {
-        read: true,
-        modify: false,
-        approvalActions: [],
-        approvalEur: null,
-        only: [],
-        conditions: [],
-        limits: [],
-      },
-    );
-  }
-
-  const rows: ToolGuardrailRow[] = toolKeys
-    .filter((k) => tools[k]?.enabled)
-    .map((key) => ({
-      toolKey: key,
-      connection: connectionByName.get(key),
-      ceilingPolicy: null,
-      ownValue: toGuardrailValue(key),
-      status: null,
-      deviationCount: { count: deviationCounts[key] ?? 0, total: agentCount },
-    }));
-
   return (
     <Panel className="p-5">
-      <ConfigSectionHeader
-        hint={t("tool access and guardrails", "Tool-Zugriff und Guardrails")}
-        title={t("Guardrails", "Guardrails")}
+      <FrameGuardrailsEditor
+        tools={existing?.tools ?? {}}
+        deviationCounts={existing?.deviationCounts ?? {}}
+        agentCount={existing?.agentCount ?? 0}
+        saving={setTools.isPending}
+        saveTools={(tools) =>
+          new Promise<void>((resolve, reject) => {
+            setTools.mutate(tools, { onSuccess: () => resolve(), onError: reject });
+          })
+        }
       />
-      {/* The table carries the "Add tool" button, so it must render even with
-          zero rows -- otherwise a fresh department can never get its first
-          tool, and every connection assigned to it stays unusable. */}
-      {rows.length === 0 && (
-        <p className="mt-3 rounded-md border border-dashed border-border/70 bg-background/30 p-4 text-center text-xs text-muted-foreground">
-          {t("No tools enabled yet.", "Noch keine Tools aktiviert.")}
-        </p>
-      )}
-      <div className="mt-3">
-        <ToolGuardrailTable
-          level="department"
-          rows={rows}
-          addableNames={addableNames}
-          connections={connections}
-          onSave={persistOne}
-          onAdd={addTool}
-          saving={setTools.isPending}
-        />
-      </div>
     </Panel>
   );
 }
 
-function ConfigSectionHeader({ hint, title }: { hint: string; title: string }) {
+/** The department's task board. A member's personal department read by
+ *  anybody but its owner (`contentHidden`): its tasks are what the owner's
+ *  agents were asked to do, the board is a 404 for this reader, so it is
+ *  never asked for and the page says why instead of showing an empty board. */
+export function DepartmentTaskBoard({
+  departmentId,
+  contentHidden,
+  members,
+}: {
+  departmentId: string;
+  contentHidden: boolean;
+  members: Agent[];
+}) {
+  const t = useT();
+  // Fetch up to the backend's per-column cap once; pagination below is
+  // client-side over that set rather than re-fetching a growing window.
+  const BOARD_FETCH_LIMIT = 200;
+  const BOARD_PAGE_SIZE = 8;
+  const [boardPage, setBoardPage] = useState(0);
+  const { data: board } = useDepartmentBoard(departmentId, BOARD_FETCH_LIMIT, !contentHidden);
+  if (contentHidden) {
+    return (
+      <section>
+        <h3 className="mb-3 font-serif text-lg">{t("Task board", "Aufgaben-Board")}</h3>
+        <Panel className="p-5 text-sm text-muted-foreground">
+          {t(
+            "This is a member's personal department. Only that member can see its tasks.",
+            "Das ist die persönliche Abteilung eines Mitglieds. Nur dieses Mitglied sieht ihre Aufgaben.",
+          )}
+        </Panel>
+      </section>
+    );
+  }
+  const taskState = board?.tasks ?? [];
+  const boardTotals = board?.totals ?? {};
+  const totalTasks = Object.values(boardTotals).reduce((a, b) => a + b, 0);
+  // Every column paginates on the same page index, sized to whichever
+  // column has the most fetched items — short columns just show fewer
+  // cards on later pages rather than getting their own page count.
+  const boardColumnCounts = ["backlog", "in_progress", "waiting", "done"].map(
+    (col) => taskState.filter((task) => task.column === col).length,
+  );
+  const boardPageCount = Math.max(
+    1,
+    Math.ceil(Math.max(...boardColumnCounts, 0) / BOARD_PAGE_SIZE),
+  );
+  const COLUMNS: { id: TaskColumn; label: string }[] = [
+    { id: "backlog", label: t("Backlog", "Backlog") },
+    { id: "in_progress", label: t("In Progress", "In Bearbeitung") },
+    { id: "waiting", label: t("Awaiting Approval", "Wartet auf Freigabe") },
+    { id: "done", label: t("Done", "Erledigt") },
+  ];
   return (
-    <div>
-      <div className="text-[10px] uppercase tracking-widest text-muted-foreground">{hint}</div>
-      <h3 className="mt-0.5 font-serif text-lg">{title}</h3>
-    </div>
+    <section>
+      <div className="mb-3 flex items-center justify-between">
+        <h3 className="font-serif text-lg">{t("Task board", "Aufgaben-Board")}</h3>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-muted-foreground">
+            {totalTasks} {t("tasks", "Aufgaben")}
+          </span>
+          {boardPageCount > 1 && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                disabled={boardPage === 0}
+                onClick={() => setBoardPage((n) => Math.max(0, n - 1))}
+                aria-label={t("Previous page", "Vorherige Seite")}
+                className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </button>
+              <span className="min-w-[64px] text-center text-xs text-muted-foreground">
+                {t(
+                  `Page ${boardPage + 1} / ${boardPageCount}`,
+                  `Seite ${boardPage + 1} / ${boardPageCount}`,
+                )}
+              </span>
+              <button
+                type="button"
+                disabled={boardPage >= boardPageCount - 1}
+                onClick={() => setBoardPage((n) => Math.min(boardPageCount - 1, n + 1))}
+                aria-label={t("Next page", "Nächste Seite")}
+                className="grid h-7 w-7 place-items-center rounded-md border border-border text-muted-foreground transition hover:bg-muted/40 disabled:opacity-30"
+              >
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        {COLUMNS.map((col) => {
+          const columnItems = taskState.filter((t) => t.column === col.id);
+          const items = columnItems.slice(
+            boardPage * BOARD_PAGE_SIZE,
+            boardPage * BOARD_PAGE_SIZE + BOARD_PAGE_SIZE,
+          );
+          const isWaiting = col.id === "waiting";
+          return (
+            <div
+              key={col.id}
+              className={cn(
+                "flex min-h-[220px] flex-col rounded-lg border bg-panel/60 p-3",
+                isWaiting
+                  ? "border-[color:var(--status-warning)]/40 bg-[color:var(--status-warning)]/5"
+                  : "border-border",
+              )}
+            >
+              <div className="mb-2 flex items-center justify-between">
+                <span
+                  className={cn(
+                    "text-[10px] uppercase tracking-widest",
+                    isWaiting ? "text-[color:var(--status-warning)]" : "text-muted-foreground",
+                  )}
+                >
+                  {col.label}
+                </span>
+                <span className="rounded-full border border-border bg-background/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                  {(boardTotals[col.id] ?? columnItems.length) > columnItems.length
+                    ? `${columnItems.length}/${boardTotals[col.id]}`
+                    : columnItems.length}
+                </span>
+              </div>
+              <div className="flex-1 space-y-2">
+                {items.map((t) => (
+                  <TaskCard key={t.id} task={t} members={members} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

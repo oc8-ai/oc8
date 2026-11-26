@@ -650,3 +650,25 @@ async def test_a_trigger_names_its_owner(app_session: AppSessionFactory) -> None
         ("legacy", None),
         ("w", "Anna"),
     ]
+
+
+async def test_a_trigger_names_an_owner_without_a_display_name_by_their_email(
+    app_session: AppSessionFactory,
+) -> None:
+    """E2E F13: the trigger tab read "Created by" and nothing else for a
+    member whose display name is empty (the dev admin's)."""
+    agent = await _make_agent(app_session)
+    tenant = agent.tenant_id
+    anna = await member(app_session, tenant, "anna@acme.test")
+    async with app_session(tenant) as db:
+        row = await db.get(m.OrgMember, anna)
+        assert row is not None
+        row.display_name = ""
+    admin = headers(tenant, "anna@acme.test", "org_admin")
+    async with api() as c:
+        created = await c.post(
+            f"/api/v1/agents/{agent.id}/triggers",
+            json={"kind": "webhook", "taskText": "w"},
+            headers=admin,
+        )
+    assert created.json()["createdByName"] == "anna@acme.test"
