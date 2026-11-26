@@ -8,7 +8,8 @@ import psycopg
 from alembic import command
 from alembic.config import Config
 
-_INDEX = "ix_token_usage_record_tenant_member_ts"
+_INDEX = "ix_token_usage_record_tenant_ts"
+_DRAFT_INDEX = "ix_token_usage_record_tenant_member_ts"
 
 
 def _cfg() -> Config:
@@ -24,12 +25,12 @@ def _member_column(dsn: str) -> tuple[str, str] | None:
     return (row[0], row[1]) if row else None
 
 
-def _index(dsn: str) -> tuple[str, bool] | None:
+def _index(dsn: str, name: str = _INDEX) -> tuple[str, bool] | None:
     with psycopg.connect(dsn) as conn:
         row = conn.execute(
             "SELECT pg_get_indexdef(i.indexrelid), i.indisvalid FROM pg_index i "
             "JOIN pg_class c ON c.oid = i.indexrelid WHERE c.relname = %s",
-            (_INDEX,),
+            (name,),
         ).fetchone()
     return (row[0], row[1]) if row else None
 
@@ -48,4 +49,5 @@ def test_0139_upgrade_downgrade(pg_url: str) -> None:
     assert index is not None
     indexdef, valid = index
     assert valid
-    assert "(tenant_id, member_id, ts)" in indexdef
+    assert "(tenant_id, ts) INCLUDE (member_id, tokens_in, tokens_out)" in indexdef
+    assert _index(dsn, _DRAFT_INDEX) is None

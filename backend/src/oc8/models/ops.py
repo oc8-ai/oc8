@@ -273,7 +273,14 @@ class TokenUsageRecord(Base, PkMixin, TenantMixin):
     request_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True)
 
     __table_args__ = (
-        Index("ix_token_usage_record_tenant_member_ts", "tenant_id", "member_id", "ts"),
+        # Tenant + time range first (migration 0139): the per-member chart reads
+        # only its range; the INCLUDE columns make that an index-only scan.
+        Index(
+            "ix_token_usage_record_tenant_ts",
+            "tenant_id",
+            "ts",
+            postgresql_include=["member_id", "tokens_in", "tokens_out"],
+        ),
     )
 
 

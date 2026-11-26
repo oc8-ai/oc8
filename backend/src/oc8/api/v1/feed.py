@@ -357,6 +357,7 @@ async def usage_timeseries(
             key: Any = (bucket_start - row[2]).replace(tzinfo=UTC)
         else:
             key = bucket_start.date()
+        # No bucket: a record stamped after the current bucket (clock skew) is dropped.
         i = index.get(key)
         if i is not None:
             points[member_id][i] += int(tokens or 0)
@@ -402,9 +403,10 @@ async def usage_timeseries(
     )
 
 
-# Column order is stable; column NAMES are the TokenUsageExportRowDTO camelCase
-# aliases (matching the JSONL branch below) so a CSV export and a JSONL export
-# of the same records key identically for a downstream ETL.
+# Column names are stable; new columns may be added. They are the
+# TokenUsageExportRowDTO camelCase aliases (matching the JSONL branch below) so
+# a CSV export and a JSONL export of the same records key identically for a
+# downstream ETL.
 _USAGE_EXPORT_COLUMNS = [
     "ts",
     "agentId",
