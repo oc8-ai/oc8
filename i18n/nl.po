@@ -1,17 +1,5 @@
 msgid ""
-msgstr ""
-"Project-Id-Version: oc8\n"
-"PO-Revision-Date: 2026-11-26 11:10+0000\n"
-"Last-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\n"
-"Language-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\n"
-"Language: nl\n"
-"MIME-Version: 1.0\n"
-"Content-Type: text/plain; charset=UTF-8\n"
-"Content-Transfer-Encoding: 8bit\n"
-"X-Native-Name: Nederlands\n"
-"X-Flag: 🇳🇱\n"
-"Plural-Forms: nplurals=2; plural=n != 1;\n"
-"X-Generator: Weblate 2026.11.1\n"
+msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-26 14:37+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
 
 msgid " (opens in a new tab)"
 msgstr " (opent in een nieuw tabblad)"
@@ -41,26 +29,22 @@ msgid "(requires settings:manage)"
 msgstr "(vereist settings:manage)"
 
 msgid "{connection} reports no amount, so a euro threshold above €0 never applies to it"
-msgstr ""
+msgstr "{connection} geeft geen bedrag door; een drempelwaarde in euro's boven de €0 is daarom nooit van toepassing."
 
 msgid "{count} departments"
 msgstr "{count} afdelingen"
 
-#, fuzzy
-#| msgid "{n} selected"
 msgid "{count} tool selected"
-msgstr "{n} geselecteerd"
+msgstr "{count} tool geselecteerd"
 
-#, fuzzy
-#| msgid "{n} selected"
 msgid "{count} tools selected"
-msgstr "{n} geselecteerd"
+msgstr "{count} tools geselecteerd"
 
 msgid "{field} is required."
 msgstr "{field} is verplicht."
 
 msgid "{field} must start with https:// (for example https://api.example.com/v1)."
-msgstr ""
+msgstr "{field} moet beginnen met https:// (bijvoorbeeld https://api.example.com/v1)."
 
 msgid "{from}–{to} of {total}"
 msgstr "{from}–{to} van {total}"
@@ -69,7 +53,7 @@ msgid "{label} may write content to knowledge bases"
 msgstr "{label} mag inhoud naar kennisbanken schrijven"
 
 msgid "{max} per {per}: {tools}"
-msgstr ""
+msgstr "{max} per {per}: {tools}"
 
 msgid "{n} selected"
 msgstr "{n} geselecteerd"
@@ -84,7 +68,7 @@ msgid "{name} is incomplete: {fields} missing"
 msgstr "{name} is niet compleet: {fields} ontbreekt"
 
 msgid "{name} is ready — {count} tools, {model}."
-msgstr ""
+msgstr "{name} is gereed — {count} tools, {model}."
 
 msgid "{name} is still in use ({what}). Delete it anyway? Agents that chose it then have no login until someone chooses another."
 msgstr "{name} is nog in gebruik ({what}). Toch verwijderen? Agents die hiervoor hadden gekozen, kunnen dan niet meer inloggen totdat iemand een andere optie kiest."
@@ -96,13 +80,13 @@ msgid "{name} is still read by the data sources {sources}. Choose another creden
 msgstr "{name} wordt nog steeds gelezen door de gegevensbronnen {sources}. Kies daar eerst een andere referentie en verwijder deze vervolgens."
 
 msgid "{name} will send mail and messages to customers and partners without a person approving each one. Guardrails and usage limits still apply, so set a daily limit on each tool that sends, so a mistake can't send hundreds of messages."
-msgstr ""
+msgstr "{name} verstuurt e-mails en berichten naar klanten en partners zonder dat elk bericht afzonderlijk door een persoon wordt goedgekeurd. Er zijn echter vangrails en gebruikslimieten van kracht; stel daarom voor elke tool die berichten verstuurt een daglimiet in, zodat een eventuele fout niet kan leiden tot het versturen van honderden berichten."
 
 msgid "{tools}: {name} can use it once the department turns it on in its tool settings."
-msgstr ""
+msgstr "{tools}: {name} kan dit gebruiken zodra de afdeling het inschakelt in de instellingen voor tools."
 
 msgid "{tools}: {name} can use them once the department turns them on in its tool settings."
-msgstr ""
+msgstr "{tools}: {name} kan ze gebruiken zodra de afdeling ze inschakelt in de instellingen voor tools."
 
 msgid "/do carry out the plan above"
 msgstr "/do voer het plan hierboven uit"
@@ -110,13 +94,11 @@ msgstr "/do voer het plan hierboven uit"
 msgid "/summarise this conversation"
 msgstr "/summarise deze conversatie"
 
-#, fuzzy
-#| msgid "Add limit"
 msgid "+ Add limit…"
-msgstr "Limiet toevoegen"
+msgstr "+ Limiet toevoegen…"
 
 msgid "+ count also…"
-msgstr ""
+msgstr "+ tel ook…"
 
 msgid "1 block"
 msgstr "1 geblokkeerd"
@@ -182,10 +164,10 @@ msgid "A message to the running answer is text only. Remove the attachments, or 
 msgstr "Een bericht aan het lopende antwoord kan alleen tekst zijn. Verwijder de bijlagen, of verstuur ze zodra het klaar is."
 
 msgid "A newer shipped version is available"
-msgstr ""
+msgstr "Er is een nieuwere meegeleverde versie beschikbaar"
 
 msgid "A newer shipped version is available. Your changes stay until you reset the skill to it."
-msgstr ""
+msgstr "Er is een nieuwere meegeleverde versie beschikbaar. Je wijzigingen blijven behouden totdat je de skill terugzet naar die versie."
 
 msgid "A reset email was sent to them"
 msgstr "Er is een resetmail naar hen gestuurd"
@@ -202,10 +184,8 @@ msgstr "Een run is geparkeerd en er is niemand om goedkeuring gevraagd"
 msgid "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in."
 msgstr "Een seat wordt per afdeling door een beheerder toegekend en gaat in bij je volgende verzoek — zonder opnieuw in te loggen."
 
-#, fuzzy
-#| msgid "No note for this period"
 msgid "A short note for the profile card"
-msgstr "Geen notitie voor deze periode"
+msgstr "Een korte notitie voor de profielkaart"
 
 msgid "A skill is no longer available."
 msgstr "Een skill is niet meer beschikbaar."
@@ -229,7 +209,7 @@ msgid "A template only — it ticks boxes now and is not stored. There is no inh
 msgstr "Alleen een sjabloon — het vinkt nu vakjes aan en wordt niet opgeslagen. Er is geen overerving."
 
 msgid "A unique webhook URL is generated once the agent is hired. You'll land on the agent's page to copy it — Odoo's Automation Rules or any other tool that can send a POST request works."
-msgstr ""
+msgstr "Zodra je de agent aanneemt, wordt er een unieke webhook-URL gegenereerd. Je kunt die kopiëren op de pagina van de agent en gebruiken in een automatiseringsregel in Odoo of in een andere tool die een POST-verzoek kan sturen."
 
 msgid "A virtual router that picks among your connected models by task complexity."
 msgstr "Een virtuele router die op basis van taakcomplexiteit kiest uit je gekoppelde modellen."
@@ -267,9 +247,8 @@ msgstr "Actie bij drempel"
 msgid "Actions"
 msgstr "Acties"
 
-#, fuzzy
 msgid "Actions needing approval"
-msgstr "Wat heeft goedkeuring nodig?"
+msgstr "Acties waarvoor goedkeuring vereist is"
 
 msgid "Activation failed."
 msgstr "Activeren mislukt."
@@ -298,10 +277,8 @@ msgstr "Actortype"
 msgid "Add"
 msgstr "Toevoegen"
 
-#, fuzzy
-#| msgid "Add limit"
 msgid "Add a limit for…"
-msgstr "Limiet toevoegen"
+msgstr "Voeg een limiet toe voor…"
 
 msgid "Add a model configuration"
 msgstr "Modelconfiguratie toevoegen"
@@ -399,10 +376,8 @@ msgstr "Escaleer na een goedkoop antwoord één keer als een zelfcontrole onzeke
 msgid "After publishing"
 msgstr "Na publicatie"
 
-#, fuzzy
-#| msgid "Enter your office"
 msgid "After you confirm"
-msgstr "Ga naar je kantoor"
+msgstr "Na je bevestiging"
 
 msgid "agent"
 msgstr "agent"
@@ -425,23 +400,20 @@ msgstr "Agent aangemaakt"
 msgid "Agent deleted"
 msgstr "Agent verwijderd"
 
-#, fuzzy
-#| msgid "Agent archived"
 msgid "Agent hired"
-msgstr "Agent gearchiveerd"
+msgstr "Agent aangenomen"
 
 msgid "Agent hired, but its login could not be set"
-msgstr ""
+msgstr "Agent aangenomen, maar de aanmeldgegevens konden niet worden ingesteld"
 
-#, fuzzy
 msgid "Agent hired, but its tools could not be granted"
-msgstr "De rollijst kon niet worden geladen."
+msgstr "Agent ingehuurd, maar de bijbehorende hulpmiddelen konden niet worden toegewezen"
 
 msgid "Agent hired, but the schedule could not be saved"
-msgstr ""
+msgstr "Agent aangenomen, maar het schema kon niet worden opgeslagen"
 
 msgid "Agent hired, but the webhook could not be created"
-msgstr ""
+msgstr "Agent aangenomen, maar de webhook kon niet worden aangemaakt"
 
 msgid "agent identity"
 msgstr "agentidentiteit"
@@ -449,10 +421,8 @@ msgstr "agentidentiteit"
 msgid "Agent not found, or you don't have access."
 msgstr "Agent niet gevonden, of je hebt geen toegang."
 
-#, fuzzy
-#| msgid "Agent roles"
 msgid "Agent profile"
-msgstr "Agentrollen"
+msgstr "Agentprofiel"
 
 msgid "Agent restored"
 msgstr "Agent hersteld"
@@ -560,13 +530,13 @@ msgid "Also fits: "
 msgstr "Past ook: "
 
 msgid "Also move the {count} agents using this skill to the shipped version"
-msgstr ""
+msgstr "Zet ook de {count} agents die deze skill gebruiken over op de meegeleverde versie"
 
 msgid "Also require approval for a specific tool (optional)"
 msgstr "Vereis ook goedkeuring voor een specifieke tool (optioneel)"
 
 msgid "Also update the {count} agents that use this skill"
-msgstr ""
+msgstr "Werk ook de {count} agents bij die deze skill gebruiken"
 
 msgid "Amount"
 msgstr "Bedrag"
@@ -646,17 +616,14 @@ msgstr "API-sleutels"
 msgid "App"
 msgstr "App"
 
-#, fuzzy
-#| msgid "Apply this rule to the draft below (doesn't save yet)"
 msgid "Applied to the draft below, limits included. Save to keep it."
-msgstr "Pas deze regel toe op het concept hieronder (slaat nog niet op)"
+msgstr "Toegepast op onderstaand concept, inclusief limieten. Sla op om het te behouden."
 
 msgid "Apply"
 msgstr "Toepassen"
 
-#, fuzzy
 msgid "Apply a preset"
-msgstr "Opslaan als preset"
+msgstr "Een voorinstelling toepassen"
 
 msgid "Apply this change"
 msgstr "Niet-gepubliceerde wijzigingen"
@@ -676,10 +643,8 @@ msgstr "Suggesties voor goedkeuringsacties"
 msgid "Approval channels"
 msgstr "Goedkeuringskanalen"
 
-#, fuzzy
-#| msgid "Approval required"
 msgid "Approval expired"
-msgstr "Goedkeuring vereist"
+msgstr "Goedkeuring verlopen"
 
 msgid "approval for"
 msgstr "goedkeuring voor"
@@ -687,10 +652,8 @@ msgstr "goedkeuring voor"
 msgid "Approval for:"
 msgstr "Goedkeuring voor:"
 
-#, fuzzy
-#| msgid "Approval for:"
 msgid "Approval from €5,000"
-msgstr "Goedkeuring voor:"
+msgstr "Goedkeuring vanaf € 5.000"
 
 msgid "Approval granted"
 msgstr "Goedkeuring verleend"
@@ -716,21 +679,17 @@ msgstr "goedkeuring vereist"
 msgid "Approval required"
 msgstr "Goedkeuring vereist"
 
-#, fuzzy
-#| msgid "approval required"
 msgid "approval threshold"
-msgstr "goedkeuring vereist"
+msgstr "goedkeuringsdrempel"
 
 msgid "Approval threshold (agent, EUR)"
-msgstr ""
+msgstr "Goedkeuringsdrempel (agent, EUR)"
 
-#, fuzzy
-#| msgid "Approval granted"
 msgid "Approval threshold (EUR)"
-msgstr "Goedkeuring verleend"
+msgstr "Goedkeuringsdrempel (EUR)"
 
 msgid "Approval threshold: {value}"
-msgstr ""
+msgstr "Goedkeuringsdrempel: {value}"
 
 msgid "Approval wait"
 msgstr "Wachten op goedkeuring"
@@ -754,7 +713,7 @@ msgid "Approved"
 msgstr "Goedgekeurd"
 
 msgid "Approved by a person, but not carried out in this run."
-msgstr ""
+msgstr "Goedgekeurd door een persoon, maar niet uitgevoerd in deze run."
 
 msgid "Archive"
 msgstr "Archiveren"
@@ -793,7 +752,7 @@ msgid "Ask anything …"
 msgstr "Vraag wat je wilt …"
 
 msgid "Ask before every change"
-msgstr ""
+msgstr "Vraag vóór elke wijziging om toestemming"
 
 msgid "Ask your admin to install it under Capas."
 msgstr "Vraag een beheerder om het onder Capas te installeren."
@@ -826,7 +785,7 @@ msgid "Assign knowledge base"
 msgstr "Kennisbank toewijzen"
 
 msgid "Assign knowledge bases to this department. Agents inherit these and can only tighten access, never expand it."
-msgstr ""
+msgstr "Wijs kennisbanken toe aan deze afdeling. Agents nemen deze over en kunnen de toegang alleen verder beperken."
 
 msgid "Assign skill"
 msgstr "Skill toewijzen"
@@ -859,7 +818,7 @@ msgid "Assignment cleared — that person’s token decides again."
 msgstr "Toewijzing gewist — het token van de persoon bepaalt weer."
 
 msgid "Assistant hired"
-msgstr ""
+msgstr "Assistent aangenomen"
 
 #, fuzzy
 #| msgid "Assigned to agents"
@@ -870,10 +829,10 @@ msgid "At least 8 characters"
 msgstr "Minstens 8 tekens"
 
 msgid "at most"
-msgstr ""
+msgstr "maximaal"
 
 msgid "At most this many calls of the listed functions together, per UTC day or hour. A call counts once it reached the tool, even if it reported an error. The next call is refused until the count resets."
-msgstr ""
+msgstr "Het maximale aantal aanroepen van de genoemde functies samen, per UTC-dag of -uur. Een aanroep telt zodra die de tool bereikt, ook als de tool een fout meldt. Na het bereiken van de limiet worden nieuwe aanroepen geweigerd totdat de teller wordt teruggezet."
 
 msgid "Attach a file"
 msgstr "Een bestand bijvoegen"
@@ -924,7 +883,7 @@ msgid "Automatic discovery isn't available for this provider — enter the model
 msgstr "Automatische detectie is niet beschikbaar voor deze provider — voer de modeltag handmatig in."
 
 msgid "Autonomous"
-msgstr ""
+msgstr "Autonoom"
 
 #, fuzzy
 #| msgid "Auto"
@@ -939,10 +898,8 @@ msgstr "Instructies opgeslagen"
 msgid "Available"
 msgstr "Beschikbaar"
 
-#, fuzzy
-#| msgid "Available in:"
 msgid "Available assistants"
-msgstr "Beschikbaar in:"
+msgstr "Beschikbare assistenten"
 
 msgid "Available in chat"
 msgstr "Beschikbaar in chat"
@@ -1173,9 +1130,8 @@ msgstr "Wijzigen"
 msgid "Changed"
 msgstr "Wijzigen"
 
-#, fuzzy
 msgid "Changed something in {connection}"
-msgstr "Deze koppeling intrekken?"
+msgstr "Iets gewijzigd in {connection}"
 
 #, fuzzy
 #| msgid "Changed"
@@ -1183,15 +1139,13 @@ msgid "Changed: {what}"
 msgstr "Wijzigen"
 
 msgid "Changes are waiting for your confirmation. Nothing below applies until you confirm it."
-msgstr ""
+msgstr "De wijzigingen wachten op je bevestiging. Pas nadat je hebt bevestigd, worden de wijzigingen hieronder toegepast."
 
 msgid "Changes inside your systems run on their own. Anything that reaches people outside, deletes something or can't be undone waits for a person."
-msgstr ""
+msgstr "Wijzigingen binnen je systemen worden automatisch uitgevoerd. Voor externe communicatie, verwijderingen en onomkeerbare acties is menselijke goedkeuring nodig."
 
-#, fuzzy
-#| msgid "Finishing the connection …"
 msgid "Changing something in {connection}"
-msgstr "De koppeling wordt afgerond …"
+msgstr "Iets wijzigen in {connection}"
 
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
 msgstr "Een ander model gaat in bij de volgende run. Beheer modelconfiguraties onder Modellen."
@@ -1272,7 +1226,7 @@ msgid "Choose a department."
 msgstr "Kies een afdeling."
 
 msgid "Choose a login for this assistant."
-msgstr ""
+msgstr "Kies aanmeldgegevens voor deze assistent."
 
 #, fuzzy
 #| msgid "Choose an agent…"
@@ -1289,7 +1243,7 @@ msgid "Choose at least one endpoint."
 msgstr "Kies minstens één endpoint."
 
 msgid "Choose Autonomous first. Until then every message to the outside waits for a person."
-msgstr ""
+msgstr "Kies eerst ‘Autonoom’. Tot die tijd is voor elk extern bericht menselijke goedkeuring nodig."
 
 msgid "Choose from a data source"
 msgstr "Kies uit een databron"
@@ -1301,7 +1255,7 @@ msgid "Choose from data source ›"
 msgstr "Kies uit databron ›"
 
 msgid "Choose LLM"
-msgstr ""
+msgstr "Taalmodel kiezen"
 
 msgid "Choose the model it thinks with and, if more than one is installed, the runtime it works in."
 msgstr "Kies het model waarmee de agent denkt en, als er meer dan één is geïnstalleerd, de runtime waarin hij werkt."
@@ -1405,7 +1359,7 @@ msgid "Conditions"
 msgstr "Koppelingen"
 
 msgid "Conditions (agent)"
-msgstr ""
+msgstr "Voorwaarden (agent)"
 
 #, fuzzy
 #| msgid "Choose a department"
@@ -2016,7 +1970,7 @@ msgid "Couldn't upload the file"
 msgstr "Bestand uploaden mislukt"
 
 msgid "Count also"
-msgstr ""
+msgstr "Ook meetellen"
 
 msgid "Create"
 msgstr "Aanmaken"
@@ -2221,10 +2175,8 @@ msgstr "Standaard"
 msgid "Default budget"
 msgstr "Standaard"
 
-#, fuzzy
-#| msgid "Departments saved."
 msgid "Default budget saved"
-msgstr "Afdeling opgeslagen."
+msgstr "Standaardbudget opgeslagen"
 
 #, fuzzy
 #| msgid "Default"
@@ -2342,7 +2294,7 @@ msgid "Deleted"
 msgstr "Verwijderd"
 
 msgid "Deleting and other irreversible actions also run without asking, unless a guardrail requires approval. Reaching people outside still asks unless you allow it below."
-msgstr ""
+msgstr "Verwijderingen en andere onomkeerbare acties worden ook automatisch uitgevoerd, tenzij een vangrail goedkeuring vereist. Voor externe communicatie blijft menselijke goedkeuring nodig, tenzij je die hieronder toestaat."
 
 msgid "Deleting…"
 msgstr "Verwijderen…"
@@ -2354,7 +2306,7 @@ msgid "Department"
 msgstr "Afdeling"
 
 msgid "Department = inherited · Agent = additional"
-msgstr ""
+msgstr "Afdeling = overgenomen · Agent = aanvullend"
 
 msgid "Department allows (ceiling)"
 msgstr "Afdeling staat toe (plafond)"
@@ -2451,7 +2403,7 @@ msgid "Disabled"
 msgstr "Uitgeschakeld"
 
 msgid "Disabled — read-only"
-msgstr ""
+msgstr "Uitgeschakeld — alleen-lezen"
 
 msgid "Discard"
 msgstr "Verwerpen"
@@ -2571,7 +2523,7 @@ msgid "Each code works once. Store them somewhere safe — you will not see them
 msgstr "Elke code werkt één keer. Bewaar ze op een veilige plek — je ziet ze niet opnieuw."
 
 msgid "Each member can get a private department of their own. Admins see only who owns one and how many agents it holds, never its content."
-msgstr ""
+msgstr "Elk lid kan een eigen privéafdeling krijgen. Beheerders zien alleen wie de eigenaar is en hoeveel agents de afdeling heeft. De inhoud blijft privé."
 
 msgid "Each person changes their email and password in their own account."
 msgstr "Iedereen wijzigt zijn e-mailadres en wachtwoord in het eigen account."
@@ -2642,16 +2594,14 @@ msgstr "Inschakelen"
 msgid "Enable a vector-index capa (Qdrant, pgvector) first."
 msgstr "Schakel eerst een vectorindex-Capa (Qdrant, pgvector) in."
 
-#, fuzzy
-#| msgid "Delete knowledge base?"
 msgid "Enable knowledge base"
-msgstr "Kennisbank verwijderen?"
+msgstr "Kennisbank inschakelen"
 
 msgid "Enabled"
 msgstr "Ingeschakeld"
 
 msgid "Enabled — read-only"
-msgstr ""
+msgstr "Ingeschakeld — alleen-lezen"
 
 msgid "Enabling…"
 msgstr "Inschakelen…"
@@ -2741,7 +2691,7 @@ msgid "Every action, every timestamp."
 msgstr "Elke actie, elk tijdstip."
 
 msgid "Every change and every message waits for a person to approve it."
-msgstr ""
+msgstr "Voor elke wijziging en elk bericht is menselijke goedkeuring nodig."
 
 msgid "Every day at {time}"
 msgstr "Elke dag om {time}"
@@ -2953,7 +2903,7 @@ msgid "Forwarded verbatim to the provider after every named field above -- for k
 msgstr "Na alle bovenstaande benoemde velden letterlijk doorgestuurd naar de provider -- voor instellingen waarvoor oc8 geen eigen veld heeft (bijv. provider/top_p van OpenRouter). Hier niet gevalideerd; de provider bepaalt wat hij accepteert."
 
 msgid "Frame"
-msgstr ""
+msgstr "Kader"
 
 msgid "Framework default"
 msgstr "Standaard van het framework"
@@ -3068,7 +3018,7 @@ msgid "Guardrails & Trigger"
 msgstr "Vangrails (één per regel)"
 
 msgid "Guardrails decide what {name} may do. This decides whether it does it without asking a person first."
-msgstr ""
+msgstr "Vangrails bepalen wat {name} mag doen. Hier stel je in of vooraf menselijke goedkeuring nodig is."
 
 msgid "Guardrails saved"
 msgstr "Vangrails opgeslagen"
@@ -3136,7 +3086,7 @@ msgid "Hide work panel"
 msgstr "Werkpaneel verbergen"
 
 msgid "Hire"
-msgstr ""
+msgstr "Aannemen"
 
 #, fuzzy
 #| msgid "Create a new agent"
@@ -3153,13 +3103,13 @@ msgid "History"
 msgstr "Geschiedenis"
 
 msgid "hour"
-msgstr ""
+msgstr "uur"
 
 msgid "How do you describe the endpoints?"
 msgstr "Hoe beschrijf je de endpoints?"
 
 msgid "how far it acts before asking"
-msgstr ""
+msgstr "wat de agent zelfstandig mag doen"
 
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr "Hoe grondig dit model nadenkt als chat noch agent een niveau instelt. Een aangepaste waarde gaat ongewijzigd naar de aanbieder."
@@ -3246,7 +3196,7 @@ msgid "Inherited"
 msgstr "Overgenomen"
 
 msgid "inherited from dept"
-msgstr ""
+msgstr "overgenomen van afdeling"
 
 #, fuzzy
 #| msgid "from the department"
@@ -3315,10 +3265,10 @@ msgid "Invite"
 msgstr "Uitnodigen"
 
 msgid "It asks no approval for {names}, which the department requires."
-msgstr ""
+msgstr "De agent vraagt geen goedkeuring voor {names}, terwijl de afdeling die wel vereist."
 
 msgid "It changes things, which the department does not allow."
-msgstr ""
+msgstr "De agent brengt wijzigingen aan, terwijl de afdeling dat niet toestaat."
 
 msgid "It has not worked yet."
 msgstr "Het heeft nog niet gewerkt."
@@ -3327,16 +3277,16 @@ msgid "It listens on the mailbox the agent uses for its tools. "
 msgstr "Het luistert naar de mailbox die de agent voor zijn tools gebruikt. "
 
 msgid "It reaches all functions, including functions the department does not offer."
-msgstr ""
+msgstr "De agent kan alle functies gebruiken, ook functies die de afdeling niet aanbiedt."
 
 msgid "It reaches functions the department does not offer: {names}."
-msgstr ""
+msgstr "De agent kan functies gebruiken die de afdeling niet aanbiedt: {names}."
 
 msgid "It reads, which the department does not allow."
-msgstr ""
+msgstr "De agent leest gegevens, terwijl de afdeling dat niet toestaat."
 
 msgid "It takes effect when you publish this version."
-msgstr ""
+msgstr "Dit gaat in zodra je deze versie publiceert."
 
 msgid "Its approval threshold is above the department's {amount} €."
 msgstr ""
@@ -3899,97 +3849,75 @@ msgstr "Verfijnd"
 msgid "Needs a mail server. Set one up under Mail server first."
 msgstr "Vereist een mailserver. Stel er eerst een in onder 'Mailserver'."
 
-#, fuzzy
 msgid "Needs an organisation connection"
 msgstr "Heeft een verbinding van de organisatie nodig"
 
 msgid "Needs HTTPS: the public URL of this installation must start with https:// (localhost works for testing)."
-msgstr ""
+msgstr "Vereist HTTPS: de openbare URL van deze installatie moet beginnen met https:// (localhost werkt voor testdoeleinden)."
 
-#, fuzzy
 msgid "Needs reconnecting"
 msgstr "Opnieuw koppelen nodig"
 
-#, fuzzy
 msgid "Needs your decision"
 msgstr "Heeft jouw beslissing nodig"
 
-#, fuzzy
 msgid "Needs your permission"
 msgstr "Heeft je toestemming nodig"
 
-#, fuzzy
 msgid "never"
 msgstr "nooit"
 
-#, fuzzy
 msgid "Never expires"
 msgstr "Verloopt nooit"
 
-#, fuzzy
 msgid "Never published"
 msgstr "Nooit gepubliceerd"
 
-#, fuzzy
 msgid "Never tested"
 msgstr "Nooit getest"
 
-#, fuzzy
 msgid "Never tested — click Test to check."
 msgstr "Nooit getest — klik op Testen om te controleren."
 
-#, fuzzy
 msgid "Never used"
 msgstr "Nooit gebruikt"
 
-#, fuzzy
 msgid "never verified"
 msgstr "nooit geverifieerd"
 
-#, fuzzy
 msgid "Never without approval"
 msgstr "Nooit zonder goedkeuring"
 
-#, fuzzy
 msgid "new"
-msgstr "Nieuwer"
+msgstr "Nieuw"
 
-#, fuzzy
 msgid "New"
-msgstr "Nieuwer"
+msgstr "Nieuw"
 
-#, fuzzy
 msgid "New agent"
 msgstr "Nieuwe agent"
 
 msgid "New agent schedules run in this timezone unless they name another."
-msgstr ""
+msgstr "Nieuwe agentschema's worden uitgevoerd in deze tijdzone, tenzij een andere tijdzone wordt opgegeven."
 
-#, fuzzy
 msgid "New approval requested"
 msgstr "Nieuwe goedkeuring aangevraagd"
 
-#, fuzzy
 msgid "New chat"
 msgstr "Nieuwe chat"
 
-#, fuzzy
 msgid "New cost limit"
 msgstr "Nieuwe kostenlimiet"
 
-#, fuzzy
 msgid "New credential"
 msgstr "Nieuwe inloggegevens"
 
-#, fuzzy
 msgid "New dashboards"
-msgstr "Nieuw wachtwoord"
+msgstr "Nieuwe dashboards"
 
-#, fuzzy
 msgid "New department"
 msgstr "Nieuwe afdeling"
 
-#, fuzzy
 msgid "New email"
 msgstr "Nieuw e-mailadres"
 
@@ -4001,10 +3929,8 @@ msgstr "Nieuwe vangrail"
 msgid "New hire"
 msgstr "Nieuwe rol"
 
-#, fuzzy
-#| msgid "Required by your organisation"
 msgid "New hires are turned off by your organisation."
-msgstr "Vereist door uw organisatie"
+msgstr "Nieuwe medewerkers raken afgeschrikt door jouw organisatie."
 
 #, fuzzy
 msgid "New key"
@@ -4014,7 +3940,6 @@ msgstr "Nieuwe sleutel"
 msgid "New model"
 msgstr "Nieuw model"
 
-#, fuzzy
 msgid "New password"
 msgstr "Nieuw wachtwoord"
 
@@ -4058,7 +3983,6 @@ msgstr "Nieuwe taak"
 msgid "New user"
 msgstr "Nieuwe gebruiker"
 
-#, fuzzy
 msgid "Newer"
 msgstr "Nieuwer"
 
@@ -4498,15 +4422,13 @@ msgstr "niet toegestaan"
 msgid "Not allowed"
 msgstr "Niet toegestaan"
 
-#, fuzzy
 msgid "Not available"
-msgstr "Niet beschikbaar."
+msgstr "Niet beschikbaar"
 
 #, fuzzy
 msgid "Not available: "
 msgstr "Niet beschikbaar: "
 
-#, fuzzy
 msgid "Not available."
 msgstr "Niet beschikbaar."
 
@@ -4647,13 +4569,11 @@ msgstr "Melden"
 msgid "Notify — alert only"
 msgstr "Melden — alleen waarschuwen"
 
-#, fuzzy
 msgid "Now"
-msgstr "Nieuwer"
+msgstr "Nu"
 
-#, fuzzy
 msgid "Now follows the default"
-msgstr "Geen follow-ups gepland."
+msgstr "Volgt nu de standaardinstelling"
 
 #, fuzzy
 #| msgid "decision"
@@ -5360,9 +5280,8 @@ msgstr "Leest een webpagina …"
 msgid "Reading archive…"
 msgstr "Archief lezen…"
 
-#, fuzzy
 msgid "Reading from {connection}"
-msgstr "Een MCP-koppeling testen"
+msgstr "Lezen van {connection}"
 
 msgid "Reading is allowed for the rest of this chat. Every change asks you again."
 msgstr ""
@@ -5731,13 +5650,11 @@ msgstr "Bedrijfsbrede toegang ingetrokken"
 msgid "Rights"
 msgstr "Rechten"
 
-#, fuzzy
 msgid "Role"
 msgstr "Rol"
 
-#, fuzzy
 msgid "Role …"
-msgstr "Rol"
+msgstr "Rol…"
 
 #, fuzzy
 msgid "Role created."
@@ -6495,10 +6412,8 @@ msgstr "Totaal aantal tokens"
 msgid "Soft-delete this person. They leave the users list and cannot sign in."
 msgstr "Verwijder deze persoon zacht. Ze verdwijnen uit de gebruikerslijst en kunnen niet meer inloggen."
 
-#, fuzzy
-#| msgid "A system is switched off or restricted for this department."
 msgid "Some tools are turned off for this department"
-msgstr "Een systeem is uitgeschakeld of beperkt voor deze afdeling."
+msgstr "Sommige hulpmiddelen zijn voor deze afdeling uitgeschakeld"
 
 #, fuzzy
 msgid "Somebody already decided this."
@@ -7381,13 +7296,11 @@ msgstr "Deze agent heeft nog geen bestanden gemaakt."
 msgid "This assistant does not use that login."
 msgstr ""
 
-#, fuzzy
 msgid "This assistant is not available"
-msgstr "Deze integratie is nog niet beschikbaar."
+msgstr "Deze assistent is niet beschikbaar"
 
-#, fuzzy
 msgid "This assistant isn't allowed by your organisation's rules"
-msgstr "Deze functie is niet beschikbaar voor je organisatie."
+msgstr "Deze assistent is volgens de regels van uw organisatie niet toegestaan"
 
 #, fuzzy
 msgid "This base already has ingested content, so its embedding model can't change -- old and new chunks would no longer be comparable. Delete and recreate the base to use a different model."
@@ -7449,9 +7362,8 @@ msgstr "De basis-URL van deze verbinding bevat een login. Verwijder deze verbind
 msgid "This connector can't be allowed from here."
 msgstr "Deze connector kan hier niet worden toegestaan."
 
-#, fuzzy
 msgid "This could not be confirmed: {reason}"
-msgstr "Deze run kon niet worden geladen."
+msgstr "Dit kon niet worden bevestigd: {reason}"
 
 #, fuzzy
 msgid "This dashboard can't be shown."
@@ -8298,9 +8210,8 @@ msgstr "Wachten op de passkey…"
 msgid "Waiting for you"
 msgstr "Wacht op jou"
 
-#, fuzzy
 msgid "Waiting for your confirmation"
-msgstr "Wachten op bevestiging…"
+msgstr "In afwachting van je bevestiging"
 
 #, fuzzy
 msgid "Waiting on your answer"
@@ -8413,9 +8324,8 @@ msgstr "Wat moet deze agent doen? Wordt bij elke run meegestuurd."
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
 msgstr "Wat moet deze agent doen? Dit wordt zijn vaste instructies — je kunt ze later verfijnen op de eigen pagina van de agent."
 
-#, fuzzy
 msgid "What this assistant gets"
-msgstr "Wat wacht er op mij?"
+msgstr "Wat deze assistent ontvangt"
 
 #, fuzzy
 msgid "What this role is for"
@@ -8649,9 +8559,8 @@ msgstr ""
 msgid "Your access"
 msgstr "Jouw toegang"
 
-#, fuzzy
 msgid "Your account can no longer hire assistants"
-msgstr "Je account in deze organisatie bestaat niet meer."
+msgstr "Je account kan geen assistenten meer inhuren"
 
 #, fuzzy
 msgid "Your account in this organisation no longer exists."
