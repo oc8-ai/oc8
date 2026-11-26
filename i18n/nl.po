@@ -1,5 +1,5 @@
 msgid ""
-msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-25 09:01+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
+msgstr "Project-Id-Version: oc8\nPO-Revision-Date: 2026-11-26 11:10+0000\nLast-Translator: Erwin van der Ploeg <erwin@odooexperts.nl>\nLanguage-Team: Dutch <https://translate.oc8.ai/projects/oc8/core-ui/nl/>\nLanguage: nl\nMIME-Version: 1.0\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit\nX-Native-Name: Nederlands\nX-Flag: 🇳🇱\nPlural-Forms: nplurals=2; plural=n != 1;\nX-Generator: Weblate 2026.11.1\n"
 
 msgid " (opens in a new tab)"
 msgstr " (opent in een nieuw tabblad)"
@@ -2599,7 +2599,6 @@ msgstr "Vanaf de verbindingssetup"
 msgid "from the department"
 msgstr "van de afdeling"
 
-#, fuzzy
 msgid "from their sign-in"
 msgstr "van hun inlog"
 
@@ -2750,7 +2749,6 @@ msgstr "Geschiedenis"
 msgid "How do you describe the endpoints?"
 msgstr "Hoe beschrijf je de endpoints?"
 
-#, fuzzy
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
 msgstr "Hoe grondig dit model nadenkt als chat noch agent een niveau instelt. Een aangepaste waarde gaat ongewijzigd naar de aanbieder."
 
@@ -2769,7 +2767,6 @@ msgstr "Hoe moet de kennisbank zijn inhoud krijgen?"
 msgid "Human oversight"
 msgstr "Menselijk toezicht"
 
-#, fuzzy
 msgid "human reviewer"
 msgstr "menselijke beoordelaar"
 
@@ -2881,7 +2878,6 @@ msgstr "onderbroken"
 msgid "Invalid"
 msgstr "Ongeldig"
 
-#, fuzzy
 msgid "Invalid code"
 msgstr "Ongeldige code"
 
@@ -2909,622 +2905,479 @@ msgstr "Ook de geplande follow-ups zijn uitgezet."
 msgid "Judge against this department's model"
 msgstr "Beoordelen tegen het model van de afdeling"
 
-#, fuzzy
 msgid "Judging against your number for this look only — nothing is saved."
 msgstr "Beoordelen tegen een getal alleen om te kijken — er wordt niets opgeslagen."
 
-#, fuzzy
 msgid "just now"
-msgstr "Nu testen"
+msgstr "zojuist"
 
-#, fuzzy
 msgid "Keep an eye on something for me"
 msgstr "Houd iets voor me in de gaten"
 
-#, fuzzy
 msgid "Keep it"
 msgstr "Behouden"
 
-#, fuzzy
 msgid "Keep running"
 msgstr "Laten doorlopen"
 
-#, fuzzy
 msgid "key"
 msgstr "sleutel"
 
-#, fuzzy
 msgid "Key name"
 msgstr "Naam van de sleutel"
 
-#, fuzzy
 msgid "Knowledge"
 msgstr "Kennis"
 
-#, fuzzy
 msgid "Knowledge base"
 msgstr "Kennisbank"
 
-#, fuzzy
 msgid "Knowledge base assigned"
 msgstr "Kennisbank toegewezen"
 
-#, fuzzy
 msgid "Knowledge base deleted"
 msgstr "Kennisbank verwijderd"
 
-#, fuzzy
 msgid "Knowledge base updated"
 msgstr "Kennisbank bijgewerkt"
 
-#, fuzzy
 msgid "Knowledge bases"
 msgstr "Kennisbanken"
 
-#, fuzzy
 msgid "Knowledge Bases"
 msgstr "Kennisbanken"
 
-#, fuzzy
 msgid "Knowledge bases (one per line)"
-msgstr "Kennisbank verwijderd"
+msgstr "Kennisbanken (één per regel)"
 
-#, fuzzy
 msgid "Knowledge library"
 msgstr "Kennisbibliotheek"
 
-#, fuzzy
 msgid "Language switched to"
 msgstr "Taal gewijzigd naar"
 
 msgid "Last 12 months"
 msgstr "Afgelopen 12 maanden"
 
-#, fuzzy
 msgid "Last 30 days — validation only"
 msgstr "Laatste 30 dagen — alleen validatie"
 
-#, fuzzy
 msgid "Last action"
 msgstr "Laatste actie"
 
 msgid "Last checked {time}"
 msgstr "Laatst gecontroleerd op {time}"
 
-#, fuzzy
 msgid "Last run"
 msgstr "Laatste run"
 
 msgid "Last success {time}."
-msgstr ""
+msgstr "Laatste succes {time}."
 
-#, fuzzy
 msgid "Latency"
 msgstr "Latentie"
 
-#, fuzzy
 msgid "Latest"
 msgstr "Nieuwste"
 
 msgid "Lead → Team"
 msgstr "Lead → Team"
 
-#, fuzzy
 msgid "Leave agent mode"
 msgstr "Agentmodus verlaten"
 
-#, fuzzy
 msgid "Leave blank to keep unchanged"
 msgstr "Laat leeg om ongewijzigd te laten"
 
-#, fuzzy
 msgid "Leave empty to allow any origin."
 msgstr "Laat leeg om elke origin toe te staan."
 
-#, fuzzy
 msgid "Leave empty to keep the stored password"
 msgstr "Laat leeg om het opgeslagen wachtwoord te behouden"
 
-#, fuzzy
 msgid "Leave empty to never expire."
 msgstr "Laat leeg om nooit te laten verlopen."
 
-#, fuzzy
 msgid "Leave empty to set up later"
 msgstr "Laat leeg om later in te stellen"
 
-#, fuzzy
 msgid "Leave unassigned"
 msgstr "Niet toegewezen laten"
 
 msgid "Legend"
-msgstr ""
+msgstr "Legenda"
 
-#, fuzzy
 msgid "Let the copilot draft this from a rough description"
 msgstr "Laat Copilot een ruwe beschrijving opstellen"
 
-#, fuzzy
 msgid "Let the copilot read this agent's instructions and suggest guardrails"
 msgstr "Laat Copilot de instructies van de agent lezen en vangrails voorstellen"
 
-#, fuzzy
 msgid "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions."
 msgstr "Laat een externe tool de Copilot van oc8 via MCP aanroepen als jij, met je eigen rechten."
 
-#, fuzzy
 msgid "Lets them sign in immediately. Min. 8 characters."
 msgstr "Hiermee kunnen ze direct inloggen. Min. 8 tekens."
 
-#, fuzzy
 msgid "Limit"
 msgstr "Limiet"
 
-#, fuzzy
 msgid "Limit created"
 msgstr "Limiet aangemaakt"
 
-#, fuzzy
 msgid "Limit removed"
 msgstr "Limiet verwijderd"
 
-#, fuzzy
 msgid "Limits"
 msgstr "Limieten"
 
-#, fuzzy
 msgid "Line"
 msgstr "Lijn"
 
-#, fuzzy
 msgid "link instead of file"
 msgstr "link in plaats van bestand"
 
-#, fuzzy
 msgid "Link your own Telegram or WhatsApp so approvals reach you there. This is separate from a capa's admin setup (bot token) — this step binds YOUR chat."
 msgstr "Koppel je eigen Telegram of WhatsApp zodat goedkeuringen je daar bereiken. Dit staat los van de beheerinstelling van de Capa (bottoken) — deze stap koppelt JOUW chat."
 
-#, fuzzy
 msgid "Linked in this tenant"
 msgstr "Gekoppeld in tenant"
 
 msgid "Listening"
-msgstr ""
+msgstr "Luisteren"
 
 msgid "Live"
 msgstr "Live"
 
-#, fuzzy
 msgid "Live Log · current run"
 msgstr "Live log · huidige run"
 
-#, fuzzy
 msgid "LLM"
 msgstr "LLM"
 
-#, fuzzy
 msgid "LLM providers, costs, and assignments."
 msgstr "LLM-providers, kosten en toewijzingen."
 
-#, fuzzy
 msgid "Load"
 msgstr "Laden"
 
-#, fuzzy
 msgid "Load into the editor"
 msgstr "In editor laden"
 
-#, fuzzy
 msgid "Load more"
 msgstr "Meer laden"
 
-#, fuzzy
 msgid "Load older versions"
 msgstr "Oudere versies laden"
 
-#, fuzzy
 msgid "Loading"
 msgstr "Laden"
 
-#, fuzzy
 msgid "Loading agent…"
 msgstr "Agent laden…"
 
-#, fuzzy
 msgid "Loading available tools…"
 msgstr "Beschikbare tools laden…"
 
-#, fuzzy
 msgid "Loading department…"
 msgstr "Afdeling laden…"
 
-#, fuzzy
 msgid "Loading files…"
 msgstr "Bestanden laden…"
 
-#, fuzzy
 msgid "Loading guardrails…"
 msgstr "Vangrails laden…"
 
-#, fuzzy
 msgid "Loading providers…"
 msgstr "Providers laden…"
 
-#, fuzzy
 msgid "Loading roles…"
 msgstr "Rollen laden…"
 
-#, fuzzy
 msgid "Loading run…"
 msgstr "Run laden…"
 
-#, fuzzy
 msgid "Loading runs…"
 msgstr "Runs laden…"
 
-#, fuzzy
 msgid "Loading the permission model…"
 msgstr "Rechtenmodel laden…"
 
-#, fuzzy
 msgid "Loading the rights…"
 msgstr "Rechten laden…"
 
-#, fuzzy
 msgid "Loading the role…"
 msgstr "Rol laden…"
 
-#, fuzzy
 msgid "Loading the steps…"
 msgstr "Stappen laden…"
 
-#, fuzzy
 msgid "Loading users…"
 msgstr "Gebruikers laden…"
 
-#, fuzzy
 msgid "Loading your department…"
 msgstr "Je afdeling laden…"
 
-#, fuzzy
 msgid "Loading…"
 msgstr "Laden…"
 
-#, fuzzy
 msgid "local"
 msgstr "lokaal"
 
-#, fuzzy
 msgid "Local"
 msgstr "Lokaal"
 
-#, fuzzy
 msgid "Local library"
 msgstr "Lokale bibliotheek"
 
-#, fuzzy
 msgid "Locality"
 msgstr "Lokaliteit"
 
-#, fuzzy
 msgid "Log the complexity choice but always run balanced (or latched) until you trust the policy."
 msgstr "Registreer de complexiteitskeuze, maar draai altijd gebalanceerd (of vergrendeld) tot je het beleid vertrouwt."
 
-#, fuzzy
 msgid "Logged in successfully"
 msgstr "Succesvol ingelogd"
 
-#, fuzzy
 msgid "Login"
 msgstr "Inloggen"
 
-#, fuzzy
 msgid "Login failed"
 msgstr "Inloggen mislukt"
 
-#, fuzzy
 msgid "Look"
-msgstr "Voorbeeld"
+msgstr "Kijk"
 
-#, fuzzy
 msgid "Looked for a tool"
 msgstr "Zocht naar een tool"
 
-#, fuzzy
 msgid "Looked through its notes"
 msgstr "Doorzocht zijn notities"
 
-#, fuzzy
 msgid "Looking for a tool"
 msgstr "Zoekt naar een tool"
 
-#, fuzzy
 msgid "Looking through its notes"
 msgstr "Doorzoekt zijn notities"
 
-#, fuzzy
 msgid "Looking through its notes …"
 msgstr "Bladert door zijn notities …"
 
-#, fuzzy
 msgid "Made a note"
 msgstr "Maakte een notitie"
 
-#, fuzzy
 msgid "Made a standard user"
 msgstr "Maakte er een standaardgebruiker van"
 
-#, fuzzy
 msgid "Made an administrator"
 msgstr "Maakte er een beheerder van"
 
-#, fuzzy
 msgid "Mail server"
 msgstr "Mailserver"
 
-#, fuzzy
 msgid "Mail server credentials"
 msgstr "Inloggegevens mailserver"
 
-#, fuzzy
 msgid "Mail server disabled"
 msgstr "Mailserver uitgeschakeld"
 
-#, fuzzy
 msgid "Mail server updated"
 msgstr "Mailserver bijgewerkt"
 
 msgid "Mailbox"
-msgstr ""
+msgstr "Mailbox"
 
 msgid "Mailbox changed: switched off. Switch it on to listen on the agent's current mailbox."
-msgstr ""
+msgstr "Voicemail gewijzigd: uitgeschakeld. Schakel deze in om de huidige voicemail van de medewerker te beluisteren."
 
-#, fuzzy
 msgid "Make available"
 msgstr "Beschikbaar maken"
 
-#, fuzzy
 msgid "Making a note"
 msgstr "Maakt een notitie"
 
-#, fuzzy
 msgid "Manage user roles for your organization."
 msgstr "Beheer de gebruikersrollen van je organisatie."
 
-#, fuzzy
 msgid "Managed by your identity provider; not editable here."
 msgstr "Beheerd door je identity provider; hier niet te bewerken."
 
-#, fuzzy
 msgid "Manages agents"
 msgstr "Beheert agents"
 
-#, fuzzy
 msgid "manual"
 msgstr "handmatig"
 
-#, fuzzy
 msgid "Map each complexity tier to an existing model config. At least one is required."
 msgstr "Koppel elk complexiteitsniveau aan een bestaande modelconfiguratie. Minstens één is vereist."
 
 msgid "Mark all as read"
-msgstr ""
+msgstr "Alles als gelezen markeren"
 
-#, fuzzy
 msgid "Max output tokens (optional)"
 msgstr "Max. uitvoertokens (optioneel)"
 
-#, fuzzy
 msgid "Max steps must be a positive whole number"
 msgstr "Max. stappen moet een positief geheel getal zijn"
 
-#, fuzzy
 msgid "Max steps per run"
 msgstr "Max. stappen per run"
 
-#, fuzzy
 msgid "Max tokens"
 msgstr "Max. tokens"
 
-#, fuzzy
 msgid "Max tokens must be a positive number"
 msgstr "Max. tokens moet een positief getal zijn"
 
-#, fuzzy
 msgid "Max tokens must be a positive whole number"
 msgstr "Max. tokens moet een positief geheel getal zijn"
 
-#, fuzzy
 msgid "Max. active follow-ups per person"
 msgstr "Max. actieve follow-ups per persoon"
 
-#, fuzzy
 msgid "MCP Connections"
 msgstr "MCP-koppelingen"
 
 msgid "Members who set up a second factor are asked for it at sign-in."
-msgstr ""
+msgstr "Leden die een tweede factor hebben ingesteld, wordt bij het inloggen gevraagd deze op te geven."
 
-#, fuzzy
 msgid "memories"
 msgstr "herinneringen"
 
-#, fuzzy
 msgid "Memory"
 msgstr "Geheugen"
 
-#, fuzzy
 msgid "Memory deleted"
 msgstr "Herinnering verwijderd"
 
-#, fuzzy
 msgid "Message"
 msgstr "Bericht"
 
-#, fuzzy
 msgid "Messages to this run"
-msgstr "Berichten tijdens run"
+msgstr "Berichten aan deze run"
 
-#, fuzzy
 msgid "Messenger"
-msgstr "Bericht"
+msgstr "Boodschapper"
 
-#, fuzzy
 msgid "metered by the platform"
-msgstr "gemeten platform"
+msgstr "door het platform gemeten"
 
 msgid "Method"
-msgstr ""
+msgstr "Methode"
 
-#, fuzzy
 msgid "Mine"
 msgstr "Van mij"
 
-#, fuzzy
 msgid "Mission"
 msgstr "Missie"
 
-#, fuzzy
 msgid "Model"
 msgstr "Model"
 
 msgid "Model (LLM)"
 msgstr "Model (LLM)"
 
-#, fuzzy
 msgid "model pattern"
 msgstr "modelpatroon"
 
-#, fuzzy
 msgid "Model price added"
 msgstr "Modelprijs toegevoegd"
 
-#, fuzzy
 msgid "Model pricing"
 msgstr "Modelprijzen"
 
-#, fuzzy
 msgid "Model tag"
-msgstr "Modeltag"
+msgstr "Modellabel"
 
-#, fuzzy
 msgid "Model updated"
 msgstr "Model bijgewerkt"
 
-#, fuzzy
 msgid "models"
 msgstr "modellen"
 
-#, fuzzy
 msgid "Models"
 msgstr "Modellen"
 
-#, fuzzy
 msgid "Models are now available for agents."
 msgstr "Modellen die nu beschikbaar zijn voor agents."
 
-#, fuzzy
 msgid "Models from connected providers appear here automatically."
 msgstr "Modellen van gekoppelde providers verschijnen hier automatisch."
 
-#, fuzzy
 msgid "modifies"
 msgstr "wijzigt"
 
-#, fuzzy
 msgid "Modify"
 msgstr "Wijzigen"
 
-#, fuzzy
 msgid "Month"
 msgstr "Maand"
 
-#, fuzzy
 msgid "Monthly"
 msgstr "Maandelijks"
 
-#, fuzzy
 msgid "More entries exist – search more specifically"
 msgstr "Er zijn meer items — zoek specifieker"
 
-#, fuzzy
 msgid "More info"
 msgstr "Meer info"
 
-#, fuzzy
 msgid "More runtimes appear here once installed as plugins."
 msgstr "Meer runtimes verschijnen hier zodra je plugins installeert."
 
-#, fuzzy
 msgid "More than 500 entries – pick a parent folder."
 msgstr "Meer dan 500 items – kies een bovenliggende map."
 
-#, fuzzy
 msgid "Move holders to"
 msgstr "Houders verplaatsen naar"
 
-#, fuzzy
 msgid "Move holders to…"
 msgstr "Houders verplaatsen naar…"
 
-#, fuzzy
 msgid "Move to project"
-msgstr "Project verplaatsen"
+msgstr "Naar project verplaatsen"
 
-#, fuzzy
 msgid "Multi-stage flows across departments with live validation."
 msgstr "Meerfasige flows over afdelingen heen, met live validatie."
 
-#, fuzzy
 msgid "Must exactly match a tool this connection exposes -- pick from the suggestions."
 msgstr "Moet exact overeenkomen met de tool die de koppeling beschikbaar stelt -- kies uit de suggesties."
 
-#, fuzzy
 msgid "Must match the remote collection"
 msgstr "Moet overeenkomen met de externe collectie"
 
-#, fuzzy
 msgid "My connections"
 msgstr "Mijn koppelingen"
 
-#, fuzzy
 msgid "My Copilot"
 msgstr "Mijn Copilot"
 
-#, fuzzy
 msgid "My work"
 msgstr "Mijn werk"
 
-#, fuzzy
 msgid "Name"
 msgstr "Naam"
 
-#, fuzzy
 msgid "Name & description"
 msgstr "Naam en beschrijving"
 
-#, fuzzy
 msgid "name + rights"
 msgstr "naam + rechten"
 
 msgid "Name this passkey"
-msgstr ""
+msgstr "Geef deze passkey een naam"
 
-#, fuzzy
 msgid "Name updated"
 msgstr "Naam bijgewerkt"
 
-#, fuzzy
 msgid "Name your workspace"
 msgstr "Geef je werkruimte een naam"
 
-#, fuzzy
 msgid "Narrowed"
 msgstr "Verfijnd"
 
 msgid "Needs a mail server. Set one up under Mail server first."
-msgstr ""
+msgstr "Vereist een mailserver. Stel er eerst een in onder 'Mailserver'."
 
 #, fuzzy
 msgid "Needs an organisation connection"
@@ -5562,9 +5415,8 @@ msgstr "Antwoord versturen"
 msgid "Send answers"
 msgstr "Antwoorden versturen"
 
-#, fuzzy
 msgid "Send code"
-msgstr "Ongeldige code"
+msgstr "Code versturen"
 
 #, fuzzy
 msgid "Send e-mail from Gmail"
@@ -5760,11 +5612,9 @@ msgstr "Toonde een samenvatting"
 msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
 msgstr "Toont de keuze van het denkniveau in chats op dit model en stuurt het gekozen niveau naar de aanbieder."
 
-#, fuzzy
 msgid "Sign in"
 msgstr "Inloggen"
 
-#, fuzzy
 msgid "Sign In"
 msgstr "Inloggen"
 
