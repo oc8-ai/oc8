@@ -11,7 +11,7 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
   const { data: me } = useAuth();
   const update = useUpdateAgentTrigger();
   const owner = trigger.createdByMemberId;
-  const ownerName = trigger.createdByName ?? t("a former member", "ein ehemaliges Mitglied");
+  const ownerName = trigger.createdByName || t("a former member", "ein ehemaliges Mitglied");
   const isCreator = !!owner && !!me?.memberId && me.memberId === owner;
   const offersActing = trigger.kind === "webhook" || trigger.kind === "event";
 
@@ -34,6 +34,13 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
       { onError },
     );
 
+  // In a department with an owner only the owner's confirmation card
+  // confirms what changed (a save there confirms nothing it did not hold
+  // before), so the trigger points to the card instead.
+  const viaCard = !!trigger.ownerConfirms || trigger.lastSkipReason === "needs_confirmation";
+  const askToSaveAgain = trigger.needsConfirmation && isCreator && !viaCard;
+  const pointToCard = trigger.needsConfirmation && isCreator && !!trigger.ownerConfirms;
+
   let hint: string | null = null;
   if (offersActing && !owner) {
     hint =
@@ -46,7 +53,7 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
 
   return (
     <div className="space-y-1.5 text-[11px] text-muted-foreground">
-      {trigger.needsConfirmation && isCreator && (
+      {askToSaveAgain && (
         <div
           role="status"
           className="flex flex-wrap items-center gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground"
@@ -61,6 +68,17 @@ export function TriggerOwner({ agentId, trigger }: { agentId: string; trigger: T
             {t("Save the schedule again", "Zeitplan erneut speichern")}
           </button>
         </div>
+      )}
+      {pointToCard && (
+        <p
+          role="status"
+          className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-foreground"
+        >
+          {t(
+            "The agent was changed. Please review and confirm the changes in your profile, under your personal assistants.",
+            "Der Agent wurde geändert. Bitte prüfe und bestätige die Änderungen in deinem Profil, bei deinen persönlichen Assistenten.",
+          )}
+        </p>
       )}
       {owner ? (
         <p>{t(`Created by ${ownerName}`, `Angelegt von ${ownerName}`)}</p>

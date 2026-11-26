@@ -22,8 +22,9 @@ import type { ToolUsage } from "@/lib/hooks-agent-detail";
 // does not repeat is shown read-only, so the editor never displays a number
 // nobody enforces.
 //
-// A limit never ends up without a tool: one is added on a real function of
-// the connection, and its last tool cannot be removed (remove the limit).
+// A limit never ends up without a tool: one is added on a function of the
+// connection the person picks, and its last tool cannot be removed (remove the
+// limit).
 export function GuardrailUsageLimits({
   value,
   onChange,
@@ -33,7 +34,7 @@ export function GuardrailUsageLimits({
 }: {
   value: GuardrailValue;
   onChange: (next: GuardrailValue) => void;
-  /** The connection's function names; the first limit added counts the first. */
+  /** The connection's function names, offered when a limit is added. */
   toolCatalog: string[];
   /** This tool's current windows (`GET /agents/{id}/tool-usage`); agent level
    * only. Undefined hides the usage line, an empty list shows 0 used. */
@@ -97,7 +98,9 @@ export function GuardrailUsageLimits({
 
   const repeated = new Set(limits.map(limitKey));
   const departmentOnly = (ceiling ?? []).filter((c) => !repeated.has(limitKey(c)));
-  const firstFree = toolCatalog[0];
+  // The functions no limit shown here counts yet: what "Add limit" offers.
+  const counted = new Set([...limits, ...departmentOnly].flatMap((limit) => limit.tools));
+  const unlimited = toolCatalog.filter((name) => !counted.has(name));
 
   return (
     <div className="mt-5">
@@ -227,14 +230,26 @@ export function GuardrailUsageLimits({
           </div>
         ))}
       </div>
-      {firstFree !== undefined && (
-        <button
-          type="button"
-          onClick={() => setLimits([...limits, { tools: [firstFree], max: 50, per: "day" }])}
-          className="mt-2 rounded-md border border-dashed border-border px-3 py-1.5 text-xs text-muted-foreground transition hover:bg-accent hover:text-foreground"
+      {unlimited.length > 0 && (
+        // A limit never exists without a function, and none is picked for
+        // the person: the first one in the catalog is whatever the tool
+        // happens to list first (for email, mail_delete).
+        <select
+          aria-label={t("Add a limit for…", "Limit hinzufügen für…")}
+          value=""
+          onChange={(e) => {
+            if (e.target.value)
+              setLimits([...limits, { tools: [e.target.value], max: 50, per: "day" }]);
+          }}
+          className="mt-2 rounded-md border border-dashed border-border bg-background/40 px-3 py-1.5 text-xs text-muted-foreground outline-none transition hover:bg-accent hover:text-foreground focus:border-primary/50"
         >
-          {t("+ Add limit", "+ Limit hinzufügen")}
-        </button>
+          <option value="">{t("+ Add limit…", "+ Limit hinzufügen…")}</option>
+          {unlimited.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
       )}
     </div>
   );

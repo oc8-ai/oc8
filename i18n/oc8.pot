@@ -32,16 +32,31 @@ msgstr ""
 msgid "(requires settings:manage)"
 msgstr ""
 
+msgid "{connection} reports no amount, so a euro threshold above €0 never applies to it"
+msgstr ""
+
 msgid "{count} departments"
 msgstr ""
 
+msgid "{count} tool selected"
+msgstr ""
+
+msgid "{count} tools selected"
+msgstr ""
+
 msgid "{field} is required."
+msgstr ""
+
+msgid "{field} must start with https:// (for example https://api.example.com/v1)."
 msgstr ""
 
 msgid "{from}–{to} of {total}"
 msgstr ""
 
 msgid "{label} may write content to knowledge bases"
+msgstr ""
+
+msgid "{max} per {per}: {tools}"
 msgstr ""
 
 msgid "{n} selected"
@@ -56,6 +71,9 @@ msgstr ""
 msgid "{name} is incomplete: {fields} missing"
 msgstr ""
 
+msgid "{name} is ready — {count} tools, {model}."
+msgstr ""
+
 msgid "{name} is still in use ({what}). Delete it anyway? Agents that chose it then have no login until someone chooses another."
 msgstr ""
 
@@ -65,13 +83,22 @@ msgstr ""
 msgid "{name} is still read by the data sources {sources}. Choose another credential there first, then delete it."
 msgstr ""
 
+msgid "{name} will send mail and messages to customers and partners without a person approving each one. Guardrails and usage limits still apply, so set a daily limit on each tool that sends, so a mistake can't send hundreds of messages."
+msgstr ""
+
+msgid "{tools}: {name} can use it once the department turns it on in its tool settings."
+msgstr ""
+
+msgid "{tools}: {name} can use them once the department turns them on in its tool settings."
+msgstr ""
+
 msgid "/do carry out the plan above"
 msgstr ""
 
 msgid "/summarise this conversation"
 msgstr ""
 
-msgid "+ Add limit"
+msgid "+ Add limit…"
 msgstr ""
 
 msgid "+ count also…"
@@ -140,6 +167,12 @@ msgstr ""
 msgid "A message to the running answer is text only. Remove the attachments, or send them once it's done."
 msgstr ""
 
+msgid "A newer shipped version is available"
+msgstr ""
+
+msgid "A newer shipped version is available. Your changes stay until you reset the skill to it."
+msgstr ""
+
 msgid "A reset email was sent to them"
 msgstr ""
 
@@ -153,6 +186,9 @@ msgid "A run is parked and nobody was asked"
 msgstr ""
 
 msgid "A seat is granted per department by an administrator and takes effect on your next request — no new sign-in."
+msgstr ""
+
+msgid "A short note for the profile card"
 msgstr ""
 
 msgid "A skill is no longer available."
@@ -174,6 +210,9 @@ msgid "A system needs a login chosen for this agent first. Set it up under Conne
 msgstr ""
 
 msgid "A template only — it ticks boxes now and is not stored. There is no inheritance."
+msgstr ""
+
+msgid "A unique webhook URL is generated once the agent is hired. You'll land on the agent's page to copy it — Odoo's Automation Rules or any other tool that can send a POST request works."
 msgstr ""
 
 msgid "A virtual router that picks among your connected models by task complexity."
@@ -212,6 +251,9 @@ msgstr ""
 msgid "Actions"
 msgstr ""
 
+msgid "Actions needing approval"
+msgstr ""
+
 msgid "Activation failed."
 msgstr ""
 
@@ -237,6 +279,9 @@ msgid "Actor type"
 msgstr ""
 
 msgid "Add"
+msgstr ""
+
+msgid "Add a limit for…"
 msgstr ""
 
 msgid "Add a model configuration"
@@ -335,6 +380,9 @@ msgstr ""
 msgid "After publishing"
 msgstr ""
 
+msgid "After you confirm"
+msgstr ""
+
 msgid "agent"
 msgstr ""
 
@@ -356,10 +404,28 @@ msgstr ""
 msgid "Agent deleted"
 msgstr ""
 
+msgid "Agent hired"
+msgstr ""
+
+msgid "Agent hired, but its login could not be set"
+msgstr ""
+
+msgid "Agent hired, but its tools could not be granted"
+msgstr ""
+
+msgid "Agent hired, but the schedule could not be saved"
+msgstr ""
+
+msgid "Agent hired, but the webhook could not be created"
+msgstr ""
+
 msgid "agent identity"
 msgstr ""
 
 msgid "Agent not found, or you don't have access."
+msgstr ""
+
+msgid "Agent profile"
 msgstr ""
 
 msgid "Agent restored"
@@ -467,7 +533,13 @@ msgstr ""
 msgid "Also fits: "
 msgstr ""
 
+msgid "Also move the {count} agents using this skill to the shipped version"
+msgstr ""
+
 msgid "Also require approval for a specific tool (optional)"
+msgstr ""
+
+msgid "Also update the {count} agents that use this skill"
 msgstr ""
 
 msgid "Amount"
@@ -548,7 +620,13 @@ msgstr ""
 msgid "App"
 msgstr ""
 
+msgid "Applied to the draft below, limits included. Save to keep it."
+msgstr ""
+
 msgid "Apply"
+msgstr ""
+
+msgid "Apply a preset"
 msgstr ""
 
 msgid "Apply this change"
@@ -569,10 +647,16 @@ msgstr ""
 msgid "Approval channels"
 msgstr ""
 
+msgid "Approval expired"
+msgstr ""
+
 msgid "approval for"
 msgstr ""
 
 msgid "Approval for:"
+msgstr ""
+
+msgid "Approval from €5,000"
 msgstr ""
 
 msgid "Approval granted"
@@ -599,6 +683,18 @@ msgstr ""
 msgid "Approval required"
 msgstr ""
 
+msgid "approval threshold"
+msgstr ""
+
+msgid "Approval threshold (agent, EUR)"
+msgstr ""
+
+msgid "Approval threshold (EUR)"
+msgstr ""
+
+msgid "Approval threshold: {value}"
+msgstr ""
+
 msgid "Approval wait"
 msgstr ""
 
@@ -618,6 +714,9 @@ msgid "Approve this?"
 msgstr ""
 
 msgid "Approved"
+msgstr ""
+
+msgid "Approved by a person, but not carried out in this run."
 msgstr ""
 
 msgid "Archive"
@@ -656,6 +755,9 @@ msgstr ""
 msgid "Ask anything …"
 msgstr ""
 
+msgid "Ask before every change"
+msgstr ""
+
 msgid "Ask your admin to install it under Capas."
 msgstr ""
 
@@ -686,6 +788,9 @@ msgstr ""
 msgid "Assign knowledge base"
 msgstr ""
 
+msgid "Assign knowledge bases to this department. Agents inherit these and can only tighten access, never expand it."
+msgstr ""
+
 msgid "Assign skill"
 msgstr ""
 
@@ -714,6 +819,12 @@ msgid "Assigning…"
 msgstr ""
 
 msgid "Assignment cleared — that person’s token decides again."
+msgstr ""
+
+msgid "Assistant hired"
+msgstr ""
+
+msgid "Assistants"
 msgstr ""
 
 msgid "At least 8 characters"
@@ -773,7 +884,19 @@ msgstr ""
 msgid "Automatic discovery isn't available for this provider — enter the model tag manually."
 msgstr ""
 
+msgid "Autonomous"
+msgstr ""
+
+msgid "Autonomy"
+msgstr ""
+
+msgid "Autonomy saved"
+msgstr ""
+
 msgid "Available"
+msgstr ""
+
+msgid "Available assistants"
 msgstr ""
 
 msgid "Available in chat"
@@ -849,6 +972,9 @@ msgid "Between 0 and 30. How long a member may still sign in without a second fa
 msgstr ""
 
 msgid "Between 1 and 100. Lowering it keeps existing follow-ups but blocks new ones above the limit."
+msgstr ""
+
+msgid "Between 1 and 1000. Lowering it keeps existing agents but blocks new ones above the limit."
 msgstr ""
 
 msgid "Binding revoked"
@@ -992,7 +1118,25 @@ msgstr ""
 msgid "Change runtime"
 msgstr ""
 
+msgid "changed"
+msgstr ""
+
 msgid "Changed"
+msgstr ""
+
+msgid "Changed something in {connection}"
+msgstr ""
+
+msgid "Changed: {what}"
+msgstr ""
+
+msgid "Changes are waiting for your confirmation. Nothing below applies until you confirm it."
+msgstr ""
+
+msgid "Changes inside your systems run on their own. Anything that reaches people outside, deletes something or can't be undone waits for a person."
+msgstr ""
+
+msgid "Changing something in {connection}"
 msgstr ""
 
 msgid "Changing the model takes effect for the next run. Manage model configurations under Models."
@@ -1073,6 +1217,12 @@ msgstr ""
 msgid "Choose a department."
 msgstr ""
 
+msgid "Choose a login for this assistant."
+msgstr ""
+
+msgid "Choose a preset…"
+msgstr ""
+
 msgid "Choose a starting layout"
 msgstr ""
 
@@ -1082,6 +1232,9 @@ msgstr ""
 msgid "Choose at least one endpoint."
 msgstr ""
 
+msgid "Choose Autonomous first. Until then every message to the outside waits for a person."
+msgstr ""
+
 msgid "Choose from a data source"
 msgstr ""
 
@@ -1089,6 +1242,9 @@ msgid "Choose from available models"
 msgstr ""
 
 msgid "Choose from data source ›"
+msgstr ""
+
+msgid "Choose LLM"
 msgstr ""
 
 msgid "Choose the model it thinks with and, if more than one is installed, the runtime it works in."
@@ -1187,6 +1343,18 @@ msgstr ""
 msgid "Condense this conversation into a decision record."
 msgstr ""
 
+msgid "Conditions"
+msgstr ""
+
+msgid "Conditions (agent)"
+msgstr ""
+
+msgid "Conditions (department)"
+msgstr ""
+
+msgid "Confidential"
+msgstr ""
+
 msgid "Configuration"
 msgstr ""
 
@@ -1215,6 +1383,9 @@ msgid "Confirming…"
 msgstr ""
 
 msgid "Connect"
+msgstr ""
+
+msgid "Connect a new one"
 msgstr ""
 
 msgid "Connect a provider"
@@ -1370,6 +1541,9 @@ msgstr ""
 msgid "Could not add source."
 msgstr ""
 
+msgid "Could not apply the default."
+msgstr ""
+
 msgid "Could not archive the flow"
 msgstr ""
 
@@ -1466,6 +1640,9 @@ msgstr ""
 msgid "Could not finish onboarding"
 msgstr ""
 
+msgid "Could not hire agent"
+msgstr ""
+
 msgid "Could not link this credential"
 msgstr ""
 
@@ -1476,6 +1653,12 @@ msgid "Could not load organization settings."
 msgstr ""
 
 msgid "Could not load the audit log."
+msgstr ""
+
+msgid "Could not load the default frame."
+msgstr ""
+
+msgid "Could not load the personal departments."
 msgstr ""
 
 msgid "Could not load this department's existing tools, so it isn't safe to continue -- saving now could delete tools it already has."
@@ -1526,6 +1709,9 @@ msgstr ""
 msgid "Could not rename the passkey."
 msgstr ""
 
+msgid "Could not reset the skill."
+msgstr ""
+
 msgid "Could not reset two-factor authentication."
 msgstr ""
 
@@ -1566,6 +1752,9 @@ msgid "Could not save prompt caching setting"
 msgstr ""
 
 msgid "Could not save settings."
+msgstr ""
+
+msgid "Could not save the default budget."
 msgstr ""
 
 msgid "Could not save the endpoints."
@@ -1628,6 +1817,9 @@ msgstr ""
 msgid "Could not update the mail server."
 msgstr ""
 
+msgid "Could not update the personal departments setting."
+msgstr ""
+
 msgid "Could not update your name."
 msgstr ""
 
@@ -1653,6 +1845,12 @@ msgid "Couldn't delete the agent"
 msgstr ""
 
 msgid "Couldn't delete the file"
+msgstr ""
+
+msgid "Couldn't grant access"
+msgstr ""
+
+msgid "Couldn't hire the assistant"
 msgstr ""
 
 msgid "Couldn't load attached files."
@@ -1698,6 +1896,9 @@ msgid "Couldn't revoke"
 msgstr ""
 
 msgid "Couldn't roll back"
+msgstr ""
+
+msgid "Couldn't save autonomy"
 msgstr ""
 
 msgid "Couldn't save guardrails"
@@ -1850,6 +2051,9 @@ msgstr ""
 msgid "Custom value"
 msgstr ""
 
+msgid "Customised"
+msgstr ""
+
 msgid "Daily"
 msgstr ""
 
@@ -1886,6 +2090,9 @@ msgstr ""
 msgid "Data sources (optional)"
 msgstr ""
 
+msgid "day"
+msgstr ""
+
 msgid "Day"
 msgstr ""
 
@@ -1920,6 +2127,18 @@ msgid "default"
 msgstr ""
 
 msgid "Default"
+msgstr ""
+
+msgid "Default budget"
+msgstr ""
+
+msgid "Default budget saved"
+msgstr ""
+
+msgid "Default frame"
+msgstr ""
+
+msgid "Default login"
 msgstr ""
 
 msgid "Default: in the user's context"
@@ -2027,6 +2246,9 @@ msgstr ""
 msgid "Deleted"
 msgstr ""
 
+msgid "Deleting and other irreversible actions also run without asking, unless a guardrail requires approval. Reaching people outside still asks unless you allow it below."
+msgstr ""
+
 msgid "Deleting…"
 msgstr ""
 
@@ -2034,6 +2256,9 @@ msgid "Delta"
 msgstr ""
 
 msgid "Department"
+msgstr ""
+
+msgid "Department = inherited · Agent = additional"
 msgstr ""
 
 msgid "Department allows (ceiling)"
@@ -2046,6 +2271,12 @@ msgid "Department assigned"
 msgstr ""
 
 msgid "Department deleted"
+msgstr ""
+
+msgid "department frame"
+msgstr ""
+
+msgid "Department frame"
 msgstr ""
 
 msgid "Department knowledge"
@@ -2120,6 +2351,9 @@ msgstr ""
 msgid "Disabled"
 msgstr ""
 
+msgid "Disabled — read-only"
+msgstr ""
+
 msgid "Discard"
 msgstr ""
 
@@ -2189,9 +2423,6 @@ msgstr ""
 msgid "Duplicate"
 msgstr ""
 
-msgid "Duplicate this skill to change it"
-msgstr ""
-
 msgid "Duration"
 msgstr ""
 
@@ -2238,6 +2469,9 @@ msgid "e.g. Work laptop"
 msgstr ""
 
 msgid "Each code works once. Store them somewhere safe — you will not see them again."
+msgstr ""
+
+msgid "Each member can get a private department of their own. Admins see only who owns one and how many agents it holds, never its content."
 msgstr ""
 
 msgid "Each person changes their email and password in their own account."
@@ -2309,13 +2543,13 @@ msgstr ""
 msgid "Enable a vector-index capa (Qdrant, pgvector) first."
 msgstr ""
 
+msgid "Enable knowledge base"
+msgstr ""
+
 msgid "Enabled"
 msgstr ""
 
-msgid "Enabled for {count} department(s)"
-msgstr ""
-
-msgid "Enabled for all departments"
+msgid "Enabled — read-only"
 msgstr ""
 
 msgid "Enabling…"
@@ -2405,6 +2639,9 @@ msgstr ""
 msgid "Every action, every timestamp."
 msgstr ""
 
+msgid "Every change and every message waits for a person to approve it."
+msgstr ""
+
 msgid "Every day at {time}"
 msgstr ""
 
@@ -2435,6 +2672,9 @@ msgstr ""
 msgid "Everyone"
 msgstr ""
 
+msgid "everything"
+msgstr ""
+
 msgid "Everything"
 msgstr ""
 
@@ -2445,6 +2685,9 @@ msgid "Execution"
 msgstr ""
 
 msgid "execution environment"
+msgstr ""
+
+msgid "Existing personal departments"
 msgstr ""
 
 msgid "Expand sidebar"
@@ -2570,6 +2813,9 @@ msgstr ""
 msgid "Folders"
 msgstr ""
 
+msgid "Follow default"
+msgstr ""
+
 msgid "For personal notes, open an agent and switch to the \"Memory\" tab."
 msgstr ""
 
@@ -2591,7 +2837,13 @@ msgstr ""
 msgid "Forgot password?"
 msgstr ""
 
+msgid "Former member"
+msgstr ""
+
 msgid "Forwarded verbatim to the provider after every named field above -- for knobs oc8 has no dedicated field for (e.g. OpenRouter's provider/top_p). Not validated here; the provider decides what it accepts."
+msgstr ""
+
+msgid "Frame"
 msgstr ""
 
 msgid "Framework default"
@@ -2690,10 +2942,19 @@ msgstr ""
 msgid "Group by"
 msgstr ""
 
+msgid "Guardrail label"
+msgstr ""
+
 msgid "Guardrails"
 msgstr ""
 
 msgid "Guardrails (one per line)"
+msgstr ""
+
+msgid "Guardrails & Trigger"
+msgstr ""
+
+msgid "Guardrails decide what {name} may do. This decides whether it does it without asking a person first."
 msgstr ""
 
 msgid "Guardrails saved"
@@ -2732,6 +2993,9 @@ msgstr ""
 msgid "hard"
 msgstr ""
 
+msgid "Hard limit (tokens)"
+msgstr ""
+
 msgid "Hard limit exceeded"
 msgstr ""
 
@@ -2756,6 +3020,12 @@ msgstr ""
 msgid "Hide work panel"
 msgstr ""
 
+msgid "Hire"
+msgstr ""
+
+msgid "Hire a new agent"
+msgstr ""
+
 msgid "Hire agent"
 msgstr ""
 
@@ -2765,7 +3035,13 @@ msgstr ""
 msgid "History"
 msgstr ""
 
+msgid "hour"
+msgstr ""
+
 msgid "How do you describe the endpoints?"
+msgstr ""
+
+msgid "how far it acts before asking"
 msgstr ""
 
 msgid "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed."
@@ -2852,6 +3128,15 @@ msgstr ""
 msgid "Inherited"
 msgstr ""
 
+msgid "inherited from dept"
+msgstr ""
+
+msgid "Inherited from the department"
+msgstr ""
+
+msgid "Inherited from the department — manage it there"
+msgstr ""
+
 msgid "Input"
 msgstr ""
 
@@ -2891,6 +3176,9 @@ msgstr ""
 msgid "Instructions saved"
 msgstr ""
 
+msgid "Internal"
+msgstr ""
+
 msgid "interrupted"
 msgstr ""
 
@@ -2903,10 +3191,31 @@ msgstr ""
 msgid "Invite"
 msgstr ""
 
+msgid "It asks no approval for {names}, which the department requires."
+msgstr ""
+
+msgid "It changes things, which the department does not allow."
+msgstr ""
+
 msgid "It has not worked yet."
 msgstr ""
 
 msgid "It listens on the mailbox the agent uses for its tools. "
+msgstr ""
+
+msgid "It reaches all functions, including functions the department does not offer."
+msgstr ""
+
+msgid "It reaches functions the department does not offer: {names}."
+msgstr ""
+
+msgid "It reads, which the department does not allow."
+msgstr ""
+
+msgid "It takes effect when you publish this version."
+msgstr ""
+
+msgid "Its approval threshold is above the department's {amount} €."
 msgstr ""
 
 msgid "its model configuration"
@@ -2925,6 +3234,9 @@ msgid "Judge against this department's model"
 msgstr ""
 
 msgid "Judging against your number for this look only — nothing is saved."
+msgstr ""
+
+msgid "Just a label for this card — it doesn't change what the agent can actually do."
 msgstr ""
 
 msgid "just now"
@@ -2960,9 +3272,6 @@ msgstr ""
 msgid "Knowledge base updated"
 msgstr ""
 
-msgid "Knowledge bases"
-msgstr ""
-
 msgid "Knowledge Bases"
 msgstr ""
 
@@ -2990,6 +3299,9 @@ msgstr ""
 msgid "Last run"
 msgstr ""
 
+msgid "Last skipped {time}: {reason}"
+msgstr ""
+
 msgid "Last success {time}."
 msgstr ""
 
@@ -3000,6 +3312,9 @@ msgid "Latest"
 msgstr ""
 
 msgid "Lead → Team"
+msgstr ""
+
+msgid "Leave a field empty for no limit. Applies to every personal department that follows the default."
 msgstr ""
 
 msgid "Leave agent mode"
@@ -3026,10 +3341,16 @@ msgstr ""
 msgid "Legend"
 msgstr ""
 
+msgid "Let members have a personal department"
+msgstr ""
+
 msgid "Let the copilot draft this from a rough description"
 msgstr ""
 
 msgid "Let the copilot read this agent's instructions and suggest guardrails"
+msgstr ""
+
+msgid "Let this assistant use my account. It acts only for me."
 msgstr ""
 
 msgid "Lets an external tool call oc8's Copilot over MCP as you, with your own permissions."
@@ -3149,6 +3470,9 @@ msgstr ""
 msgid "Local library"
 msgstr ""
 
+msgid "local model"
+msgstr ""
+
 msgid "Locality"
 msgstr ""
 
@@ -3162,6 +3486,18 @@ msgid "Login"
 msgstr ""
 
 msgid "Login failed"
+msgstr ""
+
+msgid "Login not usable in any department yet"
+msgstr ""
+
+msgid "Login usable in {count} department(s)"
+msgstr ""
+
+msgid "Login usable in all departments"
+msgstr ""
+
+msgid "Logins"
 msgstr ""
 
 msgid "Look"
@@ -3180,6 +3516,9 @@ msgid "Looking through its notes"
 msgstr ""
 
 msgid "Looking through its notes …"
+msgstr ""
+
+msgid "Looks good"
 msgstr ""
 
 msgid "Made a note"
@@ -3236,6 +3575,9 @@ msgstr ""
 msgid "Max output tokens (optional)"
 msgstr ""
 
+msgid "Max personal agents per person"
+msgstr ""
+
 msgid "Max steps must be a positive whole number"
 msgstr ""
 
@@ -3257,7 +3599,13 @@ msgstr ""
 msgid "Maximum calls"
 msgstr ""
 
+msgid "May reach people outside without asking"
+msgstr ""
+
 msgid "MCP Connections"
+msgstr ""
+
+msgid "Member without a display name"
 msgstr ""
 
 msgid "Members who set up a second factor are asked for it at sign-in."
@@ -3347,6 +3695,12 @@ msgstr ""
 msgid "More runtimes appear here once installed as plugins."
 msgstr ""
 
+msgid "More settings (agent)"
+msgstr ""
+
+msgid "More settings (department)"
+msgstr ""
+
 msgid "More than 500 entries – pick a parent folder."
 msgstr ""
 
@@ -3374,6 +3728,9 @@ msgstr ""
 msgid "My Copilot"
 msgstr ""
 
+msgid "My personal assistants"
+msgstr ""
+
 msgid "My work"
 msgstr ""
 
@@ -3381,6 +3738,9 @@ msgid "Name"
 msgstr ""
 
 msgid "Name & description"
+msgstr ""
+
+msgid "Name & Role"
 msgstr ""
 
 msgid "name + rights"
@@ -3440,6 +3800,9 @@ msgstr ""
 msgid "Never without approval"
 msgstr ""
 
+msgid "new"
+msgstr ""
+
 msgid "New"
 msgstr ""
 
@@ -3471,6 +3834,12 @@ msgid "New email"
 msgstr ""
 
 msgid "New guardrail"
+msgstr ""
+
+msgid "New hire"
+msgstr ""
+
+msgid "New hires are turned off by your organisation."
 msgstr ""
 
 msgid "New key"
@@ -3531,6 +3900,9 @@ msgid "Next run"
 msgstr ""
 
 msgid "Next step"
+msgstr ""
+
+msgid "no"
 msgstr ""
 
 msgid "No access"
@@ -3689,6 +4061,9 @@ msgstr ""
 msgid "No MCP connections yet."
 msgstr ""
 
+msgid "No MCP connections yet. Add one under Capas to offer it here."
+msgstr ""
+
 msgid "No member has connected an account yet."
 msgstr ""
 
@@ -3714,6 +4089,12 @@ msgid "No notifications"
 msgstr ""
 
 msgid "No organisation access yet."
+msgstr ""
+
+msgid "No personal assistants are available yet."
+msgstr ""
+
+msgid "No personal departments yet."
 msgstr ""
 
 msgid "No providers configured yet. Start with the wizard."
@@ -3776,6 +4157,12 @@ msgstr ""
 msgid "No tools match your search."
 msgstr ""
 
+msgid "No tools selected yet — click \"Add tool\" to pick one."
+msgstr ""
+
+msgid "No tools selected yet."
+msgstr ""
+
 msgid "No tools yet — add one directly for this agent, or grant it to the whole department first."
 msgstr ""
 
@@ -3797,6 +4184,9 @@ msgstr ""
 msgid "no version"
 msgstr ""
 
+msgid "Nobody decided it before the run ended."
+msgstr ""
+
 msgid "Nobody has signed in to this company yet — use quick access below."
 msgstr ""
 
@@ -3812,13 +4202,25 @@ msgstr ""
 msgid "Nobody will be asked for a second factor at sign-in. Set-ups are kept, and switching back on asks for them again at once."
 msgstr ""
 
+msgid "none"
+msgstr ""
+
+msgid "None"
+msgstr ""
+
 msgid "None (disable)"
+msgstr ""
+
+msgid "None of the logins this assistant needs is available in your organisation."
 msgstr ""
 
 msgid "not allowed"
 msgstr ""
 
 msgid "Not allowed"
+msgstr ""
+
+msgid "Not available"
 msgstr ""
 
 msgid "Not available: "
@@ -3830,6 +4232,9 @@ msgstr ""
 msgid "Not checked yet"
 msgstr ""
 
+msgid "not connected"
+msgstr ""
+
 msgid "Not connected"
 msgstr ""
 
@@ -3837,9 +4242,6 @@ msgid "Not delivered: this run now acts for someone else"
 msgstr ""
 
 msgid "Not enabled"
-msgstr ""
-
-msgid "Not enabled for any department yet"
 msgstr ""
 
 msgid "not for people"
@@ -3893,6 +4295,9 @@ msgstr ""
 msgid "Nothing in progress right now."
 msgstr ""
 
+msgid "Nothing is granted for it now."
+msgstr ""
+
 msgid "Nothing is imported until you choose. The source is fetched, not trusted."
 msgstr ""
 
@@ -3929,6 +4334,15 @@ msgstr ""
 msgid "Notify — alert only"
 msgstr ""
 
+msgid "Now"
+msgstr ""
+
+msgid "Now follows the default"
+msgstr ""
+
+msgid "Now: {decision}"
+msgstr ""
+
 msgid "OAuth2 client credentials"
 msgstr ""
 
@@ -3944,6 +4358,9 @@ msgstr ""
 msgid "of which from cache"
 msgstr ""
 
+msgid "off"
+msgstr ""
+
 msgid "Off"
 msgstr ""
 
@@ -3956,6 +4373,9 @@ msgstr ""
 msgid "Older"
 msgstr ""
 
+msgid "on"
+msgstr ""
+
 msgid "On"
 msgstr ""
 
@@ -3963,6 +4383,9 @@ msgid "On demand"
 msgstr ""
 
 msgid "on its own"
+msgstr ""
+
+msgid "On-Demand"
 msgstr ""
 
 msgid "once"
@@ -3977,7 +4400,13 @@ msgstr ""
 msgid "Only an organisation connection counts here. A data source feeds knowledge everyone in the organisation uses, so a personal sign-in is never used for it."
 msgstr ""
 
+msgid "Only for an autonomous agent: sends, replies and forwards go out without anyone approving each message."
+msgstr ""
+
 msgid "Only for me"
+msgstr ""
+
+msgid "Only for this agent: the department doesn't offer this tool, so it is granted to this agent alone."
 msgstr ""
 
 msgid "Only members who set up a second factor will be asked for it; the others will no longer be asked to set one up."
@@ -3987,6 +4416,9 @@ msgid "Only on-prem models are offered: this deployment routes every embedding t
 msgstr ""
 
 msgid "Only the beginning of the answer is shown."
+msgstr ""
+
+msgid "Only these actions"
 msgstr ""
 
 msgid "Only these surfaces (optional)"
@@ -4022,6 +4454,9 @@ msgstr ""
 msgid "Open the agent"
 msgstr ""
 
+msgid "Open the autonomy setting"
+msgstr ""
+
 msgid "Open the record"
 msgstr ""
 
@@ -4038,6 +4473,9 @@ msgid "Operator"
 msgstr ""
 
 msgid "Optional"
+msgstr ""
+
+msgid "Optional logins"
 msgstr ""
 
 msgid "optional, e.g. up to 100 units on its own, above that approval"
@@ -4101,6 +4539,15 @@ msgid "Oversight rules — reasoning & behavior"
 msgstr ""
 
 msgid "Overview"
+msgstr ""
+
+msgid "Own budget"
+msgstr ""
+
+msgid "Own frame"
+msgstr ""
+
+msgid "Owner"
 msgstr ""
 
 msgid "Page "
@@ -4178,6 +4625,15 @@ msgstr ""
 msgid "Personal · manual only"
 msgstr ""
 
+msgid "Personal assistants are turned off"
+msgstr ""
+
+msgid "Personal departments"
+msgstr ""
+
+msgid "Personal departments updated"
+msgstr ""
+
 msgid "phase"
 msgstr ""
 
@@ -4227,6 +4683,9 @@ msgid "Plan appointments in your calendar"
 msgstr ""
 
 msgid "Please check your entries."
+msgstr ""
+
+msgid "Please confirm that the assistant may use your account."
 msgstr ""
 
 msgid "Please include it when you contact support."
@@ -4319,6 +4778,9 @@ msgstr ""
 msgid "Provider-reported cost"
 msgstr ""
 
+msgid "Public"
+msgstr ""
+
 msgid "Publish"
 msgstr ""
 
@@ -4367,6 +4829,9 @@ msgstr ""
 msgid "Re-sync"
 msgstr ""
 
+msgid "React to whatever this webhook sends, on {name}'s behalf."
+msgstr ""
+
 msgid "read"
 msgstr ""
 
@@ -4382,6 +4847,9 @@ msgstr ""
 msgid "Read a web page"
 msgstr ""
 
+msgid "Read from {connection}"
+msgstr ""
+
 msgid "Read its instructions"
 msgstr ""
 
@@ -4389,6 +4857,9 @@ msgid "Read the new email and take care of it."
 msgstr ""
 
 msgid "Read the text before importing"
+msgstr ""
+
+msgid "Read-only"
 msgstr ""
 
 msgid "Read, sort and send your e-mail in Outlook"
@@ -4403,6 +4874,9 @@ msgstr ""
 msgid "Reading archive…"
 msgstr ""
 
+msgid "Reading from {connection}"
+msgstr ""
+
 msgid "Reading is allowed for the rest of this chat. Every change asks you again."
 msgstr ""
 
@@ -4413,6 +4887,9 @@ msgid "Reading…"
 msgstr ""
 
 msgid "Ready"
+msgstr ""
+
+msgid "ready to launch"
 msgstr ""
 
 msgid "Real server connections agents can use as tools — separate from the catalog above."
@@ -4541,6 +5018,9 @@ msgstr ""
 msgid "Remove source?"
 msgstr ""
 
+msgid "Remove tool"
+msgstr ""
+
 msgid "Remove trigger"
 msgstr ""
 
@@ -4554,6 +5034,9 @@ msgid "Remove widget"
 msgstr ""
 
 msgid "Removed account, please choose again"
+msgstr ""
+
+msgid "Removing a grant is not yet supported"
 msgstr ""
 
 msgid "Rename"
@@ -4592,13 +5075,19 @@ msgstr ""
 msgid "Required by your organisation"
 msgstr ""
 
-msgid "Required tools (MCP)"
-msgstr ""
-
 msgid "Reset"
 msgstr ""
 
 msgid "Reset their two-factor authentication?"
+msgstr ""
+
+msgid "Reset to shipped version"
+msgstr ""
+
+msgid "Reset to shipped version?"
+msgstr ""
+
+msgid "Reset to the shipped version"
 msgstr ""
 
 msgid "Reset two-factor"
@@ -4637,6 +5126,9 @@ msgstr ""
 msgid "Restoring…"
 msgstr ""
 
+msgid "Restricted"
+msgstr ""
+
 msgid "Results"
 msgstr ""
 
@@ -4650,6 +5142,9 @@ msgid "Reusable capabilities agents can be composed from."
 msgstr ""
 
 msgid "Review"
+msgstr ""
+
+msgid "Review and confirm"
 msgstr ""
 
 msgid "Revoke"
@@ -4668,6 +5163,9 @@ msgid "Rights"
 msgstr ""
 
 msgid "Role"
+msgstr ""
+
+msgid "Role …"
 msgstr ""
 
 msgid "Role created."
@@ -4692,6 +5190,9 @@ msgid "rooms"
 msgstr ""
 
 msgid "Routes each turn to a configured tier model"
+msgstr ""
+
+msgid "Rules, then go live."
 msgstr ""
 
 msgid "run"
@@ -4796,6 +5297,9 @@ msgstr ""
 msgid "Saved by caching:"
 msgstr ""
 
+msgid "Saved once you hire the agent."
+msgstr ""
+
 msgid "Saved presets"
 msgstr ""
 
@@ -4817,16 +5321,25 @@ msgstr ""
 msgid "Schedule / trigger"
 msgstr ""
 
+msgid "Schedule set"
+msgstr ""
+
 msgid "Schedule updated"
 msgstr ""
 
 msgid "Scheduled"
 msgstr ""
 
+msgid "Scheduled run for {name}"
+msgstr ""
+
 msgid "Scope"
 msgstr ""
 
 msgid "Scope (optional)"
+msgstr ""
+
+msgid "Scopes"
 msgstr ""
 
 msgid "Search"
@@ -4994,6 +5507,9 @@ msgstr ""
 msgid "Sent as the answer – attachments only afterwards."
 msgstr ""
 
+msgid "Server"
+msgstr ""
+
 msgid "Set a new password so this person can sign in. There is no way to view their current password."
 msgstr ""
 
@@ -5037,6 +5553,9 @@ msgid "Settings"
 msgstr ""
 
 msgid "Setup failed"
+msgstr ""
+
+msgid "Setup it uses"
 msgstr ""
 
 msgid "Several logins are enabled — choose one for this agent"
@@ -5183,6 +5702,9 @@ msgstr ""
 msgid "Skill updated"
 msgstr ""
 
+msgid "skills"
+msgstr ""
+
 msgid "Skills"
 msgstr ""
 
@@ -5216,7 +5738,13 @@ msgstr ""
 msgid "soft"
 msgstr ""
 
+msgid "Soft limit (tokens)"
+msgstr ""
+
 msgid "Soft-delete this person. They leave the users list and cannot sign in."
+msgstr ""
+
+msgid "Some tools are turned off for this department"
 msgstr ""
 
 msgid "Somebody already decided this."
@@ -5226,6 +5754,9 @@ msgid "Somebody holds this role. Choose where they go first."
 msgstr ""
 
 msgid "something"
+msgstr ""
+
+msgid "Something changed meanwhile. Please review again."
 msgstr ""
 
 msgid "Something went wrong"
@@ -5255,6 +5786,9 @@ msgstr ""
 msgid "Standalone agents"
 msgstr ""
 
+msgid "Standard"
+msgstr ""
+
 msgid "standing system prompt"
 msgstr ""
 
@@ -5271,6 +5805,9 @@ msgid "Statistics could not be loaded."
 msgstr ""
 
 msgid "Status"
+msgstr ""
+
+msgid "Step {step} of {total}"
 msgstr ""
 
 msgid "Step detail is not available for this run."
@@ -5300,6 +5837,9 @@ msgstr ""
 msgid "Stop this run"
 msgstr ""
 
+msgid "Stopped. Nothing more was done in this turn."
+msgstr ""
+
 msgid "Stopping work does not undo actions already taken."
 msgstr ""
 
@@ -5319,6 +5859,9 @@ msgid "Suggest from instructions"
 msgstr ""
 
 msgid "Suggested replies"
+msgstr ""
+
+msgid "Suggestion: {decision}"
 msgstr ""
 
 msgid "Summarise this"
@@ -5373,6 +5916,9 @@ msgid "System"
 msgstr ""
 
 msgid "Table"
+msgstr ""
+
+msgid "Takes effect when you publish this version."
 msgstr ""
 
 msgid "Tamper-evident record of every decision."
@@ -5462,6 +6008,15 @@ msgstr ""
 msgid "That link did not name an object I can pin, so this is a new chat."
 msgstr ""
 
+msgid "That login can't be used. Choose one of your own logins."
+msgstr ""
+
+msgid "That login has expired. Connect it again or choose another."
+msgstr ""
+
+msgid "That login is missing details. Complete it or choose another."
+msgstr ""
+
 msgid "That model isn't available for this chat. Pick another one."
 msgstr ""
 
@@ -5471,6 +6026,9 @@ msgstr ""
 msgid "That reasoning level isn't available. Pick another one."
 msgstr ""
 
+msgid "That service is not available in your organisation."
+msgstr ""
+
 msgid "The access could not be saved. Please try again."
 msgstr ""
 
@@ -5478,6 +6036,9 @@ msgid "The account could not be determined."
 msgstr ""
 
 msgid "The account's owner or an administrator can confirm it."
+msgstr ""
+
+msgid "the agent"
 msgstr ""
 
 msgid "The agent changed since this access was confirmed. Runs that need it fail until it is confirmed again."
@@ -5490,6 +6051,9 @@ msgid "The agent isn't reachable right now. Your message wasn't sent – try aga
 msgstr ""
 
 msgid "The agent that should fill the dashboard no longer exists or is out of reach."
+msgstr ""
+
+msgid "The agent was changed. Please review and confirm the changes in your profile, under your personal assistants."
 msgstr ""
 
 msgid "The agent was created without its email trigger: pick its mailbox in the agent's tool settings, then add the trigger on the agent's page."
@@ -5654,6 +6218,9 @@ msgstr ""
 msgid "The org_admin role is not set up for this tenant."
 msgstr ""
 
+msgid "The owner is no longer active, so the change stays held."
+msgstr ""
+
 msgid "The parameter schema is not valid JSON."
 msgstr ""
 
@@ -5783,6 +6350,12 @@ msgstr ""
 msgid "These functions are counted separately: today's count starts again at 0."
 msgstr ""
 
+msgid "These guardrails let this agent reach people outside without approval in some cases, but it may still ask before each one until you make it autonomous and allow it to reach people outside."
+msgstr ""
+
+msgid "These guardrails let this agent reach people outside without approval, but it will still ask before each one until you make it autonomous and allow it to reach people outside."
+msgstr ""
+
 msgid "They will disappear from the users list and will not be able to sign in. Unused invite and reset links are spent so they cannot come back through an old mail."
 msgstr ""
 
@@ -5813,6 +6386,9 @@ msgstr ""
 msgid "This address is not allowed."
 msgstr ""
 
+msgid "This agent belongs to a member's personal department. Only that member can see its runs, files, memory and activity. You see its state and cost."
+msgstr ""
+
 msgid "This agent has no published versions yet."
 msgstr ""
 
@@ -5838,6 +6414,21 @@ msgid "This archive cannot be restored:"
 msgstr ""
 
 msgid "This archive carries provider credentials and OAuth tokens, encrypted under this passphrase. Enter it exactly as set at export time — a wrong passphrase fails the whole restore before anything is touched."
+msgstr ""
+
+msgid "This assistant changed while you were looking at it. Please review it again."
+msgstr ""
+
+msgid "This assistant does not use any login."
+msgstr ""
+
+msgid "This assistant does not use that login."
+msgstr ""
+
+msgid "This assistant is not available"
+msgstr ""
+
+msgid "This assistant isn't allowed by your organisation's rules"
 msgstr ""
 
 msgid "This base already has ingested content, so its embedding model can't change -- old and new chunks would no longer be comparable. Delete and recreate the base to use a different model."
@@ -5888,6 +6479,9 @@ msgstr ""
 msgid "This connector can't be allowed from here."
 msgstr ""
 
+msgid "This could not be confirmed: {reason}"
+msgstr ""
+
 msgid "This dashboard can't be shown."
 msgstr ""
 
@@ -5933,6 +6527,15 @@ msgstr ""
 msgid "This integration is not available yet."
 msgstr ""
 
+msgid "This is a member's personal department. Only that member can see and hire its agents."
+msgstr ""
+
+msgid "This is a member's personal department. Only that member can see its tasks."
+msgstr ""
+
+msgid "This is no longer a personal department, or its owner has left."
+msgstr ""
+
 msgid "This is where this agent works. Ask it something, or wait for its next run."
 msgstr ""
 
@@ -5972,6 +6575,9 @@ msgstr ""
 msgid "This passkey is already registered."
 msgstr ""
 
+msgid "This preset is looser than the department allows. Saving it will be refused until you change:"
+msgstr ""
+
 msgid "This proposal has expired."
 msgstr ""
 
@@ -6005,6 +6611,9 @@ msgstr ""
 msgid "This run has no acting person, so the agent cannot pick an account. Give the agent a fixed access."
 msgstr ""
 
+msgid "This run's steps aren't available to you."
+msgstr ""
+
 msgid "This runtime can't be used here:"
 msgstr ""
 
@@ -6033,6 +6642,9 @@ msgid "This tool cannot use a login in your chats right now"
 msgstr ""
 
 msgid "This tool needs a login before it can be enabled."
+msgstr ""
+
+msgid "This tool's settings can't be read, so it stays blocked until an administrator fixes them: {raw}"
 msgstr ""
 
 msgid "This trigger has no owner."
@@ -6140,16 +6752,31 @@ msgstr ""
 msgid "tool access and guardrails"
 msgstr ""
 
+msgid "tools"
+msgstr ""
+
 msgid "Tools"
 msgstr ""
 
+msgid "Tools ({count})"
+msgstr ""
+
 msgid "Tools (comma-separated)"
+msgstr ""
+
+msgid "Tools (MCP)"
 msgstr ""
 
 msgid "Tools & Access"
 msgstr ""
 
 msgid "Tools & Guardrails"
+msgstr ""
+
+msgid "Tools it may use"
+msgstr ""
+
+msgid "Tools reset to"
 msgstr ""
 
 msgid "Top agents"
@@ -6165,6 +6792,12 @@ msgid "Total spend"
 msgstr ""
 
 msgid "Total tokens"
+msgstr ""
+
+msgid "Transport"
+msgstr ""
+
+msgid "Trigger"
 msgstr ""
 
 msgid "Trigger removed"
@@ -6186,6 +6819,9 @@ msgid "Turn off"
 msgstr ""
 
 msgid "Turn on"
+msgstr ""
+
+msgid "Turned off for this department: the agent can use it once the department turns it on."
 msgstr ""
 
 msgid "Two-factor authentication"
@@ -6221,7 +6857,13 @@ msgstr ""
 msgid "unassigned agent"
 msgstr ""
 
+msgid "Unchanged settings"
+msgstr ""
+
 msgid "Unknown"
+msgstr ""
+
+msgid "unknown error"
 msgstr ""
 
 msgid "Unknown widget type"
@@ -6428,10 +7070,16 @@ msgstr ""
 msgid "Version loaded — click Save to restore it"
 msgstr ""
 
+msgid "version, setup or goal"
+msgstr ""
+
 msgid "Versions"
 msgstr ""
 
 msgid "via department lead"
+msgstr ""
+
+msgid "via MCP"
 msgstr ""
 
 msgid "Visibility"
@@ -6479,13 +7127,25 @@ msgstr ""
 msgid "Waiting for the next step"
 msgstr ""
 
+msgid "Waiting for the owner"
+msgstr ""
+
+msgid "Waiting for the owner's confirmation before it listens again."
+msgstr ""
+
 msgid "Waiting for the passkey…"
 msgstr ""
 
 msgid "Waiting for you"
 msgstr ""
 
+msgid "Waiting for your confirmation"
+msgstr ""
+
 msgid "Waiting on your answer"
+msgstr ""
+
+msgid "Wants to change something in {connection}"
 msgstr ""
 
 msgid "warning"
@@ -6557,6 +7217,9 @@ msgstr ""
 msgid "What powers this agent?"
 msgstr ""
 
+msgid "What should it work with?"
+msgstr ""
+
 msgid "What should the team lead do?"
 msgstr ""
 
@@ -6564,6 +7227,9 @@ msgid "What should this agent do? Sent with every run."
 msgstr ""
 
 msgid "What should this agent do? This becomes its standing instructions — you can refine them later on the agent's own page."
+msgstr ""
+
+msgid "What this assistant gets"
 msgstr ""
 
 msgid "What this role is for"
@@ -6585,6 +7251,15 @@ msgid "Where the money goes"
 msgstr ""
 
 msgid "Where this person stands, and at which level."
+msgstr ""
+
+msgid "Which login should it use?"
+msgstr ""
+
+msgid "Which model should think?"
+msgstr ""
+
+msgid "Who is this agent?"
 msgstr ""
 
 msgid "Who may do what — and why you were refused."
@@ -6642,6 +7317,9 @@ msgid "Wrote a file"
 msgstr ""
 
 msgid "Year to date"
+msgstr ""
+
+msgid "yes"
 msgstr ""
 
 msgid "Yes, approve"
@@ -6704,6 +7382,9 @@ msgstr ""
 msgid "You have no access to this dashboard"
 msgstr ""
 
+msgid "You have no personal assistants yet."
+msgstr ""
+
 msgid "You hold no seat in any department."
 msgstr ""
 
@@ -6725,7 +7406,13 @@ msgstr ""
 msgid "You need access to knowledge to browse sources."
 msgstr ""
 
+msgid "You've reached the maximum number of personal assistants"
+msgstr ""
+
 msgid "Your access"
+msgstr ""
+
+msgid "Your account can no longer hire assistants"
 msgstr ""
 
 msgid "Your account in this organisation no longer exists."
@@ -6741,6 +7428,9 @@ msgid "Your answer was not sent. Try again."
 msgstr ""
 
 msgid "Your assigned role could not be read from the database just now. What follows is what your token carries; an assignment on top of it would not be shown. Nothing was changed."
+msgstr ""
+
+msgid "Your changes to the instructions, tools and guardrails are replaced by the shipped version. Your edited versions stay in the history."
 msgstr ""
 
 msgid "Your chats by date and project"
@@ -6825,4 +7515,7 @@ msgid "Your seats"
 msgstr ""
 
 msgid "Your work is next door"
+msgstr ""
+
+msgid "yours"
 msgstr ""

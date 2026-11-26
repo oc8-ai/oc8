@@ -1119,6 +1119,10 @@ async def _seed_acme(session: AsyncSession) -> None:
                 origin=origin,
                 trust_level="first_party" if origin == "local" else "community",
                 current_version_id=ver_id,
+                # A seeded store skill arrives as shipped: a reset restores this.
+                shipped_version_id=ver_id if origin == "store" else None,
+                shipped_description=desc if origin == "store" else None,
+                shipped_category=cat if origin == "store" else None,
             )
         )
         session.add(

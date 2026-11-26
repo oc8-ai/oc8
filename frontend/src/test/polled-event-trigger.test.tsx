@@ -302,6 +302,63 @@ describe("polled event trigger", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
+  it("shows why the source last left an event out, and when", () => {
+    panel({
+      ...TRIGGER,
+      pollStatus: {
+        lastPolledAt: "2026-11-20T11:00:00+00:00",
+        lastOkAt: "2026-11-20T11:00:00+00:00",
+        lastError: null,
+        lastErrorAt: null,
+        lastSkipped: "automatic mail (Auto-Submitted)",
+        lastSkippedAt: "2026-11-20T10:58:00+00:00",
+      },
+    });
+
+    expect(
+      screen.getByText(
+        `Last skipped ${when("2026-11-20T10:58:00Z")}: automatic mail (Auto-Submitted)`,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a reason and an error with $ in them as they are", () => {
+    panel({
+      ...TRIGGER,
+      pollStatus: {
+        lastPolledAt: "2026-11-20T11:00:00+00:00",
+        lastOkAt: "2026-11-20T09:00:00+00:00",
+        lastError: "LoginFailed: bad $& and $1 and $$",
+        lastErrorAt: "2026-11-20T10:42:00+00:00",
+        lastSkipped: "rule $& matched $'",
+        lastSkippedAt: "2026-11-20T10:58:00+00:00",
+      },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("LoginFailed: bad $& and $1 and $$");
+    expect(screen.getByText(/rule \$& matched \$'$/)).toBeInTheDocument();
+  });
+
+  it("says nothing about skips when there were none", () => {
+    panel({
+      ...TRIGGER,
+      pollStatus: {
+        lastPolledAt: "2026-11-20T11:00:00+00:00",
+        lastOkAt: "2026-11-20T11:00:00+00:00",
+        lastError: null,
+        lastErrorAt: null,
+      },
+    });
+
+    expect(screen.queryByText(/Last skipped/)).toBeNull();
+  });
+
+  it("says a poll waits for the owner's confirmation", () => {
+    panel({ ...TRIGGER, lastSkipReason: "needs_confirmation" });
+
+    expect(screen.getByText(/waiting for the owner's confirmation/i)).toBeInTheDocument();
+  });
+
   it("says when it was switched off because the mailbox changed", () => {
     panel({ ...TRIGGER, enabled: false, lastSkipReason: "event_target_changed" });
 

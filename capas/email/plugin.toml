@@ -15,10 +15,31 @@
 # which run in the bridge and see only OC8_MCP_* variables. Having the bridge
 # follow OC8_OUTBOUND_ALLOWED_PRIVATE by itself is a follow-up.
 #
+# Mail servers with a certificate from a private CA. Certificates are always
+# verified; there is no way to skip that. Either paste the CA's certificate
+# (PEM) into the login's `ca_certificate` field, which needs no change to the
+# containers and is trusted for this login only; or set SSL_CERT_FILE (or
+# SSL_CERT_DIR) on the backend, worker and scheduler. SSL_CERT_FILE REPLACES
+# the system trust store, and core passes it to every tool server, not only
+# this one: point it at the system CA bundle WITH your CA appended (e.g. a
+# copy of /etc/ssl/certs/ca-certificates.crt plus your PEM), never at your CA
+# alone, or every other tool server stops trusting public certificates. See
+# docs/DEPLOY.md, "Trusting a private certificate authority".
+#
+# Attachments travel as files of the run, not through the model:
+# mail_get_attachment returns MCP binary content that core keeps as a run
+# file, and mail_send/mail_reply/mail_forward take run-file ids in
+# `attachments[].file` (marked `x-oc8-file`), which core resolves to the file
+# before the call reaches the bridge. A sent mail is copied, marked read, to
+# the Sent folder on IMAP (the login's `sent_folder`, else the folder marked
+# \Sent, else a common name); a failed copy is a note, never a failed send,
+# and keeping it may take 10 seconds a step at most. The copy names the Bcc
+# recipients; the mail that goes out does not. `sent_folder = "-"` keeps no
+# copy, and none is kept when the SMTP host is smtp.gmail.com,
+# smtp.googlemail.com, smtp.office365.com or smtp-mail.outlook.com: those
+# providers file sent mail themselves.
+#
 # Known limits of 1.1.0, accepted for now:
-# * Attachments travel inline, as text or base64 in the tool call and result,
-#   not as run files: core's MCP client keeps only text from a tool. Handing
-#   them over as run files is a core follow-up.
 # * Daily send budgets come from core's guardrail usage limits: the
 #   autonomous_with_limit preset allows at most 50 sends, replies and
 #   forwards together per agent and UTC day (a mail counts once it was handed
@@ -26,8 +47,6 @@
 #   have up to 50 recipients). The other presets bound sending
 #   by the tools they reach and core's outward rule, one message per mail in
 #   each task.
-# * Sent mail is not copied to a Sent folder; SMTP alone does not do that,
-#   and the provider may or may not.
 
 [plugin]
 name = "email"

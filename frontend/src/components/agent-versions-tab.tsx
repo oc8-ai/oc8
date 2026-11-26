@@ -12,7 +12,7 @@ import { GitCompare, History, Loader2, RotateCcw, X } from "lucide-react";
 import { toast } from "sonner";
 import { Panel } from "@/components/app-shell";
 import { DiffTable, describePublishError } from "@/components/agent-publish-bar";
-import { useMay } from "@/lib/governance-hooks";
+import { useMayInDepartment } from "@/lib/governance-hooks";
 import { useT } from "@/lib/i18n";
 import {
   useAgentVersionDiff,
@@ -22,19 +22,29 @@ import {
 
 type Intent = "diff" | "rollback";
 
-export function AgentVersionsTab({ agentId, mayManage }: { agentId: string; mayManage: boolean }) {
+export function AgentVersionsTab({
+  agentId,
+  departmentId,
+  mayManage,
+}: {
+  agentId: string;
+  /** The agent's department: `agent_version:publish` may be held there alone
+   *  (the owner's seat in a personal department). */
+  departmentId?: string | null;
+  mayManage: boolean;
+}) {
   const t = useT();
-  const may = useMay();
+  const mayIn = useMayInDepartment();
   const { data, isPending } = useAgentVersions(agentId);
   const rollback = useRollbackAgentVersion(agentId);
   const [open, setOpen] = useState<{ versionNo: number; intent: Intent } | null>(null);
 
   const versions = data?.items ?? [];
   const currentVersionNo = versions.find((v) => v.isCurrent)?.versionNo ?? null;
-  // BOTH gates, matching the backend's `require_permission` +
+  // BOTH gates, matching the backend's `authorize_in_department` +
   // `authorize_agent_write` pair. A rollback IS a publish, so it is the same
   // permission -- spec §6.
-  const mayPublish = mayManage && may("agent_version:publish");
+  const mayPublish = mayManage && mayIn("agent_version:publish", departmentId);
 
   // `from` is the version being inspected and `to` is the one running now, so
   // the table reads "this is what changes if you do it". Only fetched while a

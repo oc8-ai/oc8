@@ -91,6 +91,31 @@ class IncompleteCredential(ValueError):
         super().__init__(f"required fields missing: {', '.join(missing)}")
 
 
+class UrlWithoutScheme(ValueError):
+    """An address field's value does not start with https:// or http:// (E2E
+    N4: `api.opaas.ai` was saved, and the model check failed later with
+    nothing saying why). `fields` names the field keys."""
+
+    def __init__(self, fields: list[str]) -> None:
+        self.fields = fields
+        super().__init__(f"address needs https://: {', '.join(fields)}")
+
+
+def refuse_urls_without_scheme(cred_type: Any, values: dict[str, Any]) -> None:
+    """Raise `UrlWithoutScheme` (422 `credential_url_scheme`) for each `url`
+    field in `values` that is filled but names no http(s) address."""
+    bad = []
+    for field in cred_type.fields:
+        value = values.get(field.key)
+        if field.kind != "url" or not isinstance(value, str) or not value.strip():
+            continue
+        parts = urlsplit(value.strip())
+        if parts.scheme.lower() not in ("http", "https") or not parts.netloc:
+            bad.append(field.key)
+    if bad:
+        raise UrlWithoutScheme(bad)
+
+
 def missing_required(
     cred_type: Any, values: dict[str, Any], secret_refs: dict[str, str]
 ) -> list[str]:
@@ -142,6 +167,7 @@ async def create_credential(
 ) -> m.Credential:
     cred_type = await get_credential_type(db, tenant_id=tenant_id, name=credential_type)
     secret_keys = {f.key for f in cred_type.fields if f.kind == "password"}
+    refuse_urls_without_scheme(cred_type, field_values)
     plain_values = keep_origins(
         cred_type, {k: v for k, v in field_values.items() if k not in secret_keys}
     )
@@ -234,6 +260,8 @@ async def update_credential(
     if field_values is not None:
         cred_type = await get_credential_type(db, tenant_id=tenant_id, name=cred.credential_type)
         secret_keys = {f.key for f in cred_type.fields if f.kind == "password"}
+        # Only what this edit changes: a stored address is not re-judged.
+        refuse_urls_without_scheme(cred_type, field_values)
         plain_updates = keep_origins(
             cred_type, {k: v for k, v in field_values.items() if k not in secret_keys}
         )
@@ -244,7 +272,19 @@ async def update_credential(
         missing = missing_required(cred_type, {**merged, **new_secrets}, dict(cred.secret_refs))
         if missing:
             raise IncompleteCredential(missing)
+        account_changed = merged != cred.field_values
         cred.field_values = merged
+        if account_changed:
+            # Any non-secret field may name the account (a host, a user, a
+            # tenant): the login may now reach another one, so whatever
+            # listens on it starts afresh. A new secret alone does not.
+            # Deliberately broad (the safe direction: never a replay, never a
+            # missed new id); the cost is that events which arrived since the
+            # last poll, at most one poll interval's worth, are taken into
+            # the new baseline and do not fire.
+            from oc8.events.sources import LoginTarget, reset_cursors_on_login
+
+            await reset_cursors_on_login(db, LoginTarget("credential", cred.id))
         secret_refs = dict(cred.secret_refs)
         for key in secret_keys:
             value = field_values.get(key)

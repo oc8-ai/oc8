@@ -87,6 +87,74 @@ reach outside the tenant and which ones are read vs. write vs. send — see
 [Architecture Overview](architecture-overview.md#how-a-capas-tools-get-called-during-a-real-run)
 for how core reads these at call time.
 
+### Files in and out of a tool
+
+A tool never pushes file bytes through the model. Core moves them as files
+of the current run (`FileAttachment`, `owner_type="agent_run"` — the same
+files `write_output_file` produces and the agent's workspace lists), in both
+directions, for any MCP tool (`oc8/agent/run_files.py`):
+
+**Returning a file.** Return it as MCP binary content: an `EmbeddedResource`
+whose `resource` is a `BlobResourceContents` (the URI's last path segment is
+the file name, e.g. `attachment:///invoice.pdf`), or `ImageContent`. Core
+stores each one as a file of the run, under the same 25 MB cap and content
+type allowlist as every other run file, and the model reads a line such as
+
+```text
+[File kept for this run: "invoice.pdf" (application/pdf, 120.4 KB), file id 0190…. Pass this id where a tool takes a file.]
+```
+
+in its place. A type the allowlist refuses, or a call made outside an agent
+run (the connection test, say), is named in a `not kept` line instead; the
+bytes are never handed to the model. One tool result keeps at most 20 files
+and 50 MB of them together; the rest are named `not kept: limit`. Put
+whatever else the model should read (ids, sizes) in a `TextContent` next to
+it.
+
+**Taking a file.** Mark the parameter in the tool's input schema with
+`"x-oc8-file": true`, on a property, an array's `items` or `prefixItems`, an
+object's `additionalProperties`, at any depth, also
+behind `anyOf`/`oneOf`/`allOf`, `if`/`then`/`else` and local `$ref`s
+(`#/$defs/...`, `#/definitions/...`). A recursive schema is followed 12
+levels deep, a `$ref` is never re-entered on its own path, and one schema's
+walk stops after 10,000 nodes; a file parameter past those limits is not
+resolved (the tool receives the bare id and should refuse it). So is a
+marker under `patternProperties`: core never runs a tool server's regex.
+In every case the marker is still removed from the model's copy:
+
+```python
+"attachments": {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {"file": {"type": "string", "x-oc8-file": True}},
+    },
+},
+```
+
+The model passes a file id there (`file:<id>` works too). An exact file name
+works only for the run's own files and the agent's instruction files, and is
+refused when several of those carry it; every other file goes by its id. Before the call reaches the bridge, core replaces the value with
+
+```json
+{"file_id": "…", "name": "report.pdf", "mime_type": "application/pdf",
+ "size": 12345, "content_base64": "…"}
+```
+
+so the bridge receives the file and needs no access to oc8's storage. The
+marker is removed from the schema the model sees, and the description says
+a file id goes there. A run may hand over its own files; those of the same
+agent's other runs that belong to the same person (a member's run sees her own
+other runs' files, never a colleague's), or, for an autonomous run (a trigger
+or a schedule), those of the agent's other autonomous runs and never a
+member's; the agent's instruction files; and the files attached in the run's
+own chat — always within its tenant. Anything else, and any file
+reference outside an agent run, fails the call before it leaves, with the
+same answer whether the file exists or not. One call may name at most 20 files
+(a repeat counts again) and at most 50 MB of distinct files; each distinct
+file is loaded once however often it is named, and both limits are checked
+before any content is loaded.
+
 ## Triggers: `[[plugin.triggers]]`
 
 A capa declares the events an agent's trigger may listen on. The short form

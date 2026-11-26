@@ -7,8 +7,9 @@ import logging
 import uuid
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import set_committed_value
 
 from oc8 import models as m
 from oc8.models import RunStateTransition
@@ -150,6 +151,28 @@ class RunRepository:
         if for_update:
             return await self._s.get(AgentRun, run_id, with_for_update=True)
         return await self._s.get(AgentRun, run_id)
+
+    async def transition_if(self, run: AgentRun, src: RunState, dst: RunState) -> bool:
+        """Move `run` from `src` to `dst` only if its state is still `src`
+        (compare-and-set), as one conditional UPDATE: a writer that holds the
+        row is waited for and its committed state decides, and no stale copy
+        is ever written over a newer state. False when the run had moved on."""
+        moved = (
+            await self._s.execute(
+                update(AgentRun)
+                .where(AgentRun.id == run.id, AgentRun.state == src.value)
+                .values(state=dst.value)
+                .returning(AgentRun.id)
+                .execution_options(synchronize_session=False)
+            )
+        ).scalar_one_or_none()
+        if moved is None:
+            return False
+        # The row now says `dst`; let the one funnel write the history and
+        # tell the UI, from the state the row really left.
+        set_committed_value(run, "state", src.value)
+        await self.transition(run, dst)
+        return True
 
     async def transition(self, run: AgentRun, dst: RunState) -> None:
         src = RunState(run.state)

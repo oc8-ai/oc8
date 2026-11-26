@@ -14,8 +14,6 @@ display-only copies the catalogue DTO reads.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
-import json
 import re
 import uuid
 from collections.abc import Awaitable, Callable
@@ -25,18 +23,34 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import func, select
 
 from oc8 import models as m
-from oc8.api.deps import CurrentPrincipal, DbSession, authorize_agent_write, require_permission
+from oc8.api.deps import (
+    CurrentPrincipal,
+    DbSession,
+    authorize_agent_write,
+    authorize_in_department,
+    refuse_personal_agent_write,
+    require_departmental,
+    require_permission,
+)
 from oc8.api.v1._serializers import skill_to_dto
+from oc8.authz.authority import authority_for_principal
 from oc8.authz.pdp import missing_skill_requirements
-from oc8.authz.permissions import MANAGE, SKILL, VIEW, perm
+from oc8.authz.permissions import AGENT, MANAGE, SKILL, VIEW, perm
 from oc8.authz.scope import HumanActor, scope_for_principal
 from oc8.db.base import uuid7
 from oc8.knowledge.connectors.base import ConnectorError
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.runtime.registry import check_runtime_capabilities, resolve_runtime_plugin
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import SkillDTO
 from oc8.skills.importer import DEFAULT_BUDGET_TOKENS, discover
 from oc8.skills.schema import SkillDefinitionError, parse_definition
+from oc8.skills.shipped import (
+    artifact_hash,
+    mark_customized,
+    needs_copy_on_write,
+    record_shipped,
+)
 
 router = APIRouter()
 
@@ -125,12 +139,6 @@ def _definition(
     }
 
 
-def _artifact_hash(definition: dict[str, Any]) -> bytes:
-    return hashlib.sha256(
-        json.dumps(definition, sort_keys=True, separators=(",", ":")).encode()
-    ).digest()
-
-
 def _slugify(value: str) -> str:
     out = "".join(ch.lower() if ch.isalnum() else "-" for ch in value).strip("-")
     while "--" in out:
@@ -159,6 +167,48 @@ def _next_patch(current: str | None) -> tuple[int, int, int]:
         return (0, 1, 0)
     major, minor, patch = (int(g) for g in match.groups())
     return (major, minor, patch + 1)
+
+
+def _same_content(definition: dict[str, Any], body: CreateVersionRequest) -> bool:
+    """Whether `body` would publish what `definition` already holds: the same
+    instruction, tools, knowledge and guardrails, read the way the catalogue
+    DTO reads them (the presentation lists, else `requires`)."""
+    pres: dict[str, Any] = definition.get("presentation") or {}
+    requires: dict[str, Any] = definition.get("requires") or {}
+    tools = pres.get("tools", requires.get("tools", []))
+    knowledge = pres.get("knowledge", requires.get("kbs", []))
+    guardrails = pres.get("guardrails", definition.get("guardrails", []))
+    return (
+        str(definition.get("instruction", "")).strip() == body.instructions.strip()
+        and list(tools) == list(body.tools)
+        and list(knowledge) == list(body.knowledge)
+        and list(guardrails) == list(body.guardrails)
+    )
+
+
+async def _pick_semver(
+    db: DbSession,
+    skill: m.Skill,
+    current_version: m.SkillVersion | None,
+    requested: str | None,
+) -> str:
+    """`requested` if it is free (409 otherwise), else the next free patch after
+    the current version."""
+    taken = set(
+        (await db.execute(select(m.SkillVersion.semver).where(m.SkillVersion.skill_id == skill.id)))
+        .scalars()
+        .all()
+    )
+    if requested is not None:
+        if requested in taken:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT, f"version {requested} already exists for this skill"
+            )
+        return requested
+    major, minor, patch = _next_patch(current_version.semver if current_version else None)
+    while f"{major}.{minor}.{patch}" in taken:
+        patch += 1
+    return f"{major}.{minor}.{patch}"
 
 
 async def _load_skill(db: DbSession, skill_id: uuid.UUID, tenant_id: uuid.UUID) -> m.Skill:
@@ -224,7 +274,7 @@ async def create_skill(
         skill_id=skill.id,
         semver=body.semver,
         definition=definition,
-        artifact_hash=_artifact_hash(definition),
+        artifact_hash=artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
@@ -244,6 +294,7 @@ async def create_skill_version(
     skill_id: uuid.UUID,
     body: CreateVersionRequest,
     request: Request,
+    response: Response,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> SkillVersionPublishedDTO:
@@ -261,23 +312,30 @@ async def create_skill_version(
     reference_root = (
         current_version.definition.get("reference_root") if current_version is not None else None
     )
+    if (
+        body.semver is None
+        and current_version is not None
+        and _same_content(current_version.definition, body)
+    ):
+        # Nothing to publish -- like a PATCH that changes nothing. Above all a
+        # shipped skill saved unchanged must not turn customised, or it would
+        # stop following shipped updates for nothing. Asked to, the live
+        # assignments still move to the current version: that is how the ones
+        # left behind by an earlier publish catch up.
+        response.status_code = status.HTTP_200_OK
+        moved = (0, 0, 0)
+        if body.update_assignments:
+            moved = await _move_assignments(db, request, principal, skill.id, current_version)
+            await db.flush()
+            await db.commit()
+        return SkillVersionPublishedDTO(
+            **skill_to_dto(skill, current_version).model_dump(),
+            assignments_updated=moved[0],
+            assignments_skipped=moved[1],
+            assignments_not_allowed=moved[2],
+        )
 
-    taken = set(
-        (await db.execute(select(m.SkillVersion.semver).where(m.SkillVersion.skill_id == skill.id)))
-        .scalars()
-        .all()
-    )
-    if body.semver is not None:
-        semver = body.semver
-        if semver in taken:
-            raise HTTPException(
-                status.HTTP_409_CONFLICT, f"version {semver} already exists for this skill"
-            )
-    else:
-        major, minor, patch = _next_patch(current_version.semver if current_version else None)
-        while f"{major}.{minor}.{patch}" in taken:
-            patch += 1
-        semver = f"{major}.{minor}.{patch}"
+    semver = await _pick_semver(db, skill, current_version, body.semver)
 
     definition = _validated(
         _definition(
@@ -295,13 +353,17 @@ async def create_skill_version(
         skill_id=skill.id,
         semver=semver,
         definition=definition,
-        artifact_hash=_artifact_hash(definition),
+        artifact_hash=artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
     # Existing assignments stay pinned to the version they were made against
     # unless the caller asks for them to follow -- publishing must not silently
     # change what a running agent is doing.
+    # A shipped skill is edited in place: it keeps its origin and its shipped
+    # version (for a reset), and is marked customised so a shipped update
+    # leaves the edit alone.
+    mark_customized(skill, previous_version_id=skill.current_version_id)
     skill.current_version_id = version.id
     updated = skipped = not_allowed = 0
     if body.update_assignments:
@@ -378,12 +440,24 @@ async def _move_assignments(
             allowed_cache[department_id] = ok
         return allowed_cache[department_id]
 
+    governs: list[bool] = []
+
+    async def may_govern_tenant_wide() -> bool:
+        # Moving a TENANT-WIDE assignment is tenant skill governance, not a
+        # write into any one agent: tenant-wide skills reach personal agents
+        # too. The caller who may do it is the one who may write every
+        # standard department's agents -- `agent:manage` held tenant-wide.
+        if not governs:
+            authority = await authority_for_principal(request, db, principal)
+            governs.append(perm(AGENT, MANAGE) in authority.tenant_wide)
+        return governs[0]
+
     requires = version.definition.get("requires", {})
     updated = skipped = not_allowed = 0
     seen_scopes: set[tuple[uuid.UUID | None, uuid.UUID | None]] = set()
     for assignment in rows:
         scope_key = (assignment.agent_id, assignment.department_id)
-        outcome = await _judge(db, assignment, requires, may_write)
+        outcome = await _judge(db, assignment, requires, may_write, may_govern_tenant_wide)
         if outcome == "not_allowed":
             not_allowed += 1
             continue
@@ -407,9 +481,16 @@ async def _judge(
     assignment: m.SkillAssignment,
     requires: dict[str, Any],
     may_write: Callable[[uuid.UUID], Awaitable[bool]],
+    may_govern_tenant_wide: Callable[[], Awaitable[bool]],
 ) -> str:
     """ "ok", "not_allowed" (caller may not change it) or "unmet" (requirement or
-    runtime check fails). Mirrors `assign_skill`, in the same order."""
+    runtime check fails). Mirrors `assign_skill`, in the same order.
+
+    A personal department refuses everybody but its owner at `may_write`
+    (`authorize_agent_write`). That holds for an assignment on one of its
+    agents, or on the department itself; a tenant-wide assignment reaches it
+    as tenant governance instead (`may_govern_tenant_wide`), still judged by
+    the requirements and runtime checks below."""
     agents: list[m.Agent] = []
     departments: list[m.Department] = []
     if assignment.agent_id is not None:
@@ -426,7 +507,12 @@ async def _judge(
         if assignment.department_id is not None:
             stmt = stmt.where(m.Department.id == assignment.department_id)
         departments = list((await db.execute(stmt)).scalars().all())
+        tenant_wide = assignment.department_id is None
         for reached in departments:
+            if tenant_wide and reached.kind == DEPARTMENT_KIND_PERSONAL:
+                if not await may_govern_tenant_wide():
+                    return "not_allowed"
+                continue
             if not await may_write(reached.id):
                 return "not_allowed"
         agents = list(
@@ -472,8 +558,9 @@ async def duplicate_skill(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> SkillDTO:
-    """A new local skill from the source's CURRENT version -- the way to change
-    a skill one may not edit (imported, store). No assignments are copied."""
+    """A new local skill from the source's CURRENT version -- an independent
+    copy that never follows the source's shipped updates. No assignments are
+    copied."""
     source = await _load_skill(db, skill_id, principal.tenant_id)
     if source.deleted_at is not None or source.current_version_id is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
@@ -536,7 +623,7 @@ async def duplicate_skill(
         skill_id=skill.id,
         semver=INITIAL_SEMVER,
         definition=definition,
-        artifact_hash=_artifact_hash(definition),
+        artifact_hash=artifact_hash(definition),
     )
     db.add(version)
     await db.flush()
@@ -564,6 +651,15 @@ async def update_skill(
     skill = await _load_skill(db, skill_id, principal.tenant_id)
     if skill.deleted_at is not None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
+    # On a shipped skill the description and category are shipped content as
+    # well: changing either customises it, so a shipped update keeps the edit.
+    # The name is not -- it is how the shipped skill is found again.
+    # Compared trimmed: the drawer trims what it sends, and a stored value
+    # with a trailing newline must not read as an edit.
+    if (body.description is not None and body.description.strip() != skill.description.strip()) or (
+        body.category is not None and body.category.strip() != (skill.category or "").strip()
+    ):
+        mark_customized(skill, previous_version_id=skill.current_version_id)
     if body.name is not None:
         skill.name = body.name
     if body.description is not None:
@@ -573,14 +669,90 @@ async def update_skill(
     version = (
         await db.get(m.SkillVersion, skill.current_version_id) if skill.current_version_id else None
     )
-    if body.instructions is not None and version is not None:
+    if (
+        body.instructions is not None
+        and version is not None
+        and body.instructions != version.definition.get("instruction")
+    ):
         # jsonb: replaced whole, or SQLAlchemy never notices the mutation.
         definition = dict(version.definition)
         definition["instruction"] = body.instructions
-        version.definition = definition
+        if needs_copy_on_write(skill):
+            # The shipped content is what a reset restores: never change that
+            # row, write the edit as the next version instead.
+            semver = await _pick_semver(db, skill, version, None)
+            definition["version"] = semver
+            edited = m.SkillVersion(
+                tenant_id=skill.tenant_id,
+                skill_id=skill.id,
+                semver=semver,
+                definition=definition,
+                artifact_hash=artifact_hash(definition),
+            )
+            db.add(edited)
+            await db.flush()
+            mark_customized(skill, previous_version_id=version.id)
+            skill.current_version_id = edited.id
+            version = edited
+        else:
+            version.definition = definition
+            mark_customized(skill, previous_version_id=version.id)
     await db.flush()
     await db.commit()
     return skill_to_dto(skill, version)
+
+
+class ResetSkillRequest(CamelModel):
+    #: As on a content edit: move live assignments to the shipped version.
+    update_assignments: bool = False
+
+
+@router.post(
+    "/skills/{skill_id}/reset",
+    response_model=SkillVersionPublishedDTO,
+    dependencies=[Depends(require_permission(perm(SKILL, MANAGE)))],
+)
+async def reset_skill(
+    skill_id: uuid.UUID,
+    body: ResetSkillRequest,
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
+) -> SkillVersionPublishedDTO:
+    """Put a shipped skill back on its shipped content -- the newest one, when
+    a shipped update arrived while it was customised -- and clear the flags, so
+    later shipped updates apply again. The edited versions stay in history."""
+    skill = await _load_skill(db, skill_id, principal.tenant_id)
+    if skill.deleted_at is not None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "skill not found")
+    shipped = (
+        await db.get(m.SkillVersion, skill.shipped_version_id)
+        if skill.origin == "store" and skill.shipped_version_id is not None
+        else None
+    )
+    if shipped is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "this skill has no shipped version to reset to"
+        )
+    skill.current_version_id = shipped.id
+    if skill.shipped_description is not None:
+        skill.description = skill.shipped_description
+        skill.category = skill.shipped_category
+    skill.customized_at = None
+    skill.shipped_update_at = None
+    updated = skipped = not_allowed = 0
+    if body.update_assignments:
+        updated, skipped, not_allowed = await _move_assignments(
+            db, request, principal, skill.id, shipped
+        )
+    await db.flush()
+    await db.commit()
+    return SkillVersionPublishedDTO(
+        **skill_to_dto(skill, shipped).model_dump(),
+        assignments_updated=updated,
+        assignments_skipped=skipped,
+        assignments_not_allowed=not_allowed,
+    )
 
 
 @router.delete(
@@ -649,14 +821,25 @@ async def _agent_or_404(db: DbSession, agent_id: uuid.UUID, tenant_id: uuid.UUID
 @router.get(
     "/agents/{agent_id}/skills",
     response_model=list[SkillAssignmentDTO],
-    dependencies=[Depends(require_permission(perm(SKILL, VIEW)))],
+    dependencies=[Depends(require_departmental(perm(SKILL, VIEW)))],
 )
 async def list_agent_skills(
     agent_id: uuid.UUID,
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> list[SkillAssignmentDTO]:
-    await _agent_or_404(db, agent_id, principal.tenant_id)
+    agent = await _agent_or_404(db, agent_id, principal.tenant_id)
+    # `skill:view` for this agent's department: tenant-wide, or the owner's
+    # seat in this personal department.
+    await authorize_in_department(
+        request,
+        db,
+        principal,
+        perm(SKILL, VIEW),
+        agent.department_id,
+        not_found=HTTPException(status.HTTP_404_NOT_FOUND, "agent not found"),
+    )
     rows = (
         await db.execute(
             select(m.SkillAssignment, m.SkillVersion, m.Skill)
@@ -686,15 +869,24 @@ async def list_agent_skills(
 @router.delete(
     "/agents/{agent_id}/skills/{assignment_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    dependencies=[Depends(require_permission(perm(SKILL, MANAGE)))],
+    dependencies=[Depends(require_departmental(perm(SKILL, MANAGE)))],
 )
 async def unassign_skill(
     agent_id: uuid.UUID,
     assignment_id: uuid.UUID,
+    request: Request,
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> Response:
-    await _agent_or_404(db, agent_id, principal.tenant_id)
+    agent = await _agent_or_404(db, agent_id, principal.tenant_id)
+    not_found = HTTPException(status.HTTP_404_NOT_FOUND, "agent not found")
+    # `skill:manage` for this agent's department (tenant-wide, or the owner's
+    # seat in this personal department), and in a personal department only
+    # the owner.
+    await authorize_in_department(
+        request, db, principal, perm(SKILL, MANAGE), agent.department_id, not_found=not_found
+    )
+    await refuse_personal_agent_write(db, principal, agent.department_id, not_found=not_found)
     assignment = await db.get(m.SkillAssignment, assignment_id)
     if (
         assignment is None
@@ -887,10 +1079,11 @@ async def import_skills(
             skill_id=skill.id,
             semver="1.0.0",
             definition=definition,
-            artifact_hash=_artifact_hash(definition),
+            artifact_hash=artifact_hash(definition),
         )
         db.add(version)
         await db.flush()
+        record_shipped(skill, version.id)
         for rel_path, content in candidate.bundled_files.items():
             db.add(
                 m.ImportedSkillFile(

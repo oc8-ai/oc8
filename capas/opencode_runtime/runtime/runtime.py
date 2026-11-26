@@ -401,7 +401,10 @@ class OpencodeRuntime:
                         )
                         if new_lines:
                             await publish_run_output_delta(
-                                tenant_id, run_id=run_id, chunk="\n".join(new_lines)
+                                tenant_id,
+                                run_id=run_id,
+                                agent_id=agent.id,
+                                chunk="\n".join(new_lines),
                             )
                         new_events = _parse_events(new_lines)
                         all_events.extend(new_events)
@@ -480,7 +483,10 @@ class OpencodeRuntime:
                             )
                             if final_lines:
                                 await publish_run_output_delta(
-                                    tenant_id, run_id=run_id, chunk="\n".join(final_lines)
+                                    tenant_id,
+                                    run_id=run_id,
+                                    agent_id=agent.id,
+                                    chunk="\n".join(final_lines),
                                 )
                             all_events.extend(_parse_events(final_lines))
                             break

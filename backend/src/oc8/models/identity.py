@@ -119,6 +119,16 @@ class OrgMember(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
         Text, nullable=False, default="pending", server_default=text("'pending'")
     )
 
+    #: The `role` claim of the last token this person was seen with, and when
+    #: it was first seen with that value. Copied by the gate's upsert
+    #: (`authz.scope._upsert_member`) only when it differs. Read ONLY where a
+    #: run acts for this member with no token of theirs behind it (a personal
+    #: agent's trigger run borrowing knowledge, spec A5 / ruling U4), and then
+    #: only when `role_id` is NULL: an assigned role still replaces it. A
+    #: change of the claim takes effect at the next sign-in.
+    last_token_role: Mapped[str | None] = mapped_column(Text)
+    last_token_role_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
+
     __table_args__ = (
         # Both partial: a soft-deleted member must not block re-enrolling the
         # same person, and `deleted_at IS NULL` is what makes the row that

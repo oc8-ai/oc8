@@ -18,7 +18,7 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 vi.mock("sonner", () => ({ toast: { success: toastSuccess, error: toastError } }));
-vi.mock("@/lib/governance-hooks", () => ({ useMay: () => mayMock }));
+vi.mock("@/lib/governance-hooks", () => ({ useMayInDepartment: () => mayMock }));
 
 import { AgentVersionsTab } from "@/components/agent-versions-tab";
 

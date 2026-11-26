@@ -93,7 +93,15 @@ async def test_the_live_reasoning_event_names_its_run_and_step(monkeypatch: Any)
             published.append((type_, data))
 
     monkeypatch.setattr(emit, "get_event_bus", lambda: _Bus())
-    run_id = uuid.uuid4()
-    await emit.publish_run_reasoning_delta(uuid.uuid4(), run_id=run_id, step=3, text="hmm")
-    await emit.publish_run_reasoning_delta(uuid.uuid4(), run_id=run_id, step=3, text="")
+    async def _standard(*a: Any) -> Any:
+        return emit.audience.STANDARD
+
+    monkeypatch.setattr(emit, "_audience_for", _standard)
+    run_id, agent_id = uuid.uuid4(), uuid.uuid4()
+    await emit.publish_run_reasoning_delta(
+        uuid.uuid4(), run_id=run_id, agent_id=agent_id, step=3, text="hmm"
+    )
+    await emit.publish_run_reasoning_delta(
+        uuid.uuid4(), run_id=run_id, agent_id=agent_id, step=3, text=""
+    )
     assert published == [("run.reasoning_delta", {"run_id": str(run_id), "step": 3, "text": "hmm"})]

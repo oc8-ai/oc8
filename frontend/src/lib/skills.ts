@@ -28,6 +28,14 @@ export interface Skill {
   /** Set once the skill is archived (`DELETE /skills/{id}` with dependents).
    * Optional because the backend does not send it yet — see Task 16's report. */
   deletedAt?: string | null;
+  /** Set once an admin changed a shipped (store) skill's content in place. */
+  customizedAt?: string | null;
+  /** Changed away from its shipped content, computed by the backend: flagged,
+   * or no longer on the shipped version. Drives the badge and Reset. */
+  customized?: boolean;
+  /** A newer shipped version arrived while the skill was customised; a reset
+   * takes it. */
+  shippedUpdateAvailable?: boolean;
   nameTranslations?: Record<string, string>;
   descriptionTranslations?: Record<string, string>;
   instructionsTranslations?: Record<string, string>;

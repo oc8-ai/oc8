@@ -31,10 +31,9 @@ from sqlalchemy.orm.attributes import set_committed_value
 
 from oc8.models.run import AgentRun
 
-_MERGE = (
-    text("UPDATE agent_run SET context = context || :patch WHERE id = :id RETURNING context")
-    .bindparams(bindparam("patch", type_=JSONB))
-)
+_MERGE = text(
+    "UPDATE agent_run SET context = context || :patch WHERE id = :id RETURNING context"
+).bindparams(bindparam("patch", type_=JSONB))
 
 #: `coalesce` because the key is absent until the first decision, and `||` on a
 #: NULL jsonb yields NULL -- which would wipe the whole column rather than
@@ -127,23 +126,21 @@ async def append_resolved_approval(
     return _adopt(run, stored)
 
 
-_APPEND_WAIVED = text(
+_APPEND_CONSUMED = text(
     "UPDATE agent_run SET context = jsonb_set("
-    "  context, '{waived_read_before_write}',"
-    "  coalesce(context->'waived_read_before_write', '[]'::jsonb) || :entry"
+    "  context, '{consumed_tool_approvals}',"
+    "  coalesce(context->'consumed_tool_approvals', '[]'::jsonb) || :entry"
     ") WHERE id = :id RETURNING context"
 ).bindparams(bindparam("entry", type_=JSONB))
 
 
-async def append_waived_read_before_write(
-    db: AsyncSession, run: AgentRun, key: str
+async def append_consumed_approval(
+    db: AsyncSession, run: AgentRun, entry: dict[str, Any]
 ) -> dict[str, Any]:
-    """Record that one approval's read-before-write waiver was used.
-
-    Durable across legs (the run's context outlives the leg), so an approval
-    waives the check once, not once per leg. An append, like the writers above.
-    """
-    stored = (await db.execute(_APPEND_WAIVED, {"entry": [key], "id": run.id})).scalar_one()
+    """Record that one approval was used up by the call it approved. An
+    append, like the writers above: a decision landing concurrently must not
+    be lost, nor this mark."""
+    stored = (await db.execute(_APPEND_CONSUMED, {"entry": [entry], "id": run.id})).scalar_one()
     return _adopt(run, stored)
 
 

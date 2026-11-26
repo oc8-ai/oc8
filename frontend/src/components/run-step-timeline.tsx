@@ -57,6 +57,8 @@ function StateGlyph({ state }: { state: StepState }) {
       return <ShieldX className={cn(className, "text-[color:var(--status-error)]")} />;
     case "awaiting_approval":
       return <PauseCircle className={cn(className, "text-[color:var(--status-warning)]")} />;
+    case "approved":
+      return <CheckCircle2 className={cn(className, "text-muted-foreground")} />;
     default:
       return <CheckCircle2 className={cn(className, "text-[color:var(--status-success)]")} />;
   }
@@ -112,12 +114,17 @@ function Row({ row, agentId }: { row: RunStepRow; agentId?: string }) {
 
           {row.reason && (
             <p className="text-[11px] text-[color:var(--status-warning)]">
-              {row.state === "awaiting_approval"
+              {row.state === "approved"
                 ? t(
-                    `Waiting for a decision: ${row.reason}`,
-                    `Wartet auf eine Entscheidung: ${row.reason}`,
+                    "Approved by a person, but not carried out in this run.",
+                    "Von einem Menschen freigegeben, aber in diesem Lauf nicht ausgeführt.",
                   )
-                : t(`Not allowed: ${row.reason}`, `Nicht erlaubt: ${row.reason}`)}
+                : row.state === "awaiting_approval"
+                  ? t(
+                      `Waiting for a decision: ${row.reason}`,
+                      `Wartet auf eine Entscheidung: ${row.reason}`,
+                    )
+                  : t(`Not allowed: ${row.reason}`, `Nicht erlaubt: ${row.reason}`)}
             </p>
           )}
 

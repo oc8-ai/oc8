@@ -11,11 +11,12 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import or_, select
+from sqlalchemy import false, or_, select, true
 from sqlalchemy.dialects.postgresql import insert
 
 from oc8 import models as m
 from oc8.audit import append_event
+from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.notifications.service import notify
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -39,13 +40,17 @@ async def board_audience(db: AsyncSession, board: m.DataBoard) -> set[uuid.UUID]
     seat = m.OrgMemberDepartment
     share = m.DataBoardShare
     dept = m.Department
-    board_department_live = (
-        await db.execute(
-            select(dept.id).where(dept.id == board.department_id, dept.deleted_at.is_(None))
-        )
-    ).first() is not None
+    located = (
+        await db.execute(select(dept.kind, dept.deleted_at).where(dept.id == board.department_id))
+    ).first()
+    board_department_live = located is not None and located[1] is None
+    # A personal agent's board is its owner's (spec A4, `boards.repo.
+    # board_visibility`): `all_departments` does not reach it.
+    reaches_everywhere = located is None or located[0] != DEPARTMENT_KIND_PERSONAL
     everywhere = select(member.id).where(
-        member.tenant_id == board.tenant_id, member.all_departments.is_(True)
+        member.tenant_id == board.tenant_id,
+        member.all_departments.is_(True),
+        true() if reaches_everywhere else false(),
     )
     if not board_department_live:
         # Seats in an archived department carry nothing (`_scope_from_seats`),
@@ -72,7 +77,7 @@ async def board_audience(db: AsyncSession, board: m.DataBoard) -> set[uuid.UUID]
     stmt = select(member.id).where(
         member.tenant_id == board.tenant_id,
         member.deleted_at.is_(None),
-        or_(member.all_departments.is_(True), member.id.in_(seated), member.id.in_(direct)),
+        or_(member.id.in_(everywhere), member.id.in_(seated), member.id.in_(direct)),
     )
     return set((await db.execute(stmt)).scalars())
 

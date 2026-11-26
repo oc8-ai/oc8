@@ -1,3 +1,4 @@
+import { LoginFieldInput } from "@/components/connections/login-field-input";
 import { Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -394,10 +395,10 @@ function CreateCredentialDialog({
           {(selectedType?.fields ?? []).map((field) => (
             <label key={field.key} className="grid gap-1.5">
               <span>{resolveTranslation(field.label, field.label_translations, lang)}</span>
-              <input
-                type={field.kind === "password" ? "password" : "text"}
+              <LoginFieldInput
+                field={field}
                 value={fieldValues[field.key] ?? field.default ?? ""}
-                onChange={(e) => setFieldValues((cur) => ({ ...cur, [field.key]: e.target.value }))}
+                onChange={(next) => setFieldValues((cur) => ({ ...cur, [field.key]: next }))}
                 className="rounded-md border border-input bg-background px-3 py-2"
               />
             </label>
@@ -514,10 +515,10 @@ function EditCredentialDialog({
           {(selectedType?.fields ?? []).map((field) => (
             <label key={field.key} className="grid gap-1.5">
               <span>{resolveTranslation(field.label, field.label_translations, lang)}</span>
-              <input
-                type={field.kind === "password" ? "password" : "text"}
+              <LoginFieldInput
+                field={field}
                 value={fieldValues[field.key] ?? ""}
-                onChange={(e) => setFieldValues((cur) => ({ ...cur, [field.key]: e.target.value }))}
+                onChange={(next) => setFieldValues((cur) => ({ ...cur, [field.key]: next }))}
                 placeholder={
                   field.kind === "password"
                     ? t("Leave blank to keep unchanged", "Leer lassen, um es unverändert zu lassen")
