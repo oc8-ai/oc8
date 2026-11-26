@@ -2539,6 +2539,7 @@ export function useUpdateAgentTrigger() {
       triggerId,
       cronExpression,
       timezone,
+      taskText,
       actsForCreator,
     }: {
       agentId: string;
@@ -2546,12 +2547,17 @@ export function useUpdateAgentTrigger() {
       cronExpression?: string;
       //: A new zone for the schedule; left out keeps the one it has.
       timezone?: string;
+      //: A new task for the runs this trigger starts; left out keeps the one
+      //: it has. Changing it changes what runs, so the trigger's ownership
+      //: moves to whoever saved it (see `_changes_what_runs`).
+      taskText?: string;
       //: Only the trigger's creator may switch this on (webhook/event).
       actsForCreator?: boolean;
     }) =>
       api.patch<TriggerDTO>(`/triggers/${triggerId}`, {
         cronExpression,
         timezone,
+        taskText,
         actsForCreator,
       }),
     onSuccess: (_d, v) => qc.invalidateQueries({ queryKey: ["agent-triggers", v.agentId] }),

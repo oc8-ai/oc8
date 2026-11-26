@@ -52,6 +52,10 @@ function zoneInput(): HTMLInputElement {
   return screen.getByLabelText("Timezone") as HTMLInputElement;
 }
 
+function taskInput(): HTMLTextAreaElement {
+  return screen.getByLabelText("Task for each run") as HTMLTextAreaElement;
+}
+
 beforeEach(() => {
   m.triggers = [];
   m.orgTimezone = "Europe/Berlin";
@@ -130,5 +134,49 @@ describe("ScheduleEditor timezone", () => {
     render(<ScheduleEditor initial="On-Demand" agentName="Ada" agentId="a1" />);
     fireEvent.click(screen.getByRole("button", { name: "Time scheduled" }));
     expect(screen.queryByRole("link", { name: /set it in settings/i })).toBeNull();
+  });
+});
+
+describe("ScheduleEditor task text", () => {
+  it("shows the task a saved schedule runs", () => {
+    m.triggers = [saved];
+    render(<ScheduleEditor initial="" agentName="Ada" agentId="a1" />);
+    expect(taskInput().value).toBe("Scheduled run for Ada");
+  });
+
+  it("shows a task written outside this editor, not a placeholder", () => {
+    m.triggers = [{ ...saved, taskText: "Review every open opportunity and take the next step" }];
+    render(<ScheduleEditor initial="" agentName="Ada" agentId="a1" />);
+    expect(taskInput().value).toBe("Review every open opportunity and take the next step");
+  });
+
+  it("sends an edited task when the schedule is saved", () => {
+    m.triggers = [saved];
+    render(<ScheduleEditor initial="" agentName="Ada" agentId="a1" />);
+    fireEvent.change(taskInput(), { target: { value: "  Summarise leads that went quiet  " } });
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    expect(m.update).toHaveBeenCalledWith(
+      expect.objectContaining({ triggerId: "t1", taskText: "Summarise leads that went quiet" }),
+      expect.anything(),
+    );
+  });
+
+  it("seeds a new schedule with a task rather than an empty one", () => {
+    render(<ScheduleEditor initial="On-Demand" agentName="Ada" agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Time scheduled" }));
+    expect(taskInput().value).toBe("Scheduled run for Ada");
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    expect(m.create).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "a1", taskText: "Scheduled run for Ada" }),
+      expect.anything(),
+    );
+  });
+
+  it("warns before saving a schedule whose runs have no task", () => {
+    m.triggers = [saved];
+    render(<ScheduleEditor initial="" agentName="Ada" agentId="a1" />);
+    expect(screen.queryByText(/no title on the board/i)).toBeNull();
+    fireEvent.change(taskInput(), { target: { value: "   " } });
+    expect(screen.getByText(/no title on the board/i)).toBeInTheDocument();
   });
 });
