@@ -191,6 +191,10 @@ _MENTIONS = [
 ]
 #: A credential value the person wrote: refused (and redacted).
 _VALUES = [
+    # A passphrase is several words: all of them, to the end of the line.
+    "passphrase: correct horse battery9 staple",
+    "Passphrase = Pferd Batterie7 Heftklammer",
+    "GPG_PASSPHRASE: my dog Rex2019 and cat\nand the rest of the note",
     # A value that only looks like an environment reference.
     "password=$Sommer2024",
     "password=%Sommer2024%",
@@ -579,3 +583,21 @@ def test_a_passphrase_is_a_strong_key_and_a_pin_is_not(text: str, refused: bool)
     from oc8.copilot.redaction import carries_secret_value
 
     assert carries_secret_value(text) is refused
+
+
+@pytest.mark.parametrize(
+    ("text", "redacted"),
+    [
+        ("passphrase: correct horse battery", "passphrase: [redacted]"),
+        ("Passphrase: richtiges Pferd Batterie.", "Passphrase: [redacted]."),
+        ("passphrase=correct horse\nnext line stays", "passphrase=[redacted]\nnext line stays"),
+        ('passphrase: "correct horse" here', 'passphrase: "[redacted]" here'),
+        ("passphrase: ${SSH_PASSPHRASE} in the env", "passphrase: ${SSH_PASSPHRASE} in the env"),
+    ],
+)
+def test_a_bare_passphrase_is_redacted_to_the_end_of_its_line(text: str, redacted: str) -> None:
+    """A passphrase is words with blanks between them: stopping at the first
+    blank left "horse battery" in titles and the stored refused turn."""
+    from oc8.copilot.redaction import redact_text
+
+    assert redact_text(text) == redacted

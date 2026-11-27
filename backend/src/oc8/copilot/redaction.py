@@ -304,10 +304,18 @@ def _assignment_spans(text: str) -> list[tuple[int, int]]:
             if not end < j < n:
                 continue  # "Authorization: Bearer" and nothing after it
             start, end, quoted = _read_value(text, j)
-        done = max(done, end)
         value = text[start:end]
-        if _refused(value, strength, quoted=quoted, crossed=crossed):
-            spans.append((start, end if quoted else start + len(_trim(value))))
+        if not _refused(value, strength, quoted=quoted, crossed=crossed):
+            done = max(done, end)
+            continue
+        if not quoted and separator is not None and "passphrase" in raw_key.lower():
+            # A passphrase is words with blanks between them: the bare value
+            # runs to the end of its line, not to the first blank.
+            line_end = text.find("\n", end)
+            end = n if line_end == -1 else line_end
+            value = text[start:end].rstrip()
+        done = max(done, end)
+        spans.append((start, end if quoted else start + len(_trim(value))))
     return spans
 
 
