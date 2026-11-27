@@ -116,7 +116,16 @@ msgstr ""
 msgid "1 unpublished change"
 msgstr ""
 
+msgid "24 h"
+msgstr ""
+
 msgid "2FA enabled. Please sign in again."
+msgstr ""
+
+msgid "30 days"
+msgstr ""
+
+msgid "7 days"
 msgstr ""
 
 msgid "A background agent finished its run."
@@ -162,6 +171,9 @@ msgid "a former member"
 msgstr ""
 
 msgid "A knowledge base can't be searched with this model – it needs a local embedding model."
+msgstr ""
+
+msgid "A message for after the answer is text only. Remove the attachments, or send them once it's done."
 msgstr ""
 
 msgid "A message to the running answer is text only. Remove the attachments, or send them once it's done."
@@ -542,6 +554,12 @@ msgstr ""
 msgid "Also update the {count} agents that use this skill"
 msgstr ""
 
+msgid "Always allow for me"
+msgstr ""
+
+msgid "Always-allowed tools"
+msgstr ""
+
 msgid "Amount"
 msgstr ""
 
@@ -555,6 +573,12 @@ msgid "An answer is sent as text only. Remove the attachments, or send them afte
 msgstr ""
 
 msgid "An answer is still being written. Try again once it's done."
+msgstr ""
+
+msgid "An answer is still running — send text only, or wait."
+msgstr ""
+
+msgid "An answer is still running — wait for it to finish."
 msgstr ""
 
 msgid "An endpoint either reads or modifies, not both:"
@@ -966,6 +990,9 @@ msgid "Basic details of your workspace."
 msgstr ""
 
 msgid "Basics"
+msgstr ""
+
+msgid "Becomes the next message when the answer is done"
 msgstr ""
 
 msgid "Between 0 and 30. How long a member may still sign in without a second factor once it is required of them."
@@ -2495,10 +2522,16 @@ msgstr ""
 msgid "Edit endpoints"
 msgstr ""
 
+msgid "Edit message"
+msgstr ""
+
 msgid "Edit model"
 msgstr ""
 
 msgid "Edit project"
+msgstr ""
+
+msgid "Edit queued message"
 msgstr ""
 
 msgid "Edit skill"
@@ -2709,6 +2742,12 @@ msgid "Export"
 msgstr ""
 
 msgid "Export as Capa"
+msgstr ""
+
+msgid "Export as JSON"
+msgstr ""
+
+msgid "Export as Markdown"
 msgstr ""
 
 msgid "Export CSV"
@@ -2925,6 +2964,9 @@ msgid "Goal / OKR"
 msgstr ""
 
 msgid "Goes to the running answer"
+msgstr ""
+
+msgid "Goes to the running answer before its next step"
 msgstr ""
 
 msgid "Good answer"
@@ -3890,6 +3932,9 @@ msgstr ""
 msgid "Next answer"
 msgstr ""
 
+msgid "Next message"
+msgstr ""
+
 msgid "Next page"
 msgstr ""
 
@@ -4091,6 +4136,9 @@ msgstr ""
 msgid "No organisation access yet."
 msgstr ""
 
+msgid "No person"
+msgstr ""
+
 msgid "No personal assistants are available yet."
 msgstr ""
 
@@ -4146,6 +4194,9 @@ msgid "No sources linked yet."
 msgstr ""
 
 msgid "No tasks yet — start one below."
+msgstr ""
+
+msgid "No token usage in this period."
 msgstr ""
 
 msgid "No tool calls yet."
@@ -4424,6 +4475,9 @@ msgstr ""
 msgid "Only these surfaces (optional)"
 msgstr ""
 
+msgid "Only this tool on this connection, only for you, only actions that change data — never deleting or sending outside."
+msgstr ""
+
 msgid "Only visible to you"
 msgstr ""
 
@@ -4520,7 +4574,13 @@ msgstr ""
 msgid "Other answer"
 msgstr ""
 
+msgid "Others"
+msgstr ""
+
 msgid "Outbound mail — password reset, email confirmation — is sent through this credential."
+msgstr ""
+
+msgid "Outcome"
 msgstr ""
 
 msgid "Output"
@@ -4604,10 +4664,16 @@ msgstr ""
 msgid "per day"
 msgstr ""
 
+msgid "Per employee"
+msgstr ""
+
 msgid "per hour"
 msgstr ""
 
 msgid "per-agent, optional"
+msgstr ""
+
+msgid "Per-person data is recorded from version 0.23.0 on; older usage appears as “No person”."
 msgstr ""
 
 msgid "Period"
@@ -4727,6 +4793,9 @@ msgstr ""
 msgid "Previous answer"
 msgstr ""
 
+msgid "Previous message"
+msgstr ""
+
 msgid "Previous page"
 msgstr ""
 
@@ -4809,6 +4878,9 @@ msgid "Questions"
 msgstr ""
 
 msgid "queued"
+msgstr ""
+
+msgid "Queued messages"
 msgstr ""
 
 msgid "Quick access — built-in roles"
@@ -5474,6 +5546,9 @@ msgstr ""
 msgid "Send"
 msgstr ""
 
+msgid "Send after"
+msgstr ""
+
 msgid "Send again"
 msgstr ""
 
@@ -5505,6 +5580,9 @@ msgid "Sensitivity"
 msgstr ""
 
 msgid "Sent as the answer – attachments only afterwards."
+msgstr ""
+
+msgid "Sent when the answer is done"
 msgstr ""
 
 msgid "Server"
@@ -5807,6 +5885,9 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
+msgid "Steer now"
+msgstr ""
+
 msgid "Step {step} of {total}"
 msgstr ""
 
@@ -5993,6 +6074,9 @@ msgstr ""
 msgid "Testing…"
 msgstr ""
 
+msgid "Text starting with / is sent as written, not run as a command."
+msgstr ""
+
 msgid "That chat doesn't exist or isn't yours."
 msgstr ""
 
@@ -6101,6 +6185,9 @@ msgstr ""
 msgid "The chat was not deleted. Try again."
 msgstr ""
 
+msgid "The chat was not exported. Try again."
+msgstr ""
+
 msgid "The chat was not moved. Try again."
 msgstr ""
 
@@ -6134,6 +6221,9 @@ msgstr ""
 msgid "The copilot found nothing in the instructions to restrict here."
 msgstr ""
 
+msgid "The copilot is still answering. Try again when it's done."
+msgstr ""
+
 msgid "The dashboard changed since this proposal. Ask the Copilot to propose the change again from its current version."
 msgstr ""
 
@@ -6153,6 +6243,9 @@ msgid "The day somebody should only sign off offers: fork a built-in role, untic
 msgstr ""
 
 msgid "The decision was not saved. Try again."
+msgstr ""
+
+msgid "The edit was not sent. Try again."
 msgstr ""
 
 msgid "The email is appended to this task as data from outside, never as instructions."
@@ -6216,6 +6309,9 @@ msgid "The office floor is for administrators. What is waiting on you — decisi
 msgstr ""
 
 msgid "The org_admin role is not set up for this tenant."
+msgstr ""
+
+msgid "The other version was not opened. Try again."
 msgstr ""
 
 msgid "The owner is no longer active, so the change stays held."
@@ -6560,6 +6656,9 @@ msgstr ""
 msgid "This member"
 msgstr ""
 
+msgid "This message was already delivered."
+msgstr ""
+
 msgid "This model can see images (vision)"
 msgstr ""
 
@@ -6692,6 +6791,9 @@ msgstr ""
 msgid "Time"
 msgstr ""
 
+msgid "Times in"
+msgstr ""
+
 msgid "Timezone"
 msgstr ""
 
@@ -6732,6 +6834,9 @@ msgid "tokens"
 msgstr ""
 
 msgid "Tokens"
+msgstr ""
+
+msgid "Tokens per employee"
 msgstr ""
 
 msgid "tokens per skill"
@@ -6866,6 +6971,9 @@ msgstr ""
 msgid "unknown error"
 msgstr ""
 
+msgid "Unknown person"
+msgstr ""
+
 msgid "Unknown widget type"
 msgstr ""
 
@@ -6923,7 +7031,13 @@ msgstr ""
 msgid "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures."
 msgstr ""
 
+msgid "Usage could not be loaded."
+msgstr ""
+
 msgid "Usage limits"
+msgstr ""
+
+msgid "Usage over time"
 msgstr ""
 
 msgid "USD per 1M tokens — editable"

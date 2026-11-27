@@ -46,7 +46,7 @@ totals table for the range below it.
 - **Top 10:** the ten people with the most tokens in the range get their own
   series; everyone else is summed up as **Others**.
 - **No person:** usage no person is attached to — anything recorded before
-  version 0.20.0, and usage without a person such as embeddings and
+  version 0.23.0, and usage without a person such as embeddings and
   knowledge-base indexing.
 - **Names:** a person is shown by display name; a removed member keeps the
   name they had. A member without a display name is shown by email to

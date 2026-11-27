@@ -996,8 +996,8 @@ export function MembersTab() {
 
       <p className="border-t border-border px-5 py-3 text-[11px] text-muted-foreground">
         {t(
-          "Per-person data is recorded from version 0.20.0 on; older usage appears as “No person”.",
-          "Personenbezogene Daten werden ab Version 0.20.0 erfasst; ältere Nutzung erscheint als „Ohne Person“.",
+          "Per-person data is recorded from version 0.23.0 on; older usage appears as “No person”.",
+          "Personenbezogene Daten werden ab Version 0.23.0 erfasst; ältere Nutzung erscheint als „Ohne Person“.",
         )}
       </p>
     </Panel>
