@@ -3880,6 +3880,12 @@ export function useFeedbackCounts(params?: FeedbackCountFilterParams) {
     queryKey: ["stats", "feedback", params] as const,
     queryFn: () =>
       api.get<FeedbackCount[]>(`/stats/feedback${buildQuery(params as Record<string, unknown>)}`),
+    // A 404 is the filter naming an agent or department whose feedback is
+    // not counted -- deterministic, so retrying only delays saying so.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
+      return failureCount < 3;
+    },
   });
 }
 

@@ -22,7 +22,7 @@ import {
   useTenantKpis,
 } from "@/lib/hooks";
 import { formatMs } from "@/lib/format";
-import { useT } from "@/lib/i18n";
+import { useLang, useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/statistics")({
@@ -66,9 +66,12 @@ function orUndefined(value: string): string | undefined {
 }
 
 /** Share of thumbs up among one row's ratings, as a whole percent. */
-function sharePositive(row: FeedbackCount): string {
+function sharePositive(row: FeedbackCount, lang: string): string {
   const total = row.up + row.down;
-  return total === 0 ? "–" : `${Math.round((row.up / total) * 100)} %`;
+  if (total === 0) return "–";
+  return new Intl.NumberFormat(lang, { style: "percent", maximumFractionDigits: 0 }).format(
+    row.up / total,
+  );
 }
 
 const FIELD_CLASS =
@@ -76,6 +79,7 @@ const FIELD_CLASS =
 
 export function StatisticsPage() {
   const t = useT();
+  const { lang } = useLang();
   const [agentId, setAgentId] = useState<string | undefined>(undefined);
   const [departmentId, setDepartmentId] = useState<string | undefined>(undefined);
   const [dateFrom, setDateFrom] = useState<string | undefined>(undefined);
@@ -95,6 +99,9 @@ export function StatisticsPage() {
   // Ratings are not runs: the run-status filter and the grouping do not apply.
   const feedback = useFeedbackCounts({ agentId, departmentId, dateFrom, dateTo });
   const feedbackRows = feedback.data ?? [];
+  // A 404 names an agent or department whose ratings are not counted (a
+  // personal one): a fact about the filter, not a failure.
+  const feedbackNotCounted = feedback.isError && statusOf(feedback.error) === 404;
   // Filter dropdowns over every agent/department, not a paginated list view --
   // same call shape `routes/activity.tsx` already uses for its own picker.
   const { data: agentsPage } = useAgents({ pageSize: 200 });
@@ -270,11 +277,7 @@ export function StatisticsPage() {
         <>
           <Panel className="p-5">
             {chartType === "bar" && (
-              <ChartContainer
-                className="aspect-auto h-72"
-                config={chartConfig}
-                data-testid="chart-bar"
-              >
+              <ChartContainer className="aspect-auto h-72" config={chartConfig} data-testid="chart-bar">
                 <BarChart data={chartRows}>
                   <CartesianGrid vertical={false} />
                   <XAxis dataKey="label" tickLine={false} axisLine={false} />
@@ -284,11 +287,7 @@ export function StatisticsPage() {
               </ChartContainer>
             )}
             {chartType === "line" && (
-              <ChartContainer
-                className="aspect-auto h-72"
-                config={chartConfig}
-                data-testid="chart-line"
-              >
+              <ChartContainer className="aspect-auto h-72" config={chartConfig} data-testid="chart-line">
                 <LineChart data={chartRows}>
                   <CartesianGrid vertical={false} />
                   <XAxis dataKey="label" tickLine={false} axisLine={false} />
@@ -381,46 +380,58 @@ export function StatisticsPage() {
       )}
 
       <Panel className="overflow-x-auto">
-        <h2 className="px-4 pt-4 text-sm font-semibold">
+        <h2 id="answer-feedback-heading" className="px-4 pt-4 text-sm font-semibold">
           {t("Answer feedback", "Antwort-Feedback")}
         </h2>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
-              <th className="px-4 py-2 font-medium">{t("Agent", "Agent")}</th>
-              <th className="px-4 py-2 font-medium">{t("Model", "Modell")}</th>
-              <th className="px-4 py-2 text-right font-medium">
-                <ThumbsUp className="ml-auto size-3.5" aria-hidden />
-                <span className="sr-only">{t("Helpful", "Hilfreich")}</span>
-              </th>
-              <th className="px-4 py-2 text-right font-medium">
-                <ThumbsDown className="ml-auto size-3.5" aria-hidden />
-                <span className="sr-only">{t("Not helpful", "Nicht hilfreich")}</span>
-              </th>
-              <th className="px-4 py-2 text-right font-medium">
-                {t("Share positive", "Anteil positiv")}
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {feedbackRows.map((r) => (
-              <tr key={`${r.agentId}:${r.model ?? ""}`} data-testid="feedback-row">
-                <td className="px-4 py-2">{r.agentName}</td>
-                <td className="px-4 py-2 font-mono text-xs">{r.model ?? "–"}</td>
-                <td className="px-4 py-2 text-right font-mono">{r.up}</td>
-                <td className="px-4 py-2 text-right font-mono">{r.down}</td>
-                <td className="px-4 py-2 text-right font-mono">{sharePositive(r)}</td>
+        {feedbackRows.length > 0 ? (
+          <table className="w-full text-sm" aria-labelledby="answer-feedback-heading">
+            <thead>
+              <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                <th scope="col" className="px-4 py-2 font-medium">
+                  {t("Agent", "Agent")}
+                </th>
+                <th scope="col" className="px-4 py-2 font-medium">
+                  {t("Model", "Modell")}
+                </th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">
+                  <ThumbsUp className="ml-auto size-3.5" aria-hidden />
+                  <span className="sr-only">{t("Helpful", "Hilfreich")}</span>
+                </th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">
+                  <ThumbsDown className="ml-auto size-3.5" aria-hidden />
+                  <span className="sr-only">{t("Not helpful", "Nicht hilfreich")}</span>
+                </th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">
+                  {t("Share positive", "Anteil positiv")}
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {feedbackRows.length === 0 && (
+            </thead>
+            <tbody className="divide-y divide-border">
+              {feedbackRows.map((r) => (
+                <tr key={`${r.agentId}:${r.model ?? ""}`} data-testid="feedback-row">
+                  <th scope="row" className="px-4 py-2 text-left font-normal">
+                    {r.agentName}
+                  </th>
+                  <td className="px-4 py-2 font-mono text-xs">{r.model ?? "–"}</td>
+                  <td className="px-4 py-2 text-right font-mono">{r.up}</td>
+                  <td className="px-4 py-2 text-right font-mono">{r.down}</td>
+                  <td className="px-4 py-2 text-right font-mono">{sharePositive(r, lang)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
           <p className="px-4 py-6 text-sm text-muted-foreground">
-            {feedback.isError
-              ? t("Feedback could not be loaded.", "Feedback konnte nicht geladen werden.")
-              : feedback.isPending
-                ? t("Loading…", "Wird geladen…")
-                : t("No feedback for this filter.", "Kein Feedback für diesen Filter.")}
+            {feedbackNotCounted
+              ? t(
+                  "Feedback is not counted for this agent.",
+                  "Für diesen Agent wird Feedback nicht gezählt.",
+                )
+              : feedback.isError
+                ? t("Feedback could not be loaded.", "Feedback konnte nicht geladen werden.")
+                : feedback.isPending
+                  ? t("Loading…", "Wird geladen…")
+                  : t("No feedback for this filter.", "Kein Feedback für diesen Filter.")}
           </p>
         )}
       </Panel>

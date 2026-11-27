@@ -49,9 +49,12 @@ describe("Statistics page: answer feedback", () => {
     expect(nora.getByText("Nora")).toBeInTheDocument();
     expect(nora.getByText("gpt-big")).toBeInTheDocument();
     expect(nora.getByText("3")).toBeInTheDocument();
-    expect(nora.getByText("75 %")).toBeInTheDocument();
+    expect(nora.getByText("75%")).toBeInTheDocument();
     expect(within(rows[1]).getByText("Sina")).toBeInTheDocument();
-    expect(within(rows[1]).getByText("0 %")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("0%")).toBeInTheDocument();
+    // A labelled table with a row header per agent.
+    expect(screen.getByRole("table", { name: "Answer feedback" })).toBeInTheDocument();
+    expect(screen.getByRole("rowheader", { name: "Nora" })).toBeInTheDocument();
   });
 
   it("asks with the page's agent, department and period filters only", () => {
@@ -65,12 +68,32 @@ describe("Statistics page: answer feedback", () => {
       dateTo: undefined,
     });
     expect(screen.getByText("No feedback for this filter.")).toBeInTheDocument();
+    // The message stands in for the table, not below an empty one.
+    expect(screen.queryByRole("table", { name: "Answer feedback" })).not.toBeInTheDocument();
   });
 
   it("says so when the counts could not be loaded", () => {
-    feedbackMock.mockReturnValue({ data: undefined, isError: true, isPending: false });
+    feedbackMock.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: new Error("network"),
+      isPending: false,
+    });
     renderPage();
 
     expect(screen.getByText("Feedback could not be loaded.")).toBeInTheDocument();
+  });
+
+  it("says feedback is not counted when the filter names an uncounted agent", () => {
+    feedbackMock.mockReturnValue({
+      data: undefined,
+      isError: true,
+      error: Object.assign(new Error("agent not found"), { status: 404 }),
+      isPending: false,
+    });
+    renderPage();
+
+    expect(screen.getByText("Feedback is not counted for this agent.")).toBeInTheDocument();
+    expect(screen.queryByText("Feedback could not be loaded.")).not.toBeInTheDocument();
   });
 });

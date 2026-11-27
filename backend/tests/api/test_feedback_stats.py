@@ -168,6 +168,40 @@ async def test_a_personal_agent_cannot_be_named_in_the_filter(
     assert status == 404
 
 
+async def test_an_agent_or_department_that_never_existed_is_a_404(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _seed(app_session, tenant)
+    assert (await _get(tenant, f"?agentId={uuid.uuid4()}"))[0] == 404
+    assert (await _get(tenant, f"?departmentId={uuid.uuid4()}"))[0] == 404
+
+
+async def test_a_malformed_id_in_an_event_does_not_fail_the_count(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.uuid4()
+    await _seed(app_session, tenant)
+    async with app_session(tenant) as db:
+        await append_event(
+            db,
+            tenant_id=tenant,
+            actor_type="operator",
+            actor_id=uuid.uuid4(),
+            category="chat",
+            action="chat.feedback",
+            resource={
+                "session_id": "not-a-uuid",
+                "agent_id": "also-not",
+                "message_id": "x",
+                "rating": "up",
+            },
+        )
+    status, body = await _get(tenant)
+    assert status == 200, body
+    assert len(body) == 4
+
+
 async def test_reading_the_counts_needs_statistics_view(app_session: AppSessionFactory) -> None:
     tenant = uuid.uuid4()
     await _seed(app_session, tenant)

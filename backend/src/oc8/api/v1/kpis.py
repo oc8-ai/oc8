@@ -26,7 +26,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import ColumnElement, Select, Text, Uuid, cast, func, literal_column, select
+from sqlalchemy import ColumnElement, Select, Text, Uuid, case, cast, func, literal_column, select
 
 from oc8 import models as m
 from oc8.agents.repo import visible_agent
@@ -435,6 +435,78 @@ def _feedback_key(key: str) -> ColumnElement[str]:
     return m.AuditEvent.resource.op("->>", return_type=Text)(literal_column(f"'{key}'"))
 
 
+_UUID_PATTERN = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+
+
+def _as_uuid_or_null(text: ColumnElement[str]) -> ColumnElement[uuid.UUID]:
+    """`text::uuid`, or NULL for anything that is not a uuid: a malformed id
+    in one immutable event must not fail the whole count."""
+    return case((text.op("~")(literal_column(f"'{_UUID_PATTERN}'")), cast(text, Uuid)), else_=None)
+
+
+def feedback_counts_query(
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID | None,
+    department_id: uuid.UUID | None,
+    date_from: dt.datetime | None,
+    date_to: dt.datetime | None,
+) -> Select[tuple[uuid.UUID, str, str | None, int, int]]:
+    """`GET /stats/feedback`'s query (see the route). Reads the tenant's
+    `chat.feedback` events of the period through migration 0146's partial
+    index on (tenant_id, ts)."""
+    latest_q = (
+        select(
+            _feedback_key("agent_id").label("agent_txt"),
+            _feedback_key("session_id").label("session_txt"),
+            _feedback_key("model").label("model"),
+            _feedback_key("rating").label("rating"),
+        )
+        .where(
+            m.AuditEvent.tenant_id == tenant_id,
+            # A literal, never a bound parameter: only then does a generic
+            # prepared plan match the partial index's predicate.
+            m.AuditEvent.action == literal_column("'chat.feedback'"),
+        )
+        .distinct(_feedback_key("message_id"), m.AuditEvent.actor_id)
+        .order_by(_feedback_key("message_id"), m.AuditEvent.actor_id, m.AuditEvent.seq.desc())
+    )
+    if date_from is not None:
+        latest_q = latest_q.where(m.AuditEvent.ts >= date_from)
+    if date_to is not None:
+        latest_q = latest_q.where(m.AuditEvent.ts <= date_to)
+    latest = latest_q.subquery()
+    agent_key = func.coalesce(_as_uuid_or_null(latest.c.agent_txt), m.ChatSession.agent_id)
+    stmt = (
+        select(
+            m.Agent.id,
+            m.Agent.name,
+            latest.c.model,
+            func.count().filter(latest.c.rating == "up"),
+            func.count().filter(latest.c.rating == "down"),
+        )
+        .select_from(latest)
+        .outerjoin(
+            m.ChatSession,
+            (m.ChatSession.id == _as_uuid_or_null(latest.c.session_txt))
+            & (m.ChatSession.tenant_id == tenant_id),
+        )
+        .join(m.Agent, (m.Agent.id == agent_key) & (m.Agent.tenant_id == tenant_id))
+        .join(
+            m.Department,
+            (m.Department.id == m.Agent.department_id)
+            & (m.Department.kind == DEPARTMENT_KIND_STANDARD),
+        )
+        .group_by(m.Agent.id, m.Agent.name, latest.c.model)
+        .order_by(m.Agent.name, latest.c.model)
+    )
+    if agent_id is not None:
+        stmt = stmt.where(m.Agent.id == agent_id)
+    if department_id is not None:
+        stmt = stmt.where(m.Agent.department_id == department_id)
+    return stmt
+
+
 @router.get(
     "/stats/feedback",
     response_model=list[FeedbackCountDTO],
@@ -460,8 +532,12 @@ async def feedback_counts(
     written before it named its agent is attributed through its chat; one
     whose agent cannot be resolved at all is left out (fail closed: it may
     have been a personal agent's). An `agentId`/`departmentId` that names no
-    standard agent/department of the tenant is a 404. The period bounds the
-    rating's own time."""
+    standard agent/department of the tenant is a 404.
+
+    The period bounds the rating's own time, and "latest" is the latest
+    within the period: a vote changed after `dateTo` still counts as it stood
+    then, and one changed inside the period counts once, as changed. The
+    model is the one that wrote the rated answer (see the feedback route)."""
     tenant_id = principal.tenant_id
     if agent_id is not None:
         found = await db.scalar(
@@ -485,55 +561,13 @@ async def feedback_counts(
         )
         if found is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "department not found")
-    parsed_from = _parse_bound(date_from, field="dateFrom", end_of_day=False)
-    parsed_to = _parse_bound(date_to, field="dateTo", end_of_day=True)
-    latest_q = (
-        select(
-            _feedback_key("agent_id").label("agent_txt"),
-            _feedback_key("session_id").label("session_txt"),
-            _feedback_key("model").label("model"),
-            _feedback_key("rating").label("rating"),
-        )
-        .where(
-            m.AuditEvent.tenant_id == tenant_id,
-            m.AuditEvent.action == "chat.feedback",
-        )
-        .distinct(_feedback_key("message_id"), m.AuditEvent.actor_id)
-        .order_by(_feedback_key("message_id"), m.AuditEvent.actor_id, m.AuditEvent.seq.desc())
+    stmt = feedback_counts_query(
+        tenant_id=tenant_id,
+        agent_id=agent_id,
+        department_id=department_id,
+        date_from=_parse_bound(date_from, field="dateFrom", end_of_day=False),
+        date_to=_parse_bound(date_to, field="dateTo", end_of_day=True),
     )
-    if parsed_from is not None:
-        latest_q = latest_q.where(m.AuditEvent.ts >= parsed_from)
-    if parsed_to is not None:
-        latest_q = latest_q.where(m.AuditEvent.ts <= parsed_to)
-    latest = latest_q.subquery()
-    agent_key = func.coalesce(cast(latest.c.agent_txt, Uuid), m.ChatSession.agent_id)
-    stmt = (
-        select(
-            m.Agent.id,
-            m.Agent.name,
-            latest.c.model,
-            func.count().filter(latest.c.rating == "up"),
-            func.count().filter(latest.c.rating == "down"),
-        )
-        .select_from(latest)
-        .outerjoin(
-            m.ChatSession,
-            (m.ChatSession.id == cast(latest.c.session_txt, Uuid))
-            & (m.ChatSession.tenant_id == tenant_id),
-        )
-        .join(m.Agent, (m.Agent.id == agent_key) & (m.Agent.tenant_id == tenant_id))
-        .join(
-            m.Department,
-            (m.Department.id == m.Agent.department_id)
-            & (m.Department.kind == DEPARTMENT_KIND_STANDARD),
-        )
-        .group_by(m.Agent.id, m.Agent.name, latest.c.model)
-        .order_by(m.Agent.name, latest.c.model)
-    )
-    if agent_id is not None:
-        stmt = stmt.where(m.Agent.id == agent_id)
-    if department_id is not None:
-        stmt = stmt.where(m.Agent.department_id == department_id)
     rows = (await db.execute(stmt)).all()
     return [
         FeedbackCountDTO(
