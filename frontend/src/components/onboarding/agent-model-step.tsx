@@ -11,6 +11,7 @@ import {
   type ModelDTO,
 } from "@/lib/hooks";
 import { ModelPicker } from "@/components/model-picker";
+import { chatModels } from "@/lib/model-capability";
 import { RuntimePicker } from "@/components/runtime-picker";
 import { AVATAR_COLORS, type AgentIdentity } from "@/components/agent-identity-fields";
 // Reused as-is (not re-implemented) so onboarding connects a provider through
@@ -28,7 +29,9 @@ export function AgentModelStep({
   onDone: (agent: AgentDetail) => void;
 }) {
   const t = useT();
-  const { data: models = [] } = useModels();
+  const { data: allModels = [] } = useModels();
+  // A speech model never runs an agent (spec 2026-11-27 §9).
+  const models = chatModels(allModels);
   const { data: providers = [] } = useModelProviders();
   // A failed or still-loading fetch just leaves this `[]`, same as `models`
   // and `providers` above -- `RuntimePicker` renders nothing for an empty

@@ -57,8 +57,9 @@ function modelsFor(models: ModelDTO[], capability: ModelCapability): ModelDTO[] 
 export function SpeechSetting() {
   const t = useT();
   const may = useMay();
+  const canView = may("settings:view");
   const canManage = may("settings:manage");
-  const { data } = useSpeechSettings();
+  const { data } = useSpeechSettings(canView);
   const { data: models = [] } = useModels();
   const update = useUpdateSpeechSettings();
   const [form, setForm] = useState<Form>({
@@ -101,6 +102,19 @@ export function SpeechSetting() {
     }
   }
 
+  if (!canView) {
+    return (
+      <Panel id="speech" className="p-5">
+        <h3 className="font-serif text-lg">{t("Speech", "Sprache")}</h3>
+        <p className="mt-2 text-xs text-muted-foreground">
+          {t(
+            "You don't have access to these settings.",
+            "Du hast keinen Zugriff auf diese Einstellungen.",
+          )}
+        </p>
+      </Panel>
+    );
+  }
   const disabled = !canManage || !data;
   const picker = (
     label: string,

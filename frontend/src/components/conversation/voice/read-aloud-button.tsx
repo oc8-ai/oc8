@@ -5,15 +5,13 @@ import { useEffect, useId } from "react";
 import { Square, Volume2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { ApiError, fetchAnswerSpeech } from "@/lib/api";
-import { useChatAudioCapabilities } from "@/lib/chat-audio";
+import { fetchAnswerSpeech } from "@/lib/api";
+import { speechRefusal, useChatAudioCapabilities } from "@/lib/chat-audio";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-import { playSpeech, stopSpeech, useSpeechPhase } from "./speech-player";
-
-/** The server's reason is worth showing for these; anything else is ours. */
-const TOLD_AS_IS = new Set([409, 413, 429]);
+import { ActionButton } from "../action-button";
+import { PlaybackBlocked, playSpeech, stopSpeech, useSpeechPhase } from "./speech-player";
 
 export function ReadAloudButton({
   sessionId,
@@ -27,29 +25,39 @@ export function ReadAloudButton({
 }) {
   const t = useT();
   const capabilities = useChatAudioCapabilities();
-  const phase = useSpeechPhase(messageId);
+  // Per view: the same answer open in the dock and in the full chat are two
+  // readings, and closing one does not stop the other.
+  const view = useId();
+  const key = `${view}:${messageId}`;
+  const phase = useSpeechPhase(key);
   const reasonId = useId();
   // Leaving the chat (or paging to another answer) stops this reading.
-  useEffect(() => () => stopSpeech(messageId), [messageId]);
+  useEffect(() => () => stopSpeech(key), [key]);
 
   if (!capabilities.textToSpeech) return null;
   const blocked = restricted !== false && !capabilities.textToSpeechLocal;
   const active = phase !== null;
+  const reason = t(
+    "Read aloud is not available for restricted answers with this speech model.",
+    "Vorlesen ist für eingeschränkte Antworten mit diesem Sprachmodell nicht verfügbar.",
+  );
 
   function toggle() {
     if (active) {
-      stopSpeech(messageId);
+      stopSpeech(key);
       return;
     }
-    playSpeech(messageId, (signal) => fetchAnswerSpeech(sessionId, messageId, signal)).catch(
+    // Called in the click itself: Safari plays only what a tap started.
+    playSpeech(key, (signal) => fetchAnswerSpeech(sessionId, messageId, signal)).catch(
       (error: unknown) => {
         toast.error(
-          error instanceof ApiError && TOLD_AS_IS.has(error.status)
-            ? error.message
-            : t(
-                "The answer could not be read aloud. Try again.",
-                "Die Antwort konnte nicht vorgelesen werden. Versuch es noch einmal.",
-              ),
+          error instanceof PlaybackBlocked
+            ? t("Tap again to play.", "Tippe noch einmal zum Abspielen.")
+            : (speechRefusal(error) ??
+                t(
+                  "The answer could not be read aloud. Try again.",
+                  "Die Antwort konnte nicht vorgelesen werden. Versuch es noch einmal.",
+                )),
         );
       },
     );
@@ -57,38 +65,23 @@ export function ReadAloudButton({
 
   return (
     <>
-      <button
-        type="button"
+      <ActionButton
+        label={t("Read aloud", "Vorlesen")}
         onClick={toggle}
+        pressed={active}
         disabled={blocked}
-        aria-pressed={active}
-        aria-label={active ? t("Stop reading", "Vorlesen stoppen") : t("Read aloud", "Vorlesen")}
-        aria-describedby={blocked ? reasonId : undefined}
-        title={
-          blocked
-            ? t(
-                "Read aloud is not available for restricted answers with this speech model.",
-                "Vorlesen ist für eingeschränkte Antworten mit diesem Sprachmodell nicht verfügbar.",
-              )
-            : undefined
-        }
-        className={cn(
-          "grid size-11 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent sm:size-9",
-          active && "text-foreground",
-        )}
+        describedBy={blocked ? reasonId : undefined}
+        title={blocked ? reason : undefined}
       >
         {active ? (
           <Square className={cn("size-3.5", phase === "loading" && "animate-pulse")} aria-hidden />
         ) : (
           <Volume2 className="size-4" aria-hidden />
         )}
-      </button>
+      </ActionButton>
       {blocked && (
         <span id={reasonId} className="sr-only">
-          {t(
-            "Read aloud is not available for restricted answers with this speech model.",
-            "Vorlesen ist für eingeschränkte Antworten mit diesem Sprachmodell nicht verfügbar.",
-          )}
+          {reason}
         </span>
       )}
     </>

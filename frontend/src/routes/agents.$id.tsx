@@ -149,6 +149,7 @@ import { useLang, useT } from "@/lib/i18n";
 import { useMayInDepartment, useMayManageAgent } from "@/lib/governance-hooks";
 import { thresholdField, valueSpecByName } from "@/lib/value-spec";
 import { useConfirm } from "@/hooks/use-confirm";
+import { chatModels } from "@/lib/model-capability";
 import { AgentAutonomyPanel } from "@/components/agent-autonomy-panel";
 
 // One empty list for a reader who may not list knowledge bases (403): a
@@ -1459,7 +1460,8 @@ export function AssignedModelPanel({
         <option value="" disabled>
           {t("Select a model", "Modell auswählen")}
         </option>
-        {models.map((model) => (
+        {/* A speech model never runs an agent (spec 2026-11-27 §9). */}
+        {chatModels(models).map((model) => (
           <option key={model.id} value={model.id}>
             {modelAssignmentLabel(model)}
           </option>

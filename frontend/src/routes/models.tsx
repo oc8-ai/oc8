@@ -31,6 +31,7 @@ import {
 import { agents } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { chatModels, isSpeechModel } from "@/lib/model-capability";
 import { useMay } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
@@ -116,10 +117,6 @@ const SPEECH_UNSUPPORTED_PROVIDERS = new Set([
 ]);
 function supportsSpeech(provider: string): boolean {
   return !SPEECH_UNSUPPORTED_PROVIDERS.has(provider);
-}
-
-function isSpeechModel(m: Pick<ModelDTO, "capability">): boolean {
-  return m.capability === "speech_to_text" || m.capability === "text_to_speech";
 }
 
 export function isAutoProvider(provider: string): boolean {
@@ -1083,7 +1080,10 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
   const isPending = createModel.isPending || updateModel.isPending;
   const showPicker =
     !editing && !isAuto && discoveredModels !== null && discoveredModels.length > 0 && !manualMode;
-  const tierTargets = allModels.filter((m) => !isAutoProvider(m.provider) && m.id !== editing?.id);
+  // The auto router routes chats and agents: never to a speech model.
+  const tierTargets = chatModels(allModels).filter(
+    (m) => !isAutoProvider(m.provider) && m.id !== editing?.id,
+  );
 
   const resetDiscovery = () => {
     setDiscoveredModels(null);

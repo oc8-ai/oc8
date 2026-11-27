@@ -21,8 +21,8 @@ import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { useMessageFeedback, useTurnRun } from "@/lib/conversation-api";
 import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
 
+import { ActionButton } from "./action-button";
 import { liveArtifactsId } from "./artifacts/context";
 import { isEmptyReply } from "./empty-reply";
 import { Sources } from "./sources";
@@ -42,33 +42,6 @@ const WAITING_ON_PERSON = new Set(["waiting_for_input", "waiting_for_approval"])
 /** The breathing mark stays at least this long once shown, so an answer
  *  whose first word comes right away does not flash it for a frame. */
 export const PRESENCE_MIN_MS = 400;
-
-function ActionButton({
-  label,
-  onClick,
-  children,
-  pressed,
-}: {
-  label: string;
-  onClick: () => void;
-  children: ReactNode;
-  pressed?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      aria-pressed={pressed}
-      className={cn(
-        "grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        pressed && "text-foreground",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
 
 export function AssistantTurn({
   sessionId,

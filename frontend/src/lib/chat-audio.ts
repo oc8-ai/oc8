@@ -4,7 +4,7 @@
 // themselves are `transcribeChatAudio` / `fetchAnswerSpeech` in lib/api.ts.
 import { useQuery } from "@tanstack/react-query";
 
-import { api } from "@/lib/api";
+import { ApiError, api } from "@/lib/api";
 
 export interface ChatAudioCapabilitiesDTO {
   speechToText: boolean;
@@ -28,4 +28,13 @@ export function useChatAudioCapabilities(enabled = true): ChatAudioCapabilitiesD
     staleTime: 60_000,
   });
   return data ?? NONE;
+}
+
+/** The server's cap on one recording (413 above it); checked before upload. */
+export const MAX_DICTATION_BYTES = 12 * 1024 * 1024;
+
+/** The server's own reason, for the refusals where it is the useful one
+ *  (too long, too large, allowance used up); null for anything else. */
+export function speechRefusal(error: unknown): string | null {
+  return error instanceof ApiError && [409, 413, 429].includes(error.status) ? error.message : null;
 }

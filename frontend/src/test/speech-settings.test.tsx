@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ModelDTO, ModelProviderDTO } from "@/lib/hooks";
 
 const api = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn() }));
-const may = vi.hoisted(() => ({ manage: true }));
+const may = vi.hoisted(() => ({ manage: true, view: true }));
 const modelsMock = vi.hoisted(() => vi.fn());
 const providersMock = vi.hoisted(() => vi.fn());
 const createModel = vi.hoisted(() => vi.fn());
@@ -29,7 +29,7 @@ vi.mock("@/lib/hooks", async (orig) => ({
 }));
 vi.mock("@/lib/governance-hooks", async (orig) => ({
   ...(await orig<typeof import("@/lib/governance-hooks")>()),
-  useMay: () => () => may.manage,
+  useMay: () => (permission: string) => (permission === "settings:view" ? may.view : may.manage),
 }));
 vi.mock("@/lib/model-prices-hooks", async (orig) => ({
   ...(await orig<typeof import("@/lib/model-prices-hooks")>()),
@@ -76,11 +76,13 @@ function wrap(ui: React.ReactElement) {
 
 beforeEach(() => {
   may.manage = true;
+  may.view = true;
   modelsMock.mockReset().mockReturnValue({ data: MODELS });
   providersMock.mockReset().mockReturnValue({
     data: [
       { canonical: "openai", locality: "cloud", available: true },
       { canonical: "anthropic", locality: "cloud", available: true },
+      { canonical: "auto", locality: "cloud", available: true },
     ] satisfies ModelProviderDTO[],
   });
   createModel.mockReset().mockResolvedValue({});
@@ -148,6 +150,17 @@ describe("SpeechSetting", () => {
   });
 });
 
+describe("SpeechSetting without settings:view", () => {
+  it("says so and asks nothing", async () => {
+    may.view = false;
+    may.manage = false;
+    wrap(<SpeechSetting />);
+    expect(await screen.findByText("You don't have access to these settings.")).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Dictation model" })).not.toBeInTheDocument();
+    expect(api.get).not.toHaveBeenCalledWith("/settings/speech");
+  });
+});
+
 describe("model capability", () => {
   function openCreate() {
     wrap(<ModelsPage />);
@@ -194,5 +207,18 @@ describe("model capability", () => {
     expect(screen.getAllByRole("switch", { name: "Available in chat" })).toHaveLength(1);
     expect(screen.getByText("Speech to text")).toBeInTheDocument();
     expect(screen.getByText("Text to speech")).toBeInTheDocument();
+  });
+
+  it("never offers a speech model as an auto-router tier", () => {
+    openCreate();
+    fireEvent.change(screen.getByRole("combobox", { name: "Provider" }), {
+      target: { value: "auto" },
+    });
+    const fast = screen.getByRole("combobox", { name: "fast" });
+    expect(
+      within(fast)
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["— none —", "gpt-5 · openai"]);
   });
 });

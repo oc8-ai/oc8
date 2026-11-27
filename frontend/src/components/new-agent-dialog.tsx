@@ -26,6 +26,7 @@ import {
 import { AgentAvatar, hueFromOklch } from "@/components/agent-avatar";
 import { AddToolPicker } from "@/components/add-tool-picker";
 import { ModelPicker } from "@/components/model-picker";
+import { chatModels } from "@/lib/model-capability";
 import { CronBuilder } from "@/components/cron-builder";
 import { CredentialPicker } from "@/components/credential-picker";
 import {
@@ -93,7 +94,10 @@ export function NewAgentDialog({
   // itself stays open to change.
   defaultDepartmentId?: string;
 }) {
-  const { data: models = [] } = useModels();
+  const { data: allModels = [] } = useModels();
+  // A speech model never runs an agent (spec 2026-11-27 §9), nor is it the
+  // preselected first one.
+  const models = useMemo(() => chatModels(allModels), [allModels]);
   const { data: providers = [] } = useModelProviders();
   // The tools a new agent CAN be handed are the tenant's real MCP
   // connections -- never a static vendor catalog (see permissions-panel.tsx,

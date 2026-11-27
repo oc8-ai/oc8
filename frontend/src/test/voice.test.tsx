@@ -54,6 +54,8 @@ import type { ChatMessageDTO } from "@/lib/hooks-chat";
 class FakeRecorder {
   static instances: FakeRecorder[] = [];
   static isTypeSupported = vi.fn((type: string) => type === "audio/webm;codecs=opus");
+  /** What the next recording holds. */
+  static nextData: BlobPart = "voice";
   state: "inactive" | "recording" = "inactive";
   ondataavailable: ((event: { data: Blob }) => void) | null = null;
   onstop: (() => void) | null = null;
@@ -69,26 +71,36 @@ class FakeRecorder {
   stop = vi.fn(() => {
     if (this.state === "inactive") return;
     this.state = "inactive";
-    this.ondataavailable?.({ data: new Blob(["voice"], { type: this.options.mimeType }) });
+    this.ondataavailable?.({
+      data: new Blob([FakeRecorder.nextData], { type: this.options.mimeType }),
+    });
     this.onstop?.();
   });
 }
 
+const SILENT_PREFIX = "data:audio/wav;base64,";
+
 class FakeAudio {
   static instances: FakeAudio[] = [];
+  /** Rejects the next play of a fetched answer with NotAllowedError. */
+  static refuseNext = false;
+  src = "";
   paused = true;
   onended: (() => void) | null = null;
-  constructor(public src: string) {
+  onerror: (() => void) | null = null;
+  constructor() {
     FakeAudio.instances.push(this);
   }
   play = vi.fn(async () => {
+    if (FakeAudio.refuseNext && !this.src.startsWith(SILENT_PREFIX)) {
+      FakeAudio.refuseNext = false;
+      throw new DOMException("not allowed", "NotAllowedError");
+    }
     this.paused = false;
   });
   pause = vi.fn(() => {
     this.paused = true;
   });
-  removeAttribute = vi.fn();
-  load = vi.fn();
 }
 
 const track = { stop: vi.fn() };
@@ -96,7 +108,13 @@ const getUserMedia = vi.fn();
 
 beforeEach(() => {
   FakeRecorder.instances = [];
+  FakeRecorder.nextData = "voice";
+  FakeRecorder.isTypeSupported.mockReset();
+  FakeRecorder.isTypeSupported.mockImplementation(
+    (type: string) => type === "audio/webm;codecs=opus",
+  );
   FakeAudio.instances = [];
+  FakeAudio.refuseNext = false;
   track.stop.mockReset();
   getUserMedia.mockReset().mockResolvedValue({ getTracks: () => [track] });
   vi.stubGlobal("MediaRecorder", FakeRecorder);
@@ -143,8 +161,37 @@ function ComposerHarness(props: Partial<ComposerProps> & { initial?: string }) {
   );
 }
 
+/** A new chat whose `ensureSession` makes "fresh" and shows it, as the page does. */
+function NewChatHarness({ ensure }: { ensure: () => void }) {
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  return (
+    <ComposerHarness
+      sessionId={sessionId}
+      ensureSession={async () => {
+        ensure();
+        setSessionId("fresh");
+        return "fresh";
+      }}
+    />
+  );
+}
+
 async function micButton() {
   return screen.findByRole("button", { name: "Dictate a message" });
+}
+
+async function startRecording() {
+  fireEvent.click(await micButton());
+  await waitFor(() => expect(FakeRecorder.instances).toHaveLength(1));
+  return FakeRecorder.instances[0];
+}
+
+function stopRecording() {
+  fireEvent.click(screen.getByRole("button", { name: "Dictate a message", pressed: true }));
+}
+
+function box() {
+  return screen.getByRole("textbox", { name: /Message/ }) as HTMLTextAreaElement;
 }
 
 describe("dictation", () => {
@@ -153,33 +200,39 @@ describe("dictation", () => {
     render(<ComposerHarness />);
     // Let the capabilities query settle before asserting the absence.
     await act(async () => {});
-    await waitFor(() => expect(screen.getByRole("textbox", { name: /Message/ })).toBeVisible());
+    await waitFor(() => expect(box()).toBeVisible());
+    expect(screen.queryByRole("button", { name: "Dictate a message" })).not.toBeInTheDocument();
+  });
+
+  it("shows no mic when the browser offers no microphone", async () => {
+    Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined });
+    render(<ComposerHarness />);
+    await act(async () => {});
+    await waitFor(() => expect(box()).toBeVisible());
     expect(screen.queryByRole("button", { name: "Dictate a message" })).not.toBeInTheDocument();
   });
 
   it("records at 16 kbit/s, transcribes and inserts the text at the caret without sending", async () => {
     const onSend = vi.fn();
     render(<ComposerHarness initial="Hello world" onSend={onSend} />);
-    const box = screen.getByRole("textbox", { name: /Message/ }) as HTMLTextAreaElement;
-    box.setSelectionRange(5, 5);
+    box().setSelectionRange(5, 5);
     const mic = await micButton();
     expect(mic).toHaveAttribute("aria-pressed", "false");
 
-    fireEvent.click(mic);
-    await waitFor(() => expect(FakeRecorder.instances).toHaveLength(1));
-    const recorder = FakeRecorder.instances[0];
+    const recorder = await startRecording();
     expect(getUserMedia).toHaveBeenCalledWith({ audio: true });
     expect(recorder.options).toEqual({
       mimeType: "audio/webm;codecs=opus",
       audioBitsPerSecond: 16000,
     });
-    const stop = screen.getByRole("button", { name: "Stop dictation" });
-    expect(stop).toHaveAttribute("aria-pressed", "true");
+    // One stable label; the pressed state says it is recording.
+    expect(mic).toHaveAttribute("aria-pressed", "true");
+    expect(mic).toHaveAccessibleName("Dictate a message");
     expect(screen.getByRole("status")).toHaveTextContent("Recording");
     expect(screen.getByText("0:00")).toBeInTheDocument();
 
-    fireEvent.click(stop);
-    await waitFor(() => expect(box.value).toBe("Hello dictated world"));
+    stopRecording();
+    await waitFor(() => expect(box().value).toBe("Hello dictated world"));
     expect(audioApi.transcribe).toHaveBeenCalledTimes(1);
     const [sessionId, blob] = audioApi.transcribe.mock.calls[0];
     expect(sessionId).toBe("s1");
@@ -188,26 +241,92 @@ describe("dictation", () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it("falls back to ogg, then mp4, when webm is not supported", async () => {
-    FakeRecorder.isTypeSupported.mockImplementation((type: string) => type === "audio/mp4");
-    render(<ComposerHarness />);
-    fireEvent.click(await micButton());
-    await waitFor(() => expect(FakeRecorder.instances).toHaveLength(1));
-    expect(FakeRecorder.instances[0].options.mimeType).toBe("audio/mp4");
+  it("prefers ogg over mp4 when webm is not supported", async () => {
     FakeRecorder.isTypeSupported.mockImplementation(
-      (type: string) => type === "audio/webm;codecs=opus",
+      (type: string) => type === "audio/ogg;codecs=opus" || type === "audio/mp4",
     );
+    render(<ComposerHarness />);
+    const recorder = await startRecording();
+    expect(recorder.options.mimeType).toBe("audio/ogg;codecs=opus");
   });
 
-  it("creates the chat first in a new chat, as the first send does", async () => {
+  it("falls back to mp4 when neither webm nor ogg is supported", async () => {
+    FakeRecorder.isTypeSupported.mockImplementation((type: string) => type === "audio/mp4");
+    render(<ComposerHarness />);
+    const recorder = await startRecording();
+    expect(recorder.options.mimeType).toBe("audio/mp4");
+  });
+
+  it("creates the chat only for the upload, as the first send does, and keeps the words", async () => {
+    const ensure = vi.fn();
+    render(<NewChatHarness ensure={ensure} />);
+    await startRecording();
+    expect(ensure).not.toHaveBeenCalled();
+    stopRecording();
+    await waitFor(() => expect(box().value).toBe("dictated"));
+    expect(ensure).toHaveBeenCalledTimes(1);
+    expect(audioApi.transcribe.mock.calls[0][0]).toBe("fresh");
+  });
+
+  it("drops a recording when another chat opens while it records (new chat)", async () => {
+    const ensureSession = vi.fn(async () => "fresh");
+    const view = render(<ComposerHarness sessionId={null} ensureSession={ensureSession} />);
+    const recorder = await startRecording();
+    view.rerender(<ComposerHarness sessionId="other" ensureSession={ensureSession} />);
+    await waitFor(() => expect(recorder.stop).toHaveBeenCalled());
+    expect(track.stop).toHaveBeenCalled();
+    expect(await micButton()).toHaveAttribute("aria-pressed", "false");
+    await act(async () => {});
+    expect(ensureSession).not.toHaveBeenCalled();
+    expect(audioApi.transcribe).not.toHaveBeenCalled();
+    expect(box().value).toBe("");
+  });
+
+  it("drops the transcript when the chat switches while it is transcribed", async () => {
+    let finish: (value: { text: string }) => void = () => undefined;
+    audioApi.transcribe.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const view = render(<ComposerHarness sessionId="s1" />);
+    await startRecording();
+    stopRecording();
+    await waitFor(() => expect(audioApi.transcribe).toHaveBeenCalled());
+    view.rerender(<ComposerHarness sessionId="s2" />);
+    await act(async () => finish({ text: "dictated" }));
+    expect(box().value).toBe("");
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it("stops and frees the microphone when the composer goes away", async () => {
+    const view = render(<ComposerHarness />);
+    const recorder = await startRecording();
+    view.unmount();
+    expect(recorder.stop).toHaveBeenCalled();
+    expect(track.stop).toHaveBeenCalled();
+    await act(async () => {});
+    expect(audioApi.transcribe).not.toHaveBeenCalled();
+  });
+
+  it("refuses a recording over 12 MB before making a chat or uploading", async () => {
+    FakeRecorder.nextData = new Uint8Array(12 * 1024 * 1024 + 1);
     const ensureSession = vi.fn(async () => "fresh");
     render(<ComposerHarness sessionId={null} ensureSession={ensureSession} />);
-    fireEvent.click(await micButton());
-    await waitFor(() => expect(FakeRecorder.instances).toHaveLength(1));
-    fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
-    await waitFor(() => expect(audioApi.transcribe).toHaveBeenCalled());
-    expect(ensureSession).toHaveBeenCalledTimes(1);
-    expect(audioApi.transcribe.mock.calls[0][0]).toBe("fresh");
+    await startRecording();
+    stopRecording();
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        "This recording is larger than 12 MB. Try a shorter one.",
+      ),
+    );
+    expect(ensureSession).not.toHaveBeenCalled();
+    expect(audioApi.transcribe).not.toHaveBeenCalled();
+  });
+
+  it("says so when nothing was recognized, and inserts nothing", async () => {
+    audioApi.transcribe.mockResolvedValue({ text: "  " });
+    render(<ComposerHarness initial="Hi" />);
+    await startRecording();
+    stopRecording();
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("No speech was recognized."));
+    expect(box().value).toBe("Hi");
   });
 
   it("says so when the microphone is refused", async () => {
@@ -224,15 +343,14 @@ describe("dictation", () => {
       new ApiError("today's dictation allowance is used up", 429),
     );
     render(<ComposerHarness />);
-    fireEvent.click(await micButton());
-    await waitFor(() => expect(FakeRecorder.instances).toHaveLength(1));
-    fireEvent.click(screen.getByRole("button", { name: "Stop dictation" }));
+    await startRecording();
+    stopRecording();
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("today's dictation allowance is used up"),
     );
   });
 
-  it("stops at 10 minutes, with a countdown from 9:30", async () => {
+  it("stops at 10 minutes, with a countdown from 9:30 that is announced", async () => {
     render(<ComposerHarness />);
     const mic = await micButton();
     vi.useFakeTimers({ shouldAdvanceTime: false });
@@ -247,12 +365,14 @@ describe("dictation", () => {
       await vi.advanceTimersByTimeAsync(65_000);
     });
     expect(screen.getByText("1:05")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/^Recording$/);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(9 * 60_000 + 30_000 - 65_000 + 1_000);
     });
-    // 9:31 elapsed: the countdown shows what is left.
+    // 9:31 elapsed: the countdown shows what is left, and says so once.
     expect(screen.getByText(/0:29 left/)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Recording. It stops in 30 seconds.");
     expect(recorder.stop).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -303,6 +423,15 @@ function wrap(ui: React.ReactElement) {
   return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
 }
 
+async function speaker() {
+  return screen.findByRole("button", { name: "Read aloud" });
+}
+
+/** The element the reading plays on (the first one made). */
+function element() {
+  return FakeAudio.instances[0];
+}
+
 describe("read aloud", () => {
   it("shows no speaker when text to speech is not configured", async () => {
     audioApi.capabilities = { speechToText: false, textToSpeech: false, textToSpeechLocal: false };
@@ -312,28 +441,66 @@ describe("read aloud", () => {
     expect(screen.queryByRole("button", { name: "Read aloud" })).not.toBeInTheDocument();
   });
 
-  it("plays the answer's audio and toggles to stop", async () => {
+  it("unlocks the element in the tap, then plays the fetched answer on it and toggles", async () => {
+    let deliver: (blob: Blob) => void = () => undefined;
+    audioApi.speech.mockReturnValue(new Promise<Blob>((resolve) => (deliver = resolve)));
     wrap(<Turn />);
-    fireEvent.click(await screen.findByRole("button", { name: "Read aloud" }));
-    const stop = await screen.findByRole("button", { name: "Stop reading" });
-    expect(stop).toHaveAttribute("aria-pressed", "true");
-    expect(audioApi.speech).toHaveBeenCalledWith("s1", "a1", expect.any(AbortSignal));
+    const button = await speaker();
+    fireEvent.click(button);
+    // Made and started inside the click, before the audio has arrived.
     expect(FakeAudio.instances).toHaveLength(1);
-    expect(FakeAudio.instances[0].src).toBe("blob:speech");
-    expect(FakeAudio.instances[0].play).toHaveBeenCalled();
+    expect(element().src.startsWith(SILENT_PREFIX)).toBe(true);
+    expect(element().play).toHaveBeenCalledTimes(1);
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(audioApi.speech).toHaveBeenCalledWith("s1", "a1", expect.any(AbortSignal));
 
-    fireEvent.click(stop);
-    expect(FakeAudio.instances[0].pause).toHaveBeenCalled();
+    await act(async () => deliver(new Blob(["mp3"], { type: "audio/mpeg" })));
+    expect(FakeAudio.instances).toHaveLength(1);
+    expect(element().src).toBe("blob:speech");
+    expect(element().play).toHaveBeenCalledTimes(2);
+    expect(button).toHaveAccessibleName("Read aloud");
+
+    fireEvent.click(button);
+    expect(element().pause).toHaveBeenCalled();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:speech");
-    expect(await screen.findByRole("button", { name: "Read aloud" })).toBeInTheDocument();
+    expect(button).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("asks for a second tap when the browser blocks playback, without fetching again", async () => {
+    FakeAudio.refuseNext = true;
+    wrap(<Turn />);
+    const button = await speaker();
+    fireEvent.click(button);
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("Tap again to play."));
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+
+    fireEvent.click(button);
+    expect(audioApi.speech).toHaveBeenCalledTimes(1);
+    const second = FakeAudio.instances[1];
+    expect(second.src).toBe("blob:speech");
+    expect(second.play).toHaveBeenCalled();
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
   });
 
   it("goes back to the speaker when the reading ends", async () => {
     wrap(<Turn />);
-    fireEvent.click(await screen.findByRole("button", { name: "Read aloud" }));
-    await screen.findByRole("button", { name: "Stop reading" });
-    act(() => FakeAudio.instances[0].onended?.());
-    expect(await screen.findByRole("button", { name: "Read aloud" })).toBeInTheDocument();
+    const button = await speaker();
+    fireEvent.click(button);
+    await waitFor(() => expect(element().src).toBe("blob:speech"));
+    act(() => element().onended?.());
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:speech");
+  });
+
+  it("resets when the audio cannot be played", async () => {
+    wrap(<Turn />);
+    const button = await speaker();
+    fireEvent.click(button);
+    await waitFor(() => expect(button).toHaveAttribute("aria-pressed", "true"));
+    await waitFor(() => expect(element().src).toBe("blob:speech"));
+    act(() => element().onerror?.());
+    expect(button).toHaveAttribute("aria-pressed", "false");
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:speech");
   });
 
@@ -346,29 +513,40 @@ describe("read aloud", () => {
     );
     const [first, second] = await screen.findAllByRole("button", { name: "Read aloud" });
     fireEvent.click(first);
-    await screen.findByRole("button", { name: "Stop reading" });
+    await waitFor(() => expect(first).toHaveAttribute("aria-pressed", "true"));
     fireEvent.click(second);
-    await waitFor(() => expect(FakeAudio.instances).toHaveLength(2));
+    expect(FakeAudio.instances).toHaveLength(2);
     expect(FakeAudio.instances[0].pause).toHaveBeenCalled();
-    await waitFor(() =>
-      expect(screen.getAllByRole("button", { name: "Stop reading" })).toHaveLength(1),
-    );
+    expect(first).toHaveAttribute("aria-pressed", "false");
+    expect(second).toHaveAttribute("aria-pressed", "true");
   });
 
   it("stops when the answer leaves the page (chat switch)", async () => {
     const view = wrap(<Turn />);
-    fireEvent.click(await screen.findByRole("button", { name: "Read aloud" }));
-    await screen.findByRole("button", { name: "Stop reading" });
+    fireEvent.click(await speaker());
+    await waitFor(() => expect(element().src).toBe("blob:speech"));
     view.unmount();
-    expect(FakeAudio.instances[0].pause).toHaveBeenCalled();
+    expect(element().pause).toHaveBeenCalled();
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:speech");
+  });
+
+  it("keeps reading in one view when another view of the same answer closes (dock)", async () => {
+    const chat = wrap(<Turn />);
+    const dock = wrap(<Turn />);
+    const [inChat] = await screen.findAllByRole("button", { name: "Read aloud" });
+    fireEvent.click(inChat);
+    await waitFor(() => expect(element().src).toBe("blob:speech"));
+    dock.unmount();
+    expect(element().pause).not.toHaveBeenCalled();
+    expect(inChat).toHaveAttribute("aria-pressed", "true");
+    chat.unmount();
   });
 
   it("is disabled with a reason on a restricted answer when the speech model is not local", async () => {
     wrap(<Turn message={{ ...answer, restricted: true }} />);
-    const speaker = await screen.findByRole("button", { name: "Read aloud" });
-    expect(speaker).toBeDisabled();
-    expect(speaker).toHaveAccessibleDescription(
+    const button = await speaker();
+    expect(button).toBeDisabled();
+    expect(button).toHaveAccessibleDescription(
       "Read aloud is not available for restricted answers with this speech model.",
     );
   });
@@ -377,14 +555,14 @@ describe("read aloud", () => {
     const { restricted: _drop, ...unknown } = answer;
     void _drop;
     wrap(<Turn message={unknown as ChatMessageDTO} />);
-    expect(await screen.findByRole("button", { name: "Read aloud" })).toBeDisabled();
+    expect(await speaker()).toBeDisabled();
   });
 
   it("reads a restricted answer with a local speech model", async () => {
     audioApi.capabilities = { speechToText: false, textToSpeech: true, textToSpeechLocal: true };
     wrap(<Turn message={{ ...answer, restricted: true }} />);
-    const speaker = await screen.findByRole("button", { name: "Read aloud" });
-    await waitFor(() => expect(speaker).toBeEnabled());
+    const button = await speaker();
+    await waitFor(() => expect(button).toBeEnabled());
   });
 
   it("shows the server's reason for a refused reading", async () => {
@@ -392,19 +570,20 @@ describe("read aloud", () => {
       new ApiError("this answer is too long to read aloud (at most 20000 characters)", 409),
     );
     wrap(<Turn />);
-    fireEvent.click(await screen.findByRole("button", { name: "Read aloud" }));
+    const button = await speaker();
+    fireEvent.click(button);
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith(
         "this answer is too long to read aloud (at most 20000 characters)",
       ),
     );
-    expect(await screen.findByRole("button", { name: "Read aloud" })).toBeEnabled();
+    expect(button).toHaveAttribute("aria-pressed", "false");
   });
 
   it("says a generic sentence for a provider failure", async () => {
     audioApi.speech.mockRejectedValue(new ApiError("ReadTimeout", 502));
     wrap(<Turn />);
-    fireEvent.click(await screen.findByRole("button", { name: "Read aloud" }));
+    fireEvent.click(await speaker());
     await waitFor(() =>
       expect(toast.error).toHaveBeenCalledWith("The answer could not be read aloud. Try again."),
     );

@@ -16,9 +16,11 @@ export interface SpeechSettingsDTO {
 
 const KEY = ["settings", "speech"] as const;
 
-export function useSpeechSettings() {
+/** Fetched only while `enabled` (the caller may view settings). */
+export function useSpeechSettings(enabled = true) {
   return useQuery({
     queryKey: KEY,
+    enabled,
     queryFn: () => api.get<SpeechSettingsDTO>("/settings/speech"),
   });
 }
