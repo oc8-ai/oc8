@@ -40,6 +40,7 @@ import {
 import { builderRefusalCode, builderRefusalText } from "@/lib/agent-builder-api";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import type { QuestionAnswers, QuestionDTO } from "@/lib/conversation-api";
 import type { ComponentProps } from "react";
 import { useWidgetLabel } from "@/components/dashboard/widget-labels";
 import { WidgetTitle } from "@/components/dashboard/widget-title";
@@ -260,9 +261,16 @@ function ApprovalsWidgetBody({
     }
   }
 
-  async function onAnswer(c: Clarification, text: string) {
+  async function onAnswer(
+    c: Clarification,
+    answerValue: { text?: string; answers?: QuestionAnswers },
+  ) {
     try {
-      await answer.mutateAsync({ clarificationId: c.id, answer: text });
+      await answer.mutateAsync({
+        clarificationId: c.id,
+        answer: answerValue.text,
+        answers: answerValue.answers,
+      });
       toast.success(t("Answer sent", "Antwort gesendet"));
       setDecided((prev) => [
         { id: c.id, kind: "clarification", title: c.question, outcome: "answered" },
@@ -974,11 +982,51 @@ function ClarificationPane({
   mayAct: boolean;
   viewOnlyBecause: ViewOnlyBecause;
   busy: boolean;
-  onAnswer: (c: Clarification, answer: string) => void;
+  onAnswer: (c: Clarification, answer: { text?: string; answers?: QuestionAnswers }) => void;
 }) {
   const t = useT();
   const [text, setText] = useState("");
-  const canSend = text.trim().length > 0;
+  // `{question id: picked option keys}` and `{question id: own words}`, exactly
+  // as the chat's question card keeps them. The inbox sends `answers` when the
+  // run parked on structured questions: on SEVERAL questions free prose would
+  // collapse onto the first one, which is the 422 that locked people out.
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [free, setFree] = useState<Record<string, string>>({});
+  const questions = clarification.questions ?? [];
+  const other = "__other__";
+
+  function collect(): QuestionAnswers {
+    const out: QuestionAnswers = {};
+    for (const q of questions) {
+      const keys = picked[q.id] ?? [];
+      const own = (free[q.id] ?? "").trim();
+      if (q.kind === "text") {
+        if (own) out[q.id] = own;
+      } else if (keys.includes(other) && own) {
+        out[q.id] = own;
+      } else {
+        const options = keys.filter((k) => k !== other);
+        if (options.length > 0) out[q.id] = options;
+      }
+    }
+    return out;
+  }
+
+  const chosen = Object.keys(collect()).length;
+  const canSend = questions.length > 0 ? chosen === questions.length : text.trim().length > 0;
+
+  function toggle(q: QuestionDTO, key: string) {
+    const current = picked[q.id] ?? [];
+    let next: string[];
+    if (q.kind !== "multi") next = [key];
+    else if (current.includes(key)) next = current.filter((k) => k !== key);
+    else if (key === other) next = [other];
+    else next = [...current.filter((k) => k !== other), key];
+    if (q.kind === "multi" && current.includes(other) && !next.includes(other)) {
+      setFree((p) => ({ ...p, [q.id]: "" }));
+    }
+    setPicked((prev) => ({ ...prev, [q.id]: next }));
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -1002,7 +1050,66 @@ function ClarificationPane({
           <p className="mt-1 text-sm text-foreground/90">{clarification.question}</p>
         </section>
 
-        {mayAct && (
+        {mayAct && questions.length > 0 && (
+          <section className="space-y-4">
+            {questions.map((q) => {
+              const chosenKeys = picked[q.id] ?? [];
+              return (
+                <div key={q.id} className="space-y-2">
+                  <div className="text-xs font-medium text-foreground">
+                    {q.prompt}
+                    {q.required && <span className="ml-1 text-muted-foreground">*</span>}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    {q.options.map((o) => {
+                      const on = chosenKeys.includes(o.key);
+                      return (
+                        <button
+                          key={o.key}
+                          type="button"
+                          onClick={() => toggle(q, o.key)}
+                          className={cn(
+                            "rounded-md border border-border px-3 py-2 text-left text-sm transition hover:border-primary/50",
+                            on && "border-primary/60 bg-primary/10",
+                          )}
+                        >
+                          <span className="font-medium">{o.label}</span>
+                          {o.detail && (
+                            <span className="block text-xs text-muted-foreground">{o.detail}</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                    {q.allowOther && (
+                      <button
+                        type="button"
+                        onClick={() => toggle(q, other)}
+                        className={cn(
+                          "rounded-md border border-border px-3 py-2 text-left text-sm transition hover:border-primary/50",
+                          chosenKeys.includes(other) && "border-primary/60 bg-primary/10",
+                        )}
+                      >
+                        {t("Other answer", "Andere Antwort")}
+                      </button>
+                    )}
+                  </div>
+                  {(q.kind === "text" || chosenKeys.includes(other)) && (
+                    <input
+                      aria-label={q.prompt}
+                      maxLength={2000}
+                      value={free[q.id] ?? ""}
+                      onChange={(e) => setFree((p) => ({ ...p, [q.id]: e.target.value }))}
+                      className="h-9 w-full rounded-md border border-border bg-background/40 px-3 text-sm outline-none focus:border-primary/50"
+                      placeholder={t("Answer in your own words", "Antworte in eigenen Worten")}
+                    />
+                  )}
+                </div>
+              );
+            })}
+          </section>
+        )}
+
+        {mayAct && questions.length === 0 && (
           <section>
             <label
               htmlFor="dashboard-clarification-answer"
@@ -1038,7 +1145,11 @@ function ClarificationPane({
         ) : (
           <button
             type="button"
-            onClick={() => onAnswer(clarification, text)}
+            onClick={() =>
+              questions.length > 0
+                ? onAnswer(clarification, { answers: collect() })
+                : onAnswer(clarification, { text })
+            }
             disabled={busy || !canSend}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground transition hover:brightness-110 glow-teal disabled:opacity-40"
           >
