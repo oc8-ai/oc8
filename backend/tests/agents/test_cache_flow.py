@@ -182,6 +182,53 @@ async def test_store_if_matching_still_caches_a_genuine_tool_less_prose_answer(
     )
 
 
+async def test_store_if_matching_refuses_a_result_cut_off_by_the_budget(
+    redis_url: str,
+) -> None:
+    """The run retried this step with a doubled budget and got a usable answer;
+    storing the cut-off one under the same key would replay the failure verbatim
+    on every identical retry for the TTL -- the same class of failure as the
+    bare-JSON guard below."""
+    dept = _dept()
+    messages = [NeutralMessage(role="user", content="do something")]
+    key, _cached = await cache_flow.lookup(
+        department=dept,
+        tenant_id=dept.tenant_id,
+        department_id=dept.id,
+        provider="ollama",
+        model="llama3.2:3b",
+        base_url=None,
+        messages=messages,
+        tools=[],
+        params=ModelParams(),
+        contains_restricted=False,
+    )
+    assert key is not None
+
+    cut_off = CompletionResult(
+        text="",
+        tool_calls=[],
+        usage=Usage(tokens_in=10, tokens_out=400),
+        stop_reason="length",
+        provider="ollama",
+        model="llama3.2:3b",
+    )
+    await cache_flow.store_if_matching(key, cut_off, provider="ollama", model="llama3.2:3b")
+    assert await get_cached(key) is None
+
+    half_written = CompletionResult(
+        text="Sure, here is the record:",
+        tool_calls=[],
+        usage=Usage(tokens_in=10, tokens_out=400),
+        stop_reason="length",
+        provider="ollama",
+        model="llama3.2:3b",
+        truncated_tool_calls=True,
+    )
+    await cache_flow.store_if_matching(key, half_written, provider="ollama", model="llama3.2:3b")
+    assert await get_cached(key) is None, "a tool call cut off mid-JSON must never be cached either"
+
+
 async def test_invalidate_deletes_a_stored_entry(redis_url: str) -> None:
     """The counterpart to store_if_matching for a failure it cannot see
     coming: it runs before any tool call in the completion it caches has
