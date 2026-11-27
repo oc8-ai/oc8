@@ -17,7 +17,7 @@ import tarfile
 import uuid
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import ColumnElement, String, and_, cast, not_, or_, select, text, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -48,6 +48,58 @@ def excluded_for_manifest(*, secrets_included: bool) -> list[str]:
     """
     tables = EXCLUDED_TABLES - {"secret", "tenant_dek"} if secrets_included else EXCLUDED_TABLES
     return [*sorted(tables), "blobs"]
+
+
+def _not_of_a_temporary_chat(name: str, tenant_id: uuid.UUID) -> list[ColumnElement[bool]]:
+    """The extra WHERE that keeps a temporary chat out of `name`'s rows (spec
+    §5.6: a conversation that is not kept). An archive outlives the chat, so
+    its session, messages, checkpoints, files, knowledge base (source, chunks,
+    jobs, grants) and the messages queued to its runs stay out -- the same
+    rows `chat.service.delete_session` removes or empties. Its runs,
+    approvals, audit events and usage are governance and are exported as
+    always. Nothing outside this set references these rows by a real foreign
+    key, so the restore's insert order is unaffected."""
+    session = table_by_name("chat_session")
+    temporary = select(session.c.id).where(
+        session.c.tenant_id == tenant_id, session.c.temporary.is_(True)
+    )
+    temporary_text = select(cast(session.c.id, String)).where(
+        session.c.tenant_id == tenant_id, session.c.temporary.is_(True)
+    )
+    if name == "chat_session":
+        return [session.c.temporary.is_(False)]
+    table = table_by_name(name)
+    if name in ("chat_message", "chat_checkpoint"):
+        return [table.c.session_id.notin_(temporary)]
+    if name == "direct_access_grant":
+        return [table.c.chat_session_id.notin_(temporary)]
+    if name == "knowledge_base":
+        return [or_(table.c.chat_session_id.is_(None), table.c.chat_session_id.notin_(temporary))]
+    kb = table_by_name("knowledge_base")
+    temporary_kbs = select(kb.c.id).where(kb.c.chat_session_id.in_(temporary))
+    source = table_by_name("data_source")
+    temporary_sources = select(source.c.id).where(
+        source.c.tenant_id == tenant_id,
+        source.c.config["chat_session_id"].astext.in_(temporary_text),
+    )
+    if name in ("kb_chunk", "knowledge_grant"):
+        return [table.c.kb_id.notin_(temporary_kbs)]
+    if name == "data_source":
+        return [table.c.id.notin_(temporary_sources)]
+    if name == "ingestion_job":
+        return [table.c.data_source_id.notin_(temporary_sources)]
+    if name == "file_attachment":
+        message = table_by_name("chat_message")
+        owners = union(temporary, select(message.c.id).where(message.c.session_id.in_(temporary)))
+        return [not_(and_(table.c.owner_type == "chat_message", table.c.owner_id.in_(owners)))]
+    if name == "run_input":
+        run = table_by_name("agent_run")
+        temporary_runs = select(run.c.id).where(
+            run.c.tenant_id == tenant_id,
+            run.c.context["chat_session_id"].astext.in_(temporary_text),
+        )
+        return [table.c.run_id.notin_(temporary_runs)]
+    return []
 
 
 async def current_alembic_revision(db: AsyncSession) -> str:
@@ -91,7 +143,9 @@ async def export_archive(
     for name in order:
         table = table_by_name(name)
         result = await db.execute(
-            select(table).where(table.c.tenant_id == tenant_id).order_by(table.c.id)
+            select(table)
+            .where(table.c.tenant_id == tenant_id, *_not_of_a_temporary_chat(name, tenant_id))
+            .order_by(table.c.id)
         )
         rows = result.mappings().all()
         lines = [json.dumps(serialize_row(table, dict(row)), sort_keys=True) for row in rows]

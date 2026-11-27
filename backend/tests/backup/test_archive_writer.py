@@ -10,6 +10,7 @@ import uuid
 from collections.abc import AsyncIterator
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -215,3 +216,86 @@ async def test_excluded_list_names_secret_tables_only_when_the_archive_carries_n
     assert "secret" not in manifest["excluded"] and "tenant_dek" not in manifest["excluded"]
     # What is NOT carried by any channel must still be named.
     assert "audit_event" in manifest["excluded"] and "blobs" in manifest["excluded"]
+
+
+async def _chat_with_everything(
+    db: AsyncSession, tenant_id: uuid.UUID, *, temporary: bool, marker: str
+) -> None:
+    """A chat with a message, a checkpoint, a file, a knowledge base with a
+    chunk and an ingestion job, a queued message to its run, and that run
+    itself. `marker` is written into every free-text field, so a test can
+    look for it anywhere in the archive."""
+    from oc8.chat.files_kb import chat_kb_for
+    from oc8.chat.service import create_session
+
+    agent_id = (await db.execute(select(m.Agent.id))).scalars().first()
+    assert agent_id is not None
+    session = await create_session(
+        db, tenant_id=tenant_id, agent_id=agent_id, member_id=uuid.uuid4(), temporary=temporary
+    )
+    message = m.ChatMessage(tenant_id=tenant_id, session_id=session.id, role="user", content=marker)
+    db.add(message)
+    await db.flush()
+    db.add(
+        m.ChatCheckpoint(
+            tenant_id=tenant_id, session_id=session.id, upto_message_id=message.id,
+            summary=marker, token_estimate=1, model="m",
+        )
+    )  # fmt: skip
+    db.add(
+        m.FileAttachment(
+            tenant_id=tenant_id, owner_type="chat_message", owner_id=message.id,
+            bucket_key=f"chat/{uuid.uuid4()}", filename=f"{marker}.txt",
+            content_type="text/plain", size_bytes=1, extracted_text=marker,
+        )
+    )  # fmt: skip
+    kb = await chat_kb_for(db, session=session, create=True)
+    assert kb is not None
+    source_id = uuid.UUID(str(kb.source_ids[0]))
+    db.add(
+        m.KbChunk(
+            tenant_id=tenant_id, kb_id=kb.id, data_source_id=source_id, content=marker,
+            source_uri=f"chat://{marker}",
+        )
+    )  # fmt: skip
+    db.add(m.IngestionJob(tenant_id=tenant_id, data_source_id=source_id, kb_id=kb.id))
+    run = m.AgentRun(
+        tenant_id=tenant_id, agent_id=agent_id, source="chat", state="done",
+        context={"chat_session_id": str(session.id)},
+    )  # fmt: skip
+    db.add(run)
+    await db.flush()
+    db.add(
+        m.RunInput(tenant_id=tenant_id, run_id=run.id, author_member_id=uuid.uuid4(), text=marker)
+    )
+    await db.flush()
+
+
+async def test_a_temporary_chat_is_not_in_the_backup_but_its_runs_are(
+    db_session: AsyncSession, acme_tenant: uuid.UUID
+) -> None:
+    """A temporary chat is a conversation that is not kept (spec §5.6): a
+    backup taken while one is open must not carry its messages, checkpoints,
+    files, knowledge or queued messages -- the archive would keep them long
+    after the chat is gone. Its runs are governance and stay, as they do when
+    the chat is deleted. An ordinary chat beside it is backed up whole."""
+    await _chat_with_everything(db_session, acme_tenant, temporary=True, marker="ephemeral-xyz")
+    await _chat_with_everything(db_session, acme_tenant, temporary=False, marker="kept-abc")
+
+    _, data = await export_archive(db_session, tenant_id=acme_tenant, passphrase=None)
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        manifest = json.loads(_extract(tar, "manifest.json"))
+        blobs = {
+            ti.name.removeprefix("tables/").removesuffix(".ndjson"): _extract(tar, ti)
+            for ti in tar.getmembers()
+            if ti.name.startswith("tables/")
+        }
+
+    leaked = sorted(name for name, blob in blobs.items() if b"ephemeral-xyz" in blob)
+    assert leaked == [], f"the temporary chat's content is in the backup: {leaked}"
+    for name in ("chat_session", "chat_message", "chat_checkpoint", "file_attachment"):
+        assert manifest["tables"][name]["rows"] == 1, name
+    for name in ("knowledge_base", "data_source", "kb_chunk", "ingestion_job", "run_input"):
+        assert manifest["tables"][name]["rows"] == 1, name
+    assert all(b"kept-abc" in blobs[name] for name in ("chat_message", "kb_chunk", "run_input"))
+    assert manifest["tables"]["agent_run"]["rows"] == 2, "both chats' runs stay (governance)"
