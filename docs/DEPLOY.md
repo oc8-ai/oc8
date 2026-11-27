@@ -345,6 +345,9 @@ organisation search without that, set a platform default in `.env`:
 | `OC8_WEB_SEARCH_BASE_URL` | SearXNG only: its address, e.g. `http://searxng:8080`. |
 | `OC8_WEB_SEARCH_API_KEY` | Brave or Tavily only: the API key. |
 
+Helm: `oc8.webSearch.provider`, `oc8.webSearch.baseUrl` and `oc8.webSearch.apiKey`
+(the key is kept in the chart's Secret).
+
 An organisation's own setting wins over the default, and an organisation can
 switch web search off for itself. The default's address and key are never
 shown to an organisation. The default SearXNG host may be an internal address

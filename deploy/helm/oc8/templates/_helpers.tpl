@@ -160,6 +160,21 @@ app.kubernetes.io/component: {{ .component }}
       name: {{ include "oc8.fullname" . }}-secrets
       key: mistral-api-key
 {{- end }}
+{{- if .Values.oc8.webSearch.provider }}
+- name: OC8_WEB_SEARCH_PROVIDER
+  value: {{ .Values.oc8.webSearch.provider | quote }}
+{{- end }}
+{{- if .Values.oc8.webSearch.baseUrl }}
+- name: OC8_WEB_SEARCH_BASE_URL
+  value: {{ .Values.oc8.webSearch.baseUrl | quote }}
+{{- end }}
+{{- if .Values.oc8.webSearch.apiKey }}
+- name: OC8_WEB_SEARCH_API_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ include "oc8.fullname" . }}-secrets
+      key: web-search-api-key
+{{- end }}
 {{- $ollamaUrl := include "oc8.ollamaBaseUrl" . }}
 {{- if $ollamaUrl }}
 - name: OC8_OLLAMA_BASE_URL

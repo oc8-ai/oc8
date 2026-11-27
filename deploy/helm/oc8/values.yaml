@@ -56,6 +56,14 @@ oc8:
   openaiApiKey: ""
   mistralApiKey: ""
 
+  # Web search for every organisation that has not chosen its own provider
+  # (docs/DEPLOY.md, "Web search"): searxng (with baseUrl, which may be an
+  # in-cluster service) or brave / tavily (with apiKey). Empty = none.
+  webSearch:
+    provider: ""
+    baseUrl: ""
+    apiKey: ""
+
   agentIsolation: false
   sandboxUser: ""
   internalBaseUrl: "" # defaults to in-cluster backend service URL
