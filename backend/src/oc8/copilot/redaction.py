@@ -17,8 +17,10 @@ request, "token: 5000 per month" a quota. Five forms count as a value:
    `--key value`, `--key=value`, curl's `-u user:pass`) under a credential
    key, compound ones included (`OPENAI_API_KEY`, `client_secret`,
    `refresh_token`). A strong key (password, secret, API key, credential,
-   ...) refuses any value but a placeholder; a weak one (token, auth) only a
-   value that looks like one. An Authorization key refuses any value but a
+   ...) refuses any value but a placeholder -- or, for a code counter that
+   merely contains the word (`max_password_length = 128`), a bare small
+   number or boolean (`_counter`); a weak one (token, auth) only a value
+   that looks like one. An Authorization key refuses any value but a
    placeholder, after an optional scheme (`Bearer`, `Basic`, ...);
 2. a well-known key shape on its own (`sk-...`, `ghp_...`, a JWT, a PEM
    private key);
