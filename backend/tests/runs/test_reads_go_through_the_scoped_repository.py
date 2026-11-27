@@ -131,6 +131,11 @@ ALLOWED: dict[str, str] = {
         "checkpoint.py): the names of the chat's own uploads and the state of the runs "
         "its answers name; no human request reaches it"
     ),
+    "chat/feedback.py": (
+        "answer_model reads only the model name the rated answer's own run ended on, for "
+        "POST /chat/sessions/{id}/messages/{id}/feedback after session_owned_by_caller: the chat's "
+        "owner rating an answer of their own chat; no run content is read"
+    ),
     "chat/checkpoint.py": (
         "the background checkpoint job loads the one run whose reply it summarises, "
         "scheduled by chat/service.py for that run's own chat; no human request reaches it"
