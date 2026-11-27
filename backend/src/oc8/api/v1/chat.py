@@ -37,12 +37,8 @@ from oc8.chat.export import (
     export_json,
     export_markdown,
 )
-from oc8.chat.model_choice import (
-    ModelOption,
-    is_allowed_override,
-    model_options,
-    session_model_config,
-)
+from oc8.chat.feedback import answer_model
+from oc8.chat.model_choice import ModelOption, is_allowed_override, model_options
 from oc8.chat.modes import ASSISTANT_ONLY_REFUSAL, MODES, ModeNotAvailable
 from oc8.chat.port import session_access
 from oc8.chat.questions import QuestionError
@@ -979,11 +975,9 @@ async def message_feedback(
     # The agent and its department name the event's subject, so the audit
     # read strips a personal agent's note for everyone but its owner (the
     # actor is the person, not the agent). The model is what the statistics
-    # count per: the chat's model choice, as its own housekeeping resolves it.
+    # count per: the one that wrote the rated answer.
     agent = await db.get(m.Agent, session.agent_id)
-    model: str | None = None
-    if agent is not None:
-        _config, _provider, model = await session_model_config(db, session=session, agent=agent)
+    model = await answer_model(db, session=session, answer=msg, agent=agent)
     await append_event(
         db,
         tenant_id=actor.principal.tenant_id,
@@ -993,6 +987,8 @@ async def message_feedback(
         action="chat.feedback",
         resource={
             "session_id": str(session.id),
+            # The key `GET /audit?chat_session_id=` reads, as on tool events.
+            "chat_session_id": str(session.id),
             "message_id": str(msg.id),
             "run_id": str(msg.run_id) if msg.run_id else None,
             "agent_id": str(session.agent_id),

@@ -30,14 +30,19 @@ _NOTE = "It mixed up my landlord's letters again."
 async def _chat_with_answer(
     app_session: AppSessionFactory, tenant: uuid.UUID, agent: uuid.UUID, subject: str
 ) -> tuple[uuid.UUID, uuid.UUID]:
-    """A chat of `subject` with `agent`, holding one answer."""
+    """A chat of `subject` with `agent`, holding one answer of a run."""
     async with app_session(tenant) as db:
         member_id = await _member_id(db, subject)
         session = m.ChatSession(tenant_id=tenant, agent_id=agent, member_id=member_id)
-        db.add(session)
+        run = m.AgentRun(tenant_id=tenant, agent_id=agent, state="done")
+        db.add_all([session, run])
         await db.flush()
         answer = m.ChatMessage(
-            tenant_id=tenant, session_id=session.id, role="assistant", content="Done."
+            tenant_id=tenant,
+            session_id=session.id,
+            role="assistant",
+            content="Done.",
+            run_id=run.id,
         )
         db.add(answer)
         await db.flush()
@@ -145,3 +150,50 @@ async def test_an_old_feedback_event_without_an_agent_keeps_its_note_from_others
     assert "note" not in as_admin
     assert as_admin["rating"] == "down"
     assert as_writer["note"] == _NOTE
+
+
+@pytest.mark.parametrize("fmt", ["csv", "jsonl"])
+async def test_the_export_keeps_a_personal_agents_feedback_note_from_an_admin(
+    app_session: AppSessionFactory, fmt: str
+) -> None:
+    w = await _world(app_session)
+    chat = await _chat_with_answer(app_session, w.tenant, w.personal_agent, "owner")
+    async with _http() as http:
+        await _rate(http, w.tenant, chat, "owner", "member")
+        admin = await http.get(
+            f"/api/v1/audit/export?format={fmt}&action=chat.feedback",
+            headers=_headers(w.tenant, "admin", "org_admin"),
+        )
+        owner = await http.get(
+            f"/api/v1/audit/export?format={fmt}&action=chat.feedback",
+            headers=_headers(w.tenant, "owner", "org_admin"),
+        )
+    assert admin.status_code == 200, admin.text
+    assert str(w.personal_agent) in admin.text
+    assert _NOTE not in admin.text
+    assert _NOTE in owner.text
+
+
+async def test_the_chat_and_run_filters_find_the_feedback_without_its_note(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await _world(app_session)
+    chat = await _chat_with_answer(app_session, w.tenant, w.personal_agent, "owner")
+    other = await _chat_with_answer(app_session, w.tenant, w.personal_agent, "owner")
+    async with app_session(w.tenant) as db:
+        run_id = (await db.get(m.ChatMessage, chat[1])).run_id  # type: ignore[union-attr]
+    async with _http() as http:
+        await _rate(http, w.tenant, chat, "owner", "member")
+        await _rate(http, w.tenant, other, "owner", "member", rating="up")
+        found = []
+        for query in (f"chat_session_id={chat[0]}", f"run_id={run_id}"):
+            r = await http.get(
+                f"/api/v1/audit?action=chat.feedback&{query}",
+                headers=_headers(w.tenant, "admin", "org_admin"),
+            )
+            assert r.status_code == 200, r.text
+            found.append([e["resource"] for e in r.json()["events"]])
+    # Each filter finds exactly this chat's one event, not the other chat's.
+    for (resource,) in found:
+        assert resource["rating"] == "down"
+        assert "note" not in resource
