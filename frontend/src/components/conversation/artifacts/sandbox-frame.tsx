@@ -7,10 +7,11 @@
 // sandbox-srcdoc.ts) gives it no network. It reaches the parent only by
 // postMessage, and only messages from this frame's own window are passed on.
 //
-// The one thing a sandbox cannot forbid is the frame navigating itself
-// (a link, `location = …`). A second load of the same document means it did:
-// the frame is taken away, so nothing more is shown from, or sent to, a page
-// that is not the preview.
+// The sandbox does not forbid the frame navigating itself (a link,
+// `location = …`); the app's `frame-src 'none'` does, before the request
+// (server/frame-ancestors.ts). As a second line, a second load of the same
+// document means it navigated anyway: the frame is taken away, so nothing
+// more is shown from, or sent to, a page that is not the preview.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { RotateCcw } from "lucide-react";
