@@ -35,6 +35,8 @@ import { ArtifactCard } from "@/components/conversation/artifacts/artifact-card"
 import { useArtifacts } from "@/components/conversation/artifacts/context";
 import { extractArtifacts, type Artifact } from "@/components/conversation/artifacts/extract";
 import { MermaidBlock } from "@/components/conversation/mermaid-block";
+import { isPythonLanguage, usePythonScope } from "@/components/conversation/python/run-context";
+import { InlinePythonRun } from "@/components/conversation/python/run-output";
 import { isPlainClick, objectHref, parseObjectUrl } from "@/components/conversation/object-links";
 import {
   commonPrefixLength,
@@ -171,6 +173,10 @@ const OpenFenceAt = createContext<number | null>(null);
 /** The artifacts of the answer being rendered, when it shows them as cards. */
 const MessageArtifacts = createContext<Artifact[] | null>(null);
 
+/** The answer being rendered (`artifactsOf`): a saved message's id or a live
+ *  run's; Run under a Python block asks whether it may run for it. */
+const MessageOf = createContext<string | undefined>(undefined);
+
 /** The artifact a fenced block is: the one with its language and code, else
  *  -- for the fence still being written, which the stream may show a little
  *  behind, or with the start of its closing fence -- the last one of its
@@ -203,6 +209,8 @@ function FencedBlock({ node, children }: { node?: HastNode; children?: ReactNode
   const openAt = useContext(OpenFenceAt);
   const artifacts = useContext(MessageArtifacts);
   const panel = useArtifacts();
+  const python = usePythonScope();
+  const messageOf = useContext(MessageOf);
   const { language, code } = codeOf(children);
   const start = node?.position?.start.offset;
   const end = node?.position?.end.offset;
@@ -221,6 +229,14 @@ function FencedBlock({ node, children }: { node?: HastNode; children?: ReactNode
   if (artifact) return <ArtifactCard artifact={artifact} />;
   if (language === "math" || language === "math-source") {
     return <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{children}</pre>;
+  }
+  if (python && messageOf && !open && isPythonLanguage(language)) {
+    return (
+      <div className="space-y-1">
+        <CodeBlock>{children}</CodeBlock>
+        <InlinePythonRun code={code} messageId={messageOf} />
+      </div>
+    );
   }
   return <CodeBlock>{children}</CodeBlock>;
 }
@@ -689,36 +705,38 @@ export function ChatMarkdown({
 
   return (
     <MessageArtifacts.Provider value={artifacts}>
-      <div
-        data-testid={streaming ? "stream-tail" : undefined}
-        className={cn(
-          streaming && "stream-tail",
-          "min-w-0 space-y-2 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
-          className,
-        )}
-      >
-        {blocks.map((block, i) =>
-          i === last ? (
-            <MarkdownBlock
-              key={i}
-              markdown={tail}
-              components={components}
-              freshFrom={freshFrom}
-              math={math}
-              openFenceAt={openFenceAt}
-              linkState={linkState}
-            />
-          ) : (
-            <MarkdownBlock
-              key={i}
-              markdown={done[i]}
-              components={components}
-              math={math}
-              linkState={linkState}
-            />
-          ),
-        )}
-      </div>
+      <MessageOf.Provider value={artifactsOf}>
+        <div
+          data-testid={streaming ? "stream-tail" : undefined}
+          className={cn(
+            streaming && "stream-tail",
+            "min-w-0 space-y-2 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
+            className,
+          )}
+        >
+          {blocks.map((block, i) =>
+            i === last ? (
+              <MarkdownBlock
+                key={i}
+                markdown={tail}
+                components={components}
+                freshFrom={freshFrom}
+                math={math}
+                openFenceAt={openFenceAt}
+                linkState={linkState}
+              />
+            ) : (
+              <MarkdownBlock
+                key={i}
+                markdown={done[i]}
+                components={components}
+                math={math}
+                linkState={linkState}
+              />
+            ),
+          )}
+        </div>
+      </MessageOf.Provider>
     </MessageArtifacts.Provider>
   );
 }

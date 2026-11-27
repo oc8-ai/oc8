@@ -364,6 +364,21 @@ server:
   limiter: false
 ```
 
+## Running Python in the chat
+
+A Python code block in an answer has a **Run** button. The code runs in the
+person's browser (Pyodide, in a sandboxed frame with no network), never on the
+server. The Pyodide files ship with the frontend image in
+`frontend/public/pyodide/` (about 28 MB: the runtime plus numpy, pandas and
+matplotlib), served by oc8 itself, so air-gapped installs need nothing extra.
+The browser downloads them on the first Run only.
+
+To move to another Pyodide release, change the pinned version and SHA-256
+values in `frontend/scripts/vendor-pyodide.mjs` and run
+`node scripts/vendor-pyodide.mjs` in `frontend/` on a connected machine;
+`--check` verifies the files in place. Run is offered only where previews may
+run scripts: an admin turning **Run scripts in previews** off turns it off too.
+
 ## Letting people connect their Microsoft or Google account
 
 On the Connections page each person can connect their own Microsoft or Google

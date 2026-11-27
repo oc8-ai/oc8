@@ -5,7 +5,8 @@
 // Previews never run in this page: HTML in a SandboxFrame, SVG and Mermaid
 // (drawn here, strict mode) as <img> data URLs, which run no script and load
 // nothing. While the block is still being written the preview waits for it
-// to close, so a half page or diagram never shows.
+// to close, so a half page or diagram never shows. Python code has Run in
+// its Code tab (python/run-output.tsx), under the same rule as scripts.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, X } from "lucide-react";
@@ -17,6 +18,8 @@ import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 import { pageIsDark, renderMermaidToSvg, svgDataUrl } from "../mermaid-render";
+import { isPythonLanguage } from "../python/run-context";
+import { PythonRun } from "../python/run-output";
 import type { PreviewMode } from "./context";
 import { fileNameFor, kindLabel, type Artifact } from "./extract";
 import { SandboxFrame } from "./sandbox-frame";
@@ -345,6 +348,11 @@ function PanelBody({
           </TabsContent>
         )}
         <TabsContent value="code" className="mt-2 min-h-0 flex-1 overflow-auto">
+          {artifact.kind === "code" && artifact.closed && isPythonLanguage(artifact.language) && (
+            <div className="border-b border-border px-3 py-2">
+              <PythonRun code={artifact.source} mode={mode} />
+            </div>
+          )}
           <Source artifact={artifact} />
         </TabsContent>
       </Tabs>
