@@ -9,14 +9,33 @@
 // it for that saved answer (see `linkable`); a member's own words are not
 // checked.
 // Images are https only and load only when the member clicks to load them.
+// Formulas render through KaTeX and ```mermaid blocks as diagrams (see
+// `mathInProse` and MermaidBlock); both libraries are their own chunks,
+// fetched the first time an answer needs them.
 
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import {
+  createContext,
+  memo,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import ReactMarkdown, { type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
 import { Check, Copy, ExternalLink, Image as ImageIcon } from "lucide-react";
 
+import { MermaidBlock } from "@/components/conversation/mermaid-block";
 import { isPlainClick, objectHref, parseObjectUrl } from "@/components/conversation/object-links";
-import { commonPrefixLength, splitBlocks, stabilizeTail } from "@/components/markdown-stream";
+import {
+  commonPrefixLength,
+  openCodeFenceAt,
+  splitBlocks,
+  stabilizeTail,
+} from "@/components/markdown-stream";
 import { rehypeStreamFresh } from "@/components/stream-words";
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
@@ -139,6 +158,34 @@ function CodeBlock({ children }: { children?: ReactNode }) {
   );
 }
 
+/** Where the fence still being written starts in the block it is in (see
+ *  `openCodeFenceAt`), or null: every fence in the block is closed. */
+const OpenFenceAt = createContext<number | null>(null);
+
+type HastNode = { position?: { start: { offset?: number }; end: { offset?: number } } };
+
+/** A fenced block: a diagram for ```mermaid, a formula's source while KaTeX
+ *  loads, else highlighted code. */
+function FencedBlock({ node, children }: { node?: HastNode; children?: ReactNode }) {
+  const openAt = useContext(OpenFenceAt);
+  const { language, code } = codeOf(children);
+  if (language === "mermaid") {
+    const start = node?.position?.start.offset;
+    const end = node?.position?.end.offset;
+    const open =
+      openAt !== null &&
+      start !== undefined &&
+      end !== undefined &&
+      start <= openAt &&
+      openAt < end;
+    return <MermaidBlock source={code} closed={!open} />;
+  }
+  if (language === "math") {
+    return <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{children}</pre>;
+  }
+  return <CodeBlock>{children}</CodeBlock>;
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).hostname;
@@ -183,13 +230,88 @@ function ExternalImage({ src, alt }: { src: string; alt: string }) {
 
 const CITATION = /\[(\d{1,2})\](?!\()/g;
 // Fenced blocks (closed or still streaming) and inline code spans: `[1]`
-// there is code (an index), never a citation.
+// there is code (an index), never a citation; and a dollar there is no math.
 const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
+// The same, and `$$` math (after `mathInProse`, all math is): `[1]` there
+// is part of a formula.
+const CODE_OR_MATH = /(```[\s\S]*?(?:```|$)|`[^`\n]*`|\$\$[\s\S]*?(?:\$\$|$))/;
+const BLANK_LINE = /\n[ \t]*\n/;
+
+/** Math in prose, rewritten to the `$$` spans remark-math reads (its own
+ *  single-dollar reading is off, it would take "$5 and $6" for a formula):
+ *  - `$…$` is a formula only when no space is inside either dollar and no
+ *    letter or digit follows the closing one: "$5-$10" stays a price, and
+ *    so does the "$5" in "$5 and **$x$**";
+ *  - `\(…\)` is inline math, `\[…\]` display math when it has its lines
+ *    to itself, else inline;
+ *  - `$$…$$` and `\$` stay as they are.
+ *  A span that is not closed stays text; none runs past a blank line. */
+function mathInProse(text: string): string {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === "\\") {
+      const next = text[i + 1];
+      if (next === "(" || next === "[") {
+        const end = text.indexOf(next === "(" ? "\\)" : "\\]", i + 2);
+        const inner = end === -1 ? "" : text.slice(i + 2, end);
+        if (end !== -1 && inner.trim() && !BLANK_LINE.test(inner)) {
+          const indent = /(?:^|\n)([ \t]*)$/.exec(out)?.[1];
+          const ownLines = indent !== undefined && /^[ \t]*(?:\n|$)/.test(text.slice(end + 2));
+          out +=
+            next === "[" && ownLines ? `$$\n${indent}${inner.trim()}\n${indent}$$` : `$$${inner}$$`;
+          i = end + 2;
+          continue;
+        }
+      }
+      out += text.slice(i, i + 2);
+      i += 2;
+      continue;
+    }
+    if (ch === "$" && text[i + 1] === "$") {
+      const end = text.indexOf("$$", i + 2);
+      const stop = end === -1 ? text.length : end + 2;
+      out += text.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    if (ch === "$") {
+      const end = text.indexOf("$", i + 1);
+      const inner = end === -1 ? "" : text.slice(i + 1, end);
+      const after = text[end + 1] ?? "";
+      if (
+        end !== -1 &&
+        /^\S/.test(inner) &&
+        /\S$/.test(inner) &&
+        !inner.endsWith("\\") &&
+        !/[\p{L}\p{N}$]/u.test(after) &&
+        !BLANK_LINE.test(inner)
+      ) {
+        out += `$$${inner}$$`;
+        i = end + 1;
+        continue;
+      }
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+/** Math outside code, rewritten for remark-math (see `mathInProse`). */
+function withMath(text: string): string {
+  if (!/[$\\]/.test(text)) return text;
+  return text
+    .split(CODE)
+    .map((part, i) => (i % 2 === 1 ? part : mathInProse(part)))
+    .join("");
+}
 
 function withCitations(text: string, count: number): string {
   if (count === 0) return text;
   return text
-    .split(CODE)
+    .split(CODE_OR_MATH)
     .map((part, i) =>
       i % 2 === 1
         ? part
@@ -200,8 +322,58 @@ function withCitations(text: string, count: number): string {
     .join("");
 }
 
-const REMARK = [remarkGfm];
+/** A block's markdown as it is parsed: math, then citations. */
+function prepare(block: string, count: number): string {
+  return withCitations(withMath(block), count);
+}
+
+const REMARK: Options["remarkPlugins"] = [
+  [remarkGfm],
+  [remarkMath, { singleDollarTextMath: false }],
+];
 const URL_AS_IS = (url: string) => url;
+
+type RehypePlugin = NonNullable<Options["rehypePlugins"]>[number];
+
+// rehype-katex and KaTeX's stylesheet (with its fonts, bundled): loaded once,
+// the first time an answer holds a formula. Until then a formula shows as
+// its source.
+let katex: RehypePlugin | null = null;
+let katexLoading: Promise<RehypePlugin> | null = null;
+
+function loadKatex(): Promise<RehypePlugin> {
+  katexLoading ??= Promise.all([import("rehype-katex"), import("katex/dist/katex.min.css")]).then(
+    ([{ default: rehypeKatex }]) => {
+      // Never throw on a formula KaTeX cannot read: it shows in red, as written.
+      katex = [rehypeKatex, { throwOnError: false, strict: "ignore" }];
+      return katex;
+    },
+    (error: unknown) => {
+      katexLoading = null;
+      throw error;
+    },
+  );
+  return katexLoading;
+}
+
+/** The KaTeX rehype step once loaded; asks for it when `needed`. */
+function useKatex(needed: boolean): RehypePlugin | null {
+  const [plugin, setPlugin] = useState<RehypePlugin | null>(() => katex);
+  useEffect(() => {
+    if (!needed || plugin) return;
+    let alive = true;
+    loadKatex().then(
+      (loaded) => {
+        if (alive) setPlugin(() => loaded);
+      },
+      () => undefined,
+    );
+    return () => {
+      alive = false;
+    };
+  }, [needed, plugin]);
+  return plugin;
+}
 
 /** One top-level block. Memoised: a finished block is parsed once and its
  *  nodes stay mounted while the answer goes on below it. */
@@ -209,26 +381,37 @@ const MarkdownBlock = memo(function MarkdownBlock({
   markdown,
   components,
   freshFrom,
+  math,
+  openFenceAt = null,
 }: {
   markdown: string;
   components: Components;
   /** Only on the block still being written: where its new words start. */
   freshFrom?: number;
+  /** KaTeX's rehype step, once loaded. */
+  math?: RehypePlugin | null;
+  /** Only on the block still being written: its open fence (see OpenFenceAt). */
+  openFenceAt?: number | null;
   /** Not read here: a new value re-renders the block when what a link may be
    *  changed, with the same renderers, so nothing in it remounts. */
   linkState?: object;
 }) {
+  // The fresh words are marked first: KaTeX's output carries no source
+  // positions to mark, and the formula's own code node is skipped.
+  const rehype: RehypePlugin[] = [];
+  if (freshFrom !== undefined) rehype.push([rehypeStreamFresh, { from: freshFrom }]);
+  if (math) rehype.push(math);
   return (
-    <ReactMarkdown
-      remarkPlugins={REMARK}
-      rehypePlugins={
-        freshFrom === undefined ? undefined : [[rehypeStreamFresh, { from: freshFrom }]]
-      }
-      components={components}
-      urlTransform={URL_AS_IS}
-    >
-      {markdown}
-    </ReactMarkdown>
+    <OpenFenceAt.Provider value={openFenceAt}>
+      <ReactMarkdown
+        remarkPlugins={REMARK}
+        rehypePlugins={rehype}
+        components={components}
+        urlTransform={URL_AS_IS}
+      >
+        {markdown}
+      </ReactMarkdown>
+    </OpenFenceAt.Provider>
   );
 });
 
@@ -285,7 +468,7 @@ export function ChatMarkdown({
   const sourcesKey = sources.map((s) => `${s.n}:${s.title}`).join("|");
   const components = useMemo<Components>(
     () => ({
-      pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
+      pre: ({ node, children }) => <FencedBlock node={node}>{children}</FencedBlock>,
       // The fresh span (rehypeStreamFresh) is keyed by where it starts, so
       // each reveal mounts a new one and its fade plays once.
       span: ({ node: _node, ...props }) => {
@@ -386,8 +569,15 @@ export function ChatMarkdown({
   const count = sources.length;
   const blocks = useMemo(() => splitBlocks(text), [text]);
   const last = blocks.length - 1;
+  const done = useMemo(
+    () => blocks.slice(0, -1).map((block) => prepare(block, count)),
+    [blocks, count],
+  );
   const tail =
-    last >= 0 ? withCitations(streaming ? stabilizeTail(blocks[last]) : blocks[last], count) : "";
+    last >= 0 ? prepare(streaming ? stabilizeTail(blocks[last]) : blocks[last], count) : "";
+  // A ```mermaid block still being written shows its source, not a diagram.
+  const openFenceAt = streaming ? openCodeFenceAt(tail) : null;
+  const math = useKatex(tail.includes("$$") || done.some((block) => block.includes("$$")));
   // Where the newest words of the last block start, against what the last
   // commit showed. Read from a ref the effect below writes after commit, so
   // a second render of the same props (StrictMode) gets the same answer.
@@ -424,13 +614,16 @@ export function ChatMarkdown({
             markdown={tail}
             components={components}
             freshFrom={freshFrom}
+            math={math}
+            openFenceAt={openFenceAt}
             linkState={linkState}
           />
         ) : (
           <MarkdownBlock
             key={i}
-            markdown={withCitations(block, count)}
+            markdown={done[i]}
             components={components}
+            math={math}
             linkState={linkState}
           />
         ),

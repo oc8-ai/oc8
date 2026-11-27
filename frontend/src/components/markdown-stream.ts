@@ -8,8 +8,11 @@
 //   an open `**` or `` ` `` is closed early, a half-typed link shows only its
 //   words, a table waits for its header rule, and a line that is only
 //   markdown punctuation ("-", "#", "``") waits for its first word.
+//
+// A `$$` line opens and closes a math block the way a code fence does (a
+// one-line `$$x$$` is inline math, no fence): neither job looks inside one.
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+const FENCE = /^ {0,3}(`{3,}|~{3,}|\$\$(?=[^$]*$))/;
 // A list item, so a loose list (items apart by a blank line) stays one list.
 const LIST_ITEM = /^([-*+]|\d{1,9}[.)])(\s|$)/;
 // Reference-style definitions apply to the whole document; a text that has
@@ -54,16 +57,30 @@ export function splitBlocks(text: string): string[] {
   return blocks;
 }
 
-/** Inside an unclosed code fence at the end of `text`. */
-function openFence(text: string): boolean {
-  let fence: string | null = null;
-  for (const line of text.split("\n")) {
-    const marker = FENCE.exec(line)?.[1];
-    if (!marker) continue;
-    if (fence === null) fence = marker[0];
-    else if (marker[0] === fence) fence = null;
+/** The fence (code or `$$` math) left open at the end of `text`: its
+ *  marker's first character, its line and the offset of its marker. */
+function openFence(text: string): { marker: string; line: number; at: number } | null {
+  let open: { marker: string; line: number; at: number } | null = null;
+  let offset = 0;
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i += 1) {
+    const found = FENCE.exec(lines[i]);
+    const marker = found?.[1];
+    if (found && marker) {
+      if (open === null) {
+        open = { marker: marker[0], line: i, at: offset + found[0].length - marker.length };
+      } else if (marker[0] === open.marker) open = null;
+    }
+    offset += lines[i].length + 1;
   }
-  return fence !== null;
+  return open;
+}
+
+/** Where the code fence left open at the end of `text` starts (its marker),
+ *  or null: that block is still being written. */
+export function openCodeFenceAt(text: string): number | null {
+  const open = openFence(text);
+  return open && open.marker !== "$" ? open.at : null;
 }
 
 /** A table row's cell count. */
@@ -134,7 +151,16 @@ function settleLink(para: string): string {
 /** The unfinished end of a streaming answer, made to render as it will
  *  once finished. Only for the last block while it streams. */
 export function stabilizeTail(text: string): string {
-  if (!text || openFence(text)) return text;
+  if (!text) return text;
+  const open = openFence(text);
+  if (open?.marker === "$") {
+    // A formula still being written shows as its source, in a code block,
+    // until its closing `$$` lands: half a formula would not parse.
+    const lines = text.split("\n");
+    lines[open.line] = lines[open.line].replace(/\$\$.*$/, "```");
+    return lines.join("\n");
+  }
+  if (open) return text;
   let lines = text.split("\n");
   // A line that is only markdown punctuation is a marker without its word
   // yet ("-", "##", "``", "--" under a line would make it a heading).
@@ -157,11 +183,11 @@ export function stabilizeTail(text: string): string {
   }
   let out = lines.join("\n");
   // The paragraph being written: after the last blank line and after the
-  // last closed fence.
+  // last closed fence (code or math).
   let start = 0;
   const blank = /\n[ \t]*\n/g;
   for (let m = blank.exec(out); m; m = blank.exec(out)) start = m.index + m[0].length;
-  const fenceLines = [...out.matchAll(/^ {0,3}(`{3,}|~{3,}).*$/gm)];
+  const fenceLines = [...out.matchAll(/^ {0,3}(`{3,}|~{3,}|\$\$(?=[^$\n]*$)).*$/gm)];
   const lastFence = fenceLines[fenceLines.length - 1];
   if (lastFence && lastFence.index !== undefined) {
     start = Math.max(start, lastFence.index + lastFence[0].length);
