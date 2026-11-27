@@ -188,6 +188,18 @@ _MENTIONS = [
     "secret: siehe Vault",
     "Passwort: erforderlich",
     "Authorization: required",
+    # A counter or switch in code whose name merely contains a strong word:
+    # a compound identifier the strong word does not end, with a bare small
+    # number or boolean (seen live: a prompt about a variable was refused).
+    "a variable SECRET_FROM_RUN1 = 42",
+    "secret_count = 3",
+    "password_attempts=5",
+    "max_password_length: 128",
+    "MAX_PASSWORD_LENGTH = 64",
+    "secretCount = 0.5",
+    "SECRET_ENABLED = True",
+    "password_reset_enabled: false",
+    '{"secret_count": 3}',
 ]
 #: A credential value the person wrote: refused (and redacted).
 _VALUES = [
@@ -266,6 +278,22 @@ _VALUES = [
     # an Authorization header holds a credential whatever its shape
     "Authorization: Bearer abc",
     "Authorization: xyz",
+    # No counter exemption: a plain strong key takes any value; a compound key
+    # the strong word ends (or that names a pin, a key, a numbered password)
+    # names the credential; a quoted, longer or non-numeric value is a value.
+    "password=42",
+    "password = True",
+    "secret = 1",
+    "passphrase: 7",
+    "pw=1234",
+    "DB_PASSWORD=1234",
+    "client_secret=1234",
+    "API_KEY=1234",
+    "SECRET_KEY = 42",
+    "secret_pin = 1234",
+    'secret_count = "42"',
+    "secret_count = 42abc",
+    "secret_count = 0.12345",
 ]
 
 
@@ -320,6 +348,19 @@ def test_redaction_removes_every_value_the_gate_refuses(message: str) -> None:
     redacted = redact_text(message)
     assert "[redacted]" in redacted
     assert not carries_secret_value(redacted), redacted
+
+
+@pytest.mark.parametrize(
+    "message", ["password_2 = 42", "SECRET_FROM_RUN1 = 12345", "SECRET_FROM_RUN1 = '42'"]
+)
+def test_a_counter_key_with_a_digit_still_refuses_a_value(message: str) -> None:
+    """Kept out of `_VALUES`, whose trace check reads a key with a digit as a
+    leftover value: a numbered password is the credential, and a counter
+    takes no long or quoted value."""
+    from oc8.copilot.redaction import carries_secret_value, redact_text
+
+    assert carries_secret_value(message) is True
+    assert "[redacted]" in redact_text(message)
 
 
 @pytest.mark.parametrize("message", _MENTIONS)

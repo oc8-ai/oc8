@@ -166,6 +166,46 @@ def _key_strength(key: str) -> str | None:
     return None
 
 
+#: A code identifier: how a variable or setting is named.
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: A bare small literal: up to four characters of number, or a boolean.
+_SMALL_LITERAL = re.compile(r"(?i)(?:\d+(?:\.\d+)?|\.\d+|true|false)")
+#: Name parts that, after a strong word, still name the credential itself
+#: (`SECRET_KEY`, `password_hash`, `secret_pin`).
+_CREDENTIAL_TAILS = frozenset(
+    "key keys value val pin code phrase hash string str text b64 base64 hex plain raw".split()
+)
+
+
+def _counter(raw_key: str, value: str, *, quoted: bool) -> bool:
+    """A counter or switch whose code name merely contains a strong word
+    (`SECRET_FROM_RUN1 = 42`, `max_password_length: 128`, `secret_count = 3`,
+    `SECRET_ENABLED = True`): an identifier with name parts after its last
+    strong word that do not name the credential, and a bare small number or
+    boolean. Not a counter: a plain strong key (`password=42`), one the
+    strong word ends (`DB_PASSWORD=1234`), a pin or a numbered password
+    (`secret_pin`, `password_2`), and a quoted or longer value."""
+    value = _trim(value)
+    if quoted or not _IDENTIFIER.fullmatch(raw_key) or not _SMALL_LITERAL.fullmatch(value):
+        return False
+    if value[0].isdigit() or value[0] == ".":
+        if len(value) > 4:
+            return False
+    parts = [part.lower() for part in re.split(r"_+|(?<=[a-z])(?=[A-Z])", raw_key) if part]
+    last = -1
+    for i, part in enumerate(parts):
+        pair = parts[i - 1] + part if i else ""
+        if part in _STRONG_WORDS or part in _STRONG_KEYS or pair in _STRONG_WORDS:
+            last = i
+    tail = parts[last + 1 :]
+    return (
+        last >= 0
+        and bool(tail)
+        and all(re.search(r"[a-z]", part) for part in tail)
+        and not any(part in _CREDENTIAL_TAILS for part in tail)
+    )
+
+
 def _trim(value: str) -> str:
     return value.strip().rstrip(".!?:…")
 
@@ -305,7 +345,9 @@ def _assignment_spans(text: str) -> list[tuple[int, int]]:
                 continue  # "Authorization: Bearer" and nothing after it
             start, end, quoted = _read_value(text, j)
         value = text[start:end]
-        if not _refused(value, strength, quoted=quoted, crossed=crossed):
+        if not _refused(value, strength, quoted=quoted, crossed=crossed) or (
+            strength == "strong" and _counter(raw_key, value, quoted=quoted)
+        ):
             done = max(done, end)
             continue
         if not quoted and separator is not None and "passphrase" in raw_key.lower():
