@@ -81,12 +81,17 @@ _PLACEHOLDERS = frozenset(
 #: `<your password>` / `[password]` are placeholders: words in brackets, no
 #: digits (`<hunter2>` is a value); `[redacted]` is what `redact_text` wrote.
 _PLACEHOLDER_SHAPE = re.compile(
-    r"^(?:<[A-Za-zÄÖÜäöüß _-]{1,64}>|\[[A-Za-zÄÖÜäöüß _-]{1,64}\]?|\*+|x{3,}|\.{3,}|…"
-    # Where the secret lives, not the secret: `${OPENAI_API_KEY}`,
-    # `$OPENAI_API_KEY` (an upper-case name; `$ecret1` is a value),
-    # `%API_KEY%`, `{{ api_key }}`.
-    r"|\$\{\w+\}|\$[A-Z_][A-Z0-9_]*|%[A-Za-z_]\w*%|\{\{\s*[\w.]+\s*\}\})$",
+    r"^(?:<[A-Za-zÄÖÜäöüß _-]{1,64}>|\[[A-Za-zÄÖÜäöüß _-]{1,64}\]?|\*+|x{3,}|\.{3,}|…)$",
     re.IGNORECASE,
+)
+#: A reference to where the secret lives, matched case-sensitively so a value
+#: that merely starts with `$` or sits between `%` is not taken for one:
+#: `${OPENAI_API_KEY}`, `$OPENAI_API_KEY` and `%API_KEY%` (upper-case names;
+#: `$Sommer2024` is a value), `{{ secrets.api_key }}` (a dotted name without
+#: digits; `{{ hunter2 }}` is a value).
+_ENV_REFERENCE = re.compile(
+    r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Z_][A-Z0-9_]*|%[A-Z_][A-Z0-9_]*%"
+    r"|\{\{\s*\.?[A-Za-z_]+(?:\.[A-Za-z_]+)*\s*\}\})$"
 )
 #: Words that follow a weak key or a sentence about a credential without being
 #: one: fillers, and what follows "my password" in a request about it ("reset
@@ -167,7 +172,12 @@ def _trim(value: str) -> str:
 
 def _placeholder(value: str) -> bool:
     value = _trim(value)
-    return not value or value.lower() in _PLACEHOLDERS or bool(_PLACEHOLDER_SHAPE.match(value))
+    return (
+        not value
+        or value.lower() in _PLACEHOLDERS
+        or bool(_PLACEHOLDER_SHAPE.match(value))
+        or bool(_ENV_REFERENCE.match(value))
+    )
 
 
 def _quantity(value: str, after: str) -> bool:
@@ -202,6 +212,14 @@ def _skip_blank(text: str, i: int, *, newline: bool = True) -> tuple[int, bool]:
     return i, crossed
 
 
+def _ends_value(text: str, i: int) -> bool:
+    """Whether a value stops at `i`: the end of the text or a delimiter. A
+    reference or bracket glued to more characters (`${x}hunter2`,
+    `<x>hunter2`) is part of a longer, real value and is read bare."""
+    # `<` too: a placeholder inside a tag (`<password><your key></password>`).
+    return i >= len(text) or text[i] in _VALUE_END or text[i] == "<"
+
+
 def _read_value(text: str, i: int) -> tuple[int, int, bool]:
     """The value starting at `i`: (start, end, quoted). A quoted value runs to
     its closing quote (or the end of the line), a bare one to a delimiter."""
@@ -213,20 +231,21 @@ def _read_value(text: str, i: int) -> tuple[int, int, bool]:
         stop = n if close == -1 else close
         line_end = text.find("\n", i + 1, stop)
         return i + 1, stop if line_end == -1 else line_end, True
-    # A template reference reads through its closing brace (`${VAR}`,
-    # `{{ name }}`) so the placeholder check sees all of it.
-    for opener, closer in (("${", "}"), ("{{", "}}")):
+    # A template reference (`${VAR}`, `{{ name }}`) or a bracket placeholder
+    # (`<your password>`) is read through its closer so the placeholder check
+    # sees all of it. One glued to more characters (`{{ x }}hunter2`) is part
+    # of a longer, real value: the bare read then starts past the closer, so
+    # the blanks inside it do not cut the value short.
+    resume = i
+    for opener, closer in (("${", "}"), ("{{", "}}"), ("<", ">")):
         if text.startswith(opener, i):
             close = text.find(closer, i, min(n, i + _PLACEHOLDER_SPAN))
             if close != -1 and text.find("\n", i, close) == -1:
-                return i, close + len(closer), True
-    if i < n and text[i] == "<":
-        # A placeholder (`<your password>`) is short: looked for within
-        # `_PLACEHOLDER_SPAN` characters, else the value is read bare.
-        close = text.find(">", i, min(n, i + _PLACEHOLDER_SPAN))
-        if close != -1 and text.find("\n", i, close) == -1:
-            return i, close + 1, True
-    end = i
+                if _ends_value(text, close + len(closer)):
+                    return i, close + len(closer), True
+                resume = close + len(closer)
+            break
+    end = resume
     while end < n and text[end] not in _VALUE_END:
         end += 1
     return i, end, False

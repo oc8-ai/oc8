@@ -153,6 +153,10 @@ async def test_an_ordinary_agents_chat_is_not_gated(
 #: Words about credentials, not credentials: a token is also what a model's
 #: usage is counted in (Cost Center), and a person may ask about a password.
 _MENTIONS = [
+    "password: $DB_PASSWORD",
+    "token=%API_TOKEN%",
+    "api_key: {{ secrets.api_key }}",
+    "passphrase: ${SSH_PASSPHRASE}",
     "How many tokens did I use this month?",
     "Wie viele Tokens habe ich verbraucht?",
     "What is our token budget?",
@@ -187,6 +191,14 @@ _MENTIONS = [
 ]
 #: A credential value the person wrote: refused (and redacted).
 _VALUES = [
+    # A value that only looks like an environment reference.
+    "password=$Sommer2024",
+    "password=%Sommer2024%",
+    "secret={{ hunter2 }}",
+    # A reference glued to a real value is the value.
+    "api_key=${x}sk-realsecret123456",
+    "password={{ x }}hunter2",
+    "password=<x>hunter2",
     "token: abc123def456",
     "password = hunter2",
     "Hier ist mein Token: abc123def456",
