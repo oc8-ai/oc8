@@ -1130,12 +1130,17 @@ class RunInputRequest(CamelModel):
     #: `steer`: read at the run's next step. `next_turn`: the chat's next turn
     #: once the run ends (spec §5.5).
     delivery: Literal["steer", "next_turn"] = "steer"
+    #: The "Web" switch for the turn a `next_turn` input becomes (spec §10);
+    #: ignored for `steer`.
+    web: bool = False
 
 
 class EditRunInputRequest(CamelModel):
     """A waiting `next_turn` input's new text; same bounds as `RunInputRequest`."""
 
     text: str = Field(min_length=1, max_length=4000)
+    #: The new "Web" switch; None keeps it.
+    web: bool | None = None
 
 
 class SetAgentToolAccessRequest(CamelModel):

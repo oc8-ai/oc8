@@ -2431,6 +2431,9 @@ class RunInputDTO(CamelModel):
     #: `steer` (read at the run's next step) or `next_turn` (queued: becomes
     #: the chat's next turn when the run ends, spec §5.5).
     delivery: Literal["steer", "next_turn"] = "steer"
+    #: A `next_turn` input's "Web" switch: the turn it becomes may search the
+    #: web (spec §10). Always false for `steer`.
+    web: bool = False
 
 
 class QueuedTurnDTO(CamelModel):

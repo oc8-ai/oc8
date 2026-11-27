@@ -10,7 +10,18 @@ from __future__ import annotations
 import datetime as dt
 import uuid
 
-from sqlalchemy import BigInteger, CheckConstraint, DateTime, Identity, Index, Integer, Text, Uuid
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Identity,
+    Index,
+    Integer,
+    Text,
+    Uuid,
+    false,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -40,3 +51,9 @@ class RunInput(Base, PkMixin, TenantMixin, TimestampMixin):
     )
     consumed_at: Mapped[dt.datetime | None] = mapped_column(DateTime(timezone=True))
     consumed_step: Mapped[int | None] = mapped_column(Integer)
+    #: A `next_turn` input's "Web" switch: the turn it becomes may search the
+    #: web (spec §10). Always false for `steer`: a message never changes the
+    #: running run's web state.
+    web: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )

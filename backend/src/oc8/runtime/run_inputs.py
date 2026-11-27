@@ -168,10 +168,15 @@ async def add_run_input(
     member: m.OrgMember,
     text: str,
     delivery: Delivery = "steer",
+    web: bool = False,
 ) -> m.RunInput:
     """Queue `text` for `run`. The caller has already checked `may_steer_run`,
     and, for `steer`, that the run's runtime takes messages at all
-    (`run_accepts_inputs`): a `next_turn` input never reaches the runtime."""
+    (`run_accepts_inputs`): a `next_turn` input never reaches the runtime.
+
+    `web` is the person's "Web" switch for the turn a `next_turn` input
+    becomes; a `steer` input never changes the running run's, so it is
+    dropped there."""
     body = await _checked_text(db, run=run, text=text)
     if delivery == "next_turn" and run.source != "chat":
         # Only a chat turn has a next turn to become; anywhere else the
@@ -213,6 +218,7 @@ async def add_run_input(
         author_member_id=member.id,
         text=body,
         delivery=delivery,
+        web=web and delivery == "next_turn",
     )
     db.add(row)
     await db.flush()
@@ -272,13 +278,22 @@ async def _waiting_own_input(
 
 
 async def edit_queued_input(
-    db: AsyncSession, *, run: m.AgentRun, member: m.OrgMember, input_id: uuid.UUID, text: str
+    db: AsyncSession,
+    *,
+    run: m.AgentRun,
+    member: m.OrgMember,
+    input_id: uuid.UUID,
+    text: str,
+    web: bool | None = None,
 ) -> m.RunInput:
-    """Change the text of the author's waiting `next_turn` input. The caller
-    has already checked `may_steer_run`."""
+    """Change the text of the author's waiting `next_turn` input, and its
+    "Web" switch unless `web` is None. The caller has already checked
+    `may_steer_run`."""
     body = await _checked_text(db, run=run, text=text)
     row = await _waiting_own_input(db, run=run, member=member, input_id=input_id)
     row.text = body
+    if web is not None:
+        row.web = web
     await db.flush()
     await _audit_input(db, run=run, member=member, row=row, action="run.input_edited")
     return row

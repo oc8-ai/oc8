@@ -719,8 +719,15 @@ async def _queue_behind_running_answer(
             # Takes the tenant audit lock, then the run_input lock -- before
             # the chat_session row `send_message` locks if this falls through
             # (the global lock order, `chat/tree.py`).
+            # The "Web" switch belongs to the message: the turn it becomes
+            # may search (`chat.carry_over`).
             row = await add_run_input(
-                db, run=run, member=actor.member, text=body.message, delivery="next_turn"
+                db,
+                run=run,
+                member=actor.member,
+                text=body.message,
+                delivery="next_turn",
+                web=body.web,
             )
         except InputRefused as exc:
             if exc.code == "finished":

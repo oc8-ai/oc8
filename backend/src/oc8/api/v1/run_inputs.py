@@ -90,6 +90,7 @@ def input_dto(row: m.RunInput, author_name: str) -> RunInputDTO:
         consumed_at=row.consumed_at.isoformat() if row.consumed_at else None,
         consumed_step=row.consumed_step,
         delivery="next_turn" if row.delivery == "next_turn" else "steer",
+        web=bool(row.web),
     )
 
 
@@ -132,7 +133,12 @@ async def post_input(
         raise HTTPException(status.HTTP_409_CONFLICT, _NO_INPUTS)
     try:
         row = await add_run_input(
-            db, run=run, member=actor.member, text=body.text, delivery=body.delivery
+            db,
+            run=run,
+            member=actor.member,
+            text=body.text,
+            delivery=body.delivery,
+            web=body.web,
         )
     except InputRefused as exc:
         raise HTTPException(exc.status_code, exc.message) from exc
@@ -155,7 +161,7 @@ async def edit_input(
     run = await _steerable(request, run_id, db, actor)
     try:
         row = await edit_queued_input(
-            db, run=run, member=actor.member, input_id=input_id, text=body.text
+            db, run=run, member=actor.member, input_id=input_id, text=body.text, web=body.web
         )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, _INPUT_NOT_FOUND) from exc

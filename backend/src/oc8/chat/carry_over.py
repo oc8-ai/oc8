@@ -122,6 +122,10 @@ async def stage_carried_over_turn(
         door=door,
         text="\n\n".join(row.text for row in rows),
         anchor_id=_anchor(run),
+        # Any queued message the person sent with "Web" on: the joined turn
+        # may search. Availability and restricted material are checked again
+        # when it does (`web_search`).
+        web_search=any(row.web and row.delivery == "next_turn" for row in rows),
     )
     now = dt.datetime.now(tz=dt.UTC)
     for row in rows:
@@ -294,6 +298,7 @@ async def _stage_turn(
     door: _Door,
     text: str,
     anchor_id: uuid.UUID | None,
+    web_search: bool = False,
 ) -> uuid.UUID:
     """`send_message`'s turn, without its commit: the user message, the run
     answering it (queued, unpublished) and its announcement after commit. No
@@ -304,7 +309,7 @@ async def _stage_turn(
     leaf only while the person is still on that branch."""
     from oc8.chat import tree
     from oc8.chat.modes import parse_command
-    from oc8.chat.service import _build_turn_context, _kb_reference_text
+    from oc8.chat.service import WEB_SEARCH_CONTEXT_KEY, _build_turn_context, _kb_reference_text
     from oc8.realtime.emit import publish_chat_message_created
     from oc8.runtime.repository import RunRepository
 
@@ -338,6 +343,9 @@ async def _stage_turn(
         resolved_refs=[],
         extra_context=None,
     )
+    if web_search:
+        # As `send_message` sets it: never through `extra_context`.
+        context[WEB_SEARCH_CONTEXT_KEY] = True
     if session.task_id is None:
         from oc8.agent.engine import open_run_task
 
