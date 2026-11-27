@@ -848,3 +848,79 @@ async def test_a_temporary_chat_is_its_owners_alone(
     assert seen == {"kept": 200, "temp": 404}
     assert renamed.status_code == 409
     assert removed.status_code == 404
+
+
+async def test_the_purges_stop_is_audited_as_the_system(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Nobody pressed Stop: the purge's cancel is the system's, not an
+    operator without a name."""
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    async with _client() as c:
+        temp = await _new_chat(c, tenant, agent_id, temporary=True)
+        turn = await _post(c, tenant, temp["id"], "go")
+    await _waiting_turn(app_session, tenant, turn["runId"], state="waiting_for_approval")
+    async with app_session(tenant) as db:
+        session = await db.get(m.ChatSession, uuid.UUID(temp["id"]))
+        assert session is not None
+        session.last_message_at = dt.datetime.now(dt.UTC) - dt.timedelta(hours=30)
+    async with app_session(tenant) as db:
+        await purge_temporary_chats(db, tenant_id=tenant)
+    async with app_session(tenant) as db:
+        actors = (
+            await db.execute(
+                select(m.AuditEvent.actor_type, m.AuditEvent.actor_id).where(
+                    m.AuditEvent.tenant_id == tenant, m.AuditEvent.action == "run.cancel"
+                )
+            )
+        ).all()
+    assert [tuple(a) for a in actors] == [("system", None)]
+
+
+async def test_a_run_naming_a_chat_that_is_gone_counts_as_temporary(
+    app_session: AppSessionFactory,
+) -> None:
+    """Fail closed: a missing chat row may be a temporary chat already
+    deleted, so its late runs keep no notes either."""
+    from oc8.chat.temporary import in_temporary_chat
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assert await in_temporary_chat(db, {"chat_session_id": str(uuid.uuid4())})
+        assert not await in_temporary_chat(db, {})
+
+
+async def test_a_second_stop_wakes_a_parked_run_whose_first_wake_failed(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The cancel row is written even when the wake times out on a lock; a
+    later stop (the purge's next tick, a second leave) must still close the
+    card instead of skipping the run because it already has a cancel."""
+    from oc8.chat.temporary import stop_chat_runs
+
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    async with _client() as c:
+        temp = await _new_chat(c, tenant, agent_id, temporary=True)
+        turn = await _post(c, tenant, temp["id"], "go")
+    approval_id = await _waiting_turn(
+        app_session, tenant, turn["runId"], state="waiting_for_approval"
+    )
+    run_id = uuid.UUID(turn["runId"])
+    async with app_session(tenant) as db:
+        db.add(
+            m.RunCancellation(
+                tenant_id=tenant, run_id=run_id, requested_at=dt.datetime.now(dt.UTC),
+                cancellation_kind="operator_interrupted",
+            )
+        )  # fmt: skip
+    async with app_session(tenant) as db:
+        session = await db.get(m.ChatSession, uuid.UUID(temp["id"]))
+        assert session is not None
+        await stop_chat_runs(db, session=session, actor_id=None, principal=None)
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        approval = await db.get(m.ApprovalRequest, approval_id)
+    assert run is not None and run.state == "queued"
+    assert approval is not None and approval.status == "expired"

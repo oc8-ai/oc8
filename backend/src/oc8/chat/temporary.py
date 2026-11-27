@@ -71,7 +71,9 @@ async def in_temporary_chat(db: AsyncSession, context: Mapping[str, Any] | None)
     temporary = await db.scalar(
         select(m.ChatSession.temporary).where(m.ChatSession.id == session_id)
     )
-    return bool(temporary)
+    # Fail closed: a chat that is gone may be a temporary one already
+    # deleted, whose late runs must keep nothing either.
+    return temporary is None or bool(temporary)
 
 
 #: Temporary chats one purge tick looks at per tenant; the rest wait a tick.
@@ -106,6 +108,7 @@ async def stop_chat_runs(
     session: m.ChatSession,
     actor_id: uuid.UUID | None,
     principal: Principal | None,
+    actor_type: str = "operator",
 ) -> list[m.AgentRun]:
     """Stop every unfinished run of the chat through the cancel a Stop
     records (`runtime.cancellation.record_operator_cancel`), once per run: a
@@ -114,8 +117,12 @@ async def stop_chat_runs(
     run stops at its next step boundary. A run waiting for an answer is
     re-queued the same way, as an answer would, so the before-start check
     ends it instead of leaving it waiting on a chat that is gone. Returns the
-    runs stopped, in their state after the stop. Flush-only."""
-    from oc8.runtime.cancellation import record_operator_cancel
+    runs stopped, in their state after the stop. A run that already has a
+    cancel and is still parked on an approval is woken again: the first wake
+    may have given up on a lock (`_wake_parked_run`), and the card would stay
+    open on a chat that is gone. `actor_type` is "system" for the purge, which
+    nobody asked for. Flush-only."""
+    from oc8.runtime.cancellation import _wake_parked_run, record_operator_cancel
     from oc8.runtime.intake import publish_run
     from oc8.runtime.repository import RunRepository
 
@@ -135,7 +142,10 @@ async def stop_chat_runs(
                     "chat_session_id": str(session.id),
                     "agent_id": str(run.agent_id),
                 },
+                actor_type=actor_type,
             )
+        else:
+            await _wake_parked_run(db, run)
         fresh = await db.get(m.AgentRun, run.id, populate_existing=True)
         if fresh is not None and await RunRepository(db).transition_if(
             fresh, RunState.WAITING_FOR_INPUT, RunState.QUEUED
@@ -193,7 +203,9 @@ async def purge_temporary_chats(
     for session in stale:
         try:
             async with db.begin_nested():
-                stopped = await stop_chat_runs(db, session=session, actor_id=None, principal=None)
+                stopped = await stop_chat_runs(
+                    db, session=session, actor_id=None, principal=None, actor_type="system"
+                )
                 if any(run.state in _MOVING for run in stopped):
                     logger.info(
                         "temporary chat %s: runs stopping; deleted on a later tick", session.id
