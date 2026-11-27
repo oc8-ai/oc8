@@ -13,8 +13,10 @@ built for.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -42,6 +44,9 @@ TAVILY_ENDPOINT = "https://api.tavily.com/search"
 
 _MAX_TITLE = 300
 _MAX_SNIPPET = 600
+#: A hit's address longer than this is dropped, not cut (a cut URL is wrong).
+MAX_HIT_URL = 2_000
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 class WebSearchError(Exception):
@@ -87,6 +92,22 @@ def _text(value: object, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def _hit_url(raw: object) -> str | None:
+    """A hit's address as it may be shown and fetched: control characters
+    out, trimmed, http(s), at most MAX_HIT_URL long and without whitespace
+    inside -- or None."""
+    url = _CONTROL_CHARS.sub("", str(raw or "")).strip()
+    if not url or len(url) > MAX_HIT_URL or any(c.isspace() for c in url):
+        return None
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return None
+    return url
+
+
 def _hits(rows: object, *, snippet_key: str, max_results: int) -> list[SearchHit]:
     """The provider's result rows as hits: http(s) URLs only, empty rows
     skipped, at most `max_results`."""
@@ -98,8 +119,8 @@ def _hits(rows: object, *, snippet_key: str, max_results: int) -> list[SearchHit
             break
         if not isinstance(row, dict):
             continue
-        url = str(row.get("url") or "").strip()
-        if urlsplit(url).scheme not in ("http", "https"):
+        url = _hit_url(row.get("url"))
+        if url is None:
             continue
         out.append(
             SearchHit(
@@ -115,7 +136,10 @@ def _transport_for(url: str, config: ProviderConfig) -> httpx.AsyncBaseTransport
     """The pinned transport for a SearXNG request, after the same guard
     `fetch_url` passes through -- unless the URL's host is the operator's own
     instance, which may live on the cluster network."""
-    host = (urlsplit(url).hostname or "").lower()
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError as exc:
+        raise WebSearchError("the search server's address is not usable") from exc
     if config.internal_host and host == config.internal_host.lower():
         return None
     try:
@@ -136,47 +160,67 @@ class _Request:
     body: dict[str, Any] | None = None
 
 
+class _TooLarge(Exception):
+    pass
+
+
+async def _attempt(
+    request: _Request, transport: httpx.AsyncBaseTransport | None
+) -> tuple[int, bytes]:
+    """One try: the status and, for a 200, the body. The whole try -- connect,
+    headers and body -- is bounded by TIMEOUT_S, not each read on its own: a
+    server sending one byte at a time would otherwise hold the turn."""
+    async with asyncio.timeout(TIMEOUT_S):
+        async with httpx.AsyncClient(
+            timeout=TIMEOUT_S, follow_redirects=False, transport=transport
+        ) as client:
+            async with client.stream(
+                request.method,
+                request.url,
+                params=request.params,
+                headers=request.headers,
+                json=request.body,
+            ) as resp:
+                if resp.status_code != 200:
+                    return resp.status_code, b""
+                body = bytearray()
+                async for chunk in resp.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > MAX_RESPONSE_BYTES:
+                        raise _TooLarge
+                return 200, bytes(body)
+
+
 async def _send(
     provider: str,
     request: _Request,
     transport: httpx.AsyncBaseTransport | None,
 ) -> Any:
-    """Send `request` (once more on a network failure or a 5xx/429) and
-    return its JSON body; anything but HTTP 200 is a `WebSearchError`."""
+    """Send `request` (once more on a failure to get an answer or a 5xx/429)
+    and return its JSON body; anything but HTTP 200 is a `WebSearchError`."""
     last: str = "no answer"
     for attempt in (1, 2):
         try:
-            async with httpx.AsyncClient(
-                timeout=TIMEOUT_S, follow_redirects=False, transport=transport
-            ) as client:
-                async with client.stream(
-                    request.method,
-                    request.url,
-                    params=request.params,
-                    headers=request.headers,
-                    json=request.body,
-                ) as resp:
-                    if resp.status_code != 200:
-                        last = f"{provider} answered HTTP {resp.status_code}"
-                        if resp.status_code >= 500 or resp.status_code == 429:
-                            continue
-                        raise WebSearchError(last)
-                    body = bytearray()
-                    async for chunk in resp.aiter_bytes():
-                        body.extend(chunk)
-                        if len(body) > MAX_RESPONSE_BYTES:
-                            raise WebSearchError(f"{provider} answered with too much data")
-        except httpx.TimeoutException:
+            status, body = await _attempt(request, transport)
+        except _TooLarge:
+            raise WebSearchError(f"{provider} answered with too much data") from None
+        except (TimeoutError, httpx.TimeoutException):
             last = f"{provider} did not answer within {TIMEOUT_S:g} seconds"
             logger.info("web search attempt %d: %s", attempt, last)
             continue
-        except httpx.HTTPError as exc:
-            # The class name only: an httpx message may quote the request.
+        except Exception as exc:
+            # Whatever else fails (network, an address httpx cannot use): the
+            # class name only -- a message may quote the request, key and all.
             last = f"{provider} could not be reached ({type(exc).__name__})"
             logger.info("web search attempt %d: %s", attempt, last)
             continue
+        if status != 200:
+            last = f"{provider} answered HTTP {status}"
+            if status >= 500 or status == 429:
+                continue
+            raise WebSearchError(last)
         try:
-            return json.loads(bytes(body))
+            return json.loads(body)
         except ValueError as exc:
             raise WebSearchError(f"{provider} answered with something that is not JSON") from exc
     raise WebSearchError(last)

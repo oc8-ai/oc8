@@ -6,6 +6,10 @@ ENTERPRISE_SUPERVISION_ADVANCED: Capability = "enterprise.supervision.advanced"
 ENTERPRISE_SSO_SAML: Capability = "enterprise.sso.saml"
 # oc8 Chat C5 (spec §6.2): implemented in oc8-enterprise; named here so the
 # core gates (edition tools, frontend slots) and governance can speak of them.
+# Retired as a gate: web search is a Community core tool (`web_search`,
+# oc8.websearch, spec §10 of the chat experience phase 1c) and no core code
+# checks this name. It stays known only so a licence issued with it still
+# reads; an edition tool can no longer be named `web_search` (core owns it).
 ENTERPRISE_WEB_SEARCH: Capability = "enterprise.web_search"
 ENTERPRISE_CANVAS: Capability = "enterprise.canvas"
 ENTERPRISE_DATA_ANALYSIS: Capability = "enterprise.data_analysis"

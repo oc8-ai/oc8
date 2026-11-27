@@ -3472,6 +3472,23 @@ WEB_SEARCH_LIMIT = (
 )
 
 
+async def _read_run(
+    db: AsyncSession, *, run_id: uuid.UUID, tenant_id: uuid.UUID, lock: bool
+) -> m.AgentRun | None:
+    """THIS run's row as stored now (flushed first, re-read), locked if asked."""
+    await db.flush()
+    stmt = select(m.AgentRun).where(m.AgentRun.id == run_id)
+    if lock:
+        stmt = stmt.with_for_update()
+    run = (await db.execute(stmt.execution_options(populate_existing=True))).scalar_one_or_none()
+    return run if run is not None and run.tenant_id == tenant_id else None
+
+
+def _searches_done(ctx: Mapping[str, Any]) -> int:
+    done = ctx.get(WEB_SEARCH_COUNT_KEY)
+    return done if isinstance(done, int) else 0
+
+
 async def _web_search(
     db: AsyncSession,
     *,
@@ -3482,15 +3499,25 @@ async def _web_search(
 ) -> ControlOutcome:
     """`web_search`: one search with the tenant's provider (`oc8.websearch`).
 
-    Decided on THIS run's row, locked and re-read, so every runtime and two
-    concurrent calls see the same count: the turn must have asked for the web,
-    the run must not carry restricted material (the query leaves the
-    organisation, like a cloud model's prompt would), and at most
-    MAX_WEB_SEARCHES_PER_RUN searches. The hits come back fenced as untrusted
-    data and are kept on the run, numbered, for the answer's sources."""
+    Decided on THIS run's row, so every runtime sees the same state: the turn
+    must have asked for the web, the run must not carry restricted material
+    (the query leaves the organisation, like a cloud model's prompt would), and
+    at most MAX_WEB_SEARCHES_PER_RUN searches.
+
+    Checked twice: once without a lock before the provider is asked, so a
+    refusal costs nothing, and again on the locked row after it answered --
+    the row is never held FOR UPDATE across the provider's up to 2 x 10 s.
+    The second check is what keeps the cap and the restricted rule exact: a
+    run that turned restricted meanwhile, or whose last search slot another
+    call of the same run took meanwhile, gets no hits back. (Such a racing
+    query has left already; only its results are withheld.) The count
+    includes failed searches: they were sent too. The hits come back fenced
+    as untrusted data and are kept on the run, numbered, for the answer's
+    sources."""
     from oc8.runtime.fencing import fence as fence_data
     from oc8.runtime.run_context import merge_context
-    from oc8.websearch.providers import WebSearchError, clamp_results, run_search
+    from oc8.websearch import providers
+    from oc8.websearch.providers import SearchHit, WebSearchError, clamp_results
     from oc8.websearch.service import requested, resolve_config
 
     query = " ".join(str(tc.arguments.get("query", "")).split())[:400]
@@ -3498,42 +3525,56 @@ async def _web_search(
         return ControlOutcome(output="ERROR: web_search requires a query")
     if run_id is None:
         return ControlOutcome(output=WEB_SEARCH_NOT_REQUESTED)
-    await db.flush()
-    run = (
-        await db.execute(
-            select(m.AgentRun)
-            .where(m.AgentRun.id == run_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-    ).scalar_one_or_none()
-    if run is None or run.tenant_id != tenant_id or not requested(run.context):
+    run = await _read_run(db, run_id=run_id, tenant_id=tenant_id, lock=False)
+    if run is None or not requested(run.context):
         return ControlOutcome(output=WEB_SEARCH_NOT_REQUESTED)
-    ctx = run.context or {}
-    if ctx.get("contains_restricted"):
+    if (run.context or {}).get("contains_restricted"):
         return ControlOutcome(output=WEB_SEARCH_RESTRICTED)
-    done = ctx.get(WEB_SEARCH_COUNT_KEY)
-    done = done if isinstance(done, int) else 0
-    if done >= MAX_WEB_SEARCHES_PER_RUN:
+    if _searches_done(run.context or {}) >= MAX_WEB_SEARCHES_PER_RUN:
         return ControlOutcome(output=WEB_SEARCH_LIMIT)
     config = await resolve_config(db, tenant_id=tenant_id)
     if config is None:
         return ControlOutcome(output=WEB_SEARCH_UNAVAILABLE)
-    # Counted before the provider answers: a failed search was still sent.
-    await merge_context(db, run, {WEB_SEARCH_COUNT_KEY: done + 1})
+
+    hits: list[SearchHit] = []
+    failure: str | None = None
     try:
-        hits = await run_search(config, query, clamp_results(tc.arguments.get("max_results", 5)))
+        hits = await providers.run_search(
+            config, query, clamp_results(tc.arguments.get("max_results", 5))
+        )
     except WebSearchError as exc:
+        failure = str(exc)
+    except Exception as exc:
+        # A failure nobody foresaw is the model's to explain, not a crashed
+        # run -- and named by its class only, as fetch_url does.
+        logger.warning("web_search failed: %s", type(exc).__name__)
+        failure = type(exc).__name__
+
+    run = await _read_run(db, run_id=run_id, tenant_id=tenant_id, lock=True)
+    if run is None:
+        return ControlOutcome(output=WEB_SEARCH_NOT_REQUESTED)
+    ctx = run.context or {}
+    done = _searches_done(ctx)
+    if done >= MAX_WEB_SEARCHES_PER_RUN:
+        return ControlOutcome(output=WEB_SEARCH_LIMIT)
+    detail: dict[str, str | int] = {"provider": config.provider, "count": len(hits)}
+    if ctx.get("contains_restricted"):
+        await merge_context(db, run, {WEB_SEARCH_COUNT_KEY: done + 1})
+        return ControlOutcome(output=WEB_SEARCH_RESTRICTED, result_detail=detail)
+    if failure is not None:
+        await merge_context(db, run, {WEB_SEARCH_COUNT_KEY: done + 1})
         return ControlOutcome(
-            output=f"ERROR: the web search failed: {exc}. Say so if it matters for the answer.",
-            result_detail={"provider": config.provider, "count": 0},
+            output=(
+                f"ERROR: the web search failed ({failure}). Say so if it matters for the answer."
+            ),
+            result_detail=detail,
         )
     kept = ctx.get(WEB_SEARCH_HITS_KEY)
     known: list[dict[str, Any]] = (
         [h for h in kept if isinstance(h, dict)] if isinstance(kept, list) else []
     )
     number_of = {str(h.get("url")): int(h.get("n", 0)) for h in known}
-    numbered: list[tuple[int, Any]] = []
+    numbered: list[tuple[int, SearchHit]] = []
     for hit in hits:
         n = number_of.get(hit.url)
         if n is None:
@@ -3541,11 +3582,10 @@ async def _web_search(
             number_of[hit.url] = n
             known.append({"n": n, "title": hit.title, "url": hit.url, "snippet": hit.snippet})
         numbered.append((n, hit))
-    await merge_context(db, run, {WEB_SEARCH_HITS_KEY: known})
+    await merge_context(db, run, {WEB_SEARCH_COUNT_KEY: done + 1, WEB_SEARCH_HITS_KEY: known})
     await record_activity(
         db, tenant_id=tenant_id, agent_id=agent.id, status="info", message="Searched the web"
     )
-    detail: dict[str, str | int] = {"provider": config.provider, "count": len(hits)}
     if not numbered:
         return ControlOutcome(
             output="The web search found nothing. Try other public terms, or say so.",

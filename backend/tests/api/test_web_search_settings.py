@@ -197,6 +197,45 @@ async def test_invalid_choices_are_refused(
     assert forbidden.status_code == 403
 
 
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://[::1",
+        "http://search.example.org:99999",
+        "http://search.example.org:port",
+        "https://",
+        "https:///search",
+        "https://search.example.org/../admin",
+        "https://search.example.org/a/./b",
+        "https://search.example.org/a%2e%2e/b",
+        "https://search.example.org\\@evil.example/",
+        "https://search.example.org/?q=1",
+        "https://search.example.org/#x",
+        "https://search.example.org/a b",
+        "https://search.example.org/\x00",
+    ],
+)
+async def test_a_searxng_address_that_is_not_a_plain_base_url_is_refused(
+    app_session: AppSessionFactory, client: AsyncClient, base_url: str
+) -> None:
+    """Refused as 422 (never a 500): scheme, host and port must be readable,
+    no login, no query or fragment, and a path of plain segments only."""
+    tenant = await _org(app_session)
+    code, text = await _put(client, tenant, {"provider": "searxng", "baseUrl": base_url})
+    assert code == 422, (base_url, code, text)
+
+
+@pytest.mark.parametrize(
+    "base_url", ["https://search.example.org", "http://searxng:8080/", "https://x.example/searx/"]
+)
+async def test_a_plain_searxng_base_url_is_accepted(
+    app_session: AppSessionFactory, client: AsyncClient, base_url: str
+) -> None:
+    tenant = await _org(app_session)
+    code, text = await _put(client, tenant, {"provider": "searxng", "baseUrl": base_url})
+    assert code == 200, text
+
+
 async def test_a_tenant_can_switch_it_off_and_back_to_the_platform(
     app_session: AppSessionFactory, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

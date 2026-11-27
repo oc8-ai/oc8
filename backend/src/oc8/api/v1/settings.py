@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 from typing import Literal
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
@@ -408,21 +407,19 @@ async def put_web_search_settings(
     """Choose the tenant's provider. SearXNG needs an http(s) base URL
     without a login in it; Brave and Tavily need a key, new or stored. The
     address is checked against the outbound guard on every search, not here."""
-    from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
     from oc8.websearch.providers import KEYED_PROVIDERS
-    from oc8.websearch.service import save_tenant_setting, tenant_setting
+    from oc8.websearch.service import base_url_problem, save_tenant_setting, tenant_setting
 
     base_url = (body.base_url or "").strip() or None
     api_key = (body.api_key or "").strip() or None
     if body.provider == "searxng":
-        parts = urlsplit(base_url or "")
-        if parts.scheme not in ("http", "https") or not parts.hostname:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_CONTENT,
-                "SearXNG needs its address, starting with http:// or https://.",
-            )
-        if base_url_has_login(base_url or ""):
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, LOGIN_IN_BASE_URL)
+        problem = base_url_problem(base_url or "")
+        if problem is not None:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, problem)
+    if api_key is not None and not api_key.isprintable():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "The API key contains characters it cannot have."
+        )
     if body.provider in KEYED_PROVIDERS and api_key is None:
         current = await tenant_setting(db, tenant_id=principal.tenant_id)
         # A stored key is kept only for the provider it was given for.

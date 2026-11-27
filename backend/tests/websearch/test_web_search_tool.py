@@ -270,7 +270,7 @@ async def test_a_provider_error_is_a_tool_error_the_model_can_explain(
     async with app_session(tenant) as db:
         agent, task, run = await _chat_run(db, tenant, web_search=True)
         outcome = await _search(db, tenant, agent, task, run.id)
-    assert outcome.output.startswith("ERROR: the web search failed: SearXNG answered HTTP 403")
+    assert outcome.output.startswith("ERROR: the web search failed (SearXNG answered HTTP 403)")
     assert outcome.result_detail == {"provider": "searxng", "count": 0}
 
 
@@ -443,3 +443,135 @@ async def test_the_isolated_runtime_runs_and_audits_it_the_same_way(
     assert event.resource["provider"] == "searxng"
     assert event.resource["count"] == 3
     assert "example.org" not in json.dumps(event.resource)
+
+
+# ------------------------------------------------------------------ fix round
+
+
+async def test_a_tenant_searxng_never_gets_the_platform_hosts_exemption(
+    app_session: AppSessionFactory, platform_searxng: FakeSearch, second_fake: FakeSearch
+) -> None:
+    """Only the operator's own SearXNG (OC8_WEB_SEARCH_BASE_URL) may be an
+    internal address. A tenant that types that same address, or another
+    internal one, is refused like any fetch_url target -- otherwise any
+    tenant admin could probe the cluster network through search."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        await _org(db, tenant)
+        agent, task, run = await _chat_run(db, tenant, web_search=True)
+        for base in (platform_searxng.base, second_fake.base):
+            await save_tenant_setting(
+                db, tenant_id=tenant, provider="searxng", base_url=base, api_key=None
+            )
+            refused = await _search(db, tenant, agent, task, run.id)
+            assert "not reachable" in refused.output, refused.output
+        assert platform_searxng.seen == [] and second_fake.seen == []
+        # Back to the platform default alone: it is reached.
+        await save_tenant_setting(db, tenant_id=tenant, provider=None, base_url=None, api_key=None)
+        ok = await _search(db, tenant, agent, task, run.id)
+    assert "[1] Hit 1" in ok.output
+    assert len(platform_searxng.seen) == 1
+
+
+async def test_restricted_material_arriving_mid_turn_stops_further_searches(
+    app_session: AppSessionFactory, platform_searxng: FakeSearch
+) -> None:
+    from oc8.runtime.run_context import merge_context
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, run = await _chat_run(db, tenant, web_search=True)
+        first = await _search(db, tenant, agent, task, run.id)
+        # A restricted knowledge hit later in the same turn (engine `_mark_restricted`).
+        await merge_context(db, run, {"contains_restricted": True})
+        second = await _search(db, tenant, agent, task, run.id)
+    assert "[1] Hit 1" in first.output
+    assert second.output == WEB_SEARCH_RESTRICTED
+    assert len(platform_searxng.seen) == 1
+
+
+async def test_restricted_material_arriving_during_the_search_withholds_its_hits(
+    app_session: AppSessionFactory, platform_searxng: FakeSearch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag is read again after the provider answered: a run that became
+    restricted meanwhile gets no web results back and keeps none."""
+    from oc8.runtime.run_context import merge_context
+    from oc8.websearch import providers
+    from oc8.websearch.providers import SearchHit
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, run = await _chat_run(db, tenant, web_search=True)
+
+        async def search_while_restricted(*_args: Any, **_kw: Any) -> list[SearchHit]:
+            await merge_context(db, run, {"contains_restricted": True})
+            return [SearchHit(title="t", url="https://x.example/", snippet="s")]
+
+        monkeypatch.setattr(providers, "run_search", search_while_restricted)
+        outcome = await _search(db, tenant, agent, task, run.id)
+        stored = (await db.get(m.AgentRun, run.id)).context  # type: ignore[union-attr]
+    assert outcome.output == WEB_SEARCH_RESTRICTED
+    assert not stored.get(WEB_SEARCH_HITS_KEY)
+
+
+async def test_any_provider_failure_is_a_tool_error_naming_only_its_class(
+    app_session: AppSessionFactory, platform_searxng: FakeSearch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.websearch import providers
+
+    async def broken(*_args: Any, **_kw: Any) -> list[Any]:
+        raise RuntimeError("detail with key=sk-123")
+
+    monkeypatch.setattr(providers, "run_search", broken)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent, task, run = await _chat_run(db, tenant, web_search=True)
+        outcome = await _search(db, tenant, agent, task, run.id)
+    assert outcome.output.startswith("ERROR: the web search failed (RuntimeError)")
+    assert "sk-123" not in outcome.output
+
+
+@pytest.mark.parametrize(
+    ("web", "provider", "offered_tool"),
+    [(True, True, True), (False, True, False), (True, False, False)],
+)
+async def test_the_isolated_runtime_offers_it_only_with_a_provider_and_the_opt_in(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakeSearch,
+    web: bool,
+    provider: bool,
+    offered_tool: bool,
+) -> None:
+    from oc8.config import get_settings
+    from oc8.modelrouter.types import CompletionResult, Usage
+    from tests.api.test_internal_agent import _as_stream, _plain_agent_run, _post_step
+
+    if provider:
+        monkeypatch.setattr(get_settings(), "web_search_provider", "searxng")
+        monkeypatch.setattr(get_settings(), "web_search_base_url", fake.base)
+    seen: dict[str, Any] = {}
+
+    async def fake_complete(*_args: object, **kw: Any) -> CompletionResult:
+        seen["tools"] = kw["tools"]
+        return CompletionResult(
+            text="ok",
+            tool_calls=[],
+            usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop",
+            provider="ollama",
+            model="m",
+        )
+
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        await _org(db, tenant)
+        agent, _task, run = await _plain_agent_run(
+            db, tenant, **({"web_search": True} if web else {})
+        )
+        agent_id, run_id = agent.id, run.id
+    await _post_step(tenant, agent_id, run_id)
+    assert ("web_search" in {t.name for t in seen["tools"]}) is offered_tool

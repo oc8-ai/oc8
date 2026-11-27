@@ -53,6 +53,36 @@ class TenantSetting:
     has_key: bool
 
 
+#: A base URL's path: plain segments only (letters, digits, `-._~`), never
+#: `.` or `..`, nothing percent-encoded.
+_PATH = re.compile(r"(/[A-Za-z0-9._~-]+)*/?")
+_UNPRINTABLE = re.compile(r"[\x00-\x20\x7f-\x9f\u2028\u2029]")
+
+
+def base_url_problem(raw: str) -> str | None:
+    """Why `raw` is no plain SearXNG base URL, or None when it is one: http(s),
+    a host, a readable port in range, no login, no query or fragment, no
+    whitespace or control characters, and a path of plain segments only."""
+    if not raw or _UNPRINTABLE.search(raw):
+        return "The address must not contain spaces or control characters."
+    try:
+        parts = urlsplit(raw)
+        _ = parts.port  # raises ValueError for a port that is no number or out of range
+        host = parts.hostname
+    except ValueError:
+        return "The address cannot be read."
+    if parts.scheme not in ("http", "https") or not host:
+        return "SearXNG needs its address, starting with http:// or https://."
+    if parts.username is not None or parts.password is not None or "\\" in raw:
+        return "The address must not contain a login."
+    if parts.query or parts.fragment or "?" in raw or "#" in raw:
+        return "The address must not contain a query or a fragment."
+    path = parts.path
+    if not _PATH.fullmatch(path) or any(seg in (".", "..") for seg in path.split("/")):
+        return "The address's path must be plain, e.g. https://search.example.org/searx."
+    return None
+
+
 def platform_config() -> ProviderConfig | None:
     """The operator's default provider, or None when there is none (or it is
     incomplete: SearXNG without a URL, Brave/Tavily without a key)."""

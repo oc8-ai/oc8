@@ -129,11 +129,68 @@ async def test_a_slow_provider_times_out_after_one_retry(
     assert len(fake.seen) == 2
 
 
-async def test_a_redirect_is_not_followed(fake: FakeSearch) -> None:
+async def test_a_redirect_is_not_followed(fake: FakeSearch, second_fake: FakeSearch) -> None:
+    """A provider answering with a redirect never sends the request (or its
+    key) on: the target is not reached and the search fails."""
     fake.answers = [(302, {})]
+    fake.location = f"{second_fake.base}/x"
     with pytest.raises(WebSearchError, match="302"):
         await run_search(_searxng(fake), "q", 3)
     assert len(fake.seen) == 1
+    assert second_fake.seen == []
+
+
+async def test_a_brave_redirect_does_not_carry_the_key_on(
+    fake: FakeSearch, second_fake: FakeSearch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(providers, "BRAVE_ENDPOINT", f"{fake.base}/x")
+    fake.answers = [(307, {})]
+    fake.location = f"{second_fake.base}/steal"
+    with pytest.raises(WebSearchError, match="307"):
+        await run_search(ProviderConfig(provider="brave", api_key="brv-k"), "q", 3)
+    assert second_fake.seen == []
+
+
+async def test_a_body_that_trickles_in_still_times_out(
+    fake: FakeSearch, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The timeout bounds the whole attempt, not each read: a server that
+    sends one byte at a time cannot hold the turn for minutes."""
+    monkeypatch.setattr(providers, "TIMEOUT_S", 0.3)
+    fake.answers = [(200, {"results": rows(3, "content")})]
+    fake.trickle_s = 0.02
+    with pytest.raises(WebSearchError, match="did not answer"):
+        await run_search(_searxng(fake), "q", 3)
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["http://[::1", "http://127.0.0.1:99999", "http://127.0.0.1:port", "http://exa mple.org"],
+)
+async def test_an_unusable_address_is_a_search_error_not_a_crash(base_url: str) -> None:
+    config = ProviderConfig(provider="searxng", base_url=base_url, internal_host="127.0.0.1")
+    with pytest.raises(WebSearchError) as caught:
+        await run_search(config, "q", 3)
+    # Only the class of what went wrong, never the address or a traceback.
+    assert "99999" not in str(caught.value) and "[::1" not in str(caught.value)
+
+
+async def test_hit_addresses_are_cleaned_and_bounded(fake: FakeSearch) -> None:
+    fake.answers = [
+        (
+            200,
+            {
+                "results": [
+                    {"title": "a", "url": "  https://a.example/x\n", "content": ""},
+                    {"title": "b", "url": "https://b.example/\u0000evil", "content": ""},
+                    {"title": "c", "url": "https://c.example/" + "x" * 2100, "content": ""},
+                    {"title": "d", "url": "https://d.example/a b", "content": ""},
+                ]
+            },
+        )
+    ]
+    hits = await run_search(_searxng(fake), "q", 8)
+    assert [h.url for h in hits] == ["https://a.example/x", "https://b.example/evil"]
 
 
 async def test_a_tenant_searxng_on_an_internal_address_is_refused(fake: FakeSearch) -> None:
