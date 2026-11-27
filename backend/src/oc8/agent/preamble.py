@@ -179,6 +179,17 @@ class Resume:
     instruction: str
 
 
+#: Where a figure has to come from. A budget, a usage figure or a record count
+#: the model remembers from an earlier turn, or makes up, reads exactly like
+#: one it just looked up; said once, in the stable system prefix, so it costs
+#: nothing per turn. The answer itself is never rewritten.
+GROUNDING_RULE = (
+    "FIGURES: numbers about budgets, usage, runs and business records must come "
+    "from a tool result of this turn, not from memory or an earlier turn. If you "
+    "did not call a tool for a figure in this turn, say so instead of estimating it."
+)
+
+
 #: The assistant's turn of a resumed leg whose run had called no tool yet.
 NO_TOOL_CALLS_YET = "[no tool calls yet]"
 
@@ -532,6 +543,7 @@ async def build_run_preamble(
     # the half that holds without the model's cooperation is the blast-radius
     # limit in agent/blast_radius.py.
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
+    messages.append(NeutralMessage(role="system", content=GROUNDING_RULE))
 
     # Per-turn context: system messages without a replay; with one, part of
     # the final user message, so the system prefix stays stable across turns.

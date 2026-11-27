@@ -550,6 +550,29 @@ async def test_the_provenance_rule_precedes_anything_a_stranger_wrote(
     assert RULE in systems
 
 
+async def test_figures_must_come_from_a_tool_result_of_this_turn(
+    app_session: AppSessionFactory,
+) -> None:
+    """A budget, a usage figure or a record count the model remembers from an
+    earlier turn, or makes up, reads exactly like one it just looked up. The
+    preamble says once, in the stable system prefix, where a figure has to
+    come from -- and what to say when no tool was called."""
+    from oc8.agent.preamble import GROUNDING_RULE
+    from oc8.agent.provenance import RULE
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _solo_agent(db, tenant)
+        pre = await build_run_preamble(
+            db, agent=agent, tenant_id=tenant, task_text="Wie viel Budget ist noch übrig?",
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40,
+        )
+    systems = [msg.content for msg in pre.messages if msg.role == "system"]
+    assert systems[systems.index(RULE) + 1] == GROUNDING_RULE
+    for word in ("budget", "usage", "runs", "records", "tool result of this turn", "estimat"):
+        assert word in GROUNDING_RULE.lower()
+
+
 async def _solo_agent(db: Any, tenant: uuid.UUID) -> m.Agent:
     dept = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
     db.add(dept)
@@ -937,7 +960,7 @@ async def test_chat_replay_order(
 async def test_non_chat_preamble_is_unchanged(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A trigger run's preamble keeps today's order: system prompt, rule,
+    """A trigger run's preamble keeps today's order: system prompt, rules,
     memory and KB as system messages, then run context and task as two user
     messages."""
     _fixed_retrieval(monkeypatch, [])
@@ -958,19 +981,21 @@ async def test_non_chat_preamble_is_unchanged(
         explicit = await build_run_preamble(db, **kwargs, replay=None)
         prompt = system_prompt(agent, caps=ModelCaps(), tenant_name="the organization")
 
+    from oc8.agent.preamble import GROUNDING_RULE
     from oc8.agent.provenance import RULE
 
-    assert [(msg.role, msg.content) for msg in pre.messages[:4]] == [
+    assert [(msg.role, msg.content) for msg in pre.messages[:5]] == [
         ("system", prompt),
         ("system", RULE),
+        ("system", GROUNDING_RULE),
         ("system", "MEMORY-BLOCK"),
         ("system", "KB-BLOCK"),
     ]
-    assert [msg.role for msg in pre.messages[4:]] == ["user", "user"]
-    assert str(pre.messages[4].content).startswith("# Run context\n")
-    assert "- Origin: trigger\n" in str(pre.messages[4].content)
-    assert pre.messages[5].content == "Invoice arrived"
-    assert len(pre.messages) == 6
+    assert [msg.role for msg in pre.messages[5:]] == ["user", "user"]
+    assert str(pre.messages[5].content).startswith("# Run context\n")
+    assert "- Origin: trigger\n" in str(pre.messages[5].content)
+    assert pre.messages[6].content == "Invoice arrived"
+    assert len(pre.messages) == 7
     assert [(msg.role, msg.content) for msg in explicit.messages] == [
         (msg.role, msg.content) for msg in pre.messages
     ]
