@@ -12,6 +12,7 @@ function fakeViewport(height: number, offsetTop = 0) {
   const vv = {
     height,
     offsetTop,
+    scale: 1,
     addEventListener: vi.fn((type: string, fn: () => void) => listeners.set(type, fn)),
     removeEventListener: vi.fn((type: string) => listeners.delete(type)),
   };
@@ -41,6 +42,19 @@ describe("useKeyboardInset", () => {
     vv.offsetTop = 100;
     fire("scroll");
     expect(inset()).toBe("236px");
+  });
+
+  it("reads pinch-zoom as no keyboard", () => {
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(844);
+    const { vv, fire } = fakeViewport(844);
+    renderHook(() => useKeyboardInset());
+    // Zoomed to 2x and panned: the visual viewport is small and offset, but
+    // nothing covers the composer.
+    vv.scale = 2;
+    vv.height = 422;
+    vv.offsetTop = 200;
+    fire("resize");
+    expect(inset()).toBe("0px");
   });
 
   it("never goes negative and stops listening on unmount", () => {

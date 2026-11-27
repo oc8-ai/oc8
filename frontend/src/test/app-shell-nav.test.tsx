@@ -43,10 +43,16 @@ describe("app-shell nav: TP3 restructuring", () => {
     expect(src).not.toContain('to: "/chat"');
   });
 
+  // One condition decides both the dock and the room kept under it.
+  function showsDockCondition() {
+    const at = src.indexOf("const showsDock =");
+    expect(at).toBeGreaterThan(-1);
+    return src.slice(at, src.indexOf(";", at));
+  }
+
   it("hides <CopilotDock /> specifically on /workspace", () => {
-    const idx = src.indexOf("<CopilotDock");
-    const context = src.slice(Math.max(0, idx - 80), idx + 40);
-    expect(context).toContain('"/workspace"');
+    expect(src).toContain("{showsDock && <CopilotDock />}");
+    expect(showsDockCondition()).toContain('"/workspace"');
   });
 });
 
@@ -54,10 +60,12 @@ describe("app-shell nav: Copilot entry", () => {
   const src = readFileSync(join(process.cwd(), "src/components/app-shell.tsx"), "utf-8");
   it("adds the Copilot entry and hides the dock on /copilot", () => {
     expect(src).toContain('to: "/copilot"');
-    const dockAt = src.indexOf("<CopilotDock");
-    expect(src.slice(Math.max(0, dockAt - 80), dockAt)).toContain('"/workspace"');
-    expect(src).toContain('"/copilot"');
-    expect(src.slice(Math.max(0, dockAt - 80), dockAt)).toContain('"/copilot"');
+    const at = src.indexOf("const showsDock =");
+    const condition = src.slice(at, src.indexOf(";", at));
+    expect(condition).toContain('"/workspace"');
+    expect(condition).toContain('"/copilot"');
+    expect(condition).toContain('can("copilot:use")');
+    expect(src).toContain("{showsDock && <CopilotDock />}");
   });
 });
 

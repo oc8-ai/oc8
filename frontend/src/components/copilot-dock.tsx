@@ -446,7 +446,7 @@ function CopilotDockPanel() {
         // A phone gets the whole screen (a sheet); from sm up it floats.
         <div
           data-testid="copilot-dock-panel"
-          className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-panel pt-[env(safe-area-inset-top)] sm:inset-auto sm:bottom-24 sm:right-5 sm:h-[min(72vh,600px)] sm:w-[min(94vw,400px)] sm:rounded-2xl sm:border sm:border-border sm:pt-0 sm:shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]"
+          className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-panel pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] sm:inset-auto sm:bottom-24 sm:right-[calc(1.25rem+env(safe-area-inset-right,0px))] sm:pl-0 sm:pr-0 sm:h-[min(72vh,600px)] sm:w-[min(94vw,400px)] sm:rounded-2xl sm:border sm:border-border sm:pt-0 sm:shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]"
         >
           <header className="flex items-center gap-2.5 border-b border-border px-4 py-3">
             <CopilotPersonaHeader variant="dock">
@@ -522,7 +522,7 @@ function CopilotDockPanel() {
                     type="button"
                     onClick={() => closeTab(tab.uiId)}
                     aria-label={de ? `${title} schließen` : `Close ${title}`}
-                    className="grid h-11 w-8 shrink-0 place-items-center opacity-60 hover:opacity-100 sm:size-4"
+                    className="grid size-11 shrink-0 place-items-center opacity-60 hover:opacity-100 sm:size-4"
                   >
                     <X className="h-3 w-3" />
                   </button>

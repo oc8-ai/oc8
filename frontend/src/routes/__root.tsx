@@ -19,6 +19,7 @@ import { LiveUpdatesProvider } from "../lib/live/provider";
 import { hasDevSession, hasCommunitySession } from "../lib/api";
 import { DevSignIn } from "../components/dev-sign-in";
 import { registerAppWorker } from "../lib/app-worker";
+import { THEME_COLORS } from "../lib/theme-color";
 import { useKeyboardInset } from "../hooks/use-keyboard-inset";
 
 const AUTH_CONFIG_URL =
@@ -265,8 +266,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 export function ThemeColorMeta() {
   return (
     <>
-      <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f8fa" />
-      <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#060b14" />
+      <meta name="theme-color" media="(prefers-color-scheme: light)" content={THEME_COLORS.light} />
+      <meta name="theme-color" media="(prefers-color-scheme: dark)" content={THEME_COLORS.dark} />
     </>
   );
 }

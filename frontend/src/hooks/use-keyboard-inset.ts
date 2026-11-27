@@ -14,7 +14,12 @@ export function useKeyboardInset(): void {
     if (!vv) return;
     const root = document.documentElement;
     const update = () => {
-      const covered = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
+      // Zoomed in, the visual viewport is small because of the zoom, not a
+      // keyboard: pushing the composer up then would be wrong.
+      const zoomed = vv.scale > 1.01;
+      const covered = zoomed
+        ? 0
+        : Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop));
       root.style.setProperty("--keyboard-inset", `${covered}px`);
     };
     update();

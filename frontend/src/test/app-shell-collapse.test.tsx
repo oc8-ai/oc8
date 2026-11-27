@@ -62,8 +62,9 @@ vi.mock("@/lib/hooks", () => ({
   }),
 }));
 
+const allowed = vi.hoisted(() => ({ copilot: true }));
 vi.mock("@/lib/governance-hooks", () => ({
-  useCan: () => () => true,
+  useCan: () => (key: string) => key !== "copilot:use" || allowed.copilot,
   useMay: () => () => true,
   useAssignedRoleName: () => null,
   useCallerCapabilities: () => null,
@@ -181,7 +182,17 @@ describe("AppShell sidebar collapse", () => {
 });
 
 describe("AppShell room under the floating Copilot button", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    allowed.copilot = true;
+  });
+
+  it("keeps no room when the member has no Copilot (the button never renders)", () => {
+    allowed.copilot = false;
+    routerState.pathname = "/costs";
+    renderShell();
+    expect(screen.getByRole("main").className).not.toContain("pb-[calc(7rem");
+  });
 
   // The 1440x900 live check: the button covered the last column of the Cost
   // Center's "Per employee" table, with no way to scroll it out from under.
@@ -193,6 +204,15 @@ describe("AppShell room under the floating Copilot button", () => {
     expect(main.className).toContain("md:pb-[calc(7rem+env(safe-area-inset-bottom,0px))]");
   });
 
+  it("keeps header, sidebar and page clear of a landscape notch", () => {
+    routerState.pathname = "/costs";
+    const { container } = renderShell();
+    expect(container.firstElementChild).toHaveClass(
+      "pl-[env(safe-area-inset-left)]",
+      "pr-[env(safe-area-inset-right)]",
+    );
+  });
+
   it("leaves the Copilot page and the workspace without it (no button there)", () => {
     for (const pathname of ["/copilot", "/workspace"]) {
       routerState.pathname = pathname;
@@ -200,5 +220,28 @@ describe("AppShell room under the floating Copilot button", () => {
       expect(screen.getByRole("main").className).not.toContain("pb-[calc(7rem");
       unmount();
     }
+  });
+});
+
+describe("AppShell browser chrome colour", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    document.head.innerHTML =
+      '<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f8fa">' +
+      '<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#060b14">';
+  });
+
+  const colours = () =>
+    [...document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')].map(
+      (m) => m.content,
+    );
+
+  it("follows the theme the member picked, not the OS scheme", () => {
+    localStorage.setItem("bf-theme", "light");
+    renderShell();
+    expect(colours()).toEqual(["#f6f8fa", "#f6f8fa"]);
+
+    fireEvent.click(screen.getByRole("button", { name: /switch to dark mode/i }));
+    expect(colours()).toEqual(["#060b14", "#060b14"]);
   });
 });

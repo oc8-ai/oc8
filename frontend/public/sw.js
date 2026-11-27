@@ -15,13 +15,20 @@
 
 // Bump to drop every older copy on the next activate.
 const ASSET_CACHE = "oc8-assets-v1";
+// Each deploy brings new hashed names; keep the newest this many files, which
+// is above one build's working set, so the cache cannot grow without end.
+const MAX_ASSETS = 200;
 
 // <name>-<hash>.<ext> directly under /assets/; Vite's hash is 8 url-safe chars.
 const HASHED_ASSET = /^\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
 
 function isCacheableRequest(request, origin) {
   if (request.method !== "GET" || request.mode === "navigate") return false;
-  if (request.headers.has("authorization")) return false;
+  // A token-bearing request is never shared; a range answer is a slice (206).
+  if (request.headers.has("authorization") || request.headers.has("range")) return false;
+  // Encoded or dot-segment paths are never one of our hashed names, and the
+  // server may decode them to something outside /assets/.
+  if (request.url.includes("%") || request.url.includes("..")) return false;
   let url;
   try {
     url = new URL(request.url);
@@ -46,16 +53,37 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+// Stores a copy and trims the oldest entries. Off the response path: a full
+// or restricted Cache Storage must never fail a file the network served.
+async function storeAsset(cache, request, response) {
+  try {
+    await cache.put(request, response);
+    const keys = await cache.keys();
+    const excess = keys.length - MAX_ASSETS;
+    if (excess > 0) await Promise.all(keys.slice(0, excess).map((key) => cache.delete(key)));
+  } catch {
+    // Not cached this time; the next load fetches it again.
+  }
+}
+
 self.addEventListener("fetch", (event) => {
-  if (!isCacheableRequest(event.request, self.location.origin)) return;
+  const request = event.request;
+  if (!isCacheableRequest(request, self.location.origin)) return;
   event.respondWith(
     (async () => {
-      const cache = await caches.open(ASSET_CACHE);
-      const hit = await cache.match(event.request);
-      if (hit) return hit;
-      const response = await fetch(event.request);
-      if (response.ok && response.type === "basic") {
-        await cache.put(event.request, response.clone());
+      let cache = null;
+      try {
+        cache = await caches.open(ASSET_CACHE);
+        const hit = await cache.match(request);
+        if (hit) return hit;
+      } catch {
+        // Cache Storage unavailable (quota, private mode): plain network.
+        cache = null;
+      }
+      // A network failure stays a failure -- no made-up response.
+      const response = await fetch(request);
+      if (cache && response.status === 200 && response.type === "basic") {
+        event.waitUntil(storeAsset(cache, request, response.clone()));
       }
       return response;
     })(),

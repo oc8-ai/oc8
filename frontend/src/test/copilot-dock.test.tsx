@@ -250,7 +250,7 @@ describe("CopilotDock", () => {
     // Phone: the whole screen, clear of the notch; the composer inside pads
     // itself clear of the home indicator and keyboard.
     expect(panel).toHaveClass("inset-0", "pt-[env(safe-area-inset-top)]");
-    expect(panel).toHaveClass("sm:inset-auto", "sm:bottom-24", "sm:right-5", "sm:rounded-2xl");
+    expect(panel).toHaveClass("sm:inset-auto", "sm:bottom-24", "sm:rounded-2xl");
     // The floating toggle would sit on the composer's send button: on a
     // phone the sheet's own close button takes over.
     const toggle = screen.getByRole("button", { name: /oc8 copilot/i });
@@ -259,6 +259,28 @@ describe("CopilotDock", () => {
     for (const name of [/^new chat$/i, /close copilot/i]) {
       expect(screen.getByRole("button", { name })).toHaveClass("size-11", "sm:size-8");
     }
+    // Clear of a landscape notch on either side.
+    expect(panel).toHaveClass(
+      "pl-[env(safe-area-inset-left)]",
+      "pr-[env(safe-area-inset-right)]",
+      "sm:pl-0",
+      "sm:pr-0",
+      "sm:right-[calc(1.25rem+env(safe-area-inset-right,0px))]",
+    );
+  });
+
+  it("gives every tab a 44x44 close target on small screens", () => {
+    renderDock();
+    openDock();
+    const closers = screen
+      .getAllByRole("button")
+      .filter(
+        (b) =>
+          /^close /i.test(b.getAttribute("aria-label") ?? "") &&
+          !/copilot/i.test(b.getAttribute("aria-label") ?? ""),
+      );
+    expect(closers.length).toBeGreaterThan(0);
+    for (const closer of closers) expect(closer).toHaveClass("size-11", "sm:size-4");
   });
 
   it("keeps the closed floating button clear of the home indicator", () => {

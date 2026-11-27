@@ -51,6 +51,7 @@ import { cn } from "@/lib/utils";
 import { APP_VERSION } from "@/lib/app-version";
 import { useAgents, useApprovals, useClarifications, useStanding } from "@/lib/hooks";
 import { useAssignedRoleName, useCallerCapabilities, useCan, useMay } from "@/lib/governance-hooks";
+import { syncThemeColor } from "@/lib/theme-color";
 import { useLang, useT } from "@/lib/i18n";
 import { hasCommunitySession, logoutCommunity, logoutDev } from "@/lib/api";
 import {
@@ -844,7 +845,12 @@ export function AppShell() {
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
     window.localStorage.setItem("bf-theme", theme);
+    syncThemeColor(theme);
   }, [theme]);
+
+  // The floating Copilot: not where the page is a chat already, and only for
+  // members who may use it (the dock itself checks the same permission).
+  const showsDock = pathname !== "/workspace" && pathname !== "/copilot" && can("copilot:use");
 
   const [notifOpen, setNotifOpen] = useState(false);
   useEffect(() => {
@@ -856,7 +862,8 @@ export function AppShell() {
   useEffect(() => listenForPushSubscriptionChanges(), []);
 
   return (
-    <div className="flex min-h-dvh w-full bg-background text-foreground">
+    // viewport-fit=cover: header, sidebar and page keep clear of a landscape notch.
+    <div className="flex min-h-dvh w-full bg-background pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] text-foreground">
       <aside
         className={cn(
           "hidden md:flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200",
@@ -1124,10 +1131,8 @@ export function AppShell() {
             // lets the chat fill the height under the header.
             pathname === "/copilot" ? "flex min-h-0 flex-col" : "px-4 py-6 md:px-8 md:py-8",
             // Room to scroll the last rows and table columns out from under
-            // the floating Copilot button (56 px at 20 px from the bottom) --
-            // on the pages that show it (the dock condition below).
-            pathname !== "/workspace" &&
-              pathname !== "/copilot" &&
+            // the floating Copilot button (56 px at 20 px from the bottom).
+            showsDock &&
               "pb-[calc(7rem+env(safe-area-inset-bottom,0px))] md:pb-[calc(7rem+env(safe-area-inset-bottom,0px))]",
           )}
         >
@@ -1148,7 +1153,7 @@ export function AppShell() {
         and `sonner` does not replay toasts raised before a Toaster mounted. It
         still follows this theme -- root reads the same persisted "bf-theme".
       */}
-      {pathname !== "/workspace" && pathname !== "/copilot" && <CopilotDock />}
+      {showsDock && <CopilotDock />}
     </div>
   );
 }

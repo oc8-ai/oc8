@@ -26,20 +26,46 @@ function request(path: string, init: Partial<Omit<FakeRequest, "url">> = {}): Fa
   };
 }
 
-function fakeCacheStorage(initial: string[] = []) {
+interface FakeResponse {
+  ok: boolean;
+  status: number;
+  type: string;
+  clone: () => unknown;
+}
+
+function response(status = 200, type = "basic"): FakeResponse {
+  return { ok: status >= 200 && status < 300, status, type, clone: () => "copy" };
+}
+
+/** Which Cache Storage call fails, the way Safari/Chrome fail them on a full
+ *  or restricted phone (QuotaExceededError, SecurityError, Vary: *). */
+type Failing = "open" | "match" | "put";
+
+function fakeCacheStorage(initial: string[] = [], failing?: Failing) {
   const stores = new Map<string, Map<string, unknown>>(initial.map((name) => [name, new Map()]));
+  const fail = (op: Failing) => {
+    if (failing === op) throw new DOMException(`${op} failed`, "QuotaExceededError");
+  };
   return {
     stores,
     keys: vi.fn(async () => [...stores.keys()]),
     delete: vi.fn(async (name: string) => stores.delete(name)),
     open: vi.fn(async (name: string) => {
+      fail("open");
       if (!stores.has(name)) stores.set(name, new Map());
       const store = stores.get(name)!;
       return {
-        match: vi.fn(async (req: FakeRequest) => store.get(req.url)),
+        match: vi.fn(async (req: FakeRequest) => {
+          fail("match");
+          return store.get(req.url);
+        }),
         put: vi.fn(async (req: FakeRequest, res: unknown) => {
+          fail("put");
           store.set(req.url, res);
         }),
+        // Insertion order, as the Cache API returns them.
+        keys: vi.fn(async () => [...store.keys()].map((url) => ({ url }))),
+        delete: vi.fn(async (req: { url: string }) => store.delete(req.url)),
       };
     }),
   };
@@ -62,15 +88,16 @@ function loadWorker(
     },
     registration: { showNotification: vi.fn(async () => {}) },
   };
-  const network = vi.fn(async () => ({ ok: true, type: "basic", clone: () => "copy" }));
+  const network = vi.fn(async (): Promise<FakeResponse> => response());
   const exports = new Function(
     "self",
     "caches",
     "fetch",
-    `${SOURCE}\n;return { isCacheableRequest, ASSET_CACHE };`,
+    `${SOURCE}\n;return { isCacheableRequest, ASSET_CACHE, MAX_ASSETS };`,
   )(self, caches, network) as {
     isCacheableRequest: (req: FakeRequest, origin: string) => boolean;
     ASSET_CACHE: string;
+    MAX_ASSETS: number;
   };
 
   async function dispatch(type: string, event: Record<string, unknown>) {
@@ -83,8 +110,20 @@ function loadWorker(
         responded = Promise.resolve(p);
       },
     });
-    await Promise.all(pending);
-    return responded ? await responded : undefined;
+    // The answer first: storing a copy is extended work (waitUntil) that the
+    // worker may start only once the response is on its way.
+    let result: unknown;
+    let failure: unknown;
+    if (responded) {
+      try {
+        result = await responded;
+      } catch (error) {
+        failure = error ?? new Error("rejected");
+      }
+    }
+    for (let i = 0; i < pending.length; i++) await pending[i];
+    if (failure) throw failure;
+    return result;
   }
 
   return { ...exports, listeners, caches, self, network, dispatch };
@@ -135,6 +174,19 @@ describe("service worker cache rules", () => {
       ),
     ).toBe(false);
   });
+
+  it("skips range requests (a 206 is a slice, not the file)", () => {
+    expect(
+      ok(request("/assets/index-BQhdFMY1.js", { headers: new Headers({ Range: "bytes=0-99" }) })),
+    ).toBe(false);
+  });
+
+  it("rejects encoded or dot-segment paths that only look like /assets/", () => {
+    expect(ok(request("/assets/../api/x-abcdefgh.js"))).toBe(false);
+    expect(ok(request("/assets/..%2Fapi%2Fx-abcdefgh.js"))).toBe(false);
+    expect(ok(request("/assets/x%2Dabcdefgh.js"))).toBe(false);
+    expect(ok(request("/assets/a..b-abcdefgh.js"))).toBe(false);
+  });
 });
 
 describe("service worker fetch handling", () => {
@@ -162,9 +214,57 @@ describe("service worker fetch handling", () => {
 
   it("does not store failed responses", async () => {
     const worker = loadWorker();
-    worker.network.mockResolvedValueOnce({ ok: false, type: "basic", clone: () => "copy" });
+    worker.network.mockResolvedValueOnce(response(404));
     await worker.dispatch("fetch", { request: request("/assets/index-BQhdFMY1.js") });
     expect(worker.caches.stores.get(worker.ASSET_CACHE)?.size ?? 0).toBe(0);
+  });
+
+  it("stores only a complete 200, never a 206 or an opaque response", async () => {
+    for (const res of [response(206), response(200, "opaque"), response(200, "cors")]) {
+      const worker = loadWorker();
+      worker.network.mockResolvedValueOnce(res);
+      const answered = await worker.dispatch("fetch", {
+        request: request("/assets/index-BQhdFMY1.js"),
+      });
+      expect(answered).toBe(res);
+      expect(worker.caches.stores.get(worker.ASSET_CACHE)?.size ?? 0).toBe(0);
+    }
+  });
+
+  it.each<Failing>(["open", "match", "put"])(
+    "still serves the network response when Cache Storage fails at %s",
+    async (failing) => {
+      const worker = loadWorker({ caches: fakeCacheStorage([], failing) });
+      const answered = await worker.dispatch("fetch", {
+        request: request("/assets/index-BQhdFMY1.js"),
+      });
+      expect(answered).toMatchObject({ status: 200 });
+      expect(worker.network).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("lets a network failure through instead of inventing a response", async () => {
+    const worker = loadWorker();
+    worker.network.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+    await expect(
+      worker.dispatch("fetch", { request: request("/assets/index-BQhdFMY1.js") }),
+    ).rejects.toThrow("Failed to fetch");
+  });
+
+  it("keeps at most MAX_ASSETS files, dropping the oldest", async () => {
+    const worker = loadWorker();
+    expect(worker.MAX_ASSETS).toBe(200);
+    const store = new Map<string, unknown>();
+    for (let i = 0; i < worker.MAX_ASSETS; i++)
+      store.set(`${ORIGIN}/assets/old${i}-abcdefgh.js`, "x");
+    worker.caches.stores.set(worker.ASSET_CACHE, store);
+
+    await worker.dispatch("fetch", { request: request("/assets/index-BQhdFMY1.js") });
+
+    expect(store.size).toBe(worker.MAX_ASSETS);
+    expect(store.has(`${ORIGIN}/assets/old0-abcdefgh.js`)).toBe(false);
+    expect(store.has(`${ORIGIN}/assets/old1-abcdefgh.js`)).toBe(true);
+    expect(store.has(`${ORIGIN}/assets/index-BQhdFMY1.js`)).toBe(true);
   });
 });
 
