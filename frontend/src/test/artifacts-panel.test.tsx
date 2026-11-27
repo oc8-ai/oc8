@@ -20,6 +20,8 @@ const previews = vi.hoisted(() => ({
   value: { data: { runScripts: true }, isError: false } as {
     data?: { runScripts: boolean };
     isError: boolean;
+    dataUpdatedAt?: number;
+    errorUpdatedAt?: number;
   },
 }));
 vi.mock("@/lib/preview-settings", () => ({ usePreviewSettings: () => previews.value }));
@@ -321,6 +323,30 @@ describe("static previews", () => {
     expect(screen.getByRole("note")).toHaveTextContent("turned off for your organization");
     unmount();
     previews.value = { data: undefined, isError: true };
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    expect(open().getAttribute("sandbox")).toBe("");
+    expect(screen.getByRole("note")).toHaveTextContent("could not be read");
+  });
+
+  it("runs no script for a message that does not say whether it is restricted", () => {
+    const old = { id: "m1", content: page("Clock", "<p>x</p>"), runId: null, role: "assistant" };
+    render(<Chat turns={[answer(old as unknown as ChatMessageDTO)]} />);
+    expect(open().getAttribute("sandbox")).toBe("");
+    expect(screen.getByRole("note")).toHaveTextContent("restricted content");
+  });
+
+  it("keeps the last setting through a failed refresh, for ten minutes at most", () => {
+    const minute = 60_000;
+    previews.value = {
+      data: { runScripts: true },
+      isError: true,
+      dataUpdatedAt: 0,
+      errorUpdatedAt: 9 * minute,
+    };
+    const { unmount } = render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    expect(open().getAttribute("sandbox")).toBe("allow-scripts");
+    unmount();
+    previews.value = { ...previews.value, errorUpdatedAt: 11 * minute };
     render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
     expect(open().getAttribute("sandbox")).toBe("");
     expect(screen.getByRole("note")).toHaveTextContent("could not be read");

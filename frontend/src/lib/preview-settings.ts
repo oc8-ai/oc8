@@ -10,13 +10,16 @@ export interface PreviewSettingsDTO {
 
 const KEY = ["settings", "previews"] as const;
 
-/** Fetched only while `enabled` (the chat asks once a preview opens). */
+/** Fetched only while `enabled` (the chat asks once a preview opens), and
+ *  then every minute: an admin turning scripts off reaches previews that are
+ *  already open within a minute. */
 export function usePreviewSettings(enabled = true) {
   return useQuery({
     queryKey: KEY,
     enabled,
     queryFn: () => api.get<PreviewSettingsDTO>("/settings/previews"),
     staleTime: 60_000,
+    refetchInterval: enabled ? 60_000 : false,
   });
 }
 

@@ -77,12 +77,17 @@ function sameArtifact(a: Artifact, b: Artifact): boolean {
  *  - "off": an admin turned scripts in previews off;
  *  - "unknown": that setting could not be read (fail closed);
  *  - "pending": it is still loading. */
+/** How long a failing refresh may lean on the setting read before it. */
+const STALE_AFTER = 10 * 60_000;
+
 export type PreviewMode = "scripts" | "restricted" | "unsaved" | "off" | "unknown" | "pending";
 
 /** The conversation's panel state: what is open, its versions on the
  *  current message path, how its preview may run, and the context the
- *  cards read. The tenant's script setting is read once a preview opens;
- *  one that cannot be read counts as off (fail closed). */
+ *  cards read. The tenant's script setting is read once a preview opens
+ *  and again every minute while one is open; one that cannot be read
+ *  counts as off (fail closed), and so does the last one read when the
+ *  refreshes have failed for STALE_AFTER. */
 export function useArtifactsPanel(sessionId: string | null, turns: TurnModel[]) {
   const [picked, setPicked] = useState<Artifact | null>(null);
   // Another chat starts with the panel closed.
@@ -113,14 +118,18 @@ export function useArtifactsPanel(sessionId: string | null, turns: TurnModel[]) 
   const settings = usePreviewSettings(picked !== null);
   const messageId = current?.messageId;
   let mode: PreviewMode = "unsaved";
+  // A failed refresh keeps the last value it read, for STALE_AFTER at most.
+  const outdated =
+    settings.isError && settings.errorUpdatedAt - settings.dataUpdatedAt > STALE_AFTER;
   if (settings.data?.runScripts === false) mode = "off";
-  else if (!settings.data) mode = settings.isError ? "unknown" : "pending";
+  else if (!settings.data || outdated) mode = settings.isError ? "unknown" : "pending";
   else if (messageId) {
     let found: boolean | undefined;
     for (const turn of turns) {
       if (turn.kind !== "assistant") continue;
       const message = turn.variants.find((v) => v.id === messageId);
-      if (message) found = message.restricted === true;
+      // A message that does not say (an older server) counts as restricted.
+      if (message) found = message.restricted !== false;
     }
     mode = found === undefined ? "unsaved" : found ? "restricted" : "scripts";
   }

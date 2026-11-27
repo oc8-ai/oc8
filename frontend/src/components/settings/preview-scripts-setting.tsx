@@ -47,6 +47,10 @@ export function PreviewScriptsSetting() {
         {t(
           "Pages, apps and diagrams the assistant writes open beside the chat in a sandbox without network access. Turned off, they are shown without running their scripts.",
           "Seiten, Apps und Diagramme, die der Assistent schreibt, öffnen sich neben dem Chat in einer Sandbox ohne Netzwerkzugriff. Ausgeschaltet werden sie angezeigt, ohne ihre Skripte auszuführen.",
+        )}{" "}
+        {t(
+          "Open previews pick this up within a minute.",
+          "Offene Vorschauen übernehmen das innerhalb einer Minute.",
         )}
       </p>
     </Panel>
