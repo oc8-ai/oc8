@@ -52,6 +52,7 @@ from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTIC
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
 from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
+from oc8.chat.temporary import NO_MEMORY_REFUSAL, is_temporary_run
 from oc8.config import get_settings
 from oc8.connections.causal import causal_ancestors
 from oc8.copilot.notes import member_behind_run_task
@@ -1569,6 +1570,12 @@ MAX_DELEGATION_DEPTH = 5
 DEPTH_LIMIT_REASON = f"delegation depth limit reached (max {MAX_DELEGATION_DEPTH})"
 
 
+async def _in_temporary_chat(db: AsyncSession, run_id: uuid.UUID) -> bool:
+    """Whether the run answers a temporary chat's turn (`chat.temporary`)."""
+    run = await db.get(m.AgentRun, run_id)
+    return run is not None and is_temporary_run(run.context)
+
+
 def offered_tools(
     agent: m.Agent,
     *,
@@ -1591,6 +1598,7 @@ def offered_tools(
     produces_board: bool = False,
     copilot_has_member: bool = True,
     offer_web_search: bool = False,
+    temporary_chat: bool = False,
 ) -> list[NeutralTool]:
     """The full tool list to offer the model this step.
 
@@ -1626,6 +1634,10 @@ def offered_tools(
     with nobody behind it (a wake-up after a delegated sub-task) or a
     follow-up has no one to keep personal notes for, so memory_write is not
     offered there. The dispatch refuses it as well.
+
+    `temporary_chat` is `chat.temporary.is_temporary_run(run.context)`: a
+    temporary chat keeps nothing, so memory_write is not offered to any agent
+    there. The dispatch refuses it as well.
 
     `offer_web_search` is the run preamble's `has_web_search`: the turn asked
     for the web (`web: true`, `oc8.websearch.service.requested`) and the
@@ -1664,7 +1676,9 @@ def offered_tools(
         READ_RESOURCE,
         READ_RUN_FILE,
     ]
-    if agent.is_tenant_assistant and (not copilot_has_member or copilot_door == "followup"):
+    if temporary_chat or (
+        agent.is_tenant_assistant and (not copilot_has_member or copilot_door == "followup")
+    ):
         offered.remove(MEMORY_WRITE)
     if offer_write_output_file:
         offered.append(WRITE_OUTPUT_FILE)
@@ -4478,6 +4492,9 @@ async def execute_control_tool(
         )
 
     if tc.name == MEMORY_WRITE.name:
+        if run_id is not None and await _in_temporary_chat(db, run_id):
+            # Before the effect: not even a company write's approval is raised.
+            return ControlOutcome(output=f"ERROR: {NO_MEMORY_REFUSAL}")
         if decision.effect is Effect.DENY:
             return ControlOutcome(output=f"ERROR: {decision.reason or 'memory write denied'}")
         if agent.is_tenant_assistant and run_id is not None:

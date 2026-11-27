@@ -227,7 +227,8 @@ async def generate_auto_title(
     from oc8.realtime.emit import publish_chat_session_updated
 
     session = await get_session(db, tenant_id=tenant_id, session_id=session_id)
-    if session is None or session.kind != "chat":
+    # A temporary chat is never named (`chat.temporary`).
+    if session is None or session.kind != "chat" or session.temporary:
         return None
     if session.title_source is not None or session.title:
         return None
@@ -243,6 +244,7 @@ async def generate_auto_title(
                 m.ChatSession.id == session_id,
                 m.ChatSession.title_source.is_(None),
                 m.ChatSession.title == "",
+                m.ChatSession.temporary.is_(False),
             )
             .values(title=title, title_source="auto")
             .returning(m.ChatSession.id)

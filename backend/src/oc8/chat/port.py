@@ -70,6 +70,9 @@ async def session_access(
         return None
     if session.member_id == member.id:
         return "owner"
+    if session.temporary:
+        # Not kept, so never shared (`chat.temporary`).
+        return None
     audience = await session_audience(
         db, session=session, acting_subject=member.subject, acting_role=token_role
     )
@@ -77,10 +80,15 @@ async def session_access(
 
 
 async def list_sessions(db: AsyncSession, *, member: m.OrgMember) -> list[SessionInfo]:
-    """The member's own sessions, newest first."""
+    """The member's own sessions, newest first. Never a temporary one
+    (`chat.temporary`): an edition searches and shares what is kept."""
     rows = await db.execute(
         select(m.ChatSession)
-        .where(m.ChatSession.tenant_id == member.tenant_id, m.ChatSession.member_id == member.id)
+        .where(
+            m.ChatSession.tenant_id == member.tenant_id,
+            m.ChatSession.member_id == member.id,
+            m.ChatSession.temporary.is_(False),
+        )
         .order_by(m.ChatSession.last_message_at.desc().nulls_last(), m.ChatSession.id.desc())
     )
     return [_info(s, "owner") for s in rows.scalars()]
@@ -127,7 +135,11 @@ async def search_candidates(
         return own
     others = await db.execute(
         select(m.ChatSession)
-        .where(m.ChatSession.tenant_id == member.tenant_id, m.ChatSession.member_id != member.id)
+        .where(
+            m.ChatSession.tenant_id == member.tenant_id,
+            m.ChatSession.member_id != member.id,
+            m.ChatSession.temporary.is_(False),
+        )
         .order_by(m.ChatSession.last_message_at.desc().nulls_last(), m.ChatSession.id.desc())
         .limit(limit)
     )

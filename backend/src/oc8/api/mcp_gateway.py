@@ -99,6 +99,7 @@ from oc8.authz.pdp import (
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.files_kb import chat_has_files
 from oc8.chat.modes import mode_from_context, mode_refusal
+from oc8.chat.temporary import is_temporary_run
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import (
     McpLaunchEnv,
@@ -552,6 +553,10 @@ async def _list_tools(
         RENDER_COMPONENT,
         SUGGEST_REPLIES,
     ]
+    # A temporary chat keeps no notes (offered_tools' temporary_chat); the
+    # dispatch refuses the call as well.
+    if is_temporary_run(run.context):
+        core.remove(MEMORY_WRITE)
     # A read of what the member pinned to this chat turn -- only when the
     # turn's manifest lists something readable (offered_tools' has_context).
     if has_readable_context(run.context):

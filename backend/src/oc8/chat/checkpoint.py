@@ -405,7 +405,8 @@ async def checkpoint_after_reply(
 
     session = await db.get(m.ChatSession, session_id)
     run = await db.get(m.AgentRun, run_id)
-    if session is None or run is None:
+    # A temporary chat is never summarised in the background (`chat.temporary`).
+    if session is None or run is None or session.temporary:
         return None
     reply_id = await db.scalar(
         select(m.ChatMessage.id)

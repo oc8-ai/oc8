@@ -77,6 +77,7 @@ export function AssistantTurn({
   cards,
   footer,
   readOnly = false,
+  noFeedback = false,
   labelsOnly = false,
   onRegenerate,
   onSelectVariant,
@@ -88,6 +89,8 @@ export function AssistantTurn({
   cards?: ReactNode;
   footer?: ReactNode;
   readOnly?: boolean;
+  /** No rating: a temporary chat keeps none (the server refuses it). */
+  noFeedback?: boolean;
   /** A colleague's run: steps as labels only (see StepList). */
   labelsOnly?: boolean;
   onRegenerate?: (replyToId: string) => void;
@@ -287,7 +290,7 @@ export function AssistantTurn({
                   <RotateCcw className="size-4" />
                 </ActionButton>
               )}
-              {!readOnly && (
+              {!readOnly && !noFeedback && (
                 <>
                   <ActionButton
                     label={t("Good answer", "Gute Antwort")}

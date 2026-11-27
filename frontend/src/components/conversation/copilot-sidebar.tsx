@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   FolderPlus,
+  MessageCircleDashed,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -57,7 +58,7 @@ import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 import { ChatTitleText } from "./chat-title";
-import { useNewChatLabel } from "./new-chat-label";
+import { useNewChatLabel, useTemporaryChatText } from "./new-chat-label";
 
 import { ProjectSheet } from "./project-sheet";
 
@@ -335,6 +336,8 @@ interface SidebarProps {
   sessionId: string | null;
   /** A chat to open; null starts a new one. */
   onSelect: (id: string | null) => void;
+  /** Start a temporary chat (spec §5.6); without it, none is offered. */
+  onStartTemporary?: () => void;
   collapsed: boolean;
   onToggle: () => void;
 }
@@ -343,11 +346,13 @@ export function CopilotSidebar({
   agentId,
   sessionId,
   onSelect,
+  onStartTemporary,
   collapsed,
   onToggle,
 }: SidebarProps) {
   const t = useT();
   const newChatLabel = useNewChatLabel();
+  const temporaryText = useTemporaryChatText();
   const projectsHeadingId = useId();
   const narrow = useIsNarrow();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -469,15 +474,33 @@ export function CopilotSidebar({
   const shared = { sessionId, onSelect: (id: string) => open(id), actions };
 
   const newChat = (
-    <Button
-      type="button"
-      variant="outline"
-      className="h-9 flex-1 justify-start"
-      onClick={() => open(null)}
-    >
-      <Plus aria-hidden />
-      {t("New chat", "Neuer Chat")}
-    </Button>
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        className="h-9 flex-1 justify-start"
+        onClick={() => open(null)}
+      >
+        <Plus aria-hidden />
+        {t("New chat", "Neuer Chat")}
+      </Button>
+      {onStartTemporary && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="size-9 shrink-0"
+          aria-label={temporaryText.label}
+          title={temporaryText.help}
+          onClick={() => {
+            onStartTemporary();
+            setSheetOpen(false);
+          }}
+        >
+          <MessageCircleDashed aria-hidden />
+        </Button>
+      )}
+    </>
   );
 
   const list = (
@@ -594,7 +617,7 @@ export function CopilotSidebar({
               {t("Your chats by date and project", "Deine Chats nach Datum und Projekt")}
             </SheetDescription>
             <nav aria-label={t("Chats", "Chats")} className="flex min-h-0 flex-1 flex-col pt-10">
-              <div className="flex p-2">{newChat}</div>
+              <div className="flex gap-1 p-2">{newChat}</div>
               {list}
             </nav>
           </SheetContent>

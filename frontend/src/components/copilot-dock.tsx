@@ -1,4 +1,4 @@
-import { ChevronDown, Plus, Sparkles, WifiOff, X } from "lucide-react";
+import { ChevronDown, MessageCircleDashed, Plus, Sparkles, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,7 @@ import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { ChatTitleText } from "@/components/conversation/chat-title";
+import { useTemporaryChatText } from "@/components/conversation/new-chat-label";
 import { SessionPicker } from "@/components/conversation/session-picker";
 
 // Set by DoneStep right before the full-page navigation into "/" that follows
@@ -174,6 +175,9 @@ export interface CopilotTab {
    *  is every tab until somebody types `@`. Persisted with the tab, so a
    *  reopened dock reopens the same conversation with the same agent. */
   agentId?: string;
+  /** A temporary chat (spec §5.6): the one this tab starts, or the one it
+   *  holds. Not read back on load; an open chat says so itself. */
+  temporary?: boolean;
 }
 
 function tabsStorageKey(memberId: string): string {
@@ -363,7 +367,30 @@ function CopilotDockPanel() {
   }
 
   function setTabSession(uiId: string, sessionId: string | null) {
-    setTabs((prev) => prev.map((tab) => (tab.uiId === uiId ? { ...tab, sessionId } : tab)));
+    // A tab back to blank starts an ordinary chat again.
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.uiId === uiId
+          ? { ...tab, sessionId, temporary: sessionId === null ? false : tab.temporary }
+          : tab,
+      ),
+    );
+  }
+
+  function startTemporaryChat(uiId: string) {
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === uiId ? { ...tab, sessionId: null, temporary: true } : tab)),
+    );
+  }
+
+  // A temporary chat is deleted once its tab leaves it (another tab, the dock
+  // closed): the tab that held it is blank again.
+  function forgetTemporaryChat(sessionId: string) {
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.sessionId === sessionId ? { ...tab, sessionId: null, temporary: false } : tab,
+      ),
+    );
   }
 
   function setTabAgent(uiId: string, agentId: string | undefined) {
@@ -382,6 +409,7 @@ function CopilotDockPanel() {
     }
   }, []);
 
+  const temporaryText = useTemporaryChatText();
   const activeTab = tabs.find((tab) => tab.uiId === activeUiId);
   const activeAgentId = activeTab?.agentId ?? assistantAgentId;
   const agents = agentPage?.items ?? [];
@@ -435,6 +463,17 @@ function CopilotDockPanel() {
                   <Plus className="h-4 w-4" />
                 </button>
               )}
+              {assistantAgentId && (
+                <button
+                  type="button"
+                  onClick={() => activeUiId && startTemporaryChat(activeUiId)}
+                  aria-label={temporaryText.label}
+                  title={temporaryText.help}
+                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                >
+                  <MessageCircleDashed className="h-4 w-4" />
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setOpen(false)}
@@ -455,7 +494,9 @@ function CopilotDockPanel() {
               const agentName = tab.agentId
                 ? (agentPage?.items.find((a) => a.id === tab.agentId)?.name ?? untitledChatText(de))
                 : null;
-              const title = session?.title || agentName || untitledChatText(de);
+              const title = tab.temporary
+                ? temporaryText.label
+                : session?.title || agentName || untitledChatText(de);
               return (
                 <div
                   key={tab.uiId}
@@ -531,6 +572,8 @@ function CopilotDockPanel() {
               agentId={activeAgentId}
               sessionId={activeTab.sessionId}
               onSessionChange={(sid) => setTabSession(activeTab.uiId, sid)}
+              temporary={!!activeTab.temporary}
+              onTemporaryLeft={forgetTemporaryChat}
               variant="compact"
               // A tab addressed to another agent is that agent's chat.
               agentMode={!activeTab.agentId}

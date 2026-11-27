@@ -51,6 +51,12 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
             unique=True,
             postgresql_where=text("kind = 'live'"),
         ),
+        Index(
+            "ix_chat_session_temporary",
+            "tenant_id",
+            "last_message_at",
+            postgresql_where=text("temporary"),
+        ),
     )
 
     agent_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
@@ -98,6 +104,13 @@ class ChatSession(Base, PkMixin, TenantMixin, TimestampMixin):
     effort: Mapped[str | None] = mapped_column(Text)
     #: Tip of the branch the person is looking at; NULL on a linear chat.
     current_leaf_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: A chat that is not kept (spec §5.6, migration 0148): never listed,
+    #: named, summarised or exported, no notes or feedback, deleted when the
+    #: person leaves it or by the worker's purge (`oc8.chat.temporary`).
+    #: Runs, approvals, audit events and usage records of it stay.
+    temporary: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
 
 class ChatMessage(Base, PkMixin, TenantMixin, TimestampMixin):

@@ -25,6 +25,10 @@ export interface ChatSessionDTO {
   // The newest message of the branch the chat shows. Null for a chat without a
   // message tree (live chats, older rows): the transcript is then linear.
   currentLeafId?: string | null;
+  // A chat that is not kept (spec §5.6): never in the list, no rating, pin,
+  // project or export, deleted when the person leaves it
+  // (components/conversation/temporary-chat.ts) or after 24 hours.
+  temporary?: boolean;
 }
 
 export interface ChatContextRefDTO {
@@ -111,10 +115,18 @@ export function useChatSessions(agentId?: string) {
   });
 }
 
+/** What a new chat is created for: an agent, or an agent and `temporary`
+ *  for a chat that is not kept. */
+export type NewChatSession = string | { agentId: string; temporary?: boolean };
+
 export function useCreateChatSession() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (agentId: string) => api.post<ChatSessionDTO>("/chat/sessions", { agentId }),
+    mutationFn: (target: NewChatSession) =>
+      api.post<ChatSessionDTO>(
+        "/chat/sessions",
+        typeof target === "string" ? { agentId: target } : target,
+      ),
     onSuccess: (session) => {
       qc.invalidateQueries({ queryKey: chatKeys.sessions(session.agentId) });
       qc.invalidateQueries({ queryKey: chatKeys.sessions() });
@@ -172,18 +184,21 @@ export function useRenameChatSession() {
   });
 }
 
+/** A deleted chat out of every cache: the lists, the chat, its messages. */
+export function forgetDeletedSession(qc: QueryClient, sessionId: string) {
+  qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
+    prev?.filter((s) => s.id !== sessionId),
+  );
+  qc.removeQueries({ queryKey: ["chat", "session", sessionId] });
+  qc.removeQueries({ queryKey: chatKeys.messages(sessionId) });
+}
+
 export function useDeleteChatSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sessionId: string) =>
       api.delete<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`),
-    onSuccess: (_void, sessionId) => {
-      qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
-        prev?.filter((s) => s.id !== sessionId),
-      );
-      qc.removeQueries({ queryKey: ["chat", "session", sessionId] });
-      qc.removeQueries({ queryKey: chatKeys.messages(sessionId) });
-    },
+    onSuccess: (_void, sessionId) => forgetDeletedSession(qc, sessionId),
   });
 }
 

@@ -67,6 +67,7 @@ from oc8.chat.questions import (
     questions_to_json,
     render_answers_text,
 )
+from oc8.chat.temporary import TEMPORARY_CHAT_KEY
 from oc8.chat.titles import schedule_auto_title
 from oc8.chat.turn_context import turn_keys
 from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
@@ -96,9 +97,17 @@ _SECRET_REFUSAL = (
 
 
 async def create_session(
-    db: AsyncSession, *, tenant_id: uuid.UUID, agent_id: uuid.UUID, member_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    member_id: uuid.UUID,
+    temporary: bool = False,
 ) -> m.ChatSession:
-    session = m.ChatSession(tenant_id=tenant_id, agent_id=agent_id, member_id=member_id)
+    """A new chat; `temporary` for one that is not kept (`chat.temporary`)."""
+    session = m.ChatSession(
+        tenant_id=tenant_id, agent_id=agent_id, member_id=member_id, temporary=temporary
+    )
     db.add(session)
     await db.flush()
     return session
@@ -130,11 +139,13 @@ async def list_sessions(
 
     Ordinary chats only: a Live session (`kind='live'`) is the Live tab's,
     reached through its own route, never a chat in the list nor the one a
-    messenger's next message lands in."""
+    messenger's next message lands in. Nor a temporary chat (`chat.temporary`):
+    it is reached only by its id, from the tab that holds it."""
     stmt = select(m.ChatSession).where(
         m.ChatSession.tenant_id == tenant_id,
         m.ChatSession.member_id == member_id,
         m.ChatSession.kind == "chat",
+        m.ChatSession.temporary.is_(False),
     )
     if agent_id is not None:
         stmt = stmt.where(m.ChatSession.agent_id == agent_id)
@@ -524,6 +535,9 @@ def _build_turn_context(
         # Folded into the pinned definition when the run resolves its version
         # (chat.model_choice.apply_effort_override); every runtime reads it there.
         context["effort_override"] = session.effort
+    if session.temporary:
+        # The runtime writes no memory for it (`agent.control_tools`).
+        context[TEMPORARY_CHAT_KEY] = True
     if extra_context:
         # Everything outside the allow-list is dropped, silently.
         context.update({k: v for k, v in extra_context.items() if k in _EXTRA_CONTEXT_KEYS})
@@ -563,8 +577,15 @@ def _title_seed(session: m.ChatSession, history: list[m.ChatMessage], body: str)
     """The text a chat with no name yet is named after: its first user message
     with any words in it (this one, in a new chat), or None when the chat is
     named already -- by the member or by an earlier title -- or is not an
-    ordinary chat. Checked again, atomically, when the title is written."""
-    if session.kind != "chat" or session.title or session.title_source is not None:
+    ordinary chat. A temporary chat is never named: the title would be the one
+    thing of it a model summarised. Checked again, atomically, when the title
+    is written."""
+    if (
+        session.kind != "chat"
+        or session.temporary
+        or session.title
+        or session.title_source is not None
+    ):
         return None
     for text_ in [msg.content for msg in history if msg.role == "user"] + [body]:
         if text_ and text_.strip():
@@ -1488,10 +1509,13 @@ async def _checkpoint_when_long(
 ) -> None:
     """Start a background checkpoint once the commit is through, when the
     replayed path now fills more than `BACKGROUND_RATIO` of the window of
-    the model the run used (spec §5.3). Never fails the reply."""
+    the model the run used (spec §5.3). Never fails the reply. Never for a
+    temporary chat: a summary of it is something kept."""
     from oc8.chat import checkpoint
     from oc8.realtime.emit import publish_after_commit
 
+    if session.temporary:
+        return
     try:
         async with db.begin_nested():
             path = await tree.path_to(db, session=session, message_id=reply.id)

@@ -20,6 +20,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, requ
 from oc8.api.v1._chat_common import (
     actor_viewer,
     ref_views,
+    refuse_if_temporary,
     session_detail,
     session_dto,
     session_owned_by_caller,
@@ -296,6 +297,7 @@ async def create_chat_session(
         tenant_id=actor.principal.tenant_id,
         agent_id=body.agent_id,
         member_id=actor.member.id,
+        temporary=body.temporary,
     )
     await db.commit()
     return session_dto(session)
@@ -377,6 +379,7 @@ async def export_chat(
     shared chat may export it -- with the same redactions they see on screen
     (no attachment file names). Names only, never file contents."""
     session, read_only = await _readable_session(request, session_id, db, actor)
+    refuse_if_temporary(session, "be exported")
     tenant_id = actor.principal.tenant_id
     if format == "md":
         messages = await visible_path(db, session=session)
@@ -976,6 +979,7 @@ async def message_feedback(
     actor: _ChatActor,
 ) -> None:
     session = await session_owned_by_caller(session_id, db, actor)
+    refuse_if_temporary(session, "be rated")
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "assistant":
         raise HTTPException(status.HTTP_409_CONFLICT, "only an answer can be rated")

@@ -218,10 +218,18 @@ export function CopilotPage({
   const workCount = useCopilotWorkCount(agentId || null);
   const { open: panelOpen, toggle: togglePanel } = useWorkRail(workCount);
   const railId = useId();
+  // The next new chat is a temporary one (spec §5.6) until it is created or
+  // another chat is opened; once created, the chat itself says so.
+  const [temporaryNew, setTemporaryNew] = useState(false);
   const openSession = (id: string | null) => {
+    setTemporaryNew(false);
     setSessionId(id);
     openedHere.current = id !== (initialSessionId ?? null) ? id : undefined;
     onSessionOpened?.(id);
+  };
+  const startTemporary = () => {
+    openSession(null);
+    setTemporaryNew(true);
   };
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { data: current } = useChatSession(sessionId);
@@ -246,6 +254,7 @@ export function CopilotPage({
       agentId={agentId}
       sessionId={sessionId}
       onSessionChange={openSession}
+      temporary={temporaryNew}
       variant="full"
       agentMode
       promptStarters={starters}
@@ -279,6 +288,7 @@ export function CopilotPage({
             agentId={agentId}
             sessionId={sessionId}
             onSelect={openSession}
+            onStartTemporary={startTemporary}
             collapsed={sidebarCollapsed}
             onToggle={() => setSidebarCollapsed((v) => !v)}
           />

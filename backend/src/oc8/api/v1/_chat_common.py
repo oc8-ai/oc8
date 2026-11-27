@@ -51,6 +51,7 @@ def session_dto(
         mode=session.mode,
         effort=as_level(session.effort),
         current_leaf_id=str(session.current_leaf_id) if session.current_leaf_id else None,
+        temporary=bool(session.temporary),
     )
 
 
@@ -120,3 +121,10 @@ async def session_owned_by_caller(
     if session is None or session.member_id != actor.member.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "chat session not found")
     return session
+
+
+def refuse_if_temporary(session: m.ChatSession, what: str) -> None:
+    """409 for what would keep something of a temporary chat (spec §5.6):
+    rating an answer, pinning it, moving it into a project, exporting it."""
+    if session.temporary:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"a temporary chat cannot {what}")

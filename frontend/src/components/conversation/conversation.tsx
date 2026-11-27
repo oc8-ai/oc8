@@ -63,6 +63,7 @@ import { ArtifactPanel } from "./artifacts/artifact-panel";
 import { ArtifactsContext, useArtifactsPanel, usePanelAsSheet } from "./artifacts/context";
 import { PythonRunContext, usePythonScopeFor } from "./python/run-context";
 import { AssistantTurn } from "./assistant-turn";
+import { TemporaryChatChip } from "./chat-title";
 import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
 import { ContextSearchDialog } from "./context-search";
 import { DataSourceBrowser } from "./data-source-browser";
@@ -72,6 +73,7 @@ import { AgentModeChip } from "./agent-mode-chip";
 import { PinnedBar } from "./pinned-bar";
 import { PromptStarters, type PromptStarter } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
+import { useLeaveTemporaryChat } from "./temporary-chat";
 import { RunInputs, runInputError } from "./run-steering";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
@@ -267,6 +269,12 @@ export interface ConversationProps {
   /** This is the Copilot's own chat: `/agent` (Agent mode) is offered. It is
    *  the Assistant's alone -- the server refuses it in any other chat. */
   agentMode?: boolean;
+  /** The new chat this starts (no `sessionId` yet) is a temporary one
+   *  (spec §5.6). An open chat says so itself (`temporary` on the session). */
+  temporary?: boolean;
+  /** A temporary chat was deleted because this view left it
+   *  (`useLeaveTemporaryChat`), also after this view unmounted. */
+  onTemporaryLeft?: (sessionId: string) => void;
 }
 
 function TurnSkeletons() {
@@ -461,6 +469,9 @@ function ConversationBody(props: ConversationProps) {
     return () => el.removeEventListener("scroll", onScroll);
   }, [ref]);
   const readOnly = !!conv.session?.readOnly;
+  // Not kept: marked, never rated, and deleted once left (spec §5.6).
+  const temporaryChat = props.sessionId ? !!conv.session?.temporary : !!props.temporary;
+  useLeaveTemporaryChat(props.sessionId, !!conv.session?.temporary, props.onTemporaryLeft);
   // The question the chat's run is parked on (spec §4.1). That run waits for
   // the reader, so it does not make the chat busy: the composer answers it.
   const pending = (!readOnly && conv.session?.pendingQuestion) || null;
@@ -731,7 +742,8 @@ function ConversationBody(props: ConversationProps) {
 
   function ensureSession(): Promise<string> {
     if (props.sessionId) return Promise.resolve(props.sessionId);
-    creating.current ??= createSession.mutateAsync(props.agentId).then(
+    const target = props.temporary ? { agentId: props.agentId, temporary: true } : props.agentId;
+    creating.current ??= createSession.mutateAsync(target).then(
       (session) => {
         // Seed the new chat's caches so it does not flash skeletons between
         // being created and its first message landing.
@@ -1110,6 +1122,7 @@ function ConversationBody(props: ConversationProps) {
         sessionId={props.sessionId}
         turn={turn}
         readOnly={readOnly}
+        noFeedback={temporaryChat}
         onRegenerate={busy ? undefined : onRegenerate}
         onSelectVariant={conv.session?.currentLeafId ? onSwitchBranch : undefined}
         {...assistantExtras(turn)}
@@ -1249,6 +1262,11 @@ function ConversationBody(props: ConversationProps) {
     ) : null;
   const chat = (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      {temporaryChat && (
+        <div className="flex justify-center border-b border-border px-3 py-1.5">
+          <TemporaryChatChip />
+        </div>
+      )}
       <div
         ref={ref}
         data-testid="conversation-scroller"

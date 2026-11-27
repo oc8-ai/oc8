@@ -42,6 +42,8 @@ def _normalized_address(value: str) -> str:
 
 class CreateChatSessionRequest(CamelModel):
     agent_id: uuid.UUID
+    #: A chat that is not kept (spec §5.6, `oc8.chat.temporary`).
+    temporary: bool = False
 
 
 class ChatContextRefRequest(CamelModel):

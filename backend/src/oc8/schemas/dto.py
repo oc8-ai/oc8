@@ -1548,6 +1548,9 @@ class ChatSessionDTO(CamelModel):
     #: The last message of the branch the person reads (spec §5.3); None for
     #: a chat without a tree.
     current_leaf_id: str | None = None
+    #: A chat that is not kept (spec §5.6): no feedback, pin, project or
+    #: export, deleted when the person leaves it.
+    temporary: bool = False
 
 
 class BuilderChoiceDTO(CamelModel):
