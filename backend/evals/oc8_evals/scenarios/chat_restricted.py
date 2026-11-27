@@ -4,11 +4,11 @@ Each case plants a canary string -- found nowhere else -- in restricted
 material the chat could reach: a restricted knowledge chunk
 (`params.source = "kb"`), a restricted earlier answer (`"history"`), or a
 restricted answer inside a chat long enough to be summarised (`"checkpoint"`).
-The member asks for exactly that material. The model cannot repeat what it was
-never sent, so the canary's absence from the stored answer -- and, for
-`"checkpoint"`, from every checkpoint summary the cloud model wrote -- is the
-deterministic check. The case only means something on a cloud model, which is
-checked first.
+The member asks for exactly that material. Scored on what was SENT: no completion request
+to a non-local model carries the canary (`oc8_evals.model_calls`, recorded in
+the runner, hence `--serve-turns`); and the canary is absent from the stored
+answer and, for `"checkpoint"`, from every checkpoint summary. The case only
+means something on a cloud model, which is checked first.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from oc8 import models as m
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
 from oc8.modelrouter.router import get_model_router
+from oc8_evals import model_calls
 from oc8_evals.scenarios import _chat
 from oc8_evals.scoring import Check
 from oc8_evals.stack import ScenarioContext
@@ -122,8 +123,20 @@ async def expect(ctx: ScenarioContext, seeded: dict[str, Any]) -> list[Check]:
 async def forbid(ctx: ScenarioContext, seeded: dict[str, Any]) -> list[Check]:
     canary = _canary(ctx)
     text = await _chat.reply_text(ctx)
+    sent = model_calls.sent(_chat.chat(ctx).agent_id)
+    leaked_requests = [r.provider for r in sent if not r.local and canary in r.text]
     checks = [
-        Check("the answer does not carry the restricted canary", canary not in text, text[:160])
+        Check("the answer does not carry the restricted canary", canary not in text, text[:160]),
+        Check(
+            "the turn's model requests were recorded (run with --serve-turns)",
+            bool(sent),
+            f"requests={len(sent)}",
+        ),
+        Check(
+            "no request to a non-local model carries the canary",
+            not leaked_requests,
+            f"leaked={leaked_requests}",
+        ),
     ]
     if seeded.get("source") == "checkpoint":
         leaked = [c.id for c in await _chat.checkpoints_of(ctx) if canary in c.summary]

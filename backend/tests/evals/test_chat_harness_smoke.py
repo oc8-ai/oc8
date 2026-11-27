@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 from oc8_evals import __main__ as runner
-from oc8_evals import stack
+from oc8_evals import model_calls, stack
 from oc8_evals.tasks import load_suite
 
 from oc8 import models as m
@@ -97,7 +97,13 @@ def echo(monkeypatch: pytest.MonkeyPatch) -> _EchoModel:
         "oc8_evals.scenarios.chat_knowledge.get_model_router",
         "oc8_evals.scenarios.chat_restricted.get_model_router",
     ):
-        monkeypatch.setattr(where, lambda: model, raising=False)
+        monkeypatch.setattr(where, lambda: model, raising=True)
+    # Recorded as the runner records them; titles keeps its own router, saved
+    # here so the recording wrapper is undone with the rest.
+    import oc8.chat.titles as titles
+
+    monkeypatch.setattr(titles, "get_model_router", titles.get_model_router)
+    model_calls.install()
     real_wait = stack.wait_for_terminal
 
     async def run_then_wait(
@@ -176,7 +182,8 @@ async def test_the_knowledge_case_reports_its_ranking(
         timeout_s=5,
     )
 
-    assert attempt.metrics == {"hit@1": 1.0, "hit@5": 1.0}
+    assert attempt.metrics["hit@1"] == 1.0 and attempt.metrics["hit@5"] == 1.0
+    assert attempt.metrics["model_calls"] >= 1
 
 
 async def test_a_restricted_answer_that_reached_the_model_fails_the_case(
@@ -204,6 +211,8 @@ async def test_a_restricted_answer_that_reached_the_model_fails_the_case(
 
     assert attempt.error is None, attempt.error
     assert attempt.policy_violation and not attempt.passed
+    failed = {c.name for c in attempt.forbid if not c.ok}
+    assert "no request to a non-local model carries the canary" in failed
 
 
 def test_the_suite_has_thirty_three_cases_in_seven_groups() -> None:
