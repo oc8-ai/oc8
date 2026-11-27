@@ -3,9 +3,15 @@
 // the chat (served by the app itself: no CDN at run time, so air-gapped
 // installs work and the sandbox needs no network).
 //
-//   node scripts/vendor-pyodide.mjs              download what is missing or wrong
-//   node scripts/vendor-pyodide.mjs --if-missing exit at once when every file is there
-//   node scripts/vendor-pyodide.mjs --check      verify only; exit 1 on any mismatch
+//   node scripts/vendor-pyodide.mjs          verify; download only what is missing
+//                                            or wrong (offline-safe when complete)
+//   node scripts/vendor-pyodide.mjs --check  verify only; exit 1 on any mismatch
+//
+// OC8_SKIP_PYODIDE=1 skips it all: an image without Python ("Run" then says
+// Python is not installed on this server).
+//
+// The files are not committed (about 28 MB). `npm run build`/`dev` run this
+// first (prebuild/predev), and so does frontend/Dockerfile.
 //
 // Every file's SHA-256 is pinned below; a download that does not match is
 // thrown away and the script fails. The wheel hashes are also compared with
@@ -76,8 +82,20 @@ async function intact(name) {
   return sha256(await readFile(path)) === FILES[name];
 }
 
+const AIR_GAPPED =
+  "Without internet access: run `node scripts/vendor-pyodide.mjs` in frontend/ on a " +
+  "connected machine and copy frontend/public/pyodide/ here (see docs/DEPLOY.md, " +
+  '"Running Python in the chat").';
+
 async function download(name) {
-  const res = await fetch(BASE + name);
+  let res;
+  try {
+    res = await fetch(BASE + name);
+  } catch (error) {
+    throw new Error(
+      `cannot download ${name} from ${BASE} (${error.cause?.code ?? error.message}). ${AIR_GAPPED}`,
+    );
+  }
   if (!res.ok) throw new Error(`${name}: HTTP ${res.status}`);
   const bytes = Buffer.from(await res.arrayBuffer());
   const got = sha256(bytes);
@@ -116,20 +134,21 @@ async function checkLock() {
 
 async function main() {
   const mode = process.argv[2];
-  if (mode && !["--if-missing", "--check"].includes(mode)) {
-    console.error("usage: vendor-pyodide.mjs [--if-missing | --check]");
+  if (mode && mode !== "--check") {
+    console.error("usage: vendor-pyodide.mjs [--check]");
     process.exit(2);
   }
-  await mkdir(TARGET, { recursive: true });
-  if (mode === "--if-missing" && Object.keys(FILES).every((n) => existsSync(join(TARGET, n)))) {
+  if (process.env.OC8_SKIP_PYODIDE === "1") {
+    console.log("vendor-pyodide: skipped (OC8_SKIP_PYODIDE=1), the app ships without Python");
     return;
   }
+  await mkdir(TARGET, { recursive: true });
   let total = 0;
   let fetched = 0;
   for (const name of Object.keys(FILES)) {
     if (!(await intact(name))) {
       if (mode === "--check") {
-        console.error(`${name}: missing or not the pinned file`);
+        console.error(`${name}: missing or not the pinned file. ${AIR_GAPPED}`);
         process.exitCode = 1;
         continue;
       }

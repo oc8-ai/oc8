@@ -13,7 +13,13 @@
 
 import { buildSandboxSrcdoc } from "../artifacts/sandbox-srcdoc";
 import { CORE_FILES, FRAME_RUNTIME, PYTHON_CSP } from "./frame-runtime";
-import { LIMITS, readOutput, type PythonFile, type PythonResult } from "./output";
+import {
+  LIMITS,
+  PythonNotInstalled,
+  readOutput,
+  type PythonFile,
+  type PythonResult,
+} from "./output";
 
 export type { PythonFile, PythonResult } from "./output";
 
@@ -258,12 +264,14 @@ export function createPythonHost(deps: HostDeps) {
   };
 }
 
-/** The app's own copy of a vendored file, with download progress. */
-async function fetchVendored(
+/** The app's own copy of a vendored file, with download progress. A 404
+ *  means the server has no Pyodide (the folder is left out of its image). */
+export async function fetchVendored(
   name: string,
   onBytes: (loaded: number, total: number | null) => void,
 ): Promise<ArrayBuffer> {
   const res = await fetch(`/pyodide/${encodeURIComponent(name)}`, { credentials: "omit" });
+  if (res.status === 404) throw new PythonNotInstalled();
   if (!res.ok) throw new Error(`/pyodide/${name}: ${res.status}`);
   const length = Number(res.headers.get("content-length"));
   const total = Number.isFinite(length) && length > 0 ? length : null;

@@ -16,9 +16,9 @@ import { useT } from "@/lib/i18n";
 import { usePreviewSettings } from "@/lib/preview-settings";
 import { cn } from "@/lib/utils";
 
-import type { PreviewMode } from "../artifacts/context";
-import { LIMITS, resultMessage, type PythonResult } from "./output";
-import { pythonRunMode, usePythonScope } from "./run-context";
+import { previewMode, type PreviewMode } from "../artifacts/context";
+import { LIMITS, PythonNotInstalled, resultMessage, type PythonResult } from "./output";
+import { usePythonScope } from "./run-context";
 
 const BUTTON =
   "inline-flex min-h-9 items-center gap-1 rounded-md border border-border px-2 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
@@ -29,7 +29,8 @@ type State =
   | { status: "running" }
   | { status: "done"; result: PythonResult }
   | { status: "stopped" }
-  | { status: "failed"; error: string };
+  | { status: "failed"; error: string }
+  | { status: "missing" };
 
 function megabytes(n: number): string {
   return (n / 1024 / 1024).toFixed(1);
@@ -199,6 +200,10 @@ function RunBody({ code, mode }: { code: string; mode: PreviewMode }) {
       if (!abort.signal.aborted) setState({ status: "done", result });
     } catch (error) {
       if (abort.signal.aborted) return;
+      if (error instanceof PythonNotInstalled) {
+        setState({ status: "missing" });
+        return;
+      }
       setState({
         status: "failed",
         error: error instanceof Error ? error.message : String(error),
@@ -300,6 +305,14 @@ function RunBody({ code, mode }: { code: string; mode: PreviewMode }) {
           ))}
         </fieldset>
       )}
+      {state.status === "missing" && (
+        <p role="alert" className="text-xs text-muted-foreground">
+          {t(
+            "Python is not installed on this server.",
+            "Python ist auf diesem Server nicht installiert.",
+          )}
+        </p>
+      )}
       {state.status === "failed" && (
         <p role="alert" className="text-xs text-destructive">
           {t("Python could not run: ", "Python konnte nicht laufen: ")}
@@ -315,6 +328,6 @@ function RunBody({ code, mode }: { code: string; mode: PreviewMode }) {
 export function InlinePythonRun({ code, messageId }: { code: string; messageId?: string }) {
   const scope = usePythonScope();
   const settings = usePreviewSettings(true);
-  const mode = pythonRunMode(settings, scope?.restrictedOf(messageId));
+  const mode = previewMode(settings, scope?.restrictedOf(messageId));
   return <PythonRun code={code} mode={mode} />;
 }

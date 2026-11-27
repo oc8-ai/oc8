@@ -39,6 +39,14 @@ export const LIMITS = {
   timeoutMs: 30_000,
 } as const;
 
+/** The server has no Pyodide files (an image built without them). */
+export class PythonNotInstalled extends Error {
+  constructor() {
+    super("Python is not installed on this server.");
+    this.name = "PythonNotInstalled";
+  }
+}
+
 export const PNG_PREFIX = "data:image/png;base64,";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;

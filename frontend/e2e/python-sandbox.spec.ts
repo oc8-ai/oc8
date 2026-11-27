@@ -3,7 +3,9 @@
 // in the real sandboxed frame, under the app's own response CSP. Python that
 // tries every way out must reach no host: a second local "outside" server
 // counts every TCP connection, and must see none. Runs in Chromium and
-// Firefox (playwright.config.ts). Needs `node scripts/vendor-pyodide.mjs`.
+// Firefox (playwright.config.ts). Needs the files: `npm run vendor:pyodide`
+// (they are not in git); without them the spec is skipped.
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -26,6 +28,10 @@ let APP = "";
 let bundle = "";
 
 test.describe.configure({ mode: "serial", timeout: 180_000 });
+test.skip(
+  !existsSync(`${PYODIDE}pyodide.asm.wasm`),
+  "Pyodide is not vendored: run `npm run vendor:pyodide` in frontend/ first.",
+);
 
 test.beforeAll(async () => {
   const built = await build({

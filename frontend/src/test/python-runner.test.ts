@@ -11,8 +11,17 @@ import {
   PYTHON_CSP,
   WORKER_SOURCE,
 } from "@/components/conversation/python/frame-runtime";
-import { LIMITS, readOutput, resultMessage } from "@/components/conversation/python/output";
-import { createPythonHost, type HostDeps } from "@/components/conversation/python/runner";
+import {
+  LIMITS,
+  PythonNotInstalled,
+  readOutput,
+  resultMessage,
+} from "@/components/conversation/python/output";
+import {
+  createPythonHost,
+  fetchVendored,
+  type HostDeps,
+} from "@/components/conversation/python/runner";
 
 const LOCK = JSON.stringify({
   packages: {
@@ -202,6 +211,47 @@ describe("the Python host", () => {
     const id = await frame.untilRun();
     frame.say({ type: "failed", id, error: "x".repeat(5000) });
     await expect(run).rejects.toThrow(/^x{2000}$/);
+  });
+});
+
+describe("fetchVendored", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says Python is not installed when the server has no Pyodide (404)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 404 }));
+    await expect(fetchVendored("pyodide.js", () => undefined)).rejects.toBeInstanceOf(
+      PythonNotInstalled,
+    );
+  });
+
+  it("reads the app's own copy without credentials and reports progress", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    const seen: number[] = [];
+    const bytes = await fetchVendored("pyodide.js", (loaded) => seen.push(loaded));
+    expect(new Uint8Array(bytes)).toEqual(new Uint8Array([1, 2, 3]));
+    expect(spy).toHaveBeenCalledWith("/pyodide/pyodide.js", { credentials: "omit" });
+    expect(seen.at(-1)).toBe(3);
+  });
+
+  it("a missing first download can be tried again", async () => {
+    let calls = 0;
+    const deps: HostDeps = {
+      fetchAsset: async () => {
+        calls += 1;
+        throw new PythonNotInstalled();
+      },
+      mountFrame: () => ({ post: () => undefined, remove: () => undefined }),
+    };
+    const host = createPythonHost(deps);
+    await expect(host.run("1", { signal: new AbortController().signal })).rejects.toBeInstanceOf(
+      PythonNotInstalled,
+    );
+    await expect(host.run("1", { signal: new AbortController().signal })).rejects.toBeInstanceOf(
+      PythonNotInstalled,
+    );
+    expect(calls).toBeGreaterThan(CORE_FILES.length);
   });
 });
 

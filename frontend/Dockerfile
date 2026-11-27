@@ -5,6 +5,13 @@ WORKDIR /app
 COPY package.json bun.lock bunfig.toml ./
 RUN bun install --frozen-lockfile
 COPY . .
+# Pyodide for "Run Python" in the chat (not in git, ~28 MB): pinned and
+# SHA-256 checked. A public/pyodide/ already in the build context is verified
+# and reused, so an air-gapped build works once the folder is copied in.
+# --build-arg OC8_SKIP_PYODIDE=1 builds an image without Python.
+ARG OC8_SKIP_PYODIDE=
+ENV OC8_SKIP_PYODIDE=$OC8_SKIP_PYODIDE
+RUN bun scripts/vendor-pyodide.mjs
 # Relative API base -> the same image runs on any server, no rebuild, no CORS.
 ARG VITE_API_URL=/api/v1
 # node-server preset: the repo default is cloudflare-module, which a container

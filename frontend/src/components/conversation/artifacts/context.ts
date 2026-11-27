@@ -82,6 +82,38 @@ const STALE_AFTER = 10 * 60_000;
 
 export type PreviewMode = "scripts" | "restricted" | "unsaved" | "off" | "unknown" | "pending";
 
+/** The tenant's script setting as the query hook gives it. */
+export type PreviewSettingsState = {
+  data?: { runScripts: boolean };
+  isError: boolean;
+  dataUpdatedAt?: number;
+  errorUpdatedAt?: number;
+};
+
+/** Whether a saved answer counts as restricted: one that does not say (an
+ *  older server) does. */
+export function isRestrictedAnswer(message: { restricted?: boolean }): boolean {
+  return message.restricted !== false;
+}
+
+/** How an answer's scripts may run (previews and Run Python): the tenant's
+ *  setting first -- off, unreadable, or failing to refresh for STALE_AFTER
+ *  fails closed -- then whether the answer is restricted (`restricted`
+ *  undefined: not saved, or not in the chat). */
+export function previewMode(
+  settings: PreviewSettingsState,
+  restricted: boolean | undefined,
+): PreviewMode {
+  // A failed refresh keeps the last value it read, for STALE_AFTER at most.
+  const outdated =
+    settings.isError &&
+    (settings.errorUpdatedAt ?? 0) - (settings.dataUpdatedAt ?? 0) > STALE_AFTER;
+  if (settings.data?.runScripts === false) return "off";
+  if (!settings.data || outdated) return settings.isError ? "unknown" : "pending";
+  if (restricted === undefined) return "unsaved";
+  return restricted ? "restricted" : "scripts";
+}
+
 /** The conversation's panel state: what is open, its versions on the
  *  current message path, how its preview may run, and the context the
  *  cards read. The tenant's script setting is read once a preview opens
@@ -117,22 +149,15 @@ export function useArtifactsPanel(sessionId: string | null, turns: TurnModel[]) 
   const versions = current ? versionsOf(current, onPath) : [];
   const settings = usePreviewSettings(picked !== null);
   const messageId = current?.messageId;
-  let mode: PreviewMode = "unsaved";
-  // A failed refresh keeps the last value it read, for STALE_AFTER at most.
-  const outdated =
-    settings.isError && settings.errorUpdatedAt - settings.dataUpdatedAt > STALE_AFTER;
-  if (settings.data?.runScripts === false) mode = "off";
-  else if (!settings.data || outdated) mode = settings.isError ? "unknown" : "pending";
-  else if (messageId) {
-    let found: boolean | undefined;
+  let found: boolean | undefined;
+  if (messageId) {
     for (const turn of turns) {
       if (turn.kind !== "assistant") continue;
       const message = turn.variants.find((v) => v.id === messageId);
-      // A message that does not say (an older server) counts as restricted.
-      if (message) found = message.restricted !== false;
+      if (message) found = isRestrictedAnswer(message);
     }
-    mode = found === undefined ? "unsaved" : found ? "restricted" : "scripts";
   }
+  const mode = previewMode(settings, found);
   const open = useCallback((artifact: Artifact) => setPicked(artifact), []);
   const sync = useCallback(
     (artifact: Artifact) =>

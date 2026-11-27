@@ -7,7 +7,7 @@ import { createContext, useContext, useMemo } from "react";
 
 import type { FileAttachmentDTO } from "@/lib/hooks-chat";
 
-import type { PreviewMode } from "../artifacts/context";
+import { isRestrictedAnswer } from "../artifacts/context";
 import type { TurnModel } from "../types";
 import { LIMITS } from "./output";
 
@@ -45,7 +45,7 @@ export function usePythonScopeFor(
           files.push(file);
         }
       } else {
-        for (const v of turn.variants) restricted.set(v.id, v.restricted === true);
+        for (const v of turn.variants) restricted.set(v.id, isRestrictedAnswer(v));
       }
     }
     return {
@@ -54,20 +54,6 @@ export function usePythonScopeFor(
       send,
     };
   }, [turns, send]);
-}
-
-/** Whether Python may run for an answer: the same decision as a preview's
- *  scripts (useArtifactsPanel in artifacts/context.ts) -- the tenant's
- *  setting first (off, or unreadable: fail closed), then restricted or
- *  unsaved answers. */
-export function pythonRunMode(
-  settings: { data?: { runScripts: boolean }; isError: boolean },
-  restricted: boolean | undefined,
-): PreviewMode {
-  if (settings.data?.runScripts === false) return "off";
-  if (!settings.data) return settings.isError ? "unknown" : "pending";
-  if (restricted === undefined) return "unsaved";
-  return restricted ? "restricted" : "scripts";
 }
 
 /** A fence language that is Python. */

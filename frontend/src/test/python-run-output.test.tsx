@@ -33,7 +33,12 @@ vi.mock("@/lib/api", async (orig) => ({
 }));
 
 import { ChatMarkdown } from "@/components/chat-markdown";
-import { readOutput, LIMITS, type PythonResult } from "@/components/conversation/python/output";
+import {
+  LIMITS,
+  PythonNotInstalled,
+  readOutput,
+  type PythonResult,
+} from "@/components/conversation/python/output";
 import {
   PythonRunContext,
   usePythonScopeFor,
@@ -192,6 +197,15 @@ describe("Run under a ```python block", () => {
     expect(files.map((f) => [f.name, new TextDecoder().decode(f.bytes)])).toEqual([
       ["sales.csv", "a,b\n1,2\n"],
     ]);
+  });
+
+  it("says so when the server has no Python", async () => {
+    runner.runPython.mockRejectedValue(new PythonNotInstalled());
+    render(inScope(scope(), <PythonRun code="1" mode="scripts" />));
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Python is not installed on this server.",
+    );
   });
 
   it("shows a failure as text", async () => {

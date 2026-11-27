@@ -368,16 +368,31 @@ server:
 
 A Python code block in an answer has a **Run** button. The code runs in the
 person's browser (Pyodide, in a sandboxed frame with no network), never on the
-server. The Pyodide files ship with the frontend image in
-`frontend/public/pyodide/` (about 28 MB: the runtime plus numpy, pandas and
-matplotlib), served by oc8 itself, so air-gapped installs need nothing extra.
-The browser downloads them on the first Run only.
+server. oc8 serves the Pyodide files itself from `/pyodide/`; the browser
+downloads them on the first Run only (about 12 MB for Python, plus about 16 MB
+the first time code imports numpy, pandas or matplotlib).
+
+The files (Pyodide 0.29.5, 18 files, about 28 MB) are **not in git**. The
+frontend image build fetches them from the official Pyodide release on
+cdn.jsdelivr.net and checks each one against the SHA-256 pinned in
+`frontend/scripts/vendor-pyodide.mjs`; `npm run build` and `npm run dev` do the
+same through `prebuild`/`predev`. Files already in `frontend/public/pyodide/`
+are verified and reused, nothing is downloaded then.
+
+**Air-gapped installs:** on a machine with internet access run
+`npm run vendor:pyodide` (or `node scripts/vendor-pyodide.mjs`) in
+`frontend/`, copy the resulting `frontend/public/pyodide/` folder into the
+same place in the build context of the offline machine, and build the image
+there. `node scripts/vendor-pyodide.mjs --check` verifies a copied folder.
+
+**Turning it off:** an admin turning **Run scripts in previews** off hides Run
+as well. To ship an image without Python at all, build it with
+`--build-arg OC8_SKIP_PYODIDE=1` (or set `OC8_SKIP_PYODIDE=1` for
+`npm run build`) and leave the folder out of the build context; Run then says
+"Python is not installed on this server."
 
 To move to another Pyodide release, change the pinned version and SHA-256
-values in `frontend/scripts/vendor-pyodide.mjs` and run
-`node scripts/vendor-pyodide.mjs` in `frontend/` on a connected machine;
-`--check` verifies the files in place. Run is offered only where previews may
-run scripts: an admin turning **Run scripts in previews** off turns it off too.
+values in the script and run it.
 
 ## Letting people connect their Microsoft or Google account
 
