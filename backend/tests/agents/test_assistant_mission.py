@@ -160,3 +160,16 @@ def test_mission_keeps_preserved_rules_and_unambiguous_delegation() -> None:
         "Without that block, general work is yours",
     ):
         assert needle in _MISSION, needle
+
+
+def test_mission_asks_for_self_contained_artifacts() -> None:
+    # The chat opens ```html/```svg/```mermaid blocks beside it, in a sandbox
+    # without network: the mission asks for one complete document, no URLs.
+    for needle in (
+        "ONE complete, self-contained document",
+        "```html with all CSS and JavaScript inline",
+        "no external URL",
+        "keep that name when you revise it",
+        "For everything else answer normally",
+    ):
+        assert needle in _MISSION, needle

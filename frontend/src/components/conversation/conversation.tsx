@@ -49,6 +49,8 @@ import type { ReasoningLevel } from "@/lib/reasoning-levels";
 import { cn } from "@/lib/utils";
 
 import { SidePanelProvider } from "@/edition/slots";
+import { ArtifactPanel } from "./artifacts/artifact-panel";
+import { ArtifactsContext, useArtifactsPanel, usePanelAsSheet } from "./artifacts/context";
 import { AssistantTurn } from "./assistant-turn";
 import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
 import { ContextSearchDialog } from "./context-search";
@@ -283,6 +285,7 @@ function ConversationBody(props: ConversationProps) {
   const { data: me } = useAuth();
   const { lang } = useLang();
   const conv = useConversation(props.sessionId);
+  const artifacts = useArtifactsPanel(props.sessionId, conv.turns);
   const [outbox, setOutbox] = useState<Outbox | null>(null);
   // Stored message id -> the outbox id its turn was first shown under.
   const [aliases, setAliases] = useState<Record<string, string>>({});
@@ -1185,6 +1188,9 @@ function ConversationBody(props: ConversationProps) {
   const empty =
     typeof props.emptyState === "function" ? props.emptyState(sendText) : props.emptyState;
   const full = props.variant === "full";
+  // An answer's artifact opens beside the chat; a sheet in the compact chat
+  // and on narrow screens.
+  const panelAsSheet = usePanelAsSheet() || !full;
   const questionAbove =
     pending && props.sessionId ? (
       dismissed === pending.clarificationId ? (
@@ -1214,8 +1220,8 @@ function ConversationBody(props: ConversationProps) {
         {questionNotice}
       </p>
     ) : null;
-  return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+  const chat = (
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div
         ref={ref}
         data-testid="conversation-scroller"
@@ -1449,5 +1455,19 @@ function ConversationBody(props: ConversationProps) {
         )}
       </div>
     </div>
+  );
+  return (
+    <ArtifactsContext.Provider value={artifacts.context}>
+      <div className="flex min-h-0 min-w-0 flex-1">
+        {chat}
+        <ArtifactPanel
+          artifact={artifacts.current}
+          versions={artifacts.versions}
+          onSelect={artifacts.open}
+          onClose={artifacts.close}
+          asSheet={panelAsSheet}
+        />
+      </div>
+    </ArtifactsContext.Provider>
   );
 }

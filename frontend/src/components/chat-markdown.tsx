@@ -12,6 +12,9 @@
 // Formulas render through KaTeX and ```mermaid blocks as diagrams (see
 // `mathInProse` and MermaidBlock); both libraries are their own chunks,
 // fetched the first time an answer needs them.
+// In a conversation, an answer's artifacts (```html, ```svg, long code, see
+// artifacts/extract.ts) show as cards that open them beside the chat; a
+// ```mermaid diagram stays inline and can be opened there too.
 
 import {
   createContext,
@@ -28,6 +31,9 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { Check, Copy, ExternalLink, Image as ImageIcon } from "lucide-react";
 
+import { ArtifactCard } from "@/components/conversation/artifacts/artifact-card";
+import { useArtifacts } from "@/components/conversation/artifacts/context";
+import { extractArtifacts, type Artifact } from "@/components/conversation/artifacts/extract";
 import { MermaidBlock } from "@/components/conversation/mermaid-block";
 import { isPlainClick, objectHref, parseObjectUrl } from "@/components/conversation/object-links";
 import {
@@ -162,24 +168,57 @@ function CodeBlock({ children }: { children?: ReactNode }) {
  *  `openCodeFenceAt`), or null: every fence in the block is closed. */
 const OpenFenceAt = createContext<number | null>(null);
 
+/** The artifacts of the answer being rendered, when it shows them as cards. */
+const MessageArtifacts = createContext<Artifact[] | null>(null);
+
+/** The artifact a fenced block is: the one with its language and code, else
+ *  -- for the fence still being written, which the stream may show a little
+ *  behind, or with the start of its closing fence -- the last one of its
+ *  language that what is shown starts, or that starts it. */
+function artifactOf(
+  artifacts: Artifact[] | null,
+  language: string | undefined,
+  code: string,
+  open: boolean,
+): Artifact | null {
+  if (!artifacts) return null;
+  const same = artifacts.find((a) => a.source === code && a.language === (language ?? ""));
+  if (same) return same;
+  if (!open) return null;
+  const lang = language ?? "";
+  return (
+    [...artifacts]
+      .reverse()
+      .find(
+        (a) => a.language === lang && (a.source.startsWith(code) || code.startsWith(a.source)),
+      ) ?? null
+  );
+}
+
 type HastNode = { position?: { start: { offset?: number }; end: { offset?: number } } };
 
 /** A fenced block: a diagram for ```mermaid, a formula's source while it is
  *  written or KaTeX loads, else highlighted code. */
 function FencedBlock({ node, children }: { node?: HastNode; children?: ReactNode }) {
   const openAt = useContext(OpenFenceAt);
+  const artifacts = useContext(MessageArtifacts);
+  const panel = useArtifacts();
   const { language, code } = codeOf(children);
+  const start = node?.position?.start.offset;
+  const end = node?.position?.end.offset;
+  const open =
+    openAt !== null && start !== undefined && end !== undefined && start <= openAt && openAt < end;
+  const artifact = panel ? artifactOf(artifacts, language, code, open) : null;
   if (language === "mermaid") {
-    const start = node?.position?.start.offset;
-    const end = node?.position?.end.offset;
-    const open =
-      openAt !== null &&
-      start !== undefined &&
-      end !== undefined &&
-      start <= openAt &&
-      openAt < end;
-    return <MermaidBlock source={code} closed={!open} />;
+    return (
+      <MermaidBlock
+        source={code}
+        closed={!open}
+        onOpen={artifact && panel ? () => panel.open(artifact) : undefined}
+      />
+    );
   }
+  if (artifact) return <ArtifactCard artifact={artifact} />;
   if (language === "math" || language === "math-source") {
     return <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{children}</pre>;
   }
@@ -446,6 +485,7 @@ export function ChatMarkdown({
   streaming = false,
   messageId,
   memberAuthored = false,
+  artifactsOf,
 }: {
   text: string;
   className?: string;
@@ -463,6 +503,9 @@ export function ChatMarkdown({
   messageId?: string;
   /** A member's own message: links render as written, nothing is checked. */
   memberAuthored?: boolean;
+  /** Show the answer's artifacts as cards (inside a conversation): the id
+   *  they are numbered under -- the saved message's, or the live run's. */
+  artifactsOf?: string;
 }) {
   const t = useT();
   const plainLinks = !memberAuthored && (streaming || !messageId);
@@ -588,6 +631,18 @@ export function ChatMarkdown({
     if (met.join("\n") !== toVerify.join("\n")) setToVerify(met);
   }, [text, components, linkState, messageId, toVerify]);
 
+  // A new list only when an artifact changed, so the cards of finished
+  // blocks are not re-rendered for every word.
+  const artifactsNow = useMemo(
+    () => (artifactsOf ? extractArtifacts(text, artifactsOf) : null),
+    [text, artifactsOf],
+  );
+  const artifactsKey = artifactsNow
+    ?.map((a) => `${a.id}\u0000${a.closed}\u0000${a.title}\u0000${a.source}`)
+    .join("\u0001");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const artifacts = useMemo(() => artifactsNow, [artifactsKey]);
+
   const count = sources.length;
   const blocks = useMemo(() => splitBlocks(text), [text]);
   const last = blocks.length - 1;
@@ -633,35 +688,37 @@ export function ChatMarkdown({
   }, [last, tail, freshFrom]);
 
   return (
-    <div
-      data-testid={streaming ? "stream-tail" : undefined}
-      className={cn(
-        streaming && "stream-tail",
-        "min-w-0 space-y-2 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
-        className,
-      )}
-    >
-      {blocks.map((block, i) =>
-        i === last ? (
-          <MarkdownBlock
-            key={i}
-            markdown={tail}
-            components={components}
-            freshFrom={freshFrom}
-            math={math}
-            openFenceAt={openFenceAt}
-            linkState={linkState}
-          />
-        ) : (
-          <MarkdownBlock
-            key={i}
-            markdown={done[i]}
-            components={components}
-            math={math}
-            linkState={linkState}
-          />
-        ),
-      )}
-    </div>
+    <MessageArtifacts.Provider value={artifacts}>
+      <div
+        data-testid={streaming ? "stream-tail" : undefined}
+        className={cn(
+          streaming && "stream-tail",
+          "min-w-0 space-y-2 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere] [&_code]:rounded-md [&_code]:bg-muted [&_code]:px-1 [&_code]:font-mono [&_code]:text-xs [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-base [&_h2]:font-semibold [&_h3]:text-sm [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_ol]:space-y-0.5 [&_strong]:font-semibold [&_ul]:list-disc [&_ul]:space-y-0.5 [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:block [&_table]:w-full [&_table]:overflow-x-auto [&_table]:border-collapse [&_th]:border [&_th]:border-border [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_th]:font-medium [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1",
+          className,
+        )}
+      >
+        {blocks.map((block, i) =>
+          i === last ? (
+            <MarkdownBlock
+              key={i}
+              markdown={tail}
+              components={components}
+              freshFrom={freshFrom}
+              math={math}
+              openFenceAt={openFenceAt}
+              linkState={linkState}
+            />
+          ) : (
+            <MarkdownBlock
+              key={i}
+              markdown={done[i]}
+              components={components}
+              math={math}
+              linkState={linkState}
+            />
+          ),
+        )}
+      </div>
+    </MessageArtifacts.Provider>
   );
 }

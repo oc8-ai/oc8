@@ -1,10 +1,10 @@
 // A ```mermaid block: drawn as a diagram once the block is closed (see
 // mermaid-render.ts), its source while it is still being written or when
-// Mermaid cannot parse it. Drawn again in the page's colours when the theme
+// Mermaid cannot parse it. In a conversation it also opens beside the chat. Drawn again in the page's colours when the theme
 // changes.
 
 import { useEffect, useState } from "react";
-import { Check, Code, Copy, Network } from "lucide-react";
+import { Check, Code, Copy, Maximize2, Network } from "lucide-react";
 
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -28,7 +28,16 @@ const FOCUS =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 const BUTTON = cn("inline-flex items-center gap-1 rounded-md px-1 hover:text-foreground", FOCUS);
 
-export function MermaidBlock({ source, closed }: { source: string; closed: boolean }) {
+export function MermaidBlock({
+  source,
+  closed,
+  onOpen,
+}: {
+  source: string;
+  closed: boolean;
+  /** Opens the diagram beside the chat (in a conversation). */
+  onOpen?: () => void;
+}) {
   const t = useT();
   // What Mermaid made of a source; one for another source is stale.
   const [result, setResult] = useState<{ source: string; svg?: string; failed?: boolean }>();
@@ -75,6 +84,12 @@ export function MermaidBlock({ source, closed }: { source: string; closed: boole
       <div className="flex items-center justify-between gap-2 px-3 py-1 text-xs text-muted-foreground">
         <span className="font-mono">mermaid</span>
         <span className="flex items-center gap-2">
+          {onOpen && svg && (
+            <button type="button" onClick={onOpen} className={BUTTON}>
+              <Maximize2 className="size-3.5" aria-hidden />
+              {t("Open", "Öffnen")}
+            </button>
+          )}
           {svg && (
             <button type="button" onClick={() => setShowSource((s) => !s)} className={BUTTON}>
               {showSource ? (

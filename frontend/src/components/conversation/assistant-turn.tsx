@@ -23,6 +23,7 @@ import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
+import { liveArtifactsId } from "./artifacts/context";
 import { isEmptyReply } from "./empty-reply";
 import { Sources } from "./sources";
 import { StepList } from "./step-list";
@@ -204,6 +205,9 @@ export function AssistantTurn({
         // Only a saved answer's links are checked and can be clickable: the
         // streamed text, even once its stream ended, waits for the message.
         messageId={message?.id}
+        // A saved answer's artifacts are numbered under its id, a live one's
+        // under its run until it is saved (see useArtifactsPanel).
+        artifactsOf={message ? message.id : runId ? liveArtifactsId(runId) : undefined}
         sources={sources}
         onObjectClick={openObject}
         onCitation={(n) => {
