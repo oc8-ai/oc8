@@ -6,8 +6,8 @@ is on and replays only the messages after it. `restricted` is true when the
 summary was made from a restricted answer (by a local model): such a summary is
 never replayed to a model that may not see it.
 
-Revision ID: 0134
-Revises: 0133
+Revision ID: 0140
+Revises: 0139
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0134"
-down_revision: str | None = "0133"
+revision: str = "0140"
+down_revision: str | None = "0139"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -1,4 +1,4 @@
-"""0130: chat messages form a tree (`parent_id`) and a chat remembers the leaf
+"""0136: chat messages form a tree (`parent_id`) and a chat remembers the leaf
 the person is looking at (`current_leaf_id`); existing chats are backfilled."""
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def _columns(dsn: str, table: str) -> set[str]:
 def test_upgrade_adds_the_columns_and_downgrade_removes_them(pg_url: str) -> None:
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
-    command.downgrade(cfg, "0129")
+    command.downgrade(cfg, "0135")
     try:
         assert "parent_id" not in _columns(dsn, "chat_message")
         assert "current_leaf_id" not in _columns(dsn, "chat_session")
@@ -62,7 +62,7 @@ def test_backfill_links_a_linear_chat_and_keeps_regenerated_variants_siblings(
         ("L1", live, "user", None),
         ("L2", live, "assistant", "L1"),
     ]
-    command.downgrade(cfg, "0129")
+    command.downgrade(cfg, "0135")
     try:
         with psycopg.connect(dsn) as conn:
             for sid, kind in ((chat, "chat"), (live, "live")):
@@ -110,14 +110,14 @@ def test_backfill_links_a_linear_chat_and_keeps_regenerated_variants_siblings(
 def _backfill(
     pg_url: str, rows: list[tuple[str, str, str | None]], empty_chat: bool = False
 ) -> tuple[dict[str, str | None], dict[str, str | None], uuid.UUID | None]:
-    """Seed one chat at 0129 from (name, role, reply_to name) rows, upgrade, and
+    """Seed one chat at 0135 from (name, role, reply_to name) rows, upgrade, and
     return its parent map, the leaf name and the empty chat's leaf."""
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
     tenant, chat, empty = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     order = [r[0] for r in rows]
     ids = dict(zip(order, sorted(uuid7() for _ in order), strict=True))
-    command.downgrade(cfg, "0129")
+    command.downgrade(cfg, "0135")
     try:
         with psycopg.connect(dsn) as conn:
             for sid in (chat, empty):

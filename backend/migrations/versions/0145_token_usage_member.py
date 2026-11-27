@@ -19,14 +19,14 @@ migration transaction, so the completion hot path keeps inserting while it
 builds.
 
 The draft's `ix_token_usage_record_tenant_member_ts` was never released, but a
-development database that applied the draft is already at 0139 and will not
+development database that applied the draft is already at this revision and will not
 re-run this revision: drop it there by hand
 (`DROP INDEX ix_token_usage_record_tenant_member_ts`) and create the new index
 with the statement below, or rebuild the database. Upgrade drops the old name
 IF EXISTS so a database that somehow carries it ends up with one index.
 
-Revision ID: 0139
-Revises: 0138
+Revision ID: 0145
+Revises: 0144
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from typing import Final
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0139"
-down_revision: str | None = "0138"
+revision: str = "0145"
+down_revision: str | None = "0144"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

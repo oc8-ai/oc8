@@ -1,4 +1,4 @@
-"""0138: partial expression indexes on the run and chat a tool event names."""
+"""0144: partial expression indexes on the run and chat a tool event names."""
 
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ def _indexes(dsn: str) -> dict[str, str]:
         }
 
 
-def test_0138_upgrade_downgrade(pg_url: str) -> None:
+def test_0144_upgrade_downgrade(pg_url: str) -> None:
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
-    command.downgrade(cfg, "0137")
+    command.downgrade(cfg, "0143")
     try:
         assert not _NAMES & set(_indexes(dsn))
     finally:

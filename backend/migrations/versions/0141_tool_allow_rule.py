@@ -7,8 +7,8 @@ connection deleted and re-created under the same name is a different system
 and matches no old rule. Revoking sets `revoked_at`; the row stays for the
 audit. At most one live rule per member, agent, connection and tool.
 
-Revision ID: 0135
-Revises: 0134
+Revision ID: 0141
+Revises: 0140
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0135"
-down_revision: str | None = "0134"
+revision: str = "0141"
+down_revision: str | None = "0140"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

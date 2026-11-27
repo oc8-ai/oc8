@@ -192,7 +192,7 @@ def test_embeddings_encode_little_endian_regardless_of_host() -> None:
 
 
 def test_a_generated_column_is_neither_written_nor_read() -> None:
-    """`kb_chunk.search_tsv` (0137) is computed from `content`: Postgres
+    """`kb_chunk.search_tsv` (0143) is computed from `content`: Postgres
     refuses an INSERT that sets it, and an archive written before it existed
     has no such key."""
     table = table_by_name("kb_chunk")

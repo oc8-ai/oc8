@@ -5,8 +5,8 @@ reads it at its next step boundary) or `'next_turn'` (queued: the run never
 reads it; it becomes the chat's next turn when the run ends). Consumers read a
 run's waiting inputs of one delivery, so the pending index leads with it.
 
-Revision ID: 0136
-Revises: 0135
+Revision ID: 0142
+Revises: 0141
 """
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0136"
-down_revision: str | None = "0135"
+revision: str = "0142"
+down_revision: str | None = "0141"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

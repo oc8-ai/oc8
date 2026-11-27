@@ -7,8 +7,8 @@ scan of the whole log. Both are built
 CONCURRENTLY outside the migration transaction, without a statement timeout
 (the log only grows), so writers are never blocked.
 
-Revision ID: 0138
-Revises: 0137
+Revision ID: 0144
+Revises: 0143
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0138"
-down_revision: str | None = "0137"
+revision: str = "0144"
+down_revision: str | None = "0143"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
@@ -36,7 +36,7 @@ def _build_index_concurrently(name: str, ddl: str) -> None:
     """`ddl` (a `CREATE INDEX CONCURRENTLY IF NOT EXISTS`) outside the
     migration transaction, after dropping an INVALID leftover of a failed
     earlier build that `IF NOT EXISTS` would otherwise keep for good. Same as
-    `0111_chat_c1.py` and `0137`, with no `statement_timeout` for the build (a
+    `0111_chat_c1.py` and `0143`, with no `statement_timeout` for the build (a
     session setting here, outside any transaction, so reset afterwards)."""
     with op.get_context().autocommit_block():
         op.execute("SET statement_timeout = 0")

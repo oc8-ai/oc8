@@ -1,4 +1,4 @@
-"""0132: a chat file records whether its text was indexed (`index_status`) and
+"""0138: a chat file records whether its text was indexed (`index_status`) and
 which file's index it shares (`indexed_from_id`)."""
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ def _columns(dsn: str) -> set[str]:
 def test_upgrade_adds_and_downgrade_removes_the_columns(pg_url: str) -> None:
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
-    command.downgrade(cfg, "0131")
+    command.downgrade(cfg, "0137")
     try:
         assert not {"index_status", "indexed_from_id"} & _columns(dsn)
     finally:

@@ -19,8 +19,8 @@ rewrite of a large knowledge base takes minutes. Both indexes are built
 CONCURRENTLY outside the migration transaction, likewise without a statement
 timeout.
 
-Revision ID: 0137
-Revises: 0136
+Revision ID: 0143
+Revises: 0142
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0137"
-down_revision: str | None = "0136"
+revision: str = "0143"
+down_revision: str | None = "0142"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

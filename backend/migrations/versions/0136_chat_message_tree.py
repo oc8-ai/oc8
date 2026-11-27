@@ -13,8 +13,8 @@ every row except the other variants, each following the previous main-line
 row. The other variants hang off the main variant's parent as side branches.
 The leaf is the last main-line row, so nothing a person saw goes off-path.
 
-Revision ID: 0130
-Revises: 0129
+Revision ID: 0136
+Revises: 0135
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0130"
-down_revision: str | None = "0129"
+revision: str = "0136"
+down_revision: str | None = "0135"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -1,4 +1,4 @@
-"""0139: `token_usage_record.member_id` and its per-member time index."""
+"""0145: `token_usage_record.member_id` and its per-member time index."""
 
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ def _index(dsn: str, name: str = _INDEX) -> tuple[str, bool] | None:
     return (row[0], row[1]) if row else None
 
 
-def test_0139_upgrade_downgrade(pg_url: str) -> None:
+def test_0145_upgrade_downgrade(pg_url: str) -> None:
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
-    command.downgrade(cfg, "0138")
+    command.downgrade(cfg, "0144")
     try:
         assert _member_column(dsn) is None
         assert _index(dsn) is None

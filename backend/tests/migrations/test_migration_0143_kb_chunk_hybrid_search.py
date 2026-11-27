@@ -1,4 +1,4 @@
-"""0137: `kb_chunk.search_tsv`, a generated full-text column with a GIN index,
+"""0143: `kb_chunk.search_tsv`, a generated full-text column with a GIN index,
 and an HNSW index on `kb_chunk.embedding` where pgvector supports one."""
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ from alembic import command
 from alembic.config import Config
 
 _PATH = Path(__file__).resolve().parents[2] / "migrations" / "versions"
-_PATH = _PATH / "0137_kb_chunk_hybrid_search.py"
+_PATH = _PATH / "0143_kb_chunk_hybrid_search.py"
 
 
 def _module() -> Any:
-    spec = importlib.util.spec_from_file_location("oc8_migration_0137", _PATH)
+    spec = importlib.util.spec_from_file_location("oc8_migration_0143", _PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -69,10 +69,10 @@ def _state(dsn: str) -> tuple[str | None, set[str], bool]:
     return (generated[0] if generated else None), indexes, hnsw
 
 
-def test_0137_upgrade_downgrade(pg_url: str) -> None:
+def test_0143_upgrade_downgrade(pg_url: str) -> None:
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
-    command.downgrade(cfg, "0136")
+    command.downgrade(cfg, "0142")
     try:
         generated, indexes, _ = _state(dsn)
         assert generated is None

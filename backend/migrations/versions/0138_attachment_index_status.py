@@ -10,8 +10,8 @@ the model inline and truncated instead.
 `file_attachment.indexed_from_id` names the attachment whose indexed text a
 row shares: an edited turn's copy of a file is not ingested a second time.
 
-Revision ID: 0132
-Revises: 0131
+Revision ID: 0138
+Revises: 0137
 """
 
 from __future__ import annotations
@@ -20,8 +20,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0132"
-down_revision: str | None = "0131"
+revision: str = "0138"
+down_revision: str | None = "0137"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

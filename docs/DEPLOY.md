@@ -383,12 +383,12 @@ connections themselves.
   shared ingestion stream, and an older ingestion worker cannot run them.
   `docker compose up -d --build` replaces both at once; with Helm or any
   rolling rollout, update the ingestion workers first.
-- **Upgrading to 0.20.0:** this release adds migrations 0133-0138 (chat message
+- **Upgrading to 0.20.0:** this release adds migrations 0139-0144 (chat message
   digests, chat checkpoints, always-allow tool rules, queued-message delivery,
   hybrid knowledge search, audit run/chat indexes). `docker compose up -d --build`
   applies them through the `migrate` service. Two of them take longer on big
   instances:
-  - 0137 rewrites `kb_chunk` once (a generated full-text column); expect a few
+  - 0143 rewrites `kb_chunk` once (a generated full-text column); expect a few
     minutes on large knowledge bases. The rewrite holds an exclusive lock on
     `kb_chunk` for its whole duration, so knowledge search and ingestion wait
     until it is done: plan it for a quiet moment. It then builds a full-text
@@ -399,12 +399,12 @@ connections themselves.
     an exact scan, as before. Upgrading the Postgres image does not upgrade
     the extension in an existing database: run
     `ALTER EXTENSION vector UPDATE;` in the oc8 database after the image
-    upgrade and before 0137 runs to get the index. If 0137 already ran
+    upgrade and before 0143 runs to get the index. If 0143 already ran
     without it, update the extension and build the index by hand:
     `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_kb_chunk_embedding_hnsw ON
     kb_chunk USING hnsw (embedding vector_cosine_ops);`, then restart the
     backend processes so retrieval picks up the new pgvector version.
-  - 0138 builds two audit-log expression indexes concurrently (run and chat
+  - 0144 builds two audit-log expression indexes concurrently (run and chat
     filters); writes are not blocked.
 
   There is no worker-order constraint beyond the 0.19.0 one above (ingestion

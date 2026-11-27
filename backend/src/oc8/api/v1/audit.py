@@ -276,7 +276,7 @@ def _filtered(
 
 def _resource_key(key: str) -> ColumnElement[str]:
     """`resource ->> '<key>'` with the key as a literal, never a bound
-    parameter: only then is it the expression migration 0138 indexes, under a
+    parameter: only then is it the expression migration 0144 indexes, under a
     generic prepared plan as well. `key` is one of this module's constants."""
     return m.AuditEvent.resource.op("->>", return_type=Text)(literal_column(f"'{key}'"))
 

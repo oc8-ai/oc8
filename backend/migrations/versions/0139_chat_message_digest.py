@@ -8,8 +8,8 @@ calls and every row written before this.
 `chat_message.restricted` is true when the run read restricted data: such an
 answer is never replayed to a model that may not see it.
 
-Revision ID: 0133
-Revises: 0132
+Revision ID: 0139
+Revises: 0138
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0133"
-down_revision: str | None = "0132"
+revision: str = "0139"
+down_revision: str | None = "0138"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

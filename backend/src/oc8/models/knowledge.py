@@ -137,7 +137,7 @@ class KnowledgeBase(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin)
     #: Required when ``index_type`` is not ``internal``. Points at a
     #: ``Credential`` whose type matches the capa's ``credential_type``.
     credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
-    #: `KB_KIND_SHARED` or `KB_KIND_CHAT` (migration 0131).
+    #: `KB_KIND_SHARED` or `KB_KIND_CHAT` (migration 0137).
     kind: Mapped[str] = mapped_column(
         Text, nullable=False, default=KB_KIND_SHARED, server_default=KB_KIND_SHARED
     )
@@ -173,7 +173,7 @@ class KbChunk(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     kb_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM))
-    #: Full-text vector of `content` (migration 0137), computed by Postgres and
+    #: Full-text vector of `content` (migration 0143), computed by Postgres and
     #: never written: retrieval ranks by it next to `embedding`. Deferred, so
     #: loading a chunk does not carry it along.
     search_tsv: Mapped[str | None] = mapped_column(

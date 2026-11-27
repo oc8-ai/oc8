@@ -50,7 +50,7 @@ _CANDIDATE_LIMIT = 50
 SIMILAR_CHUNKS_LIMIT = 5
 #: Reciprocal rank fusion constant: a hit at rank r in a list adds 1 / (k + r).
 RRF_K = 60
-#: Rows an HNSW scan of `kb_chunk.embedding` (migration 0137) hands back before
+#: Rows an HNSW scan of `kb_chunk.embedding` (migration 0143) hands back before
 #: the tenant/base/source filter. At pgvector's default of 40 a base whose
 #: nearest rows sit among other bases' rows got fewer than `_CANDIDATE_LIMIT`
 #: candidates, or none, where the exact scan before the index found them all.
@@ -271,7 +271,7 @@ async def _widen_hnsw_scan(db: AsyncSession) -> None:
     widens a later HNSW scan of `kb_chunk` in the same transaction the same
     way, and no other table has an HNSW index.
 
-    Only from pgvector 0.8.0, the version migration 0137 builds the index
+    Only from pgvector 0.8.0, the version migration 0143 builds the index
     from: below it there is no index to widen. And pgvector reserves the
     `hnsw.` prefix, so setting a name an older version does not know is an
     error that would abort the transaction."""

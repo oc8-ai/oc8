@@ -1,4 +1,4 @@
-"""0131: a knowledge base is either shared with the organisation (`kind='shared'`,
+"""0137: a knowledge base is either shared with the organisation (`kind='shared'`,
 every base that existed before) or holds the files of one chat (`kind='chat'`,
 `chat_session_id` set)."""
 
@@ -29,7 +29,7 @@ def test_upgrade_backfills_shared_and_downgrade_removes_the_columns(pg_url: str)
     dsn = pg_url.replace("+psycopg", "")
     cfg = _cfg()
     tenant, kb = uuid.uuid4(), uuid.uuid4()
-    command.downgrade(cfg, "0130")
+    command.downgrade(cfg, "0136")
     try:
         assert not {"kind", "chat_session_id"} & _columns(dsn, "knowledge_base")
         with psycopg.connect(dsn) as conn:
@@ -127,7 +127,7 @@ def test_downgrade_retires_chat_bases_instead_of_sharing_them(pg_url: str) -> No
         conn.execute(chunk_insert, (uuid.uuid4(), tenant, chat_kb, chat_src))
         conn.execute(chunk_insert, (uuid.uuid4(), tenant, shared_kb, other_src))
     try:
-        command.downgrade(cfg, "0130")
+        command.downgrade(cfg, "0136")
         with psycopg.connect(dsn) as conn:
             bases = dict(
                 conn.execute(

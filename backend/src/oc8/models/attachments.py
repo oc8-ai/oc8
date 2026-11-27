@@ -25,7 +25,7 @@ class FileAttachment(Base, PkMixin, TenantMixin, TimestampMixin):
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
     extracted_text: Mapped[str | None] = mapped_column(Text)
     is_image: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
-    #: A chat file's indexing (spec §5.4, migration 0132): None (not a chat
+    #: A chat file's indexing (spec §5.4, migration 0138): None (not a chat
     #: file, or older than this), 'inline' (small enough to hand over whole),
     #: 'queued', 'indexed' (searchable in the chat's own knowledge base) or
     #: 'failed' (handed over inline and truncated instead).

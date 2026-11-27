@@ -7,8 +7,8 @@ that holds the large files of one chat session, named by
 a deleted one does not count, so a chat can get a fresh base after its old one
 was dropped.
 
-Revision ID: 0131
-Revises: 0130
+Revision ID: 0137
+Revises: 0136
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from collections.abc import Sequence
 
 from alembic import op
 
-revision: str = "0131"
-down_revision: str | None = "0130"
+revision: str = "0137"
+down_revision: str | None = "0136"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
