@@ -16,6 +16,7 @@ from oc8 import models as m
 from oc8.audit import append_event
 from oc8.modelrouter.keys import resolve_model_base_url, resolve_model_key
 from oc8.modelrouter.router import ModelRouter
+from oc8.modelrouter.speech import is_speech_model, refuse_speech_model
 from oc8.modelrouter.types import (
     CompletionChunk,
     CompletionRequest,
@@ -83,6 +84,20 @@ def params_for_model(params: ModelParams, supports_reasoning: bool | None) -> Mo
     return params
 
 
+async def _chain(db: AsyncSession, primary: m.ModelConfig) -> list[m.ModelConfig]:
+    """`primary` and its fallbacks, in order. A speech model never answers a
+    chat, whatever pinned it (a published version, the gateway, a title or
+    checkpoint call): as the primary it is refused before any call
+    (`NotAChatModel`), in the fallbacks it is skipped."""
+    refuse_speech_model(primary)
+    chain: list[m.ModelConfig] = [primary]
+    for fb_id in primary.fallbacks or []:
+        fb = await db.get(m.ModelConfig, uuid.UUID(str(fb_id)))
+        if fb is not None and not is_speech_model(fb):
+            chain.append(fb)
+    return chain
+
+
 async def complete_with_fallback(
     db: AsyncSession,
     router: ModelRouter,
@@ -134,11 +149,7 @@ async def complete_with_fallback(
             )
             return await router.complete(req)
 
-        chain: list[m.ModelConfig] = [primary]
-        for fb_id in primary.fallbacks or []:
-            fb = await db.get(m.ModelConfig, uuid.UUID(str(fb_id)))
-            if fb is not None:
-                chain.append(fb)
+        chain = await _chain(db, primary)
 
         for i, config in enumerate(chain):
             is_last = i == len(chain) - 1
@@ -244,13 +255,7 @@ async def stream_completion_with_fallback(
         )
         span.set_attribute("model", no_config_model if primary is None else primary.model)
 
-        chain: list[m.ModelConfig] = []
-        if primary is not None:
-            chain.append(primary)
-            for fb_id in primary.fallbacks or []:
-                fb = await db.get(m.ModelConfig, uuid.UUID(str(fb_id)))
-                if fb is not None:
-                    chain.append(fb)
+        chain = await _chain(db, primary) if primary is not None else []
 
         # No ModelConfig means no chain to draw from -- exactly one attempt, the
         # same as complete_with_fallback.

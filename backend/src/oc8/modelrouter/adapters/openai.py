@@ -13,6 +13,7 @@ is the one `chatgpt_subscription` already speaks.
 
 from __future__ import annotations
 
+import io
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -127,7 +128,7 @@ class OpenAIAdapter:
             yield chunk
 
     async def transcribe(
-        self, audio: bytes, *, model: str, content_type: str, language: str | None
+        self, audio: bytes | io.BytesIO, *, model: str, content_type: str, language: str | None
     ) -> Transcript:
         return await post_transcription(
             _AUDIO_BASE_URL,

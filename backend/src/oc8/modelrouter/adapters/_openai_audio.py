@@ -9,6 +9,7 @@ spoken answer is streamed through.
 
 from __future__ import annotations
 
+import io
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -67,7 +68,7 @@ def _parse_transcript(data: dict[str, Any]) -> Transcript:
 async def post_transcription(
     base_url: str,
     api_key: str,
-    audio: bytes,
+    audio: bytes | io.BytesIO,
     *,
     model: str,
     content_type: str,

@@ -317,7 +317,9 @@ async def test_reported_tokens_are_metered_as_tokens(
             db, tenant_id=tenant, audio=_AUDIO, content_type="audio/ogg", language=None
         )
         [row] = await _usage(db, tenant)
-        assert (row.tokens_in, row.tokens_out, row.platform_units) == (50, 2, 0)
+        # Tokens bill the call; the seconds (estimated from the upload here)
+        # still count towards the member's daily allowance.
+        assert (row.tokens_in, row.tokens_out, row.platform_units) == (50, 2, 1)
 
 
 async def test_a_plugin_providers_speech_is_metered_under_its_own_name(
@@ -482,3 +484,295 @@ async def test_a_setting_pointing_at_a_chat_model_is_not_a_speech_model(
             await transcribe(
                 db, tenant_id=tenant, audio=_AUDIO, content_type="audio/webm", language=None
             )
+
+
+# --------------------------------------------------- defence in depth / caps
+
+
+def _speech_cfg(tenant: uuid.UUID, capability: str = "speech_to_text") -> m.ModelConfig:
+    return m.ModelConfig(
+        tenant_id=tenant,
+        provider="openai_compatible",
+        model="whisper-1",
+        chat_enabled=False,
+        params={"capability": capability},
+    )
+
+
+class _NoCallRouter:
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    async def complete(self, req: Any) -> Any:
+        self.calls.append(req)
+        raise AssertionError("a speech model must never be asked for a completion")
+
+    async def stream(self, req: Any) -> Any:  # pragma: no cover - never reached
+        self.calls.append(req)
+        raise AssertionError("a speech model must never be asked for a completion")
+
+
+async def test_a_completion_is_never_sent_to_a_speech_model(
+    app_session: AppSessionFactory,
+) -> None:
+    """Whatever path pinned it (a published version, the gateway, titles,
+    checkpoints), the router's fallback layer refuses a speech model before
+    any call."""
+    from oc8.modelrouter.fallback import complete_with_fallback, stream_completion_with_fallback
+    from oc8.modelrouter.speech import NotAChatModel
+    from oc8.modelrouter.types import ModelParams, NeutralMessage
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        cfg = _speech_cfg(tenant)
+        db.add(cfg)
+        await db.flush()
+        router = _NoCallRouter()
+        args: dict[str, Any] = {
+            "tenant_id": tenant,
+            "agent_id": uuid.uuid4(),
+            "primary": cfg,
+            "no_config_provider": "x",
+            "no_config_model": "x",
+            "messages": [NeutralMessage(role="user", content="hi")],
+            "tools": [],
+            "params": ModelParams(),
+            "request_id": uuid.uuid4(),
+            "contains_restricted": False,
+        }
+        with pytest.raises(NotAChatModel):
+            await complete_with_fallback(db, router, **args)  # type: ignore[arg-type]
+        with pytest.raises(NotAChatModel):
+            async for _chunk in stream_completion_with_fallback(db, router, **args):  # type: ignore[arg-type]
+                pass
+        assert router.calls == []
+
+
+async def test_a_speech_model_in_a_fallback_chain_is_skipped(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.modelrouter.fallback import complete_with_fallback
+    from oc8.modelrouter.types import CompletionResult, ModelParams, NeutralMessage, Usage
+
+    tenant = uuid.uuid4()
+    calls: list[Any] = []
+
+    class _Router:
+        async def complete(self, req: Any) -> CompletionResult:
+            calls.append(req)
+            if len(calls) == 1:
+                request = httpx.Request("POST", "https://x.example")
+                raise httpx.HTTPStatusError(
+                    "boom", request=request, response=httpx.Response(503, request=request)
+                )
+            return CompletionResult(
+                text="ok",
+                tool_calls=[],
+                usage=Usage(tokens_in=1, tokens_out=1),
+                stop_reason="stop",
+                provider=req.provider,
+                model=req.model,
+            )
+
+    async with app_session(tenant) as db:
+        speech = _speech_cfg(tenant)
+        backup = m.ModelConfig(tenant_id=tenant, provider="openai_compatible", model="backup")
+        db.add_all([speech, backup])
+        await db.flush()
+        primary = m.ModelConfig(
+            tenant_id=tenant,
+            provider="openai_compatible",
+            model="primary",
+            fallbacks=[str(speech.id), str(backup.id)],
+        )
+        db.add(primary)
+        await db.flush()
+        result = await complete_with_fallback(
+            db,
+            _Router(),  # type: ignore[arg-type]
+            tenant_id=tenant,
+            agent_id=uuid.uuid4(),
+            primary=primary,
+            no_config_provider="x",
+            no_config_model="x",
+            messages=[NeutralMessage(role="user", content="hi")],
+            tools=[],
+            params=ModelParams(),
+            request_id=uuid.uuid4(),
+            contains_restricted=False,
+        )
+    assert [c.model for c in calls] == ["primary", "backup"]
+    assert result.model == "backup"
+
+
+async def test_markdown_is_read_as_plain_words() -> None:
+    from oc8.modelrouter.speech import speakable
+
+    text = (
+        "# Ergebnis\n\n"
+        "Das ist **wichtig** und _kursiv_, siehe [die Doku](https://x.example/a).\n\n"
+        "```python\nprint('secret code')\n```\n\n"
+        "| Name | Wert |\n|------|------|\n| A | 1 |\n\n"
+        "> ein Zitat\n"
+        "- erster Punkt\n"
+        "Code `x = 1` inline. ![Bild](https://x.example/b.png)"
+    )
+    spoken = speakable(text)
+    for gone in ("#", "**", "_kursiv_", "https://", "print(", "|", "---", "```", ">", "`"):
+        assert gone not in spoken, (gone, spoken)
+    for kept in ("Ergebnis", "wichtig", "kursiv", "die Doku", "Name", "Wert", "A", "1"):
+        assert kept in spoken, (kept, spoken)
+    assert "ein Zitat" in spoken and "erster Punkt" in spoken and "x = 1" in spoken
+
+
+async def test_only_the_pieces_sent_are_billed(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stopping after the first piece bills the first piece, not the answer."""
+    _FakeAudioServer(audio=b"mp3").install(monkeypatch)
+    tenant = uuid.uuid4()
+    text = "Ein langer Satz der vorgelesen wird. " * 300
+    pieces = split_for_speech(text.strip())
+    assert len(pieces) > 1
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        spoken = await synthesize(db, tenant_id=tenant, text=text)
+        async for _chunk in spoken.chunks:
+            break
+        await spoken.aclose()
+        rows = await _usage(db, tenant)
+    assert sum(r.platform_units for r in rows) == len(pieces[0])
+
+
+async def test_a_failing_later_piece_ends_the_stream_cleanly(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sent: list[httpx.Request] = []
+
+    async def send(client: Any, request: httpx.Request, **_kwargs: Any) -> httpx.Response:
+        await request.aread()
+        sent.append(request)
+        if len(sent) > 1:
+            return httpx.Response(500, json={"error": "down"}, request=request)
+        return httpx.Response(200, content=b"mp3", request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    failures: list[Exception] = []
+
+    async def on_error(exc: Exception) -> None:
+        failures.append(exc)
+
+    tenant = uuid.uuid4()
+    text = "Ein langer Satz der vorgelesen wird. " * 300
+    pieces = split_for_speech(text.strip())
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        spoken = await synthesize(db, tenant_id=tenant, text=text, on_error=on_error)
+        audio = b"".join([c async for c in spoken.chunks])
+        rows = await _usage(db, tenant)
+    assert audio == b"mp3"
+    assert len(sent) == 2
+    assert [type(f).__name__ for f in failures] == ["HTTPStatusError"]
+    # The refused piece is not billed.
+    assert sum(r.platform_units for r in rows) == len(pieces[0])
+
+
+async def test_transcription_seconds_are_kept_even_when_tokens_are_reported(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daily allowance counts seconds, so a token-billed model still
+    records them (estimated from the upload when the provider names none)."""
+    _FakeAudioServer(
+        transcript={"text": "ok", "usage": {"type": "tokens", "input_tokens": 5}}
+    ).install(monkeypatch)
+    tenant = uuid.uuid4()
+    audio = b"x" * (16_000 * 3)
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        await transcribe(
+            db, tenant_id=tenant, audio=audio, content_type="audio/webm", language=None
+        )
+        [row] = await _usage(db, tenant)
+    assert row.tokens_in == 5
+    assert row.platform_units == 3
+
+
+async def test_a_member_past_the_daily_allowance_is_refused_before_the_call(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.metering.usage import record_usage
+    from oc8.modelrouter.speech import SpeechAllowanceUsedUp
+
+    server = _FakeAudioServer().install(monkeypatch)
+    tenant, member, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        org = await db.get(m.Organization, tenant)
+        assert org is not None
+        org.settings = {
+            "speech": {
+                **org.settings["speech"],
+                "daily_transcription_minutes": 1,
+                "daily_read_aloud_characters": 10,
+            }
+        }
+        await db.flush()
+        await record_usage(
+            db,
+            tenant_id=tenant,
+            request_id=uuid.uuid4(),
+            model="whisper-1",
+            provider="openai_compatible",
+            tokens_in=0,
+            tokens_out=0,
+            platform_units=60,
+            member_id=member,
+        )
+        await db.flush()
+        with pytest.raises(SpeechAllowanceUsedUp):
+            await transcribe(
+                db,
+                tenant_id=tenant,
+                audio=_AUDIO,
+                content_type="audio/webm",
+                language=None,
+                member_id=member,
+            )
+        # Another member's day is their own.
+        await transcribe(
+            db,
+            tenant_id=tenant,
+            audio=_AUDIO,
+            content_type="audio/webm",
+            language=None,
+            member_id=other,
+        )
+        # Reading aloud more than the day's characters is refused up front.
+        with pytest.raises(SpeechAllowanceUsedUp):
+            await synthesize(db, tenant_id=tenant, text="Mehr als zehn Zeichen.", member_id=member)
+    assert len(server.requests) == 1
+
+
+async def test_a_zero_allowance_switches_the_feature_off(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter.speech import SpeechAllowanceUsedUp
+
+    server = _FakeAudioServer().install(monkeypatch)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        org = await db.get(m.Organization, tenant)
+        assert org is not None
+        org.settings = {"speech": {**org.settings["speech"], "daily_transcription_minutes": 0}}
+        await db.flush()
+        with pytest.raises(SpeechAllowanceUsedUp):
+            await transcribe(
+                db,
+                tenant_id=tenant,
+                audio=_AUDIO,
+                content_type="audio/webm",
+                language=None,
+                member_id=uuid.uuid4(),
+            )
+    assert server.requests == []

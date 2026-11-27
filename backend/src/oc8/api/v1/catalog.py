@@ -341,6 +341,29 @@ async def _check_speech(
         )
         if pinned:
             raise refuse("cannot run an agent; move its agents to another model first")
+        # A published version pins it too: a rollback would restore it.
+        versioned = await db.scalar(
+            select(func.count())
+            .select_from(m.AgentVersion)
+            .where(
+                m.AgentVersion.tenant_id == tenant_id,
+                m.AgentVersion.payload["model_config_id"].astext == str(cfg.id),
+            )
+        )
+        if versioned:
+            raise refuse("cannot be converted: a published agent version runs on it")
+        autos = (
+            await db.scalars(
+                select(m.ModelConfig).where(
+                    m.ModelConfig.tenant_id == tenant_id,
+                    m.ModelConfig.provider == AUTO_PROVIDER,
+                )
+            )
+        ).all()
+        for auto in autos:
+            tiers = (auto.params or {}).get("tiers")
+            if isinstance(tiers, dict) and str(cfg.id) in {str(v) for v in tiers.values()}:
+                raise refuse("cannot be converted: an auto model routes to it")
     return capability
 
 

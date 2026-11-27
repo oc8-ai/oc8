@@ -357,7 +357,12 @@ async def test_the_speech_settings_take_only_matching_speech_models(
         h = _admin(w.tenant)
         r = await http.get("/api/v1/settings/speech", headers=h)
         assert r.status_code == 200, r.text
-        assert r.json() == {"speechToTextModelId": None, "textToSpeechModelId": None}
+        assert r.json() == {
+            "speechToTextModelId": None,
+            "textToSpeechModelId": None,
+            "dailyTranscriptionMinutes": 60,
+            "dailyReadAloudCharacters": 200_000,
+        }
         chat = await _model(http, w.tenant, capability=None)
         stt = await _model(http, w.tenant, capability="speech_to_text")
         for bad in (
@@ -367,7 +372,12 @@ async def test_the_speech_settings_take_only_matching_speech_models(
         ):
             r = await http.put("/api/v1/settings/speech", json=bad, headers=h)
             assert r.status_code == 422, (bad, r.text)
-        good = {"speechToTextModelId": stt["id"], "textToSpeechModelId": None}
+        good = {
+            "speechToTextModelId": stt["id"],
+            "textToSpeechModelId": None,
+            "dailyTranscriptionMinutes": 30,
+            "dailyReadAloudCharacters": 5000,
+        }
         member = _headers(w.tenant, "owner", "member")
         assert (
             await http.put("/api/v1/settings/speech", json=good, headers=member)
@@ -451,7 +461,7 @@ async def test_dictation_returns_the_text_and_meters_and_audits_without_it(
     assert _SECRET_WORDS not in str(event.resource)
 
 
-async def test_dictation_works_without_a_chat_yet(
+async def test_dictation_needs_the_persons_chat(
     app_session: AppSessionFactory, provider: list[httpx.Request]
 ) -> None:
     async with _http() as http:
@@ -461,8 +471,10 @@ async def test_dictation_works_without_a_chat_yet(
             headers=_headers(w.tenant, "owner", "member"),
             **_upload(content_type="audio/webm;codecs=opus"),
         )
-    assert r.status_code == 200, r.text
-    assert len(provider) == 1
+    # Usage and audit always name the chat's agent, so there is no dictation
+    # outside a chat.
+    assert r.status_code == 422, r.text
+    assert provider == []
 
 
 async def test_dictation_into_someone_elses_chat_is_not_found(
@@ -485,10 +497,11 @@ async def test_dictation_refuses_what_is_not_audio(
 ) -> None:
     async with _http() as http:
         w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
         r = await http.post(
             "/api/v1/chat/audio/transcribe",
             headers=_headers(w.tenant, "owner", "member"),
-            **_upload(content_type="text/html"),
+            **_upload(content_type="text/html", session_id=str(session_id)),
         )
     assert r.status_code == 415, r.text
     assert provider == []
@@ -499,10 +512,11 @@ async def test_dictation_over_25_mb_is_too_large(
 ) -> None:
     async with _http() as http:
         w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
         r = await http.post(
             "/api/v1/chat/audio/transcribe",
             headers=_headers(w.tenant, "owner", "member"),
-            **_upload(audio=b"\0" * (25 * 1024 * 1024 + 1)),
+            **_upload(audio=b"\0" * (25 * 1024 * 1024 + 1), session_id=str(session_id)),
         )
     assert r.status_code == 413, r.text
     assert provider == []
@@ -516,7 +530,11 @@ async def test_without_a_speech_model_dictation_and_speech_are_not_found(
     session_id, message_id = await _chat(app_session, w.tenant, w.personal_agent, "owner")
     h = _headers(w.tenant, "owner", "member")
     async with _http() as http:
-        r = await http.post("/api/v1/chat/audio/transcribe", headers=h, **_upload())
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=h,
+            **_upload(session_id=str(session_id)),
+        )
         assert r.status_code == 404, r.text
         r = await http.post(
             f"/api/v1/chat/sessions/{session_id}/messages/{message_id}/speech", headers=h
@@ -608,3 +626,428 @@ async def test_a_restricted_answer_is_read_by_a_local_model(
         )
     assert r.status_code == 200, r.text
     assert len(provider) == 1
+
+
+# ------------------------------------------- a speech model is never an agent's
+
+
+async def _department_of(
+    app_session: AppSessionFactory, tenant: uuid.UUID, agent: uuid.UUID
+) -> str:
+    async with app_session(tenant) as db:
+        row = await db.get(m.Agent, agent)
+        assert row is not None
+        return str(row.department_id)
+
+
+async def test_a_new_agent_cannot_run_on_a_speech_model(
+    app_session: AppSessionFactory,
+) -> None:
+    async with _http() as http:
+        w, _chat_model, stt, _tts = await _speech_world(app_session, http)
+        dept = await _department_of(app_session, w.tenant, w.standard_agent)
+        r = await http.post(
+            "/api/v1/agents",
+            json={"departmentId": dept, "name": "Sprachlos", "modelConfigId": stt["id"]},
+            headers=_admin(w.tenant),
+        )
+    assert r.status_code == 422, r.text
+    assert "speech" in r.text
+
+
+async def test_a_model_a_version_or_an_auto_tier_runs_on_stays_a_chat_model(
+    app_session: AppSessionFactory,
+) -> None:
+    """Converting checks every agent version that pins the model and every
+    auto tier that points at it, not only the agents' live rows; a rollback to
+    a version whose model became speech anyway (direct SQL) is refused."""
+    async with _http() as http:
+        w, chat, _stt, _tts = await _speech_world(app_session, http)
+        h = _admin(w.tenant)
+        other = await _model(http, w.tenant, capability=None, model="gpt-other")
+        dept = await _department_of(app_session, w.tenant, w.standard_agent)
+        hired = await http.post(
+            "/api/v1/agents",
+            json={"departmentId": dept, "name": "Vera", "modelConfigId": other["id"]},
+            headers=h,
+        )
+        assert hired.status_code == 201, hired.text
+        agent_id = hired.json()["id"]
+        switched = await http.patch(
+            f"/api/v1/agents/{agent_id}/model-config",
+            json={"modelConfigId": chat["id"]},
+            headers=h,
+        )
+        assert switched.status_code == 200, switched.text
+        assert hired.json()["currentVersionNo"] == 1
+        published = await http.post(
+            f"/api/v1/agents/{agent_id}/versions",
+            json={"expectedCurrentVersionNo": 1},
+            headers=h,
+        )
+        assert published.status_code == 201, published.text
+        # No live agent runs on `other` now; v1 still pins it.
+        r = await http.patch(
+            f"/api/v1/models/{other['id']}",
+            json={
+                "provider": "openai_compatible",
+                "model": "gpt-other",
+                "capability": "speech_to_text",
+            },
+            headers=h,
+        )
+        assert r.status_code == 422, r.text
+        assert "version" in r.json()["detail"]
+
+        tiered = await _model(http, w.tenant, capability=None, model="gpt-tier")
+        auto = await http.post(
+            "/api/v1/models",
+            json={"provider": "auto", "model": "auto", "autoTiers": {"fast": tiered["id"]}},
+            headers=h,
+        )
+        assert auto.status_code == 201, auto.text
+        r = await http.patch(
+            f"/api/v1/models/{tiered['id']}",
+            json={
+                "provider": "openai_compatible",
+                "model": "gpt-tier",
+                "capability": "text_to_speech",
+            },
+            headers=h,
+        )
+        assert r.status_code == 422, r.text
+        assert "auto" in r.json()["detail"]
+
+        async with app_session(w.tenant) as db:
+            row = await db.get(m.ModelConfig, uuid.UUID(other["id"]))
+            assert row is not None
+            row.params = {"capability": "speech_to_text"}
+            row.chat_enabled = False
+            await db.flush()
+        r = await http.post(f"/api/v1/agents/{agent_id}/versions/1/rollback", headers=h)
+        assert r.status_code == 422, r.text
+        assert "speech" in r.text
+
+
+async def test_the_llm_gateway_lists_no_speech_model(app_session: AppSessionFactory) -> None:
+    from tests.api.test_llm_gateway import _agent_run, _agent_token
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _dept = await _agent_run(db, tenant, model="gpt-chat")
+        db.add(
+            m.ModelConfig(
+                tenant_id=tenant,
+                provider="openai_compatible",
+                model="whisper-1",
+                chat_enabled=False,
+                params={"capability": "speech_to_text"},
+            )
+        )
+        await db.flush()
+    token = _agent_token(tenant, agent_id, run_id)
+    async with _http() as http:
+        r = await http.get("/llm/v1/models", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200, r.text
+    names = {row["id"] for row in r.json()["data"]}
+    assert "gpt-chat" in names and "whisper-1" not in names
+
+
+async def test_a_speech_model_forced_on_for_chat_cannot_be_picked_for_a_session(
+    app_session: AppSessionFactory,
+) -> None:
+    async with _http() as http:
+        w, _chat_model, stt, _tts = await _speech_world(app_session, http)
+        async with app_session(w.tenant) as db:
+            row = await db.get(m.ModelConfig, uuid.UUID(stt["id"]))
+            assert row is not None
+            row.chat_enabled = True
+            await db.flush()
+        session_id, _ = await _chat(app_session, w.tenant, w.standard_agent, "admin")
+        r = await http.put(
+            f"/api/v1/chat/sessions/{session_id}/model",
+            json={"modelConfigId": stt["id"]},
+            headers=_admin(w.tenant),
+        )
+    assert r.status_code == 422, r.text
+
+
+# ------------------------------------------------------ allowance and input
+
+
+async def test_the_daily_allowance_is_set_and_bounded_in_the_speech_settings(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, _chat_model, stt, tts = await _speech_world(app_session, http)
+        h = _admin(w.tenant)
+        base = {"speechToTextModelId": stt["id"], "textToSpeechModelId": tts["id"]}
+        for bad in (
+            {"dailyTranscriptionMinutes": -1},
+            {"dailyTranscriptionMinutes": 24 * 60 + 1},
+            {"dailyReadAloudCharacters": -5},
+            {"dailyReadAloudCharacters": 10_000_001},
+        ):
+            r = await http.put("/api/v1/settings/speech", json={**base, **bad}, headers=h)
+            assert r.status_code == 422, (bad, r.text)
+        r = await http.put(
+            "/api/v1/settings/speech",
+            json={**base, "dailyTranscriptionMinutes": 0, "dailyReadAloudCharacters": 0},
+            headers=h,
+        )
+        assert r.status_code == 200, r.text
+        member = _headers(w.tenant, "owner", "member")
+        caps = await http.get("/api/v1/chat/audio/capabilities", headers=member)
+        assert caps.json() == {
+            "speechToText": False,
+            "textToSpeech": False,
+            "textToSpeechLocal": False,
+        }
+        session_id, message_id = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=member,
+            **_upload(session_id=str(session_id)),
+        )
+        assert r.status_code == 429, r.text
+        assert "switched off" in r.json()["detail"]
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{message_id}/speech", headers=member
+        )
+        assert r.status_code == 429, r.text
+    assert provider == []
+
+
+async def test_dictation_past_the_daily_minutes_is_refused(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, _chat_model, stt, tts = await _speech_world(app_session, http)
+        r = await http.put(
+            "/api/v1/settings/speech",
+            json={
+                "speechToTextModelId": stt["id"],
+                "textToSpeechModelId": tts["id"],
+                "dailyTranscriptionMinutes": 1,
+            },
+            headers=_admin(w.tenant),
+        )
+        assert r.status_code == 200, r.text
+        async with app_session(w.tenant) as db:
+            from oc8.metering.usage import record_usage
+
+            owner = (
+                await db.execute(
+                    select(m.OrgMember.id).where(m.OrgMember.subject_uuid == _subject_uuid("owner"))
+                )
+            ).scalar_one()
+            await record_usage(
+                db,
+                tenant_id=w.tenant,
+                request_id=uuid.uuid4(),
+                model="whisper-1",
+                provider="openai_compatible",
+                tokens_in=0,
+                tokens_out=0,
+                platform_units=60,
+                member_id=owner,
+            )
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=_headers(w.tenant, "owner", "member"),
+            **_upload(session_id=str(session_id)),
+        )
+    assert r.status_code == 429, r.text
+    assert "used up" in r.json()["detail"]
+    assert provider == []
+
+
+async def test_a_bad_language_is_refused(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        for language in ("german", "DE", "d1", "de-DE; drop"):
+            r = await http.post(
+                "/api/v1/chat/audio/transcribe",
+                headers=_headers(w.tenant, "owner", "member"),
+                **_upload(session_id=str(session_id), language=language),
+            )
+            assert r.status_code == 422, (language, r.text)
+    assert provider == []
+
+
+async def test_a_chunked_upload_over_25_mb_is_too_large(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    """No Content-Length to refuse up front: the bytes are counted as read."""
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        boundary = "oc8boundary"
+        head = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="session_id"\r\n\r\n'
+            f"{session_id}\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="a.webm"\r\n'
+            "Content-Type: audio/webm\r\n\r\n"
+        ).encode()
+
+        async def body() -> Any:
+            yield head
+            chunk = b"\0" * (1024 * 1024)
+            for _ in range(26):
+                yield chunk
+            yield f"\r\n--{boundary}--\r\n".encode()
+
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers={
+                **_headers(w.tenant, "owner", "member"),
+                "content-type": f"multipart/form-data; boundary={boundary}",
+            },
+            content=body(),
+        )
+    assert r.status_code == 413, r.text
+    assert provider == []
+
+
+async def test_another_tenants_speech_model_is_not_a_choice(
+    app_session: AppSessionFactory,
+) -> None:
+    async with _http() as http:
+        theirs, _c, their_stt, _t = await _speech_world(app_session, http)
+        ours, *_ = await _speech_world(app_session, http)
+        r = await http.put(
+            "/api/v1/settings/speech",
+            json={"speechToTextModelId": their_stt["id"], "textToSpeechModelId": None},
+            headers=_admin(ours.tenant),
+        )
+    assert theirs.tenant != ours.tenant
+    assert r.status_code == 422, r.text
+
+
+async def test_the_provider_failing_oddly_is_a_bad_gateway_without_details(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_send = httpx.AsyncClient.send
+    mode = {"kind": "invalid-url"}
+
+    async def send(client: Any, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.url.host != "speech.example":
+            return await real_send(client, request, **kwargs)
+        if mode["kind"] == "invalid-url":
+            raise httpx.InvalidURL("sk-speech leaked in a url")
+        return httpx.Response(200, content=b"<html>not json", request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        h = _headers(w.tenant, "owner", "member")
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe", headers=h, **_upload(session_id=str(session_id))
+        )
+        assert r.status_code == 502, r.text
+        assert "InvalidURL" in r.json()["detail"] and "sk-speech" not in r.text
+        mode["kind"] = "not-json"
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe", headers=h, **_upload(session_id=str(session_id))
+        )
+    assert r.status_code == 502, r.text
+    assert "unexpectedly" in r.json()["detail"]
+
+
+async def _answer(
+    app_session: AppSessionFactory, tenant: uuid.UUID, session_id: uuid.UUID, content: str
+) -> uuid.UUID:
+    async with app_session(tenant) as db:
+        msg = m.ChatMessage(
+            tenant_id=tenant, session_id=session_id, role="assistant", content=content
+        )
+        db.add(msg)
+        await db.flush()
+        return msg.id
+
+
+async def test_a_very_long_answer_is_not_read_aloud(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        long_id = await _answer(app_session, w.tenant, session_id, "Wort " * 4001)
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{long_id}/speech",
+            headers=_headers(w.tenant, "owner", "member"),
+        )
+    assert r.status_code == 409, r.text
+    assert "20000" in r.json()["detail"]
+    assert provider == []
+
+
+async def test_markdown_is_stripped_before_it_is_read_aloud(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        md = "## Antwort\n\n**Ja**, siehe [Doku](https://x.example).\n\n```sh\nrm -rf /\n```\n"
+        msg_id = await _answer(app_session, w.tenant, session_id, md)
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{msg_id}/speech",
+            headers=_headers(w.tenant, "owner", "member"),
+        )
+        assert r.status_code == 200, r.text
+    [request] = provider
+    import json as _json
+
+    spoken = _json.loads(request.content)["input"]
+    assert "rm -rf" not in spoken and "**" not in spoken and "https://" not in spoken
+    assert "Antwort" in spoken and "Ja" in spoken and "Doku" in spoken
+
+
+async def test_a_later_piece_failing_ends_the_audio_and_is_audited(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_send = httpx.AsyncClient.send
+    sent: list[httpx.Request] = []
+
+    async def send(client: Any, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.url.host != "speech.example":
+            return await real_send(client, request, **kwargs)
+        await request.aread()
+        sent.append(request)
+        if len(sent) > 1:
+            return httpx.Response(500, json={"error": "down"}, request=request)
+        return httpx.Response(200, content=b"ID3-first", request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        msg_id = await _answer(
+            app_session, w.tenant, session_id, "Ein langer Satz der vorgelesen wird. " * 200
+        )
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{msg_id}/speech",
+            headers=_headers(w.tenant, "owner", "member"),
+        )
+        assert r.status_code == 200, r.text
+        assert r.content == b"ID3-first"
+    async with app_session(w.tenant) as db:
+        [event] = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "chat.audio.speech_failed")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert event.resource["message_id"] == str(msg_id)
+    assert event.resource["error"] == "HTTPStatusError"
+    assert event.decision == "error"

@@ -3,29 +3,36 @@ answer aloud, through the tenant's speech models (`oc8.modelrouter.speech`).
 
 - `GET /chat/audio/capabilities`: which voice buttons the chat shows.
 - `POST /chat/audio/transcribe`: multipart `file` (one recording, at most
-  25 MB), optional `session_id` and `language` -> `{"text": ...}`. The text is
-  put into the composer for the person to review; nothing is sent.
+  25 MB), `session_id` (required) and optional `language` -> `{"text": ...}`.
+  The text is put into the composer for the person to review; nothing is sent.
 - `POST /chat/sessions/{sid}/messages/{mid}/speech`: the answer as an
-  `audio/mpeg` stream. A restricted answer needs a local speech model (409).
+  `audio/mpeg` stream, its markdown read as plain words, at most 20 000
+  characters. A restricted answer needs a local speech model (409).
 
 Both calls are the chat owner's alone (another member gets 404), metered for
-the person and audited with duration / characters and the model -- never the
-words. Audio is never stored: the upload is read from the request into a
-size-checked buffer in memory (not a spooled temp file) and the spoken answer
+the person and the chat's agent, bounded by the member's daily allowance
+(429), and audited with duration / characters and the model -- never the
+words. Audio is never stored: the upload is parsed as it arrives into one
+size-checked in-memory buffer (not a spooled temp file) and the spoken answer
 is streamed through.
 """
 
 from __future__ import annotations
 
+import asyncio
+import io
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from python_multipart.multipart import MultipartParser, parse_options_header
+from sqlalchemy.exc import SQLAlchemyError
+from starlette.background import BackgroundTask
 
 from oc8 import models as m
 from oc8.api.deps import DbSession, require_departmental
@@ -35,11 +42,15 @@ from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.modelrouter.router import ClassificationViolation
 from oc8.modelrouter.speech import (
+    MAX_SPOKEN_CHARS,
     SPEECH_TO_TEXT,
     TEXT_TO_SPEECH,
+    SpeechAllowanceUsedUp,
     SpeechNotConfigured,
     SpeechUnavailable,
     configured_speech_model,
+    daily_limit,
+    speakable,
     synthesize,
     transcribe,
 )
@@ -82,34 +93,28 @@ def _too_large() -> HTTPException:
     )
 
 
-async def _read_capped(request: Request) -> bytes:
-    """The request body, refused (413) as soon as it passes the cap: the
-    declared length is checked before reading, the bytes read while reading."""
-    declared = request.headers.get("content-length")
-    if declared is not None and declared.isdigit() and int(declared) > _MAX_BODY_BYTES:
-        raise _too_large()
-    body = bytearray()
-    async for chunk in request.stream():
-        body.extend(chunk)
-        if len(body) > _MAX_BODY_BYTES:
-            raise _too_large()
-    return bytes(body)
-
-
 @dataclass
 class _Part:
     headers: dict[bytes, bytes] = field(default_factory=dict)
-    data: bytearray = field(default_factory=bytearray)
+    #: The part's bytes. For the recording this is the one buffer: it is
+    #: handed to the provider call as is, not copied into `bytes`.
+    data: io.BytesIO = field(default_factory=io.BytesIO)
 
 
-def _form_parts(content_type: str, body: bytes) -> dict[str, _Part]:
-    """`multipart/form-data` parsed in memory, by field name (first wins)."""
-    kind, options = parse_options_header(content_type)
+async def _form_parts(request: Request) -> dict[str, _Part]:
+    """`multipart/form-data` parsed in memory as it arrives, by field name
+    (first wins). Refused (413) as soon as it passes the cap: the declared
+    length before reading, the bytes read while reading (a chunked upload
+    has no length to declare)."""
+    kind, options = parse_options_header(request.headers.get("content-type", ""))
     boundary = options.get(b"boundary")
     if kind != b"multipart/form-data" or not boundary:
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY, "expected multipart/form-data with a file"
         )
+    declared = request.headers.get("content-length")
+    if declared is not None and declared.isdigit() and int(declared) > _MAX_BODY_BYTES:
+        raise _too_large()
     parts: list[_Part] = []
     header_field = bytearray()
     header_value = bytearray()
@@ -119,8 +124,8 @@ def _form_parts(content_type: str, body: bytes) -> dict[str, _Part]:
 
     def on_part_data(data: bytes, start: int, end: int) -> None:
         part = parts[-1]
-        part.data.extend(data[start:end])
-        if len(part.data) > MAX_AUDIO_BYTES:
+        part.data.write(data[start:end])
+        if part.data.tell() > MAX_AUDIO_BYTES:
             raise _too_large()
 
     def on_header_field(data: bytes, start: int, end: int) -> None:
@@ -144,8 +149,13 @@ def _form_parts(content_type: str, body: bytes) -> dict[str, _Part]:
             "on_header_end": on_header_end,
         },
     )
+    read = 0
     try:
-        parser.write(body)
+        async for chunk in request.stream():
+            read += len(chunk)
+            if read > _MAX_BODY_BYTES:
+                raise _too_large()
+            parser.write(chunk)
         parser.finalize()
     except HTTPException:
         raise
@@ -165,7 +175,7 @@ def _field(parts: dict[str, _Part], name: str) -> str | None:
     part = parts.get(name)
     if part is None:
         return None
-    value = bytes(part.data).decode("utf-8", "replace").strip()
+    value = part.data.getvalue().decode("utf-8", "replace").strip()
     return value or None
 
 
@@ -183,6 +193,11 @@ def _audio_type(part: _Part) -> str:
 
 
 def _speech_error(exc: Exception) -> HTTPException:
+    """The person's answer for a failed speech call. A provider failure names
+    at most its status or its exception's class: its message may carry a URL
+    or a key."""
+    if isinstance(exc, SpeechAllowanceUsedUp):
+        return HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(exc))
     if isinstance(exc, SpeechNotConfigured):
         return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(exc, ClassificationViolation):
@@ -194,59 +209,104 @@ def _speech_error(exc: Exception) -> HTTPException:
             status.HTTP_502_BAD_GATEWAY,
             f"the speech provider refused the call (HTTP {exc.response.status_code})",
         )
-    return HTTPException(status.HTTP_502_BAD_GATEWAY, "the speech provider could not be reached")
+    if isinstance(exc, httpx.TransportError):
+        return HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "the speech provider could not be reached"
+        )
+    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+        return HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "the speech provider answered unexpectedly"
+        )
+    return HTTPException(
+        status.HTTP_502_BAD_GATEWAY, f"the speech provider call failed ({type(exc).__name__})"
+    )
 
 
-_PROVIDER_ERRORS = (SpeechUnavailable, ClassificationViolation, httpx.HTTPError, ValueError)
+def _is_provider_error(exc: Exception) -> bool:
+    """Everything a speech call raises except the database's own errors,
+    which stay 500s instead of posing as the provider's."""
+    return not isinstance(exc, (HTTPException, SQLAlchemyError))
+
+
+#: Detached audit writes still running; held so they are not collected.
+_PENDING: set[asyncio.Task[None]] = set()
+
+
+async def _audit_detached(tenant_id: uuid.UUID, **event: Any) -> None:
+    """`append_event` on a session of its own, as a detached task awaited
+    through a shield: it runs while the answer streams, after the request's
+    transaction committed, and survives the client going away."""
+    from oc8.db.session import tenant_session
+
+    async def write() -> None:
+        async with tenant_session(tenant_id) as own:
+            await append_event(own, tenant_id=tenant_id, **event)
+
+    task = asyncio.ensure_future(write())
+    _PENDING.add(task)
+    task.add_done_callback(_PENDING.discard)
+    await asyncio.shield(task)
 
 
 @router.get("/chat/audio/capabilities", response_model=AudioCapabilities)
 async def audio_capabilities(db: DbSession, actor: _ChatActor) -> AudioCapabilities:
-    """Which voice buttons the chat shows: none without a configured model."""
+    """Which voice buttons the chat shows: none without a configured model,
+    nor where the tenant set the member allowance to 0."""
     tenant_id = actor.principal.tenant_id
+    organization = await db.get(m.Organization, tenant_id)
     stt = await configured_speech_model(db, tenant_id=tenant_id, capability=SPEECH_TO_TEXT)
     tts = await configured_speech_model(db, tenant_id=tenant_id, capability=TEXT_TO_SPEECH)
+    stt_on = stt is not None and daily_limit(organization, SPEECH_TO_TEXT) > 0
+    tts_on = tts is not None and daily_limit(organization, TEXT_TO_SPEECH) > 0
     return AudioCapabilities(
-        speech_to_text=stt is not None,
-        text_to_speech=tts is not None,
-        text_to_speech_local=tts is not None and tts.locality == "local",
+        speech_to_text=stt_on,
+        text_to_speech=tts_on,
+        text_to_speech_local=tts_on and tts is not None and tts.locality == "local",
     )
 
 
 @router.post("/chat/audio/transcribe", response_model=Transcription)
 async def transcribe_audio(request: Request, db: DbSession, actor: _ChatActor) -> Transcription:
-    """The person's recording as text. Dictation is the person's own words,
-    like typing, so it is allowed in a chat that holds restricted content."""
-    parts = _form_parts(request.headers.get("content-type", ""), await _read_capped(request))
+    """The person's recording as text, into one of the person's own chats.
+    Dictation is the person's own words, like typing, so it is allowed in a
+    chat that holds restricted content."""
+    parts = await _form_parts(request)
     audio_part = parts.get("file")
-    if audio_part is None or not audio_part.data:
+    if audio_part is None or not audio_part.data.tell():
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "a recording is required")
     content_type = _audio_type(audio_part)
     language = _field(parts, "language")
     if language is not None and not _LANGUAGE.match(language):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "language must be like 'de'")
-    session: m.ChatSession | None = None
     raw_session = _field(parts, "session_id")
-    if raw_session is not None:
-        try:
-            session_id = uuid.UUID(raw_session)
-        except ValueError as exc:
-            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid session_id") from exc
-        session = await session_owned_by_caller(session_id, db, actor)
-    agent = await db.get(m.Agent, session.agent_id) if session is not None else None
+    if raw_session is None:
+        # Usage and the audit event always name the chat's agent.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "session_id is required")
+    try:
+        session_id = uuid.UUID(raw_session)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid session_id") from exc
+    session = await session_owned_by_caller(session_id, db, actor)
+    agent = await db.get(m.Agent, session.agent_id)
+    size = audio_part.data.tell()
+    audio_part.data.seek(0)
     try:
         result = await transcribe(
             db,
             tenant_id=actor.principal.tenant_id,
-            audio=bytes(audio_part.data),
+            audio=audio_part.data,
             content_type=content_type,
             language=language,
             member_id=actor.member.id,
-            agent_id=agent.id if agent is not None else None,
+            agent_id=session.agent_id,
             department_id=agent.department_id if agent is not None else None,
         )
-    except _PROVIDER_ERRORS as exc:
+    except Exception as exc:
+        if not _is_provider_error(exc):
+            raise
         raise _speech_error(exc) from exc
+    finally:
+        audio_part.data.close()
     await append_event(
         db,
         tenant_id=actor.principal.tenant_id,
@@ -255,17 +315,17 @@ async def transcribe_audio(request: Request, db: DbSession, actor: _ChatActor) -
         category="chat",
         action="chat.audio.transcribed",
         resource={
-            "session_id": str(session.id) if session is not None else None,
+            "session_id": str(session.id),
             # The key `GET /audit?chat_session_id=` reads, as on chat.feedback.
-            "chat_session_id": str(session.id) if session is not None else None,
+            "chat_session_id": str(session.id),
             # Names the subject, so the audit read treats a personal agent's
             # event as personal (PR #187).
-            "agent_id": str(agent.id) if agent is not None else None,
+            "agent_id": str(session.agent_id),
             "department_id": str(agent.department_id) if agent is not None else None,
             "provider": result.provider,
             "model": result.model,
             "seconds": result.seconds,
-            "bytes": len(audio_part.data),
+            "bytes": size,
         },
         principal=actor.principal,
     )
@@ -281,55 +341,91 @@ async def transcribe_audio(request: Request, db: DbSession, actor: _ChatActor) -
 async def speak_message(
     session_id: uuid.UUID, message_id: uuid.UUID, db: DbSession, actor: _ChatActor
 ) -> StreamingResponse:
-    """One answer read aloud. Everything that touches the database (the
-    gates, the usage row, the audit event) is done before the stream starts;
-    the stream itself only relays the provider's audio."""
+    """One answer read aloud. The gates, the first piece's usage row and the
+    audit event are written before the stream starts; a later piece is billed
+    when the provider accepts it, and a later piece that fails ends the audio
+    and is audited as an error."""
     session = await session_owned_by_caller(session_id, db, actor)
     msg = await db.get(m.ChatMessage, message_id)
     if msg is None or msg.session_id != session.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
     if msg.role != "assistant":
         raise HTTPException(status.HTTP_409_CONFLICT, "only an answer can be read aloud")
-    if not (msg.content or "").strip():
+    text = speakable(msg.content or "")
+    if not text:
         raise HTTPException(status.HTTP_409_CONFLICT, "this answer has no text to read aloud")
+    if len(text) > MAX_SPOKEN_CHARS:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"this answer is too long to read aloud (at most {MAX_SPOKEN_CHARS} characters)",
+        )
     agent = await db.get(m.Agent, session.agent_id)
+    tenant_id = actor.principal.tenant_id
+    resource = {
+        "session_id": str(session.id),
+        "chat_session_id": str(session.id),
+        "message_id": str(msg.id),
+        "run_id": str(msg.run_id) if msg.run_id else None,
+        "agent_id": str(session.agent_id),
+        "department_id": str(agent.department_id) if agent is not None else None,
+    }
+    principal = actor.principal
+    member_id = actor.member.id
+
+    async def on_error(exc: Exception) -> None:
+        await _audit_detached(
+            tenant_id,
+            actor_type="operator",
+            actor_id=member_id,
+            category="chat",
+            action="chat.audio.speech_failed",
+            resource={**resource, "error": type(exc).__name__},
+            decision="error",
+            principal=principal,
+        )
+
     try:
         spoken = await synthesize(
             db,
-            tenant_id=actor.principal.tenant_id,
-            text=msg.content,
+            tenant_id=tenant_id,
+            text=text,
             restricted=bool(msg.restricted),
-            member_id=actor.member.id,
+            member_id=member_id,
             agent_id=session.agent_id,
             department_id=agent.department_id if agent is not None else None,
+            on_error=on_error,
         )
-    except _PROVIDER_ERRORS as exc:
+    except Exception as exc:
+        if not _is_provider_error(exc):
+            raise
         raise _speech_error(exc) from exc
-    await append_event(
-        db,
-        tenant_id=actor.principal.tenant_id,
-        actor_type="operator",
-        actor_id=actor.member.id,
-        category="chat",
-        action="chat.audio.spoken",
-        resource={
-            "session_id": str(session.id),
-            "chat_session_id": str(session.id),
-            "message_id": str(msg.id),
-            "run_id": str(msg.run_id) if msg.run_id else None,
-            "agent_id": str(session.agent_id),
-            "department_id": str(agent.department_id) if agent is not None else None,
-            "provider": spoken.provider,
-            "model": spoken.model,
-            "characters": spoken.characters,
-        },
-        principal=actor.principal,
-    )
-    await db.commit()
+    try:
+        await append_event(
+            db,
+            tenant_id=tenant_id,
+            actor_type="operator",
+            actor_id=member_id,
+            category="chat",
+            action="chat.audio.spoken",
+            resource={
+                **resource,
+                "provider": spoken.provider,
+                "model": spoken.model,
+                "characters": spoken.characters,
+            },
+            principal=principal,
+        )
+        await db.commit()
+    except BaseException:
+        await spoken.aclose()
+        raise
     return StreamingResponse(
         spoken.chunks,
         media_type=spoken.media_type,
         # Never cached, by the browser or the service worker: the audio is
         # the answer's words.
         headers={"Cache-Control": "no-store"},
+        # Runs after the response, also when the client went away mid-answer:
+        # the provider stream that is still open is closed, not left to GC.
+        background=BackgroundTask(spoken.aclose),
     )

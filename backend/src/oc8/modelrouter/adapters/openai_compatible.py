@@ -7,6 +7,7 @@ dedicated adapter per provider."""
 
 from __future__ import annotations
 
+import io
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -91,7 +92,7 @@ class OpenAICompatibleAdapter:
         return [float(x) for x in vector], tokens
 
     async def transcribe(
-        self, audio: bytes, *, model: str, content_type: str, language: str | None
+        self, audio: bytes | io.BytesIO, *, model: str, content_type: str, language: str | None
     ) -> Transcript:
         """`POST {base_url}/audio/transcriptions` (`_openai_audio`)."""
         return await post_transcription(

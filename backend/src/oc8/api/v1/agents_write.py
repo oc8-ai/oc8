@@ -400,6 +400,13 @@ async def create_agent(
         _refuse_unenforceable_thresholds(checked.unenforceable)
         narrowing = checked.narrowing
 
+    if body.model_config_id is not None and is_speech_model(
+        await db.get(m.ModelConfig, body.model_config_id)
+    ):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "a speech model cannot run an agent"
+        )
+
     principal = actor.principal
     gated = await hire_is_gated(db, tenant_id=principal.tenant_id, department=dept)
     agent = m.Agent(
@@ -1607,6 +1614,12 @@ async def rollback_agent_version(
         )
 
     restored_model = pinned_model_config_id(payload)
+    if restored_model is not None and is_speech_model(await db.get(m.ModelConfig, restored_model)):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "this version runs on a model that is now a speech model; a speech model "
+            "cannot run an agent",
+        )
     if restored_model != agent.model_config_id:
         try:
             await assert_manual_only_compatible(

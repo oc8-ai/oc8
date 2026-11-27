@@ -1281,9 +1281,18 @@ async def list_models(db: DbSession, principal: CurrentPrincipal) -> dict[str, A
     """
     from sqlalchemy import select
 
+    from oc8.modelrouter.speech import chat_capable
+
     caller = await _caller(db, principal, bills=False)
     rows = (
-        (await db.execute(select(m.ModelConfig).where(m.ModelConfig.tenant_id == caller.tenant_id)))
+        (
+            await db.execute(
+                # A speech model answers no chat, so a harness must not see it.
+                select(m.ModelConfig).where(
+                    m.ModelConfig.tenant_id == caller.tenant_id, chat_capable()
+                )
+            )
+        )
         .scalars()
         .all()
     )
