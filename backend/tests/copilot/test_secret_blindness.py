@@ -12,6 +12,7 @@ a benign message to the Assistant itself is NOT refused.
 
 from __future__ import annotations
 
+import re
 import uuid
 
 import pytest
@@ -232,6 +233,7 @@ _VALUES = [
     "AIzaSyA-abcdefghijklmnopqrstuvwxyz012345",
     "-----BEGIN RSA PRIVATE KEY-----",
     "-----BEGIN PRIVATE KEY-----",
+    "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEF\nAASCBKcwggSj",
     "connect to postgres://admin:hunter2@db.example.com/app",
     # a strong key takes no exemption a weak key gets
     "password=gpt-4o",
@@ -500,3 +502,68 @@ def test_generated_mentions_pass() -> None:
         if carries_secret_value(sentence.format(k=key))
     ]
     assert not leaked, leaked
+
+
+def test_a_truncated_pem_key_is_redacted_to_the_end() -> None:
+    """No END line: the body after BEGIN is the key; redaction must not be
+    weaker than the refusal (the refused turn, titles and context objects
+    store the redacted text)."""
+    from oc8.copilot.redaction import carries_secret_value, redact_text
+
+    text = "here it is:\n-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEF\nAASCBKcwggSj"
+    assert carries_secret_value(text)
+    redacted = redact_text(text)
+    assert redacted == "here it is:\n[redacted]"
+
+
+@pytest.mark.parametrize("message", _VALUES)
+def test_redaction_is_never_weaker_than_the_refusal(message: str) -> None:
+    """Whatever made the gate refuse leaves no trace after redaction: no run of
+    six or more value characters holding a digit survives (the value shapes
+    of `_VALUES` all hold one; a key word such as `OPENAI_API_KEY` or
+    `api03` is not a value)."""
+    from oc8.copilot.redaction import redact_text
+
+    redacted = redact_text(message)
+    left = [
+        run
+        for run in re.findall(r"[A-Za-z0-9_+/=.-]{6,}", redacted)
+        if re.search(r"\d", run) and run not in {"OPENAI_API_KEY"}
+    ]
+    assert not left, (message, redacted)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "api_key=${OPENAI_API_KEY}",
+        "api_key=$OPENAI_API_KEY",
+        "password=%DB_PASSWORD%",
+        "token: {{ api_key }}",
+        "secret = <API_KEY>",
+        "Set OPENAI_API_KEY=${OPENAI_API_KEY} in the environment.",
+    ],
+)
+def test_an_environment_reference_is_a_placeholder(text: str) -> None:
+    """Configuration that names where the secret lives (an env var, a
+    template) is not the secret -- also in project instructions and builder
+    text, which read the same detector."""
+    from oc8.copilot.redaction import carries_secret_value, redact_text
+
+    assert not carries_secret_value(text)
+    assert redact_text(text) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "refused"),
+    [
+        ("passphrase=correct horse", True),
+        ("SSH_PASSPHRASE: Sommer2024", True),
+        ("my PIN is 1234", False),
+        ("PIN: 1234", False),
+    ],
+)
+def test_a_passphrase_is_a_strong_key_and_a_pin_is_not(text: str, refused: bool) -> None:
+    from oc8.copilot.redaction import carries_secret_value
+
+    assert carries_secret_value(text) is refused

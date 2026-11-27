@@ -190,9 +190,10 @@ class Resume:
 #: task, and an earlier turn is what a chat has and a run does not.
 GROUNDING_RULE = (
     "FIGURES: numbers about budgets, usage, runs and business records must come "
-    "from this turn -- a tool result, the knowledge context provided, the task "
-    "or the person's own message -- never from memory or what an earlier turn "
-    "recalled. If none of these holds the figure, say so instead of estimating it."
+    "from a tool result of this turn, the knowledge context provided, the task, "
+    "or what the person told you in this conversation -- never from memory or "
+    "from a figure an earlier answer recalled. If none of these holds the figure, "
+    "say so instead of estimating it."
 )
 
 

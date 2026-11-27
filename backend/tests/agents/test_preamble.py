@@ -558,7 +558,8 @@ async def test_a_chat_turn_is_told_where_a_figure_comes_from(
     earlier turn, or makes up, reads exactly like one it just looked up. A
     chat's preamble says once, in the stable system prefix, where a figure has
     to come from -- a tool result, the knowledge context, the task or the
-    person's own message -- and what to say when none holds it. A triggered
+    figure the person told you in this conversation -- and what to say when
+    none holds it. A triggered
     run has no earlier turn and its figures come with its task: not told."""
     from oc8.agent.preamble import GROUNDING_RULE
     from oc8.agent.provenance import RULE
@@ -580,9 +581,9 @@ async def test_a_chat_turn_is_told_where_a_figure_comes_from(
     if said:
         assert systems[systems.index(RULE) + 1] == GROUNDING_RULE
     rule = GROUNDING_RULE.lower()
-    for word in ("budget", "tool result", "knowledge context", "the task", "own message"):
+    for word in ("budget", "tool result", "knowledge context", "the task", "this conversation"):
         assert word in rule
-    assert "estimat" in rule and "earlier turn" in rule
+    assert "estimat" in rule and "earlier answer" in rule
 
 
 async def test_the_copilot_is_told_where_a_figure_comes_from(

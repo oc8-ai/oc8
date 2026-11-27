@@ -46,7 +46,7 @@ _SENSITIVE_KEY = re.compile(
 
 #: Where an assignment can be: every word a credential key is built around.
 _CREDENTIAL_WORD = re.compile(
-    r"(?i)password|passwort|kennwort|passwd|secret|api[ _-]?key|access[ _-]?key"
+    r"(?i)password|passwort|kennwort|passwd|passphrase|secret|api[ _-]?key|access[ _-]?key"
     r"|private[ _-]?key|credential|token|authorization|auth|pwd|pw"
 )
 #: Characters a key is made of (`DB_PASSWORD`, `x-api-key`, `config.secret`).
@@ -61,7 +61,7 @@ _PLACEHOLDER_SPAN = 128
 #: Key words whose value is always a secret: any value but a clear
 #: placeholder counts (`password=gpt-4o`, `secret = manager` are values).
 _STRONG_WORDS = (
-    "password", "passwort", "kennwort", "passwd", "secret", "apikey", "accesskey",
+    "password", "passwort", "kennwort", "passwd", "passphrase", "secret", "apikey", "accesskey",
     "privatekey", "credential",
 )  # fmt: skip
 #: Exact keys that are short spellings of a password.
@@ -82,7 +82,10 @@ _PLACEHOLDERS = frozenset(
 #: digits (`<hunter2>` is a value); `[redacted]` is what `redact_text` wrote.
 _PLACEHOLDER_SHAPE = re.compile(
     r"^(?:<[A-Za-zÄÖÜäöüß _-]{1,64}>|\[[A-Za-zÄÖÜäöüß _-]{1,64}\]?|\*+|x{3,}|\.{3,}|…"
-    r"|\$\{\w+\})$",
+    # Where the secret lives, not the secret: `${OPENAI_API_KEY}`,
+    # `$OPENAI_API_KEY` (an upper-case name; `$ecret1` is a value),
+    # `%API_KEY%`, `{{ api_key }}`.
+    r"|\$\{\w+\}|\$[A-Z_][A-Z0-9_]*|%[A-Za-z_]\w*%|\{\{\s*[\w.]+\s*\}\})$",
     re.IGNORECASE,
 )
 #: Words that follow a weak key or a sentence about a credential without being
@@ -210,6 +213,13 @@ def _read_value(text: str, i: int) -> tuple[int, int, bool]:
         stop = n if close == -1 else close
         line_end = text.find("\n", i + 1, stop)
         return i + 1, stop if line_end == -1 else line_end, True
+    # A template reference reads through its closing brace (`${VAR}`,
+    # `{{ name }}`) so the placeholder check sees all of it.
+    for opener, closer in (("${", "}"), ("{{", "}}")):
+        if text.startswith(opener, i):
+            close = text.find(closer, i, min(n, i + _PLACEHOLDER_SPAN))
+            if close != -1 and text.find("\n", i, close) == -1:
+                return i, close + len(closer), True
     if i < n and text[i] == "<":
         # A placeholder (`<your password>`) is short: looked for within
         # `_PLACEHOLDER_SPAN` characters, else the value is read bare.
@@ -311,7 +321,8 @@ def _other_spans(text: str) -> list[tuple[int, int]]:
             end = _PEM_END.search(text, begin.end())
             exhausted = end is None
         spans.append(
-            (begin.start(), end.end() if end is not None and not exhausted else begin.end())
+            # No END line: the key runs to the end of the text, all of it.
+            (begin.start(), end.end() if end is not None and not exhausted else len(text))
         )
     spans += [m.span("value") for m in _BEARER.finditer(text) if _bearer_token(m.group("value"))]
     spans += [
