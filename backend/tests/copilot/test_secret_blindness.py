@@ -58,21 +58,26 @@ async def test_assistant_refuses_a_message_that_looks_like_a_credential(
 
     async with app_session(tenant) as db:
         messages = (
-            await db.execute(
-                select(m.ChatMessage)
-                .where(m.ChatMessage.session_id == session_id)
-                .order_by(m.ChatMessage.id.asc())
+            (
+                await db.execute(
+                    select(m.ChatMessage)
+                    .where(m.ChatMessage.session_id == session_id)
+                    .order_by(m.ChatMessage.id.asc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         runs = (
-            await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant))
-        ).scalars().all()
+            (await db.execute(select(m.AgentRun).where(m.AgentRun.tenant_id == tenant)))
+            .scalars()
+            .all()
+        )
 
     assert [message.role for message in messages] == ["user", "assistant"]
     assert messages[0].content == "apiKey=[redacted]"
     assert messages[1].content == (
-        "I cannot accept, request, or use credential values. "
-        "Use the normal secret setup flow."
+        "I cannot accept, request, or use credential values. Use the normal secret setup flow."
     )
     assert runs == []
     assert secret not in messages[0].content
@@ -280,3 +285,191 @@ async def test_the_assistant_answers_a_question_about_token_usage(
 
     assert run is not None and run.source == "chat"
     assert user_message.content == message
+
+
+def test_a_value_written_as_a_sentence_is_redacted() -> None:
+    from oc8.copilot.redaction import redact_text
+
+    assert redact_text("my password is hunter2, thanks") == "my password is [redacted], thanks"
+
+
+@pytest.mark.parametrize("message", _VALUES)
+def test_redaction_removes_every_value_the_gate_refuses(message: str) -> None:
+    """One detector for refusal and redaction: what the gate refuses is never
+    redaction-blind (titles, context objects, the stored refused turn)."""
+    from oc8.copilot.redaction import carries_secret_value, redact_text
+
+    redacted = redact_text(message)
+    assert "[redacted]" in redacted
+    assert not carries_secret_value(redacted), redacted
+
+
+@pytest.mark.parametrize("message", _MENTIONS)
+def test_redaction_leaves_a_mention_alone(message: str) -> None:
+    from oc8.copilot.redaction import redact_text
+
+    assert redact_text(message) == message
+
+
+@pytest.mark.parametrize(
+    ("text", "refused"),
+    [
+        ("Explain our password policy", False),
+        ("Answer questions about token usage: max token: 8000 per run.", False),
+        ("Use DB_PASSWORD=Sommer2024 for the reports.", True),
+        ("Nutze Passwort: Sommer2024 für Odoo.", True),
+        ("Nutze password=hunter2 für Odoo.", True),
+        ("narrowing password=x", True),
+        ("Bearer abc.def", True),
+        ("token=abc123", True),
+        ("api_key=sk-123", True),
+    ],
+)
+def test_stored_configuration_refuses_only_values(text: str, refused: bool) -> None:
+    """Project instructions and builder proposals read the same detector: a
+    policy text passes, a value does not (ea53133b; the builder's leaf texts
+    turn `{"password": "x"}` into `password=x`)."""
+    from oc8.copilot.redaction import carries_secret_value
+
+    assert carries_secret_value(text) is refused
+
+
+_ADVERSARIAL = {
+    "dots": ("a.", 500_000),
+    "dashes": ("a-", 500_000),
+    "words": ("password", 100_000),
+    "separators": ("=", 1_000_000),
+    "quotes": ('"', 1_000_000),
+    "quoted-keys": ("'password': '", 80_000),
+    "flags": ("--password ", 90_000),
+    "weak-keys": ("token: ", 140_000),
+    "headers": ("Authorization: Bearer ", 45_000),
+    "tags": ("<a>", 330_000),
+    "urls": ("a://", 250_000),
+    "prose": ("my password is ", 70_000),
+}
+
+
+@pytest.mark.parametrize("name", [*_ADVERSARIAL, "jwt-run"])
+def test_the_detector_stays_linear_on_a_long_message(name: str) -> None:
+    """About 1 MB of adversarial input in well under a second of CPU: no form
+    backtracks quadratically (a quadratic one takes minutes here). CPU time,
+    with the collector off, so a busy machine does not fail the test."""
+    import gc
+    import time
+
+    from oc8.copilot.redaction import carries_secret_value
+
+    if name == "jwt-run":
+        text = "eyJ" + "a" * 1_000_000
+    else:
+        unit, times = _ADVERSARIAL[name]
+        text = unit * times
+    gc.disable()
+    try:
+        started = time.process_time()
+        carries_secret_value(text + " password=hunter2")
+        spent = time.process_time() - started
+    finally:
+        gc.enable()
+    assert spent < 1.5, spent
+
+
+def test_a_value_far_into_a_long_message_is_still_found() -> None:
+    from oc8.copilot.redaction import carries_secret_value
+
+    assert carries_secret_value("a" * 50_000 + " password=hunter2")
+
+
+@pytest.mark.parametrize("lead", [0, 4000, 16_000])
+def test_a_long_token_is_redacted_whole(lead: int) -> None:
+    """A 5 000-character JWT and a 600-character quoted value are redacted to
+    the last character, wherever in the message they stand (the earlier
+    windowed scan split them at 4 096 / 16 384)."""
+    from oc8.copilot.redaction import redact_text
+
+    jwt = "eyJ" + "a" * 2500 + "." + "b" * 2000 + "." + "c" * 497
+    quoted = "Z9" * 300
+    text = "x " * lead + f"token {jwt} and " + '{"client_secret": "' + quoted + '"}'
+    redacted = redact_text(text)
+    assert "aaaa" not in redacted and "bbbb" not in redacted and "cccc" not in redacted
+    assert "Z9" not in redacted
+
+
+def test_a_long_key_and_a_value_on_the_next_line_are_read() -> None:
+    from oc8.copilot.redaction import carries_secret_value
+
+    assert carries_secret_value("X" * 100 + "_PASSWORD=hunter2")
+    assert carries_secret_value("password:\n    hunter2")
+    assert carries_secret_value("password      =      hunter2")
+    assert carries_secret_value("password=" + "v" * 2000)
+
+
+def test_a_flag_takes_its_value() -> None:
+    from oc8.copilot.redaction import carries_secret_value, redact_text
+
+    assert redact_text("--password=-x9abc") == "--password=[redacted]"
+    assert redact_text("--password x9-abc") == "--password [redacted]"
+    assert not carries_secret_value("--password --verbose")
+    assert carries_secret_value('{"auth": "dXNlcjpwYXNz"}')
+    assert not carries_secret_value("auth: required")
+
+
+#: Keys as people write them: the word, a prefix, a suffix, casing, quotes.
+_GEN_KEYS = [
+    "password", "passwd", "pwd", "secret", "api_key", "apiKey", "Passwort", "Kennwort",
+    "credential", "client_secret", "access_key", "private_key",
+    "token", "access_token", "refresh_token", "auth",
+]  # fmt: skip
+_GEN_VARIANTS = ["{k}", "{K}", "DB_{K}", "{k}_value", '"{k}"', "'{k}'", "app.{k}", "x-{k}"]
+_GEN_SEPARATORS = ["=", ": ", " = ", " : ", "=>", " -> ", ":\n  ", "  =  "]
+_GEN_VALUES = [
+    "hunter2xy", "Sommer2024!", "s3cr3t-v4lue", "dXNlcjpwYXNzd29yZA==",
+    "ghp_abcdefghijklmnopqrstuvwxyz0123", "Zx9#kLm2Qp", "correct-horse-battery-1",
+]  # fmt: skip
+
+
+def _generated() -> list[str]:
+    cases = []
+    for key in _GEN_KEYS:
+        for variant in _GEN_VARIANTS:
+            rendered = variant.format(k=key, K=key.upper())
+            for separator in _GEN_SEPARATORS:
+                for value in _GEN_VALUES:
+                    quote = rendered[0] if rendered[0] in "\"'" else ""
+                    cases.append(f"{rendered}{separator}{quote}{value}{quote}")
+    return cases
+
+
+def test_every_generated_assignment_is_refused_and_redacted_whole() -> None:
+    """Key word x casing/prefix/suffix/quotes x separator x real-looking value:
+    each is refused and its value leaves no trace after redaction."""
+    from oc8.copilot.redaction import carries_secret_value, redact_text
+
+    missed = [
+        (case, redact_text(case))
+        for case in _generated()
+        if not carries_secret_value(case)
+        or any(value in redact_text(case) for value in _GEN_VALUES)
+    ]
+    assert not missed, missed[:10]
+
+
+_GEN_MENTIONS = [
+    "How many {k}s did we use?",
+    "Where do I change the {k}?",
+    "The {k} handling is described in the wiki.",
+    "Wie setze ich {k} zurück?",
+]
+
+
+def test_generated_mentions_pass() -> None:
+    from oc8.copilot.redaction import carries_secret_value
+
+    leaked = [
+        sentence.format(k=key)
+        for key in _GEN_KEYS
+        for sentence in _GEN_MENTIONS
+        if carries_secret_value(sentence.format(k=key))
+    ]
+    assert not leaked, leaked
