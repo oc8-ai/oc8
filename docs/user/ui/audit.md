@@ -59,6 +59,24 @@ Runs on the in-process engine whose connection cannot be resolved at session
 start record no per-call result event; isolated and gateway runs record the
 outcome as `error`.
 
+A `web_search` call's `tool.result` also holds the search provider and the
+number of hits (`provider`, `count`); the query itself is in the `tool.call`
+arguments.
+
+## Chat events
+
+| Action | Written when | Holds |
+|--------|--------------|-------|
+| `chat.feedback` | Someone rates an answer | `rating` (`up`/`down`), `note` (a rating sent through the API can carry one), the `model` that wrote the answer, the chat, message, run, agent and department |
+| `chat.audio.transcribed` | A dictation was turned into text | provider, model, `seconds`, `bytes` — never the audio or the text |
+| `chat.audio.spoken` | An answer was read aloud | provider, model, `characters` |
+| `chat.audio.speech_failed` | Reading aloud failed at the provider | the error's kind |
+| `chat.audio.allowance_overshoot` | The speech service reported a dictation more than ten times longer than its upload size suggested | `reserved_seconds`, `reported_seconds` |
+
+All of them name the chat's agent, so the rule for personal agents applies:
+for a personal agent's chat, content such as a rating's `note` or a search
+query is shown only to the person it belongs to.
+
 ## Where work goes next
 
 | Goal | Next |

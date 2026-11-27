@@ -352,10 +352,13 @@ An organisation's own setting wins over the default, and an organisation can
 switch web search off for itself. The default's address and key are never
 shown to an organisation. The default SearXNG host may be an internal address
 (a container or cluster service); every other address follows the rules in
-*Reaching systems on your own network*.
+*Reaching systems on your own network*: an organisation's own SearXNG on an
+internal host works only once that host is listed in
+`OC8_OUTBOUND_ALLOWED_PRIVATE`.
 
 For a self-hosted SearXNG, its `settings.yml` must allow JSON answers and must
-not rate-limit oc8:
+not rate-limit oc8 (its limiter is meant for browsers; oc8 is one internal
+client making every request):
 
 ```yaml
 search:
@@ -401,6 +404,29 @@ browser's: code that allocates without bound can crash the browser tab (it
 cannot reach anything outside it). Each Run starts a fresh Python, so nothing
 from one run (variables, imported modules, mounted files) is left for the
 next.
+
+## Dictation and reading answers aloud
+
+The chat can turn a person's dictation into text and read answers aloud when
+an admin adds speech models (Models: a model with the capability *Speech to
+text* or *Text to speech*) and picks them under Settings → Speech. Only
+OpenAI and OpenAI-compatible providers can serve speech
+(`/audio/transcriptions`, `/audio/speech`). Reading an answer with
+restricted content aloud requires a read-aloud model whose locality is
+*local* (a speech server you run yourself); dictation is the person's own
+words and goes to the dictation model in any chat. Audio is not stored.
+
+Speech cost shows 0 (usage is recorded in platform units -- seconds and
+characters -- not tokens). Spend is bounded per member per day: dictation
+minutes and read-aloud characters, set in Settings → Speech (defaults 60
+minutes and 200 000 characters; 0 switches the feature off for members). The
+dictation allowance bounds upload **bytes** per day (the minutes times
+16 kbit/s); real audio time can exceed it by the ratio of 16 kbit/s to the
+recording's actual bitrate -- about 2.7x for constant low-bitrate Opus, up to
+about 50x for mostly silent recordings (variable bitrate with silence
+suppression). Admins can lower the daily cap or switch dictation off (0). A
+transcription whose reported duration is more than 10x its reservation is
+audited as `chat.audio.allowance_overshoot`. One upload is at most 12 MB.
 
 ## Letting people connect their Microsoft or Google account
 
@@ -459,10 +485,12 @@ connections themselves.
   window must be at least 4096 tokens when it is saved; a row saved earlier
   with a smaller one keeps working as stored (the harness reads it as is), so
   set it again or clear it to use the default. This release also adds
-  migrations 0136-0145 (chat message trees, chat knowledge bases, chat file
+  migrations 0136-0148 (chat message trees, chat knowledge bases, chat file
   index status, chat message digests, chat checkpoints, always-allow tool
   rules, queued-message delivery, hybrid knowledge search, audit run/chat
-  indexes, token usage per member). `docker compose up -d --build`
+  indexes, token usage per member, an audit index for answer feedback
+  (0146), the Web choice of a queued message (0147, `run_input.web`) and
+  temporary chats (0148, `chat_session.temporary`)). `docker compose up -d --build`
   applies them through the `migrate` service. Two of them take longer on big
   instances:
   - 0143 rewrites `kb_chunk` once (a generated full-text column); expect a few
@@ -482,9 +510,27 @@ connections themselves.
     kb_chunk USING hnsw (embedding vector_cosine_ops);`, then restart the
     backend processes so retrieval picks up the new pgvector version.
   - 0144 builds two audit-log expression indexes concurrently (run and chat
-    filters), and 0145 one token-usage index; writes are not blocked.
+    filters), 0145 one token-usage index and 0146 one audit-log index for
+    answer feedback; writes are not blocked.
 
   There is no worker-order constraint beyond the ingestion workers first.
+
+  Also new in 0.23.0:
+  - **Web search, Python in the chat, speech:** see *Web search*, *Running
+    Python in the chat* and *Dictation and reading answers aloud* above. The
+    frontend image build now downloads the Pyodide files (or reuses a vendored
+    copy, for air-gapped builds); `OC8_SKIP_PYODIDE=1` builds without them.
+  - **A new response header part:** the app's pages are served with
+    `frame-src 'none'; child-src 'self' blob:` in their Content-Security-Policy
+    (next to `frame-ancestors`): the app frames nothing but sandboxed
+    previews, so no frame may load a URL. An edition or a reverse proxy that
+    frames a URL inside oc8's pages must widen `frame-src` for it.
+  - **Service worker caching:** `/sw.js` now also caches the hashed program
+    files under `/assets/` (never API answers, chats or files) and is served
+    with `Cache-Control: no-cache` so a new worker reaches people at once. A
+    proxy in front must not cache `/sw.js` longer. Signing out clears the
+    cache.
+  - **Helm chart 0.12.0** adds `oc8.webSearch.*`.
 - **The four backend processes** are one image with different commands:
   `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
   restart them independently with `docker compose restart <service>`.
