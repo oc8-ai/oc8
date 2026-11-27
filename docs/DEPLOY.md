@@ -348,6 +348,10 @@ organisation search without that, set a platform default in `.env`:
 Helm: `oc8.webSearch.provider`, `oc8.webSearch.baseUrl` and `oc8.webSearch.apiKey`
 (the key is kept in the chart's Secret).
 
+Web search is offered only to agents on the in-process and isolated runtimes;
+an agent on an external runtime that reaches oc8 through the MCP gateway (the
+Claude Code, Codex and OpenCode images) is not offered `web_search`.
+
 An organisation's own setting wins over the default, and an organisation can
 switch web search off for itself. The default's address and key are never
 shown to an organisation. The default SearXNG host may be an internal address
@@ -510,8 +514,9 @@ connections themselves.
     kb_chunk USING hnsw (embedding vector_cosine_ops);`, then restart the
     backend processes so retrieval picks up the new pgvector version.
   - 0144 builds two audit-log expression indexes concurrently (run and chat
-    filters), 0145 one token-usage index and 0146 one audit-log index for
-    answer feedback; writes are not blocked.
+    filters), 0145 one token-usage index, 0146 one audit-log index for
+    answer feedback and 0148 one partial `chat_session` index for temporary
+    chats; writes are not blocked.
 
   There is no worker-order constraint beyond the ingestion workers first.
 
