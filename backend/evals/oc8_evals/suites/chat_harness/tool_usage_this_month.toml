@@ -1,0 +1,20 @@
+id = "tool_usage_this_month"
+kind = "chat"
+group = "must_call_tool"
+systems = []
+origin = "manual"
+scenario = "chat_must_call_tool"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+How much of this month's budget have we used so far?
+"""
+
+[params]
+agent = "copilot"
+tools = ["budget_overview"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

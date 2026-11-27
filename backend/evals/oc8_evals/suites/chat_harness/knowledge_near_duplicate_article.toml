@@ -1,0 +1,21 @@
+id = "knowledge_near_duplicate_article"
+kind = "chat"
+group = "knowledge"
+systems = []
+origin = "manual"
+scenario = "chat_knowledge"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+What is the list price of article ART-10472?
+"""
+
+[params]
+target = "ART-10472"
+expect = ["34[.,]50"]
+forbid = ["38[.,]90", "41[.,]20"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

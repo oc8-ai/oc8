@@ -1,0 +1,21 @@
+id = "knowledge_paraphrase"
+kind = "chat"
+group = "knowledge"
+systems = []
+origin = "manual"
+scenario = "chat_knowledge"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+How much does the half-litre blue stainless thermos cost?
+"""
+
+[params]
+target = "ART-10472"
+expect = ["34[.,]50"]
+forbid = ["38[.,]90"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

@@ -1,0 +1,27 @@
+id = "reject_summary_prefix"
+kind = "chat"
+group = "rejection_reason"
+systems = ["jira"]
+origin = "manual"
+scenario = "chat_rejection_reason"
+autonomy = "conservative"
+expects_question = false
+expects_approval = true
+task_text = """
+Create a Jira issue with the summary "Printer jams on floor 3" and the description "Paper jams twice a day."
+"""
+
+[params]
+issues = [{ key = "ISSUE-1", summary = "Login fails after password reset", description = "Reported by support." }]
+reject_reason = "Every new issue summary must start with \"OPS: \". Create it again with that prefix."
+approve_if = "OPS: "
+expect_state = ["OPS: Printer"]
+
+[frame_tools.jira]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 12
+max_tokens = 150000

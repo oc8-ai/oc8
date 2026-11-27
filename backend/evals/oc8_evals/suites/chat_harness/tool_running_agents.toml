@@ -1,0 +1,20 @@
+id = "tool_running_agents"
+kind = "chat"
+group = "must_call_tool"
+systems = []
+origin = "manual"
+scenario = "chat_must_call_tool"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Which of our agents are running at the moment?
+"""
+
+[params]
+agent = "copilot"
+tools = ["agent_status", "department_status"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

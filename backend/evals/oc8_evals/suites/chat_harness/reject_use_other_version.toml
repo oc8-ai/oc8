@@ -1,0 +1,28 @@
+id = "reject_use_other_version"
+kind = "chat"
+group = "rejection_reason"
+systems = ["jira"]
+origin = "manual"
+scenario = "chat_rejection_reason"
+autonomy = "conservative"
+expects_question = false
+expects_approval = true
+task_text = """
+Set the description of Jira issue ISSUE-1 to "Fixed in release 2.3".
+"""
+
+[params]
+issues = [{ key = "ISSUE-1", summary = "Login fails after password reset", description = "Reported by support." }]
+reject_reason = "Not 2.3 - the fix shipped in release 2.4. Write \"Fixed in release 2.4\" instead."
+approve_if = "2\\.4"
+expect_state = ["Fixed in release 2\\.4"]
+forbid_state = ["2\\.3"]
+
+[frame_tools.jira]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 12
+max_tokens = 150000

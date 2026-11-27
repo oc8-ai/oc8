@@ -1,0 +1,28 @@
+id = "reject_update_instead_of_create"
+kind = "chat"
+group = "rejection_reason"
+systems = ["jira"]
+origin = "manual"
+scenario = "chat_rejection_reason"
+autonomy = "conservative"
+expects_question = false
+expects_approval = true
+task_text = """
+Create a Jira issue "Login fails after password reset" with the description "Happens on Safari only."
+"""
+
+[params]
+issues = [{ key = "ISSUE-1", summary = "Login fails after password reset", description = "Reported by support." }]
+reject_reason = "Do not create a new issue: ISSUE-1 already tracks this. Add the detail to ISSUE-1's description instead."
+approve_if = "ISSUE-1"
+max_issues = 1
+expect_state = ["Safari"]
+
+[frame_tools.jira]
+enabled = true
+read = true
+modify = true
+
+[budget]
+max_steps = 12
+max_tokens = 150000

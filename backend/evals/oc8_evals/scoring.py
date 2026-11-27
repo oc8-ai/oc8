@@ -5,6 +5,7 @@ violations, plus the JSON + markdown report. Pure functions, no I/O except
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,11 @@ class Attempt:
     duration_s: float
     error: str | None = None
     step_timings: list[dict] = field(default_factory=list)
+    #: Prompt tokens the provider served from its cache (usage rows).
+    cache_read_tokens: int = 0
+    #: Scenario-measured numbers that are reported, not scored (e.g. hit@1).
+    metrics: dict[str, float] = field(default_factory=dict)
+    group: str = ""
 
     @property
     def passed(self) -> bool:
@@ -69,10 +75,30 @@ class TaskSummary:
     policy_violations: int
     errors: int = 0
     failed_checks: list[str] = field(default_factory=list)
+    mean_tokens_in: float = 0.0
+    mean_tokens_out: float = 0.0
+    mean_cache_read_tokens: float = 0.0
+    mean_duration_s: float = 0.0
+    #: Each scenario metric's mean over the attempts that reported it.
+    metrics: dict[str, float] = field(default_factory=dict)
+    group: str = ""
 
 
 def _mean(values: list[int]) -> float:
     return round(sum(values) / len(values), 2) if values else 0.0
+
+
+def _mean_metrics(rows: Sequence[Attempt] | Sequence[TaskSummary]) -> dict[str, float]:
+    """Each metric's mean over the rows that reported it."""
+    names = sorted({name for a in rows for name in a.metrics})
+    return {
+        name: round(
+            sum(a.metrics[name] for a in rows if name in a.metrics)
+            / sum(1 for a in rows if name in a.metrics),
+            2,
+        )
+        for name in names
+    }
 
 
 def summarise(attempts: list[Attempt], *, expects_question: dict[str, bool]) -> list[TaskSummary]:
@@ -101,6 +127,12 @@ def summarise(attempts: list[Attempt], *, expects_question: dict[str, bool]) -> 
                 policy_violations=sum(1 for a in rows if a.policy_violation),
                 errors=sum(1 for a in rows if a.error is not None),
                 failed_checks=failed,
+                mean_tokens_in=_mean([a.tokens_in for a in rows]),
+                mean_tokens_out=_mean([a.tokens_out for a in rows]),
+                mean_cache_read_tokens=_mean([a.cache_read_tokens for a in rows]),
+                mean_duration_s=round(sum(a.duration_s for a in rows) / len(rows), 1),
+                metrics=_mean_metrics(rows),
+                group=rows[0].group,
             )
         )
     return out
@@ -112,21 +144,47 @@ def _markdown(meta: dict[str, Any], summaries: list[TaskSummary]) -> str:
     lines += [
         "",
         (
-            "| task | k | pass^k | pass@k | steps | tool calls | tokens | "
-            "false-success | over-asks | violations | errors | failed checks |"
+            "| task | k | pass^k | pass@k | steps | tool calls | tokens | cached | latency s | "
+            "false-success | over-asks | violations | errors | metrics | failed checks |"
         ),
-        "|---|---|---|---|---|---|---|---|---|---|---|---|",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for s in summaries:
+        metrics = ", ".join(f"{k}={v}" for k, v in s.metrics.items())
         lines.append(
             f"| {s.task_id} | {s.k} | {s.pass_pow_k:.2f} | {s.pass_at_k:.2f} | {s.mean_steps} | "
-            f"{s.mean_tool_calls} | {s.mean_tokens} | {s.false_success_rate:.2f} | {s.over_asks} | "
-            f"{s.policy_violations} | {s.errors} | {', '.join(s.failed_checks)} |"
+            f"{s.mean_tool_calls} | {s.mean_tokens} | {s.mean_cache_read_tokens} | "
+            f"{s.mean_duration_s} | {s.false_success_rate:.2f} | {s.over_asks} | "
+            f"{s.policy_violations} | {s.errors} | {metrics} | {', '.join(s.failed_checks)} |"
         )
     if summaries:
         overall = sum(s.pass_pow_k for s in summaries) / len(summaries)
         lines += ["", f"**Suite pass^k: {overall:.2f}** over {len(summaries)} tasks"]
+    lines += _group_lines(summaries)
     return "\n".join(lines) + "\n"
+
+
+def _group_lines(summaries: list[TaskSummary]) -> list[str]:
+    """pass^k and the scenario metrics per group, for a suite whose tasks name one."""
+    groups: dict[str, list[TaskSummary]] = {}
+    for s in summaries:
+        if s.group:
+            groups.setdefault(s.group, []).append(s)
+    if not groups:
+        return []
+    lines = [
+        "",
+        "## Groups",
+        "",
+        "| group | tasks | pass^k | cached | metrics |",
+        "|---|---|---|---|---|",
+    ]
+    for name, rows in sorted(groups.items()):
+        pass_k = sum(s.pass_pow_k for s in rows) / len(rows)
+        cached = round(sum(s.mean_cache_read_tokens for s in rows) / len(rows), 2)
+        metrics = ", ".join(f"{k}={v}" for k, v in _mean_metrics(rows).items())
+        lines.append(f"| {name} | {len(rows)} | {pass_k:.2f} | {cached} | {metrics} |")
+    return lines
 
 
 def latency_section(attempts: list[Attempt]) -> str:

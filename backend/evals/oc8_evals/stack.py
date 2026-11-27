@@ -140,6 +140,23 @@ async def assign_skill(db, *, tenant_id, agent_id, definition: dict) -> uuid.UUI
     return version.id
 
 
+@dataclass(frozen=True)
+class ChatFixture:
+    """A member's chat with an agent, opened before `setup` seeds it."""
+
+    member_id: uuid.UUID
+    subject: str
+    agent_id: uuid.UUID
+    session_id: uuid.UUID
+    #: The Copilot (`params.agent = "copilot"`) instead of a throw-away agent.
+    assistant: bool
+    #: The throw-away department (None for the Copilot).
+    department_id: uuid.UUID | None = None
+    #: The model clone the chat runs on (None: the agent's own model).
+    model_config_id: uuid.UUID | None = None
+    connection_ids: tuple[uuid.UUID, ...] = ()
+
+
 @dataclass
 class ScenarioContext:
     tenant_id: uuid.UUID
@@ -151,6 +168,9 @@ class ScenarioContext:
     run_context: dict[str, Any] = field(default_factory=dict)
     final_state: str = ""
     run_id: uuid.UUID | None = None
+    chat: ChatFixture | None = None
+    #: Numbers the scenario reports but does not score (e.g. hit@1).
+    metrics: dict[str, float] = field(default_factory=dict)
 
 
 async def find_tenant(slug: str | None) -> uuid.UUID:
@@ -349,6 +369,15 @@ async def wait_for_terminal(
 
 
 async def usage_for(tenant_id: uuid.UUID, agent_id: uuid.UUID) -> tuple[int, int, int]:
+    tokens_in, tokens_out, units, _cached = await usage_with_cache(
+        tenant_id, m.TokenUsageRecord.agent_id == agent_id
+    )
+    return tokens_in, tokens_out, units
+
+
+async def usage_with_cache(tenant_id: uuid.UUID, where: Any) -> tuple[int, int, int, int]:
+    """(tokens in, tokens out, platform units, cache-read tokens) of the usage
+    rows matching `where`."""
     async with tenant_session(tenant_id) as db:
         row = (
             await db.execute(
@@ -356,10 +385,192 @@ async def usage_for(tenant_id: uuid.UUID, agent_id: uuid.UUID) -> tuple[int, int
                     func.coalesce(func.sum(m.TokenUsageRecord.tokens_in), 0),
                     func.coalesce(func.sum(m.TokenUsageRecord.tokens_out), 0),
                     func.coalesce(func.sum(m.TokenUsageRecord.platform_units), 0),
-                ).where(m.TokenUsageRecord.agent_id == agent_id)
+                    func.coalesce(func.sum(m.TokenUsageRecord.cache_read_tokens), 0),
+                ).where(where)
             )
         ).one()
-    return int(row[0]), int(row[1]), int(row[2])
+    return int(row[0]), int(row[1]), int(row[2]), int(row[3])
+
+
+async def chat_usage_for(tenant_id: uuid.UUID, fixture: ChatFixture) -> tuple[int, int, int, int]:
+    """The chat's spend: the throw-away agent's rows, or the eval member's on
+    the Copilot (shared by the tenant, so its agent id would count others)."""
+    if fixture.assistant:
+        return await usage_with_cache(tenant_id, m.TokenUsageRecord.member_id == fixture.member_id)
+    return await usage_with_cache(tenant_id, m.TokenUsageRecord.agent_id == fixture.agent_id)
+
+
+#: The token role the eval member chats with: every Copilot status tool is
+#: offered, so a missing tool call is the model's choice, not a permission.
+CHAT_ROLE = "org_admin"
+
+
+async def _model_clone(
+    db: Any, tenant_id: uuid.UUID, task: Task, model_config_id: uuid.UUID
+) -> uuid.UUID:
+    """A chat-enabled copy of the model with the task's caps, so the chat can
+    pick it (`model_override_id` is honoured only for chat-enabled models)."""
+    source = await db.get(m.ModelConfig, model_config_id)
+    if source is None:
+        raise RuntimeError(f"model config {model_config_id} not found")
+    clone = m.ModelConfig(
+        tenant_id=tenant_id,
+        provider=source.provider,
+        model=source.model,
+        locality=source.locality,
+        credential_id=source.credential_id,
+        fallbacks=list(source.fallbacks or []),
+        cost_meta=dict(source.cost_meta or {}),
+        display_name=f"{source.display_name or source.model} eval",
+        health=dict(source.health or {}),
+        used_by_copilot=False,
+        chat_enabled=True,
+        supports_reasoning=source.supports_reasoning,
+        params={**dict(source.params or {}), **caps_params(task)},
+    )
+    db.add(clone)
+    await db.flush()
+    return clone.id
+
+
+async def create_chat_fixture(
+    tenant_id: uuid.UUID,
+    *,
+    task: Task,
+    run_tag: str,
+    model_config_id: uuid.UUID | None,
+    mock_state_file: Path | None,
+) -> ChatFixture:
+    """A fresh member and their chat: with the Copilot when the task's params
+    say `agent = "copilot"`, else with a throw-away department agent that
+    holds the task's mock connections (`systems`) under its frame."""
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.auth.principal import Principal
+    from oc8.authz.scope import scope_for_principal
+
+    if caps_params(task) and model_config_id is None:
+        raise RuntimeError(
+            f"{task.id} sets model caps; pass --model-config so a clone carries them"
+        )
+    subject = f"eval-chat-{run_tag}"
+    async with tenant_session(tenant_id) as db:
+        principal = Principal(subject=subject, tenant_id=tenant_id, role=CHAT_ROLE)
+        member, _scope = await scope_for_principal(db, principal, upsert=True)
+        if member is None:
+            raise RuntimeError("could not create the eval member")
+        member.display_name = "Eval member"
+        member.all_departments = True
+        clone_id = (
+            await _model_clone(db, tenant_id, task, model_config_id)
+            if model_config_id is not None
+            else None
+        )
+        assistant = task.params.get("agent") == "copilot"
+        department_id: uuid.UUID | None = None
+        connection_ids: list[uuid.UUID] = []
+        if assistant:
+            agent = await get_or_create_assistant(db, tenant_id=tenant_id)
+        else:
+            frame = department_frame_for(task)
+            if "cleared_classes" in task.params:
+                frame["cleared_classes"] = [str(c) for c in task.params["cleared_classes"]]
+            dept = m.Department(tenant_id=tenant_id, name=f"EVAL {run_tag} {task.id}", frame=frame)
+            db.add(dept)
+            await db.flush()
+            department_id = dept.id
+            agent = m.Agent(
+                tenant_id=tenant_id,
+                department_id=dept.id,
+                name=f"Eval chat agent {task.id}",
+                role_title="Office agent",
+                status="running",
+                narrowing={},
+                definition=agent_definition_for(task),
+                presentation={},
+                runtime_ref=RUNTIME_REFS["inprocess"],
+                model_config_id=clone_id,
+            )
+            db.add(agent)
+            await db.flush()
+            for system in task.systems:
+                if mock_state_file is None:
+                    raise RuntimeError("a chat task with systems needs a mock state file")
+                config, scopes = _mock_connection_config(system, mock_state_file)
+                conn = m.McpConnection(
+                    tenant_id=tenant_id,
+                    department_id=dept.id,
+                    name=system,
+                    transport="stdio",
+                    server_url="",
+                    scopes=scopes,
+                    config=config,
+                    connected=True,
+                    health={},
+                )
+                db.add(conn)
+                await db.flush()
+                connection_ids.append(conn.id)
+        session = m.ChatSession(
+            tenant_id=tenant_id,
+            agent_id=agent.id,
+            member_id=member.id,
+            model_override_id=clone_id,
+        )
+        db.add(session)
+        await db.flush()
+        return ChatFixture(
+            member_id=member.id,
+            subject=subject,
+            agent_id=agent.id,
+            session_id=session.id,
+            assistant=assistant,
+            department_id=department_id,
+            model_config_id=clone_id,
+            connection_ids=tuple(connection_ids),
+        )
+
+
+async def send_chat_turn(tenant_id: uuid.UUID, fixture: ChatFixture, text: str) -> uuid.UUID:
+    """The member's next turn, through the same `send_message` the chat API
+    calls; returns the run that answers it."""
+    from oc8.chat.service import send_message
+
+    async with tenant_session(tenant_id) as db:
+        session = await db.get(m.ChatSession, fixture.session_id)
+        member = await db.get(m.OrgMember, fixture.member_id)
+        if session is None or member is None:
+            raise RuntimeError("the eval chat vanished")
+        _message, run = await send_message(
+            db,
+            session=session,
+            tenant_id=tenant_id,
+            message=text,
+            originating_operator=fixture.subject,
+            operator_role=CHAT_ROLE,
+            author_member_id=member.id,
+            acting_member=member,
+        )
+        if run is None:
+            raise RuntimeError("the chat refused the turn (no run was started)")
+        return run.id
+
+
+async def teardown_chat_fixture(tenant_id: uuid.UUID, fixture: ChatFixture) -> None:
+    """Best-effort, like `teardown_fixture`: the chat, its runs and usage stay
+    as evidence; the clone stops being offered and the agent stops."""
+    async with tenant_session(tenant_id) as db:
+        for cid in fixture.connection_ids:
+            conn = await db.get(m.McpConnection, cid)
+            if conn is not None:
+                conn.connected = False
+        if fixture.model_config_id is not None:
+            clone = await db.get(m.ModelConfig, fixture.model_config_id)
+            if clone is not None:
+                clone.chat_enabled = False
+        if not fixture.assistant:
+            agent = await db.get(m.Agent, fixture.agent_id)
+            if agent is not None:
+                agent.status = "stopped"
 
 
 async def teardown_fixture(tenant_id: uuid.UUID, fixture: Fixture) -> None:

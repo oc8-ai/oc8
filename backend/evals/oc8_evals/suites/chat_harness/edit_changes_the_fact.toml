@@ -1,0 +1,24 @@
+id = "edit_changes_the_fact"
+kind = "chat"
+group = "edit_regenerate"
+systems = []
+origin = "manual"
+scenario = "chat_edit_regenerate"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+(the turn is the edited message)
+"""
+
+[params]
+action = "edit"
+seed = [["user", "My cost centre is CC-1180. Please confirm it."], ["assistant", "Confirmed: your cost centre is CC-1180."]]
+target = 0
+content = "My cost centre is CC-2290. Please confirm it."
+expect = ["CC-2290"]
+forbid = ["CC-1180"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

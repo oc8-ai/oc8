@@ -1,0 +1,21 @@
+id = "knowledge_invoice_number"
+kind = "chat"
+group = "knowledge"
+systems = []
+origin = "manual"
+scenario = "chat_knowledge"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+When was invoice RE-2026-004711 paid?
+"""
+
+[params]
+target = "RE-2026-004711"
+expect = ["\\b0?3\\b.{0,3}(March|März|Mar|03)|(March|März) 0?3\\b|2026-03-03"]
+forbid = ["\\b17\\b", "2025"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

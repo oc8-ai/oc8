@@ -1,0 +1,23 @@
+id = "recall_from_seeded_checkpoint"
+kind = "chat"
+group = "recall"
+systems = []
+origin = "manual"
+scenario = "chat_recall"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+context_window_tokens = 8192
+task_text = """
+What is the warehouse gate code?
+"""
+
+[params]
+early = ["The warehouse gate code is 7741-B."]
+filler_turns = 6
+checkpoint = "seeded"
+expect = ["7741-B"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000
