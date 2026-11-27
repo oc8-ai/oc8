@@ -25,6 +25,7 @@ from oc8.modelrouter import (
     Usage,
     chunk_from_result,
 )
+from oc8.runtime.approval_resume import Decisions
 
 pytestmark = pytest.mark.asyncio
 
@@ -283,7 +284,7 @@ async def test_resolved_b5_ask_does_not_park_again(
             task_text="go",
             tenant_id=tenant,
             mcp_conn=conn,
-            pre_decided={call_sig(resolved_call): {"decision": verdict}},
+            pre_decided=Decisions.of({call_sig(resolved_call): verdict}),
         )
 
     assert result.status == "done", result
@@ -330,7 +331,7 @@ async def test_one_approval_runs_its_call_once_in_the_engine(
             task_text="go",
             tenant_id=tenant,
             mcp_conn=conn,
-            pre_decided={call_sig(resolved_call): "approve"},
+            pre_decided=Decisions.of({call_sig(resolved_call): "approve"}),
         )
 
     assert result.status == "waiting_for_approval", result
@@ -374,7 +375,7 @@ async def test_a_reused_call_id_does_not_ride_on_an_approval(
             task_text="go",
             tenant_id=tenant,
             mcp_conn=conn,
-            pre_decided={call_sig(resolved_call): "approve"},
+            pre_decided=Decisions.of({call_sig(resolved_call): "approve"}),
         )
 
     assert result.status == "waiting_for_approval", result

@@ -32,6 +32,7 @@ from oc8.agent.engine import run_agent
 from oc8.agents.versioning import publish_version
 from oc8.connections.direct_access import DIRECT_ACTION_NUDGE
 from oc8.modelrouter import ToolCall
+from oc8.runtime.approval_resume import Decisions
 
 pytestmark = pytest.mark.asyncio
 
@@ -733,7 +734,7 @@ async def test_an_elicited_department_held_write_needs_both_approvals_and_runs_o
             task_text="resume",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
     assert leg2.status == "done"
     assert [name for name, _s, _e in recorder.windows] == ["update_record"]
@@ -1137,7 +1138,7 @@ async def _two_legs_on(
         task_text="resume",
         tenant_id=office.tenant,
         run_id=run.id,
-        pre_decided={approved: {"decision": "approve"}},
+        pre_decided=Decisions.of({approved: "approve"}),
     )
 
 
@@ -1233,7 +1234,7 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
             task_text="resume again",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided={approved: {"decision": "approve"}},
+            pre_decided=Decisions.of({approved: "approve"}),
         )
     (entry,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry["result"])
@@ -1313,7 +1314,7 @@ async def test_a_pdp_hold_leaves_no_proof_so_the_resumed_write_is_refused(
             task_text="resume",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
     assert recorder.windows == []
 
@@ -1358,7 +1359,7 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
             task_text="resume",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
         assert leg2.status == "done"
         assert [n for n, _s, _e in recorder.windows] == ["get_record", "update_record"]
@@ -1374,7 +1375,7 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
             task_text="resume again",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
     # The approval covered leg 2's run, so the repeat is asked again --
     # never run on it a second time.

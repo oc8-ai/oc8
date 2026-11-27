@@ -709,13 +709,13 @@ async def run_agent(
     delegation_depth: int = 0,
     cancel_check: CancelCheck | None = None,
     inbox_check: InboxCheck | None = None,
-    pre_decided: Decisions | Mapping[str, str | Mapping[str, Any]] | None = None,
+    pre_decided: Decisions | None = None,
     originating_operator: str | None = None,
     task_images_raw: list[dict[str, str]] | None = None,
     resume: Resume | None = None,
 ) -> RunResult:
     # Each approval covers one run of its call, claimed before it runs (`claim_approval`).
-    decided = Decisions.of(pre_decided)
+    decided = pre_decided
 
     async def _run() -> RunResult:
         settings = get_settings()
@@ -1815,6 +1815,11 @@ async def run_agent(
                             if effect == "run" and replayed is None
                             else None
                         )
+                        # Whether the call went out (or its earlier answer was
+                        # replayed): only then is there a result to audit. A
+                        # usage refusal or an approval lost to a racing request
+                        # never reached the tool.
+                        held_dispatched = replayed is not None
                         if effect == "refuse":
                             finished = f"ERROR: {why}"
                         elif replayed is not None:
@@ -1841,6 +1846,7 @@ async def run_agent(
                             finished = f"ERROR: {_APPROVAL_USED}"
                         else:
                             held_reached = True
+                            held_dispatched = True
                             try:
                                 finished = await server.call(tool_name, arguments)
                                 await record_for(
@@ -1946,12 +1952,10 @@ async def run_agent(
                                 "result": str(finished)[:300],
                                 "step": 0,
                                 "connection": held_route[0],
-                                "state": call_state_for(
-                                    str(finished), dispatched=effect != "refuse"
-                                ),
+                                "state": call_state_for(str(finished), dispatched=held_dispatched),
                             }
                         )
-                        if effect != "refuse":
+                        if held_dispatched:
                             # With the trace entry, so call and result commit together.
                             await audit_tool_result(
                                 db,

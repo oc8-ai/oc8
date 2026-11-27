@@ -1117,7 +1117,8 @@ async def _finish_elicitation(
         return "waiting_for_approval", why
     refusal = why if effect == "refuse" else None
     dispatched = False
-    #: Allowed and answered (run or replayed): the call has a result to audit.
+    #: Answered by the tool or by a replay: only then is there a result to
+    #: audit. A usage refusal never reached the tool.
     ran = False
     held_started_at = dt.datetime.now(dt.UTC)
     if conn is None or not tool:
@@ -1125,7 +1126,6 @@ async def _finish_elicitation(
     elif refusal is not None:
         output = f"ERROR: {refusal}"
     else:
-        ran = True
         # The same replay-safety as /tools (B9), keyed on the merged call: an
         # identical later call -- which the run-long approval would also let
         # through -- gets this result back instead of acting twice, and so
@@ -1164,6 +1164,7 @@ async def _finish_elicitation(
             else None
         )
         if replayed is not None:
+            ran = True
             output = replayed
         elif held_hold is not None and held_hold.refusal is not None:
             await record_limit_refusal(
@@ -1178,6 +1179,7 @@ async def _finish_elicitation(
             output = held_hold.refusal
         else:
             dispatched = True
+            ran = True
             # Whether the call reached the tool: only one that never did (its
             # environment or session could not be set up) gives its count back.
             held_reached = False

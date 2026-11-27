@@ -289,20 +289,12 @@ class Decisions:
         }
 
     @classmethod
-    def of(
-        cls, decided: Decisions | Mapping[str, str | Mapping[str, Any]] | None
-    ) -> Decisions | None:
-        """A plain `signature -> verdict` map, or `signature -> resolved entry`
-        (`resolved_entries`), as unused decisions."""
+    def of(cls, decided: Decisions | Mapping[str, str] | None) -> Decisions | None:
+        """A plain `signature -> verdict` map as unused decisions."""
         if decided is None or isinstance(decided, Decisions):
             return decided
         return cls(
-            {
-                "resolved_tool_approvals": [
-                    {**v, "sig": k} if isinstance(v, Mapping) else {"sig": k, "decision": v}
-                    for k, v in decided.items()
-                ]
-            }
+            {"resolved_tool_approvals": [{"sig": k, "decision": v} for k, v in decided.items()]}
         )
 
     def entry(self, sig: str) -> dict[str, Any]:

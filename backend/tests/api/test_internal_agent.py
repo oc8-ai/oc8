@@ -4310,3 +4310,85 @@ async def test_an_answered_elicitation_over_the_usage_limit_is_refused(
             "Daily limit of 0 reached for create_record" in str(e.get("content", ""))
             for e in row.context["transcript"]
         )
+
+
+@pytest.mark.asyncio
+async def test_an_answered_elicitation_refused_by_the_usage_limit_is_not_audited_as_run(
+    app_session: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The usage limit refused the held re-run before it went out: no
+    `tool.result` event, and the timeline says denied, not failed."""
+    from oc8 import models as m
+    from oc8.modelrouter.types import CompletionResult, Usage
+
+    reached: list[str] = []
+
+    async def fake_call(*args: Any, tool: str, **kw: Any) -> str:
+        reached.append(tool)
+        return "created"
+
+    async def fake_complete(*args: object, **kw: object) -> CompletionResult:
+        return CompletionResult(
+            text="ok", tool_calls=[], usage=Usage(tokens_in=1, tokens_out=1),
+            stop_reason="stop", provider="ollama", model="m",
+        )
+
+    monkeypatch.setattr("oc8.agent.mcp_pool.call", fake_call)
+    monkeypatch.setattr(
+        "oc8.api.v1.internal_agent.stream_completion_with_fallback", _as_stream(fake_complete)
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        agent_id, run_id = await _mcp_backed_run(db, tenant)
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        dept = await db.get(m.Department, agent.department_id)
+        assert dept is not None
+        dept.frame = {
+            "tools": {
+                "odoo": {
+                    "enabled": True,
+                    "read": True,
+                    "modify": True,
+                    "limits": [{"tools": ["create_record"], "max": 0}],
+                }
+            }
+        }
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **run.context,
+            "transcript": [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}],
+            "pending_elicitation": {
+                "connection": "odoo",
+                "tool": "create_record",
+                "arguments": {"model": "sale.order"},
+                "question": "Which customer?",
+            },
+            "clarifications": [{"question": "Which customer?", "answer": "ACME"}],
+        }
+        await db.flush()
+
+    await _post_step(tenant, agent_id, run_id)
+
+    assert reached == []
+    async with app_session(tenant) as db:  # type: ignore[operator]
+        row = await db.get(m.AgentRun, run_id)
+        assert row is not None
+        (entry,) = [c for c in row.context["toolCalls"] if c["tool"] == "create_record"]
+        assert entry["state"] == "denied"
+        from sqlalchemy import select
+
+        results = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action == "tool.result:create_record",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert list(results) == []
