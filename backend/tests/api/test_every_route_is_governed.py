@@ -305,6 +305,10 @@ _CHAT_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/copilot/builder/{}/request"): "agent:view",
     ("POST", "/api/v1/chat/sessions/{}/messages/{}/regenerate"): "agent:view",
     ("POST", "/api/v1/chat/sessions/{}/messages/{}/feedback"): "agent:view",
+    # Voice: the same chat door, then owner-only (`oc8.api.v1.chat_audio`).
+    ("GET", "/api/v1/chat/audio/capabilities"): "agent:view",
+    ("POST", "/api/v1/chat/audio/transcribe"): "agent:view",
+    ("POST", "/api/v1/chat/sessions/{}/messages/{}/speech"): "agent:view",
     ("POST", "/api/v1/chat/sessions/{}/questions/{}/answer"): "agent:view",
     ("GET", "/api/v1/runs/{}/steering"): "agent:view",
     ("POST", "/api/v1/runs/{}/inputs"): "agent:view",

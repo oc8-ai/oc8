@@ -75,6 +75,7 @@ from oc8.departments.personal import (
     ensure_personal_capacity,
     withholds_content_from_trail,
 )
+from oc8.modelrouter.speech import is_speech_model
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
@@ -905,6 +906,10 @@ async def switch_model(
     mc = await db.get(m.ModelConfig, body.model_config_id)
     if mc is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown model config")
+    if is_speech_model(mc):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "a speech model cannot run an agent"
+        )
     # Unlike triggers.py's create/update guard calls (which must run AFTER
     # their own flush, because they check a Trigger row the request itself
     # just created), this check can safely run BEFORE the mutation below:

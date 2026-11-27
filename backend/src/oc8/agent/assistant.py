@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agents.versioning import NoChangesToPublish, publish_version
+from oc8.modelrouter.speech import chat_capable
 from oc8.models.core import DEPARTMENT_KIND_ASSISTANT
 
 ASSISTANT_NAME = "oc8 Assistant"
@@ -398,7 +399,8 @@ _LEGACY_MISSIONS: tuple[str, ...] = (
 
 async def _select_model_config(db: AsyncSession, *, tenant_id: uuid.UUID) -> uuid.UUID | None:
     """Same selection rule as the retired copilot/chat.py:_select_copilot_model
-    -- the used_by_copilot-flagged config wins, else the oldest configured one."""
+    -- the used_by_copilot-flagged config wins, else the oldest configured one.
+    Never a speech model."""
     flagged = await db.scalar(
         select(m.ModelConfig)
         .where(
@@ -406,6 +408,7 @@ async def _select_model_config(db: AsyncSession, *, tenant_id: uuid.UUID) -> uui
             m.ModelConfig.provider != "",
             m.ModelConfig.model != "",
             m.ModelConfig.used_by_copilot.is_(True),
+            chat_capable(),
         )
         .order_by(m.ModelConfig.created_at)
         .limit(1)
@@ -418,6 +421,8 @@ async def _select_model_config(db: AsyncSession, *, tenant_id: uuid.UUID) -> uui
             m.ModelConfig.tenant_id == tenant_id,
             m.ModelConfig.provider != "",
             m.ModelConfig.model != "",
+            # A speech model cannot run the Copilot.
+            chat_capable(),
         )
         .order_by(m.ModelConfig.created_at)
         .limit(1)

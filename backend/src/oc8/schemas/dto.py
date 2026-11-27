@@ -545,6 +545,8 @@ class ModelDTO(CamelModel):
     used_by_copilot: bool = False
     #: Whether members may pick this model in a chat (`oc8.chat.model_choice`).
     chat_enabled: bool = True
+    #: chat | speech_to_text | text_to_speech (`oc8.modelrouter.speech`).
+    capability: str = "chat"
     #: Whether this model can think; gates the chat's reasoning-level control.
     supports_reasoning: bool = False
     credential_id: str | None = None

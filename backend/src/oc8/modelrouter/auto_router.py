@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.audit import append_event
+from oc8.modelrouter.speech import is_speech_model
 
 logger = logging.getLogger(__name__)
 
@@ -239,6 +240,9 @@ def _capability_ok(
     approx_tokens: int,
     require_local: bool,
 ) -> bool:
+    if is_speech_model(cfg):
+        # A speech model cannot answer a chat; a tier pointing at one is skipped.
+        return False
     if require_local and cfg.locality != "local":
         return False
     params = cfg.params or {}

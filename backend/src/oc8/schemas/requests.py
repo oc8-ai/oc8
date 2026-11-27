@@ -268,6 +268,11 @@ class ModelConfigWrite(CamelModel):
     used_by_copilot: bool | None = None
     #: Whether members may pick this model in a chat. None leaves it unchanged.
     chat_enabled: bool | None = None
+    #: What the model is for: a chat model, or a speech model (dictation /
+    #: reading answers aloud, `oc8.modelrouter.speech`). A speech model is
+    #: never offered to a chat. On create None means "chat"; on update None
+    #: leaves it unchanged.
+    capability: Literal["chat", "speech_to_text", "text_to_speech"] | None = None
     #: Whether this model can think, so a reasoning level is sent to it at all.
     #: On create, None takes the provider's declaration (`ProviderEntry.
     #: supports_reasoning`); on update, None leaves it unchanged.

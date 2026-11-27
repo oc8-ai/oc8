@@ -1,0 +1,610 @@
+"""Voice in the chat: speech models in the catalog, the tenant's pick, and the
+three chat-audio routes.
+
+A speech model is never a chat model: it is not offered in the chat picker,
+cannot be the Copilot's model, an agent's model or an auto tier, and the auto
+router never picks it. Dictation needs a speech-to-text model; reading an
+answer aloud needs a text-to-speech model, and a local one when the answer is
+restricted. Both are the chat owner's alone, metered for the person, and
+audited without their words.
+"""
+
+from __future__ import annotations
+
+import base64
+import uuid
+from typing import Any
+
+import httpx
+import pytest
+from httpx import AsyncClient
+from sqlalchemy import select
+
+from oc8 import models as m
+from oc8.credentials.service import create_credential
+from tests.api.test_personal_agent_content import _headers, _http, _subject_uuid, _world
+from tests.conftest import AppSessionFactory
+
+pytestmark = pytest.mark.asyncio
+
+_AUDIO = b"\x1aE\xdf\xa3" + b"webm" * 100
+_SECRET_WORDS = "Bitte den Vertrag kuendigen"
+
+
+@pytest.fixture(autouse=True)
+def _kek(monkeypatch: pytest.MonkeyPatch) -> None:
+    from oc8 import config
+
+    monkeypatch.setattr(
+        config.get_settings(),
+        "secret_kek",
+        base64.b64encode(bytes(range(32))).decode(),
+        raising=False,
+    )
+
+
+@pytest.fixture
+def provider(monkeypatch: pytest.MonkeyPatch) -> list[httpx.Request]:
+    """A fake OpenAI-compatible server behind every outgoing httpx call. The
+    ASGI test client sends through its transport, not `AsyncClient.send` of a
+    real network client, so only calls whose URL is the provider's land here."""
+    seen: list[httpx.Request] = []
+    real_send = httpx.AsyncClient.send
+
+    async def send(client: Any, request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        if request.url.host != "speech.example":
+            return await real_send(client, request, **kwargs)
+        await request.aread()
+        seen.append(request)
+        if request.url.path.endswith("/audio/transcriptions"):
+            return httpx.Response(
+                200, json={"text": _SECRET_WORDS, "duration": 2.5}, request=request
+            )
+        return httpx.Response(
+            200, content=b"ID3-audio", headers={"content-type": "audio/mpeg"}, request=request
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    return seen
+
+
+async def _organization(app_session: AppSessionFactory, tenant: uuid.UUID) -> None:
+    async with app_session(tenant) as db:
+        db.add(
+            m.Organization(
+                id=tenant, slug=f"t{tenant.hex[:6]}", name="T", tier="standard", region="eu"
+            )
+        )
+        await create_credential(
+            db,
+            tenant_id=tenant,
+            name="Speech",
+            credential_type="openai_compatible_api_key",
+            field_values={"api_key": "sk-speech", "base_url": "https://speech.example/v1"},
+        )
+        await db.flush()
+
+
+def _admin(tenant: uuid.UUID) -> dict[str, str]:
+    return _headers(tenant, "admin", "org_admin")
+
+
+async def _model(
+    http: AsyncClient,
+    tenant: uuid.UUID,
+    *,
+    capability: str | None,
+    locality: str = "cloud",
+    provider: str = "openai_compatible",
+    model: str = "m",
+    **extra: Any,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"provider": provider, "model": model, "locality": locality, **extra}
+    if capability is not None:
+        body["capability"] = capability
+    r = await http.post("/api/v1/models", json=body, headers=_admin(tenant))
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+async def _speech_world(
+    app_session: AppSessionFactory, http: AsyncClient, *, tts_locality: str = "cloud"
+) -> tuple[Any, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """`_world` plus an organization, a chat model, one speech model of each
+    kind, both picked for the tenant."""
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    chat = await _model(http, w.tenant, capability=None, model="gpt-chat")
+    stt = await _model(http, w.tenant, capability="speech_to_text", model="whisper-1")
+    tts = await _model(
+        http, w.tenant, capability="text_to_speech", model="tts-1", locality=tts_locality
+    )
+    r = await http.put(
+        "/api/v1/settings/speech",
+        json={"speechToTextModelId": stt["id"], "textToSpeechModelId": tts["id"]},
+        headers=_admin(w.tenant),
+    )
+    assert r.status_code == 200, r.text
+    return w, chat, stt, tts
+
+
+async def _chat(
+    app_session: AppSessionFactory,
+    tenant: uuid.UUID,
+    agent: uuid.UUID,
+    subject: str,
+    *,
+    restricted: bool = False,
+) -> tuple[uuid.UUID, uuid.UUID]:
+    async with app_session(tenant) as db:
+        member_id = (
+            await db.execute(
+                select(m.OrgMember.id).where(m.OrgMember.subject_uuid == _subject_uuid(subject))
+            )
+        ).scalar_one()
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent, member_id=member_id)
+        db.add(session)
+        await db.flush()
+        answer = m.ChatMessage(
+            tenant_id=tenant,
+            session_id=session.id,
+            role="assistant",
+            content="Der Termin ist am Montag.",
+            restricted=restricted,
+        )
+        db.add(answer)
+        await db.flush()
+        return session.id, answer.id
+
+
+def _upload(
+    audio: bytes = _AUDIO, content_type: str = "audio/webm", **fields: str
+) -> dict[str, Any]:
+    return {
+        "files": {"file": ("../../etc/evil name.webm", audio, content_type)},
+        "data": fields,
+    }
+
+
+# ----------------------------------------------------------------- catalog
+
+
+async def test_the_capability_round_trips_through_the_catalog(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    async with _http() as http:
+        chat = await _model(http, w.tenant, capability=None, model="gpt-chat")
+        stt = await _model(http, w.tenant, capability="speech_to_text", model="whisper-1")
+        assert chat["capability"] == "chat"
+        assert stt["capability"] == "speech_to_text"
+        # A speech model is never offered to a chat.
+        assert stt["chatEnabled"] is False
+        assert stt["usedByCopilot"] is False
+        listed = {
+            row["id"]: row
+            for row in (await http.get("/api/v1/models", headers=_admin(w.tenant))).json()
+        }
+        assert listed[stt["id"]]["capability"] == "speech_to_text"
+        # Back to chat on update; it stays off for chat until an admin turns it on.
+        r = await http.patch(
+            f"/api/v1/models/{stt['id']}",
+            json={"provider": "openai_compatible", "model": "whisper-1", "capability": "chat"},
+            headers=_admin(w.tenant),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["capability"] == "chat"
+        assert r.json()["chatEnabled"] is False
+        r = await http.patch(
+            f"/api/v1/models/{stt['id']}",
+            json={
+                "provider": "openai_compatible",
+                "model": "whisper-1",
+                "capability": "text_to_speech",
+            },
+            headers=_admin(w.tenant),
+        )
+        assert r.json()["capability"] == "text_to_speech"
+        assert r.json()["chatEnabled"] is False
+
+
+async def test_the_only_model_of_a_tenant_is_not_the_copilot_model_when_it_is_speech(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    async with _http() as http:
+        stt = await _model(http, w.tenant, capability="speech_to_text")
+    assert stt["usedByCopilot"] is False
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "ollama"])
+async def test_only_openai_style_providers_can_be_speech_models(
+    app_session: AppSessionFactory, provider: str
+) -> None:
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    async with _http() as http:
+        r = await http.post(
+            "/api/v1/models",
+            json={"provider": provider, "model": "x", "capability": "speech_to_text"},
+            headers=_admin(w.tenant),
+        )
+    assert r.status_code == 422, r.text
+    assert "speech" in r.json()["detail"]
+
+
+async def test_an_unknown_capability_is_refused(app_session: AppSessionFactory) -> None:
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    async with _http() as http:
+        r = await http.post(
+            "/api/v1/models",
+            json={"provider": "openai_compatible", "model": "x", "capability": "images"},
+            headers=_admin(w.tenant),
+        )
+    assert r.status_code == 422
+
+
+async def test_a_speech_model_cannot_be_a_chat_or_copilot_or_agent_model(
+    app_session: AppSessionFactory,
+) -> None:
+    async with _http() as http:
+        w, chat, stt, _tts = await _speech_world(app_session, http)
+        h = _admin(w.tenant)
+        base = {"provider": "openai_compatible", "model": "whisper-1"}
+        for change in ({"usedByCopilot": True}, {"chatEnabled": True}):
+            r = await http.patch(f"/api/v1/models/{stt['id']}", json={**base, **change}, headers=h)
+            assert r.status_code == 422, (change, r.text)
+        r = await http.post(
+            "/api/v1/models",
+            json={**base, "capability": "speech_to_text", "usedByCopilot": True},
+            headers=h,
+        )
+        assert r.status_code == 422, r.text
+        # The Copilot's model does not become a speech model.
+        r = await http.patch(
+            f"/api/v1/models/{chat['id']}",
+            json={
+                "provider": "openai_compatible",
+                "model": "gpt-chat",
+                "capability": "speech_to_text",
+            },
+            headers=h,
+        )
+        assert r.status_code == 422, r.text
+        # Not an auto tier.
+        r = await http.post(
+            "/api/v1/models",
+            json={"provider": "auto", "model": "auto", "autoTiers": {"fast": stt["id"]}},
+            headers=h,
+        )
+        assert r.status_code == 422, r.text
+        # Not an agent's model.
+        r = await http.patch(
+            f"/api/v1/agents/{w.standard_agent}/model-config",
+            json={"modelConfigId": stt["id"]},
+            headers=h,
+        )
+        assert r.status_code == 422, r.text
+
+        session_id, _ = await _chat(app_session, w.tenant, w.standard_agent, "admin")
+        options = await http.get(f"/api/v1/chat/sessions/{session_id}/models", headers=h)
+        assert options.status_code == 200, options.text
+        ids = {o["id"] for o in options.json()}
+        assert chat["id"] in ids
+        assert stt["id"] not in ids and _tts["id"] not in ids
+        r = await http.put(
+            f"/api/v1/chat/sessions/{session_id}/model",
+            json={"modelConfigId": stt["id"]},
+            headers=h,
+        )
+        assert r.status_code == 422, r.text
+
+
+async def test_a_speech_model_flipped_on_for_chat_in_the_database_is_still_not_offered(
+    app_session: AppSessionFactory,
+) -> None:
+    """The picker reads the capability itself, not only the flag the catalog
+    keeps off."""
+    async with _http() as http:
+        w, _chat_model, stt, _tts = await _speech_world(app_session, http)
+        async with app_session(w.tenant) as db:
+            row = await db.get(m.ModelConfig, uuid.UUID(stt["id"]))
+            assert row is not None
+            row.chat_enabled = True
+            await db.flush()
+        session_id, _ = await _chat(app_session, w.tenant, w.standard_agent, "admin")
+        options = await http.get(
+            f"/api/v1/chat/sessions/{session_id}/models", headers=_admin(w.tenant)
+        )
+    assert stt["id"] not in {o["id"] for o in options.json()}
+
+
+async def test_the_copilot_never_falls_back_to_a_speech_model(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import _select_model_config
+
+    w = await _world(app_session)
+    async with app_session(w.tenant) as db:
+        speech = m.ModelConfig(
+            tenant_id=w.tenant,
+            provider="openai_compatible",
+            model="whisper-1",
+            chat_enabled=False,
+            params={"capability": "speech_to_text"},
+        )
+        db.add(speech)
+        await db.flush()
+        assert await _select_model_config(db, tenant_id=w.tenant) is None
+        chat = m.ModelConfig(tenant_id=w.tenant, provider="openai_compatible", model="gpt")
+        db.add(chat)
+        await db.flush()
+        assert await _select_model_config(db, tenant_id=w.tenant) == chat.id
+
+
+# ---------------------------------------------------------------- settings
+
+
+async def test_the_speech_settings_take_only_matching_speech_models(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    async with _http() as http:
+        h = _admin(w.tenant)
+        r = await http.get("/api/v1/settings/speech", headers=h)
+        assert r.status_code == 200, r.text
+        assert r.json() == {"speechToTextModelId": None, "textToSpeechModelId": None}
+        chat = await _model(http, w.tenant, capability=None)
+        stt = await _model(http, w.tenant, capability="speech_to_text")
+        for bad in (
+            {"speechToTextModelId": chat["id"], "textToSpeechModelId": None},
+            {"speechToTextModelId": None, "textToSpeechModelId": stt["id"]},
+            {"speechToTextModelId": str(uuid.uuid4()), "textToSpeechModelId": None},
+        ):
+            r = await http.put("/api/v1/settings/speech", json=bad, headers=h)
+            assert r.status_code == 422, (bad, r.text)
+        good = {"speechToTextModelId": stt["id"], "textToSpeechModelId": None}
+        member = _headers(w.tenant, "owner", "member")
+        assert (
+            await http.put("/api/v1/settings/speech", json=good, headers=member)
+        ).status_code == 403
+        r = await http.put("/api/v1/settings/speech", json=good, headers=h)
+        assert r.status_code == 200 and r.json() == good
+        assert (await http.get("/api/v1/settings/speech", headers=h)).json() == good
+
+
+async def test_capabilities_say_which_voice_buttons_to_show(
+    app_session: AppSessionFactory,
+) -> None:
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    member = _headers(w.tenant, "owner", "member")
+    async with _http() as http:
+        r = await http.get("/api/v1/chat/audio/capabilities", headers=member)
+        assert r.status_code == 200, r.text
+        assert r.json() == {
+            "speechToText": False,
+            "textToSpeech": False,
+            "textToSpeechLocal": False,
+        }
+        tts = await _model(http, w.tenant, capability="text_to_speech", locality="local")
+        await http.put(
+            "/api/v1/settings/speech",
+            json={"speechToTextModelId": None, "textToSpeechModelId": tts["id"]},
+            headers=_admin(w.tenant),
+        )
+        r = await http.get("/api/v1/chat/audio/capabilities", headers=member)
+    assert r.json() == {"speechToText": False, "textToSpeech": True, "textToSpeechLocal": True}
+
+
+# -------------------------------------------------------------- transcribe
+
+
+async def test_dictation_returns_the_text_and_meters_and_audits_without_it(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, _chat_model, _stt, _tts = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=_headers(w.tenant, "owner", "member"),
+            **_upload(session_id=str(session_id)),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json() == {"text": _SECRET_WORDS}
+    [request] = provider
+    assert str(request.url) == "https://speech.example/v1/audio/transcriptions"
+    assert request.headers["authorization"] == "Bearer sk-speech"
+    assert b"evil" not in request.content and b"etc" not in request.content
+    async with app_session(w.tenant) as db:
+        owner = (
+            await db.execute(
+                select(m.OrgMember.id).where(m.OrgMember.subject_uuid == _subject_uuid("owner"))
+            )
+        ).scalar_one()
+        [usage] = (await db.execute(select(m.TokenUsageRecord))).scalars().all()
+        assert usage.member_id == owner
+        assert (usage.provider, usage.model, usage.platform_units) == (
+            "openai_compatible",
+            "whisper-1",
+            3,
+        )
+        assert usage.agent_id == w.personal_agent
+        [event] = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "chat.audio.transcribed")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert event.resource["agent_id"] == str(w.personal_agent)
+    assert event.resource["chat_session_id"] == str(session_id)
+    assert event.resource["model"] == "whisper-1"
+    assert event.resource["seconds"] == pytest.approx(2.5)
+    assert _SECRET_WORDS not in str(event.resource)
+
+
+async def test_dictation_works_without_a_chat_yet(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=_headers(w.tenant, "owner", "member"),
+            **_upload(content_type="audio/webm;codecs=opus"),
+        )
+    assert r.status_code == 200, r.text
+    assert len(provider) == 1
+
+
+async def test_dictation_into_someone_elses_chat_is_not_found(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.standard_agent, "admin")
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=_headers(w.tenant, "manager", "member"),
+            **_upload(session_id=str(session_id)),
+        )
+    assert r.status_code == 404, r.text
+    assert provider == []
+
+
+async def test_dictation_refuses_what_is_not_audio(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=_headers(w.tenant, "owner", "member"),
+            **_upload(content_type="text/html"),
+        )
+    assert r.status_code == 415, r.text
+    assert provider == []
+
+
+async def test_dictation_over_25_mb_is_too_large(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        r = await http.post(
+            "/api/v1/chat/audio/transcribe",
+            headers=_headers(w.tenant, "owner", "member"),
+            **_upload(audio=b"\0" * (25 * 1024 * 1024 + 1)),
+        )
+    assert r.status_code == 413, r.text
+    assert provider == []
+
+
+async def test_without_a_speech_model_dictation_and_speech_are_not_found(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    w = await _world(app_session)
+    await _organization(app_session, w.tenant)
+    session_id, message_id = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+    h = _headers(w.tenant, "owner", "member")
+    async with _http() as http:
+        r = await http.post("/api/v1/chat/audio/transcribe", headers=h, **_upload())
+        assert r.status_code == 404, r.text
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{message_id}/speech", headers=h
+        )
+        assert r.status_code == 404, r.text
+    assert provider == []
+
+
+# ------------------------------------------------------------------ speech
+
+
+async def test_an_answer_is_read_aloud_as_an_audio_stream(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, message_id = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{message_id}/speech",
+            headers=_headers(w.tenant, "owner", "member"),
+        )
+        assert r.status_code == 200, r.text
+        assert r.headers["content-type"] == "audio/mpeg"
+        assert r.content == b"ID3-audio"
+    [request] = provider
+    assert str(request.url) == "https://speech.example/v1/audio/speech"
+    async with app_session(w.tenant) as db:
+        [usage] = (await db.execute(select(m.TokenUsageRecord))).scalars().all()
+        assert usage.platform_units == len("Der Termin ist am Montag.")
+        assert usage.model == "tts-1"
+        [event] = (
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(m.AuditEvent.action == "chat.audio.spoken")
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert event.resource["agent_id"] == str(w.personal_agent)
+    assert event.resource["message_id"] == str(message_id)
+    assert event.resource["characters"] == len("Der Termin ist am Montag.")
+    assert event.resource["model"] == "tts-1"
+    assert "Montag" not in str(event.resource)
+
+
+async def test_reading_someone_elses_answer_is_not_found(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, message_id = await _chat(app_session, w.tenant, w.standard_agent, "admin")
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{message_id}/speech",
+            headers=_headers(w.tenant, "manager", "member"),
+        )
+    assert r.status_code == 404, r.text
+    assert provider == []
+
+
+async def test_a_restricted_answer_is_not_read_by_a_cloud_model(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, message_id = await _chat(
+            app_session, w.tenant, w.personal_agent, "owner", restricted=True
+        )
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{message_id}/speech",
+            headers=_headers(w.tenant, "owner", "member"),
+        )
+    assert r.status_code == 409, r.text
+    assert "local" in r.json()["detail"]
+    assert provider == []
+
+
+async def test_a_restricted_answer_is_read_by_a_local_model(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http, tts_locality="local")
+        session_id, message_id = await _chat(
+            app_session, w.tenant, w.personal_agent, "owner", restricted=True
+        )
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{message_id}/speech",
+            headers=_headers(w.tenant, "owner", "member"),
+        )
+    assert r.status_code == 200, r.text
+    assert len(provider) == 1

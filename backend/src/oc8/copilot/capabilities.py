@@ -73,6 +73,7 @@ from oc8.copilot.guardrail_interpret import (
     attributes_for_function,
     parse_conditions,
 )
+from oc8.modelrouter.speech import is_speech_model
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
@@ -1112,7 +1113,8 @@ async def apply_operation(
         if agent is None or agent.deleted_at is not None:
             raise InvalidOperation()
         mc = await db.get(m.ModelConfig, operation.modelConfigId)
-        if mc is None:
+        if mc is None or is_speech_model(mc):
+            # A speech model cannot run an agent.
             raise InvalidOperation()
         try:
             await assert_manual_only_compatible(db, agent_id=agent.id, model_config_id=mc.id)

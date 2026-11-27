@@ -3,7 +3,8 @@
 The allowed set is the tenant's concrete, chat-enabled `ModelConfig` rows: an
 Auto row is a policy, not a model -- choosing "Auto" means "no override" -- and
 a model an admin switched off for chat ("Im Chat verfügbar") is never offered
-nor honoured. The flag is read live, so switching a model off bites mid-chat.
+nor honoured, and neither is a speech model (`oc8.modelrouter.speech`). The
+flag is read live, so switching a model off bites mid-chat.
 
 This module only ever SUBTRACTS. Classification and locality are still decided
 by the PDP and the router for whatever model is finally used.
@@ -22,6 +23,7 @@ from oc8 import models as m
 from oc8.modelrouter.auto_router import is_auto_config
 from oc8.modelrouter.levels import CHAT_LEVEL_KEY, DEFAULT_LEVEL, as_level, default_display
 from oc8.modelrouter.sampling import configured_effort
+from oc8.modelrouter.speech import chat_capable
 
 _AUTO_PROVIDER = "auto"
 
@@ -45,6 +47,8 @@ async def _chat_enabled_configs(db: AsyncSession, *, tenant_id: uuid.UUID) -> li
             m.ModelConfig.tenant_id == tenant_id,
             m.ModelConfig.provider != _AUTO_PROVIDER,
             m.ModelConfig.chat_enabled.is_(True),
+            # A speech model is never a chat model, whatever its flag says.
+            chat_capable(),
         )
     )
     return list(rows.scalars())

@@ -19,6 +19,7 @@ from oc8.api.v1 import (
     catalog,
     channels,
     chat,
+    chat_audio,
     chat_context,
     chat_direct_access,
     chat_live,
@@ -59,6 +60,7 @@ from oc8.api.v1 import (
     secrets,
     settings,
     skills_write,
+    speech_settings,
     tasks,
     tool_allow_rules,
     totp,
@@ -85,6 +87,7 @@ api_router.include_router(model_prices.router, tags=["catalog"])
 api_router.include_router(reconciliation.router, tags=["catalog"])
 api_router.include_router(channels.router, tags=["channels"])
 api_router.include_router(chat.router, tags=["chat"])
+api_router.include_router(chat_audio.router, tags=["chat"])
 api_router.include_router(chat_context.router, tags=["chat"])
 api_router.include_router(chat_direct_access.router, tags=["chat"])
 api_router.include_router(files.router, tags=["files"])
@@ -116,6 +119,7 @@ api_router.include_router(runtimes.router, tags=["runtimes"])
 # directly so that exception is visible in one place instead of implied.
 api_router.include_router(settings.router, tags=["settings"])
 api_router.include_router(preview_settings.router, tags=["settings"])
+api_router.include_router(speech_settings.router, tags=["settings"])
 api_router.include_router(events.router, tags=["events"])
 api_router.include_router(handoffs.router, tags=["handoffs"])
 api_router.include_router(contracts.router, tags=["contracts"])

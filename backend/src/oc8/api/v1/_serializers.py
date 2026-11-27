@@ -17,6 +17,7 @@ from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
+from oc8.modelrouter.speech import capability_of
 from oc8.models.core import DEPARTMENT_KIND_STANDARD
 from oc8.schemas.dto import (
     ActivityDTO,
@@ -620,6 +621,7 @@ def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
         used_by_copilot=bool(mc.used_by_copilot),
         # Same INSERT-time default caveat as above; the column defaults to on.
         chat_enabled=mc.chat_enabled is not False,
+        capability=capability_of(mc),
         # Same INSERT-time default caveat; the column defaults to off.
         supports_reasoning=bool(mc.supports_reasoning),
         credential_id=str(mc.credential_id) if mc.credential_id else None,
