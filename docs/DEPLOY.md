@@ -413,7 +413,14 @@ connections themselves.
   API (`backend`). From 0.23.0 a chat's large files are indexed as jobs on the
   shared ingestion stream, and an older ingestion worker cannot run them.
   `docker compose up -d --build` replaces both at once; with Helm or any
-  rolling rollout, update the ingestion workers first. This release also adds
+  rolling rollout, update the ingestion workers first. Two recording changes
+  come with it: usage of a plugin-provided model (chat titles, chat
+  checkpoints, the LLM gateway) is recorded under the plugin's provider name
+  from 0.23.0, where older rows carry the adapter's name -- a report grouped
+  by provider splits the upgrade month between the two. And a model's context
+  window must be at least 4096 tokens when it is saved; a row saved earlier
+  with a smaller one keeps working as stored (the harness reads it as is), so
+  set it again or clear it to use the default. This release also adds
   migrations 0136-0145 (chat message trees, chat knowledge bases, chat file
   index status, chat message digests, chat checkpoints, always-allow tool
   rules, queued-message delivery, hybrid knowledge search, audit run/chat

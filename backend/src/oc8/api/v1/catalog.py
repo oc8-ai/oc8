@@ -260,7 +260,8 @@ async def _validated(
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             f"context window must be at least {MIN_CONTEXT_WINDOW} tokens to hold a "
-            "chat turn; leave it empty if you do not know it",
+            "chat turn; leave it empty to use the default (also for a small local "
+            "model whose window you do not know)",
         )
     if body.provider.strip().lower() == AUTO_PROVIDER:
         if body.locality not in ("cloud", "local"):
