@@ -5,6 +5,8 @@
 // the throw, not by quietly becoming org_admin. `<DevSignIn>` is the only
 // thing that ever calls `/auth/dev-login` and stores what it gets back.
 
+import { resetPython } from "./python-reset";
+
 const API_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8099/api/v1";
 const TOKEN_KEY = "oc8-dev-token";
@@ -65,6 +67,7 @@ export function hasCommunitySession(): boolean {
 export async function logoutCommunity(): Promise<void> {
   if (typeof window === "undefined") return;
   tokenStore.clear();
+  resetPython();
   // /auth/config is unguarded, so this works with the token already gone.
   try {
     const res = await fetch(`${API_URL}/auth/config`);
@@ -118,6 +121,8 @@ export function hasDevSession(): boolean {
 export function logoutDev(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(TOKEN_KEY);
+  // A chat's Python sandbox (with any file it was given) goes with the session.
+  resetPython();
 }
 
 export async function loginDev(opts: {

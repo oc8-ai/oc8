@@ -394,6 +394,14 @@ as well. To ship an image without Python at all, build it with
 To move to another Pyodide release, change the pinned version and SHA-256
 values in the script and run it.
 
+Known limits: the sandbox is tested in Chromium and Firefox; Safari (WebKit)
+is untested, in particular whether a worker started from a `blob:` URL inside
+the sandboxed frame inherits the frame's no-network policy. Memory is the
+browser's: code that allocates without bound can crash the browser tab (it
+cannot reach anything outside it). Each Run starts a fresh Python, so nothing
+from one run (variables, imported modules, mounted files) is left for the
+next.
+
 ## Letting people connect their Microsoft or Google account
 
 On the Connections page each person can connect their own Microsoft or Google

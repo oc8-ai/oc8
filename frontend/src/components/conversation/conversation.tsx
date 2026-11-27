@@ -52,6 +52,7 @@ import {
 } from "@/lib/hooks-chat";
 import { useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
+import { resetPython } from "@/lib/python-reset";
 import { useWatchRuns } from "@/lib/live/provider";
 import type { ReasoningLevel } from "@/lib/reasoning-levels";
 import { useWebChoice, useWebSearchAvailable } from "@/lib/web-search";
@@ -460,7 +461,6 @@ function ConversationBody(props: ConversationProps) {
     return () => el.removeEventListener("scroll", onScroll);
   }, [ref]);
   const readOnly = !!conv.session?.readOnly;
-  const python = usePythonScopeFor(conv.turns, readOnly ? null : sendResult);
   // The question the chat's run is parked on (spec §4.1). That run waits for
   // the reader, so it does not make the chat busy: the composer answers it.
   const pending = (!readOnly && conv.session?.pendingQuestion) || null;
@@ -471,6 +471,9 @@ function ConversationBody(props: ConversationProps) {
     if (pending) setQuestionNotice(null);
   }, [pending]);
   const busy = conv.liveRunIds.some((id) => id !== pending?.runId);
+  const python = usePythonScopeFor(conv.turns, readOnly ? null : sendResult, busy);
+  // What Python ran for ends with the chat: another chat, or none.
+  useEffect(() => () => resetPython(), [props.sessionId]);
   // Ruling 52: while the reader's own answer is being written, what they
   // type goes to that run (POST /runs/{id}/inputs). A surface that routes
   // the composer itself (the Live tab, to a timeline run) goes first; its

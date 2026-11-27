@@ -24,7 +24,7 @@
 
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -143,6 +143,10 @@ async function main() {
     return;
   }
   await mkdir(TARGET, { recursive: true });
+  // A run that died mid-download leaves its .partial file behind.
+  for (const entry of await readdir(TARGET)) {
+    if (entry.endsWith(".partial")) await rm(join(TARGET, entry), { force: true });
+  }
   let total = 0;
   let fetched = 0;
   for (const name of Object.keys(FILES)) {

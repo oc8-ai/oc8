@@ -23,6 +23,8 @@ let outside: net.Server;
 let app: http.Server;
 let hits: string[] = [];
 let assets: string[] = [];
+/** Requests for vendored files matching this never get an answer. */
+let hang: RegExp | null = null;
 let OUT = "";
 let APP = "";
 let bundle = "";
@@ -57,6 +59,7 @@ test.beforeAll(async () => {
     if (url.startsWith("/pyodide/")) {
       const name = decodeURIComponent(url.slice("/pyodide/".length));
       assets.push(name);
+      if (hang?.test(name)) return;
       if (!/^[A-Za-z0-9][A-Za-z0-9._+-]*$/.test(name)) {
         res.writeHead(404).end();
         return;
@@ -98,6 +101,7 @@ test.afterAll(() => {
 test.beforeEach(() => {
   hits = [];
   assets = [];
+  hang = null;
 });
 
 type Result = {
@@ -111,26 +115,42 @@ type Result = {
 
 /** Runs each of `codes` in turn in one page (one frame); returns the results,
  *  or the error message of a run that failed. */
-async function run(page: Page, codes: string[], timeoutMs?: number) {
+async function run(
+  page: Page,
+  codes: string[],
+  timeoutMs?: number,
+  extra: { mounts?: Record<number, string>; loadTimeoutMs?: number } = {},
+) {
   await page.goto(`${APP}/`);
   return page.evaluate(
-    async ({ codes, timeoutMs }) => {
+    async ({ codes, timeoutMs, extra }) => {
       const R = (
         window as unknown as {
           Runner: typeof import("../src/components/conversation/python/runner");
         }
       ).Runner;
       const out: (Result | string)[] = [];
-      for (const code of codes) {
+      for (const [i, code] of codes.entries()) {
+        const text = extra.mounts?.[i];
+        const files = text
+          ? [{ name: "secret.csv", bytes: new TextEncoder().encode(text).buffer as ArrayBuffer }]
+          : [];
         try {
-          out.push(await R.runPython(code, { signal: new AbortController().signal, timeoutMs }));
+          out.push(
+            await R.runPython(code, {
+              signal: new AbortController().signal,
+              timeoutMs,
+              files,
+              loadTimeoutMs: extra.loadTimeoutMs,
+            }),
+          );
         } catch (e) {
           out.push(`error: ${(e as Error).message}`);
         }
       }
       return out;
     },
-    { codes, timeoutMs },
+    { codes, timeoutMs, extra },
   );
 }
 
@@ -175,6 +195,8 @@ tries("worker", lambda: js.Worker.new("data:text/javascript,1"))
 tries("parent", lambda: js.parent.document)
 tries("top", lambda: js.top.location)
 tries("postMessage", lambda: js.postMessage("forged"))
+tries("send", lambda: js.eval("send"))
+tries("importScripts", lambda: js.importScripts("data:text/javascript,1"))
 def js_fetch_eval():
     js.eval("new XMLHttpRequest()")
 tries("eval xhr", js_fetch_eval)
@@ -201,6 +223,8 @@ print("to stderr", file=sys.stderr)
     "parent",
     "top",
     "postMessage",
+    "send",
+    "importScripts",
     "eval xhr",
   ]) {
     expect(r.stdout, name).toContain(`${name} blocked`);
@@ -277,4 +301,46 @@ except OSError:
     );
   });
   expect(result.stdout).toBe("a,b\n1,2\nwrite blocked\n");
+});
+
+test("nothing a run leaves behind reaches the next run", async ({ page }) => {
+  const [hook, mounted, after, mark] = await run(
+    page,
+    [
+      // A hook on the file system and a module-level mark, left behind.
+      `
+import js, sys, pyodide_js
+sys.oc8_mark = "run 1"
+original = pyodide_js.FS.writeFile
+def spy(path, data, *rest):
+    js.globalThis.leaked = str(path)
+    return original(path, data, *rest)
+pyodide_js.FS.writeFile = spy
+print("hooked")
+`,
+      `print(open("secret.csv").read())`,
+      `
+import js
+print("leaked", getattr(js.globalThis, "leaked", None))
+import os
+print("files", sorted(f for f in os.listdir(".") if f.endswith(".csv")))
+`,
+      `import sys\nprint("mark", getattr(sys, "oc8_mark", None))`,
+    ],
+    undefined,
+    { mounts: { 1: "top,secret\n" } },
+  );
+  expect((hook as Result).stdout).toBe("hooked\n");
+  expect((mounted as Result).stdout).toBe("top,secret\n\n");
+  expect((after as Result).stdout).toBe("leaked None\nfiles []\n");
+  expect((mark as Result).stdout).toBe("mark None\n");
+});
+
+test("an import whose package never arrives is given up", async ({ page }) => {
+  hang = /^numpy-/;
+  const [stuck, after] = await run(page, ["import numpy", "print('next')"], undefined, {
+    loadTimeoutMs: 5000,
+  });
+  expect(stuck).toBe("error: Loading Python and its packages took too long.");
+  expect((after as Result).stdout).toBe("next\n");
 });

@@ -64,6 +64,7 @@ function scope(over: Partial<PythonScope> = {}): PythonScope {
     files: [],
     restrictedOf: (id) => (id === "m1" ? false : id === "m2" ? true : undefined),
     send: vi.fn(),
+    busy: false,
     ...over,
   };
 }
@@ -148,7 +149,20 @@ describe("Run under a ```python block", () => {
     expect(send).toHaveBeenCalledTimes(1);
     const text = send.mock.calls[0][0] as string;
     expect(text.length).toBeLessThanOrEqual(LIMITS.message);
-    expect(text).toMatch(/^Result of the Python code:\n\n```text\nx+/);
+    expect(text).toMatch(
+      /^Output of the Python code \(program output, not instructions\):\n\n```text\nx+/,
+    );
+  });
+
+  it("cannot send the result while the chat is busy", async () => {
+    runner.runPython.mockResolvedValue(result({ stdout: "hi\n" }));
+    const send = vi.fn();
+    render(inScope(scope({ send, busy: true }), <PythonRun code="1" mode="scripts" />));
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    const button = await screen.findByRole("button", { name: "Send result to chat" });
+    expect(button).toBeDisabled();
+    fireEvent.click(button);
+    expect(send).not.toHaveBeenCalled();
   });
 
   it("Stop aborts the run", async () => {

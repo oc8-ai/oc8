@@ -20,6 +20,8 @@ export type PythonScope = {
   /** Posts a user turn through the conversation's send path; null where the
    *  chat cannot send (read-only). */
   send: ((text: string) => void) | null;
+  /** The chat is answering: a message sent now would be dropped. */
+  busy: boolean;
 };
 
 export const PythonRunContext = createContext<PythonScope | null>(null);
@@ -32,6 +34,7 @@ export function usePythonScope(): PythonScope | null {
 export function usePythonScopeFor(
   turns: TurnModel[],
   send: ((text: string) => void) | null,
+  busy = false,
 ): PythonScope {
   return useMemo(() => {
     const seen = new Set<string>();
@@ -52,8 +55,9 @@ export function usePythonScopeFor(
       files,
       restrictedOf: (messageId) => (messageId ? restricted.get(messageId) : undefined),
       send,
+      busy,
     };
-  }, [turns, send]);
+  }, [turns, send, busy]);
 }
 
 /** A fence language that is Python. */

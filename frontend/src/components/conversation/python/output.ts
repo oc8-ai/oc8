@@ -25,18 +25,25 @@ export const LIMITS = {
   text: 100_000,
   result: 100_000,
   images: 10,
-  /** One image's data URL. */
-  imageChars: 8_000_000,
+  /** A figure's width and height, each. */
+  imagePixels: 4096,
   tables: 10,
+  /** Cells over all tables. */
+  tableCells: 20_000,
   rows: 200,
   columns: 100,
   cell: 1_000,
+  /** Characters of everything a run shows: text, tables and images. */
+  total: 2_000_000,
   /** "Send result to chat". */
   message: 4_000,
   /** A chat upload offered to the code. */
   fileBytes: 20 * 1024 * 1024,
-  /** Wall clock for the code itself (not the first download). */
+  /** Wall clock for the code itself, from when its packages are loaded. */
   timeoutMs: 30_000,
+  /** Before that: starting Python and loading the packages the code imports
+   *  (a cold Firefox compiles pandas for many seconds). */
+  loadTimeoutMs: 120_000,
 } as const;
 
 /** The server has no Pyodide files (an image built without them). */
@@ -60,23 +67,51 @@ function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-function image(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > LIMITS.imageChars) return null;
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** Width and height from a PNG's IHDR chunk, or null when the bytes do not
+ *  start like a PNG. */
+function pngSize(base64: string): { width: number; height: number } | null {
+  let head: string;
+  try {
+    head = atob(base64.slice(0, 44));
+  } catch {
+    return null;
+  }
+  if (head.length < 24) return null;
+  const byte = (i: number) => head.charCodeAt(i);
+  if (PNG_SIGNATURE.some((b, i) => byte(i) !== b)) return null;
+  if (head.slice(12, 16) !== "IHDR") return null;
+  const u32 = (i: number) =>
+    ((byte(i) << 24) | (byte(i + 1) << 16) | (byte(i + 2) << 8) | byte(i + 3)) >>> 0;
+  return { width: u32(16), height: u32(20) };
+}
+
+function image(value: unknown, room: number): string | null {
+  if (typeof value !== "string" || value.length > room) return null;
   if (!value.startsWith(PNG_PREFIX)) return null;
-  return BASE64.test(value.slice(PNG_PREFIX.length)) ? value : null;
+  const data = value.slice(PNG_PREFIX.length);
+  if (!BASE64.test(data)) return null;
+  const size = pngSize(data);
+  if (!size) return null;
+  const { width, height } = size;
+  const max = LIMITS.imagePixels;
+  return width >= 1 && height >= 1 && width <= max && height <= max ? value : null;
 }
 
 function cell(value: unknown): string {
   return typeof value === "string" ? capped(value, LIMITS.cell) : "";
 }
 
-function table(value: unknown): PythonTable | null {
+/** A table within `cellsLeft` cells (rows cut to fit), or null. */
+function table(value: unknown, cellsLeft: number): PythonTable | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as { columns?: unknown; rows?: unknown };
   const columns = asArray(raw.columns).slice(0, LIMITS.columns).map(cell);
-  if (columns.length === 0) return null;
+  if (columns.length === 0 || columns.length > cellsLeft) return null;
+  const fit = Math.min(LIMITS.rows, Math.floor(cellsLeft / columns.length) - 1);
   const rows = asArray(raw.rows)
-    .slice(0, LIMITS.rows)
+    .slice(0, Math.max(0, fit))
     .map((row) => {
       const cells = asArray(row).slice(0, columns.length).map(cell);
       while (cells.length < columns.length) cells.push("");
@@ -85,23 +120,45 @@ function table(value: unknown): PythonTable | null {
   return { columns, rows };
 }
 
-/** A run's output as the frame posted it, made safe to show. */
+function tableChars(t: PythonTable): number {
+  let n = 0;
+  for (const row of [t.columns, ...t.rows]) for (const c of row) n += c.length;
+  return n;
+}
+
+/** A run's output as the frame posted it, made safe to show: each part
+ *  capped, and all of it within LIMITS.total characters (text first, then
+ *  tables, then figures -- what does not fit is left out). */
 export function readOutput(raw: unknown, timedOut = false): PythonResult {
   const out = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-  return {
-    stdout: capped(out.stdout, LIMITS.text),
-    stderr: capped(out.stderr, LIMITS.text),
-    result: typeof out.result === "string" ? capped(out.result, LIMITS.result) : null,
-    images: asArray(out.images)
-      .slice(0, LIMITS.images)
-      .map(image)
-      .filter((x): x is string => x !== null),
-    tables: asArray(out.tables)
-      .slice(0, LIMITS.tables)
-      .map(table)
-      .filter((x): x is PythonTable => x !== null),
-    timedOut,
+  let room = LIMITS.total;
+  const text = (value: unknown, max: number) => {
+    const t = capped(value, Math.min(max, room));
+    room -= t.length;
+    return t;
   };
+  const stdout = text(out.stdout, LIMITS.text);
+  const stderr = text(out.stderr, LIMITS.text);
+  const result = typeof out.result === "string" ? text(out.result, LIMITS.result) : null;
+  const tables: PythonTable[] = [];
+  let cellsLeft = LIMITS.tableCells;
+  for (const value of asArray(out.tables).slice(0, LIMITS.tables)) {
+    const t = table(value, cellsLeft);
+    if (!t) continue;
+    const chars = tableChars(t);
+    if (chars > room) break;
+    room -= chars;
+    cellsLeft -= (t.rows.length + 1) * t.columns.length;
+    tables.push(t);
+  }
+  const images: string[] = [];
+  for (const value of asArray(out.images).slice(0, LIMITS.images)) {
+    const src = image(value, room);
+    if (!src) continue;
+    room -= src.length;
+    images.push(src);
+  }
+  return { stdout, stderr, result, images, tables, timedOut };
 }
 
 /** A table as tab-separated text (for "Send result to chat"). */

@@ -8,8 +8,15 @@
 // sends back is untrusted: messages from anywhere else are dropped, and the
 // output is checked and capped (readOutput).
 //
-// Stop (the signal) and the 30 s wall clock terminate the worker; the next run
-// starts a new one from the files the frame kept.
+// Every run gets a fresh worker, terminated when the run ends for any reason
+// (done, failed, Stop, the 30 s wall clock, the 120 s load deadline): nothing
+// one run's code did -- a hook, a module-level global, a mounted file -- is
+// there for the next. The frame keeps only the files this page handed in, so
+// a new worker pays Pyodide's start-up, not the download. resetPython()
+// (lib/python-reset) removes the frame itself: another chat, the chat
+// closed, signing out.
+
+import { onPythonReset } from "@/lib/python-reset";
 
 import { buildSandboxSrcdoc } from "../artifacts/sandbox-srcdoc";
 import { CORE_FILES, FRAME_RUNTIME, PYTHON_CSP } from "./frame-runtime";
@@ -36,6 +43,9 @@ export type RunOptions = {
   onStarted?: () => void;
   /** Wall clock for the code; LIMITS.timeoutMs unless a test needs less. */
   timeoutMs?: number;
+  /** Deadline for starting Python and loading packages, from the moment the
+   *  run is handed to the frame; LIMITS.loadTimeoutMs unless a test needs less. */
+  loadTimeoutMs?: number;
 };
 
 /** The frame as the host sees it. */
@@ -83,7 +93,9 @@ type Pending = {
   reject: (error: Error) => void;
   onStarted?: () => void;
   timeoutMs: number;
+  /** The load deadline until `started`, then the wall clock. */
   timer?: ReturnType<typeof setTimeout>;
+  started: boolean;
 };
 
 export function createPythonHost(deps: HostDeps) {
@@ -96,6 +108,7 @@ export function createPythonHost(deps: HostDeps) {
   let queue: Promise<unknown> = Promise.resolve();
   let readyWaiter: (() => void) | null = null;
   let progressTo: ((p: Progress) => void) | undefined;
+  let disposed = false;
   const sizes = new Map<string, { loaded: number; total: number | null }>();
 
   function report(name: string, loaded: number, total: number | null) {
@@ -162,7 +175,9 @@ export function createPythonHost(deps: HostDeps) {
     const id = m.id;
     if (m.type === "started") {
       const p = pending.get(id);
-      if (!p || p.timer) return;
+      if (!p || p.started) return;
+      p.started = true;
+      if (p.timer) clearTimeout(p.timer);
       p.onStarted?.();
       p.timer = setTimeout(() => {
         stopWorker();
@@ -211,6 +226,13 @@ export function createPythonHost(deps: HostDeps) {
     return booted;
   }
 
+  // Settles (rejects) once the host is disposed, for a run still booting.
+  let goneNow: () => void = () => undefined;
+  const gone = new Promise<never>((_, reject) => {
+    goneNow = () => reject(abortError());
+  });
+  gone.catch(() => undefined);
+
   async function runNow(code: string, opts: RunOptions): Promise<PythonResult> {
     if (opts.signal.aborted) throw abortError();
     progressTo = opts.onProgress;
@@ -218,7 +240,8 @@ export function createPythonHost(deps: HostDeps) {
       opts.signal.addEventListener("abort", () => reject(abortError()), { once: true });
     });
     aborted.catch(() => undefined);
-    await Promise.race([ensureBooted(), aborted]);
+    await Promise.race([ensureBooted(), aborted, gone]);
+    if (disposed) throw abortError();
     const id = (seq += 1);
     const files = opts.files ?? [];
     const result = new Promise<PythonResult>((resolve, reject) => {
@@ -227,6 +250,11 @@ export function createPythonHost(deps: HostDeps) {
         reject,
         onStarted: opts.onStarted,
         timeoutMs: opts.timeoutMs ?? LIMITS.timeoutMs,
+        started: false,
+        timer: setTimeout(() => {
+          stopWorker();
+          settle(id, (p) => p.reject(new Error("Loading Python and its packages took too long.")));
+        }, opts.loadTimeoutMs ?? LIMITS.loadTimeoutMs),
       });
     });
     opts.signal.addEventListener(
@@ -255,6 +283,15 @@ export function createPythonHost(deps: HostDeps) {
   }
 
   return {
+    /** Stops every run and removes the frame with all it holds. */
+    dispose() {
+      for (const id of [...pending.keys()]) settle(id, (p) => p.reject(abortError()));
+      frame?.remove();
+      frame = null;
+      readyWaiter = null;
+      disposed = true;
+      goneNow();
+    },
     /** Runs `code`; one run at a time, in order. */
     run(code: string, opts: RunOptions): Promise<PythonResult> {
       const next = queue.then(() => runNow(code, opts));
@@ -271,7 +308,12 @@ export async function fetchVendored(
   onBytes: (loaded: number, total: number | null) => void,
 ): Promise<ArrayBuffer> {
   const res = await fetch(`/pyodide/${encodeURIComponent(name)}`, { credentials: "omit" });
+  // A server without the files answers 404, or (an SPA fallback in front of
+  // it) with its HTML page; neither is a Pyodide file.
   if (res.status === 404) throw new PythonNotInstalled();
+  if (res.ok && /text\/html/i.test(res.headers.get("content-type") ?? "")) {
+    throw new PythonNotInstalled();
+  }
   if (!res.ok) throw new Error(`/pyodide/${name}: ${res.status}`);
   const length = Number(res.headers.get("content-length"));
   const total = Number.isFinite(length) && length > 0 ? length : null;
@@ -329,6 +371,12 @@ let host: ReturnType<typeof createPythonHost> | null = null;
 
 /** Runs `code` in the page's Python sandbox (created on the first call). */
 export function runPython(code: string, opts: RunOptions): Promise<PythonResult> {
-  host ??= createPythonHost({ fetchAsset: fetchVendored, mountFrame: mountHiddenFrame });
+  if (!host) {
+    host = createPythonHost({ fetchAsset: fetchVendored, mountFrame: mountHiddenFrame });
+    onPythonReset(() => {
+      host?.dispose();
+      host = null;
+    });
+  }
   return host.run(code, opts);
 }

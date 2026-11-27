@@ -20,8 +20,21 @@ import {
 import {
   createPythonHost,
   fetchVendored,
+  runPython,
   type HostDeps,
 } from "@/components/conversation/python/runner";
+import { resetPython } from "@/lib/python-reset";
+
+/** A PNG's first bytes (signature and IHDR) as a data URL. */
+function png(width: number, height: number): string {
+  const bytes = new Uint8Array(33);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  bytes.set([8, 6, 0, 0, 0], 24);
+  return `data:image/png;base64,${btoa(String.fromCharCode(...bytes))}`;
+}
 
 const LOCK = JSON.stringify({
   packages: {
@@ -205,6 +218,45 @@ describe("the Python host", () => {
     expect(run.transfer).toEqual([bytes]);
   });
 
+  it("gives up on a run whose packages do not load within the load deadline", async () => {
+    const frame = fakeFrame();
+    const run = createPythonHost(frame.deps).run("import numpy", {
+      signal: new AbortController().signal,
+      loadTimeoutMs: 300,
+    });
+    await frame.untilRun();
+    expect(frame.posted.some((p) => p.message.type === "stop")).toBe(false);
+    await expect(run).rejects.toThrow("Loading Python and its packages took too long.");
+    expect(frame.posted.at(-1)?.message).toEqual({ type: "stop" });
+  });
+
+  it("the load deadline is 120 s and separate from the 30 s clock", async () => {
+    expect(LIMITS.loadTimeoutMs).toBe(120_000);
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const frame = fakeFrame();
+    const run = createPythonHost(frame.deps).run("x", { signal: new AbortController().signal });
+    const id = await frame.untilRun();
+    vi.advanceTimersByTime(100_000);
+    frame.say({ type: "started", id });
+    // The load deadline no longer counts once the code started.
+    vi.advanceTimersByTime(25_000);
+    expect(frame.posted.some((p) => p.message.type === "stop")).toBe(false);
+    vi.advanceTimersByTime(5_000);
+    vi.useRealTimers();
+    await expect(run).resolves.toMatchObject({ timedOut: true });
+  });
+
+  it("dispose rejects the run in progress and removes the frame", async () => {
+    const frame = fakeFrame();
+    const host = createPythonHost(frame.deps);
+    const run = host.run("x", { signal: new AbortController().signal });
+    await frame.untilRun();
+    host.dispose();
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    const link = (frame.deps.mountFrame as ReturnType<typeof vi.fn>).mock.results[0].value;
+    expect(link.remove).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects a failed run with the frame's message, capped", async () => {
     const frame = fakeFrame();
     const run = createPythonHost(frame.deps).run("x", { signal: new AbortController().signal });
@@ -235,6 +287,18 @@ describe("fetchVendored", () => {
     expect(seen.at(-1)).toBe(3);
   });
 
+  it("says Python is not installed when the server answers with its HTML page", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("<!doctype html><title>oc8</title>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      }),
+    );
+    await expect(fetchVendored("pyodide.asm.wasm", () => undefined)).rejects.toBeInstanceOf(
+      PythonNotInstalled,
+    );
+  });
+
   it("a missing first download can be tried again", async () => {
     let calls = 0;
     const deps: HostDeps = {
@@ -255,14 +319,34 @@ describe("fetchVendored", () => {
   });
 });
 
+describe("resetPython", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("takes the page's Python frame away and stops its run", async () => {
+    // The download never finishes: the run is still booting.
+    vi.spyOn(globalThis, "fetch").mockReturnValue(new Promise(() => undefined));
+    const run = runPython("x", { signal: new AbortController().signal });
+    await vi.waitFor(() => expect(document.querySelector("iframe[title=Python]")).not.toBeNull());
+    resetPython();
+    await expect(run).rejects.toMatchObject({ name: "AbortError" });
+    expect(document.querySelector("iframe[title=Python]")).toBeNull();
+    // The next run starts over with a new frame.
+    void runPython("y", { signal: new AbortController().signal }).catch(() => undefined);
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll("iframe[title=Python]")).toHaveLength(1),
+    );
+    resetPython();
+  });
+});
+
 describe("readOutput", () => {
   it("caps text, images and tables", () => {
-    const png = "data:image/png;base64,iVBORw0KGgo=";
+    const image = png(64, 48);
     const out = readOutput({
       stdout: "a".repeat(LIMITS.text + 50),
       stderr: 5,
       result: "r",
-      images: Array.from({ length: 15 }, () => png),
+      images: Array.from({ length: 15 }, () => image),
       tables: [
         {
           columns: ["n", 2],
@@ -287,10 +371,38 @@ describe("readOutput", () => {
         'data:image/png;base64,abc"onerror=alert(1)',
         "https://example.com/x.png",
         `data:image/png;base64,${"A".repeat(LIMITS.imageChars)}`,
-        "data:image/png;base64,iVBORw0KGgo=",
+        png(64, 48),
       ],
     });
-    expect(out.images).toEqual(["data:image/png;base64,iVBORw0KGgo="]);
+    expect(out.images).toEqual([png(64, 48)]);
+  });
+
+  it("refuses a PNG over 4096 x 4096 or without a PNG header", () => {
+    const out = readOutput({
+      images: [png(4097, 10), png(10, 5000), "data:image/png;base64,AAAA", png(4096, 4096)],
+    });
+    expect(out.images).toEqual([png(4096, 4096)]);
+  });
+
+  it("keeps the whole output within one budget", () => {
+    const big = "a".repeat(LIMITS.text);
+    const cells = Array.from({ length: 200 }, () => Array.from({ length: 100 }, () => "x"));
+    const out = readOutput({
+      stdout: big,
+      stderr: big,
+      result: big,
+      images: Array.from({ length: 10 }, () => png(64, 48) + "A".repeat(1_000_000)),
+      tables: Array.from({ length: 10 }, () => ({ columns: Array(100).fill("c"), rows: cells })),
+    });
+    const tableCells = out.tables.reduce((n, t) => n + t.rows.length * t.columns.length, 0);
+    expect(tableCells).toBeLessThanOrEqual(LIMITS.tableCells);
+    const total =
+      out.stdout.length +
+      out.stderr.length +
+      (out.result?.length ?? 0) +
+      out.images.reduce((n, i) => n + i.length, 0) +
+      out.tables.reduce((n, t) => n + [t.columns, ...t.rows].flat().join("").length, 0);
+    expect(total).toBeLessThanOrEqual(LIMITS.total + 10);
   });
 
   it("reads junk as empty output", () => {

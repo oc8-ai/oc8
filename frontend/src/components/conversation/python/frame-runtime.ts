@@ -13,9 +13,15 @@
 // fetches those files from its own origin (/pyodide/, vendored by
 // scripts/vendor-pyodide.mjs) and only by names the lock file lists.
 // The worker also loses every other way to send (XHR, WebSocket, WebRTC,
-// EventSource, WebTransport) and to start a fresh realm (Worker), and its
-// postMessage once the protocol has captured it: Python code can neither
-// reach the network nor talk to the frame except through the run's result.
+// EventSource, WebTransport), to load more script (importScripts) and to
+// start a fresh realm (Worker), and its postMessage once the protocol has
+// captured it -- in a closure, not on the global, so Python cannot reach it
+// through `js` or `js.eval`. If any of that cannot be done, the worker fails
+// to start instead of running unhardened. Python code can neither reach the
+// network nor talk to the frame except through the run's result.
+//
+// One worker per run: the frame starts it for the run and terminates it when
+// the run ends, so nothing a run leaves behind reaches the next one.
 
 /** Where Pyodide believes its files are. `.invalid` never resolves, and the
  *  worker's fetch serves this prefix from memory only. */
@@ -159,6 +165,8 @@ function localFetch(input) {
 // its prototype chain, non-writable and non-configurable.
 const lock = (target, name, value) => {
   try { Object.defineProperty(target, name, { value, writable: false, configurable: false, enumerable: false }); } catch (e) {}
+  // Already locked by the browser is fine only if it already is what we want.
+  if (target[name] !== value) throw new Error("The Python sandbox could not be set up (" + name + ").");
 };
 const everywhere = (name, value) => {
   for (let o = Object.getPrototypeOf(scope); o; o = Object.getPrototypeOf(o)) {
@@ -168,7 +176,7 @@ const everywhere = (name, value) => {
 };
 for (const name of ["XMLHttpRequest", "WebSocket", "WebSocketStream", "WebTransport", "EventSource",
   "RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel", "RTCRtpScriptTransformer",
-  "Worker", "SharedWorker", "BroadcastChannel"]) {
+  "Worker", "SharedWorker", "BroadcastChannel", "importScripts"]) {
   everywhere(name, undefined);
 }
 everywhere("fetch", localFetch);
@@ -211,7 +219,6 @@ function boot(core) {
   })();
 }
 
-let mounted = [];
 const safeName = (name, used) => {
   let base = String(name).split(/[\\\\/]/).pop().replace(/[^A-Za-z0-9._ -]/g, "_").slice(0, 120);
   if (!base || base === "." || base === "..") base = "file";
@@ -225,14 +232,11 @@ async function run(m) {
   const id = m.id;
   try {
     const { py, run: runCode, preload, packageImports } = await ready;
-    for (const path of mounted) { try { py.FS.unlink(path); } catch (e) {} }
-    mounted = [];
     const used = new Set();
     for (const file of m.mounts || []) {
       const path = "/home/pyodide/" + safeName(file.name, used);
       py.FS.writeFile(path, new Uint8Array(file.bytes));
       py.FS.chmod(path, 0o444);
-      mounted.push(path);
     }
     stdout = "";
     stderr = "";
@@ -281,9 +285,10 @@ listen("message", (event) => {
 
 /** The worker's source: Pyodide, the offline fetch and the run protocol. */
 export const WORKER_SOURCE =
-  `"use strict";\nconst BASE = ${JSON.stringify(PYODIDE_BASE)};\n` +
+  `"use strict";\n(() => {\nconst BASE = ${JSON.stringify(PYODIDE_BASE)};\n` +
   `const HELPER = ${JSON.stringify(PY_HELPER)};\n` +
-  WORKER_BODY;
+  WORKER_BODY +
+  "\n})();\n";
 
 const FRAME_BODY = `(() => {
   "use strict";
@@ -312,8 +317,12 @@ const FRAME_BODY = `(() => {
       }
       if (Object.keys(have).length && worker) worker.postMessage({ type: "files", files: have });
       if (missing.length) toHost({ type: "need", names: missing });
-    } else if (m.type === "started" || m.type === "done" || m.type === "failed") {
+    } else if (m.type === "started") {
+      toHost({ type: "started", id: m.id });
+    } else if (m.type === "done" || m.type === "failed") {
       toHost({ type: m.type, id: m.id, out: m.out, error: m.error });
+      // The run is over: its worker, and all it holds, go.
+      stop();
     }
   };
   const start = () => {
@@ -347,7 +356,8 @@ const FRAME_BODY = `(() => {
       if (worker) worker.postMessage({ type: "files", files: kept, missing: Array.isArray(m.missing) ? m.missing : [] });
     } else if (m.type === "run") {
       current = m.id;
-      if (!worker) start();
+      stop();
+      start();
       worker.postMessage({ type: "run", id: m.id, code: String(m.code), mounts: Array.isArray(m.mounts) ? m.mounts : [] });
     } else if (m.type === "stop") stop();
   });
