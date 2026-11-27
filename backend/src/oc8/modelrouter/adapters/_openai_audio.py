@@ -33,6 +33,14 @@ _EXTENSIONS: dict[str, str] = {
 }
 
 
+#: (base URL, model) pairs that refused `verbose_json`; asked with `json` only.
+_NO_VERBOSE_JSON: set[tuple[str, str]] = set()
+
+
+class UnexpectedAudioResponse(ValueError):
+    """The provider answered, but not in a shape an audio endpoint answers in."""
+
+
 @dataclass(frozen=True)
 class Transcript:
     text: str
@@ -74,22 +82,48 @@ async def post_transcription(
     content_type: str,
     language: str | None,
 ) -> Transcript:
-    fields: dict[str, str] = {"model": model, "response_format": "json"}
-    if language:
-        fields["language"] = language
+    """The recording as text, with its length where the provider says it.
+
+    `verbose_json` is asked first: it carries `duration`, which the member's
+    daily allowance counts. A model that refuses that format (a 4xx naming
+    `response_format`, as gpt-4o-transcribe answers) is asked again once with
+    `json`, and remembered per (base URL, model) for this process."""
+    key = (base_url, model)
+    formats = ("json",) if key in _NO_VERBOSE_JSON else ("verbose_json", "json")
     filename = f"audio.{_EXTENSIONS.get(content_type, 'webm')}"
     async with httpx.AsyncClient(timeout=_TRANSCRIBE_TIMEOUT_S) as client:
-        resp = await client.post(
-            f"{base_url}/audio/transcriptions",
-            data=fields,
-            files={"file": (filename, audio, content_type)},
-            headers=_auth(api_key),
-        )
-        raise_for_status_with_body(resp)
-        data = resp.json()
-    if not isinstance(data, dict):
-        raise ValueError(f"unexpected transcription response for model {model!r}")
-    return _parse_transcript(data)
+        for response_format in formats:
+            fields: dict[str, str] = {"model": model, "response_format": response_format}
+            if language:
+                fields["language"] = language
+            if isinstance(audio, io.BytesIO):
+                audio.seek(0)
+            resp = await client.post(
+                f"{base_url}/audio/transcriptions",
+                data=fields,
+                files={"file": (filename, audio, content_type)},
+                headers=_auth(api_key),
+            )
+            if (
+                response_format == "verbose_json"
+                and 400 <= resp.status_code < 500
+                and "response_format" in resp.text
+            ):
+                _NO_VERBOSE_JSON.add(key)
+                continue
+            raise_for_status_with_body(resp)
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                raise UnexpectedAudioResponse(
+                    f"the transcription answer of model {model!r} is not JSON"
+                ) from exc
+            if not isinstance(data, dict):
+                raise UnexpectedAudioResponse(
+                    f"unexpected transcription response for model {model!r}"
+                )
+            return _parse_transcript(data)
+    raise UnexpectedAudioResponse(f"model {model!r} took no transcription format")
 
 
 async def open_speech_stream(

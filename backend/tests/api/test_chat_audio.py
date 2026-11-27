@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.credentials.service import create_credential
@@ -437,14 +437,20 @@ async def test_dictation_returns_the_text_and_meters_and_audits_without_it(
                 select(m.OrgMember.id).where(m.OrgMember.subject_uuid == _subject_uuid("owner"))
             )
         ).scalar_one()
-        [usage] = (await db.execute(select(m.TokenUsageRecord))).scalars().all()
-        assert usage.member_id == owner
-        assert (usage.provider, usage.model, usage.platform_units) == (
-            "openai_compatible",
-            "whisper-1",
-            3,
+        rows = (
+            (
+                await db.execute(
+                    select(m.TokenUsageRecord).where(m.TokenUsageRecord.tenant_id == w.tenant)
+                )
+            )
+            .scalars()
+            .all()
         )
-        assert usage.agent_id == w.personal_agent
+        # The reservation (the upload at 16 kbit/s) plus the reported seconds
+        # beyond it: 2.5 s rounded up.
+        assert sum(r.platform_units for r in rows) == 3
+        assert {(r.member_id, r.agent_id) for r in rows} == {(owner, w.personal_agent)}
+        assert {(r.provider, r.model) for r in rows} == {("openai_compatible", "whisper-1")}
         [event] = (
             (
                 await db.execute(
@@ -507,7 +513,7 @@ async def test_dictation_refuses_what_is_not_audio(
     assert provider == []
 
 
-async def test_dictation_over_25_mb_is_too_large(
+async def test_dictation_over_12_mb_is_too_large(
     app_session: AppSessionFactory, provider: list[httpx.Request]
 ) -> None:
     async with _http() as http:
@@ -516,7 +522,7 @@ async def test_dictation_over_25_mb_is_too_large(
         r = await http.post(
             "/api/v1/chat/audio/transcribe",
             headers=_headers(w.tenant, "owner", "member"),
-            **_upload(audio=b"\0" * (25 * 1024 * 1024 + 1), session_id=str(session_id)),
+            **_upload(audio=b"\0" * (12 * 1024 * 1024 + 1), session_id=str(session_id)),
         )
     assert r.status_code == 413, r.text
     assert provider == []
@@ -659,8 +665,7 @@ async def test_a_model_a_version_or_an_auto_tier_runs_on_stays_a_chat_model(
     app_session: AppSessionFactory,
 ) -> None:
     """Converting checks every agent version that pins the model and every
-    auto tier that points at it, not only the agents' live rows; a rollback to
-    a version whose model became speech anyway (direct SQL) is refused."""
+    auto tier that points at it, not only the agents' live rows."""
     async with _http() as http:
         w, chat, _stt, _tts = await _speech_world(app_session, http)
         h = _admin(w.tenant)
@@ -717,16 +722,6 @@ async def test_a_model_a_version_or_an_auto_tier_runs_on_stays_a_chat_model(
         )
         assert r.status_code == 422, r.text
         assert "auto" in r.json()["detail"]
-
-        async with app_session(w.tenant) as db:
-            row = await db.get(m.ModelConfig, uuid.UUID(other["id"]))
-            assert row is not None
-            row.params = {"capability": "speech_to_text"}
-            row.chat_enabled = False
-            await db.flush()
-        r = await http.post(f"/api/v1/agents/{agent_id}/versions/1/rollback", headers=h)
-        assert r.status_code == 422, r.text
-        assert "speech" in r.text
 
 
 async def test_the_llm_gateway_lists_no_speech_model(app_session: AppSessionFactory) -> None:
@@ -879,7 +874,7 @@ async def test_a_bad_language_is_refused(
     assert provider == []
 
 
-async def test_a_chunked_upload_over_25_mb_is_too_large(
+async def test_a_chunked_upload_over_12_mb_is_too_large(
     app_session: AppSessionFactory, provider: list[httpx.Request]
 ) -> None:
     """No Content-Length to refuse up front: the bytes are counted as read."""
@@ -899,7 +894,7 @@ async def test_a_chunked_upload_over_25_mb_is_too_large(
         async def body() -> Any:
             yield head
             chunk = b"\0" * (1024 * 1024)
-            for _ in range(26):
+            for _ in range(13):
                 yield chunk
             yield f"\r\n--{boundary}--\r\n".encode()
 
@@ -1051,3 +1046,166 @@ async def test_a_later_piece_failing_ends_the_audio_and_is_audited(
     assert event.resource["message_id"] == str(msg_id)
     assert event.resource["error"] == "HTTPStatusError"
     assert event.decision == "error"
+
+
+async def _agent_on_v1_then_moved(
+    app_session: AppSessionFactory, http: AsyncClient, w: Any, first: str, then: str
+) -> str:
+    """An agent hired on `first` (v1), moved to `then` and published (v2)."""
+    h = _admin(w.tenant)
+    dept = await _department_of(app_session, w.tenant, w.standard_agent)
+    hired = await http.post(
+        "/api/v1/agents",
+        json={"departmentId": dept, "name": "Vera", "modelConfigId": first},
+        headers=h,
+    )
+    assert hired.status_code == 201, hired.text
+    agent_id = str(hired.json()["id"])
+    switched = await http.patch(
+        f"/api/v1/agents/{agent_id}/model-config", json={"modelConfigId": then}, headers=h
+    )
+    assert switched.status_code == 200, switched.text
+    published = await http.post(
+        f"/api/v1/agents/{agent_id}/versions", json={"expectedCurrentVersionNo": 1}, headers=h
+    )
+    assert published.status_code == 201, published.text
+    return agent_id
+
+
+async def test_a_rollback_to_a_version_whose_model_became_speech_is_refused(
+    app_session: AppSessionFactory,
+) -> None:
+    """The model was turned into a speech model past the catalog (direct
+    SQL): restoring the version that pins it would make it the agent's."""
+    async with _http() as http:
+        w, chat, _stt, _tts = await _speech_world(app_session, http)
+        other = await _model(http, w.tenant, capability=None, model="gpt-other")
+        agent_id = await _agent_on_v1_then_moved(app_session, http, w, other["id"], chat["id"])
+        async with app_session(w.tenant) as db:
+            row = await db.get(m.ModelConfig, uuid.UUID(other["id"]))
+            assert row is not None
+            row.params = {"capability": "speech_to_text"}
+            row.chat_enabled = False
+            await db.flush()
+        r = await http.post(
+            f"/api/v1/agents/{agent_id}/versions/1/rollback", headers=_admin(w.tenant)
+        )
+        assert r.status_code == 422, r.text
+        assert "speech" in r.text
+        async with app_session(w.tenant) as db:
+            agent = await db.get(m.Agent, uuid.UUID(agent_id))
+            assert agent is not None
+            assert str(agent.model_config_id) == chat["id"]
+
+
+async def test_the_gateway_refuses_an_agent_pinned_to_a_speech_model(
+    app_session: AppSessionFactory,
+) -> None:
+    from tests.api.test_llm_gateway import _agent_run, _agent_token
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent_id, run_id, _dept = await _agent_run(db, tenant, model="whisper-1")
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        cfg = await db.get(m.ModelConfig, agent.model_config_id)
+        assert cfg is not None
+        cfg.params = {"capability": "speech_to_text"}
+        cfg.chat_enabled = False
+        await db.flush()
+    token = _agent_token(tenant, agent_id, run_id)
+    body = {"model": "whisper-1", "messages": [{"role": "user", "content": "hi"}]}
+    async with _http() as http:
+        for stream in (False, True):
+            r = await http.post(
+                "/llm/v1/chat/completions",
+                json={**body, "stream": stream},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert r.status_code == 409, (stream, r.text)
+            assert "speech model" in r.json()["detail"]
+
+
+async def test_parallel_dictations_are_reserved_not_raced(
+    app_session: AppSessionFactory, provider: list[httpx.Request]
+) -> None:
+    """Five recordings at once against a day that fits two: two are
+    transcribed, three refused, and the day is not overshot."""
+    import asyncio
+
+    async with _http() as http:
+        w, _chat_model, stt, tts = await _speech_world(app_session, http)
+        r = await http.put(
+            "/api/v1/settings/speech",
+            json={
+                "speechToTextModelId": stt["id"],
+                "textToSpeechModelId": tts["id"],
+                "dailyTranscriptionMinutes": 1,
+            },
+            headers=_admin(w.tenant),
+        )
+        assert r.status_code == 200, r.text
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        h = _headers(w.tenant, "owner", "member")
+        # 30 seconds each at 16 kbit/s.
+        audio = b"\0" * (2_000 * 30)
+        results = await asyncio.gather(
+            *(
+                http.post(
+                    "/api/v1/chat/audio/transcribe",
+                    headers=h,
+                    **_upload(audio=audio, session_id=str(session_id)),
+                )
+                for _ in range(5)
+            )
+        )
+    assert sorted(r.status_code for r in results) == [200, 200, 429, 429, 429]
+    assert len(provider) == 2
+    async with app_session(w.tenant) as db:
+        units = await db.scalar(
+            select(func.sum(m.TokenUsageRecord.platform_units)).where(
+                m.TokenUsageRecord.tenant_id == w.tenant
+            )
+        )
+    assert units is not None and units <= 60
+
+
+async def test_a_bug_in_a_speech_call_is_not_passed_off_as_the_providers(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.modelrouter.adapters.openai_compatible import OpenAICompatibleAdapter
+
+    async def broken(*_a: Any, **_k: Any) -> Any:
+        raise KeyError("a programming error")
+
+    monkeypatch.setattr(OpenAICompatibleAdapter, "transcribe", broken)
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        with pytest.raises(KeyError):
+            await http.post(
+                "/api/v1/chat/audio/transcribe",
+                headers=_headers(w.tenant, "owner", "member"),
+                **_upload(session_id=str(session_id)),
+            )
+
+
+async def test_an_oversized_answer_is_refused_before_its_markdown_is_read(
+    app_session: AppSessionFactory, provider: list[httpx.Request], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from oc8.api.v1 import chat_audio
+
+    def never(_text: str) -> str:
+        raise AssertionError("an oversized answer must not be stripped")
+
+    monkeypatch.setattr(chat_audio, "speakable", never)
+    async with _http() as http:
+        w, *_ = await _speech_world(app_session, http)
+        session_id, _ = await _chat(app_session, w.tenant, w.personal_agent, "owner")
+        msg_id = await _answer(app_session, w.tenant, session_id, "*|`" * 30_000)
+        r = await http.post(
+            f"/api/v1/chat/sessions/{session_id}/messages/{msg_id}/speech",
+            headers=_headers(w.tenant, "owner", "member"),
+        )
+    assert r.status_code == 409, r.text
+    assert provider == []

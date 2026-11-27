@@ -12,6 +12,7 @@ provider reports no tokens. Audio is never stored.
 from __future__ import annotations
 
 import base64
+import io
 import uuid
 from typing import Any
 
@@ -107,6 +108,7 @@ async def test_the_compatible_adapter_posts_the_audio_as_multipart(
     body = request.content
     assert _AUDIO in body
     assert b'name="model"\r\n\r\nwhisper-1' in body
+    assert b'name="response_format"\r\n\r\nverbose_json' in body
     assert b'name="language"\r\n\r\nde' in body
     # Never the client's own file name: a fixed one by content type.
     assert b'filename="audio.webm"' in body
@@ -294,11 +296,14 @@ async def test_transcribe_uses_the_tenants_key_and_meters_the_seconds(
         [request] = server.requests
         assert str(request.url) == "https://tenant-llm.example/v1/audio/transcriptions"
         assert request.headers["authorization"] == "Bearer sk-tenant"
-        [row] = await _usage(db, tenant)
-        assert row.member_id == member
-        assert (row.provider, row.model) == ("openai_compatible", "whisper-1")
-        # No tokens reported: the seconds, rounded up, are the platform units.
-        assert (row.tokens_in, row.tokens_out, row.platform_units) == (0, 0, 5)
+        rows = await _usage(db, tenant)
+        assert {r.member_id for r in rows} == {member}
+        assert {(r.provider, r.model) for r in rows} == {("openai_compatible", "whisper-1")}
+        # The reported seconds, rounded up, are the platform units: the
+        # reservation (the upload's estimate) plus what the provider reported
+        # beyond it.
+        assert sum(r.platform_units for r in rows) == 5
+        assert sum(r.tokens_in + r.tokens_out for r in rows) == 0
 
 
 async def test_reported_tokens_are_metered_as_tokens(
@@ -316,10 +321,12 @@ async def test_reported_tokens_are_metered_as_tokens(
         await transcribe(
             db, tenant_id=tenant, audio=_AUDIO, content_type="audio/ogg", language=None
         )
-        [row] = await _usage(db, tenant)
+        rows = await _usage(db, tenant)
         # Tokens bill the call; the seconds (estimated from the upload here)
         # still count towards the member's daily allowance.
-        assert (row.tokens_in, row.tokens_out, row.platform_units) == (50, 2, 1)
+        assert sum(r.tokens_in for r in rows) == 50
+        assert sum(r.tokens_out for r in rows) == 2
+        assert sum(r.platform_units for r in rows) == 1
 
 
 async def test_a_plugin_providers_speech_is_metered_under_its_own_name(
@@ -379,8 +386,8 @@ async def test_a_plugin_providers_speech_is_metered_under_its_own_name(
             db, tenant_id=tenant, audio=_AUDIO, content_type="audio/webm", language=None
         )
         assert result.provider == "demo_ai"
-        [row] = await _usage(db, tenant)
-        assert row.provider == "demo_ai"
+        rows = await _usage(db, tenant)
+        assert rows and {r.provider for r in rows} == {"demo_ai"}
 
 
 async def test_synthesize_streams_audio_and_meters_the_characters(
@@ -625,10 +632,11 @@ async def test_markdown_is_read_as_plain_words() -> None:
     assert "ein Zitat" in spoken and "erster Punkt" in spoken and "x = 1" in spoken
 
 
-async def test_only_the_pieces_sent_are_billed(
+async def test_a_stopped_reading_still_counts_the_whole_answer(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Stopping after the first piece bills the first piece, not the answer."""
+    """The allowance is reserved up front for the whole (stripped) answer;
+    usage rows are append-only, so stopping early refunds nothing."""
     _FakeAudioServer(audio=b"mp3").install(monkeypatch)
     tenant = uuid.uuid4()
     text = "Ein langer Satz der vorgelesen wird. " * 300
@@ -641,7 +649,8 @@ async def test_only_the_pieces_sent_are_billed(
             break
         await spoken.aclose()
         rows = await _usage(db, tenant)
-    assert sum(r.platform_units for r in rows) == len(pieces[0])
+    assert len(rows) == 1
+    assert rows[0].platform_units == sum(len(p) for p in pieces)
 
 
 async def test_a_failing_later_piece_ends_the_stream_cleanly(
@@ -664,37 +673,122 @@ async def test_a_failing_later_piece_ends_the_stream_cleanly(
 
     tenant = uuid.uuid4()
     text = "Ein langer Satz der vorgelesen wird. " * 300
-    pieces = split_for_speech(text.strip())
     async with app_session(tenant) as db:
         await _tenant(db, tenant)
         spoken = await synthesize(db, tenant_id=tenant, text=text, on_error=on_error)
         audio = b"".join([c async for c in spoken.chunks])
-        rows = await _usage(db, tenant)
     assert audio == b"mp3"
     assert len(sent) == 2
     assert [type(f).__name__ for f in failures] == ["HTTPStatusError"]
-    # The refused piece is not billed.
-    assert sum(r.platform_units for r in rows) == len(pieces[0])
 
 
-async def test_transcription_seconds_are_kept_even_when_tokens_are_reported(
+async def test_without_a_reported_duration_the_upload_size_counts_conservatively(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The daily allowance counts seconds, so a token-billed model still
-    records them (estimated from the upload when the provider names none)."""
+    """16 kbit/s: a low-bitrate recording cannot pass for a short one."""
     _FakeAudioServer(
         transcript={"text": "ok", "usage": {"type": "tokens", "input_tokens": 5}}
     ).install(monkeypatch)
     tenant = uuid.uuid4()
-    audio = b"x" * (16_000 * 3)
+    audio = b"x" * (2_000 * 24)
     async with app_session(tenant) as db:
         await _tenant(db, tenant)
         await transcribe(
             db, tenant_id=tenant, audio=audio, content_type="audio/webm", language=None
         )
-        [row] = await _usage(db, tenant)
-    assert row.tokens_in == 5
-    assert row.platform_units == 3
+        rows = await _usage(db, tenant)
+    assert sum(r.tokens_in for r in rows) == 5
+    assert sum(r.platform_units for r in rows) == 24
+
+
+async def test_a_longer_reported_duration_is_added_to_the_reservation(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reservation is the size estimate; when the provider reports more
+    seconds, the difference is appended -- never less, never refunded."""
+    _FakeAudioServer(transcript={"text": "ok", "duration": 40.2}).install(monkeypatch)
+    tenant = uuid.uuid4()
+    audio = b"x" * (2_000 * 10)
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        await transcribe(
+            db, tenant_id=tenant, audio=audio, content_type="audio/webm", language=None
+        )
+        rows = await _usage(db, tenant)
+    # The reservation, then the seconds reported beyond it.
+    assert sorted(r.platform_units for r in rows) == [10, 31]
+
+
+async def test_a_shorter_reported_duration_refunds_nothing(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _FakeAudioServer(transcript={"text": "ok", "duration": 2.0}).install(monkeypatch)
+    tenant = uuid.uuid4()
+    audio = b"x" * (2_000 * 10)
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        await transcribe(
+            db, tenant_id=tenant, audio=audio, content_type="audio/webm", language=None
+        )
+        rows = await _usage(db, tenant)
+    assert [r.platform_units for r in rows] == [10]
+
+
+async def test_verbose_json_is_asked_first_for_the_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = _FakeAudioServer(transcript={"text": "ok", "duration": 7.5}).install(monkeypatch)
+    adapter = OpenAICompatibleAdapter("https://verbose.example/v1", "k")
+    result = await adapter.transcribe(
+        _AUDIO, model="whisper-1", content_type="audio/webm", language=None
+    )
+    assert result.seconds == pytest.approx(7.5)
+    [request] = server.requests
+    assert b'name="response_format"\r\n\r\nverbose_json' in request.content
+
+
+async def test_a_model_without_verbose_json_is_asked_once_and_remembered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sent: list[bytes] = []
+
+    async def send(client: Any, request: httpx.Request, **_kwargs: Any) -> httpx.Response:
+        body = await request.aread()
+        sent.append(body)
+        if b"verbose_json" in body:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": "response_format 'verbose_json' is not compatible with "
+                        "model 'gpt-4o-transcribe'"
+                    }
+                },
+                request=request,
+            )
+        return httpx.Response(200, json={"text": "ok"}, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", send)
+    adapter = OpenAICompatibleAdapter("https://noverbose.example/v1", "k")
+    for _ in range(2):
+        result = await adapter.transcribe(
+            io.BytesIO(_AUDIO), model="gpt-4o-transcribe", content_type="audio/webm", language=None
+        )
+        assert result.text == "ok"
+    assert [b"verbose_json" in body for body in sent] == [True, False, False]
+    # The retry carried the whole recording again.
+    assert all(_AUDIO in body for body in sent)
+
+
+async def _limited_tenant(app_session: AppSessionFactory, tenant: uuid.UUID, **limits: int) -> None:
+    """`_tenant`, committed, with the given daily allowance: the reservation
+    reads on a session of its own."""
+    async with app_session(tenant) as db:
+        await _tenant(db, tenant)
+        org = await db.get(m.Organization, tenant)
+        assert org is not None
+        org.settings = {"speech": {**org.settings["speech"], **limits}}
+        await db.flush()
 
 
 async def test_a_member_past_the_daily_allowance_is_refused_before_the_call(
@@ -705,18 +799,10 @@ async def test_a_member_past_the_daily_allowance_is_refused_before_the_call(
 
     server = _FakeAudioServer().install(monkeypatch)
     tenant, member, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    await _limited_tenant(
+        app_session, tenant, daily_transcription_minutes=1, daily_read_aloud_characters=10
+    )
     async with app_session(tenant) as db:
-        await _tenant(db, tenant)
-        org = await db.get(m.Organization, tenant)
-        assert org is not None
-        org.settings = {
-            "speech": {
-                **org.settings["speech"],
-                "daily_transcription_minutes": 1,
-                "daily_read_aloud_characters": 10,
-            }
-        }
-        await db.flush()
         await record_usage(
             db,
             tenant_id=tenant,
@@ -728,7 +814,7 @@ async def test_a_member_past_the_daily_allowance_is_refused_before_the_call(
             platform_units=60,
             member_id=member,
         )
-        await db.flush()
+    async with app_session(tenant) as db:
         with pytest.raises(SpeechAllowanceUsedUp):
             await transcribe(
                 db,
@@ -760,12 +846,8 @@ async def test_a_zero_allowance_switches_the_feature_off(
 
     server = _FakeAudioServer().install(monkeypatch)
     tenant = uuid.uuid4()
+    await _limited_tenant(app_session, tenant, daily_transcription_minutes=0)
     async with app_session(tenant) as db:
-        await _tenant(db, tenant)
-        org = await db.get(m.Organization, tenant)
-        assert org is not None
-        org.settings = {"speech": {**org.settings["speech"], "daily_transcription_minutes": 0}}
-        await db.flush()
         with pytest.raises(SpeechAllowanceUsedUp):
             await transcribe(
                 db,
@@ -776,3 +858,61 @@ async def test_a_zero_allowance_switches_the_feature_off(
                 member_id=uuid.uuid4(),
             )
     assert server.requests == []
+
+
+async def test_parallel_dictations_cannot_overshoot_the_allowance(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reserve-then-call under a per-member lock: five at once against an
+    allowance that fits two -- two pass, three are refused."""
+    import asyncio
+
+    from oc8.modelrouter.speech import SpeechAllowanceUsedUp
+
+    server = _FakeAudioServer(transcript={"text": "ok", "duration": 1.0}).install(monkeypatch)
+    tenant, member = uuid.uuid4(), uuid.uuid4()
+    await _limited_tenant(app_session, tenant, daily_transcription_minutes=1)
+    audio = b"x" * (2_000 * 30)
+
+    async def one() -> str:
+        async with app_session(tenant) as db:
+            try:
+                await transcribe(
+                    db,
+                    tenant_id=tenant,
+                    audio=audio,
+                    content_type="audio/webm",
+                    language=None,
+                    member_id=member,
+                )
+            except SpeechAllowanceUsedUp:
+                return "refused"
+            return "ok"
+
+    outcomes = await asyncio.gather(*(one() for _ in range(5)))
+    assert sorted(outcomes) == ["ok", "ok", "refused", "refused", "refused"]
+    assert len(server.requests) == 2
+    async with app_session(tenant) as db:
+        rows = await _usage(db, tenant)
+    assert sum(r.platform_units for r in rows) <= 60
+
+
+async def test_speakable_is_linear_on_adversarial_markdown() -> None:
+    import time
+
+    from oc8.modelrouter.speech import speakable
+
+    for text in (
+        "*" * 80_000,
+        "*a" * 40_000,
+        "| - " * 20_000,
+        "|-|\n" * 20_000,
+        "`" * 80_000,
+        "```\n" * 20_000,
+        "[" * 40_000 + "](" * 20_000,
+        "_a" * 40_000,
+        " \t" * 40_000,
+    ):
+        start = time.perf_counter()
+        speakable(text)
+        assert time.perf_counter() - start < 0.2, text[:20]

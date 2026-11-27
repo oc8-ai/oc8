@@ -12,23 +12,25 @@ A call goes to exactly the picked model: no fallback to another provider or a
 local default, since the person asked for that model to hear or speak. Before
 it leaves, the same checks a cloud embedding passes apply (entitlement, strict
 BYOK, a key, the provider's monthly limit, the hard budget), and a restricted
-text only reaches a local model. Each call writes one usage row naming the
-person, the provider the router resolved (a plugin provider's own name, not its
-adapter's) and the model, with the audio seconds (rounded up) or the
-characters as its platform units -- also when the provider bills tokens, since
-the per-member daily allowance counts them. Audio is never stored.
+text only reaches a local model. Usage rows name the person, the provider the
+router resolved (a plugin provider's own name, not its adapter's) and the
+model, with the audio seconds (rounded up) or the characters as platform units
+-- also when the provider bills tokens, since the per-member daily allowance
+counts them. Rows are append-only: a call first reserves its estimate as a
+usage row (`_reserve`), and dictation appends what the provider reports beyond
+it (and its tokens); nothing is refunded. Audio is never stored.
 
 Speech costs show 0 until pricing reads platform units, so the budgets that
 sum tokens do not see it; what bounds the spend is the per-member daily
-allowance (`check_allowance`): minutes of dictation and characters read
+allowance (`_reserve`): minutes of dictation and characters read
 aloud per member per day on the organisation's clock, set per tenant in the
 speech settings (0 switches the feature off for members).
 """
 
 from __future__ import annotations
 
-import asyncio
 import datetime as dt
+import hashlib
 import io
 import logging
 import math
@@ -80,9 +82,11 @@ DEFAULT_DAILY_LIMIT: Final = {SPEECH_TO_TEXT: 60, TEXT_TO_SPEECH: 200_000}
 #: The setting's unit -> the platform units a usage row holds (seconds, characters).
 _UNITS_PER: Final = {SPEECH_TO_TEXT: 60, TEXT_TO_SPEECH: 1}
 
-#: A recording's length when the provider names none: MediaRecorder's default
-#: Opus bitrate (128 kbit/s) -- a low-bitrate recording counts short.
-_ESTIMATED_BYTES_PER_SECOND: Final = 16_000
+#: A recording's length by its size, at 16 kbit/s: conservative, so a
+#: low-bitrate recording cannot pass for a short one (a 12 MB upload counts as
+#: about 100 minutes). The chat records at this rate, so for it the estimate
+#: is about the truth; a higher-bitrate upload counts longer than it is.
+_ESTIMATED_BYTES_PER_SECOND: Final = 2_000
 
 
 def capability_of(cfg: m.ModelConfig | None) -> str:
@@ -237,35 +241,81 @@ async def used_today(
     return int(total or 0)
 
 
-async def check_allowance(
-    db: AsyncSession,
+def _lock_key(tenant_id: uuid.UUID, member_id: uuid.UUID, capability: str) -> int:
+    """A signed 64-bit advisory-lock key for one member's allowance of one kind."""
+    digest = hashlib.blake2b(
+        f"oc8:speech:{tenant_id}:{member_id}:{capability}".encode(), digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+async def _reserve(
     *,
     tenant_id: uuid.UUID,
     member_id: uuid.UUID | None,
     capability: str,
-    wanted: int = 0,
+    limit: int,
+    units: int,
+    provider: str,
+    model: str,
+    agent_id: uuid.UUID | None,
+    department_id: uuid.UUID | None,
 ) -> None:
-    """Refuse (`SpeechAllowanceUsedUp`) before the provider call when the
-    member's day is used up, or would be by `wanted` more units. A call made
-    for nobody has no member allowance; the tenant budgets still apply."""
-    if member_id is None:
-        return
-    organization = await db.get(m.Organization, tenant_id)
-    limit = daily_limit(organization, capability) * _UNITS_PER[capability]
+    """Reserve `units` of the member's day BEFORE the provider is called.
+
+    One short transaction of its own: a per-member advisory lock, today's use
+    (every earlier reservation included), the refusal (`SpeechAllowanceUsedUp`)
+    when `used + units` passes `limit`, and the reservation itself -- the usage
+    row, since usage rows are append-only (migration 0001). Committing releases
+    the lock, so neither the lock nor a transaction spans the provider call,
+    and a parallel request sees this reservation. Nothing is ever refunded: a
+    failed or shorter call keeps its reservation. A call made for nobody has
+    no member allowance; its usage row is still written."""
+    from oc8.db.session import tenant_session
+    from oc8.metering.usage import record_usage
+
     what = "dictation" if capability == SPEECH_TO_TEXT else "reading aloud"
     unit = "seconds" if capability == SPEECH_TO_TEXT else "characters"
-    if limit == 0:
-        raise SpeechAllowanceUsedUp(f"{what} is switched off for members of this organization")
-    used = await used_today(db, tenant_id=tenant_id, member_id=member_id, capability=capability)
-    if used >= limit:
-        raise SpeechAllowanceUsedUp(
-            f"today's allowance for {what} is used up; it renews at midnight"
+    async with tenant_session(tenant_id) as own:
+        if member_id is not None:
+            if limit == 0:
+                raise SpeechAllowanceUsedUp(
+                    f"{what} is switched off for members of this organization"
+                )
+            await own.execute(
+                select(func.pg_advisory_xact_lock(_lock_key(tenant_id, member_id, capability)))
+            )
+            used = await used_today(
+                own, tenant_id=tenant_id, member_id=member_id, capability=capability
+            )
+            if used >= limit:
+                raise SpeechAllowanceUsedUp(
+                    f"today's allowance for {what} is used up; it renews at midnight"
+                )
+            if used + units > limit:
+                raise SpeechAllowanceUsedUp(
+                    f"this would pass today's allowance for {what}: "
+                    f"{limit - used} of {limit} {unit} are left"
+                )
+        await record_usage(
+            own,
+            tenant_id=tenant_id,
+            request_id=uuid.uuid4(),
+            model=model,
+            provider=provider,
+            tokens_in=0,
+            tokens_out=0,
+            platform_units=units,
+            agent_id=agent_id,
+            department_id=department_id,
+            member_id=member_id,
         )
-    if used + wanted > limit:
-        raise SpeechAllowanceUsedUp(
-            f"this would pass today's allowance for {what}: "
-            f"{limit - used} of {limit} {unit} are left"
-        )
+
+
+async def _limit(db: AsyncSession, *, tenant_id: uuid.UUID, capability: str) -> int:
+    """The member allowance in platform units (seconds / characters)."""
+    organization = await db.get(m.Organization, tenant_id)
+    return daily_limit(organization, capability) * _UNITS_PER[capability]
 
 
 async def _admit(
@@ -350,29 +400,13 @@ async def _record(
         )
 
 
-#: Detached usage writes still running; held so they are not collected.
-_PENDING: set[asyncio.Task[None]] = set()
-
-
-async def _record_detached(**kwargs: Any) -> None:
-    """`_record` on a session of its own, as a detached task awaited through a
-    shield (the LLM gateway's `_bill`): it runs while the answer streams,
-    after the request's transaction committed, and must survive the client
-    disconnecting mid-answer."""
-    from oc8.db.session import tenant_session
-
-    async def write() -> None:
-        async with tenant_session(kwargs["tenant_id"]) as own:
-            await _record(own, **kwargs)
-
-    task = asyncio.ensure_future(write())
-    _PENDING.add(task)
-    task.add_done_callback(_PENDING.discard)
-    await asyncio.shield(task)
-
-
 def _size(audio: bytes | io.BytesIO) -> int:
     return len(audio) if isinstance(audio, bytes) else audio.getbuffer().nbytes
+
+
+def estimated_seconds(size: int) -> int:
+    """A recording's length by its size at 16 kbit/s, rounded up (at least 1)."""
+    return max(1, math.ceil(size / _ESTIMATED_BYTES_PER_SECOND))
 
 
 async def transcribe(
@@ -387,25 +421,42 @@ async def transcribe(
     department_id: uuid.UUID | None = None,
 ) -> SpeechText:
     """The person's own words, as text. Dictation is like typing, so it is
-    allowed whatever the chat holds; only the text comes back."""
+    allowed whatever the chat holds; only the text comes back.
+
+    Counted so it never undercounts: the upload's size at 16 kbit/s is
+    reserved before the call; when the provider reports more seconds, the
+    difference is appended after it. A provider reporting fewer seconds
+    refunds nothing, so a recording above 16 kbit/s counts by its size."""
     cfg = await _model_for(db, tenant_id=tenant_id, capability=SPEECH_TO_TEXT)
-    await check_allowance(db, tenant_id=tenant_id, member_id=member_id, capability=SPEECH_TO_TEXT)
     provider, adapter = await _admit(db, tenant_id=tenant_id, cfg=cfg, department_id=department_id)
-    result = await adapter.transcribe(
-        audio, model=cfg.model, content_type=content_type, language=language
-    )
-    await _record(
-        db,
+    reserved = estimated_seconds(_size(audio))
+    await _reserve(
         tenant_id=tenant_id,
+        member_id=member_id,
+        capability=SPEECH_TO_TEXT,
+        limit=await _limit(db, tenant_id=tenant_id, capability=SPEECH_TO_TEXT),
+        units=reserved,
         provider=provider,
         model=cfg.model,
-        usage=result.usage,
-        platform_units=math.ceil(result.seconds)
-        or max(1, math.ceil(_size(audio) / _ESTIMATED_BYTES_PER_SECOND)),
-        member_id=member_id,
         agent_id=agent_id,
         department_id=department_id,
     )
+    result = await adapter.transcribe(
+        audio, model=cfg.model, content_type=content_type, language=language
+    )
+    beyond = max(0, math.ceil(result.seconds) - reserved)
+    if result.usage is not None or beyond:
+        await _record(
+            db,
+            tenant_id=tenant_id,
+            provider=provider,
+            model=cfg.model,
+            usage=result.usage,
+            platform_units=beyond,
+            member_id=member_id,
+            agent_id=agent_id,
+            department_id=department_id,
+        )
     return SpeechText(
         text=result.text,
         seconds=result.seconds,
@@ -468,11 +519,12 @@ async def synthesize(
     """`text` read aloud, as an MP3 stream. A restricted text only reaches a
     local model (the chat's `ClassificationViolation`, raised before any call).
 
-    The first piece is requested here, so a refusal raises while the caller
-    can still answer with an error; the rest follow as the stream is read.
-    Each piece is billed once the provider accepted it, so stopping early
-    bills only what was sent. A later piece that fails ends the stream
-    cleanly (the audio so far stays playable) and is handed to `on_error`."""
+    Its characters are reserved from the member's day before the first call
+    and are its usage: rows are append-only, so stopping early refunds
+    nothing. The first piece is requested here, so a refusal raises while the
+    caller can still answer with an error; the rest follow as the stream is
+    read. A later piece that fails ends the stream cleanly (the audio so far
+    stays playable) and is handed to `on_error`."""
     cfg = await _model_for(db, tenant_id=tenant_id, capability=TEXT_TO_SPEECH)
     if restricted and cfg.locality != "local":
         raise ClassificationViolation(
@@ -482,37 +534,26 @@ async def synthesize(
     if not pieces:
         raise ValueError("there is no text to read aloud")
     characters = sum(len(p) for p in pieces)
-    await check_allowance(
-        db,
+    provider, adapter = await _admit(db, tenant_id=tenant_id, cfg=cfg, department_id=department_id)
+    await _reserve(
         tenant_id=tenant_id,
         member_id=member_id,
         capability=TEXT_TO_SPEECH,
-        wanted=characters,
+        limit=await _limit(db, tenant_id=tenant_id, capability=TEXT_TO_SPEECH),
+        units=characters,
+        provider=provider,
+        model=cfg.model,
+        agent_id=agent_id,
+        department_id=department_id,
     )
-    provider, adapter = await _admit(db, tenant_id=tenant_id, cfg=cfg, department_id=department_id)
     extra = (cfg.params or {}).get("extra")
     extra = extra if isinstance(extra, dict) else None
-    billing: dict[str, Any] = {
-        "tenant_id": tenant_id,
-        "provider": provider,
-        "model": cfg.model,
-        "usage": None,
-        "member_id": member_id,
-        "agent_id": agent_id,
-        "department_id": department_id,
-    }
     first = await adapter.open_speech(pieces[0], model=cfg.model, extra=extra)
     open_streams: list[AsyncIterator[bytes]] = [first]
 
     async def close() -> None:
         while open_streams:
             await _aclose(open_streams.pop())
-
-    try:
-        await _record(db, platform_units=len(pieces[0]), **billing)
-    except BaseException:
-        await close()
-        raise
 
     async def chunks() -> AsyncIterator[bytes]:
         try:
@@ -522,7 +563,6 @@ async def synthesize(
             for piece in pieces[1:]:
                 stream = await adapter.open_speech(piece, model=cfg.model, extra=extra)
                 open_streams.append(stream)
-                await _record_detached(platform_units=len(piece), **billing)
                 async for chunk in stream:
                     yield chunk
                 await close()
@@ -544,32 +584,99 @@ async def synthesize(
     )
 
 
-_FENCE = re.compile(r"^[ \t]*(```|~~~)[^\n]*\n.*?^[ \t]*\1[^\n]*$", re.MULTILINE | re.DOTALL)
-_TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$", re.MULTILINE)
-_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
-_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
-_INLINE_CODE = re.compile(r"`([^`]*)`")
-_EMPHASIS = re.compile(r"(\*\*|__|\*|_)(?=\S)(.+?)(?<=\S)\1")
-_LINE_MARKER = re.compile(r"^[ \t]*(#{1,6}[ \t]+|>+[ \t]?|[-*+][ \t]+)", re.MULTILINE)
+# Markdown as a listener should hear it. Line by line and character by
+# character on purpose: no regex here may backtrack on an answer's text.
+
+_FENCES: Final = ("```", "~~~")
+_RULE_CHARS: Final = frozenset("|-: \t")
+
+
+def _without_links(line: str) -> str:
+    """`[text](url)` and `![alt](url)` as their text, in one pass: every
+    search starts where the last one ended, and a missing `]` or `)` ends
+    the search for the line."""
+    out: list[str] = []
+    i, n = 0, len(line)
+    while i < n:
+        start = line.find("[", i)
+        if start == -1:
+            out.append(line[i:])
+            break
+        bang = start > i and line[start - 1] == "!"
+        out.append(line[i : start - 1 if bang else start])
+        close = line.find("]", start + 1)
+        if close == -1:
+            out.append(line[start:])
+            break
+        if close + 1 < n and line[close + 1] == "(":
+            end = line.find(")", close + 2)
+            if end == -1:
+                out.append(line[start:])
+                break
+            out.append(line[start + 1 : close])
+            i = end + 1
+        else:
+            out.append(line[start : close + 1])
+            i = close + 1
+    return "".join(out)
+
+
+def _without_markers(line: str) -> str:
+    """`*` and backticks dropped; `_` dropped where it opens or closes a word
+    (`_kursiv_`), kept inside one (`snake_case`)."""
+    out: list[str] = []
+    n = len(line)
+    for i, c in enumerate(line):
+        if c in "*`":
+            continue
+        if c == "_":
+            before = line[i - 1] if i > 0 else " "
+            after = line[i + 1] if i + 1 < n else " "
+            if not (before.isalnum() and after.isalnum()):
+                continue
+        out.append(c)
+    return "".join(out)
+
+
+def _without_line_marker(line: str) -> str:
+    """A quote's `>`s, then a heading's `#`s, then a list bullet."""
+    k, n = 0, len(line)
+    if k < n and line[k] == ">":
+        while k < n and line[k] in "> \t":
+            k += 1
+    hashes = k
+    while hashes < n and line[hashes] == "#":
+        hashes += 1
+    if 1 <= hashes - k <= 6 and hashes < n and line[hashes] in " \t":
+        k = hashes + 1
+    if line[k : k + 2] in ("- ", "* ", "+ "):
+        k += 2
+    return line[k:].strip()
 
 
 def speakable(text: str) -> str:
     """Markdown as the words a listener should hear: fenced code dropped,
-    table rows as their cells, links and images as their text, and the
-    `#`, `*`, `_`, `>` and list markers gone."""
-    text = _FENCE.sub("", text)
-    text = _TABLE_RULE.sub("", text)
-    lines = []
-    for line in text.splitlines():
-        stripped = line.strip()
+    table rows as their cells (rule lines dropped), links and images as their
+    text, and the `#`, `*`, `_`, `>`, backtick and list markers gone.
+    Linear in the text's length."""
+    lines: list[str] = []
+    fence: str | None = None
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if fence is not None:
+            if stripped.startswith(fence):
+                fence = None
+            continue
+        if stripped.startswith(_FENCES):
+            fence = stripped[:3]
+            continue
+        if stripped and "-" in stripped and set(stripped) <= _RULE_CHARS:
+            continue
         if stripped.startswith("|") and stripped.count("|") >= 2:
-            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            cells = (_without_markers(_without_links(c)).strip() for c in stripped.split("|"))
             line = ", ".join(c for c in cells if c)
-        lines.append(line)
-    text = "\n".join(lines)
-    text = _IMAGE.sub(r"\1", text)
-    text = _LINK.sub(r"\1", text)
-    text = _INLINE_CODE.sub(r"\1", text)
-    text = _EMPHASIS.sub(r"\2", text)
-    text = _LINE_MARKER.sub("", text)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+        else:
+            line = _without_markers(_without_links(_without_line_marker(stripped)))
+        if line or (lines and lines[-1]):
+            lines.append(line)
+    return "\n".join(lines).strip()

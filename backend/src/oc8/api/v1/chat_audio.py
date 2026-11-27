@@ -3,7 +3,7 @@ answer aloud, through the tenant's speech models (`oc8.modelrouter.speech`).
 
 - `GET /chat/audio/capabilities`: which voice buttons the chat shows.
 - `POST /chat/audio/transcribe`: multipart `file` (one recording, at most
-  25 MB), `session_id` (required) and optional `language` -> `{"text": ...}`.
+  12 MB), `session_id` (required) and optional `language` -> `{"text": ...}`.
   The text is put into the composer for the person to review; nothing is sent.
 - `POST /chat/sessions/{sid}/messages/{mid}/speech`: the answer as an
   `audio/mpeg` stream, its markdown read as plain words, at most 20 000
@@ -31,7 +31,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 from python_multipart.multipart import MultipartParser, parse_options_header
-from sqlalchemy.exc import SQLAlchemyError
 from starlette.background import BackgroundTask
 
 from oc8 import models as m
@@ -40,6 +39,7 @@ from oc8.api.v1._chat_common import session_owned_by_caller
 from oc8.audit import append_event
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.modelrouter.adapters._openai_audio import UnexpectedAudioResponse
 from oc8.modelrouter.router import ClassificationViolation
 from oc8.modelrouter.speech import (
     MAX_SPOKEN_CHARS,
@@ -63,8 +63,9 @@ _ChatActor = Annotated[
     HumanActor, Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE))
 ]
 
-#: OpenAI's own limit for one transcription upload.
-MAX_AUDIO_BYTES = 25 * 1024 * 1024
+#: Below OpenAI's 25 MB: 12 MB counts as about 100 minutes at the 16 kbit/s
+#: the allowance assumes when the provider reports no duration.
+MAX_AUDIO_BYTES = 12 * 1024 * 1024
 #: The multipart envelope around the audio: boundaries, headers, two fields.
 _MAX_ENVELOPE_BYTES = 64 * 1024
 _MAX_BODY_BYTES = MAX_AUDIO_BYTES + _MAX_ENVELOPE_BYTES
@@ -73,6 +74,16 @@ _MAX_BODY_BYTES = MAX_AUDIO_BYTES + _MAX_ENVELOPE_BYTES
 AUDIO_TYPES = frozenset({"audio/webm", "audio/mp4", "audio/mpeg", "audio/wav", "audio/ogg"})
 
 _LANGUAGE = re.compile(r"^[a-z]{2,3}$")
+
+#: An answer longer than this is refused before its markdown is stripped.
+_MAX_RAW_CHARS = 4 * MAX_SPOKEN_CHARS
+
+
+def _too_long() -> HTTPException:
+    return HTTPException(
+        status.HTTP_409_CONFLICT,
+        f"this answer is too long to read aloud (at most {MAX_SPOKEN_CHARS} characters)",
+    )
 
 
 class AudioCapabilities(CamelModel):
@@ -213,7 +224,7 @@ def _speech_error(exc: Exception) -> HTTPException:
         return HTTPException(
             status.HTTP_502_BAD_GATEWAY, "the speech provider could not be reached"
         )
-    if isinstance(exc, (json.JSONDecodeError, ValueError)):
+    if isinstance(exc, (UnexpectedAudioResponse, json.JSONDecodeError)):
         return HTTPException(
             status.HTTP_502_BAD_GATEWAY, "the speech provider answered unexpectedly"
         )
@@ -222,10 +233,22 @@ def _speech_error(exc: Exception) -> HTTPException:
     )
 
 
+#: What a speech call raises on purpose or the provider's HTTP client raises.
+#: Anything else (a KeyError, a database error) is our bug and stays a 500.
+_PROVIDER_ERRORS = (
+    SpeechAllowanceUsedUp,
+    SpeechUnavailable,
+    ClassificationViolation,
+    UnexpectedAudioResponse,
+    json.JSONDecodeError,
+    httpx.HTTPError,
+    httpx.InvalidURL,
+    httpx.StreamError,
+)
+
+
 def _is_provider_error(exc: Exception) -> bool:
-    """Everything a speech call raises except the database's own errors,
-    which stay 500s instead of posing as the provider's."""
-    return not isinstance(exc, (HTTPException, SQLAlchemyError))
+    return isinstance(exc, _PROVIDER_ERRORS)
 
 
 #: Detached audit writes still running; held so they are not collected.
@@ -351,14 +374,15 @@ async def speak_message(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found")
     if msg.role != "assistant":
         raise HTTPException(status.HTTP_409_CONFLICT, "only an answer can be read aloud")
-    text = speakable(msg.content or "")
+    content = msg.content or ""
+    # Checked before stripping too, so no markdown pass sees an oversized text.
+    if len(content) > _MAX_RAW_CHARS:
+        raise _too_long()
+    text = speakable(content)
     if not text:
         raise HTTPException(status.HTTP_409_CONFLICT, "this answer has no text to read aloud")
     if len(text) > MAX_SPOKEN_CHARS:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"this answer is too long to read aloud (at most {MAX_SPOKEN_CHARS} characters)",
-        )
+        raise _too_long()
     agent = await db.get(m.Agent, session.agent_id)
     tenant_id = actor.principal.tenant_id
     resource = {

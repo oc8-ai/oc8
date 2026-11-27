@@ -46,6 +46,7 @@ from oc8.modelrouter.fallback import limit_reason, stream_completion_with_fallba
 from oc8.modelrouter.http_errors import describe_upstream_error, explain_upstream_error
 from oc8.modelrouter.router import ClassificationViolation, TenantKeyRequired
 from oc8.modelrouter.sampling import resolve_params
+from oc8.modelrouter.speech import NotAChatModel, is_speech_model
 from oc8.modelrouter.types import CompletionResult, Usage
 
 logger = logging.getLogger(__name__)
@@ -301,6 +302,10 @@ async def _prepare(
     pinned_model_id = pinned_model_config_id(caller.pinned)
     model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
     settings = get_settings()
+    if model_config is not None and is_speech_model(model_config):
+        # Before any stream starts: a 409 the harness can read, not an
+        # in-band error after a 200. The router refuses it too (`NotAChatModel`).
+        raise HTTPException(status.HTTP_409_CONFLICT, _SPEECH_PINNED)
     if model_config is not None:
         provider, model = model_config.provider, model_config.model
     else:
@@ -342,6 +347,8 @@ async def _complete_or_raise(db: DbSession, common: dict[str, Any]) -> Completio
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except TenantKeyRequired as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except NotAChatModel as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, _SPEECH_PINNED) from exc
     except HTTPException:
         raise
     except Exception as exc:  # upstream failed after the chain was exhausted
@@ -1269,6 +1276,9 @@ async def _responses_sse(
     finally:
         usage = reported or Usage(tokens_in=0, tokens_out=estimate_tokens("x" * text_len))
         await _bill(db, caller, request_id=request_id, provider=provider, model=model, usage=usage)
+
+
+_SPEECH_PINNED = "this agent's version runs on a speech model, which cannot answer a chat"
 
 
 @router.get("/v1/models")
