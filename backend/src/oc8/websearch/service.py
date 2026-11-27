@@ -1,4 +1,4 @@
-"""Which search provider a tenant uses, and the search itself.
+"""Which search provider a tenant uses, and whether a run is offered web search.
 
 Resolution order: the tenant's own setting, else the platform default
 (`OC8_WEB_SEARCH_*`), else no web search. A tenant can also switch it off for
