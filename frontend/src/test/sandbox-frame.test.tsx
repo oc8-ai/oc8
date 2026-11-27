@@ -82,6 +82,21 @@ describe("buildSandboxSrcdoc", () => {
     ).toContain("worker-src blob:");
   });
 
+  it("puts GUARD as the first script before any artifact markup; a static page has none", () => {
+    const page = "<p id='first'>x</p><script>1</script>";
+    const scripted = buildSandboxSrcdoc(page);
+    expect(scripted.indexOf(`<script>${GUARD}</script>`)).toBeGreaterThan(0);
+    expect(scripted.indexOf("<script>")).toBe(scripted.indexOf(`<script>${GUARD}</script>`));
+    expect(scripted.indexOf(GUARD)).toBeLessThan(scripted.indexOf("<p id"));
+    const fixed = buildSandboxSrcdoc(page, "script-src 'unsafe-inline' blob:", { scripts: false });
+    const doc = new DOMParser().parseFromString(fixed, "text/html");
+    expect(fixed).not.toContain(GUARD);
+    expect(doc.querySelectorAll("script")).toHaveLength(1); // the page's own, inert
+    const csp = doc.head.firstElementChild?.getAttribute("content") ?? "";
+    expect(csp).toContain("script-src 'none'");
+    expect(csp.match(/script-src/g)).toHaveLength(1);
+  });
+
   it("escapes the policy into its attribute", () => {
     const meta = head(buildSandboxSrcdoc("", 'img-src "x"><script>')).firstElementChild;
     expect(meta?.getAttribute("content")).toContain('img-src "x"><script>');
@@ -127,6 +142,17 @@ describe("withoutNetworkHints", () => {
     expect(doc.querySelectorAll("script")[1].textContent).toContain('"a<b"');
   });
 
+  it("drops frames, noscript and comments (where the two parsers differ)", () => {
+    const out = withoutNetworkHints(
+      '<iframe srcdoc="x"></iframe><frameset></frameset><object data="x"></object><embed src="x">' +
+        "<portal src=x></portal><fencedframe></fencedframe>" +
+        '<noscript><p title="</noscript><iframe srcdoc=y></iframe>"></p></noscript>' +
+        "<!-- <iframe srcdoc=z></iframe> --><p>kept</p>",
+    );
+    expect(out).not.toMatch(/iframe|frameset|object|embed|portal|fencedframe|noscript|<!--/i);
+    expect(out).toContain("<p>kept</p>");
+  });
+
   it("is stripped in the srcdoc too", () => {
     const srcdoc = buildSandboxSrcdoc(`<meta http-equiv="refresh" content="0;url=${OUT}">`);
     expect(srcdoc).not.toContain(OUT);
@@ -153,18 +179,56 @@ describe("GUARD, run", () => {
     );
   });
 
-  it("removes a nested frame before it can load", async () => {
+  it("keeps a nested frame out, synchronously, whatever the page polluted", () => {
     const win = frame(
-      '<iframe srcdoc="<p>x</p>"></iframe><object data="data:text/html,x"></object>' +
-        "<script>const f = document.createElement('iframe'); document.body.append(f);" +
-        "const d = document.createElement('div'); d.innerHTML = '<embed src=x><iframe></iframe>'; document.body.append(d);</script>",
+      "<script>window.out = [];" +
+        "Array.prototype[Symbol.iterator] = function* () {};" +
+        "Element.prototype.remove = () => {}; Element.prototype.matches = () => false;" +
+        "Node.prototype.removeChild = (n) => n;" +
+        "const t = (f) => { try { f(); out.push('ok'); } catch (e) { out.push('blocked'); } };" +
+        "t(() => document.createElement('iframe'));" +
+        "const d = new DOMParser().parseFromString('<div><iframe></iframe></div><object></object>', 'text/html');" +
+        "t(() => document.body.append(document.adoptNode(d.body.firstChild)));" +
+        "t(() => document.body.appendChild(document.adoptNode(d.querySelector('object'))));" +
+        "const x = document.createElement('div'); document.body.append(x);" +
+        "x.innerHTML = '<embed src=x><iframe></iframe>';" +
+        "window.left = document.querySelectorAll('iframe,frame,object,embed').length;</script>",
     );
-    await new Promise((r) => setTimeout(r, 0));
-    expect(win.document.querySelectorAll("iframe,frame,object,embed")).toHaveLength(0);
+    expect(win.out).toEqual(["blocked", "ok", "blocked"]);
+    // Counted in the same task, before any nested document could load.
+    expect(win.left).toBe(0);
+  });
+
+  it("drops a resource hint or refresh a script adds or switches on", () => {
+    const win = frame(
+      '<link id="l" rel="icon" href="data:,x"><script>' +
+        "document.getElementById('l').setAttribute('rel', 'preconnect');" +
+        "const m = document.createElement('meta'); document.head.append(m); m.httpEquiv = 'refresh';" +
+        "const k = document.createElement('div'); k.innerHTML = '<link rel=dns-prefetch href=//x>'; document.body.append(k);" +
+        "window.left = document.querySelectorAll('link, meta[http-equiv=refresh]').length;</script>",
+    );
+    expect(win.left).toBe(0);
+  });
+
+  it("removes document.write and the other ways to parse a shadow root", () => {
+    const win = frame("");
+    const doc = win.document as unknown as Record<string, unknown>;
+    expect(doc.write).toBeUndefined();
+    expect(doc.writeln).toBeUndefined();
+    expect(doc.open).toBeUndefined();
+    expect(doc.execCommand).toBeUndefined();
   });
 });
 
 describe("SandboxFrame", () => {
+  it("is a static frame without scripts when asked", () => {
+    render(<SandboxFrame html="<p>x</p>" scripts={false} />);
+    const frame = screen.getByTitle("Preview");
+    expect(frame.getAttribute("sandbox")).toBe("");
+    expect(frame.getAttribute("srcdoc")).not.toContain(GUARD);
+    expect(frame.getAttribute("srcdoc")).toContain("script-src 'none'");
+  });
+
   it("is sandboxed with allow-scripts only", () => {
     render(<SandboxFrame html={SANDBOX_PROBE} />);
     const frame = screen.getByTitle("Preview") as HTMLIFrameElement;

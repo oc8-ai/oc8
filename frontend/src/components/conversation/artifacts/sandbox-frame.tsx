@@ -1,7 +1,8 @@
 // A frame for untrusted HTML (an artifact's preview; Run Python reuses it).
 //
-// `sandbox="allow-scripts"` and nothing else: no `allow-same-origin`, so the
-// page runs in an opaque origin -- no cookies, no storage, no oc8 API, no
+// `sandbox="allow-scripts"` and nothing else (`sandbox=""` for a static
+// page): no `allow-same-origin`, so the page runs in an opaque origin -- no
+// cookies, no storage, no oc8 API, no
 // access to this page's DOM; no `allow-top-navigation`, `allow-popups`,
 // `allow-forms` or `allow-modals`. The CSP in its srcdoc (see
 // sandbox-srcdoc.ts) gives it no network. It reaches the parent only by
@@ -25,6 +26,7 @@ export function SandboxFrame({
   html,
   onMessage,
   extraCsp,
+  scripts = true,
   title,
   className,
 }: {
@@ -33,12 +35,17 @@ export function SandboxFrame({
   onMessage?: (data: unknown) => void;
   /** See `sandboxCsp`. */
   extraCsp?: string;
+  /** False: a static page -- `sandbox=""` and `script-src 'none'`. */
+  scripts?: boolean;
   title?: string;
   className?: string;
 }) {
   const t = useT();
   const frame = useRef<HTMLIFrameElement>(null);
-  const srcdoc = useMemo(() => buildSandboxSrcdoc(html, extraCsp), [html, extraCsp]);
+  const srcdoc = useMemo(
+    () => buildSandboxSrcdoc(html, extraCsp, { scripts }),
+    [html, extraCsp, scripts],
+  );
   // The document the frame has loaded once; a second load of it is a
   // navigation away from it.
   const loaded = useRef<string | null>(null);
@@ -94,7 +101,7 @@ export function SandboxFrame({
       key={attempt}
       ref={frame}
       title={title ?? t("Preview", "Vorschau")}
-      sandbox="allow-scripts"
+      sandbox={scripts ? "allow-scripts" : ""}
       srcDoc={srcdoc}
       referrerPolicy="no-referrer"
       onLoad={() => {

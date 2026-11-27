@@ -11,18 +11,26 @@
 //   'none'`, so the frame cannot navigate itself to another URL (a link,
 //   `location = …`, a refresh) -- the check runs before any request;
 // - this CSP: no network for fetch/XHR/WebSocket, images, styles, fonts;
-// - GUARD, the first script: takes away the network APIs CSP does not
-//   cover in every browser (WebRTC has no CSP in Chromium) and removes any
-//   nested frame before it can load (a nested srcdoc would run script in a
-//   new window without GUARD);
-// - `withoutNetworkHints`: drops refresh, <base>, resource hints (DNS
-//   prefetch is not under CSP) and declarative shadow roots from the page.
-//   Best effort: GUARD and the CSPs do not depend on it.
+// - GUARD (sandbox-guard.ts), the first script: a hardening layer in the
+//   page's own realm. It takes away WebRTC (no CSP covers it in Chromium or
+//   Firefox) and the other ways to send, and keeps any nested frame (the way
+//   to a fresh realm without GUARD), resource hint or late refresh out of
+//   the page;
+// - `withoutNetworkHints`, in this (trusted) page before the srcdoc is
+//   built: drops frames, refresh, <base>, resource hints, declarative shadow
+//   roots, <noscript> and comments from the page.
+// Static mode (`scripts: false`) has no scripts at all: `sandbox=""` and
+// `script-src 'none'` -- for restricted answers and when an admin turned
+// scripts in previews off.
 //
 // The page is put after our <head>, so whatever it starts with (its own
 // doctype, <html>, <head>, a CSP meta of its own) comes after ours -- the
 // parser merges a second <html>/<body> into ours, and a CSP meta outside
 // <head> is not read (one inside could only tighten the policy anyway).
+
+import { GUARD } from "./sandbox-guard";
+
+export { GUARD };
 
 /** For a plain HTML page: inline script and style, images, fonts and media
  *  from data:/blob: only; no fetch/XHR/WebSocket, no frames, no forms, no
@@ -42,42 +50,6 @@ const FIXED = new Set([
   "base-uri",
   "webrtc",
 ]);
-
-/** Runs before anything of the page. Every network API that is not needed
- *  (the Python runner gets its bytes by postMessage, see §9) is replaced by
- *  an undefined, non-configurable, non-writable property, so the page can
- *  neither call nor restore it; `attachShadow` too, so no frame can hide in
- *  a shadow tree from the observer. Any <iframe>, <frame>, <object> or
- *  <embed> is removed in the microtask after it is inserted: a nested
- *  frame's document loads in a later task, so it never runs. (A nested
- *  about:blank window cannot be reached either: in a sandbox each document
- *  has its own opaque origin.) */
-export const GUARD = `(() => {
-  const gone = (target, name) => {
-    try {
-      Object.defineProperty(target, name, { value: undefined, writable: false, configurable: false });
-    } catch {}
-  };
-  for (const name of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCDataChannel",
-    "RTCIceTransport", "WebSocket", "WebTransport", "EventSource", "fetch", "XMLHttpRequest"]) {
-    gone(window, name);
-  }
-  gone(Navigator.prototype, "sendBeacon");
-  gone(navigator, "sendBeacon");
-  gone(Element.prototype, "attachShadow");
-  gone(Element.prototype, "setHTMLUnsafe");
-  gone(ShadowRoot.prototype, "setHTMLUnsafe");
-  gone(Document, "parseHTMLUnsafe");
-  const FRAMES = "iframe,frame,object,embed";
-  const drop = (node) => {
-    if (node.nodeType !== 1) return;
-    if (node.matches(FRAMES)) node.remove();
-    else for (const frame of node.querySelectorAll(FRAMES)) frame.remove();
-  };
-  new MutationObserver((records) => {
-    for (const record of records) for (const node of record.addedNodes) drop(node);
-  }).observe(document, { childList: true, subtree: true });
-})();`;
 
 function directives(policy: string): [string, string][] {
   return policy
@@ -115,20 +87,26 @@ const HINTS = new Set([
   "modulepreload",
 ]);
 
-/** The page without what could navigate it, rebase it or reach a host
- *  outside the CSP: `<meta http-equiv=refresh>`, `<base>`, resource-hint
- *  links, and declarative shadow roots (they would hide a frame from
- *  GUARD). Parsed, not matched, so attribute order and quoting do not
- *  matter; the scripts are inert while parsed. Where there is no
- *  DOMParser (server render) the page stays as it is -- the frame is only
- *  ever shown in a browser. */
+/** Elements that would hold a nested document (a fresh realm without GUARD). */
+const FRAMES = "iframe, frame, frameset, object, embed, portal, fencedframe";
+
+/** The page without what could open a fresh realm, navigate it, rebase it or
+ *  reach a host outside the CSP: frames, `<meta http-equiv=refresh>` (and a
+ *  DNS prefetch switch of its own), `<base>`, resource-hint links, and
+ *  declarative shadow roots (they would hide a frame from GUARD). Also
+ *  `<noscript>` and comments: parsed here with scripting off, there with it
+ *  on, they are where the two parsers would read the page differently.
+ *  Parsed, not matched, so attribute order and quoting do not matter; the
+ *  scripts are inert while parsed. Where there is no DOMParser (server
+ *  render) the page stays as it is -- the frame is only ever shown in a
+ *  browser, and GUARD and the CSPs do not depend on this. */
 export function withoutNetworkHints(html: string): string {
   if (typeof DOMParser === "undefined") return html;
   const doc = new DOMParser().parseFromString(html, "text/html");
+  for (const element of doc.querySelectorAll(`${FRAMES}, base, noscript`)) element.remove();
   for (const meta of doc.querySelectorAll("meta[http-equiv]")) {
-    if (/^\s*refresh\s*$/i.test(meta.getAttribute("http-equiv") ?? "")) meta.remove();
+    if (/refresh|dns-prefetch/i.test(meta.getAttribute("http-equiv") ?? "")) meta.remove();
   }
-  for (const base of doc.querySelectorAll("base")) base.remove();
   for (const link of doc.querySelectorAll("link[rel]")) {
     const rels = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/);
     if (rels.some((rel) => HINTS.has(rel))) link.remove();
@@ -137,18 +115,29 @@ export function withoutNetworkHints(html: string): string {
     template.removeAttribute("shadowrootmode");
     template.removeAttribute("shadowroot");
   }
+  const comments = doc.createTreeWalker(doc, NodeFilter.SHOW_COMMENT);
+  const found: Node[] = [];
+  while (comments.nextNode()) found.push(comments.currentNode);
+  for (const comment of found) comment.parentNode?.removeChild(comment);
   return doc.documentElement.outerHTML;
 }
 
 /** The srcdoc for a sandboxed frame showing `body` (a page or a fragment).
  *  `extraCsp` widens the policy for a frame that needs it (Run Python:
- *  wasm, a blob: worker), see `sandboxCsp`; GUARD runs in every frame. */
-export function buildSandboxSrcdoc(body: string, extraCsp?: string): string {
+ *  wasm, a blob: worker), see `sandboxCsp`; GUARD runs in every frame with
+ *  scripts. With `scripts: false` the frame runs none (`script-src 'none'`,
+ *  and SandboxFrame drops `allow-scripts`). */
+export function buildSandboxSrcdoc(
+  body: string,
+  extraCsp?: string,
+  { scripts = true }: { scripts?: boolean } = {},
+): string {
+  const csp = scripts ? sandboxCsp(extraCsp) : sandboxCsp(`${extraCsp ?? ""}; script-src 'none'`);
   return (
     "<!doctype html><html><head>" +
-    `<meta http-equiv="Content-Security-Policy" content="${attribute(sandboxCsp(extraCsp))}">` +
+    `<meta http-equiv="Content-Security-Policy" content="${attribute(csp)}">` +
     '<meta http-equiv="x-dns-prefetch-control" content="off">' +
-    `<script>${GUARD}</script>` +
+    (scripts ? `<script>${GUARD}</script>` : "") +
     '<meta name="viewport" content="width=device-width, initial-scale=1">' +
     `</head><body>${withoutNetworkHints(body)}</body></html>`
   );

@@ -9,5 +9,9 @@ export default defineConfig({
   testDir: "e2e",
   outputDir: join(tmpdir(), "oc8-playwright"),
   reporter: "list",
-  use: { browserName: "chromium", headless: true },
+  use: { headless: true },
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" } },
+    { name: "firefox", use: { browserName: "firefox" } },
+  ],
 });
