@@ -48,11 +48,16 @@ async def audit_tool_result(
     ok: bool,
     duration_ms: int,
     originating_operator: str | None,
+    detail: Mapping[str, str | int] | None = None,
 ) -> None:
     """Stage the `tool.result:<tool>` event of a dispatched call.
 
+    `detail` is what a core tool adds about its outcome (`ControlOutcome.
+    result_detail`: a count, a provider name) -- never content. It cannot
+    replace the keys set here.
+
     Never fails the call: a failure to stage it is logged and swallowed."""
-    resource: dict[str, Any] = {"tool": tool, **link}
+    resource: dict[str, Any] = {**(detail or {}), "tool": tool, **link}
     if connection:
         resource["connection"] = connection
     resource["outcome"] = "ok" if ok else "error"

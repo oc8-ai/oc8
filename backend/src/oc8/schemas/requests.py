@@ -69,6 +69,8 @@ class SendChatMessageRequest(CamelModel):
     context_refs: list[ChatContextRefRequest] = Field(
         default_factory=list, max_length=MAX_MESSAGE_REFS
     )
+    #: The composer's "Web" switch: this turn may search the web.
+    web: bool = False
 
 
 class PinRefsRequest(CamelModel):
@@ -101,6 +103,13 @@ class RenameChatSessionRequest(CamelModel):
 class EditChatMessageRequest(CamelModel):
     #: The rewritten turn; same bounds as a sent one.
     content: str = Field(min_length=1, max_length=20_000)
+    #: The composer's "Web" switch, as for a sent turn.
+    web: bool = False
+
+
+class RegenerateRequest(CamelModel):
+    #: The composer's "Web" switch as it stands now, as for a sent turn.
+    web: bool = False
 
 
 class SetLeafRequest(CamelModel):

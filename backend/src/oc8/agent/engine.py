@@ -1190,6 +1190,7 @@ async def run_agent(
         copilot_permissions = preamble.copilot_permissions
         copilot_has_member = preamble.copilot_has_member
         produces_board = preamble.produces_board
+        has_web_search = preamble.has_web_search
         # C3's step stamp uses the SAME resolved timezone as A2's "Now" line
         # above, instead of re-resolving it -- consumed by the harness.shape()
         # call inside loop() below.
@@ -1355,6 +1356,7 @@ async def run_agent(
                     ),
                     edition_tools=edition.neutral_tools(),
                     offer_direct_access=direct_run is not None,
+                    offer_web_search=has_web_search,
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -4060,6 +4062,7 @@ async def run_agent(
                                 ok=succeeded,
                                 duration_ms=int(_tool_call_entry["durationMs"]),
                                 originating_operator=originating_operator,
+                                detail=control.result_detail if control is not None else None,
                             )
                         await _live_tool_call(tool_trace[-1])
                         messages.append(

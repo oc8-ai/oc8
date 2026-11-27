@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Literal
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
@@ -28,6 +30,7 @@ from oc8.copilot.followups import max_active_followups
 from oc8.credentials.service import list_credentials
 from oc8.mail.send import active_smtp_credential
 from oc8.schemas.base import CamelModel
+from oc8.secrets.keyprovider import SecretStoreUnavailable
 from oc8.triggers.zones import valid_timezone
 
 router = APIRouter()
@@ -337,5 +340,123 @@ async def put_two_factor_settings(
         principal=principal,
     )
     dto = await _two_factor_dto(db, organization, new)
+    await db.commit()
+    return dto
+
+
+class WebSearchSettings(CamelModel):
+    """The tenant's web search provider (spec §10). Never the API key, and
+    never the platform default's address or key: `source` says only whether
+    search comes from the tenant's own setting or the platform."""
+
+    provider: Literal["searxng", "brave", "tavily", "off"] | None = None
+    #: The tenant's own SearXNG address; None for any other source.
+    base_url: str | None = None
+    #: Whether the tenant stored an API key of its own.
+    has_key: bool = False
+    source: Literal["tenant", "platform"] | None = None
+
+
+class WebSearchSettingsUpdate(CamelModel):
+    #: None removes the tenant's setting (the platform default applies again);
+    #: "off" switches web search off for this tenant.
+    provider: Literal["searxng", "brave", "tavily", "off"] | None = None
+    base_url: str | None = Field(default=None, max_length=500)
+    #: Write-only. Omitted or blank keeps the stored key.
+    api_key: str | None = Field(default=None, max_length=500)
+
+
+async def _web_search_dto(db: DbSession, tenant_id: uuid.UUID) -> WebSearchSettings:
+    from oc8.websearch.providers import PROVIDERS
+    from oc8.websearch.service import effective_source, platform_config, tenant_setting
+
+    setting = await tenant_setting(db, tenant_id=tenant_id)
+    source = await effective_source(db, tenant_id=tenant_id)
+    if setting.provider is not None:
+        provider = setting.provider if setting.provider in (*PROVIDERS, "off") else "off"
+        return WebSearchSettings(
+            provider=provider,  # type: ignore[arg-type]
+            base_url=setting.base_url if provider == "searxng" else None,
+            has_key=setting.has_key,
+            source="tenant" if source == "tenant" else None,
+        )
+    platform = platform_config()
+    return WebSearchSettings(
+        provider=platform.provider if platform is not None else None,
+        has_key=setting.has_key,
+        source=source,
+    )
+
+
+@router.get(
+    "/settings/web-search",
+    response_model=WebSearchSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, VIEW)))],
+)
+async def get_web_search_settings(db: DbSession, principal: CurrentPrincipal) -> WebSearchSettings:
+    return await _web_search_dto(db, principal.tenant_id)
+
+
+@router.put(
+    "/settings/web-search",
+    response_model=WebSearchSettings,
+    dependencies=[Depends(require_permission(perm(SETTINGS, MANAGE)))],
+)
+async def put_web_search_settings(
+    body: WebSearchSettingsUpdate, db: DbSession, principal: CurrentPrincipal
+) -> WebSearchSettings:
+    """Choose the tenant's provider. SearXNG needs an http(s) base URL
+    without a login in it; Brave and Tavily need a key, new or stored. The
+    address is checked against the outbound guard on every search, not here."""
+    from oc8.net.outbound import LOGIN_IN_BASE_URL, base_url_has_login
+    from oc8.websearch.providers import KEYED_PROVIDERS
+    from oc8.websearch.service import save_tenant_setting, tenant_setting
+
+    base_url = (body.base_url or "").strip() or None
+    api_key = (body.api_key or "").strip() or None
+    if body.provider == "searxng":
+        parts = urlsplit(base_url or "")
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                "SearXNG needs its address, starting with http:// or https://.",
+            )
+        if base_url_has_login(base_url or ""):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, LOGIN_IN_BASE_URL)
+    if body.provider in KEYED_PROVIDERS and api_key is None:
+        current = await tenant_setting(db, tenant_id=principal.tenant_id)
+        # A stored key is kept only for the provider it was given for.
+        if not (current.has_key and current.provider == body.provider):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT, "This provider needs an API key."
+            )
+    try:
+        await save_tenant_setting(
+            db,
+            tenant_id=principal.tenant_id,
+            provider=body.provider,
+            base_url=base_url,
+            api_key=api_key,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="organization not found") from exc
+    except SecretStoreUnavailable as exc:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(exc)) from exc
+    await append_event(
+        db,
+        tenant_id=principal.tenant_id,
+        actor_type="operator",
+        actor_id=None,
+        category="admin",
+        action="organization.settings.updated",
+        resource={
+            "organization_id": str(principal.tenant_id),
+            "by": principal.subject,
+            # Never the key; only whether a new one was given.
+            "web_search": {"provider": body.provider, "new_key": api_key is not None},
+        },
+        principal=principal,
+    )
+    dto = await _web_search_dto(db, principal.tenant_id)
     await db.commit()
     return dto

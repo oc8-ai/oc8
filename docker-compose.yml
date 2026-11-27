@@ -41,6 +41,10 @@ x-backend-env: &backend-env
   OC8_OUTBOUND_ALLOWED_PRIVATE: ${OC8_OUTBOUND_ALLOWED_PRIVATE:-}
   # The same for the Email capa's tools (they see only OC8_MCP_* variables).
   OC8_MCP_EMAIL_ALLOWED_PRIVATE: ${OC8_MCP_EMAIL_ALLOWED_PRIVATE:-}
+  # Platform default web search for every organisation (see .env.example).
+  OC8_WEB_SEARCH_PROVIDER: ${OC8_WEB_SEARCH_PROVIDER:-}
+  OC8_WEB_SEARCH_BASE_URL: ${OC8_WEB_SEARCH_BASE_URL:-}
+  OC8_WEB_SEARCH_API_KEY: ${OC8_WEB_SEARCH_API_KEY:-}
   # Seconds between checks of polled event triggers ("On new email").
   OC8_EVENT_POLL_SECONDS: ${OC8_EVENT_POLL_SECONDS:-60}
   # Bundled S3-compatible object storage (file attachments). Bundled-by-default,

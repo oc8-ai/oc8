@@ -1573,6 +1573,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         )
         ctx["has_knowledge"] = preamble.has_knowledge
         ctx["produces_board"] = preamble.produces_board
+        ctx["has_web_search"] = preamble.has_web_search
         ctx["has_instruction_files"] = preamble.has_instruction_files
         # Persisted like has_knowledge: the chat's base exists from the first
         # large upload, before the turn is sent.
@@ -1685,6 +1686,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         copilot_has_member=copilot_has_member,
         has_context=has_readable_context(ctx),
         has_chat_files=bool(ctx.get("has_chat_files", False)),
+        offer_web_search=bool(ctx.get("has_web_search", False)),
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
@@ -3492,6 +3494,7 @@ async def _dispatch_one_tool(
             ok=succeeded,
             duration_ms=duration_ms,
             originating_operator=run.context.get("originating_operator"),
+            detail=control.result_detail if control is not None else None,
         )
     await append_tool_call(db, run, live_call)
     await db.commit()

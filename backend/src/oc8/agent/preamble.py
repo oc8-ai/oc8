@@ -159,6 +159,9 @@ class RunPreamble:
     #: Whether the agent produces at least one live board: `board_write` is offered
     #: to it alone (see oc8.boards.mission).
     produces_board: bool = False
+    #: Whether `web_search` is offered: the turn asked for the web and the
+    #: tenant has a provider (`oc8.websearch.service.offered`).
+    has_web_search: bool = False
     #: The tenant's resolved timezone label (resolve_timezone's first return
     #: value) -- read back by engine.py/internal_agent.py after this call so
     #: C3's step stamp (format_step_stamp) uses the SAME resolved zone as A2's
@@ -192,6 +195,16 @@ GROUNDING_RULE = (
 
 #: The assistant's turn of a resumed leg whose run had called no tool yet.
 NO_TOOL_CALLS_YET = "[no tool calls yet]"
+
+
+#: Said on a turn that offers `web_search` (spec §10): its queries leave the
+#: organisation, so they must never carry what the person's data says.
+WEB_SEARCH_NOTE = (
+    "WEB: web search is on for this turn -- use web_search for current or "
+    "public facts, search with public terms only (never names, numbers or text "
+    "from records, chats or files), and cite each web result you rely on by "
+    "its number, e.g. [1]."
+)
 
 
 #: How many tool keys one roster line names before it says "…".
@@ -642,6 +655,15 @@ async def build_run_preamble(
         if block is not None:
             _per_turn(block)
 
+    from oc8.websearch.service import offered as web_search_offered
+
+    has_web_search = run is not None and await web_search_offered(
+        db, tenant_id=tenant_id, context=run.context
+    )
+    if has_web_search:
+        # Per turn: "Web" is switched on message by message.
+        _per_turn(WEB_SEARCH_NOTE)
+
     from oc8.boards.mission import board_section
 
     boards_text = None if agent.is_tenant_assistant else await board_section(db, agent=agent)
@@ -712,5 +734,6 @@ async def build_run_preamble(
         copilot_permissions=copilot_permissions,
         copilot_has_member=copilot_member is not None,
         produces_board=boards_text is not None,
+        has_web_search=has_web_search,
         tz=tz_label,
     )

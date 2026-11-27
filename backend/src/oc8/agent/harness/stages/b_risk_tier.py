@@ -49,6 +49,7 @@ _CONTROL_READ: frozenset[str] = frozenset(
         "search_chat_files",
         "read_chat_file",
         "fetch_url",
+        "web_search",
         "search_memory",
         "render_component",
         "request_decision",

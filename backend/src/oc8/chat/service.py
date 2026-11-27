@@ -83,6 +83,7 @@ from oc8.runtime.intake import enqueue_run
 from oc8.runtime.person import FOR_PERSON
 from oc8.runtime.states import TERMINAL, RunState
 from oc8.storage.attachments import copy_attachment, delete_attachment_blobs
+from oc8.websearch.service import RUN_CONTEXT_KEY as WEB_SEARCH_CONTEXT_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -710,8 +711,12 @@ async def send_message(
     acting_member: m.OrgMember | None = None,
     notice: Mapping[str, object] | None = None,
     edit_of: m.ChatMessage | None = None,
+    web_search: bool = False,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
+
+    `web_search` is the person's "Web" switch for this turn: the run may then
+    search the web (`oc8.websearch`), if the tenant has a provider.
 
     `edit_of` makes the turn an edit of that earlier user turn (see
     `edit_message`): it goes beside it in the tree, its transcript is the path
@@ -1009,6 +1014,10 @@ async def send_message(
         notice=notice,
     )
     task_text = str(context["task"])
+    if web_search:
+        # Set here, never through `extra_context`: only the person's own switch
+        # on this request turns it on, and no other run inherits it.
+        context[WEB_SEARCH_CONTEXT_KEY] = True
     _apply_acting_person(context, acting)
     await _place_turn(
         db, session=session, message=user_message, sticky_mode=sticky_mode, edit_of=edit_of
@@ -1123,6 +1132,7 @@ async def edit_message(
     originating_operator: str | None,
     operator_role: str | None,
     acting_member: m.OrgMember | None,
+    web_search: bool = False,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Rewrite a sent user turn (spec §5.3 "Edit"): a new turn with `content`
     beside `original` in the tree, which becomes the branch the person reads;
@@ -1151,6 +1161,7 @@ async def edit_message(
         ),
         acting_member=acting_member,
         edit_of=original,
+        web_search=web_search,
     )
 
 
@@ -1179,8 +1190,12 @@ async def regenerate_reply(
     originating_operator: str | None,
     operator_role: str | None,
     acting_member: m.OrgMember | None = None,
+    web_search: bool = False,
 ) -> m.AgentRun:
     """A second answer to an existing user turn (spec §2.1 "Regenerate").
+
+    `web_search` is the person's "Web" switch as it stands now, like
+    `send_message`'s: it is not carried over from the first answer.
 
     No new user turn and no history rewrite: the transcript is everything
     before `user_message` plus that turn, the new run carries the same
@@ -1306,6 +1321,8 @@ async def regenerate_reply(
     if first_variant_parent is not None:
         # Set here, not through `extra_context`: its allow-list stays closed.
         context["regenerate_of"] = str(first_variant_parent)
+    if web_search:
+        context[WEB_SEARCH_CONTEXT_KEY] = True
     _apply_acting_person(context, acting)
     # Lock late: after the fit block and the manifest (embeddings, network),
     # shortly before the commit -- audit lock, then the row (`chat.tree`).
@@ -1396,6 +1413,13 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     builder_id = uuid_or_none(raw_builder) if raw_builder else None
     if builder_id is not None:
         reply_parts.append({"type": "agent_builder", "proposalId": str(builder_id)})
+    # The web results the answer cites (`web_search`): core's own hits, kept
+    # on the run, shown as the reply's sources of kind `web`.
+    from oc8.agent.control_tools import WEB_SEARCH_HITS_KEY
+    from oc8.websearch.service import cited_sources, with_web_sources
+
+    raw_web_hits = (run.context or {}).get(WEB_SEARCH_HITS_KEY)
+    with_web_sources(reply_parts, cited_sources(raw_web_hits, output or ""))
     if suggestions:
         reply_parts.append({"type": "suggestions", "options": suggestions})
     consumed = {
@@ -1404,6 +1428,7 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             ("suggestions", raw_suggestions),
             ("parts", raw_parts),
             ("builder_proposal_id", raw_builder),
+            (WEB_SEARCH_HITS_KEY, raw_web_hits),
         )
         if raw is not None
     }

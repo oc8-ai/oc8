@@ -333,6 +333,34 @@ services:
 
 Leave the variable unset rather than empty when you do not use it.
 
+## Web search
+
+The Copilot can search the web on a turn where the person switches **Web** on.
+Each organisation can pick its own provider under Settings; to give every
+organisation search without that, set a platform default in `.env`:
+
+| Variable | Meaning |
+| --- | --- |
+| `OC8_WEB_SEARCH_PROVIDER` | `searxng`, `brave` or `tavily`. Unset: no default. |
+| `OC8_WEB_SEARCH_BASE_URL` | SearXNG only: its address, e.g. `http://searxng:8080`. |
+| `OC8_WEB_SEARCH_API_KEY` | Brave or Tavily only: the API key. |
+
+An organisation's own setting wins over the default, and an organisation can
+switch web search off for itself. The default's address and key are never
+shown to an organisation. The default SearXNG host may be an internal address
+(a container or cluster service); every other address follows the rules in
+*Reaching systems on your own network*.
+
+For a self-hosted SearXNG, its `settings.yml` must allow JSON answers and must
+not rate-limit oc8:
+
+```yaml
+search:
+  formats: [html, json]
+server:
+  limiter: false
+```
+
 ## Letting people connect their Microsoft or Google account
 
 On the Connections page each person can connect their own Microsoft or Google
