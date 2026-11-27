@@ -33,10 +33,13 @@ class KPIGroupedResponseDTO(CamelModel):
 
 class FeedbackCountDTO(CamelModel):
     """Answer feedback (thumbs) for one agent and model. `model` is None for
-    a rating written before its event named the model."""
+    a rating written before its event named the model. `is_assistant` marks
+    the tenant Assistant (Copilot), whose stored name is not what people
+    call it."""
 
     agent_id: str
     agent_name: str
+    is_assistant: bool
     model: str | None
     up: int
     down: int

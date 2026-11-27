@@ -4,8 +4,9 @@ the `chat.feedback` audit events.
 Rating an answer again appends a second event, so only each person's latest
 rating of an answer counts. An event written before it named its agent is
 attributed through its chat; one whose agent cannot be resolved is left out.
-Same gate and rows as `GET /kpis?groupBy=agent`: `statistics:view` is
-tenant-wide only, and a personal agent gets no row. One tenant never counts
+Same gate and rows as `GET /kpis?groupBy=agent`, plus the tenant Assistant
+(Copilot): `statistics:view` is tenant-wide only, and a personal agent gets no
+row. One tenant never counts
 another's ratings, nor names another's agent in a filter.
 """
 
@@ -122,10 +123,38 @@ async def test_counts_the_latest_rating_per_answer_and_person_by_agent_and_model
     status, body = await _get(tenant)
     assert status == 200, body
     assert body == [
-        {"agentId": str(ada), "agentName": "Ada", "model": "big", "up": 1, "down": 0},
-        {"agentId": str(ada), "agentName": "Ada", "model": "small", "up": 1, "down": 1},
-        {"agentId": str(ada), "agentName": "Ada", "model": None, "up": 1, "down": 0},
-        {"agentId": str(bo), "agentName": "Bo", "model": "small", "up": 0, "down": 1},
+        {
+            "agentId": str(ada),
+            "agentName": "Ada",
+            "isAssistant": False,
+            "model": "big",
+            "up": 1,
+            "down": 0,
+        },
+        {
+            "agentId": str(ada),
+            "agentName": "Ada",
+            "isAssistant": False,
+            "model": "small",
+            "up": 1,
+            "down": 1,
+        },
+        {
+            "agentId": str(ada),
+            "agentName": "Ada",
+            "isAssistant": False,
+            "model": None,
+            "up": 1,
+            "down": 0,
+        },
+        {
+            "agentId": str(bo),
+            "agentName": "Bo",
+            "isAssistant": False,
+            "model": "small",
+            "up": 0,
+            "down": 1,
+        },
     ]
 
 
@@ -136,7 +165,16 @@ async def test_the_agent_filter_and_the_period_narrow_the_counts(
     _ada, bo, ops = await _seed(app_session, tenant)
     status, body = await _get(tenant, f"?agentId={bo}")
     assert status == 200, body
-    assert body == [{"agentId": str(bo), "agentName": "Bo", "model": "small", "up": 0, "down": 1}]
+    assert body == [
+        {
+            "agentId": str(bo),
+            "agentName": "Bo",
+            "isAssistant": False,
+            "model": "small",
+            "up": 0,
+            "down": 1,
+        }
+    ]
     status, body = await _get(tenant, f"?departmentId={ops}")
     assert status == 200, body
     assert len(body) == 4
@@ -208,3 +246,91 @@ async def test_reading_the_counts_needs_statistics_view(app_session: AppSessionF
     for role in ("member", "dept_manager"):
         status, _body = await _get(tenant, role=role)
         assert status == 403, role
+
+
+async def _seed_copilot(
+    app_session: AppSessionFactory, tenant: uuid.UUID
+) -> tuple[uuid.UUID, uuid.UUID]:
+    """The tenant Assistant (Copilot) in its `assistant` department, with one
+    up on model "copilot-model" and one down on "other". Returns (agent,
+    department)."""
+    async with app_session(tenant) as db:
+        dept = m.Department(tenant_id=tenant, name="Assistant", frame={}, kind="assistant")
+        db.add(dept)
+        await db.flush()
+        copilot = m.Agent(
+            tenant_id=tenant,
+            department_id=dept.id,
+            name="oc8 Assistant",
+            is_tenant_assistant=True,
+        )
+        db.add(copilot)
+        await db.flush()
+        chat = m.ChatSession(tenant_id=tenant, agent_id=copilot.id, member_id=uuid.uuid4())
+        db.add(chat)
+        await db.flush()
+        for rating, model in (("up", "copilot-model"), ("down", "other")):
+            await append_event(
+                db,
+                tenant_id=tenant,
+                actor_type="operator",
+                actor_id=uuid.uuid4(),
+                category="chat",
+                action="chat.feedback",
+                resource={
+                    "session_id": str(chat.id),
+                    "message_id": str(uuid.uuid4()),
+                    "run_id": None,
+                    "rating": rating,
+                    "note": "",
+                    "agent_id": str(copilot.id),
+                    "department_id": str(dept.id),
+                    "model": model,
+                },
+            )
+        return copilot.id, dept.id
+
+
+async def test_a_rating_on_a_copilot_answer_is_counted_under_the_copilot_and_its_model(
+    app_session: AppSessionFactory,
+) -> None:
+    # The Copilot is the main chat agent; its department is of kind
+    # `assistant`, not `standard`, and its ratings must still be counted.
+    tenant = uuid.uuid4()
+    ada, bo, _ops = await _seed(app_session, tenant)
+    copilot, _dept = await _seed_copilot(app_session, tenant)
+    status, body = await _get(tenant)
+    assert status == 200, body
+    copilot_rows = [r for r in body if r["agentId"] == str(copilot)]
+    assert copilot_rows == [
+        {
+            "agentId": str(copilot),
+            "agentName": "oc8 Assistant",
+            "isAssistant": True,
+            "model": "copilot-model",
+            "up": 1,
+            "down": 0,
+        },
+        {
+            "agentId": str(copilot),
+            "agentName": "oc8 Assistant",
+            "isAssistant": True,
+            "model": "other",
+            "up": 0,
+            "down": 1,
+        },
+    ]
+    # The personal agent Pia is still left out; standard agents are not assistants.
+    assert {r["agentName"] for r in body} == {"Ada", "Bo", "oc8 Assistant"}
+    assert all(r["isAssistant"] is False for r in body if r["agentId"] in {str(ada), str(bo)})
+
+
+async def test_the_copilot_can_be_named_in_the_filters(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    await _seed(app_session, tenant)
+    copilot, dept = await _seed_copilot(app_session, tenant)
+    for query in (f"?agentId={copilot}", f"?departmentId={dept}"):
+        status, body = await _get(tenant, query)
+        assert status == 200, (query, body)
+        assert {r["agentId"] for r in body} == {str(copilot)}, query
+        assert len(body) == 2, query

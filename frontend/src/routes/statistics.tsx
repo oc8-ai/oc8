@@ -410,7 +410,7 @@ export function StatisticsPage() {
               {feedbackRows.map((r) => (
                 <tr key={`${r.agentId}:${r.model ?? ""}`} data-testid="feedback-row">
                   <th scope="row" className="px-4 py-2 text-left font-normal">
-                    {r.agentName}
+                    {r.isAssistant ? t("Copilot", "Copilot") : r.agentName}
                   </th>
                   <td className="px-4 py-2 font-mono text-xs">{r.model ?? "–"}</td>
                   <td className="px-4 py-2 text-right font-mono">{r.up}</td>

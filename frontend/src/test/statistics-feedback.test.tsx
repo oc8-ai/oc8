@@ -34,8 +34,8 @@ describe("Statistics page: answer feedback", () => {
   it("shows up, down and the positive share per agent and model", () => {
     feedbackMock.mockReturnValue({
       data: [
-        { agentId: "a1", agentName: "Nora", model: "gpt-big", up: 3, down: 1 },
-        { agentId: "a2", agentName: "Sina", model: null, up: 0, down: 2 },
+        { agentId: "a1", agentName: "Nora", isAssistant: false, model: "gpt-big", up: 3, down: 1 },
+        { agentId: "a2", agentName: "Sina", isAssistant: false, model: null, up: 0, down: 2 },
       ],
       isError: false,
       isPending: false,
@@ -55,6 +55,27 @@ describe("Statistics page: answer feedback", () => {
     // A labelled table with a row header per agent.
     expect(screen.getByRole("table", { name: "Answer feedback" })).toBeInTheDocument();
     expect(screen.getByRole("rowheader", { name: "Nora" })).toBeInTheDocument();
+  });
+
+  it("names the Copilot's rows Copilot, not by its stored agent name", () => {
+    feedbackMock.mockReturnValue({
+      data: [
+        {
+          agentId: "c1",
+          agentName: "oc8 Assistant",
+          isAssistant: true,
+          model: "gpt-big",
+          up: 2,
+          down: 0,
+        },
+      ],
+      isError: false,
+      isPending: false,
+    });
+    renderPage();
+
+    expect(screen.getByRole("rowheader", { name: "Copilot" })).toBeInTheDocument();
+    expect(screen.queryByText("oc8 Assistant")).not.toBeInTheDocument();
   });
 
   it("asks with the page's agent, department and period filters only", () => {

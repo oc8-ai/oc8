@@ -3877,6 +3877,8 @@ export function useTenantKpis(params?: TenantKPIFilterParams) {
 export interface FeedbackCount {
   agentId: string;
   agentName: string;
+  /** The tenant Assistant (Copilot): shown as "Copilot", not its stored name. */
+  isAssistant: boolean;
   model: string | null;
   up: number;
   down: number;
