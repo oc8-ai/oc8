@@ -40,6 +40,8 @@ import { InlinePythonRun } from "@/components/conversation/python/run-output";
 import { isPlainClick, objectHref, parseObjectUrl } from "@/components/conversation/object-links";
 import {
   commonPrefixLength,
+  continuationOf,
+  lastLine,
   openCodeFenceAt,
   splitBlocks,
   stabilizeTail,
@@ -292,19 +294,6 @@ const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
 const CODE_OR_MATH = /(```[\s\S]*?(?:```|$)|`[^`\n]*`|\$\$[\s\S]*?(?:\$\$|$))/;
 const BLANK_LINE = /\n[ \t]*\n/;
 
-// What may stand before a `$$` that opens a display formula: blanks, or the
-// markers of the list items and quotes it sits in ("- ", "1. ", "> - ").
-const CONTAINER_LEAD = /^(?:[ \t]*(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])[ \t]+))*[ \t]*$/;
-const LIST_MARKER = /(?:[-*+]|\d{1,9}[.)])[ \t]+/g;
-
-/** The prefix that keeps a line inside the containers `lead` opens (a list
- *  marker becomes blanks of its width, a quote's `>` stays), or undefined
- *  when `lead` is prose. */
-function continuationOf(lead: string): string | undefined {
-  if (!CONTAINER_LEAD.test(lead)) return undefined;
-  return lead.replace(LIST_MARKER, (marker) => " ".repeat(marker.length));
-}
-
 /** A formula's lines, each kept inside the list item or quote: a fenced
  *  block has no lazy continuation, so an unprefixed line would end it. The
  *  first line follows the prefix the caller writes. */
@@ -341,7 +330,8 @@ function mathInProse(text: string): string {
         const end = text.indexOf(next === "(" ? "\\)" : "\\]", i + 2);
         const inner = end === -1 ? "" : text.slice(i + 2, end);
         if (end !== -1 && inner.trim() && !BLANK_LINE.test(inner)) {
-          const indent = /(?:^|\n)([ \t]*)$/.exec(out)?.[1];
+          const line = lastLine(out);
+          const indent = line !== null && line.trim() === "" ? line : undefined;
           const ownLines = indent !== undefined && /^[ \t]*(?:\n|$)/.test(text.slice(end + 2));
           out +=
             next === "[" && ownLines ? `$$\n${indent}${inner.trim()}\n${indent}$$` : `$$${inner}$$`;
@@ -360,7 +350,7 @@ function mathInProse(text: string): string {
         break;
       }
       const inner = text.slice(i + 2, end);
-      const lead = /(?:^|\n)([^\n]*)$/.exec(out)?.[1] ?? "";
+      const lead = lastLine(out);
       const indent = continuationOf(lead);
       if (indent !== undefined && inner.includes("\n")) {
         // A display formula with TeX on its `$$` lines: remark-math would take
@@ -368,7 +358,7 @@ function mathInProse(text: string): string {
         // closing fence. Each `$$` gets a line of its own -- inside the list
         // item or quote it opened in, when it did.
         const restOfLine = /^[ \t]*(?:\n|$)/.test(text.slice(end + 2)) ? "" : `\n${indent}`;
-        const body = lead.trim() ? insideContainer(inner.trim(), indent) : inner.trim();
+        const body = lead?.trim() ? insideContainer(inner.trim(), indent) : inner.trim();
         out += `$$\n${indent}${body}\n${indent}$$${restOfLine}`;
       } else {
         out += text.slice(i, end + 2);

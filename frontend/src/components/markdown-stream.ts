@@ -246,6 +246,61 @@ function openDisplayBracket(text: string): number | null {
   return lines.slice(candidate).join("\n").includes("\\]") ? null : candidate;
 }
 
+/** Longer than this, what stands before a `$$` on its line is prose. */
+const MAX_LEAD = 200;
+
+/** The text of the last line of `out`, or null when it is longer than
+ *  `MAX_LEAD` (read backwards to its newline once; no regex over `out`). */
+export function lastLine(out: string): string | null {
+  const start = out.lastIndexOf("\n") + 1;
+  return out.length - start > MAX_LEAD ? null : out.slice(start);
+}
+
+function isBlankChar(ch: string | undefined): boolean {
+  return ch === " " || ch === "\t";
+}
+
+/** What may stand before a `$$` that opens a display formula: blanks, or the
+ *  markers of the list items and quotes it sits in ("- ", "1. ", "> - ").
+ *  Returns the prefix that keeps a line inside those containers (a list
+ *  marker becomes blanks of its width, a quote's `>` stays), or undefined
+ *  when `lead` is prose. One pass over at most `MAX_LEAD` characters. */
+export function continuationOf(lead: string | null): string | undefined {
+  if (lead === null || lead.length > MAX_LEAD) return undefined;
+  let prefix = "";
+  let i = 0;
+  while (i < lead.length) {
+    const ch = lead[i];
+    if (isBlankChar(ch)) {
+      prefix += ch;
+      i += 1;
+      continue;
+    }
+    if (ch === ">") {
+      prefix += ">";
+      i += 1;
+      if (isBlankChar(lead[i])) {
+        prefix += lead[i];
+        i += 1;
+      }
+      continue;
+    }
+    // A list marker: `-`, `*`, `+`, or 1-9 digits and `.` or `)`; then a blank.
+    let j = i;
+    if (ch === "-" || ch === "*" || ch === "+") {
+      j = i + 1;
+    } else {
+      while (j < lead.length && j - i < 9 && lead[j] >= "0" && lead[j] <= "9") j += 1;
+      if (j === i || (lead[j] !== "." && lead[j] !== ")")) return undefined;
+      j += 1;
+    }
+    if (!isBlankChar(lead[j])) return undefined;
+    prefix += " ".repeat(j - i);
+    i = j;
+  }
+  return prefix;
+}
+
 /** How many leading characters two strings share. */
 export function commonPrefixLength(a: string, b: string): number {
   const n = Math.min(a.length, b.length);

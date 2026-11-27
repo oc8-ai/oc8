@@ -10,7 +10,7 @@ vi.mock("@/lib/record-links", async (orig) => ({
 }));
 
 import { ChatMarkdown } from "@/components/chat-markdown";
-import { splitBlocks, stabilizeTail } from "@/components/markdown-stream";
+import { continuationOf, splitBlocks, stabilizeTail } from "@/components/markdown-stream";
 
 /** Waits until KaTeX (its own chunk) has rendered `count` formulas. */
 async function katexNodes(container: HTMLElement, count = 1) {
@@ -236,5 +236,38 @@ describe("display math in a list item or a quote", () => {
     const outside = container.cloneNode(true) as HTMLElement;
     outside.querySelectorAll(".katex").forEach((node) => node.remove());
     expect(outside.textContent).not.toContain("aligned");
+  });
+});
+
+describe("the lead before a display formula", () => {
+  it.each([
+    ["", ""],
+    ["  ", "  "],
+    ["- ", "  "],
+    ["12. ", "    "],
+    ["> ", "> "],
+    ["> - ", ">   "],
+    ["Text ", undefined],
+    ["**x** ", undefined],
+    ["-x", undefined],
+  ])("reads %j as %j", (lead, prefix) => {
+    expect(continuationOf(lead)).toBe(prefix);
+  });
+
+  it.each([
+    ["a list marker and blanks", "- " + " \t".repeat(25_000) + "x"],
+    ["nested quotes", "> ".repeat(20_000) + "x"],
+  ])("stays fast on a long lead of %s", (_, lead) => {
+    const started = performance.now();
+    expect(continuationOf(lead)).toBeUndefined();
+    // Just under the length cap, where every character is read.
+    expect(continuationOf(lead.slice(0, 199) + "x")).toBeUndefined();
+    expect(performance.now() - started).toBeLessThan(50);
+  });
+
+  it("keeps a formula after prose on its line inline, as before", async () => {
+    const { container } = render(<ChatMarkdown text={"So $$a\n+b$$ holds."} />);
+    await katexNodes(container);
+    expect(container.querySelector(".katex-display")).toBeNull();
   });
 });
