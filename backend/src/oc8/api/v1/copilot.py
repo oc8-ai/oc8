@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 
+from oc8 import models as m
 from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
 from oc8.authz.permissions import COPILOT, MANAGE, VIEW, perm
 from oc8.copilot.capabilities import InvalidOperation, operation_references
@@ -32,8 +33,18 @@ async def _response(db: DbSession, proposal: CopilotProposal) -> dict[str, Any]:
     operations = (await db.execute(select(CopilotOperation).where(
         CopilotOperation.proposal_id == proposal.id
     ).order_by(CopilotOperation.ordinal))).scalars().all()
+    awaiting: list[dict[str, str]] = []
+    for raw in (proposal.result or {}).get("awaitingPublish") or []:
+        try:
+            agent = await db.get(m.Agent, uuid.UUID(str(raw)))
+        except ValueError:
+            continue
+        if agent is not None and agent.deleted_at is None:
+            awaiting.append({"agentId": str(agent.id), "name": agent.name})
     return {
         "id": str(proposal.id), "status": proposal.status, "revision": proposal.revision,
+        # Applied, but held in these agents' pending drafts: publish to take effect.
+        "awaitingPublish": awaiting,
         "operations": [
             {
                 "label": operation.operation_type,

@@ -1039,9 +1039,9 @@ async def test_a_name_both_systems_offer_is_only_callable_qualified(
     _, listed = await _rpc(tok, "tools/list")
     names = {t["name"] for t in listed["result"]["tools"]}
     assert "search_records" not in names
-    assert {"odoo.search_records", "gitea.search_records"} <= names
+    assert {"odoo__search_records", "gitea__search_records"} <= names
 
-    await _rpc(tok, "tools/call", {"name": "gitea.search_records", "arguments": {}})
+    await _rpc(tok, "tools/call", {"name": "gitea__search_records", "arguments": {}})
     assert ("gitea-mcp", "search_records") in _FakeMcp.routed
     assert not [c for c, t in _FakeMcp.routed if c == "x"]
 
