@@ -292,6 +292,34 @@ const CODE = /(```[\s\S]*?(?:```|$)|`[^`\n]*`)/;
 const CODE_OR_MATH = /(```[\s\S]*?(?:```|$)|`[^`\n]*`|\$\$[\s\S]*?(?:\$\$|$))/;
 const BLANK_LINE = /\n[ \t]*\n/;
 
+// What may stand before a `$$` that opens a display formula: blanks, or the
+// markers of the list items and quotes it sits in ("- ", "1. ", "> - ").
+const CONTAINER_LEAD = /^(?:[ \t]*(?:>[ \t]?|(?:[-*+]|\d{1,9}[.)])[ \t]+))*[ \t]*$/;
+const LIST_MARKER = /(?:[-*+]|\d{1,9}[.)])[ \t]+/g;
+
+/** The prefix that keeps a line inside the containers `lead` opens (a list
+ *  marker becomes blanks of its width, a quote's `>` stays), or undefined
+ *  when `lead` is prose. */
+function continuationOf(lead: string): string | undefined {
+  if (!CONTAINER_LEAD.test(lead)) return undefined;
+  return lead.replace(LIST_MARKER, (marker) => " ".repeat(marker.length));
+}
+
+/** A formula's lines, each kept inside the list item or quote: a fenced
+ *  block has no lazy continuation, so an unprefixed line would end it. The
+ *  first line follows the prefix the caller writes. */
+function insideContainer(formula: string, prefix: string): string {
+  const quoted = prefix.includes(">");
+  return formula
+    .split("\n")
+    .map((line, k) => {
+      if (k === 0) return line;
+      if (line.startsWith(prefix) || (quoted && line.trimStart().startsWith(">"))) return line;
+      return prefix + line.trimStart();
+    })
+    .join("\n");
+}
+
 /** Math in prose, rewritten to the `$$` spans remark-math reads (its own
  *  single-dollar reading is off, it would take "$5 and $6" for a formula):
  *  - `$…$` is a formula only when no space is inside either dollar and no
@@ -332,13 +360,16 @@ function mathInProse(text: string): string {
         break;
       }
       const inner = text.slice(i + 2, end);
-      const indent = /(?:^|\n)([ \t]*)$/.exec(out)?.[1];
+      const lead = /(?:^|\n)([^\n]*)$/.exec(out)?.[1] ?? "";
+      const indent = continuationOf(lead);
       if (indent !== undefined && inner.includes("\n")) {
         // A display formula with TeX on its `$$` lines: remark-math would take
         // the opening line's TeX for a fence's info string and find no
-        // closing fence. Each `$$` gets a line of its own.
+        // closing fence. Each `$$` gets a line of its own -- inside the list
+        // item or quote it opened in, when it did.
         const restOfLine = /^[ \t]*(?:\n|$)/.test(text.slice(end + 2)) ? "" : `\n${indent}`;
-        out += `$$\n${indent}${inner.trim()}\n${indent}$$${restOfLine}`;
+        const body = lead.trim() ? insideContainer(inner.trim(), indent) : inner.trim();
+        out += `$$\n${indent}${body}\n${indent}$$${restOfLine}`;
       } else {
         out += text.slice(i, end + 2);
       }

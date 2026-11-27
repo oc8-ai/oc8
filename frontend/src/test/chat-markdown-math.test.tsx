@@ -207,3 +207,34 @@ describe("markdown-stream and math", () => {
     expect(stabilizeTail("$$\na**b")).not.toContain("a**b**");
   });
 });
+
+describe("\\[ inside a code fence", () => {
+  it("is code, not a formula left open, while the answer streams", () => {
+    const text = "```latex\n\\[ a\n```";
+    expect(stabilizeTail(text)).toBe(text);
+    const { container } = render(<ChatMarkdown text={text} streaming />);
+    expect(container.querySelector("code")?.textContent).toContain("\\[ a");
+    expect(container.textContent).not.toContain("math-source");
+  });
+
+  it("still finds an open \\[ after a closed fence", () => {
+    expect(stabilizeTail("```\nx\n```\n\n\\[\n\\frac{a}{b")).toContain("```math-source");
+  });
+});
+
+describe("display math in a list item or a quote", () => {
+  it.each([
+    ["a list item", "- $$\\begin{aligned}\na &= b\n\\end{aligned}$$", "li"],
+    ["a numbered item", "1. $$\\begin{aligned}\n   a &= b\n   \\end{aligned}$$", "li"],
+    ["a quote", "> $$\\begin{aligned}\n> a &= b\n> \\end{aligned}$$", "blockquote"],
+  ])("renders as display math in %s", async (_, text, container_) => {
+    const { container } = render(<ChatMarkdown text={text} />);
+    await katexNodes(container);
+    const display = container.querySelector(`${container_} .katex-display`);
+    // KaTeX keeps the source in its annotation: the environment reached it.
+    expect(display?.textContent).toContain("\\begin{aligned}");
+    const outside = container.cloneNode(true) as HTMLElement;
+    outside.querySelectorAll(".katex").forEach((node) => node.remove());
+    expect(outside.textContent).not.toContain("aligned");
+  });
+});

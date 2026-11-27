@@ -186,6 +186,8 @@ export function stabilizeTail(text: string): string {
   const last = lines[lines.length - 1];
   if (
     last !== "" &&
+    // The closing line of a fence is no marker waiting for its word.
+    scanFences(text).closedAt !== text.length &&
     PUNCTUATION_ONLY.test(last) &&
     !(last.includes("|") && TABLE_RULE.test(last))
   ) {
@@ -229,15 +231,19 @@ function asMathSource(text: string, at: number, marker: string): string {
   return lines.join("\n");
 }
 
-/** The line of a `\[` that starts a line and is not closed yet, or null. */
+/** The line of a `\[` that starts a line outside code and is not closed
+ *  yet, or null. A `\[` inside a fenced block is code: turned into math
+ *  source it would break the block open. */
 function openDisplayBracket(text: string): number | null {
   const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (/^ {0,3}\\\[/.test(lines[i])) {
-      return lines.slice(i).join("\n").includes("\\]") ? null : i;
-    }
+  let candidate: number | null = null;
+  let fence: string | null = null;
+  for (let i = 0; i < lines.length; i += 1) {
+    if (fence === null && /^ {0,3}\\\[/.test(lines[i])) candidate = i;
+    fence = nextFence(fence, lines[i]);
   }
-  return null;
+  if (candidate === null) return null;
+  return lines.slice(candidate).join("\n").includes("\\]") ? null : candidate;
 }
 
 /** How many leading characters two strings share. */
