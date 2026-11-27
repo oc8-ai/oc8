@@ -12,6 +12,8 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { usePreviewSettings } from "@/lib/preview-settings";
+
 import type { AssistantTurnModel, TurnModel } from "../types";
 import { artifactsOnPath, versionsOf, type Artifact } from "./extract";
 
@@ -67,8 +69,20 @@ function sameArtifact(a: Artifact, b: Artifact): boolean {
   return a.id === b.id && a.source === b.source && a.closed === b.closed && a.title === b.title;
 }
 
+/** Whether a preview may run its scripts, and if not, why:
+ *  - "scripts": a saved answer without restricted content, scripts allowed;
+ *  - "restricted": the answer holds restricted content;
+ *  - "unsaved": a live answer (or one no longer in the chat) -- whether it
+ *    is restricted is known once it is saved;
+ *  - "off": an admin turned scripts in previews off;
+ *  - "unknown": that setting could not be read (fail closed);
+ *  - "pending": it is still loading. */
+export type PreviewMode = "scripts" | "restricted" | "unsaved" | "off" | "unknown" | "pending";
+
 /** The conversation's panel state: what is open, its versions on the
- *  current message path, and the context the cards read. */
+ *  current message path, how its preview may run, and the context the
+ *  cards read. The tenant's script setting is read once a preview opens;
+ *  one that cannot be read counts as off (fail closed). */
 export function useArtifactsPanel(sessionId: string | null, turns: TurnModel[]) {
   const [picked, setPicked] = useState<Artifact | null>(null);
   // Another chat starts with the panel closed.
@@ -96,6 +110,20 @@ export function useArtifactsPanel(sessionId: string | null, turns: TurnModel[]) 
     current = onPath.find((a) => a.id === id) ?? picked;
   }
   const versions = current ? versionsOf(current, onPath) : [];
+  const settings = usePreviewSettings(picked !== null);
+  const messageId = current?.messageId;
+  let mode: PreviewMode = "unsaved";
+  if (settings.data?.runScripts === false) mode = "off";
+  else if (!settings.data) mode = settings.isError ? "unknown" : "pending";
+  else if (messageId) {
+    let found: boolean | undefined;
+    for (const turn of turns) {
+      if (turn.kind !== "assistant") continue;
+      const message = turn.variants.find((v) => v.id === messageId);
+      if (message) found = message.restricted === true;
+    }
+    mode = found === undefined ? "unsaved" : found ? "restricted" : "scripts";
+  }
   const open = useCallback((artifact: Artifact) => setPicked(artifact), []);
   const sync = useCallback(
     (artifact: Artifact) =>
@@ -107,5 +135,5 @@ export function useArtifactsPanel(sessionId: string | null, turns: TurnModel[]) 
   const close = useCallback(() => setPicked(null), []);
   const openId = current?.id ?? null;
   const context = useMemo<ArtifactsState>(() => ({ openId, open, sync }), [openId, open, sync]);
-  return { current, versions, context, open, close };
+  return { current, versions, mode, context, open, close };
 }

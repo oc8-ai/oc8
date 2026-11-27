@@ -17,6 +17,7 @@ import { Panel } from "@/components/app-shell";
 import { BackupPanel } from "@/components/backup-panel";
 import { CredentialPicker } from "@/components/credential-picker";
 import { PersonalDepartmentsAdminPanel } from "@/components/personal-departments-admin";
+import { PreviewScriptsSetting } from "@/components/settings/preview-scripts-setting";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 import { TimezoneSelect } from "@/components/timezone-select";
 import { EditionSettingsSections } from "@/edition/slots";
@@ -54,6 +55,7 @@ function SettingsPage() {
         <MailServerSetting />
         <TwoFactorPolicyPanel />
         <CopilotSettingsPanel />
+        <PreviewScriptsSetting />
         <PersonalDepartmentsAdminPanel />
         <BackupPanel />
         <EditionSettingsSections />

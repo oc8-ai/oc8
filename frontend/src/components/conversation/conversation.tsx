@@ -1463,6 +1463,7 @@ function ConversationBody(props: ConversationProps) {
         <ArtifactPanel
           artifact={artifacts.current}
           versions={artifacts.versions}
+          mode={artifacts.mode}
           onSelect={artifacts.open}
           onClose={artifacts.close}
           asSheet={panelAsSheet}

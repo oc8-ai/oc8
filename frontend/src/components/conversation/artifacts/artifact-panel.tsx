@@ -7,7 +7,7 @@
 // nothing. While the block is still being written the preview waits for it
 // to close, so a half page or diagram never shows.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, X } from "lucide-react";
 
 import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/ui/sheet";
@@ -17,19 +17,27 @@ import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 import { pageIsDark, renderMermaidToSvg, svgDataUrl } from "../mermaid-render";
+import type { PreviewMode } from "./context";
 import { fileNameFor, kindLabel, type Artifact } from "./extract";
 import { SandboxFrame } from "./sandbox-frame";
 
+// HTML and SVG download as bytes: a browser that opened the blob instead of
+// saving it must not render an untrusted page in the oc8 origin.
 const MIME: Record<Artifact["kind"], string> = {
-  html: "text/html",
-  svg: "image/svg+xml",
+  html: "application/octet-stream",
+  svg: "application/octet-stream",
   mermaid: "text/plain",
   code: "text/plain",
 };
 
 function download(artifact: Artifact) {
   const url = URL.createObjectURL(
-    new Blob([artifact.source], { type: `${MIME[artifact.kind]};charset=utf-8` }),
+    new Blob([artifact.source], {
+      type:
+        artifact.kind === "html" || artifact.kind === "svg"
+          ? MIME[artifact.kind]
+          : `${MIME[artifact.kind]};charset=utf-8`,
+    }),
   );
   const link = document.createElement("a");
   link.href = url;
@@ -92,11 +100,55 @@ function MermaidPreview({ source }: { source: string }) {
   );
 }
 
-function Preview({ artifact }: { artifact: Artifact }) {
+/** Why a page shows without its scripts (see PreviewMode). */
+function StaticNote({ mode }: { mode: PreviewMode }) {
+  const t = useT();
+  const text =
+    mode === "restricted"
+      ? t(
+          "Shown without scripts because this answer contains restricted content.",
+          "Ohne Skripte angezeigt, weil diese Antwort eingeschränkte Inhalte enthält.",
+        )
+      : mode === "off"
+        ? t(
+            "Shown without scripts: scripts in previews are turned off for your organization.",
+            "Ohne Skripte angezeigt: Skripte in Vorschauen sind für deine Organisation ausgeschaltet.",
+          )
+        : mode === "unknown"
+          ? t(
+              "Shown without scripts: the preview setting could not be read.",
+              "Ohne Skripte angezeigt: Die Vorschau-Einstellung konnte nicht gelesen werden.",
+            )
+          : t(
+              "Shown without scripts until the answer is saved.",
+              "Ohne Skripte angezeigt, bis die Antwort gespeichert ist.",
+            );
+  return (
+    <p role="note" className="border-b border-border px-4 py-2 text-xs text-muted-foreground">
+      {text}
+    </p>
+  );
+}
+
+function Preview({ artifact, mode }: { artifact: Artifact; mode: PreviewMode }) {
   const t = useT();
   if (!artifact.closed) return <Writing />;
   if (artifact.kind === "html") {
-    return <SandboxFrame html={artifact.source} title={artifact.title} className="size-full" />;
+    if (mode === "pending") return <Skeleton className="m-4 h-40 rounded-md" />;
+    const scripts = mode === "scripts";
+    return (
+      <div className="flex size-full flex-col">
+        {!scripts && <StaticNote mode={mode} />}
+        <SandboxFrame
+          // A new mode is a new document: the frame starts over.
+          key={scripts ? "scripts" : "static"}
+          html={artifact.source}
+          title={artifact.title}
+          scripts={scripts}
+          className="min-h-0 w-full flex-1"
+        />
+      </div>
+    );
   }
   if (artifact.kind === "svg") {
     return (
@@ -156,12 +208,14 @@ function Source({ artifact }: { artifact: Artifact }) {
 function PanelBody({
   artifact,
   versions,
+  mode,
   onSelect,
   onClose,
   asSheet,
 }: {
   artifact: Artifact;
   versions: Artifact[];
+  mode: PreviewMode;
   onSelect: (artifact: Artifact) => void;
   onClose: () => void;
   asSheet: boolean;
@@ -287,7 +341,7 @@ function PanelBody({
               artifact.kind === "html" && "overflow-hidden",
             )}
           >
-            <Preview key={`${artifact.id}:${dark}`} artifact={artifact} />
+            <Preview key={`${artifact.id}:${dark}`} artifact={artifact} mode={mode} />
           </TabsContent>
         )}
         <TabsContent value="code" className="mt-2 min-h-0 flex-1 overflow-auto">
@@ -301,17 +355,35 @@ function PanelBody({
 export function ArtifactPanel({
   artifact,
   versions,
+  mode = "scripts",
   onSelect,
   onClose,
   asSheet,
 }: {
   artifact: Artifact | null;
   versions: Artifact[];
+  /** How the preview may run (see useArtifactsPanel). */
+  mode?: PreviewMode;
   onSelect: (artifact: Artifact) => void;
   onClose: () => void;
   /** A sheet over the chat instead of a column beside it. */
   asSheet: boolean;
 }) {
+  // Beside the chat (the sheet does this itself): focus moves into the panel
+  // when it opens and goes back to where it was when it closes.
+  const aside = useRef<HTMLElement>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
+  const open = !!artifact && !asSheet;
+  useEffect(() => {
+    if (!open) return;
+    returnTo.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    aside.current?.focus();
+    return () => {
+      const back = returnTo.current;
+      if (back?.isConnected) back.focus();
+    };
+  }, [open]);
   if (asSheet) {
     return (
       <Sheet open={!!artifact} onOpenChange={(open) => !open && onClose()}>
@@ -320,6 +392,7 @@ export function ArtifactPanel({
             <PanelBody
               artifact={artifact}
               versions={versions}
+              mode={mode}
               onSelect={onSelect}
               onClose={onClose}
               asSheet
@@ -332,12 +405,21 @@ export function ArtifactPanel({
   if (!artifact) return null;
   return (
     <aside
+      ref={aside}
+      tabIndex={-1}
       aria-label={artifact.title}
-      className="flex w-[clamp(24rem,42vw,45rem)] shrink-0 flex-col border-l border-border bg-background"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
+      className="flex w-[clamp(24rem,42vw,45rem)] shrink-0 flex-col border-l border-border bg-background focus-visible:outline-none"
     >
       <PanelBody
         artifact={artifact}
         versions={versions}
+        mode={mode}
         onSelect={onSelect}
         onClose={onClose}
         asSheet={false}

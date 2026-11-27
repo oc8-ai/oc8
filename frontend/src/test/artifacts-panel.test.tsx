@@ -16,6 +16,13 @@ vi.mock("shiki", () => ({
   codeToHtml: async (code: string) =>
     `<pre class="shiki"><code>${code.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</code></pre>`,
 }));
+const previews = vi.hoisted(() => ({
+  value: { data: { runScripts: true }, isError: false } as {
+    data?: { runScripts: boolean };
+    isError: boolean;
+  },
+}));
+vi.mock("@/lib/preview-settings", () => ({ usePreviewSettings: () => previews.value }));
 vi.mock("@/lib/record-links", async (orig) => ({
   ...(await orig<typeof import("@/lib/record-links")>()),
   useVerifiedLinks: () => ({ data: undefined }),
@@ -35,8 +42,13 @@ import type { ChatMessageDTO } from "@/lib/hooks-chat";
 const page = (title: string, body: string) =>
   "```html\n<!doctype html>\n<title>" + title + "</title>\n" + body + "\n```";
 
-function message(id: string, content: string, runId: string | null = null): ChatMessageDTO {
-  return { id, content, runId, role: "assistant" } as unknown as ChatMessageDTO;
+function message(
+  id: string,
+  content: string,
+  runId: string | null = null,
+  restricted = false,
+): ChatMessageDTO {
+  return { id, content, runId, role: "assistant", restricted } as unknown as ChatMessageDTO;
 }
 
 function answer(m: ChatMessageDTO): TurnModel {
@@ -74,6 +86,7 @@ function Chat({
       <ArtifactPanel
         artifact={panel.current}
         versions={panel.versions}
+        mode={panel.mode}
         onSelect={panel.open}
         onClose={panel.close}
         asSheet={narrow || !wide}
@@ -91,7 +104,10 @@ function stubWidth(px: number) {
   }));
 }
 
-beforeEach(() => stubWidth(1440));
+beforeEach(() => {
+  stubWidth(1440);
+  previews.value = { data: { runScripts: true }, isError: false };
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("artifact cards", () => {
@@ -198,7 +214,8 @@ describe("the panel", () => {
     expect(clicked).toHaveLength(1);
     expect(clicked[0].download).toBe("sales-board.html");
     const blob = (createObjectURL.mock.calls[0] as unknown as [Blob])[0];
-    expect(blob.type).toBe("text/html;charset=utf-8");
+    // Bytes, never a page a browser would render in the oc8 origin.
+    expect(blob.type).toBe("application/octet-stream");
   });
 
   it("steps through the versions with the same title on the path", () => {
@@ -257,5 +274,72 @@ describe("the panel", () => {
     expect(mermaid.initialize).toHaveBeenCalledWith(
       expect.objectContaining({ securityLevel: "strict" }),
     );
+  });
+
+  it("moves focus into the panel, closes on Escape and gives focus back", () => {
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    const card = screen.getByRole("button", { name: "Open Clock" });
+    card.focus();
+    fireEvent.click(card);
+    const panel = screen.getByRole("complementary", { name: "Clock" });
+    expect(panel).toHaveFocus();
+    fireEvent.keyDown(panel, { key: "Escape" });
+    expect(screen.queryByRole("complementary")).toBeNull();
+    expect(card).toHaveFocus();
+  });
+});
+
+describe("the card", () => {
+  it("is named by its title and described by its state", () => {
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    const card = screen.getByRole("button", { name: "Open Clock" });
+    expect(card).toHaveAccessibleDescription("HTML · 3 lines");
+    expect(card).not.toHaveAttribute("aria-label");
+  });
+});
+
+describe("static previews", () => {
+  const open = () => {
+    fireEvent.click(screen.getByRole("button", { name: "Open Clock" }));
+    return screen.getByTitle("Clock");
+  };
+
+  it("runs no script for an answer with restricted content, and says why", () => {
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>"), null, true))]} />);
+    const frame = open();
+    expect(frame.getAttribute("sandbox")).toBe("");
+    expect(frame.getAttribute("srcdoc")).toContain("script-src 'none'");
+    expect(screen.getByRole("note")).toHaveTextContent(
+      "Shown without scripts because this answer contains restricted content.",
+    );
+  });
+
+  it("runs no script when an admin turned scripts off, or the setting cannot be read", () => {
+    previews.value = { data: { runScripts: false }, isError: false };
+    const { unmount } = render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    expect(open().getAttribute("sandbox")).toBe("");
+    expect(screen.getByRole("note")).toHaveTextContent("turned off for your organization");
+    unmount();
+    previews.value = { data: undefined, isError: true };
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    expect(open().getAttribute("sandbox")).toBe("");
+    expect(screen.getByRole("note")).toHaveTextContent("could not be read");
+  });
+
+  it("waits for the setting before showing a page", () => {
+    previews.value = { data: undefined, isError: false };
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Clock" }));
+    expect(screen.queryByTitle("Clock")).toBeNull();
+  });
+
+  it("runs no script in a live answer until it is saved", () => {
+    const text = page("Clock", "<p>x</p>");
+    const { rerender } = render(<Chat turns={[]} live={{ runId: "r1", text }} />);
+    expect(open().getAttribute("sandbox")).toBe("");
+    expect(screen.getByRole("note")).toHaveTextContent("until the answer is saved");
+    rerender(<Chat turns={[answer(message("m9", text, "r1"))]} />);
+    expect(screen.getByTitle("Clock").getAttribute("sandbox")).toBe("allow-scripts");
+    expect(screen.queryByRole("note")).toBeNull();
   });
 });

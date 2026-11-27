@@ -48,6 +48,7 @@ from oc8.api.v1 import (
     oauth,
     onboarding,
     personal_departments,
+    preview_settings,
     reconciliation,
     record_links,
     reports,
@@ -114,6 +115,7 @@ api_router.include_router(runtimes.router, tags=["runtimes"])
 # /api/v1 that an agent token legitimately uses. It is mounted on the app
 # directly so that exception is visible in one place instead of implied.
 api_router.include_router(settings.router, tags=["settings"])
+api_router.include_router(preview_settings.router, tags=["settings"])
 api_router.include_router(events.router, tags=["events"])
 api_router.include_router(handoffs.router, tags=["handoffs"])
 api_router.include_router(contracts.router, tags=["contracts"])

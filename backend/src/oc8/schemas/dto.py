@@ -1761,6 +1761,9 @@ class ChatMessageDTO(CamelModel):
     parts: list[dict[str, Any]] | None = None
     #: One-click replies from the `suggest_replies` part, derived for convenience.
     suggestions: list[str] = []
+    #: The run read restricted data (`ChatMessage.restricted`). The chat shows
+    #: such an answer's HTML previews without scripts.
+    restricted: bool = False
 
 
 class ReportDTO(CamelModel):

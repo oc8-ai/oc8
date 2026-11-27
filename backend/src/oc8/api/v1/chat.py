@@ -174,6 +174,7 @@ async def _message_dto(
             if isinstance(part, dict) and part.get("type") == "suggestions"
             for o in (part.get("options") or [])
         ],
+        restricted=msg.restricted,
     )
 
 

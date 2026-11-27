@@ -57,6 +57,9 @@ export interface ChatMessageDTO {
   parentId?: string | null;
   // C2: one-click replies the model offered with suggest_replies.
   suggestions?: string[];
+  // The run read restricted data: the chat shows this answer's HTML
+  // previews without scripts.
+  restricted?: boolean;
   // Typed parts an edition tool returned (spec §6.2), e.g.
   // {type: "sources", items: ChatSourceDTO[]} -- stored and delivered unchanged.
   parts?: Record<string, unknown>[];
