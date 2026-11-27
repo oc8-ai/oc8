@@ -52,6 +52,7 @@ import { kindIcon, kindLabel } from "./context-icons";
 import { ModelPicker } from "./model-picker";
 import { EffortPicker } from "./effort-picker";
 import { PlusMenu, type PlusMenuItem } from "./plus-menu";
+import { WebToggle } from "./web-toggle";
 
 export type { PlusMenuItem } from "./plus-menu";
 
@@ -86,6 +87,9 @@ export interface ComposerProps {
   effortValue?: ReasoningLevel | null;
   /** A new chat: the level pick is held by the caller, not written yet. */
   onEffortPick?: (level: ReasoningLevel | null) => void;
+  /** The "Web" switch for this message; left out (no search provider), the
+   *  composer shows none. */
+  web?: { on: boolean; onChange: (on: boolean) => void };
   /** While busy, a send goes to the running run (steering): Send stays
    *  beside Stop, and Enter sends. */
   sendWhileBusy?: boolean;
@@ -644,6 +648,9 @@ export function Composer(props: ComposerProps) {
                 onPick={props.onEffortPick}
               />
             </>
+          )}
+          {props.web && (
+            <WebToggle on={props.web.on} onChange={props.web.onChange} disabled={props.disabled} />
           )}
           <div className="flex-1" />
           {props.trailing}

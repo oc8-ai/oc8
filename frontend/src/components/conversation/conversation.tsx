@@ -46,6 +46,7 @@ import { useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
 import { useWatchRuns } from "@/lib/live/provider";
 import type { ReasoningLevel } from "@/lib/reasoning-levels";
+import { useWebChoice, useWebSearchAvailable } from "@/lib/web-search";
 import { cn } from "@/lib/utils";
 
 import { SidePanelProvider } from "@/edition/slots";
@@ -396,6 +397,11 @@ function ConversationBody(props: ConversationProps) {
   const sendMessage = useSendChatMessage(props.sessionId ?? "");
   const regenerate = useRegenerate(props.sessionId);
   const editMessage = useEditMessage(props.sessionId);
+  // The composer's "Web" switch; it goes with a send, a regenerate and an
+  // edit alike, and only while the tenant has a search provider.
+  const webAvailable = useWebSearchAvailable();
+  const [webChoice, setWebChoice] = useWebChoice();
+  const web = webAvailable && webChoice;
   const setLeaf = useSetLeaf(props.sessionId);
   const stopRun = useStopRun();
   // Any new row re-checks the bottom; an older page landing on top moves
@@ -851,6 +857,7 @@ function ConversationBody(props: ConversationProps) {
           : submit.text,
       attachmentIds: submit.attachmentIds,
       contextRefs: submit.contextRefs.map(({ kind, id }) => ({ kind, id })),
+      ...(web && { web: true }),
     };
     let modelRefused = false;
     let effortRefused = false;
@@ -1017,21 +1024,24 @@ function ConversationBody(props: ConversationProps) {
 
   function onRegenerate(replyToId: string) {
     setSendError(null);
-    regenerate.mutate(replyToId, {
-      onError: (error) =>
-        setSendError({
-          text:
-            error instanceof ApiError && error.status === 409
-              ? t(
-                  "An answer is still being written. Try again once it's done.",
-                  "Es wird noch eine Antwort geschrieben. Versuch es noch einmal, wenn sie fertig ist.",
-                )
-              : t(
-                  "No new answer was started. Try again.",
-                  "Es wurde keine neue Antwort gestartet. Versuch es noch einmal.",
-                ),
-        }),
-    });
+    regenerate.mutate(
+      { messageId: replyToId, web },
+      {
+        onError: (error) =>
+          setSendError({
+            text:
+              error instanceof ApiError && error.status === 409
+                ? t(
+                    "An answer is still being written. Try again once it's done.",
+                    "Es wird noch eine Antwort geschrieben. Versuch es noch einmal, wenn sie fertig ist.",
+                  )
+                : t(
+                    "No new answer was started. Try again.",
+                    "Es wurde keine neue Antwort gestartet. Versuch es noch einmal.",
+                  ),
+          }),
+      },
+    );
   }
 
   /** A local command (/budget) is answered here, never sent as a message. */
@@ -1074,7 +1084,7 @@ function ConversationBody(props: ConversationProps) {
         onEdit={(text) => setDraft(text)}
         onSave={
           inTree
-            ? (content) => editMessage.mutateAsync({ messageId: turn.message.id, content })
+            ? (content) => editMessage.mutateAsync({ messageId: turn.message.id, content, web })
             : undefined
         }
         onSwitch={inTree ? onSwitchBranch : undefined}
@@ -1390,6 +1400,7 @@ function ConversationBody(props: ConversationProps) {
           onModelPick={firstMessage ? setHeldModel : undefined}
           effortValue={heldEffort !== undefined ? heldEffort : (conv.session?.effort ?? null)}
           onEffortPick={firstMessage ? setHeldEffort : undefined}
+          web={webAvailable && !readOnly ? { on: webChoice, onChange: setWebChoice } : undefined}
           sendWhileBusy={steerReply || !!pending || !!props.sendWhileBusy}
           onSendAfter={queueReply ? (s) => void onSendAfter(s) : undefined}
           agentItems={props.agentItems}

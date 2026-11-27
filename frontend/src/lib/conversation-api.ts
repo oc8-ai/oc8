@@ -149,9 +149,11 @@ export function withActiveRun(
 export function useRegenerate(sessionId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (messageId: string) =>
+    // `web`: the composer's "Web" switch as it stands now.
+    mutationFn: ({ messageId, web = false }: { messageId: string; web?: boolean }) =>
       api.post<ActiveRunDTO>(
         `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages/${encodeURIComponent(messageId)}/regenerate`,
+        web ? { web: true } : undefined,
       ),
     onSuccess: (run) => {
       if (!sessionId) return;
@@ -167,10 +169,19 @@ export function useRegenerate(sessionId: string | null) {
 export function useEditMessage(sessionId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ messageId, content }: { messageId: string; content: string }) =>
+    mutationFn: ({
+      messageId,
+      content,
+      web = false,
+    }: {
+      messageId: string;
+      content: string;
+      /** The composer's "Web" switch, as for a sent turn. */
+      web?: boolean;
+    }) =>
       api.post<ChatMessageDTO>(
         `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages/${encodeURIComponent(messageId)}/edit`,
-        { content },
+        web ? { content, web: true } : { content },
       ),
     onSuccess: (message) => {
       if (!sessionId) return;
