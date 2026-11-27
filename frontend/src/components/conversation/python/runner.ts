@@ -301,45 +301,80 @@ export function createPythonHost(deps: HostDeps) {
   };
 }
 
+/** How long a download may go without a byte before it is given up. A stuck
+ *  one would otherwise hold its file -- and every later run that needs it --
+ *  until the page is reset; given up, the next run fetches it again. */
+export const FETCH_STALL_MS = 30_000;
+
 /** The app's own copy of a vendored file, with download progress. A 404
  *  means the server has no Pyodide (the folder is left out of its image). */
 export async function fetchVendored(
   name: string,
   onBytes: (loaded: number, total: number | null) => void,
+  stallMs: number = FETCH_STALL_MS,
 ): Promise<ArrayBuffer> {
-  const res = await fetch(`/pyodide/${encodeURIComponent(name)}`, { credentials: "omit" });
-  // A server without the files answers 404, or (an SPA fallback in front of
-  // it) with its HTML page; neither is a Pyodide file.
-  if (res.status === 404) throw new PythonNotInstalled();
-  if (res.ok && /text\/html/i.test(res.headers.get("content-type") ?? "")) {
-    throw new PythonNotInstalled();
+  const controller = new AbortController();
+  const stalled = new Promise<never>((_, reject) => {
+    controller.signal.addEventListener(
+      "abort",
+      () => reject(new Error(`/pyodide/${name}: the download stalled`)),
+      { once: true },
+    );
+  });
+  stalled.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const progressed = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), stallMs);
+  };
+  progressed();
+  try {
+    const res = await Promise.race([
+      fetch(`/pyodide/${encodeURIComponent(name)}`, {
+        credentials: "omit",
+        signal: controller.signal,
+      }),
+      stalled,
+    ]);
+    // A server without the files answers 404, or (an SPA fallback in front of
+    // it) with its HTML page; neither is a Pyodide file.
+    if (res.status === 404) throw new PythonNotInstalled();
+    if (res.ok && /text\/html/i.test(res.headers.get("content-type") ?? "")) {
+      throw new PythonNotInstalled();
+    }
+    if (!res.ok) throw new Error(`/pyodide/${name}: ${res.status}`);
+    const length = Number(res.headers.get("content-length"));
+    const total = Number.isFinite(length) && length > 0 ? length : null;
+    if (!res.body) {
+      const bytes = await Promise.race([res.arrayBuffer(), stalled]);
+      onBytes(bytes.byteLength, bytes.byteLength);
+      return bytes;
+    }
+    const reader = res.body.getReader();
+    controller.signal.addEventListener("abort", () => void reader.cancel().catch(() => undefined), {
+      once: true,
+    });
+    const chunks: Uint8Array[] = [];
+    let loaded = 0;
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), stalled]);
+      if (done) break;
+      progressed();
+      chunks.push(value);
+      loaded += value.byteLength;
+      onBytes(loaded, total);
+    }
+    const out = new Uint8Array(loaded);
+    let at = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    onBytes(loaded, loaded);
+    return out.buffer;
+  } finally {
+    clearTimeout(timer);
   }
-  if (!res.ok) throw new Error(`/pyodide/${name}: ${res.status}`);
-  const length = Number(res.headers.get("content-length"));
-  const total = Number.isFinite(length) && length > 0 ? length : null;
-  if (!res.body) {
-    const bytes = await res.arrayBuffer();
-    onBytes(bytes.byteLength, bytes.byteLength);
-    return bytes;
-  }
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let loaded = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    loaded += value.byteLength;
-    onBytes(loaded, total);
-  }
-  const out = new Uint8Array(loaded);
-  let at = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, at);
-    at += chunk.byteLength;
-  }
-  onBytes(loaded, loaded);
-  return out.buffer;
 }
 
 /** A hidden frame in this page; only its own window's messages count. */

@@ -283,8 +283,36 @@ describe("fetchVendored", () => {
     const seen: number[] = [];
     const bytes = await fetchVendored("pyodide.js", (loaded) => seen.push(loaded));
     expect(new Uint8Array(bytes)).toEqual(new Uint8Array([1, 2, 3]));
-    expect(spy).toHaveBeenCalledWith("/pyodide/pyodide.js", { credentials: "omit" });
+    expect(spy).toHaveBeenCalledWith(
+      "/pyodide/pyodide.js",
+      expect.objectContaining({ credentials: "omit", signal: expect.any(AbortSignal) }),
+    );
     expect(seen.at(-1)).toBe(3);
+  });
+
+  it("gives up on a download that never answers, so a later run can try again", async () => {
+    let signal: AbortSignal | undefined;
+    vi.spyOn(globalThis, "fetch").mockImplementation((_url, init) => {
+      signal = init?.signal ?? undefined;
+      return new Promise<Response>(() => undefined);
+    });
+    await expect(fetchVendored("pyodide.js", () => undefined, 20)).rejects.toThrow(/stalled/);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("gives up on a download whose bytes stop coming", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2]));
+        // ...and nothing more, ever.
+      },
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(body, { status: 200 }));
+    const seen: number[] = [];
+    await expect(
+      fetchVendored("pyodide.asm.wasm", (loaded) => seen.push(loaded), 20),
+    ).rejects.toThrow(/stalled/);
+    expect(seen).toEqual([2]);
   });
 
   it("says Python is not installed when the server answers with its HTML page", async () => {
