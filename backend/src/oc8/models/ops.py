@@ -266,7 +266,22 @@ class TokenUsageRecord(Base, PkMixin, TenantMixin):
     creator_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     skill_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     skill_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
+    #: The org_member the call was made for (migration 0145); NULL for rows
+    #: before it and for calls made for nobody. No foreign key: usage records
+    #: are immutable and must survive the member's deletion.
+    member_id: Mapped[uuid.UUID | None] = mapped_column(Uuid)
     request_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, unique=True)
+
+    __table_args__ = (
+        # Tenant + time range first (migration 0145): the per-member chart reads
+        # only its range; the INCLUDE columns make that an index-only scan.
+        Index(
+            "ix_token_usage_record_tenant_ts",
+            "tenant_id",
+            "ts",
+            postgresql_include=["member_id", "tokens_in", "tokens_out"],
+        ),
+    )
 
 
 class Budget(Base, PkMixin, TenantMixin, TimestampMixin):

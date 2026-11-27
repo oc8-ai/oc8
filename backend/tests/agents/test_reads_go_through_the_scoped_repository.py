@@ -88,6 +88,11 @@ ALLOWED: dict[str, str] = {
         "reads the finished run's own agent, after its owner's reach was "
         "re-checked, to stage the follow-up turn; no departmental browse"
     ),
+    "chat/checkpoint.py": (
+        "reads the chat's own agent in a background job with no human caller; "
+        "only for its model config and its department's budget, never a "
+        "departmental browse"
+    ),
     "runtime/clarification.py": (
         "the answer path reading the run's own agent for the secret gate "
         "(is_tenant_assistant); no departmental browse"
@@ -216,6 +221,11 @@ ALLOWED: dict[str, str] = {
         "browse; that agent's visibility is already established by the caller "
         "(api/v1/chat.py's ownership/_assistant_visible check) before send_message runs"
     ),
+    "chat/files_kb.py": (
+        "chat_local_reason reads only the ChatSession's own session.agent_id, to "
+        "decide whether its files must be embedded locally -- not a departmental "
+        "browse; the caller already owns or reaches that chat"
+    ),
     "collab/emit.py": "handoff department-name resolution, same rationale as api/v1/handoffs.py",
     "collab/intake.py": "handoff department-name and team-lead resolution, no human in this path",
     "events/sources.py": (
@@ -246,6 +256,10 @@ ALLOWED: dict[str, str] = {
     "workspace/queue.py": (
         "the clarification queue applies scope.viewable itself (see its own department_id."
         "in_(scope.viewable) filter) instead of going through the funnel"
+    ),
+    "approvals/allow_rules.py": (
+        "names the agent of the caller's OWN always-allow rules (member_rules, filtered "
+        "on the caller's member id) for their profile list; name only, never content"
     ),
 }
 

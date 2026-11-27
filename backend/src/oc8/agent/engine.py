@@ -32,8 +32,10 @@ from oc8.agent.control_tools import (
     ENTER_AGENT_MODE,
     FIND_TOOLS,
     MAX_DELEGATION_DEPTH,  # re-exported for tests/coding/test_engine_delegation.py
+    MEMORY_WRITE,
     READ_RESOURCE,
     audit_edition_call,
+    audited_decision,
     execute_control_tool,
     has_readable_context,
     has_released_knowledge,
@@ -81,7 +83,7 @@ from oc8.agent.harness.stages.b_direct_access import (
 from oc8.agent.harness.stages.b_idempotency import record_for, replay_for
 from oc8.agent.harness.stages.b_outward import check_outward, remember_outward
 from oc8.agent.harness.stages.b_read_before_write import note_access
-from oc8.agent.harness.stages.b_risk_tier import classify_tier
+from oc8.agent.harness.stages.b_risk_tier import RiskTier, classify_tier
 from oc8.agent.harness.stages.b_usage_limit import (
     record_limit_refusal,
     reserve_usage,
@@ -118,7 +120,7 @@ from oc8.agent.offering import (
     unavailable_sentence,
 )
 from oc8.agent.outward import outward_target
-from oc8.agent.preamble import build_run_preamble
+from oc8.agent.preamble import Resume, build_run_preamble
 from oc8.agent.run_files import RunFiles, bind_run_files
 from oc8.agent.tool_notes import apply_tool_notes
 from oc8.agent.tool_routing import RoutedToolset
@@ -126,6 +128,7 @@ from oc8.agent.tool_semantics import describe_focus, describes_a_record, record_
 from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.approvals import DERIVE, publish_created, raise_approval
 from oc8.audit import append_event
+from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
     NOT_THIS_CONNECTION,
     Decision,
@@ -148,6 +151,8 @@ from oc8.capas.claude_hooks.context import (
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import AGENT, mode_from_context
+from oc8.chat.replay import chat_replay_of, prompt_cache_key
+from oc8.chat.temporary import NO_MEMORY_REFUSAL, in_temporary_chat
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
@@ -167,6 +172,7 @@ from oc8.hooks.executor import InProcessExecutor
 from oc8.hooks.types import HookCtx
 from oc8.memory.router import write_memory
 from oc8.metering import check_budget, record_usage, trigger_budget_hard_stop
+from oc8.metering.usage import usage_member_id
 from oc8.modelrouter import (
     NeutralMessage,
     NeutralTool,
@@ -217,7 +223,7 @@ from oc8.records.links import (
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
 from oc8.runtime.agent_status import settle_agent_status
-from oc8.runtime.approval_resume import Decisions, claim_approval, drop_used
+from oc8.runtime.approval_resume import Decisions, claim_approval, drop_used, rejection_text
 from oc8.runtime.run_context import (
     append_tool_call,
     merge_context,
@@ -330,6 +336,14 @@ class RunResult:
     # the executor to park beside the readable `output`. None for a plain ask
     # and for every other status.
     pending_questions: list[dict[str, Any]] | None = None
+    # True once this leg read restricted data (`_mark_restricted`). The executor
+    # ORs it over the run's legs into `run.context["contains_restricted"]`.
+    contains_restricted: bool = False
+    # The window and the model this leg ended on, for the chat checkpoint
+    # (`oc8.chat.checkpoint`): the executor writes them into the run context.
+    # None when the leg never resolved a model (e.g. the budget gate).
+    context_window_tokens: int | None = None
+    model: str | None = None
 
 
 def _json_chunks(text: str) -> list[str]:
@@ -672,6 +686,17 @@ async def _open_tool_session_for(
     )
 
 
+def _card_connection(owner: m.McpConnection | None, *, core: bool) -> dict[str, str | None]:
+    """A held call's `connection_id` for its card: None for a core tool, the
+    connection's id for a connection tool, and nothing when that connection
+    is unresolved (approvals.allow_rules.rule_eligible refuses such a card)."""
+    if core:
+        return {"connection_id": None}
+    if owner is None:
+        return {}
+    return {"connection_id": str(owner.id)}
+
+
 async def run_agent(
     db: AsyncSession,
     *,
@@ -686,12 +711,13 @@ async def run_agent(
     delegation_depth: int = 0,
     cancel_check: CancelCheck | None = None,
     inbox_check: InboxCheck | None = None,
-    pre_decided: Decisions | Mapping[str, str] | None = None,
+    pre_decided: Decisions | None = None,
     originating_operator: str | None = None,
     task_images_raw: list[dict[str, str]] | None = None,
+    resume: Resume | None = None,
 ) -> RunResult:
     # Each approval covers one run of its call, claimed before it runs (`claim_approval`).
-    decided = Decisions.of(pre_decided)
+    decided = pre_decided
 
     async def _run() -> RunResult:
         settings = get_settings()
@@ -710,6 +736,8 @@ async def run_agent(
         # The slash command this turn was sent with, if any (chat/service.py
         # writes it into the run's context; oc8.chat.modes reads it back).
         chat_mode = mode_from_context(run_row.context if run_row is not None else None)
+        # The run (and chat) every tool event of this run names (spec §5.7).
+        audit_link = run_link(run_id, run_row.context if run_row is not None else None)
         # Every behavioural field below (model, narrowing, definition, mission,
         # team-lead flag) comes from the run's pinned version, never the live
         # row -- the same answer the isolated control plane and the MCP gateway
@@ -805,6 +833,11 @@ async def run_agent(
         # present in (follow-up, messenger, trigger, delegation) gets none.
         direct_run = (
             _direct.direct_access_run(run_row, agent) if agent.is_tenant_assistant else None
+        )
+        # Whose budget line every completion of this call is booked to:
+        # resolved once here, not per completion (Cost Center per member).
+        usage_member = (
+            direct_run.member_id if direct_run is not None else await usage_member_id(db, run_row)
         )
         if agent.is_tenant_assistant and toolset is None:
             # One row per key, of the department granting the strongest
@@ -1127,6 +1160,10 @@ async def run_agent(
             task=task,
             run_id=run_id,
             pinned=pinned,
+            # A chat turn reads its conversation here, as native turns; every
+            # other runtime gets it flattened (runtime/executor.py).
+            replay=chat_replay_of(run_row.context or {}) if run_row is not None else None,
+            resume=resume,
         )
         messages: list[NeutralMessage] = list(preamble.messages)
         if run_id is not None:
@@ -1145,11 +1182,22 @@ async def run_agent(
         assigned_skills = preamble.assigned_skills
         skill_tool_names = preamble.skill_tool_names
         contains_restricted = preamble.contains_restricted
+        if contains_restricted and run_row is not None:
+            # Restricted from the start (knowledge, replayed answers): on the
+            # run now, so a reply recorded after a crash honours it too (see
+            # _mark_restricted).
+            await merge_context(db, run_row, {"contains_restricted": True})
         has_knowledge = preamble.has_knowledge
         has_instruction_files = preamble.has_instruction_files
         copilot_permissions = preamble.copilot_permissions
         copilot_has_member = preamble.copilot_has_member
+        # Once per run, from the chat row itself: a delegated sub-run or a
+        # wake-up of a temporary chat keeps no notes either (`chat.temporary`).
+        temporary_chat = await in_temporary_chat(
+            db, run_row.context if run_row is not None else None
+        )
         produces_board = preamble.produces_board
+        has_web_search = preamble.has_web_search
         # C3's step stamp uses the SAME resolved timezone as A2's "Now" line
         # above, instead of re-resolving it -- consumed by the harness.shape()
         # call inside loop() below.
@@ -1262,13 +1310,28 @@ async def run_agent(
                 chat_mode=chat_mode,
             )
 
-            def _mark_restricted() -> None:
+            # Once per leg: the chat's base exists from the first large upload,
+            # before the turn is sent.
+            from oc8.chat.files_kb import chat_has_files
+
+            has_chat_files = await chat_has_files(
+                db, run_row.context if run_row is not None else None
+            )
+
+            async def _mark_restricted() -> None:
                 # One-way: restricted text is in the transcript from here on, so
                 # every later completion says so and the router refuses a cloud
                 # model or fallback. The step helpers below read the flag late,
                 # on purpose -- each call sees the run's current state.
                 nonlocal contains_restricted
                 contains_restricted = True
+                # Persisted now, not only through the RunResult: the call's
+                # result preview is already on the run's toolCalls (see
+                # _live_tool_call), and a leg that crashes before returning
+                # would otherwise leave the reply's work digest unrestricted
+                # (same one-way write as the isolated runtime's /step).
+                if run_row is not None:
+                    await merge_context(db, run_row, {"contains_restricted": True})
 
             def _offered() -> list[NeutralTool]:
                 # Shared with the isolated runtime so both offer the same list --
@@ -1288,6 +1351,7 @@ async def run_agent(
                     has_context=has_readable_context(
                         run_row.context if run_row is not None else None
                     ),
+                    has_chat_files=has_chat_files,
                     # The in-process engine is the one runtime with no
                     # /workspace mount of its own -- see offered_tools' docstring.
                     offer_write_output_file=True,
@@ -1299,6 +1363,8 @@ async def run_agent(
                     ),
                     edition_tools=edition.neutral_tools(),
                     offer_direct_access=direct_run is not None,
+                    offer_web_search=has_web_search,
+                    temporary_chat=temporary_chat,
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -1315,6 +1381,26 @@ async def run_agent(
             raw_b5_grants = definition.get("b5_grants")
             b5_grants = raw_b5_grants if isinstance(raw_b5_grants, list) else []
 
+            def _call_tier(
+                tc: ToolCall,
+                *,
+                scopes: dict[str, Any] | None,
+                config: dict[str, Any],
+                advertised: str | None = None,
+            ) -> RiskTier:
+                """The call's risk tier, as the B gate tiers it: also stored on
+                a held call's card, which is what "always allow" reads."""
+                shown = advertised or tc.name
+                offered = next((tool for tool in _offered() if tool.name == shown), None)
+                return classify_tier(
+                    tc.name,
+                    scopes=scopes,
+                    config=config,
+                    annotations=offered.annotations if offered is not None else None,
+                    arguments=tc.arguments,
+                    core=is_core_call(tc.name, routed=shown != tc.name),
+                )
+
             def _gate(
                 tc: ToolCall,
                 *,
@@ -1329,16 +1415,7 @@ async def run_agent(
                 # annotations) is listed under the name the model saw, which a
                 # route qualifies. A routed name that matches a core tool is
                 # tiered as the connection's tool it is, not by the core tier.
-                shown = advertised or tc.name
-                offered = next((tool for tool in _offered() if tool.name == shown), None)
-                tier = classify_tier(
-                    tc.name,
-                    scopes=scopes,
-                    config=config,
-                    annotations=offered.annotations if offered is not None else None,
-                    arguments=tc.arguments,
-                    core=is_core_call(tc.name, routed=shown != tc.name),
-                )
+                tier = _call_tier(tc, scopes=scopes, config=config, advertised=advertised)
                 identity = record_identity(tc.name, tc.arguments, spec)
                 return harness.gate(
                     tc,
@@ -1518,10 +1595,11 @@ async def run_agent(
                     direct_access=direct_view,
                 )
                 verdict = decided.get(_call_sig(held)) if decided is not None else None
+                held_entry = decided.entry(_call_sig(held)) if decided is not None else {}
                 if decision.effect is Effect.DENY:
                     return "refuse", decision.reason or "denied", decision, False
                 if verdict == "reject":
-                    return "refuse", "operator rejected this action", decision, False
+                    return "refuse", rejection_text(held_entry), decision, False
                 if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
                     return "park", decision.reason or "", decision, False
                 gate = _gate(
@@ -1633,7 +1711,7 @@ async def run_agent(
                             actor_id=agent.id,
                             category="tool_action",
                             action=f"tool.call:{tool_name}",
-                            resource={"tool": tool_name, "arguments": arguments},
+                            resource={"tool": tool_name, "arguments": arguments, **audit_link},
                             decision={
                                 "run": "allow",
                                 "refuse": "deny",
@@ -1700,6 +1778,7 @@ async def run_agent(
                                 rendered_components,
                                 todos,
                                 step_timings,
+                                contains_restricted=contains_restricted,
                             )
                         # The same replay-safety as the step loop's dispatch
                         # (B9), keyed on the merged call: an identical later
@@ -1726,6 +1805,7 @@ async def run_agent(
                             if effect == "run"
                             else None
                         )
+                        held_started_at = dt.datetime.now(dt.UTC)
                         held_hold = (
                             await reserve_usage(
                                 tenant_id=tenant_id,
@@ -1745,6 +1825,11 @@ async def run_agent(
                             if effect == "run" and replayed is None
                             else None
                         )
+                        # Whether the call went out (or its earlier answer was
+                        # replayed): only then is there a result to audit. A
+                        # usage refusal or an approval lost to a racing request
+                        # never reached the tool.
+                        held_dispatched = replayed is not None
                         if effect == "refuse":
                             finished = f"ERROR: {why}"
                         elif replayed is not None:
@@ -1771,6 +1856,7 @@ async def run_agent(
                             finished = f"ERROR: {_APPROVAL_USED}"
                         else:
                             held_reached = True
+                            held_dispatched = True
                             try:
                                 finished = await server.call(tool_name, arguments)
                                 await record_for(
@@ -1815,6 +1901,7 @@ async def run_agent(
                                     rendered_components,
                                     todos,
                                     step_timings,
+                                    contains_restricted=contains_restricted,
                                 )
                             except Exception as exc:
                                 finished = f"ERROR: {exc}"
@@ -1875,11 +1962,25 @@ async def run_agent(
                                 "result": str(finished)[:300],
                                 "step": 0,
                                 "connection": held_route[0],
-                                "state": call_state_for(
-                                    str(finished), dispatched=effect != "refuse"
-                                ),
+                                "state": call_state_for(str(finished), dispatched=held_dispatched),
                             }
                         )
+                        if held_dispatched:
+                            # With the trace entry, so call and result commit together.
+                            await audit_tool_result(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tool_name,
+                                link=audit_link,
+                                connection=held_route[0],
+                                ok=not str(finished).startswith("ERROR:"),
+                                duration_ms=int(
+                                    (dt.datetime.now(dt.UTC) - held_started_at).total_seconds()
+                                    * 1000
+                                ),
+                                originating_operator=originating_operator,
+                            )
                         if held_direct and direct_run is not None:
                             # Run log: whom the Copilot acted for (§8).
                             tool_trace[-1]["actingMember"] = str(direct_run.member_id)
@@ -1923,6 +2024,7 @@ async def run_agent(
                         rendered_components,
                         todos,
                         step_timings,
+                        contains_restricted=contains_restricted,
                     )
                 # Operator chat (§ live steering): drain any messages an operator
                 # sent to this running agent and inject them as user turns, so the
@@ -2044,6 +2146,7 @@ async def run_agent(
                             rendered_components,
                             todos,
                             step_timings,
+                            contains_restricted=contains_restricted,
                         )
                     provider = model_config.provider
                     model = model_config.model
@@ -2117,6 +2220,7 @@ async def run_agent(
                             active_skills[-1].skill_version_id if active_skills else None
                         ),
                         creator_id=active_skills[-1].creator_id if active_skills else None,
+                        member_id=usage_member,
                     )
 
                 async def _compact(sampling_params: ModelParams = resolved_params) -> None:
@@ -2193,7 +2297,8 @@ async def run_agent(
                 ) -> tuple[Any, uuid.UUID]:
                     nonlocal key, resolved_messages, overflow_retried
                     stamped = with_prompt_cache_key(
-                        sampling_params, str(run_id) if run_id is not None else None
+                        sampling_params,
+                        prompt_cache_key(run_row.context if run_row is not None else None, run_id),
                     )
                     try:
                         return (
@@ -2250,6 +2355,7 @@ async def run_agent(
                         cache_hit=True,
                         saved_tokens_in=result.usage.tokens_in,
                         saved_tokens_out=result.usage.tokens_out,
+                        member_id=usage_member,
                     )
                 else:
 
@@ -2447,6 +2553,7 @@ async def run_agent(
                             rendered_components,
                             todos,
                             step_timings,
+                            contains_restricted=contains_restricted,
                         )
 
                     open_todos = [t for t in todos if t.get("status") != "completed"]
@@ -2536,6 +2643,7 @@ async def run_agent(
                         rendered_components,
                         todos,
                         step_timings,
+                        contains_restricted=contains_restricted,
                     )
 
                 messages.append(
@@ -2735,11 +2843,21 @@ async def run_agent(
                     # Reloaded for EVERY call: a grant revoked or a seat lost
                     # since the last call bites now (§4, Review Focus 4).
                     direct_view = await _direct_view()
+                    # A skill load is no connection's call either: `authorize`
+                    # decides it as a read (an early ALLOW, as here: unrouted,
+                    # not an edition call). Its `call_key` is only the run's
+                    # fallback connection, which it never reaches.
+                    skill_load = (
+                        tc.name in skill_tool_names
+                        and auth_tc.name == tc.name
+                        and not edition.claims(tc.name)
+                    )
                     direct_call = (
                         direct_run is not None
                         and call_key is not None
                         and call_key in direct_view.granted
                         and not is_core_call(auth_tc.name, routed=auth_tc.name != tc.name)
+                        and not skill_load
                     )
                     direct_nudge = False
                     decision = _authorize(
@@ -2772,6 +2890,14 @@ async def run_agent(
                         # when it is one, so it is decided as one.
                         routed=auth_tc.name != tc.name,
                     )
+                    if (
+                        tc.name == auth_tc.name == MEMORY_WRITE.name
+                        and decision.effect is not Effect.DENY
+                        and temporary_chat
+                    ):
+                        # A temporary chat keeps no notes -- refused here, before
+                        # a company write could park the run for an approval.
+                        decision = Decision(Effect.DENY, NO_MEMORY_REFUSAL)
                     if direct_call and decision.effect is not Effect.DENY:
                         decision = await _direct_right_check(
                             decision,
@@ -2814,20 +2940,35 @@ async def run_agent(
                     # again -- approve executes it, reject turns it into a DENY
                     # the model sees and moves past.
                     if decision.effect is Effect.REQUIRE_APPROVAL and decided:
-                        verdict = decided.get(_call_sig(tc))
-                        if verdict == "approve" and await _reserve(tc.id, _call_sig(tc)):
+                        decided_verdict = decided.get(_call_sig(tc))
+                        if decided_verdict == "approve" and await _reserve(tc.id, _call_sig(tc)):
                             # Set aside; claimed just before it runs: one
                             # approval, one call.
                             decision = Decision(Effect.ALLOW, "operator approved")
-                        elif verdict == "reject":
-                            decision = Decision(Effect.DENY, "operator rejected this action")
+                        elif decided_verdict == "reject":
+                            decision = Decision(
+                                Effect.DENY, rejection_text(decided.entry(_call_sig(tc)))
+                            )
                     # Reaching for a connection whose account is missing asks
                     # the person for it now (quiet until then, E2E N3).
                     await _ask_when_reached(db, run_row, startup_unavailable, tc)
-                    record_tool_call(tool=tc.name, decision=decision.effect.value)
+                    # A reading core tool runs under the frame's routine verdict
+                    # on a connection it does not belong to (none at all on a
+                    # Copilot chat): what applies to it is an ALLOW, so that is
+                    # what the audit records, marked, with its result (spec
+                    # §5.7). `decision` itself stays as the PEP gave it. Only
+                    # the core tool itself: a routed call keeps its real name
+                    # in `auth_tc` and goes to the connection.
+                    audited, audit_terms = audited_decision(
+                        decision,
+                        tc.name,
+                        core_call=is_core_call(auth_tc.name, routed=auth_tc.name != tc.name),
+                    )
+                    ran_despite_denial = bool(audit_terms)
+                    record_tool_call(tool=tc.name, decision=audited.effect.value)
                     with get_tracer().start_as_current_span("tool.call") as tool_span:
                         tool_span.set_attribute("tool", tc.name)
-                        tool_span.set_attribute("decision", decision.effect.value)
+                        tool_span.set_attribute("decision", audited.effect.value)
                         await append_event(
                             db,
                             tenant_id=tenant_id,
@@ -2838,12 +2979,17 @@ async def run_agent(
                             # An edition call keeps its arguments out of the audit; its own
                             # `edition_tool.called` event is the record of it.
                             resource=(
-                                {"tool": tc.name}
+                                {"tool": tc.name, **audit_link, **audit_terms}
                                 if edition.claims(tc.name)
-                                else {"tool": tc.name, "arguments": tc.arguments}
+                                else {
+                                    "tool": tc.name,
+                                    "arguments": tc.arguments,
+                                    **audit_link,
+                                    **audit_terms,
+                                }
                             ),
-                            decision=decision.effect.value,
-                            reason=decision.reason or None,
+                            decision=audited.effect.value,
+                            reason=audited.reason or None,
                             originating_operator=originating_operator,
                         )
                         pre_hook = await dispatch_claude_event(
@@ -2948,14 +3094,18 @@ async def run_agent(
                                 direct=direct_call,
                             )
                             if gate_verdict.effect == "ask":
-                                verdict = decided.get(_call_sig(tc)) if decided else None
+                                decided_verdict = decided.get(_call_sig(tc)) if decided else None
                                 if _approved(tc.id, _call_sig(tc)) or (
-                                    verdict == "approve" and await _reserve(tc.id, _call_sig(tc))
+                                    decided_verdict == "approve"
+                                    and await _reserve(tc.id, _call_sig(tc))
                                 ):
                                     decision = Decision(Effect.ALLOW, "operator approved")
-                                elif verdict == "reject":
+                                elif decided_verdict == "reject":
                                     decision = Decision(
-                                        Effect.DENY, "operator rejected this action"
+                                        Effect.DENY,
+                                        rejection_text(
+                                            decided.entry(_call_sig(tc)) if decided else {}
+                                        ),
                                     )
                                 else:
                                     decision = Decision(
@@ -3118,6 +3268,26 @@ async def run_agent(
                                             if read_ok_at_hold
                                             else {}
                                         ),
+                                        # What "always allow" reads
+                                        # (approvals.allow_rules): the call's
+                                        # tier and the connection, by id --
+                                        # None for a core tool, and no key
+                                        # at all for a connection tool whose
+                                        # connection is unresolved (never a
+                                        # rule: it would share a core tool's
+                                        # key).
+                                        "risk_tier": _call_tier(
+                                            auth_tc,
+                                            scopes=call_scopes,
+                                            config=call_config,
+                                            advertised=tc.name,
+                                        ),
+                                        **_card_connection(
+                                            owner,
+                                            core=is_core_call(
+                                                auth_tc.name, routed=auth_tc.name != tc.name
+                                            ),
+                                        ),
                                         **({"record_url": link} if link else {}),
                                         **(hold_terms[1] if hold_terms is not None else {}),
                                     },
@@ -3179,6 +3349,7 @@ async def run_agent(
                                 rendered_components,
                                 todos,
                                 step_timings,
+                                contains_restricted=contains_restricted,
                             )
 
                         # Ledger outward attribution must follow the tool that
@@ -3328,7 +3499,7 @@ async def run_agent(
                                     message=control.output.removeprefix("ERROR: ").strip(),
                                 )
                             if control.contains_restricted:
-                                _mark_restricted()
+                                await _mark_restricted()
                             if control.pending_run is not None:
                                 pending_runs.append(control.pending_run)
                             if control.activated_skill is not None:
@@ -3416,6 +3587,7 @@ async def run_agent(
                                     todos,
                                     step_timings,
                                     pending_questions=control.questions,
+                                    contains_restricted=contains_restricted,
                                 )
                             if control.suspend == "waiting_for_approval":
                                 # offer_direct_access asked the person (§3 step
@@ -3452,6 +3624,7 @@ async def run_agent(
                                     rendered_components,
                                     todos,
                                     step_timings,
+                                    contains_restricted=contains_restricted,
                                 )
                         elif decision.effect is Effect.DENY or server is None:
                             reason = decision.reason or "no tool server available"
@@ -3671,6 +3844,7 @@ async def run_agent(
                                             rendered_components,
                                             todos,
                                             step_timings,
+                                            contains_restricted=contains_restricted,
                                         )
                                     except Exception as exc:  # surface tool errors to the model
                                         tool_error = classify_exception(
@@ -3888,6 +4062,24 @@ async def run_agent(
                         # was claimed already.
                         reserved.pop(tc.id, None)
                         tool_trace.append(_tool_call_entry)
+                        if _tool_call_dispatched and (
+                            decision.effect is Effect.ALLOW or ran_despite_denial
+                        ):
+                            # With the trace entry, so call and result commit
+                            # together. Sequential even for a parallel read
+                            # batch, so the chain keeps the calls' order.
+                            await audit_tool_result(
+                                db,
+                                tenant_id=tenant_id,
+                                agent_id=agent.id,
+                                tool=tc.name,
+                                link=audit_link,
+                                connection=None if control is not None else call_key,
+                                ok=succeeded,
+                                duration_ms=int(_tool_call_entry["durationMs"]),
+                                originating_operator=originating_operator,
+                                detail=control.result_detail if control is not None else None,
+                            )
                         await _live_tool_call(tool_trace[-1])
                         messages.append(
                             NeutralMessage(
@@ -3960,6 +4152,7 @@ async def run_agent(
                 rendered_components,
                 todos,
                 step_timings,
+                contains_restricted=contains_restricted,
             )
 
         def _offerable(listed: list[NeutralTool], conn: m.McpConnection) -> list[NeutralTool]:
@@ -4115,7 +4308,13 @@ async def run_agent(
         # Every MCP call of this run keeps its binary results as this run's
         # files and resolves file arguments against them (agent/run_files.py).
         with bind_run_files(RunFiles.of(run_row) if run_row is not None else None):
-            return await _run_with_session_end()
+            result = await _run_with_session_end()
+        # The model the leg ended on: an Auto run's last concrete one.
+        result.context_window_tokens = resolve_caps(
+            model_config.params if model_config is not None else None
+        ).context_window_tokens
+        result.model = model
+        return result
 
     with get_tracer().start_as_current_span("agent.run") as span:
         span.set_attribute("tenant_id", str(tenant_id))

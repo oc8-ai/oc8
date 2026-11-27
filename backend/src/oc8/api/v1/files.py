@@ -18,12 +18,14 @@ from oc8.api.v1.chat import _owned_session
 from oc8.authz.authority import authority_for_principal
 from oc8.authz.permissions import AGENT, VIEW, perm
 from oc8.authz.scope import HumanActor
+from oc8.chat.files_kb import enqueue_chat_file_ingest, forget_chat_file
 from oc8.schemas.dto import FileAttachmentDTO
 from oc8.storage import s3
 from oc8.storage.attachment_access import member_may_open_attachment
 from oc8.storage.attachments import (
     AttachmentTooLarge,
     UnsupportedContentType,
+    delete_attachment_blobs,
     store_attachment_bytes,
 )
 
@@ -73,7 +75,7 @@ async def upload_chat_attachment(
     actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT, VIEW)))],
     file: UploadFile,
 ) -> FileAttachmentDTO:
-    await _owned_session(request, session_id, db, actor)
+    session = await _owned_session(request, session_id, db, actor)
     row = await _store_upload(
         db,
         tenant_id=actor.principal.tenant_id,
@@ -81,6 +83,9 @@ async def upload_chat_attachment(
         owner_id=session_id,
         file=file,
     )
+    # At upload, not at send: the file is usually indexed by the time the
+    # message goes out (spec §5.4). Only a large file is queued.
+    await enqueue_chat_file_ingest(db, attachment=row, session=session)
     await db.commit()
     return _attachment_dto(row)
 
@@ -164,6 +169,10 @@ async def delete_file(
     actor: Annotated[HumanActor, Depends(require_departmental(perm(AGENT, VIEW)))],
 ) -> None:
     row = await _owned_attachment(request, db, actor, attachment_id)
-    await s3.delete_object(row.bucket_key)
-    await db.delete(row)
+    await delete_attachment_blobs(row)
+    if row.owner_type == "chat_message":
+        # Its text leaves the chat's own base with it (spec §5.4).
+        await forget_chat_file(db, attachment=row, principal=actor.principal)
+    else:
+        await db.delete(row)
     await db.commit()

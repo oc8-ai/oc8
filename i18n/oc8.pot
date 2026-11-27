@@ -26,6 +26,9 @@ msgstr ""
 msgid "(no longer allowed by your organisation)"
 msgstr ""
 
+msgid "(opens in a new tab)"
+msgstr ""
+
 msgid "(optional)"
 msgstr ""
 
@@ -116,7 +119,16 @@ msgstr ""
 msgid "1 unpublished change"
 msgstr ""
 
+msgid "24 h"
+msgstr ""
+
 msgid "2FA enabled. Please sign in again."
+msgstr ""
+
+msgid "30 days"
+msgstr ""
+
+msgid "7 days"
 msgstr ""
 
 msgid "A background agent finished its run."
@@ -162,6 +174,9 @@ msgid "a former member"
 msgstr ""
 
 msgid "A knowledge base can't be searched with this model – it needs a local embedding model."
+msgstr ""
+
+msgid "A message for after the answer is text only. Remove the attachments, or send them once it's done."
 msgstr ""
 
 msgid "A message to the running answer is text only. Remove the attachments, or send them once it's done."
@@ -542,6 +557,12 @@ msgstr ""
 msgid "Also update the {count} agents that use this skill"
 msgstr ""
 
+msgid "Always allow for me"
+msgstr ""
+
+msgid "Always-allowed tools"
+msgstr ""
+
 msgid "Amount"
 msgstr ""
 
@@ -557,6 +578,12 @@ msgstr ""
 msgid "An answer is still being written. Try again once it's done."
 msgstr ""
 
+msgid "An answer is still running — send text only, or wait."
+msgstr ""
+
+msgid "An answer is still running — wait for it to finish."
+msgstr ""
+
 msgid "An endpoint either reads or modifies, not both:"
 msgstr ""
 
@@ -570,6 +597,9 @@ msgid "Another tool already has this name."
 msgstr ""
 
 msgid "Answer"
+msgstr ""
+
+msgid "Answer feedback"
 msgstr ""
 
 msgid "Answer from what you already know. No tools, no systems touched."
@@ -968,6 +998,9 @@ msgstr ""
 msgid "Basics"
 msgstr ""
 
+msgid "Becomes the next message when the answer is done"
+msgstr ""
+
 msgid "Between 0 and 30. How long a member may still sign in without a second factor once it is required of them."
 msgstr ""
 
@@ -1073,6 +1106,9 @@ msgstr ""
 msgid "Capa name"
 msgstr ""
 
+msgid "Capability"
+msgstr ""
+
 msgid "Capas"
 msgstr ""
 
@@ -1148,7 +1184,13 @@ msgstr ""
 msgid "Chat"
 msgstr ""
 
+msgid "Chat files the code can read (read-only, in its working folder)"
+msgstr ""
+
 msgid "Chat name"
+msgstr ""
+
+msgid "Chat previews"
 msgstr ""
 
 msgid "Chat title"
@@ -1754,6 +1796,9 @@ msgstr ""
 msgid "Could not save settings."
 msgstr ""
 
+msgid "Could not save speech."
+msgstr ""
+
 msgid "Could not save the default budget."
 msgstr ""
 
@@ -1764,6 +1809,12 @@ msgid "Could not save the policy."
 msgstr ""
 
 msgid "Could not save the preset."
+msgstr ""
+
+msgid "Could not save the preview setting."
+msgstr ""
+
+msgid "Could not save web search."
 msgstr ""
 
 msgid "Could not save workspace name"
@@ -2024,6 +2075,9 @@ msgstr ""
 msgid "CSV downloaded to your device."
 msgstr ""
 
+msgid "Current model"
+msgstr ""
+
 msgid "Current password"
 msgstr ""
 
@@ -2246,6 +2300,9 @@ msgstr ""
 msgid "Deleted"
 msgstr ""
 
+msgid "Deleted when you leave it, at the latest after 24 hours."
+msgstr ""
+
 msgid "Deleting and other irreversible actions also run without asking, unless a guardrail requires approval. Reaching people outside still asks unless you allow it below."
 msgstr ""
 
@@ -2334,6 +2391,21 @@ msgid "Development only. Production instances are set up once through POST /auth
 msgstr ""
 
 msgid "Deviations"
+msgstr ""
+
+msgid "Diagram"
+msgstr ""
+
+msgid "Diagram could not be drawn."
+msgstr ""
+
+msgid "Dictate a message"
+msgstr ""
+
+msgid "Dictation minutes per day"
+msgstr ""
+
+msgid "Dictation model"
 msgstr ""
 
 msgid "Did something"
@@ -2495,10 +2567,16 @@ msgstr ""
 msgid "Edit endpoints"
 msgstr ""
 
+msgid "Edit message"
+msgstr ""
+
 msgid "Edit model"
 msgstr ""
 
 msgid "Edit project"
+msgstr ""
+
+msgid "Edit queued message"
 msgstr ""
 
 msgid "Edit skill"
@@ -2589,6 +2667,9 @@ msgid "Enter the 6-digit code"
 msgstr ""
 
 msgid "Enter the path below the base URL, starting with /."
+msgstr ""
+
+msgid "Enter the SearXNG address, starting with http:// or https://, without a login in it."
 msgstr ""
 
 msgid "Enter this code on that page:"
@@ -2711,6 +2792,12 @@ msgstr ""
 msgid "Export as Capa"
 msgstr ""
 
+msgid "Export as JSON"
+msgstr ""
+
+msgid "Export as Markdown"
+msgstr ""
+
 msgid "Export CSV"
 msgstr ""
 
@@ -2733,6 +2820,12 @@ msgid "Failed agents"
 msgstr ""
 
 msgid "Fast"
+msgstr ""
+
+msgid "Feedback could not be loaded."
+msgstr ""
+
+msgid "Feedback is not counted for this agent."
 msgstr ""
 
 msgid "Fetch again"
@@ -2927,6 +3020,9 @@ msgstr ""
 msgid "Goes to the running answer"
 msgstr ""
 
+msgid "Goes to the running answer before its next step"
+msgstr ""
+
 msgid "Good answer"
 msgstr ""
 
@@ -3008,6 +3104,9 @@ msgstr ""
 msgid "Held by"
 msgstr ""
 
+msgid "Helpful"
+msgstr ""
+
 msgid "hide"
 msgstr ""
 
@@ -3087,6 +3186,9 @@ msgid "If that email exists and a mail server is configured, a reset link was se
 msgstr ""
 
 msgid "If this archive was taken on a different oc8 instance, restoring it also replaces every member and role this company has with the source instance's — including your own membership. Because those rows carry sign-in identities from the source instance's own login provider, this can remove your own access to this company."
+msgstr ""
+
+msgid "Image"
 msgstr ""
 
 msgid "Import"
@@ -3431,6 +3533,9 @@ msgstr ""
 msgid "Loading providers…"
 msgstr ""
 
+msgid "Loading Python…"
+msgstr ""
+
 msgid "Loading roles…"
 msgstr ""
 
@@ -3633,6 +3738,9 @@ msgid "metered by the platform"
 msgstr ""
 
 msgid "Method"
+msgstr ""
+
+msgid "Microphone access was denied."
 msgstr ""
 
 msgid "Mine"
@@ -3890,6 +3998,9 @@ msgstr ""
 msgid "Next answer"
 msgstr ""
 
+msgid "Next message"
+msgstr ""
+
 msgid "Next page"
 msgstr ""
 
@@ -3900,6 +4011,9 @@ msgid "Next run"
 msgstr ""
 
 msgid "Next step"
+msgstr ""
+
+msgid "Next version"
 msgstr ""
 
 msgid "no"
@@ -4013,6 +4127,9 @@ msgstr ""
 msgid "No documents yet."
 msgstr ""
 
+msgid "No feedback for this filter."
+msgstr ""
+
 msgid "No files attached yet."
 msgstr ""
 
@@ -4067,6 +4184,9 @@ msgstr ""
 msgid "No member has connected an account yet."
 msgstr ""
 
+msgid "No microphone could be used."
+msgstr ""
+
 msgid "No model connected yet — connect a provider now to give this agent something to think with."
 msgstr ""
 
@@ -4089,6 +4209,12 @@ msgid "No notifications"
 msgstr ""
 
 msgid "No organisation access yet."
+msgstr ""
+
+msgid "No output."
+msgstr ""
+
+msgid "No person"
 msgstr ""
 
 msgid "No personal assistants are available yet."
@@ -4145,7 +4271,13 @@ msgstr ""
 msgid "No sources linked yet."
 msgstr ""
 
+msgid "No speech was recognized."
+msgstr ""
+
 msgid "No tasks yet — start one below."
+msgstr ""
+
+msgid "No token usage in this period."
 msgstr ""
 
 msgid "No tool calls yet."
@@ -4247,6 +4379,9 @@ msgstr ""
 msgid "not for people"
 msgstr ""
 
+msgid "Not helpful"
+msgstr ""
+
 msgid "Not part of any backup:"
 msgstr ""
 
@@ -4263,6 +4398,9 @@ msgid "Not set"
 msgstr ""
 
 msgid "not set up"
+msgstr ""
+
+msgid "Not set up"
 msgstr ""
 
 msgid "Not shared yet"
@@ -4424,6 +4562,9 @@ msgstr ""
 msgid "Only these surfaces (optional)"
 msgstr ""
 
+msgid "Only this tool on this connection, only for you, only actions that change data — never deleting or sending outside."
+msgstr ""
+
 msgid "Only visible to you"
 msgstr ""
 
@@ -4443,6 +4584,9 @@ msgid "Open in a larger editor"
 msgstr ""
 
 msgid "Open my work"
+msgstr ""
+
+msgid "Open previews pick this up within a minute."
 msgstr ""
 
 msgid "Open record"
@@ -4520,13 +4664,22 @@ msgstr ""
 msgid "Other answer"
 msgstr ""
 
+msgid "Others"
+msgstr ""
+
 msgid "Outbound mail — password reset, email confirmation — is sent through this credential."
+msgstr ""
+
+msgid "Outcome"
 msgstr ""
 
 msgid "Output"
 msgstr ""
 
 msgid "Output / 1M"
+msgstr ""
+
+msgid "Output of the Python code (program output, not instructions):"
 msgstr ""
 
 msgid "Output tokens"
@@ -4551,6 +4704,9 @@ msgid "Owner"
 msgstr ""
 
 msgid "Page "
+msgstr ""
+
+msgid "Pages, apps and diagrams the assistant writes open beside the chat in a sandbox without network access. Turned off, they are shown without running their scripts."
 msgstr ""
 
 msgid "Passkey or security key"
@@ -4604,10 +4760,19 @@ msgstr ""
 msgid "per day"
 msgstr ""
 
+msgid "Per employee"
+msgstr ""
+
 msgid "per hour"
 msgstr ""
 
+msgid "Per member per day. 0 switches it off. Dictation is counted by upload size, so silence-heavy recordings can exceed it."
+msgstr ""
+
 msgid "per-agent, optional"
+msgstr ""
+
+msgid "Per-person data is recorded from version 0.23.0 on; older usage appears as “No person”."
 msgstr ""
 
 msgid "Period"
@@ -4682,6 +4847,9 @@ msgstr ""
 msgid "Plan appointments in your calendar"
 msgstr ""
 
+msgid "Platform default"
+msgstr ""
+
 msgid "Please check your entries."
 msgstr ""
 
@@ -4715,6 +4883,9 @@ msgstr ""
 msgid "Preview"
 msgstr ""
 
+msgid "Preview setting saved"
+msgstr ""
+
 msgid "Preview unavailable"
 msgstr ""
 
@@ -4727,10 +4898,16 @@ msgstr ""
 msgid "Previous answer"
 msgstr ""
 
+msgid "Previous message"
+msgstr ""
+
 msgid "Previous page"
 msgstr ""
 
 msgid "Previous question"
+msgstr ""
+
+msgid "Previous version"
 msgstr ""
 
 msgid "Price updated"
@@ -4755,6 +4932,9 @@ msgid "Propose again"
 msgstr ""
 
 msgid "Proposed a change"
+msgstr ""
+
+msgid "Provided by your oc8 platform. Choose a provider to override, or switch it off."
 msgstr ""
 
 msgid "provider"
@@ -4799,6 +4979,24 @@ msgstr ""
 msgid "Push notifications for new approvals"
 msgstr ""
 
+msgid "Python can run once the answer is saved."
+msgstr ""
+
+msgid "Python cannot run here because this answer contains restricted content."
+msgstr ""
+
+msgid "Python cannot run: scripts in previews are turned off for your organization."
+msgstr ""
+
+msgid "Python cannot run: the preview setting could not be read."
+msgstr ""
+
+msgid "Python could not run: "
+msgstr ""
+
+msgid "Python is not installed on this server."
+msgstr ""
+
 msgid "QR code"
 msgstr ""
 
@@ -4809,6 +5007,9 @@ msgid "Questions"
 msgstr ""
 
 msgid "queued"
+msgstr ""
+
+msgid "Queued messages"
 msgstr ""
 
 msgid "Quick access — built-in roles"
@@ -4847,6 +5048,12 @@ msgstr ""
 msgid "Read a web page"
 msgstr ""
 
+msgid "Read aloud"
+msgstr ""
+
+msgid "Read aloud is not available for restricted answers with this speech model."
+msgstr ""
+
 msgid "Read from {connection}"
 msgstr ""
 
@@ -4857,6 +5064,12 @@ msgid "Read the new email and take care of it."
 msgstr ""
 
 msgid "Read the text before importing"
+msgstr ""
+
+msgid "Read-aloud characters per day"
+msgstr ""
+
+msgid "Read-aloud model"
 msgstr ""
 
 msgid "Read-only"
@@ -4952,7 +5165,13 @@ msgstr ""
 msgid "Recorded usage"
 msgstr ""
 
+msgid "Recording"
+msgstr ""
+
 msgid "Recording a completed step"
+msgstr ""
+
+msgid "Recording. It stops in 30 seconds."
 msgstr ""
 
 msgid "recurring"
@@ -5219,6 +5438,9 @@ msgstr ""
 msgid "Run on behalf of the creator"
 msgstr ""
 
+msgid "Run scripts in previews"
+msgstr ""
+
 msgid "Run test call"
 msgstr ""
 
@@ -5289,6 +5511,9 @@ msgid "Save title"
 msgstr ""
 
 msgid "Save your backup codes"
+msgstr ""
+
+msgid "saved"
 msgstr ""
 
 msgid "Saved"
@@ -5402,6 +5627,9 @@ msgstr ""
 msgid "Search sources …"
 msgstr ""
 
+msgid "Search the web for this message"
+msgstr ""
+
 msgid "Search this knowledge base…"
 msgstr ""
 
@@ -5414,6 +5642,9 @@ msgstr ""
 msgid "Searched the knowledge base"
 msgstr ""
 
+msgid "Searches the web"
+msgstr ""
+
 msgid "Searching the knowledge base"
 msgstr ""
 
@@ -5421,6 +5652,9 @@ msgid "Searching the knowledge base …"
 msgstr ""
 
 msgid "Searching the web …"
+msgstr ""
+
+msgid "SearXNG address"
 msgstr ""
 
 msgid "Seat added"
@@ -5474,6 +5708,9 @@ msgstr ""
 msgid "Send"
 msgstr ""
 
+msgid "Send after"
+msgstr ""
+
 msgid "Send again"
 msgstr ""
 
@@ -5495,6 +5732,9 @@ msgstr ""
 msgid "Send reset link"
 msgstr ""
 
+msgid "Send result to chat"
+msgstr ""
+
 msgid "Send the key in"
 msgstr ""
 
@@ -5505,6 +5745,9 @@ msgid "Sensitivity"
 msgstr ""
 
 msgid "Sent as the answer – attachments only afterwards."
+msgstr ""
+
+msgid "Sent when the answer is done"
 msgstr ""
 
 msgid "Server"
@@ -5576,6 +5819,9 @@ msgstr ""
 msgid "Share dashboard"
 msgstr ""
 
+msgid "Share positive"
+msgstr ""
+
 msgid "Share this invite link"
 msgstr ""
 
@@ -5612,6 +5858,9 @@ msgstr ""
 msgid "Show chats"
 msgstr ""
 
+msgid "Show diagram"
+msgstr ""
+
 msgid "Show disabled"
 msgstr ""
 
@@ -5624,7 +5873,13 @@ msgstr ""
 msgid "Show questions"
 msgstr ""
 
+msgid "Show source"
+msgstr ""
+
 msgid "Show spend so far and what is left."
+msgstr ""
+
+msgid "Show the preview again"
 msgstr ""
 
 msgid "Show the rights a role may not hold, and why"
@@ -5637,6 +5892,21 @@ msgid "Show work panel ({count} items)"
 msgstr ""
 
 msgid "Showed a summary"
+msgstr ""
+
+msgid "Shown without scripts because this answer contains restricted content."
+msgstr ""
+
+msgid "Shown without scripts until the answer is saved."
+msgstr ""
+
+msgid "Shown without scripts: scripts in previews are turned off for your organization."
+msgstr ""
+
+msgid "Shown without scripts: the preview setting could not be read."
+msgstr ""
+
+msgid "Shown without scripts: this page could not be read safely."
 msgstr ""
 
 msgid "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider."
@@ -5777,6 +6047,18 @@ msgstr ""
 msgid "Sources"
 msgstr ""
 
+msgid "Speech"
+msgstr ""
+
+msgid "Speech saved"
+msgstr ""
+
+msgid "Speech to text"
+msgstr ""
+
+msgid "Speech usage shows as 0 in Costs for now."
+msgstr ""
+
 msgid "Spend distribution"
 msgstr ""
 
@@ -5807,6 +6089,9 @@ msgstr ""
 msgid "Status"
 msgstr ""
 
+msgid "Steer now"
+msgstr ""
+
 msgid "Step {step} of {total}"
 msgstr ""
 
@@ -5835,6 +6120,9 @@ msgid "Stop the answer"
 msgstr ""
 
 msgid "Stop this run"
+msgstr ""
+
+msgid "Stopped."
 msgstr ""
 
 msgid "Stopped. Nothing more was done in this turn."
@@ -5924,6 +6212,9 @@ msgstr ""
 msgid "Tamper-evident record of every decision."
 msgstr ""
 
+msgid "Tap again to play."
+msgstr ""
+
 msgid "Target"
 msgstr ""
 
@@ -5969,6 +6260,12 @@ msgstr ""
 msgid "Temperature must be a number"
 msgstr ""
 
+msgid "Temporary — not saved"
+msgstr ""
+
+msgid "Temporary chat"
+msgstr ""
+
 msgid "Tenant"
 msgstr ""
 
@@ -5991,6 +6288,12 @@ msgid "Test now"
 msgstr ""
 
 msgid "Testing…"
+msgstr ""
+
+msgid "Text starting with / is sent as written, not run as a command."
+msgstr ""
+
+msgid "Text to speech"
 msgstr ""
 
 msgid "That chat doesn't exist or isn't yours."
@@ -6065,6 +6368,9 @@ msgstr ""
 msgid "The agent's runtime cannot run skills."
 msgstr ""
 
+msgid "The answer could not be read aloud. Try again."
+msgstr ""
+
 msgid "The answer was not stopped. Try again."
 msgstr ""
 
@@ -6101,6 +6407,9 @@ msgstr ""
 msgid "The chat was not deleted. Try again."
 msgstr ""
 
+msgid "The chat was not exported. Try again."
+msgstr ""
+
 msgid "The chat was not moved. Try again."
 msgstr ""
 
@@ -6134,6 +6443,9 @@ msgstr ""
 msgid "The copilot found nothing in the instructions to restrict here."
 msgstr ""
 
+msgid "The copilot is still answering. Try again when it's done."
+msgstr ""
+
 msgid "The dashboard changed since this proposal. Ask the Copilot to propose the change again from its current version."
 msgstr ""
 
@@ -6153,6 +6465,9 @@ msgid "The day somebody should only sign off offers: fork a built-in role, untic
 msgstr ""
 
 msgid "The decision was not saved. Try again."
+msgstr ""
+
+msgid "The edit was not sent. Try again."
 msgstr ""
 
 msgid "The email is appended to this task as data from outside, never as instructions."
@@ -6218,6 +6533,9 @@ msgstr ""
 msgid "The org_admin role is not set up for this tenant."
 msgstr ""
 
+msgid "The other version was not opened. Try again."
+msgstr ""
+
 msgid "The owner is no longer active, so the change stays held."
 msgstr ""
 
@@ -6243,6 +6561,9 @@ msgid "The permission model could not be loaded."
 msgstr ""
 
 msgid "The permissions were not granted. Please sign in again and allow access."
+msgstr ""
+
+msgid "The preview tried to open another page and was stopped."
 msgstr ""
 
 msgid "The project could not be saved. Check the name and try again."
@@ -6276,6 +6597,9 @@ msgid "The run was not stopped. Try again."
 msgstr ""
 
 msgid "The run will stop at its next step boundary."
+msgstr ""
+
+msgid "The saved key will be removed."
 msgstr ""
 
 msgid "The schedule has ended"
@@ -6560,6 +6884,9 @@ msgstr ""
 msgid "This member"
 msgstr ""
 
+msgid "This message was already delivered."
+msgstr ""
+
 msgid "This model can see images (vision)"
 msgstr ""
 
@@ -6587,7 +6914,13 @@ msgstr ""
 msgid "This provider needs a completion key before its agents can run."
 msgstr ""
 
+msgid "This provider needs an API key."
+msgstr ""
+
 msgid "This question needs an answer."
+msgstr ""
+
+msgid "This recording is larger than 12 MB. Try a shorter one."
 msgstr ""
 
 msgid "This removes every second factor and backup code they have. If your organisation requires two-factor authentication from them, they set it up again at their next sign-in, within the grace period."
@@ -6636,6 +6969,9 @@ msgid "This source is no longer available to you. Go back and pick another."
 msgstr ""
 
 msgid "This step used its whole answer budget."
+msgstr ""
+
+msgid "This temporary chat was deleted."
 msgstr ""
 
 msgid "This tool cannot use a login in your chats right now"
@@ -6692,6 +7028,9 @@ msgstr ""
 msgid "Time"
 msgstr ""
 
+msgid "Times in"
+msgstr ""
+
 msgid "Timezone"
 msgstr ""
 
@@ -6732,6 +7071,9 @@ msgid "tokens"
 msgstr ""
 
 msgid "Tokens"
+msgstr ""
+
+msgid "Tokens per employee"
 msgstr ""
 
 msgid "tokens per skill"
@@ -6824,6 +7166,9 @@ msgstr ""
 msgid "Turned off for this department: the agent can use it once the department turns it on."
 msgstr ""
 
+msgid "Turning your dictation into text …"
+msgstr ""
+
 msgid "Two-factor authentication"
 msgstr ""
 
@@ -6864,6 +7209,9 @@ msgid "Unknown"
 msgstr ""
 
 msgid "unknown error"
+msgstr ""
+
+msgid "Unknown person"
 msgstr ""
 
 msgid "Unknown widget type"
@@ -6923,7 +7271,13 @@ msgstr ""
 msgid "Usage below is an estimate from the editable pricing model (see Models), not the platform's recorded spend — see the Overview/By Agent/By Department tabs for metered figures."
 msgstr ""
 
+msgid "Usage could not be loaded."
+msgstr ""
+
 msgid "Usage limits"
+msgstr ""
+
+msgid "Usage over time"
 msgstr ""
 
 msgid "USD per 1M tokens — editable"
@@ -6975,6 +7329,9 @@ msgid "used by {count} agents"
 msgstr ""
 
 msgid "used by 1 agent"
+msgstr ""
+
+msgid "Used for dictation or reading answers aloud, never for chats or agents. Pick it under Settings, Speech."
 msgstr ""
 
 msgid "used in {count} departments"
@@ -7091,6 +7448,9 @@ msgstr ""
 msgid "vs. same period last year"
 msgstr ""
 
+msgid "Wait until the answer is finished."
+msgstr ""
+
 msgid "waiting"
 msgstr ""
 
@@ -7161,6 +7521,15 @@ msgid "We send a 6-digit code to your sign-in email."
 msgstr ""
 
 msgid "We send a 6-digit code to your sign-in email. Enter it to confirm the address."
+msgstr ""
+
+msgid "Web"
+msgstr ""
+
+msgid "Web search"
+msgstr ""
+
+msgid "Web search saved"
 msgstr ""
 
 msgid "webhook"
@@ -7277,6 +7646,12 @@ msgstr ""
 msgid "Why this change, for whoever reads the history"
 msgstr ""
 
+msgid "With a model, the chat offers dictation and reading answers aloud. Add speech models under Models."
+msgstr ""
+
+msgid "With a provider, a person can switch on “Web” for a message and the assistant searches the web for it."
+msgstr ""
+
 msgid "With limits"
 msgstr ""
 
@@ -7311,6 +7686,12 @@ msgid "Workspace starting"
 msgstr ""
 
 msgid "Writing a file"
+msgstr ""
+
+msgid "writing…"
+msgstr ""
+
+msgid "Writing… the preview appears once it is complete."
 msgstr ""
 
 msgid "Wrote a file"
@@ -7374,6 +7755,9 @@ msgid "you define these"
 msgstr ""
 
 msgid "You don't have access to Copilot chat."
+msgstr ""
+
+msgid "You don't have access to these settings."
 msgstr ""
 
 msgid "You don't have permission to view this content."
@@ -7443,6 +7827,9 @@ msgid "Your company as a living floor — each department a room."
 msgstr ""
 
 msgid "Your dashboard could not be loaded."
+msgstr ""
+
+msgid "Your dictation could not be turned into text. Try again."
 msgstr ""
 
 msgid "Your email"

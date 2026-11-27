@@ -152,7 +152,7 @@ export function ModelPicker({
   const label = isAuto ? t("Auto", "Auto") : current.label;
   const effective = isAuto && fallback ? `${label} (${fallback.label})` : label;
   return (
-    <div ref={root} className="relative">
+    <div ref={root} className="relative min-w-0">
       <button
         ref={trigger}
         type="button"
@@ -161,11 +161,16 @@ export function ModelPicker({
         aria-haspopup="true"
         aria-expanded={open}
         aria-label={t(`Model: ${effective}`, `Modell: ${effective}`)}
-        className="inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
+        className="inline-flex h-11 min-w-0 max-w-full items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs text-muted-foreground sm:h-9 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
       >
-        {label}
-        {isAuto && fallback && <span className="hidden sm:inline">· {fallback.label}</span>}
-        <ChevronDown className="size-3.5" aria-hidden />
+        {/* A long model name must not push the send button off a phone, nor
+            wrap onto a second line when the composer narrows (the artifact
+            panel open beside the chat): it is cut with an ellipsis. */}
+        <span className="min-w-0 max-w-[7rem] truncate sm:max-w-none">{label}</span>
+        {isAuto && fallback && (
+          <span className="hidden min-w-0 truncate sm:inline">· {fallback.label}</span>
+        )}
+        <ChevronDown className="size-3.5 shrink-0" aria-hidden />
       </button>
       {open && (
         <div

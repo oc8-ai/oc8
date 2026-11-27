@@ -43,7 +43,7 @@ describe("useRegenerate", () => {
     qc.setQueryData(conversationKeys.session("s"), session);
     post.mockResolvedValue({ runId: "r2", replyToId: "u1", state: "running" });
     const { result } = renderHook(() => useRegenerate("s"), { wrapper: wrapper(qc) });
-    await act(() => result.current.mutateAsync("a1"));
+    await act(() => result.current.mutateAsync({ messageId: "a1" }));
     const after = qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s"));
     expect(after?.activeRuns.map((r) => r.runId)).toEqual(["r2"]);
   });
@@ -53,7 +53,7 @@ describe("useRegenerate", () => {
     qc.setQueryData(conversationKeys.session("s"), session);
     post.mockResolvedValue({ runId: "r3", replyToId: "u1", state: "queued" });
     const { result } = renderHook(() => useRegenerate("s"), { wrapper: wrapper(qc) });
-    await act(() => result.current.mutateAsync("a1"));
+    await act(() => result.current.mutateAsync({ messageId: "a1" }));
     const after = qc.getQueryData<ChatSessionDetailDTO>(conversationKeys.session("s"));
     expect(after?.activeRuns.map((r) => r.runId)).toEqual(["r2", "r3"]);
   });

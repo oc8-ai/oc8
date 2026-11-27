@@ -1,22 +1,27 @@
 # backend/src/oc8/knowledge/retrieval.py
-"""Access-scoped KB retrieval (§11.4-11.5): cosine search over granted KBs.
+"""Access-scoped KB retrieval (§11.4-11.5): hybrid search over granted KBs.
 
-Internal bases query ``kb_chunk``. External bases (``index_type`` ≠
-``internal``) dispatch to a capa ``VectorIndex``. Both paths share grants,
+Internal bases query ``kb_chunk`` twice -- by cosine distance and by full text
+(``websearch_to_tsquery('simple', q)``, which finds an invoice number or an
+article code verbatim where cosine finds only what sounds alike). External
+bases (``index_type`` ≠ ``internal``) dispatch to a capa ``VectorIndex``. Every
+ranked list is fused with reciprocal rank fusion; all paths share grants,
 classification clearance, and the token budget.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import math
+import re
 import uuid
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -36,12 +41,26 @@ from oc8.knowledge.embedding_policy import (
 from oc8.knowledge.vector_indexes.base import VectorIndexError
 from oc8.knowledge.vector_indexes.registry import INTERNAL_INDEX_TYPE, resolve_vector_index
 from oc8.modelrouter import EmbeddingMustStayLocal, EmbeddingUnavailable, get_model_router
+from oc8.models.knowledge import KB_KIND_SHARED
 
 logger = logging.getLogger(__name__)
 
 KB_TOKEN_BUDGET = 1200
 _CANDIDATE_LIMIT = 50
 SIMILAR_CHUNKS_LIMIT = 5
+#: Reciprocal rank fusion constant: a hit at rank r in a list adds 1 / (k + r).
+RRF_K = 60
+#: Rows an HNSW scan of `kb_chunk.embedding` (migration 0143) hands back before
+#: the tenant/base/source filter. At pgvector's default of 40 a base whose
+#: nearest rows sit among other bases' rows got fewer than `_CANDIDATE_LIMIT`
+#: candidates, or none, where the exact scan before the index found them all.
+HNSW_EF_SEARCH = 4 * _CANDIDATE_LIMIT
+#: pgvector's version as `(major, minor)`, read once per process: `None` until
+#: read, `()` when the extension is absent.
+_pgvector_version: tuple[int, ...] | None = None
+#: A question full-text search can use at all; without a word character
+#: `websearch_to_tsquery` yields an empty query (and a NOTICE per base).
+_HAS_WORD = re.compile(r"\w")
 
 
 @dataclass
@@ -55,6 +74,35 @@ class _Hit:
     score: float
     local_only: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: The `kb_chunk` row of an internal hit; None for a remote one.
+    chunk_id: uuid.UUID | None = None
+    #: Set by `fuse_rrf`; what the budget trim ranks by. `score` stays cosine.
+    rank_score: float = 0.0
+
+
+def _identity(hit: _Hit) -> tuple[Any, ...]:
+    if hit.chunk_id is not None:
+        return ("chunk", hit.chunk_id)
+    digest = hashlib.sha1(hit.content.encode(), usedforsecurity=False).hexdigest()
+    return ("remote", hit.kb_id, hit.source_uri, digest)
+
+
+def fuse_rrf(ranked_lists: list[list[_Hit]], *, k: int = RRF_K) -> list[_Hit]:
+    """Reciprocal rank fusion: each hit scores the sum of 1 / (k + rank) over
+    the lists it appears in (rank from 1), and comes back once, highest first,
+    with `rank_score` set. A hit is its chunk for an internal base, and its
+    base, source and text for a remote one. Ties keep first-seen order, so
+    callers pass each base's vector list before its full-text list and a tie
+    goes to the better vector rank."""
+    fused: dict[tuple[Any, ...], _Hit] = {}
+    for ranked in ranked_lists:
+        for rank, hit in enumerate(ranked, start=1):
+            key = _identity(hit)
+            kept = fused.setdefault(key, hit)
+            if kept is hit:
+                hit.rank_score = 0.0
+            kept.rank_score += 1.0 / (k + rank)
+    return sorted(fused.values(), key=lambda h: h.rank_score, reverse=True)
 
 
 async def _own_kb_ids(db: AsyncSession, *, agent: m.Agent) -> set[uuid.UUID]:
@@ -158,7 +206,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 def _trim_hits_to_budget(hits: list[_Hit], token_budget: int) -> list[_Hit]:
-    scored = sorted(hits, key=lambda h: h.score, reverse=True)
+    scored = sorted(hits, key=lambda h: h.rank_score, reverse=True)
     out: list[_Hit] = []
     used = 0
     for h in scored:
@@ -214,25 +262,78 @@ async def _embed_for_kb(
         return None
 
 
+async def _widen_hnsw_scan(db: AsyncSession) -> None:
+    """Let an HNSW scan return enough rows for the filtered candidate list,
+    for the rest of this transaction: `hnsw.ef_search`, and
+    `hnsw.iterative_scan = relaxed_order`, which keeps scanning until the
+    filtered LIMIT is met (the order may be slightly off; fusion re-sorts
+    anyway). Lasting to the end of the transaction is harmless: it only
+    widens a later HNSW scan of `kb_chunk` in the same transaction the same
+    way, and no other table has an HNSW index.
+
+    Only from pgvector 0.8.0, the version migration 0143 builds the index
+    from: below it there is no index to widen. And pgvector reserves the
+    `hnsw.` prefix, so setting a name an older version does not know is an
+    error that would abort the transaction."""
+    global _pgvector_version
+    if _pgvector_version is None:
+        extversion = (
+            await db.execute(text("SELECT extversion FROM pg_extension WHERE extname = 'vector'"))
+        ).scalar_one_or_none()
+        _pgvector_version = (
+            tuple(int(p) for p in extversion.split(".")[:2] if p.isdigit()) if extversion else ()
+        )
+    if _pgvector_version < (0, 8):
+        return
+    await db.execute(
+        text(
+            "SELECT set_config('hnsw.ef_search', :ef, true), "
+            "set_config('hnsw.iterative_scan', 'relaxed_order', true)"
+        ),
+        {"ef": str(HNSW_EF_SEARCH)},
+    )
+
+
 async def _search_internal(
     db: AsyncSession,
     *,
     tenant_id: uuid.UUID,
     kb: m.KnowledgeBase,
     query_embedding: list[float],
-) -> list[_Hit]:
-    stmt = (
-        live_chunks()
-        .where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id == kb.id)
-        .order_by(m.KbChunk.embedding.cosine_distance(query_embedding))
-        .limit(_CANDIDATE_LIMIT)
+    query_text: str,
+    only_sources: Mapping[str, str] | None = None,
+) -> tuple[list[_Hit], list[_Hit]]:
+    """(top by cosine, top by full text), each at most `_CANDIDATE_LIMIT` and
+    under the same filters. The full-text list is empty for a question with
+    no words in it (`#`, `--`, blank)."""
+    stmt = live_chunks().where(m.KbChunk.tenant_id == tenant_id, m.KbChunk.kb_id == kb.id)
+    if only_sources is not None:
+        # In the query, so other documents cannot crowd these out of the
+        # candidate limit.
+        stmt = stmt.where(m.KbChunk.source_uri.in_(sorted(only_sources)))
+    await _widen_hnsw_scan(db)
+    by_vector = stmt.order_by(m.KbChunk.embedding.cosine_distance(query_embedding)).limit(
+        _CANDIDATE_LIMIT
     )
-    chunks = list((await db.execute(stmt)).scalars().all())
+    vector_chunks = list((await db.execute(by_vector)).scalars().all())
+    text_chunks: list[m.KbChunk] = []
+    if _HAS_WORD.search(query_text):
+        tsq = func.websearch_to_tsquery("simple", query_text)
+        # `numnode` is 0 for a query without lexemes; the planner folds the
+        # constant, so such a query reads no rows at all.
+        by_text = (
+            stmt.where(func.numnode(tsq) > 0, m.KbChunk.search_tsv.bool_op("@@")(tsq))
+            .order_by(func.ts_rank_cd(m.KbChunk.search_tsv, tsq).desc(), m.KbChunk.id)
+            .limit(_CANDIDATE_LIMIT)
+        )
+        text_chunks = list((await db.execute(by_text)).scalars().all())
     # A chunk's own label may be looser than its source's or its base's: chunks
     # stored before ingest copied those labels read `internal`, and a label
     # changed later on the base or source is not rewritten into every chunk.
     # Judge each hit by the strictest of the three.
-    source_ids = {c.data_source_id for c in chunks if c.data_source_id is not None}
+    source_ids = {
+        c.data_source_id for c in (*vector_chunks, *text_chunks) if c.data_source_id is not None
+    }
     source_labels: dict[uuid.UUID, str] = {}
     if source_ids:
         source_labels = {
@@ -245,26 +346,26 @@ async def _search_internal(
                 )
             ).all()
         }
-    hits: list[_Hit] = []
-    for c in chunks:
+
+    def to_hit(c: m.KbChunk) -> _Hit:
         score = 0.0
         if c.embedding is not None:
             score = cosine_similarity(c.embedding, query_embedding)
-        hits.append(
-            _Hit(
-                kb_id=kb.id,
-                content=c.content,
-                source_uri=c.source_uri,
-                classification=strictest(
-                    c.classification,
-                    kb.classification,
-                    source_labels.get(c.data_source_id) if c.data_source_id else None,
-                ),
-                score=score,
-                local_only=kb.local_only,
-            )
+        return _Hit(
+            kb_id=kb.id,
+            content=c.content,
+            source_uri=c.source_uri,
+            classification=strictest(
+                c.classification,
+                kb.classification,
+                source_labels.get(c.data_source_id) if c.data_source_id else None,
+            ),
+            score=score,
+            local_only=kb.local_only,
+            chunk_id=c.id,
         )
-    return hits
+
+    return [to_hit(c) for c in vector_chunks], [to_hit(c) for c in text_chunks]
 
 
 async def _search_external(
@@ -326,6 +427,7 @@ async def retrieve_kb_context(
     only_kb_ids: frozenset[uuid.UUID] | None = None,
     released_kb_ids: frozenset[uuid.UUID] | None = None,
     skipped_local: list[str] | None = None,
+    only_sources: Mapping[str, str] | None = None,
     owner_claim: OwnerClaim | None = None,
     lenders: Lenders | None = None,
 ) -> tuple[str, bool]:
@@ -356,6 +458,17 @@ async def retrieve_kb_context(
     `skipped_local`, when given, receives the name of every base that was not
     searched because the question must stay local and the base embeds with a
     cloud model.
+
+    A chat's own base (`kind='chat'`, spec §5.4) is searched ONLY when the
+    caller names it in `only_kb_ids` (`search_chat_files`). Not through a
+    grant, not through `released_kb_ids` alone: nothing that feeds those sets
+    for an agent's normal search may ever reach a chat's files, so even a
+    stray grant or pin on one is ignored here.
+
+    `only_sources`, when given, maps the `source_uri`s that may be returned
+    to the name each is shown under: every other document is left out, and a
+    hit's source is shown by that name (`search_chat_files`: the files on
+    the branch a run answers, named by the file the model can read).
 
     `owner_claim` and `lenders` are `lending_departments`' input and answer:
     how to read the owner's claim on this run, or the lenders the caller
@@ -390,6 +503,10 @@ async def retrieve_kb_context(
                     m.KnowledgeBase.tenant_id == tenant_id,
                     m.KnowledgeBase.id.in_(kb_ids),
                     m.KnowledgeBase.deleted_at.is_(None),
+                    or_(
+                        m.KnowledgeBase.kind == KB_KIND_SHARED,
+                        m.KnowledgeBase.id.in_(sorted(only_kb_ids or ())),
+                    ),
                 )
             )
         )
@@ -400,7 +517,9 @@ async def retrieve_kb_context(
         return "", False
 
     local_agent = await agent_runs_locally(db, agent, model_locality)
-    all_hits: list[_Hit] = []
+    # Each internal base's vector list, then its full-text list; each external
+    # base's one remote list. Fused once, across bases, before any filter.
+    ranked_lists: list[list[_Hit]] = []
     for kb in bases:
         query_embedding = await _embed_for_kb(
             db,
@@ -414,13 +533,18 @@ async def retrieve_kb_context(
             continue
         index_type = kb.index_type or INTERNAL_INDEX_TYPE
         if index_type == INTERNAL_INDEX_TYPE:
-            all_hits.extend(
+            ranked_lists.extend(
                 await _search_internal(
-                    db, tenant_id=tenant_id, kb=kb, query_embedding=query_embedding
+                    db,
+                    tenant_id=tenant_id,
+                    kb=kb,
+                    query_embedding=query_embedding,
+                    query_text=query_text,
+                    only_sources=only_sources,
                 )
             )
         else:
-            all_hits.extend(
+            ranked_lists.append(
                 await _search_external(
                     db,
                     tenant_id=tenant_id,
@@ -430,6 +554,9 @@ async def retrieve_kb_context(
                 )
             )
 
+    all_hits = fuse_rrf(ranked_lists)
+    if only_sources is not None:
+        all_hits = [h for h in all_hits if h.source_uri in only_sources]
     if not all_hits:
         return "", False
 
@@ -471,7 +598,10 @@ async def retrieve_kb_context(
     for kb_id, kb_hits in by_kb.items():
         kb = next((b for b in bases if b.id == kb_id), None)
         kb_name = kb.name if kb is not None else str(kb_id)
-        body = "\n".join(f"- {h.content} (source: {h.source_uri})" for h in kb_hits)
+        body = "\n".join(
+            f"- {h.content} (source: {(only_sources or {}).get(h.source_uri, h.source_uri)})"
+            for h in kb_hits
+        )
         sections.append(f"[Knowledge: {kb_name}]\n{body}")
 
     return "\n\n".join(sections), contains_restricted
@@ -517,6 +647,9 @@ async def similar_chunks(
     ).scalar_one_or_none()
     if source is None or source.embedding is None:
         return None
+    # The same HNSW post-filter cap as `_search_internal`: other bases' rows
+    # would otherwise crowd this base's neighbours out of the scan.
+    await _widen_hnsw_scan(db)
     stmt = (
         live_chunks()
         .where(

@@ -2,10 +2,21 @@
 # (runs the CLI; launches the mock MCP servers for the isolated runtime's
 # /tool endpoint) and `worker` (launches them for the in-process engine).
 # Usage: docker compose -f docker-compose.yml -f docker-compose.evals.yml up -d
+#
+# Web search points at the fake SearXNG the chat_harness `web` cases start in
+# the eval CLI (backend container, port 8790): the platform default is the one
+# search host oc8 lets an internal address be.
+x-eval-web-search: &eval-web-search
+  OC8_WEB_SEARCH_PROVIDER: searxng
+  OC8_WEB_SEARCH_BASE_URL: http://backend:8790
+  OC8_WEB_SEARCH_API_KEY: ""
+
 services:
   backend:
     volumes:
       - ./backend/evals:/app/evals
+    environment: *eval-web-search
   worker:
     volumes:
       - ./backend/evals:/app/evals:ro
+    environment: *eval-web-search

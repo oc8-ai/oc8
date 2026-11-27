@@ -143,6 +143,32 @@ async def test_an_offer_asks_the_person_and_parks_the_run(
 
 
 @pytest.mark.asyncio
+async def test_an_offer_locks_no_conversation_row_during_the_run(
+    app_session: AppSessionFactory,
+) -> None:
+    """The offer runs inside the Copilot's run, which goes on calling the model
+    and takes the audit lock only at its commit: holding the chat_session row
+    meanwhile would invert `chat.tree`'s lock order (audit, then row). It
+    serialises on the conversation's own advisory lock instead -- and takes
+    no audit lock either, which would stall the tenant for the whole leg."""
+    from tests.chat.test_message_tree import is_audit_lock, locks_session_row, statements
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        run = await chat_run(db, office)
+        with statements() as seen:
+            outcome = await _offer(db, office, run)
+        assert outcome.suspend == "waiting_for_approval"
+    assert not [sql for sql in seen if locks_session_row(sql)]
+    assert not [sql for sql in seen if is_audit_lock(sql, tenant)]
+    assert any(
+        "pg_advisory_xact_lock" in sql and f"direct_access:{office.session_id}" in sql
+        for sql in seen
+    )
+
+
+@pytest.mark.asyncio
 async def test_a_second_offer_while_one_waits_raises_nothing(
     app_session: AppSessionFactory, redis_url: str
 ) -> None:

@@ -11,7 +11,7 @@ import {
   type InfiniteData,
 } from "@tanstack/react-query";
 
-import { api, ApiError, retryUnlessRefused } from "@/lib/api";
+import { api, API_URL, ApiError, getToken, retryUnlessRefused } from "@/lib/api";
 import { isUuid } from "@/lib/ids";
 import {
   chatKeys,
@@ -149,9 +149,11 @@ export function withActiveRun(
 export function useRegenerate(sessionId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (messageId: string) =>
+    // `web`: the composer's "Web" switch as it stands now.
+    mutationFn: ({ messageId, web = false }: { messageId: string; web?: boolean }) =>
       api.post<ActiveRunDTO>(
         `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages/${encodeURIComponent(messageId)}/regenerate`,
+        web ? { web: true } : undefined,
       ),
     onSuccess: (run) => {
       if (!sessionId) return;
@@ -159,6 +161,57 @@ export function useRegenerate(sessionId: string | null) {
         withActiveRun(prev, run),
       );
     },
+  });
+}
+
+/** Edit a turn: the server adds the new text as a sibling of the original,
+ *  makes it the visible branch and starts a run. */
+export function useEditMessage(sessionId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      messageId,
+      content,
+      web = false,
+    }: {
+      messageId: string;
+      content: string;
+      /** The composer's "Web" switch, as for a sent turn. */
+      web?: boolean;
+    }) =>
+      api.post<ChatMessageDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId ?? "")}/messages/${encodeURIComponent(messageId)}/edit`,
+        web ? { content, web: true } : { content },
+      ),
+    onSuccess: (message) => {
+      if (!sessionId) return;
+      // The edit is the new leaf; show it now, the refetch fills in the rest
+      // (the run that answers it).
+      qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
+        prev && !prev.some((m) => m.id === message.id) ? [...prev, message] : prev,
+      );
+      qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(sessionId), (prev) =>
+        prev ? { ...prev, currentLeafId: message.id } : prev,
+      );
+      void qc.invalidateQueries({ queryKey: conversationKeys.session(sessionId) });
+      void qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+    },
+  });
+}
+
+/** Switch the visible branch: the server continues from `messageId` to the
+ *  newest message below it and returns the chat with its new leaf. */
+export function useSetLeaf(sessionId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (messageId: string) =>
+      api.put<ChatSessionDetailDTO>(`/chat/sessions/${encodeURIComponent(sessionId ?? "")}/leaf`, {
+        messageId,
+      }),
+    onSuccess: (session) =>
+      qc.setQueryData<ChatSessionDetailDTO>(conversationKeys.session(session.id), (prev) =>
+        prev ? { ...prev, currentLeafId: session.currentLeafId ?? null } : prev,
+      ),
   });
 }
 
@@ -542,6 +595,22 @@ export interface RunInputDTO {
   createdAt: string;
   consumedAt: string | null;
   consumedStep: number | null;
+  /** `steer`: read at the run's next step. `next_turn`: queued, it becomes
+   *  the chat's next message when the answer is done (spec §5.5). */
+  delivery: RunInputDelivery;
+  /** A queued message that searches the web once it is the chat's turn.
+   *  Absent on an older backend. */
+  web?: boolean;
+}
+
+export type RunInputDelivery = "steer" | "next_turn";
+
+/** A chat send while an answer still runs (202): not a turn yet, but a
+ *  `next_turn` input on that run (`runId`). */
+export interface QueuedTurnDTO {
+  queued: true;
+  runId: string;
+  input: RunInputDTO;
 }
 
 export interface RunSteeringDTO {
@@ -637,19 +706,75 @@ export function useRunSteering(runId: string | null, cachedId: string | null = r
   });
 }
 
-/** Write to a running run. Refusals (409 finished / takes no messages, 422
- *  too long, 429 too many waiting) come back as ApiError -- word them with
- *  `runInputError` (components/conversation/run-steering.tsx). */
+/** The run's steering cache with `input` in it, added or replaced. */
+export function withRunInput(
+  prev: RunSteeringDTO | undefined,
+  input: RunInputDTO,
+): RunSteeringDTO | undefined {
+  if (!prev) return prev;
+  return prev.inputs.some((i) => i.id === input.id)
+    ? { ...prev, inputs: prev.inputs.map((i) => (i.id === input.id ? input : i)) }
+    : { ...prev, inputs: [...prev.inputs, input] };
+}
+
+/** Write to a running run: `steer` reaches it before its next step,
+ *  `next_turn` waits and becomes the chat's next message (spec §5.5).
+ *  Refusals (409 finished / takes no messages, 422 too long, 429 too many
+ *  waiting) come back as ApiError -- word them with `runInputError`
+ *  (components/conversation/run-steering.tsx). */
 export function useSendRunInput(runId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (text: string) =>
-      api.post<RunInputDTO>(`/runs/${encodeURIComponent(runId ?? "")}/inputs`, { text }),
+    // `web` only goes with a `next_turn`: a steer joins a run already
+    // under way, whose tools are set.
+    mutationFn: ({
+      text,
+      delivery,
+      web = false,
+    }: {
+      text: string;
+      delivery: RunInputDelivery;
+      web?: boolean;
+    }) =>
+      api.post<RunInputDTO>(`/runs/${encodeURIComponent(runId ?? "")}/inputs`, {
+        text,
+        delivery,
+        ...(web && delivery === "next_turn" && { web: true }),
+      }),
     onSuccess: (input) =>
+      qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) => withRunInput(prev, input)),
+    onSettled: () => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
+  });
+}
+
+/** Change a queued message while it waits (its author only). 409 once it
+ *  was already delivered. */
+export function useEditRunInput(runId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ inputId, text }: { inputId: string; text: string }) =>
+      api.patch<RunInputDTO>(
+        `/runs/${encodeURIComponent(runId ?? "")}/inputs/${encodeURIComponent(inputId)}`,
+        { text },
+      ),
+    onSuccess: (input) =>
+      qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) => withRunInput(prev, input)),
+    onSettled: () => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
+  });
+}
+
+/** Withdraw a queued message while it waits (its author only, 204): it never
+ *  becomes a turn. 409 once it was already delivered. */
+export function useCancelRunInput(runId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (inputId: string) =>
+      api.delete<void>(
+        `/runs/${encodeURIComponent(runId ?? "")}/inputs/${encodeURIComponent(inputId)}`,
+      ),
+    onSuccess: (_data, inputId) =>
       qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) =>
-        prev && !prev.inputs.some((i) => i.id === input.id)
-          ? { ...prev, inputs: [...prev.inputs, input] }
-          : prev,
+        prev ? { ...prev, inputs: prev.inputs.filter((i) => i.id !== inputId) } : prev,
       ),
     onSettled: () => qc.invalidateQueries({ queryKey: runSteeringKey(runId) }),
   });
@@ -780,4 +905,25 @@ export function useSetChatMode(sessionId: string | null) {
       );
     },
   });
+}
+
+export type ChatExportFormat = "md" | "json";
+
+/** Downloads a chat as a file: Markdown is the conversation on screen, JSON
+ *  every branch. Fetched with the bearer token (a plain link carries none),
+ *  then saved under the name the server chose. */
+export async function exportChat(sessionId: string, format: ChatExportFormat): Promise<void> {
+  const res = await fetch(
+    `${API_URL}/chat/sessions/${encodeURIComponent(sessionId)}/export?format=${format}`,
+    { headers: { authorization: `Bearer ${await getToken()}` } },
+  );
+  if (!res.ok) throw new ApiError(res.statusText || "export failed", res.status);
+  const disposition = res.headers.get("content-disposition") ?? "";
+  const filename = /filename="([^"]+)"/i.exec(disposition)?.[1] ?? `chat.${format}`;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
 }

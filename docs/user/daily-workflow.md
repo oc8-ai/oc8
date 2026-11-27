@@ -47,8 +47,8 @@ Details: [Governance and approvals](governance-and-approvals.md).
 
 ## Copilot
 
-Use the floating **[Copilot](ui/copilot.md)** to draft config; you always review
-before applying.
+Use the floating **[Copilot](ui/copilot.md)** to get work done or draft config;
+you always review setup changes before applying.
 
 ## End of day
 

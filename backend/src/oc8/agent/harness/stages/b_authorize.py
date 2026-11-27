@@ -231,11 +231,12 @@ def authorize(
         # should be for a tool that can only ever produce a draft a human has
         # to approve before anything changes.
         return Decision(Effect.ALLOW)
-    if tc.name == "read_context":
+    if tc.name in ("read_context", "search_chat_files", "read_chat_file"):
         # Belongs to no connection either: it reads what the member pinned,
         # re-authorised for them and checked against the model inside the
-        # tool (control_tools._execute_read_context). Falling through would
-        # audit every read as a denial.
+        # tool (control_tools._execute_read_context), or the files of the
+        # run's own chat, for its owner only (`_chat_of_owner_run`). Falling
+        # through would audit every read as a denial.
         return Decision(Effect.ALLOW)
     if tc.name == "suggest_replies":
         # Belongs to no connection, like propose_change: it only stores chips
@@ -334,7 +335,14 @@ def authorize(
         guardrail_attribute_specs=guardrail_attribute_specs,
     )
     if verdict.effect is Effect.DENY:
-        return Decision(Effect.DENY, verdict.reason, reason_code=NOT_THIS_CONNECTION)
+        # The frame's own code (e.g. right_not_granted) rides along for the
+        # audit, which records it when the tool runs anyway.
+        return Decision(
+            Effect.DENY,
+            verdict.reason,
+            reason_code=NOT_THIS_CONNECTION,
+            context=({"frame_reason_code": verdict.reason_code} if verdict.reason_code else {}),
+        )
     return verdict
 
 

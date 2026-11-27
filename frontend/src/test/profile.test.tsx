@@ -74,6 +74,11 @@ vi.mock("@/lib/totp", () => ({
 // to route unrelated network calls through the blanket `apiGetMock`, which
 // answers every GET the same way and would otherwise resolve `useAvailableChannels`
 // to a non-array value.
+// The always-allow panel's hooks: no rules unless a test sets them.
+const allowRules = vi.hoisted(() => ({
+  data: [] as unknown[],
+  revoke: vi.fn(),
+}));
 vi.mock("@/lib/hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/hooks")>();
   return {
@@ -82,6 +87,8 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useChannelBindings: () => ({ data: [] }),
     useRequestChannelLink: () => ({ mutate: vi.fn(), isPending: false }),
     useRevokeChannelBinding: () => ({ mutate: vi.fn(), isPending: false }),
+    useToolAllowRules: () => ({ data: allowRules.data }),
+    useRevokeToolAllowRule: () => ({ mutate: allowRules.revoke, isPending: false }),
   };
 });
 vi.mock("@/lib/governance-hooks", async (importOriginal) => {
@@ -551,5 +558,47 @@ describe("Profile page — Account panel", () => {
     // caller-side reload here would race a pending SSO redirect and win,
     // silently cancelling it, so the caller must not also reload.
     expect(reloadMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("Profile page — always-allowed tools", () => {
+  beforeEach(() => {
+    apiGetMock.mockReset();
+    apiGetMock.mockResolvedValue({});
+    allowRules.data = [];
+    allowRules.revoke.mockReset();
+  });
+
+  it("shows nothing while the person has no rule", () => {
+    renderPage();
+    expect(screen.queryByText("Always-allowed tools")).toBeNull();
+  });
+
+  it("profile shows allow rules and revokes one", () => {
+    allowRules.data = [
+      {
+        id: "rule-1",
+        agentId: "copilot",
+        agentName: "oc8 Assistant",
+        connectionName: "Odoo",
+        toolKey: "update_record",
+        createdAt: "2026-11-25T10:00:00Z",
+      },
+      {
+        id: "rule-2",
+        agentId: "copilot",
+        agentName: "oc8 Assistant",
+        connectionName: null,
+        toolKey: "write_output_file",
+        createdAt: "2026-11-25T11:00:00Z",
+      },
+    ];
+    renderPage();
+    const panel = screen.getByText("Always-allowed tools").closest("div")!;
+    const first = within(panel).getByText("update_record").closest("li")!;
+    expect(within(first).getByText(/oc8 Assistant · Odoo/)).toBeInTheDocument();
+    expect(within(panel).getByText("write_output_file")).toBeInTheDocument();
+    fireEvent.click(within(first).getByRole("button", { name: "Revoke" }));
+    expect(allowRules.revoke).toHaveBeenCalledWith("rule-1", expect.anything());
   });
 });

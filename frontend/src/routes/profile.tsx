@@ -25,6 +25,8 @@ import {
   useChannelBindings,
   useRequestChannelLink,
   useRevokeChannelBinding,
+  useRevokeToolAllowRule,
+  useToolAllowRules,
 } from "@/lib/hooks";
 import { useCan } from "@/lib/governance-hooks";
 import { EditionProfileSections } from "@/edition/slots";
@@ -433,6 +435,7 @@ export function ProfilePage() {
       <ApiKeysPanel />
       <PersonalAssistantsPanel />
       <ApprovalChannelsPanel />
+      <ToolAllowRulesPanel />
       <EditionProfileSections />
     </div>
   );
@@ -975,6 +978,55 @@ function ApprovalChannelsPanel() {
           )}
         </div>
       )}
+    </Panel>
+  );
+}
+
+/** The person's own "always allow for me" rules: made on an approval card,
+ * revoked here. Only theirs -- the list is never anybody else's. Hidden until
+ * there is one. */
+function ToolAllowRulesPanel() {
+  const t = useT();
+  const { data } = useToolAllowRules();
+  const revoke = useRevokeToolAllowRule();
+  const rules = Array.isArray(data) ? data : [];
+  if (rules.length === 0) return null;
+
+  return (
+    <Panel className="p-4 md:col-span-2">
+      <h2 className="mb-3 text-sm font-semibold text-foreground">
+        {t("Always-allowed tools", "Immer erlaubte Werkzeuge")}
+      </h2>
+      <ul className="space-y-1.5">
+        {rules.map((rule) => (
+          <li
+            key={rule.id}
+            className="flex items-center justify-between gap-2 rounded-md border border-border bg-background/30 px-2.5 py-1.5 text-xs"
+          >
+            <span className="min-w-0 truncate">
+              <span className="font-medium text-foreground">{rule.toolKey}</span>
+              <span className="text-muted-foreground">
+                {" · "}
+                {rule.agentName}
+                {rule.connectionName ? ` · ${rule.connectionName}` : ""}
+              </span>
+            </span>
+            <button
+              type="button"
+              disabled={revoke.isPending}
+              onClick={() =>
+                revoke.mutate(rule.id, {
+                  onError: () =>
+                    toast.error(t("Couldn't revoke", "Konnte nicht widerrufen werden")),
+                })
+              }
+              className="h-7 shrink-0 rounded-md border border-border bg-panel px-2.5 text-xs font-medium text-foreground transition hover:bg-accent disabled:opacity-50"
+            >
+              {t("Revoke", "Widerrufen")}
+            </button>
+          </li>
+        ))}
+      </ul>
     </Panel>
   );
 }

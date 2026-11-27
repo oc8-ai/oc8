@@ -205,7 +205,7 @@ export function EffortPicker({
         aria-haspopup="true"
         aria-expanded={open}
         aria-label={t("Reasoning: {level}", "Denkstufe: {level}").replace("{level}", label)}
-        className="inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
+        className="inline-flex h-11 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground sm:h-9 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
       >
         <Brain className="size-3.5" aria-hidden />
         {label}

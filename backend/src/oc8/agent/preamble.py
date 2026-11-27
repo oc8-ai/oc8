@@ -14,6 +14,7 @@ Core-neutral: names no vendor, product or software specifics.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -32,7 +33,6 @@ from oc8.agent.control_tools import (
 )
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.harness.prompts import (
-    TENANT_ASSISTANT_OPENER,
     render_system_prompt,
     resolve_timezone,
     run_context_block,
@@ -50,6 +50,15 @@ from oc8.authz.permissions import (
     perm,
 )
 from oc8.authz.scope import AgentActor
+from oc8.chat.replay import (
+    ChatReplay,
+    last_answer,
+    new_turn_text,
+    replay_messages,
+    replay_path,
+    withheld,
+)
+from oc8.chat.turn_context import flattened_task_text_for_model
 from oc8.connections.tool_connection import tool_connections
 from oc8.connections.usable import needs_department
 from oc8.copilot.notes import member_behind_run_task
@@ -59,6 +68,8 @@ from oc8.modelrouter import NeutralMessage
 from oc8.modelrouter.types import ImagePart, TextPart
 from oc8.models.core import DEPARTMENT_KIND_PERSONAL
 from oc8.skills.runtime import LoadedSkill, catalog_block, load_assigned_skills
+
+logger = logging.getLogger(__name__)
 
 _ORIGIN_LABELS: dict[str, str] = {
     "chat": "chat",
@@ -110,10 +121,7 @@ def system_prompt(
     mid-run edit never rewrites the instructions a run is working to. `name`
     and `presentation` (guardrails) are identity/operational state, not
     versioned -- see `render_system_prompt`'s own docstring."""
-    prompt = render_system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned)
-    if agent.is_tenant_assistant:
-        prompt = f"{prompt}\n\n{TENANT_ASSISTANT_OPENER}"
-    return prompt
+    return render_system_prompt(agent, caps=caps, tenant_name=tenant_name, pinned=pinned)
 
 
 @dataclass
@@ -151,11 +159,56 @@ class RunPreamble:
     #: Whether the agent produces at least one live board: `board_write` is offered
     #: to it alone (see oc8.boards.mission).
     produces_board: bool = False
+    #: Whether `web_search` is offered: the turn asked for the web and the
+    #: tenant has a provider (`oc8.websearch.service.offered`).
+    has_web_search: bool = False
     #: The tenant's resolved timezone label (resolve_timezone's first return
     #: value) -- read back by engine.py/internal_agent.py after this call so
     #: C3's step stamp (format_step_stamp) uses the SAME resolved zone as A2's
     #: "Now" line, rather than re-resolving it a second time.
     tz: str = "UTC"
+
+
+@dataclass(frozen=True)
+class Resume:
+    """A chat turn's leg woken by a decision (a held call's approval, an
+    offer's answer): the conversation and the turn stay, and the leg is told
+    what it already did and what was decided after them."""
+
+    #: This run's own work before the pause (`chat.digest`), as the
+    #: assistant's turn; None reads as "[no tool calls yet]".
+    own_work_digest: str | None
+    #: What the leg is told to do now, as the user's turn.
+    instruction: str
+
+
+#: Where a figure has to come from, in a chat. A budget, a usage figure or a
+#: record count the model remembers from an earlier turn, or makes up, reads
+#: exactly like one it just looked up; said once, in the stable system prefix,
+#: so it costs nothing per turn. The answer itself is never rewritten. Only
+#: for chat turns (and the Copilot): a triggered run's figures come with its
+#: task, and an earlier turn is what a chat has and a run does not.
+GROUNDING_RULE = (
+    "FIGURES: numbers about budgets, usage, runs and business records must come "
+    "from a tool result of this turn, the knowledge context provided, the task, "
+    "or what the person told you in this conversation -- never from memory or "
+    "from a figure an earlier answer recalled. If none of these holds the figure, "
+    "say so instead of estimating it."
+)
+
+
+#: The assistant's turn of a resumed leg whose run had called no tool yet.
+NO_TOOL_CALLS_YET = "[no tool calls yet]"
+
+
+#: Said on a turn that offers `web_search` (spec §10): its queries leave the
+#: organisation, so they must never carry what the person's data says.
+WEB_SEARCH_NOTE = (
+    "WEB: web search is on for this turn -- use web_search for current or "
+    "public facts, search with public terms only (never names, numbers or text "
+    "from records, chats or files), and cite each web result you rely on by "
+    "its number, e.g. [1]."
+)
 
 
 #: How many tool keys one roster line names before it says "…".
@@ -376,6 +429,8 @@ async def build_run_preamble(
     task: m.Task | None = None,
     run_id: uuid.UUID | None = None,
     pinned: Mapping[str, Any] | None = None,
+    replay: ChatReplay | None = None,
+    resume: Resume | None = None,
 ) -> RunPreamble:
     """Seed a run's conversation: system context first, the task last.
 
@@ -384,6 +439,17 @@ async def build_run_preamble(
 
     `pinned` is the run's resolved agent version (`resolve_version`). Every
     runtime passes it; None (a direct call with no run) reads the live row.
+
+    `replay` (a chat turn of the in-process engine, spec §5.2): the system
+    messages keep only what is stable for the session, the earlier turns
+    follow as real turns, and everything that varies per turn -- run context,
+    memory and KB retrieval, roster, direct access -- goes into one final
+    user message with the new turn. A replay that cannot be read falls back
+    to the flattened transcript in today's order.
+
+    `resume` (that chat turn's leg after a decision): two more turns after
+    the final user message -- the run's own work so far as the assistant's,
+    the decision as the user's -- so the cached prefix stays as it was.
     """
     org = await db.get(m.Organization, tenant_id)
     tenant_name = org.name if org is not None else "the organization"
@@ -408,6 +474,53 @@ async def build_run_preamble(
     run = await db.get(m.AgentRun, run_id) if run_id is not None else None
     origin = await _origin_label(db, run=run)
 
+    turns: list[NeutralMessage] | None = None
+    query_text = task_text
+    replay_restricted = False
+    if replay is not None:
+        try:
+            # A savepoint, so a failed read leaves the run's transaction usable.
+            async with db.begin_nested():
+                path = await replay_path(db, replay=replay)
+                # Bounded by the window (spec §5.3): from the newest
+                # checkpoint, with one made now when the chat outgrew it.
+                turns = await replay_messages(
+                    db,
+                    replay=replay,
+                    model_locality=model_locality,
+                    path=path,
+                    window=caps.context_window_tokens,
+                )
+        except Exception:
+            logger.warning(
+                "chat replay for run %s failed; using the flattened transcript",
+                run_id,
+                exc_info=True,
+            )
+            turns = None
+            if run is not None:
+                try:
+                    task_text, replay_restricted = await flattened_task_text_for_model(
+                        db, run, model_locality=model_locality
+                    )
+                except Exception:
+                    # Never fail the turn over the fallback: the task text
+                    # passed in is the new turn alone.
+                    logger.warning(
+                        "flattened transcript for run %s failed; keeping the task text",
+                        run_id,
+                        exc_info=True,
+                    )
+            query_text = task_text
+        else:
+            task_text = new_turn_text((run.context or {}) if run is not None else {}, task_text)
+            answer = last_answer(path, model_locality=model_locality)
+            query_text = task_text if answer is None else f"{task_text}\n{answer}"
+            # A restricted answer replayed in full (a local model) puts
+            # restricted data into this run, as a restricted KB hit does.
+            replay_restricted = any(
+                msg.restricted and not withheld(msg, model_locality=model_locality) for msg in path
+            )
     department = await db.get(m.Department, agent.department_id)
     department_name = department.name if department is not None else "unassigned"
 
@@ -447,6 +560,18 @@ async def build_run_preamble(
     # the half that holds without the model's cooperation is the blast-radius
     # limit in agent/blast_radius.py.
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
+    if agent.is_tenant_assistant or (run is not None and run.source == "chat"):
+        messages.append(NeutralMessage(role="system", content=GROUNDING_RULE))
+
+    # Per-turn context: system messages without a replay; with one, part of
+    # the final user message, so the system prefix stays stable across turns.
+    turn_blocks: list[str] = []
+
+    def _per_turn(block: str) -> None:
+        if turns is not None:
+            turn_blocks.append(block)
+        else:
+            messages.append(NeutralMessage(role="system", content=block))
 
     copilot_member = (
         await member_behind_run_task(db, tenant_id=tenant_id, task=task, run_id=run_id)
@@ -458,13 +583,13 @@ async def build_run_preamble(
         agent=agent,
         tenant_id=tenant_id,
         frame=frame,
-        query_text=task_text,
+        query_text=query_text,
         model_locality=model_locality,
         narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         member_id=copilot_member,
     )
     if memory_ctx:
-        messages.append(NeutralMessage(role="system", content=memory_ctx))
+        _per_turn(memory_ctx)
 
     # Resolved once for this run (spec A5): what the up-front retrieval reads
     # and what `has_knowledge` offers search_knowledge for cannot disagree.
@@ -475,13 +600,14 @@ async def build_run_preamble(
         db,
         agent=agent,
         tenant_id=tenant_id,
-        query_text=task_text,
+        query_text=query_text,
         frame=frame,
         model_locality=model_locality,
         lenders=lenders,
     )
     if kb_ctx:
-        messages.append(NeutralMessage(role="system", content=kb_ctx))
+        _per_turn(kb_ctx)
+    contains_restricted = contains_restricted or replay_restricted
     has_knowledge = bool(await granted_kb_ids(db, agent=agent, lenders=lenders))
 
     instruction_file_count = (
@@ -519,7 +645,7 @@ async def build_run_preamble(
         # system_prompt is a pure sync function and this needs the DB.
         roster = await roster_block(db, agent=agent, task=task, run=run)
         if roster is not None:
-            messages.append(NeutralMessage(role="system", content=roster))
+            _per_turn(roster)
 
     if agent.is_tenant_assistant:
         # What the Copilot may offer to do itself (copilot direct access §3).
@@ -532,7 +658,16 @@ async def build_run_preamble(
             narrowing=(pinned["narrowing"] or {}) if pinned is not None else None,
         )
         if block is not None:
-            messages.append(NeutralMessage(role="system", content=block))
+            _per_turn(block)
+
+    from oc8.websearch.service import offered as web_search_offered
+
+    has_web_search = run is not None and await web_search_offered(
+        db, tenant_id=tenant_id, context=run.context
+    )
+    if has_web_search:
+        # Per turn: "Web" is switched on message by message.
+        _per_turn(WEB_SEARCH_NOTE)
 
     from oc8.boards.mission import board_section
 
@@ -545,27 +680,34 @@ async def build_run_preamble(
     if catalog:
         messages.append(NeutralMessage(role="system", content=catalog))
 
-    messages.append(
-        NeutralMessage(
-            role="user",
-            content=run_context_block(
-                now=now,
-                tz_label=tz_label,
-                acting_for=acting_for,
-                origin=origin,
-                department=department_name,
-                connection_names=connection_names,
-                max_steps=max_steps,
-                instruction_file_count=instruction_file_count,
-                task_attachment_count=len(task_images) if task_images else 0,
-                connection_details=connection_details or None,
-            ),
-        )
+    run_context = run_context_block(
+        now=now,
+        tz_label=tz_label,
+        acting_for=acting_for,
+        origin=origin,
+        department=department_name,
+        connection_names=connection_names,
+        max_steps=max_steps,
+        instruction_file_count=instruction_file_count,
+        task_attachment_count=len(task_images) if task_images else 0,
+        connection_details=connection_details or None,
     )
+    if turns is not None:
+        # Cache breakpoints (spec §5.2): the end of the stable system prefix,
+        # and the end of the replayed turns, which only grow turn by turn.
+        messages[-1].cache_breakpoint = True
+        if turns:
+            turns[-1].cache_breakpoint = True
+        messages.extend(turns)
+        # One final user message: run context, per-turn blocks, the new turn.
+        final_text = "\n\n".join([run_context, *turn_blocks, task_text])
+    else:
+        messages.append(NeutralMessage(role="user", content=run_context))
+        final_text = task_text
 
     if task_images and supports_vision:
         messages.append(
-            NeutralMessage(role="user", content=[TextPart(text=task_text), *task_images])
+            NeutralMessage(role="user", content=[TextPart(text=final_text), *task_images])
         )
     else:
         note = ""
@@ -574,7 +716,12 @@ async def build_run_preamble(
                 "\n\n(An image was attached to this message, but this agent's "
                 "model cannot process images.)"
             )
-        messages.append(NeutralMessage(role="user", content=task_text + note))
+        messages.append(NeutralMessage(role="user", content=final_text + note))
+    if resume is not None:
+        messages.append(
+            NeutralMessage(role="assistant", content=resume.own_work_digest or NO_TOOL_CALLS_YET)
+        )
+        messages.append(NeutralMessage(role="user", content=resume.instruction))
 
     copilot_permissions = await _gated_copilot_permissions(
         db, agent=agent, tenant_id=tenant_id, task=task, run_id=run_id, actor=actor
@@ -592,5 +739,6 @@ async def build_run_preamble(
         copilot_permissions=copilot_permissions,
         copilot_has_member=copilot_member is not None,
         produces_board=boards_text is not None,
+        has_web_search=has_web_search,
         tz=tz_label,
     )

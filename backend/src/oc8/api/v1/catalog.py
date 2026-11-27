@@ -24,6 +24,15 @@ from oc8.modelrouter.registry import (
     provider_infos,
     resolve_provider,
 )
+from oc8.modelrouter.speech import (
+    CAPABILITY_KEY,
+    CHAT,
+    SPEECH_CAPABILITIES,
+    capability_of,
+    chat_capable,
+    is_speech_model,
+    speaks_openai_audio,
+)
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_credential_bind_safe,
@@ -195,6 +204,11 @@ async def _validate_auto_tier_targets(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 f"auto tier {name!r} must not point at another auto model",
             )
+        if is_speech_model(target):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"auto tier {name!r} must not point at a speech model",
+            )
 
 
 @router.post(
@@ -242,6 +256,13 @@ async def discover_provider_models(
     return ModelDiscoverResponse(models=models)
 
 
+#: The smallest context window a model may be recorded with. A chat
+#: checkpoints at 40 % / 70 % of the window and replays the turns that fit;
+#: below this the system prefix and one turn no longer fit, and every turn of
+#: every chat on the model would checkpoint. 0 or None stays "not recorded".
+MIN_CONTEXT_WINDOW = 4096
+
+
 async def _validated(
     body: ModelConfigWrite, db: DbSession, tenant_id: uuid.UUID
 ) -> tuple[str, str]:
@@ -249,6 +270,13 @@ async def _validated(
     has no db session, so entitlement is decided here, at configuration time: a
     tenant can only name a provider that is built in or comes from a plugin it
     enabled. Unknown and not-entitled deliberately give the same answer."""
+    if body.context_window and body.context_window < MIN_CONTEXT_WINDOW:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"context window must be at least {MIN_CONTEXT_WINDOW} tokens to hold a "
+            "chat turn; leave it empty to use the default (also for a small local "
+            "model whose window you do not know)",
+        )
     if body.provider.strip().lower() == AUTO_PROVIDER:
         if body.locality not in ("cloud", "local"):
             raise HTTPException(
@@ -264,6 +292,91 @@ async def _validated(
     if body.locality not in ("cloud", "local"):
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "locality must be cloud|local")
     return entry.canonical, body.model
+
+
+async def _check_speech(
+    db: DbSession,
+    tenant_id: uuid.UUID,
+    canon: str,
+    body: ModelConfigWrite,
+    cfg: m.ModelConfig | None = None,
+) -> str:
+    """The capability this write leaves the model with, refused (422) where a
+    speech model would end up a chat model (spec 2026-11-27 §9): only a
+    provider whose adapter speaks OpenAI's audio endpoints, never the auto
+    router, never the Copilot's model nor a chat-enabled one, and no model an
+    agent runs on. On update `cfg` is the stored row; a capability left out
+    keeps the stored one."""
+    capability: str
+    if body.capability is not None:
+        capability = body.capability
+    else:
+        capability = capability_of(cfg) if cfg is not None else CHAT
+    if capability not in SPEECH_CAPABILITIES:
+        return capability
+
+    def refuse(reason: str) -> HTTPException:
+        return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"a speech model {reason}")
+
+    if canon == AUTO_PROVIDER:
+        raise refuse("cannot be the auto router")
+    entry = await resolve_provider(db, tenant_id=tenant_id, name=canon)
+    try:
+        adapter = entry.factory(get_settings(), None, None) if entry is not None else None
+    except Exception:
+        adapter = None
+    if not speaks_openai_audio(adapter):
+        raise refuse(f"needs an OpenAI or OpenAI-compatible provider, not {canon!r}")
+    if body.used_by_copilot:
+        raise refuse("cannot be the Copilot's model")
+    if body.chat_enabled:
+        raise refuse("cannot be offered in the chat")
+    if cfg is not None and not is_speech_model(cfg):
+        if cfg.used_by_copilot:
+            raise refuse("cannot be the Copilot's model; pick another Copilot model first")
+        pinned = await db.scalar(
+            select(func.count())
+            .select_from(m.Agent)
+            .where(m.Agent.model_config_id == cfg.id, m.Agent.deleted_at.is_(None))
+        )
+        if pinned:
+            raise refuse("cannot run an agent; move its agents to another model first")
+        # A published version pins it too: a rollback would restore it.
+        versioned = await db.scalar(
+            select(func.count())
+            .select_from(m.AgentVersion)
+            .where(
+                m.AgentVersion.tenant_id == tenant_id,
+                m.AgentVersion.payload["model_config_id"].astext == str(cfg.id),
+            )
+        )
+        if versioned:
+            raise refuse("cannot be converted: a published agent version runs on it")
+        autos = (
+            await db.scalars(
+                select(m.ModelConfig).where(
+                    m.ModelConfig.tenant_id == tenant_id,
+                    m.ModelConfig.provider == AUTO_PROVIDER,
+                )
+            )
+        ).all()
+        for auto in autos:
+            tiers = (auto.params or {}).get("tiers")
+            if isinstance(tiers, dict) and str(cfg.id) in {str(v) for v in tiers.values()}:
+                raise refuse("cannot be converted: an auto model routes to it")
+    return capability
+
+
+def _set_capability(cfg: m.ModelConfig, capability: str) -> None:
+    """Record `capability` on the row; a speech model is never chat-enabled."""
+    # jsonb: replaced whole, or SQLAlchemy never notices the mutation.
+    params = dict(cfg.params or {})
+    if capability in SPEECH_CAPABILITIES:
+        params[CAPABILITY_KEY] = capability
+        cfg.chat_enabled = False
+    else:
+        params.pop(CAPABILITY_KEY, None)
+    cfg.params = params
 
 
 async def _apply_copilot_flag(
@@ -295,6 +408,7 @@ async def create_model(
     _p: CurrentPrincipal,
 ) -> ModelDTO:
     canon, model = await _validated(body, db, _p.tenant_id)
+    capability = await _check_speech(db, _p.tenant_id, canon, body)
     if canon == AUTO_PROVIDER:
         params = _auto_params_from_body(body)
         await _validate_auto_tier_targets(db, _p.tenant_id, params["tiers"])
@@ -335,11 +449,17 @@ async def create_model(
         if body.extra:
             params["extra"] = body.extra
         cfg.params = params
+    if capability in SPEECH_CAPABILITIES:
+        _set_capability(cfg, capability)
+        await db.flush()
+        return _model_to_dto(cfg, [])
+    # Counted among the models a chat can run on: a speech model never is the
+    # Copilot's, so the first chat model after one still becomes it.
     existing_count = (
         await db.execute(
             select(func.count())
             .select_from(m.ModelConfig)
-            .where(m.ModelConfig.tenant_id == _p.tenant_id)
+            .where(m.ModelConfig.tenant_id == _p.tenant_id, chat_capable())
         )
     ).scalar_one()
     if existing_count == 1:
@@ -369,6 +489,7 @@ async def update_model(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "model config not found")
     was_auto = is_auto_config(cfg)
     canon, model = await _validated(body, db, _p.tenant_id)
+    capability = await _check_speech(db, _p.tenant_id, canon, body, cfg)
     cfg.provider = canon
     cfg.model = model
     if canon == AUTO_PROVIDER:
@@ -390,6 +511,8 @@ async def update_model(
         cfg.display_name = body.display_name
     if body.chat_enabled is not None:
         cfg.chat_enabled = body.chat_enabled
+    if canon != AUTO_PROVIDER:
+        _set_capability(cfg, capability)
     if body.supports_reasoning is not None:
         cfg.supports_reasoning = body.supports_reasoning
     if canon == AUTO_PROVIDER:

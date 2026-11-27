@@ -6,7 +6,7 @@
 //   above          C2 QuestionCard, C3 PinnedBar
 //   target         C4 "To the running run …"
 //   extraPlusItems C3 data source, knowledge base, oc8 object
-//   trailing       C5 dictation (Enterprise; core ships no mic)
+//   trailing       C5 more trailing buttons (core's mic: voice/dictation-button)
 import {
   useEffect,
   useRef,
@@ -52,6 +52,8 @@ import { kindIcon, kindLabel } from "./context-icons";
 import { ModelPicker } from "./model-picker";
 import { EffortPicker } from "./effort-picker";
 import { PlusMenu, type PlusMenuItem } from "./plus-menu";
+import { WebToggle } from "./web-toggle";
+import { DictationButton } from "./voice/dictation-button";
 
 export type { PlusMenuItem } from "./plus-menu";
 
@@ -86,9 +88,17 @@ export interface ComposerProps {
   effortValue?: ReasoningLevel | null;
   /** A new chat: the level pick is held by the caller, not written yet. */
   onEffortPick?: (level: ReasoningLevel | null) => void;
+  /** The "Web" switch for this message; left out (no search provider), the
+   *  composer shows none. */
+  web?: { on: boolean; onChange: (on: boolean) => void };
   /** While busy, a send goes to the running run (steering): Send stays
    *  beside Stop, and Enter sends. */
   sendWhileBusy?: boolean;
+  /** While busy, "Send after" queues the text as the next message once the
+   *  answer is done (spec §5.5). With `sendWhileBusy` the plain Send becomes
+   *  "Steer now" beside it; Enter takes "Steer now" when it is offered,
+   *  otherwise "Send after". */
+  onSendAfter?: (submit: ComposerSubmit) => void;
   agentItems?: SigilItem[];
   onAddressAgent?: (agentId: string) => void;
   /** C4: "To the running run …" */
@@ -97,7 +107,7 @@ export interface ComposerProps {
   above?: ReactNode;
   /** C3: data source, knowledge base, oc8 object. */
   extraPlusItems?: PlusMenuItem[];
-  /** C5: dictation button. */
+  /** C5: more buttons before Send (core's own mic is shown before them). */
   trailing?: ReactNode;
   /** Read-only share: no Stop button, Esc does not stop. */
   disabled?: boolean;
@@ -128,6 +138,10 @@ function maxMb(): number {
 // 44 px on touch screens, 36 px with a pointer (DESIGN.md, Buttons).
 const ICON_BUTTON =
   "grid size-11 place-items-center sm:size-9 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
+
+// The two labelled sends while an answer runs: 44 px tall on touch screens.
+const TEXT_BUTTON =
+  "inline-flex h-11 shrink-0 items-center rounded-md px-3 text-xs font-medium sm:h-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2";
 
 export function Composer(props: ComposerProps) {
   const t = useT();
@@ -357,10 +371,23 @@ export function Composer(props: ComposerProps) {
     }
   }
 
-  function submit() {
+  /** `after`: the "Send after" button, or Enter while it is the only send. */
+  function submit(after = props.busy && !!props.onSendAfter && !props.sendWhileBusy) {
     const text = props.draft.trim();
-    const steering = props.busy && !!props.sendWhileBusy;
-    if (!text || props.disabled || (props.busy && !steering) || uploading > 0) return;
+    const queueing = props.busy && after && !!props.onSendAfter;
+    const steering = props.busy && !queueing && !!props.sendWhileBusy;
+    if (!text || props.disabled || (props.busy && !steering && !queueing) || uploading > 0) {
+      return;
+    }
+    if (queueing && (attachments.length > 0 || refs.length > 0)) {
+      setError(
+        t(
+          "A message for after the answer is text only. Remove the attachments, or send them once it's done.",
+          "Eine Nachricht für nach der Antwort geht nur als Text. Entfern die Anhänge oder schick sie, wenn sie fertig ist.",
+        ),
+      );
+      return;
+    }
     if (steering && (attachments.length > 0 || refs.length > 0)) {
       setError(
         t(
@@ -397,7 +424,9 @@ export function Composer(props: ComposerProps) {
       props.onDraftChange("");
       return;
     }
-    props.onSend({ text, attachmentIds: attachments.map((a) => a.id), contextRefs: refs });
+    const sent = { text, attachmentIds: attachments.map((a) => a.id), contextRefs: refs };
+    if (queueing) props.onSendAfter?.(sent);
+    else props.onSend(sent);
     setAttachments([]);
     setRefs([]);
     setError(null);
@@ -488,6 +517,25 @@ export function Composer(props: ComposerProps) {
       onSelect: () => p.onSelect(slotProps),
     })),
   ];
+  /** Dictated words go where the caret is, spaced from their neighbours,
+   *  for the person to read over: never sent from here. */
+  function insertDictation(text: string) {
+    const box = textarea.current;
+    const current = box?.value ?? props.draft;
+    const at = Math.min(box?.selectionStart ?? current.length, current.length);
+    const before = current.slice(0, at);
+    const after = current.slice(at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = after && !/^\s/.test(after) ? " " : "";
+    const end = before.length + lead.length + text.length;
+    props.onDraftChange(before + lead + text + trail + after);
+    setCaret(end);
+    setTimeout(() => {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(end, end);
+    }, 0);
+  }
+
   const canSend = !!props.draft.trim() && !props.disabled && uploading === 0;
   const chips = attachments.length > 0 || refs.length > 0 || uploading > 0;
 
@@ -600,7 +648,7 @@ export function Composer(props: ComposerProps) {
           onPaste={onPaste}
           className="edition-accent-focus max-h-48 min-h-10 w-full resize-none rounded-md bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground"
         />
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 items-center gap-1">
           <PlusMenu items={plusItems} disabled={props.disabled || textOnly} />
           {props.showModelPicker && (
             <>
@@ -621,7 +669,18 @@ export function Composer(props: ComposerProps) {
               />
             </>
           )}
+          {props.web && (
+            <WebToggle on={props.web.on} onChange={props.web.onChange} disabled={props.disabled} />
+          )}
           <div className="flex-1" />
+          {!readOnly && (
+            <DictationButton
+              sessionId={props.sessionId}
+              ensureSession={props.ensureSession}
+              onTranscript={insertDictation}
+              className={ICON_BUTTON}
+            />
+          )}
           {props.trailing}
           {!readOnly &&
             composerActions.map(({ id, component: Action }) => (
@@ -641,10 +700,52 @@ export function Composer(props: ComposerProps) {
               <Square className="size-3.5" aria-hidden />
             </button>
           )}
-          {props.busy && !props.sendWhileBusy ? null : (
+          {props.busy && props.onSendAfter && !props.disabled ? (
+            // Two sends while the answer runs (spec §5.5): never a plain one.
+            <>
+              {props.sendWhileBusy && (
+                <button
+                  type="button"
+                  onClick={() => submit(false)}
+                  disabled={!canSend}
+                  title={t(
+                    "Goes to the running answer before its next step",
+                    "Geht vor dem nächsten Schritt an die laufende Antwort",
+                  )}
+                  className={cn(
+                    TEXT_BUTTON,
+                    canSend
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {t("Steer now", "Jetzt einlenken")}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => submit(true)}
+                disabled={!canSend}
+                title={t(
+                  "Becomes the next message when the answer is done",
+                  "Wird die nächste Nachricht, wenn die Antwort fertig ist",
+                )}
+                className={cn(
+                  TEXT_BUTTON,
+                  !canSend
+                    ? "bg-muted text-muted-foreground"
+                    : props.sendWhileBusy
+                      ? "border border-border text-foreground hover:bg-muted"
+                      : "bg-primary text-primary-foreground",
+                )}
+              >
+                {t("Send after", "Danach senden")}
+              </button>
+            </>
+          ) : props.busy && !props.sendWhileBusy ? null : (
             <button
               type="button"
-              onClick={submit}
+              onClick={() => submit()}
               disabled={!canSend}
               aria-label={props.sendLabel ?? t("Send", "Senden")}
               className={cn(

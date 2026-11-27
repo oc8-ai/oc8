@@ -32,6 +32,7 @@ from oc8.agent.engine import run_agent
 from oc8.agents.versioning import publish_version
 from oc8.connections.direct_access import DIRECT_ACTION_NUDGE
 from oc8.modelrouter import ToolCall
+from oc8.runtime.approval_resume import Decisions
 
 pytestmark = pytest.mark.asyncio
 
@@ -733,7 +734,7 @@ async def test_an_elicited_department_held_write_needs_both_approvals_and_runs_o
             task_text="resume",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
     assert leg2.status == "done"
     assert [name for name, _s, _e in recorder.windows] == ["update_record"]
@@ -1137,7 +1138,7 @@ async def _two_legs_on(
         task_text="resume",
         tenant_id=office.tenant,
         run_id=run.id,
-        pre_decided={approved: "approve"},
+        pre_decided=Decisions.of({approved: "approve"}),
     )
 
 
@@ -1233,7 +1234,7 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
             task_text="resume again",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided={approved: "approve"},
+            pre_decided=Decisions.of({approved: "approve"}),
         )
     (entry,) = [e for e in leg3.tool_calls if e["tool"] == "update_record"]
     assert "have not read" in str(entry["result"])
@@ -1242,7 +1243,7 @@ async def test_a_waiver_is_spent_once_per_approval_across_legs(
 
 async def _decide_both_stages(
     db: AsyncSession, office: DirectOffice, run: m.AgentRun
-) -> dict[str, str]:
+) -> dict[str, dict[str, Any]]:
     """The person approves their card, then the holding department approves
     the one that raises; returns what the resumed leg is pre-decided with."""
     from tests.copilot.test_direct_access_department_stage import _approver, _human
@@ -1313,7 +1314,7 @@ async def test_a_pdp_hold_leaves_no_proof_so_the_resumed_write_is_refused(
             task_text="resume",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
     assert recorder.windows == []
 
@@ -1358,7 +1359,7 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
             task_text="resume",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
         assert leg2.status == "done"
         assert [n for n, _s, _e in recorder.windows] == ["get_record", "update_record"]
@@ -1374,12 +1375,156 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
             task_text="resume again",
             tenant_id=office.tenant,
             run_id=run.id,
-            pre_decided=pre,
+            pre_decided=Decisions.of(pre),
         )
     # The approval covered leg 2's run, so the repeat is asked again --
     # never run on it a second time.
     assert leg3.status == "waiting_for_approval"
     assert [n for n, _s, _e in recorder.windows].count("update_record") == 1
+
+
+async def test_the_repeated_call_is_denied_with_the_reason(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A person rejected the held write and said why: the resumed leg's
+    repeat of exactly that call is refused with who rejected it and why, so
+    the model changes course instead of retrying."""
+    from oc8.runtime.approval_resume import Decisions, resolve_tool_approval
+
+    recorder = _RecordingServer(delay_s=0)
+    _patch(
+        monkeypatch,
+        recorder,
+        [
+            _turn("", ToolCall(id="c1", name="get_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c2", name="update_record", arguments=dict(_ORDER))),
+            # The resumed leg reads again and retries the very call.
+            _turn("", ToolCall(id="c3", name="get_record", arguments=dict(_ORDER))),
+            _turn("", ToolCall(id="c4", name="update_record", arguments=dict(_ORDER))),
+            *[_turn("done") for _ in range(8)],
+        ],
+    )
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant)
+        await _focused(db, office)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        run = await chat_run(db, office)
+        leg1 = await _run(db, office, agent, run)
+        assert leg1.status == "waiting_for_approval"
+        ada = m.OrgMember(
+            tenant_id=tenant, subject="ada", subject_uuid=uuid.uuid4(), display_name="Ada Admin"
+        )
+        db.add(ada)
+        await db.flush()
+        held = await _held(db)
+        held.status, held.reason, held.decided_by = "rejected", "wrong customer", ada.id
+        await db.flush()
+        await resolve_tool_approval(db, approval=held, decision="reject")
+        await db.refresh(run)
+        leg2 = await run_agent(
+            db,
+            agent=agent,
+            task_text="resume",
+            tenant_id=office.tenant,
+            run_id=run.id,
+            pre_decided=Decisions(run.context),
+        )
+    (repeat,) = [e for e in leg2.tool_calls if e["tool"] == "update_record"]
+    assert repeat["state"] == "denied"
+    assert (
+        "ERROR from oc8 (update_record): rejected by Ada Admin: wrong customer. "
+        "Adjust your approach instead of retrying the same call."
+    ) in str(repeat["result"])
+    assert [n for n, _s, _e in recorder.windows] == ["get_record", "get_record"]
+
+
+async def test_a_person_who_may_only_read_lets_the_copilot_load_a_skill(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Loading a skill only hands the model a procedure: the PEP decides it as
+    a read and an early ALLOW, and it reaches no connection. It used to fall
+    back to the run's opened connection and count as a direct call, whose
+    per-call check judged it a change -- refused for a person who may only
+    read, so the Copilot could not load its own skill."""
+    from oc8.skills.runtime import load_assigned_skills
+
+    recorder = _RecordingServer(delay_s=0)
+    _opened, _bus, stream = _patch(monkeypatch, recorder, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        office = await direct_office(db, tenant, policy=READ_ONLY)
+        await grant(db, office)
+        agent = await _copilot(db, office)
+        skill = m.Skill(
+            id=uuid.uuid4(), tenant_id=tenant, name="Refunds", description="d", author="t"
+        )
+        db.add(skill)
+        await db.flush()
+        version = m.SkillVersion(
+            id=uuid.uuid4(),
+            tenant_id=tenant,
+            skill_id=skill.id,
+            semver="1.0.0",
+            definition={
+                "oc8_skill": 1,
+                "id": "sk-refunds",
+                "version": "1.0.0",
+                "instruction": "STEP ONE: check the refund policy.",
+                "requires": {"tools": [], "kbs": []},
+                "guardrails": [],
+            },
+            artifact_hash=b"\x00" * 32,
+        )
+        db.add(version)
+        await db.flush()
+        db.add(
+            m.SkillAssignment(
+                id=uuid.uuid4(),
+                tenant_id=tenant,
+                agent_id=agent.id,
+                skill_version_id=version.id,
+                enabled=True,
+            )
+        )
+        await db.flush()
+        (loaded,) = await load_assigned_skills(db, agent=agent, tenant_id=tenant)
+        stream.script.extend(
+            [_turn("", ToolCall(id="c1", name=loaded.tool_name, arguments={})), _turn("done")]
+        )
+        run = await chat_run(db, office)
+        result = await _run(db, office, agent, run)
+    # Read back once the run's session committed, like every audit test.
+    async with app_session(tenant) as db:
+        events = list(
+            (
+                await db.execute(
+                    select(m.AuditEvent)
+                    .where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action.in_(
+                            [f"tool.call:{loaded.tool_name}", f"tool.result:{loaded.tool_name}"]
+                        ),
+                    )
+                    .order_by(m.AuditEvent.seq)
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert result.status == "done"
+    (entry,) = [e for e in result.tool_calls if e["tool"] == loaded.tool_name]
+    assert "STEP ONE" in entry["result"], entry
+    # Not on the person's behalf: no connection was reached.
+    assert "actingMember" not in entry
+    call, outcome = events
+    assert call.action == f"tool.call:{loaded.tool_name}"
+    assert call.decision == "allow"
+    assert "basis" not in call.resource
+    assert outcome.action == f"tool.result:{loaded.tool_name}"
+    assert outcome.resource["outcome"] == "ok"
+    assert recorder.windows == []
 
 
 async def test_a_direct_call_over_the_departments_usage_limit_is_refused(

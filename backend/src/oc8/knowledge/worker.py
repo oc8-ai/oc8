@@ -3,20 +3,36 @@
 Reuses the durable-run machinery wholesale: a dedicated Redis stream via the
 already-parameterized RunQueue, and run_worker's already-parameterized handler
 slot. On this stream the RunMessage `run_id` field carries the IngestionJob id.
+
+Two kinds of job share it: a connector sync (`run_source_sync`) and the
+indexing of one large chat file (`ingest_chat_file`, spec §5.4), told apart
+by `IngestionJob.stats["kind"]`.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.chat.files_kb import (
+    CHAT_FILE_JOB,
+    chat_file_uri,
+    chat_local_reason,
+    finish_chat_file,
+    lock_chat_source,
+)
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
-from oc8.knowledge.ingest import run_source_sync
+from oc8.knowledge.connectors.base import RawDocument
+from oc8.knowledge.ingest import IngestionError, ingest_raw_document, run_source_sync
 from oc8.runtime.queue import RunMessage, RunQueue
+from oc8.storage import s3
+from oc8.storage.attachments import full_text_key
 from oc8.tenants.activity import TENANT_INACTIVE_REASON, tenant_may_run
 
 logger = logging.getLogger(__name__)
@@ -59,6 +75,13 @@ async def ingest_job(message: RunMessage) -> None:
     """
     job_id = uuid.UUID(message["run_id"])  # this stream carries the job id here
     tenant_id = uuid.UUID(message["tenant_id"])
+
+    async with tenant_session(tenant_id) as db:
+        job = await db.get(m.IngestionJob, job_id)
+        chat_file = job is not None and _is_chat_file_job(job)
+    if chat_file:
+        await ingest_chat_file(message)
+        return
 
     async with tenant_session(tenant_id) as db:
         job = await db.get(m.IngestionJob, job_id)
@@ -142,7 +165,140 @@ async def recover_ingestion(message: RunMessage) -> None:
         if job.status == "running":
             job.status = "failed"
             job.stats = {**(job.stats or {}), "error": "worker died mid-ingestion"}
+            if _is_chat_file_job(job):
+                # Its file is handed over inline from now on.
+                await finish_chat_file(
+                    db, attachment_id=uuid.UUID(job.stats["attachment_id"]), status="failed"
+                )
             logger.warning("ingestion job %s marked failed: lease lost", job_id)
             return  # tenant_session commits
     # queued: run it in a fresh session, like recover_reclaimed defers to execute_run
     await ingest_job(message)
+
+
+def _is_chat_file_job(job: m.IngestionJob) -> bool:
+    return (job.stats or {}).get("kind") == CHAT_FILE_JOB
+
+
+class _ChatFileGone(Exception):
+    """The chat's base or source, or the file itself, went away mid-ingest."""
+
+
+async def _fail_chat_file(
+    tenant_id: uuid.UUID, job_id: uuid.UUID, attachment_id: uuid.UUID, error: str
+) -> None:
+    async with tenant_session(tenant_id) as db:
+        job = await db.get(m.IngestionJob, job_id)
+        if job is None or job.status not in ("queued", "running"):
+            return
+        job.status = "failed"
+        job.stats = {**(job.stats or {}), "error": error}
+        await finish_chat_file(db, attachment_id=attachment_id, status="failed")
+
+
+async def ingest_chat_file(message: RunMessage) -> None:
+    """Index one large chat file into its chat's own knowledge base.
+
+    Claimed in a short transaction of its own first, for the reason
+    `ingest_job` gives. Then the file's full text (stored beside it at upload)
+    is chunked and embedded under `chat_file_max_chars`, with a vector for
+    every chunk or not at all: a model that is down, or an embedding policy
+    that keeps the text off every model there is (a local-only base, a
+    restricted label), fails the job and the file is handed to the model
+    inline and truncated, as before. When the chat's agent runs on a local
+    model, only a local embedding model may embed the file
+    (`chat.files_kb.chat_local_reason`): a cloud one is refused and the file
+    goes inline.
+
+    Before its chunks commit, the chat's source row is locked and re-checked
+    (`chat.files_kb.lock_chat_source`, the mutex with `drop_chat_kb`): the
+    chat was deleted meanwhile -> the whole transaction rolls back, the job
+    fails, and nothing is left under the dropped base. The lock is taken
+    only then, not before the embedding, so deleting a chat never waits for
+    minutes of embedding calls.
+    """
+    job_id = uuid.UUID(message["run_id"])
+    tenant_id = uuid.UUID(message["tenant_id"])
+
+    async with tenant_session(tenant_id) as db:
+        job = await db.get(m.IngestionJob, job_id)
+        if job is None or job.status != "queued":
+            return
+        attachment_id = uuid.UUID(job.stats["attachment_id"])
+        error: str | None = None
+        attachment = await db.get(m.FileAttachment, attachment_id)
+        ds = await db.get(m.DataSource, job.data_source_id)
+        if not await tenant_may_run(tenant_id):
+            error = TENANT_INACTIVE_REASON
+        elif ds is None or ds.deleted_at is not None:
+            error = "data source no longer exists"
+        elif job.kb_id is None or not await _live_base(db, job.kb_id):
+            error = "job has no knowledge base"
+        elif attachment is None:
+            error = "the file no longer exists"
+        if error is not None:
+            job.status = "failed"
+            job.stats = {**(job.stats or {}), "error": error}
+            await finish_chat_file(db, attachment_id=attachment_id, status="failed")
+            return  # tenant_session commits the failed job
+        assert attachment is not None and job.kb_id is not None
+        kb_id, source_id = job.kb_id, job.data_source_id
+        base = await db.get(m.KnowledgeBase, kb_id)
+        chat = (
+            await db.get(m.ChatSession, base.chat_session_id)
+            if base is not None and base.chat_session_id is not None
+            else None
+        )
+        # The chat's agent on a local model -> no cloud embedding model sees
+        # its files; with no local one configured the file goes inline.
+        local_reason = await chat_local_reason(db, session=chat)
+        text_key, filename = full_text_key(attachment), attachment.filename
+        job.status = "running"
+
+    try:
+        content = (await s3.get_object(text_key)).decode("utf-8")
+        async with tenant_session(tenant_id) as db:
+            job = await db.get(m.IngestionJob, job_id)
+            if job is None or job.status != "running":
+                return  # a reclaimer failed it meanwhile
+            ds = await db.get(m.DataSource, source_id)
+            if ds is None:
+                raise _ChatFileGone("data source no longer exists")
+            chunks = await ingest_raw_document(
+                db,
+                tenant_id=tenant_id,
+                data_source=ds,
+                kb_id=kb_id,
+                raw=RawDocument(
+                    source_uri=chat_file_uri(attachment_id),
+                    title=filename,
+                    content=content,
+                    content_type="text/plain",
+                    content_hash=hashlib.sha256(content.encode()).hexdigest(),
+                    metadata={"attachment_id": str(attachment_id), "filename": filename},
+                ),
+                max_chars=get_settings().chat_file_max_chars,
+                require_embeddings=True,
+                require_local=local_reason,
+            )
+            if await lock_chat_source(db, source_id=source_id) is None:
+                raise _ChatFileGone("the chat was deleted while its file was indexed")
+            kb = (
+                await db.execute(
+                    select(m.KnowledgeBase)
+                    .where(m.KnowledgeBase.id == kb_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if kb is None or kb.deleted_at is not None:
+                raise _ChatFileGone("the chat was deleted while its file was indexed")
+            if not await finish_chat_file(db, attachment_id=attachment_id, status="indexed"):
+                raise _ChatFileGone("the file no longer exists")
+            job.status = "succeeded"
+            job.stats = {**(job.stats or {}), "chunks": chunks, "chars": len(content)}
+    except (IngestionError, _ChatFileGone, s3.ObjectNotFound) as exc:
+        logger.info("chat file %s not indexed: %s", attachment_id, exc)
+        await _fail_chat_file(tenant_id, job_id, attachment_id, str(exc) or type(exc).__name__)
+    except Exception:
+        logger.exception("chat file %s: indexing failed", attachment_id)
+        await _fail_chat_file(tenant_id, job_id, attachment_id, "indexing failed")

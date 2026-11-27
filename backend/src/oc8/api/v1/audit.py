@@ -17,11 +17,12 @@ import io
 import json
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import ColumnElement, Select, Text, func, literal_column, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 
 from oc8 import models as m
@@ -83,6 +84,7 @@ _PERSONAL_CONTENT_KEYS: frozenset[str] = frozenset(
         "answer",
         "text",
         "body",
+        "note",
     }
 )
 
@@ -98,21 +100,46 @@ def _content_keys(action: str) -> frozenset[str]:
     return _PERSONAL_CONTENT_KEYS
 
 
-#: Is this personal department's content hidden from the reader?
-_HidesDepartment = Callable[[uuid.UUID], bool]
+#: Events written before they named their agent, whose subject is therefore
+#: unknown: treated as personal (fail closed) -- their content keys are shown
+#: to the person who wrote them and nobody else. The trail is immutable, so
+#: only new events can carry the `agent_id` that settles it.
+_SUBJECTLESS_BEFORE_AGENT_ID: frozenset[str] = frozenset({"chat.feedback"})
 
 
-async def _personal_reader(db: DbSession, principal: Principal) -> _HidesDepartment:
+@dataclass(frozen=True)
+class _Reader:
+    #: Is this personal department's content hidden from the reader?
+    hides: Callable[[uuid.UUID], bool]
+    #: The reader's own member row, if any.
+    member_id: uuid.UUID | None
+
+
+async def _personal_reader(db: DbSession, principal: Principal) -> _Reader:
     """The reader's side of the personal-content rule, resolved once per
     request: the owner's seat sees its own department's content, everybody
     else (an auditor, an admin, a token with no member row) sees none."""
     try:
-        _member, scope = await scope_for_principal(db, principal)
+        member, scope = await scope_for_principal(db, principal)
     except PermissionError:
-        return lambda _department_id: True
-    return lambda department_id: personal_content_hidden(
-        kind=DEPARTMENT_KIND_PERSONAL, department_id=department_id, scope=scope
+        return _Reader(hides=lambda _department_id: True, member_id=None)
+    return _Reader(
+        hides=lambda department_id: personal_content_hidden(
+            kind=DEPARTMENT_KIND_PERSONAL, department_id=department_id, scope=scope
+        ),
+        member_id=member.id if member is not None else None,
     )
+
+
+def _subject_unknown(ev: m.AuditEvent, reader: _Reader) -> bool:
+    """An event of `_SUBJECTLESS_BEFORE_AGENT_ID` that names no agent, read by
+    anybody but the person who wrote it."""
+    if ev.action not in _SUBJECTLESS_BEFORE_AGENT_ID:
+        return False
+    resource = ev.resource if isinstance(ev.resource, dict) else {}
+    if _as_uuid(resource.get("agent_id")) is not None:
+        return False
+    return reader.member_id is None or ev.actor_id != reader.member_id
 
 
 def _as_uuid(value: object) -> uuid.UUID | None:
@@ -139,7 +166,7 @@ def _subjects(ev: m.AuditEvent) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
 
 
 async def _events_to_dtos(
-    db: DbSession, events: Sequence[m.AuditEvent], hides: _HidesDepartment
+    db: DbSession, events: Sequence[m.AuditEvent], reader: _Reader
 ) -> list[AuditEventDTO]:
     """`_event_to_dto` for one page, with a personal agent's content stripped
     for every reader but its owner. One query per page resolves which of the
@@ -173,7 +200,7 @@ async def _events_to_dtos(
         owners = {personal_agents[a] for a in agents if a in personal_agents}
         owners |= departments & personal_departments
         dto = _event_to_dto(ev)
-        if any(hides(d) for d in owners):
+        if any(reader.hides(d) for d in owners) or _subject_unknown(ev, reader):
             if isinstance(dto.resource, dict):
                 stripped = _content_keys(ev.action)
                 dto.resource = {k: v for k, v in dto.resource.items() if k not in stripped}
@@ -248,6 +275,8 @@ def _filtered(
     responsible_type: str | None,
     from_ts: dt.datetime | None,
     to_ts: dt.datetime | None,
+    run_id: uuid.UUID | None = None,
+    chat_session_id: uuid.UUID | None = None,
 ) -> Select[tuple[m.AuditEvent]]:
     if category:
         stmt = stmt.where(m.AuditEvent.category == category)
@@ -263,7 +292,20 @@ def _filtered(
         stmt = stmt.where(m.AuditEvent.ts >= from_ts)
     if to_ts:
         stmt = stmt.where(m.AuditEvent.ts <= to_ts)
+    # Every event that names the run or chat in `resource`, tool calls
+    # included (spec §5.7).
+    if run_id is not None:
+        stmt = stmt.where(_resource_key("run_id") == str(run_id))
+    if chat_session_id is not None:
+        stmt = stmt.where(_resource_key("chat_session_id") == str(chat_session_id))
     return stmt
+
+
+def _resource_key(key: str) -> ColumnElement[str]:
+    """`resource ->> '<key>'` with the key as a literal, never a bound
+    parameter: only then is it the expression migration 0144 indexes, under a
+    generic prepared plan as well. `key` is one of this module's constants."""
+    return m.AuditEvent.resource.op("->>", return_type=Text)(literal_column(f"'{key}'"))
 
 
 @router.get("/audit", response_model=AuditPageDTO, dependencies=[Depends(_require_read)])
@@ -277,6 +319,8 @@ async def list_audit_events(
     responsible_type: str | None = None,
     from_: Annotated[str | None, Query(alias="from")] = None,
     to: Annotated[str | None, Query(alias="to")] = None,
+    run_id: uuid.UUID | None = None,
+    chat_session_id: uuid.UUID | None = None,
     before_seq: int | None = None,
     limit: int = 50,
 ) -> AuditPageDTO:
@@ -292,6 +336,8 @@ async def list_audit_events(
         responsible_type=responsible_type,
         from_ts=from_ts,
         to_ts=to_ts,
+        run_id=run_id,
+        chat_session_id=chat_session_id,
     )
     if before_seq is not None:
         stmt = stmt.where(m.AuditEvent.seq < before_seq)
@@ -300,8 +346,8 @@ async def list_audit_events(
     )
     page = rows[:limit]
     next_before = page[-1].seq if len(rows) > limit and page else None
-    hides = await _personal_reader(db, principal)
-    return AuditPageDTO(events=await _events_to_dtos(db, page, hides), next_before_seq=next_before)
+    reader = await _personal_reader(db, principal)
+    return AuditPageDTO(events=await _events_to_dtos(db, page, reader), next_before_seq=next_before)
 
 
 # Column order is stable; column NAMES are the AuditEventDTO camelCase aliases
@@ -352,10 +398,12 @@ async def export_audit_events(
     responsible_type: str | None = None,
     from_: Annotated[str | None, Query(alias="from")] = None,
     to: Annotated[str | None, Query(alias="to")] = None,
+    run_id: uuid.UUID | None = None,
+    chat_session_id: uuid.UUID | None = None,
 ) -> StreamingResponse:
     from_ts = _parse_bound(from_, field="from", end_of_day=False)
     to_ts = _parse_bound(to, field="to", end_of_day=True)
-    hides = await _personal_reader(db, principal)
+    reader = await _personal_reader(db, principal)
     base = _filtered(
         select(m.AuditEvent),
         category=category,
@@ -365,6 +413,8 @@ async def export_audit_events(
         responsible_type=responsible_type,
         from_ts=from_ts,
         to_ts=to_ts,
+        run_id=run_id,
+        chat_session_id=chat_session_id,
     )
 
     # NOTE: this generator keeps using the request-scoped `db` (DbSession) after
@@ -397,7 +447,7 @@ async def export_audit_events(
             )
             if not rows:
                 return
-            for ev, dto in zip(rows, await _events_to_dtos(db, rows, hides), strict=True):
+            for ev, dto in zip(rows, await _events_to_dtos(db, rows, reader), strict=True):
                 if format == "csv":
                     writer.writerow(_row(dto))
                 else:

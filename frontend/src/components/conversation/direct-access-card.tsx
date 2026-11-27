@@ -37,6 +37,7 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
   const [decided, setDecided] = useState<"approved" | "rejected" | "awaiting" | null>(null);
   const [started, setStarted] = useState<Chosen | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [alwaysAllow, setAlwaysAllow] = useState(false);
   const openObject = useObjectNavigation();
   if (!info) return null;
   const agents = info.agents ?? [];
@@ -49,6 +50,14 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
     decided ??
     (approval.status === "approved" && info.awaitingDepartment ? "awaiting" : approval.status);
   const grant = isOffer ? grants?.find((g) => g.approvalId === approval.id) : undefined;
+  // Only the person's own pending write-tier card (the server says which):
+  // never an offer, a department's card or a destructive/outward action.
+  const offersAlwaysAllow =
+    !!approval.alwaysAllowOffered &&
+    !isOffer &&
+    !offersAgents &&
+    status === "pending" &&
+    info.decider === "member";
   const title = offersAgents
     ? t(`${agents[0].name} does this — run it?`, `${agents[0].name} erledigt das – starten?`)
     : resolveTranslation(approval.title, approval.titleTranslations, lang);
@@ -63,7 +72,13 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
   const answer = (decision: "approve" | "reject") => {
     setProblem(null);
     decide.mutate(
-      { approvalId: approval.id, decision },
+      {
+        approvalId: approval.id,
+        decision,
+        ...(decision === "approve" && offersAlwaysAllow && alwaysAllow
+          ? { alwaysAllow: true }
+          : {}),
+      },
       {
         onError: (error) => setProblem(error.message),
         onSuccess: (dto) => {
@@ -240,6 +255,28 @@ export function DirectAccessCard({ approval }: { approval: Approval }) {
           </Button>
         )}
       </div>
+      {offersAlwaysAllow && (
+        <label className="mt-2 flex items-start gap-2 text-xs">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={alwaysAllow}
+            disabled={decide.isPending}
+            onChange={(e) => setAlwaysAllow(e.target.checked)}
+          />
+          <span>
+            <span className="font-medium">
+              {t("Always allow for me", "Immer erlauben (für mich)")}
+            </span>
+            <span className="block text-muted-foreground">
+              {t(
+                "Only this tool on this connection, only for you, only actions that change data — never deleting or sending outside.",
+                "Nur dieses Werkzeug auf dieser Verbindung, nur für dich, nur ändernde Aktionen — nie Löschen oder Versenden nach außen.",
+              )}
+            </span>
+          </span>
+        </label>
+      )}
       {offersAgents && agents.length > 1 && status === "pending" && info.decider === "member" && (
         <div className="mt-2 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
           <span>{t("Also fits: ", "Passt auch: ")}</span>

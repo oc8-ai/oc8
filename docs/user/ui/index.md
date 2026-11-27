@@ -49,4 +49,4 @@ Start here if Flows and Handoffs feel abstract:
 |---------|-----|
 | Welcome wizard | [welcome.md](welcome.md) |
 | Profile | [profile.md](profile.md) |
-| Copilot (dock) | [copilot.md](copilot.md) |
+| Copilot (AI workplace, dock) | [copilot.md](copilot.md) |

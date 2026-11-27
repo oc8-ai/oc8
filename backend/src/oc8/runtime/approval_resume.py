@@ -9,23 +9,42 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8.approvals.repo import department_after_person
+from oc8.models.identity import OrgMember
 from oc8.models.ops import ApprovalRequest
 from oc8.models.run import AgentRun
+from oc8.runtime.fencing import one_line
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import append_consumed_approval, append_resolved_approval
 from oc8.runtime.states import RunState
+
+#: How long a rejection reason may be when the model is told it.
+REASON_LIMIT: Final = 500
+#: Who rejected a call, when the decider has no name the model may be told.
+NO_DECIDER: Final = "a reviewer"
+#: What the model is told about a rejected call that carries no reason.
+REJECTED: Final = "operator rejected this action"
 
 
 def call_signature(tool: str, arguments: dict[str, Any]) -> str:
     """Same signature the engine computes, so a decision made here matches the
     call when the run replays it."""
     return tool + "\n" + json.dumps(arguments, sort_keys=True, default=str)
+
+
+async def _decider_name(db: AsyncSession, approval: ApprovalRequest) -> str:
+    """The decider's display name, as the approval card shows it; "" when
+    there is none. A name that is an email address is not told to a model."""
+    if approval.decided_by is None:
+        return ""
+    member = await db.get(OrgMember, approval.decided_by)
+    name = one_line(member.display_name or "", 120) if member is not None else ""
+    return "" if "@" in name else name
 
 
 async def open_parking_cards(
@@ -120,6 +139,9 @@ async def resolve_tool_approval(
             "tool": tool,
             "arguments": arguments,
             "decision": decision,
+            # What the model is told about a rejection (`rejection_text`).
+            "reason": one_line(approval.reason or "", REASON_LIMIT),
+            "decided_by_name": await _decider_name(db, approval),
             # Names the approval, so the call that uses it up can say which
             # one it used (`claim_approval`).
             "approval_id": str(approval.id),
@@ -157,35 +179,54 @@ async def resolve_tool_approval(
     return run
 
 
+def rejection_text(entry: Mapping[str, Any]) -> str:
+    """What the model is told about a call a person rejected: who and why,
+    when they gave a reason, so it changes course instead of retrying."""
+    reason = one_line(str(entry.get("reason") or ""), REASON_LIMIT)
+    if not reason:
+        return REJECTED
+    name = one_line(str(entry.get("decided_by_name") or ""), 120) or NO_DECIDER
+    return f"rejected by {name}: {reason}. Adjust your approach instead of retrying the same call."
+
+
 def resume_instruction(entries: list[dict[str, Any]]) -> str:
-    """A focused task instruction for the resumed run: perform exactly the
+    """A focused instruction for the resumed leg: perform exactly the
     approved calls (so the model reproduces them and the engine's pre-decision
-    executes them), and do not perform the rejected ones. Deliberately replaces
-    the original task so the model does not replay earlier read/write steps."""
+    executes them), and do not perform the rejected ones. A run without a
+    conversation gets it in place of its task, so the model does not replay
+    earlier read/write steps; a chat turn of the in-process engine gets it
+    after its conversation (`agent.preamble.Resume`)."""
     approved = [e for e in entries if e.get("decision") == "approve"]
     rejected = [e for e in entries if e.get("decision") == "reject"]
     lines: list[str] = [
-        "Fortsetzung nach Freigabe. Eine oder mehrere Aktionen wurden von einem "
-        "Menschen entschieden. Wiederhole KEINE vorherigen Schritte (keine erneute "
-        "Suche, keine erneuten Notizen)."
+        "Resuming after a decision. A person decided one or more actions. Do NOT "
+        "repeat earlier steps (no new searches, no new notes)."
     ]
     for e in approved:
         lines.append(
-            f"FREIGEGEBEN — führe genau diese Aktion jetzt aus: "
-            f"{e['tool']} mit {json.dumps(e['arguments'], ensure_ascii=False)}"
+            "APPROVED — carry out exactly this action now: "
+            f"{e['tool']} with {json.dumps(e['arguments'], ensure_ascii=False)}"
         )
     for e in rejected:
-        lines.append(
-            f"ABGELEHNT — führe diese Aktion NICHT aus: "
-            f"{e['tool']} mit {json.dumps(e['arguments'], ensure_ascii=False)}"
+        line = (
+            "REJECTED — do NOT carry out this action: "
+            f"{e['tool']} with {json.dumps(e['arguments'], ensure_ascii=False)}"
         )
-    lines.append("Fasse danach in 1-2 Sätzen zusammen und rufe keine weiteren Tools auf.")
+        why = rejection_text(e)
+        lines.append(line if why == REJECTED else f"{line} — {why}")
+    lines.append("Then sum up in 1-2 sentences and call no further tools.")
     return "\n".join(lines)
 
 
 def pre_decided_map(entries: list[dict[str, Any]]) -> dict[str, str]:
     """signature -> "approve"|"reject", for the engine to honour on replay."""
     return {e["sig"]: e["decision"] for e in entries if e.get("sig") and e.get("decision")}
+
+
+def resolved_entries(entries: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """signature -> its latest resolved entry (`decision`, and a rejection's
+    `reason` and `decided_by_name` for `rejection_text`)."""
+    return {e["sig"]: e for e in entries if e.get("sig") and e.get("decision")}
 
 
 #: Prefix of the delivery marker an approval leaves when its call runs.
@@ -214,6 +255,9 @@ class Decisions:
         entries = [e for e in ctx.get("resolved_tool_approvals") or [] if isinstance(e, dict)]
         latest = pre_decided_map(entries)
         self.decided = bool(latest)
+        #: signature -> its latest resolved entry, for what a rejection tells
+        #: the model (`rejection_text`).
+        self.latest: dict[str, dict[str, Any]] = resolved_entries(entries)
         consumed = [c for c in ctx.get("consumed_tool_approvals") or [] if isinstance(c, dict)]
         used = {str(c.get("key")) for c in consumed}
         #: call id -> (its signature, the approval claimed for it before it
@@ -252,6 +296,10 @@ class Decisions:
         return cls(
             {"resolved_tool_approvals": [{"sig": k, "decision": v} for k, v in decided.items()]}
         )
+
+    def entry(self, sig: str) -> dict[str, Any]:
+        """The latest resolved entry of this call, `{}` when nobody decided it."""
+        return self.latest.get(sig) or {}
 
     def get(self, sig: str, default: str | None = None) -> str | None:
         return self.verdicts.get(sig, default)

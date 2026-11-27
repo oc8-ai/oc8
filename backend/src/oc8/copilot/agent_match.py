@@ -38,6 +38,7 @@ from oc8.knowledge.embedding_policy import LOCAL_AGENT_REASON, agent_runs_locall
 from oc8.knowledge.retrieval import cosine_similarity
 from oc8.modelrouter import EmbeddingUnavailable, get_model_router
 from oc8.modelrouter.router import embedding_local_tag
+from oc8.runtime.fencing import one_line
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ MATCH_THRESHOLD: float = 0.6
 MATCH_LIMIT: int = 3
 
 _CACHE_SIZE = 512
+#: Longest agent or department name put into a turn (they are person-typed).
+_NAME_LIMIT = 120
 
 
 @dataclass(frozen=True)
@@ -209,14 +212,14 @@ async def matching_agents(
     db: AsyncSession,
     *,
     member_id: uuid.UUID,
-    tool_key: str,
+    tool_key: str | None,
     request: str,
     copilot: m.Agent,
     token_role: str | None = None,
 ) -> list[AgentMatch]:
-    """The agents of the Copilot's tenant that have `tool_key`, that this
-    person may run, and whose published name, role title and mission fit
-    `request` -- best first, at most `MATCH_LIMIT`, each at least
+    """The agents of the Copilot's tenant that have `tool_key` (any agent
+    when `tool_key` is None), that this person may run, and whose published
+    name, role title and mission fit `request` -- best first, at most `MATCH_LIMIT`, each at least
     `MATCH_THRESHOLD`. Empty when embeddings are unavailable."""
     agents = (
         (
@@ -244,7 +247,9 @@ async def matching_agents(
     for agent in agents:
         published = await resolve_version(db, None, agent)
         department = await _frame(db, agent)
-        if not _tool_enabled(department, published.get("narrowing"), tool_key):
+        if tool_key is not None and not _tool_enabled(
+            department, published.get("narrowing"), tool_key
+        ):
             continue
         if not runnable_with(reach, agent):
             continue
@@ -277,3 +282,19 @@ async def matching_agents(
         )
     matches.sort(key=lambda match: match.score, reverse=True)
     return matches[:MATCH_LIMIT]
+
+
+def agent_fit_text(matches: list[AgentMatch]) -> str:
+    """The block a user turn carries: the agents that fit it, best first.
+    Empty without matches. The heading is what the Copilot's mission keys on."""
+    if not matches:
+        return ""
+    lines = [
+        f"- {one_line(match.name, _NAME_LIMIT)} "
+        f"({one_line(match.department_name, _NAME_LIMIT)}) — fit {match.score:.2f}"
+        for match in matches
+    ]
+    return (
+        "\n\nAgents that fit this request and that this person may run (best first):\n"
+        + "\n".join(lines)
+    )

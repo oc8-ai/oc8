@@ -249,17 +249,23 @@ class ModelRouter:
         started = time.monotonic()
         try:
             try:
-                return await adapter.complete(resolved)
+                result = await adapter.complete(resolved)
             except Exception as exc:
                 retry = self._retry_trimmed(resolved, exc)
                 if retry is not None:
-                    return await adapter.complete(retry)
-                plain = self._retry_without_reasoning(resolved, exc)
-                if plain is None:
-                    raise
-                result = await adapter.complete(plain)
-                result.reasoning_dropped = True
-                return result
+                    result = await adapter.complete(retry)
+                else:
+                    plain = self._retry_without_reasoning(resolved, exc)
+                    if plain is None:
+                        raise
+                    result = await adapter.complete(plain)
+                    result.reasoning_dropped = True
+            # The provider the router resolved, as stream() stamps on every
+            # chunk: a plugin provider's adapter is often the OpenAI-compatible
+            # one, whose own name would bill the call outside the plugin
+            # provider's budget and price rows.
+            result.provider = canonical
+            return result
         finally:
             record_model_latency(
                 provider=canonical, model=model, ms=(time.monotonic() - started) * 1000
@@ -280,9 +286,8 @@ class ModelRouter:
                     sent = True
                     # Stamped here, not left to the adapter: `canonical`/`model`
                     # are what resolve() actually decided (a BYOK-missing-key
-                    # downgrade included), the same source complete()'s result
-                    # implicitly carries via the adapter's own `provider=self.
-                    # provider`. A caller reconstructing a CompletionResult from
+                    # downgrade included), the same provider complete() stamps
+                    # on its result. A caller reconstructing a CompletionResult from
                     # chunks (oc8.modelrouter.accumulate) needs this to bill and
                     # cache against the model that actually ran, not the one
                     # requested.
@@ -484,6 +489,8 @@ class ModelRouter:
 
         try:
             async with db.begin_nested():
+                # No member_id: an embedding (ingest, retrieval) has no person
+                # in scope here, so its usage stays unattributed.
                 await record_usage(
                     db,
                     tenant_id=tenant_id,

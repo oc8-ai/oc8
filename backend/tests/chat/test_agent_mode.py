@@ -108,7 +108,7 @@ def test_offered_tools_do_not_exempt_a_connection_tool_named_like_a_core_one() -
 def test_agent_mode_tells_the_copilot_how_to_answer_a_refused_create() -> None:
     """A refused "Create" reaches the Copilot as an oc8 notice turn; the mode
     says to explain it and fix the proposal or say what the person must do."""
-    from oc8.chat.service import NOTICE_PREFIX
+    from oc8.chat.turn_context import NOTICE_PREFIX
 
     text = AGENT.instruction
     assert NOTICE_PREFIX.strip().rstrip(":") in text

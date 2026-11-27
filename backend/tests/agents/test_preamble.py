@@ -19,6 +19,7 @@ from oc8 import models as m
 from oc8.agent.harness.caps import ModelCaps
 from oc8.agent.preamble import build_run_preamble, system_prompt
 from oc8.authz.permissions import AGENT, APPROVAL, VIEW, perm
+from oc8.chat.replay import ChatReplay
 from oc8.modelrouter.types import ImagePart
 from tests.conftest import AppSessionFactory
 
@@ -549,6 +550,58 @@ async def test_the_provenance_rule_precedes_anything_a_stranger_wrote(
     assert RULE in systems
 
 
+@pytest.mark.parametrize(("source", "said"), [("chat", True), ("event", False)])
+async def test_a_chat_turn_is_told_where_a_figure_comes_from(
+    app_session: AppSessionFactory, source: str, said: bool
+) -> None:
+    """A budget, a usage figure or a record count the model remembers from an
+    earlier turn, or makes up, reads exactly like one it just looked up. A
+    chat's preamble says once, in the stable system prefix, where a figure has
+    to come from -- a tool result, the knowledge context, the task or the
+    figure the person told you in this conversation -- and what to say when
+    none holds it. A triggered
+    run has no earlier turn and its figures come with its task: not told."""
+    from oc8.agent.preamble import GROUNDING_RULE
+    from oc8.agent.provenance import RULE
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _solo_agent(db, tenant)
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, source=source, state="running", context={}
+        )
+        db.add(run)
+        await db.flush()
+        pre = await build_run_preamble(
+            db, agent=agent, tenant_id=tenant, task_text="Wie viel Budget ist noch übrig?",
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40, run_id=run.id,
+        )
+    systems = [msg.content for msg in pre.messages if msg.role == "system"]
+    assert (GROUNDING_RULE in systems) is said
+    if said:
+        assert systems[systems.index(RULE) + 1] == GROUNDING_RULE
+    rule = GROUNDING_RULE.lower()
+    for word in ("budget", "tool result", "knowledge context", "the task", "this conversation"):
+        assert word in rule
+    assert "estimat" in rule and "earlier answer" in rule
+
+
+async def test_the_copilot_is_told_where_a_figure_comes_from(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.agent.preamble import GROUNDING_RULE
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        pre = await build_run_preamble(
+            db, agent=assistant, tenant_id=tenant, task_text="Budget?",
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40,
+        )
+    assert GROUNDING_RULE in [msg.content for msg in pre.messages if msg.role == "system"]
+
+
 async def _solo_agent(db: Any, tenant: uuid.UUID) -> m.Agent:
     dept = m.Department(tenant_id=tenant, name="Vertrieb", frame={})
     db.add(dept)
@@ -698,7 +751,7 @@ async def test_build_run_preamble_grants_permissions_the_human_behind_the_chat_h
     assert f"- Acting for: {member.subject}" in joined
 
 
-def test_system_prompt_tells_the_assistant_to_open_with_status() -> None:
+def test_system_prompt_has_no_status_opener_for_the_assistant() -> None:
     assistant = m.Agent(
         tenant_id=uuid.uuid4(),
         department_id=uuid.uuid4(),
@@ -717,12 +770,10 @@ def test_system_prompt_tells_the_assistant_to_open_with_status() -> None:
         presentation={},
         is_tenant_assistant=False,
     )
-    assert "list_pending_approvals" in system_prompt(
-        assistant, caps=ModelCaps(), tenant_name="Acme"
-    )
-    assert "list_pending_approvals" not in system_prompt(
-        ordinary, caps=ModelCaps(), tenant_name="Acme"
-    )
+    for agent in (assistant, ordinary):
+        prompt = system_prompt(agent, caps=ModelCaps(), tenant_name="Acme")
+        assert "At the start of a new conversation" not in prompt
+        assert "list_pending_approvals" not in prompt
 
 
 @pytest.mark.parametrize(
@@ -855,3 +906,367 @@ async def test_systems_you_can_reach_names_only_systems_the_agent_can_use(
 
     joined = "\n".join(msg.content for msg in pre.messages if isinstance(msg.content, str))
     assert "- Systems you can reach: microsoft365\n" in joined
+
+
+def _fixed_retrieval(monkeypatch: pytest.MonkeyPatch, queries: list[str]) -> None:
+    """Memory and KB retrieval as fixed blocks, recording each query text."""
+
+    async def _memory(*_a: Any, query_text: str, **_kw: Any) -> str:
+        queries.append(query_text)
+        return "MEMORY-BLOCK"
+
+    async def _kb(*_a: Any, query_text: str, **_kw: Any) -> tuple[str, bool]:
+        queries.append(query_text)
+        return "KB-BLOCK", False
+
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_context", _memory)
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_kb_context", _kb)
+
+
+async def _copilot_chat(
+    db: Any, tenant: uuid.UUID, turns: list[tuple[str, str]]
+) -> tuple[m.Agent, m.Task, m.AgentRun, ChatReplay]:
+    """The Copilot answering a chat whose path so far is `turns`."""
+    assistant, task, run = await _copilot_with_person(db, tenant, seats=[])
+    session = await db.get(m.ChatSession, uuid.UUID(run.context["chat_session_id"]))
+    parent: m.ChatMessage | None = None
+    for role, content in turns:
+        message = m.ChatMessage(
+            tenant_id=tenant, session_id=session.id, role=role, content=content,
+            parent_id=parent.id if parent is not None else None,
+        )
+        db.add(message)
+        await db.flush()
+        parent = message
+    assert parent is not None
+    session.current_leaf_id = parent.id
+    run.context = {
+        **run.context, "task": "User: NEW-TURN", "turn_text": "NEW-TURN",
+        "turn_role": "user", "transcript_until": str(parent.id),
+    }
+    await db.flush()
+    return assistant, task, run, ChatReplay(session.id, parent.id)
+
+
+async def test_chat_replay_order(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _direct_access(*_a: Any, **_kw: Any) -> str:
+        return "DIRECT-ACCESS-BLOCK"
+
+    monkeypatch.setattr("oc8.copilot.direct_access.direct_access_block", _direct_access)
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(
+            db, tenant, [("user", "OLD-QUESTION"), ("assistant", "OLD-ANSWER")]
+        )
+        pre = await build_run_preamble(
+            db, agent=assistant, tenant_id=tenant, task_text="User: NEW-TURN", frame={},
+            model_locality="cloud", caps=ModelCaps(), max_steps=40, task=task,
+            run_id=run.id, replay=replay,
+        )
+
+    roles = [msg.role for msg in pre.messages]
+    first_turn = roles.index("user")
+    assert set(roles[:first_turn]) == {"system"}
+    assert roles[first_turn:] == ["user", "assistant", "user"]
+    assert [msg.content for msg in pre.messages[first_turn:-1]] == ["OLD-QUESTION", "OLD-ANSWER"]
+    systems = "\n".join(str(msg.content) for msg in pre.messages[:first_turn])
+    for block in ("MEMORY-BLOCK", "KB-BLOCK", "DIRECT-ACCESS-BLOCK", "Every agent in this tenant"):
+        assert block not in systems, f"{block} is per turn, not part of the stable system prefix"
+    final = pre.messages[-1].content
+    assert isinstance(final, str)
+    assert final.startswith("# Run context")
+    order = [
+        final.index(piece)
+        for piece in ("MEMORY-BLOCK", "KB-BLOCK", "DIRECT-ACCESS-BLOCK", "NEW-TURN")
+    ]
+    assert order == sorted(order)
+    assert final.endswith("\n\nNEW-TURN"), "the new turn is the person's message, unlabelled"
+
+
+async def test_non_chat_preamble_is_unchanged(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trigger run's preamble keeps today's order: system prompt, rules,
+    memory and KB as system messages, then run context and task as two user
+    messages."""
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        agent = await _solo_agent(db, tenant)
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, source="event", state="running",
+            context={"task": "Invoice arrived"},
+        )
+        db.add(run)
+        await db.flush()
+        kwargs: dict[str, Any] = dict(
+            agent=agent, tenant_id=tenant, task_text="Invoice arrived", frame={},
+            model_locality="cloud", caps=ModelCaps(), max_steps=40, run_id=run.id,
+        )
+        pre = await build_run_preamble(db, **kwargs)
+        explicit = await build_run_preamble(db, **kwargs, replay=None)
+        prompt = system_prompt(agent, caps=ModelCaps(), tenant_name="the organization")
+
+    from oc8.agent.provenance import RULE
+
+    assert [(msg.role, msg.content) for msg in pre.messages[:4]] == [
+        ("system", prompt),
+        ("system", RULE),
+        ("system", "MEMORY-BLOCK"),
+        ("system", "KB-BLOCK"),
+    ]
+    assert [msg.role for msg in pre.messages[4:]] == ["user", "user"]
+    assert str(pre.messages[4].content).startswith("# Run context\n")
+    assert "- Origin: trigger\n" in str(pre.messages[4].content)
+    assert pre.messages[5].content == "Invoice arrived"
+    assert len(pre.messages) == 6
+    assert [(msg.role, msg.content) for msg in explicit.messages] == [
+        (msg.role, msg.content) for msg in pre.messages
+    ]
+
+
+async def test_retrieval_query_is_new_message_plus_last_answer(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queries: list[str] = []
+    _fixed_retrieval(monkeypatch, queries)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(
+            db, tenant,
+            [("user", "OLD-QUESTION"), ("assistant", "OLD-ANSWER"), ("followup", "PING")],
+        )
+        await build_run_preamble(
+            db, agent=assistant, tenant_id=tenant, task_text="User: NEW-TURN", frame={},
+            model_locality="cloud", caps=ModelCaps(), max_steps=40, task=task,
+            run_id=run.id, replay=replay,
+        )
+    assert queries == ["NEW-TURN\nOLD-ANSWER", "NEW-TURN\nOLD-ANSWER"]
+
+
+async def _preamble_for(
+    db: Any, tenant: uuid.UUID, assistant: Any, task: Any, run: Any, replay: ChatReplay,
+    *, locality: str = "cloud",
+) -> Any:
+    return await build_run_preamble(
+        db, agent=assistant, tenant_id=tenant, task_text="User: NEW-TURN", frame={},
+        model_locality=locality, caps=ModelCaps(), max_steps=40, task=task,
+        run_id=run.id, replay=replay,
+    )
+
+
+async def test_system_prefix_is_byte_equal_across_two_turns(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Memory, KB and the run context (Now, person) differ per turn; none of
+    them is in the system part, so two turns of one chat share the prefix."""
+    blocks = iter(["MEMORY-ONE", "KB-ONE", "MEMORY-TWO", "KB-TWO"])
+
+    async def _memory(*_a: Any, **_kw: Any) -> str:
+        return next(blocks)
+
+    async def _kb(*_a: Any, **_kw: Any) -> tuple[str, bool]:
+        return next(blocks), False
+
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_context", _memory)
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_kb_context", _kb)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q1")])
+        first = await _preamble_for(db, tenant, assistant, task, run, replay)
+        session = await db.get(m.ChatSession, replay.session_id)
+        parent = session.current_leaf_id
+        for role, content in (("assistant", "A1"), ("user", "Q2")):
+            message = m.ChatMessage(
+                tenant_id=tenant, session_id=session.id, role=role, content=content,
+                parent_id=parent,
+            )
+            db.add(message)
+            await db.flush()
+            parent = message.id
+        session.current_leaf_id = parent
+        second = await _preamble_for(
+            db, tenant, assistant, task, run, ChatReplay(session.id, parent)
+        )
+
+    def _system(pre: Any) -> list[tuple[str, Any]]:
+        return [(msg.role, msg.content) for msg in pre.messages if msg.role == "system"]
+
+    assert _system(first) == _system(second)
+    assert "MEMORY-ONE" in str(first.messages[-1].content)
+    assert "MEMORY-TWO" in str(second.messages[-1].content)
+
+
+async def test_breakpoints_at_end_of_system_and_end_of_replay(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(
+            db, tenant, [("user", "OLD-QUESTION"), ("assistant", "OLD-ANSWER")]
+        )
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay)
+    marked = [i for i, msg in enumerate(pre.messages) if msg.cache_breakpoint]
+    first_turn = [msg.role for msg in pre.messages].index("user")
+    assert marked == [first_turn - 1, len(pre.messages) - 2]
+    assert pre.messages[marked[1]].content == "OLD-ANSWER"
+
+
+async def test_first_turn_marks_only_the_system_prefix_and_other_runs_none(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run = await _copilot_with_person(db, tenant, seats=[])
+        first = await _preamble_for(
+            db, tenant, assistant, task, run, ChatReplay(uuid.uuid4(), None)
+        )
+        agent = await _solo_agent(db, tenant)
+        trigger = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, source="event", state="running",
+            context={"task": "Invoice arrived"},
+        )
+        db.add(trigger)
+        await db.flush()
+        other = await build_run_preamble(
+            db, agent=agent, tenant_id=tenant, task_text="Invoice arrived", frame={},
+            model_locality="cloud", caps=ModelCaps(), max_steps=40, run_id=trigger.id,
+        )
+    marked = [msg for msg in first.messages if msg.cache_breakpoint]
+    assert len(marked) == 1 and marked[0].role == "system"
+    assert not any(msg.cache_breakpoint for msg in other.messages)
+
+
+async def _restricted_chat(db: Any, tenant: uuid.UUID) -> tuple[Any, Any, Any, ChatReplay]:
+    assistant, task, run, replay = await _copilot_chat(
+        db, tenant, [("user", "Q"), ("assistant", "SECRET-ANSWER")]
+    )
+    secret = await db.get(m.ChatMessage, replay.until_id)
+    secret.restricted = True
+    await db.flush()
+    return assistant, task, run, replay
+
+
+async def test_restricted_answer_replayed_to_a_local_model_marks_the_run_restricted(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _restricted_chat(db, tenant)
+        local = await _preamble_for(db, tenant, assistant, task, run, replay, locality="local")
+        cloud = await _preamble_for(db, tenant, assistant, task, run, replay, locality="cloud")
+    assert local.contains_restricted is True
+    assert any(msg.content == "SECRET-ANSWER" for msg in local.messages)
+    assert cloud.contains_restricted is False
+    assert not any("SECRET-ANSWER" in str(msg.content) for msg in cloud.messages)
+
+
+async def test_restricted_kb_hit_still_marks_the_run_restricted_on_the_replay_path(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _memory(*_a: Any, **_kw: Any) -> str:
+        return ""
+
+    async def _kb(*_a: Any, **_kw: Any) -> tuple[str, bool]:
+        return "KB-BLOCK", True
+
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_context", _memory)
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_kb_context", _kb)
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q")])
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay)
+    assert pre.contains_restricted is True
+
+
+async def test_failing_flattened_fallback_keeps_the_task_text(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("replay unreadable")
+
+    monkeypatch.setattr("oc8.agent.preamble.replay_messages", _boom)
+    monkeypatch.setattr("oc8.agent.preamble.flattened_task_text_for_model", _boom)
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(db, tenant, [("user", "Q")])
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay)
+    assert pre.messages[-1].content == "User: NEW-TURN"
+
+
+@pytest.mark.parametrize(
+    ("locality", "shown", "restricted"),
+    [("cloud", "[restricted answer withheld from this model]", False),
+     ("local", "SECRET-ANSWER", True)],
+)
+async def test_the_flattened_fallback_withholds_a_restricted_answer_from_a_cloud_model(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch,
+    locality: str, shown: str, restricted: bool,
+) -> None:
+    """When the native replay fails, the run falls back to the flattened
+    transcript -- which printed a restricted answer verbatim, to whichever
+    model the in-process run was on."""
+
+    async def _boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("replay unreadable")
+
+    monkeypatch.setattr("oc8.agent.preamble.replay_messages", _boom)
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _restricted_chat(db, tenant)
+        pre = await _preamble_for(db, tenant, assistant, task, run, replay, locality=locality)
+    final = pre.messages[-1].content
+    assert isinstance(final, str)
+    assert f"You (assistant): {shown}\n" in final
+    if locality != "local":
+        assert not any("SECRET-ANSWER" in str(msg.content) for msg in pre.messages)
+    assert pre.contains_restricted is restricted
+
+
+@pytest.mark.parametrize(
+    ("digest", "told"), [("search_records {} → ok: 3 rows", None), (None, "[no tool calls yet]")]
+)
+async def test_a_resume_follows_the_turn_and_keeps_the_cached_prefix(
+    app_session: AppSessionFactory,
+    monkeypatch: pytest.MonkeyPatch,
+    digest: str | None,
+    told: str | None,
+) -> None:
+    """A resumed chat leg: the replayed turns and the new turn stay as they
+    were, the run's own work and the decision follow them, and the cache
+    breakpoints stay where a leg without a resume has them."""
+    from oc8.agent.preamble import Resume
+
+    _fixed_retrieval(monkeypatch, [])
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant, task, run, replay = await _copilot_chat(
+            db, tenant, [("user", "OLD-QUESTION"), ("assistant", "OLD-ANSWER")]
+        )
+        plain = await _preamble_for(db, tenant, assistant, task, run, replay)
+        resumed = await build_run_preamble(
+            db, agent=assistant, tenant_id=tenant, task_text="User: NEW-TURN", frame={},
+            model_locality="cloud", caps=ModelCaps(), max_steps=40, task=task,
+            run_id=run.id, replay=replay,
+            resume=Resume(own_work_digest=digest, instruction="RESUME-INSTRUCTION"),
+        )
+    head = resumed.messages[: len(plain.messages)]
+    assert [(msg.role, msg.cache_breakpoint) for msg in head] == [
+        (msg.role, msg.cache_breakpoint) for msg in plain.messages
+    ]
+    assert [msg.content for msg in head[:-1]] == [msg.content for msg in plain.messages[:-1]]
+    assert str(head[-1].content).endswith("\n\nNEW-TURN")
+    tail = resumed.messages[len(plain.messages) :]
+    assert [(msg.role, msg.content) for msg in tail] == [
+        ("assistant", told or digest),
+        ("user", "RESUME-INSTRUCTION"),
+    ]
+    assert not any(msg.cache_breakpoint for msg in tail)

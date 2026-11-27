@@ -1,4 +1,4 @@
-import { ChevronDown, Plus, Sparkles, WifiOff, X } from "lucide-react";
+import { ChevronDown, MessageCircleDashed, Plus, Sparkles, WifiOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,8 @@ import { mostRecentSession } from "@/lib/chat-sessions";
 import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { ChatTitleText } from "@/components/conversation/chat-title";
+import { useTemporaryChatText } from "@/components/conversation/new-chat-label";
+import { TemporaryChatLease } from "@/components/conversation/temporary-chat";
 import { SessionPicker } from "@/components/conversation/session-picker";
 
 // Set by DoneStep right before the full-page navigation into "/" that follows
@@ -208,6 +210,9 @@ export interface CopilotTab {
    *  is every tab until somebody types `@`. Persisted with the tab, so a
    *  reopened dock reopens the same conversation with the same agent. */
   agentId?: string;
+  /** A temporary chat (spec §5.6): the one this tab starts, or the one it
+   *  holds. Not read back on load; an open chat says so itself. */
+  temporary?: boolean;
 }
 
 function tabsStorageKey(memberId: string): string {
@@ -397,7 +402,46 @@ function CopilotDockPanel() {
   }
 
   function setTabSession(uiId: string, sessionId: string | null) {
-    setTabs((prev) => prev.map((tab) => (tab.uiId === uiId ? { ...tab, sessionId } : tab)));
+    // A tab back to blank starts an ordinary chat again; only the chat the
+    // tab itself just created keeps its temporary mark -- another chat put
+    // in its place is that chat, which says itself whether it is temporary.
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.uiId === uiId
+          ? {
+              ...tab,
+              sessionId,
+              temporary: sessionId !== null && tab.sessionId === null && !!tab.temporary,
+            }
+          : tab,
+      ),
+    );
+  }
+
+  function startTemporaryChat(uiId: string) {
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === uiId ? { ...tab, sessionId: null, temporary: true } : tab)),
+    );
+  }
+
+  // A tab reopened after a reload learns from the chat itself that it is
+  // temporary.
+  function markTemporary(uiId: string) {
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === uiId && !tab.temporary ? { ...tab, temporary: true } : tab)),
+    );
+  }
+
+  // A temporary chat is deleted once its tab leaves it (the tab closed,
+  // another chat in its place, the dock closed) -- not when another tab is
+  // shown: each tab holds its chat while the dock is open (the leases
+  // below). The tab that held it is blank again.
+  function forgetTemporaryChat(sessionId: string) {
+    setTabs((prev) =>
+      prev.map((tab) =>
+        tab.sessionId === sessionId ? { ...tab, sessionId: null, temporary: false } : tab,
+      ),
+    );
   }
 
   function setTabAgent(uiId: string, agentId: string | undefined) {
@@ -416,6 +460,7 @@ function CopilotDockPanel() {
     }
   }, []);
 
+  const temporaryText = useTemporaryChatText();
   const activeTab = tabs.find((tab) => tab.uiId === activeUiId);
   const activeAgentId = activeTab?.agentId ?? assistantAgentId;
   const agents = agentPage?.items ?? [];
@@ -449,7 +494,11 @@ function CopilotDockPanel() {
   return (
     <>
       {open && (
-        <div className="fixed bottom-24 right-5 z-50 flex h-[min(72vh,600px)] w-[min(94vw,400px)] flex-col overflow-hidden rounded-2xl border border-border bg-panel shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]">
+        // A phone gets the whole screen (a sheet); from sm up it floats.
+        <div
+          data-testid="copilot-dock-panel"
+          className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-panel pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)] sm:inset-auto sm:bottom-24 sm:right-[calc(1.25rem+env(safe-area-inset-right,0px))] sm:pl-0 sm:pr-0 sm:h-[min(72vh,600px)] sm:w-[min(94vw,400px)] sm:rounded-2xl sm:border sm:border-border sm:pt-0 sm:shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]"
+        >
           <header className="flex items-center gap-2.5 border-b border-border px-4 py-3">
             <CopilotPersonaHeader variant="dock">
               {assistantAgentId && (
@@ -464,16 +513,27 @@ function CopilotDockPanel() {
                   }}
                   aria-label={de ? "Neuer Chat" : "New chat"}
                   title={de ? "Neuer Chat" : "New chat"}
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                  className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground sm:size-8"
                 >
                   <Plus className="h-4 w-4" />
+                </button>
+              )}
+              {assistantAgentId && (
+                <button
+                  type="button"
+                  onClick={() => activeUiId && startTemporaryChat(activeUiId)}
+                  aria-label={temporaryText.label}
+                  title={temporaryText.help}
+                  className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground sm:size-8"
+                >
+                  <MessageCircleDashed className="h-4 w-4" />
                 </button>
               )}
               <button
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label={de ? "Copilot schließen" : "Close copilot"}
-                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                className="grid size-11 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground sm:size-8"
               >
                 <ChevronDown className="h-4 w-4" />
               </button>
@@ -483,13 +543,24 @@ function CopilotDockPanel() {
             </CopilotPersonaHeader>
           </header>
 
+          {tabs.map((tab) => (
+            <TemporaryChatLease
+              key={tab.uiId}
+              sessionId={tab.sessionId}
+              temporary={!!tab.temporary}
+              onLeft={forgetTemporaryChat}
+              onTemporary={() => markTemporary(tab.uiId)}
+            />
+          ))}
           <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1">
             {tabs.map((tab) => {
               const session = allSessions?.find((s) => s.id === tab.sessionId);
               const agentName = tab.agentId
                 ? (agentPage?.items.find((a) => a.id === tab.agentId)?.name ?? untitledChatText(de))
                 : null;
-              const title = session?.title || agentName || untitledChatText(de);
+              const title = tab.temporary
+                ? temporaryText.label
+                : session?.title || agentName || untitledChatText(de);
               return (
                 <div
                   key={tab.uiId}
@@ -503,7 +574,7 @@ function CopilotDockPanel() {
                     type="button"
                     onClick={() => setActiveUiId(tab.uiId)}
                     aria-label={de ? `${title} – Tab` : `${title} tab`}
-                    className="max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1"
+                    className="min-h-11 max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1 sm:min-h-0"
                   >
                     <ChatTitleText title={title} />
                   </button>
@@ -511,7 +582,7 @@ function CopilotDockPanel() {
                     type="button"
                     onClick={() => closeTab(tab.uiId)}
                     aria-label={de ? `${title} schließen` : `Close ${title}`}
-                    className="grid h-4 w-4 shrink-0 place-items-center opacity-60 hover:opacity-100"
+                    className="grid size-11 shrink-0 place-items-center opacity-60 hover:opacity-100 sm:size-4"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -522,7 +593,7 @@ function CopilotDockPanel() {
               type="button"
               onClick={openNewTab}
               aria-label={t("New tab", "Neuer Tab")}
-              className="grid h-6 w-6 shrink-0 place-items-center rounded-md hover:bg-muted/50"
+              className="grid size-11 shrink-0 place-items-center rounded-md hover:bg-muted/50 sm:size-6"
             >
               <Plus className="h-4 w-4" />
             </button>
@@ -565,6 +636,8 @@ function CopilotDockPanel() {
               agentId={activeAgentId}
               sessionId={activeTab.sessionId}
               onSessionChange={(sid) => setTabSession(activeTab.uiId, sid)}
+              temporary={!!activeTab.temporary}
+              onTemporaryLeft={forgetTemporaryChat}
               variant="compact"
               // A tab addressed to another agent is that agent's chat.
               agentMode={!activeTab.agentId}
@@ -602,7 +675,12 @@ function CopilotDockPanel() {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label={de ? "oc8 Copilot" : "oc8 copilot"}
-        className="group fixed bottom-5 right-5 z-50 grid h-14 w-14 place-items-center rounded-full border border-primary/30 bg-panel shadow-[0_16px_40px_-16px_oklch(0_0_0/90%)] transition hover:scale-105"
+        className={cn(
+          "group fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom,0px))] right-[calc(1.25rem+env(safe-area-inset-right,0px))] z-50 h-14 w-14 place-items-center rounded-full border border-primary/30 bg-panel shadow-[0_16px_40px_-16px_oklch(0_0_0/90%)] transition hover:scale-105",
+          // On a phone the open sheet covers the screen and closes from its
+          // own header; the toggle would sit on the composer's send button.
+          open ? "hidden sm:grid" : "grid",
+        )}
       >
         {open ? (
           <X className="h-5 w-5 text-muted-foreground" />

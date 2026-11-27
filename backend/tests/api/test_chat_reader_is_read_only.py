@@ -243,3 +243,60 @@ async def test_a_failing_extension_fails_closed_to_owner_only(
             )
             assert own.status_code == 200
     del bob
+
+
+async def test_a_readers_export_redacts_file_names_as_the_screen_does(
+    app_session: AppSessionFactory,
+) -> None:
+    """The export is the reader's channel too: the same placeholder for every
+    attachment as `_message_dto` shows them, in both formats; the owner's
+    export keeps the real names."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        alice = await copilot_seat(db, tenant, "alice")
+        bob = await copilot_seat(db, tenant, "bob")
+        chat = await db.get(m.ChatSession, alice.session_id)
+        assert chat is not None
+        msg = m.ChatMessage(tenant_id=tenant, session_id=chat.id, role="user", content="see this")
+        db.add(msg)
+        await db.flush()
+        for name in ("payslip.pdf", "contract.docx"):
+            db.add(
+                m.FileAttachment(
+                    tenant_id=tenant,
+                    owner_type="chat_message",
+                    owner_id=msg.id,
+                    bucket_key=f"k/{uuid.uuid4()}",
+                    filename=name,
+                    content_type="application/pdf",
+                    size_bytes=1234,
+                )
+            )
+        sid = chat.id
+
+    async def readers(_db: AsyncSession, session: m.ChatSession) -> list[uuid.UUID]:
+        return [bob.member_id] if session.id == sid else []
+
+    app = create_app(
+        runtime_composition=RuntimeComposition(NOOP_SUPERVISION_RUN_HOOK, extra_readers=readers)
+    )
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            h = _headers(tenant, "bob")
+            screen = (await c.get(f"/api/v1/chat/sessions/{sid}/messages", headers=h)).json()
+            md = await c.get(f"/api/v1/chat/sessions/{sid}/export?format=md", headers=h)
+            js = await c.get(f"/api/v1/chat/sessions/{sid}/export?format=json", headers=h)
+            own = await c.get(
+                f"/api/v1/chat/sessions/{sid}/export?format=json",
+                headers=_headers(tenant, "alice"),
+            )
+    assert md.status_code == js.status_code == own.status_code == 200
+    on_screen = [a["filename"] for a in screen[0]["attachments"]]
+    assert on_screen == ["Anhang", "Anhang"]
+    assert md.text.count(f"- {on_screen[0]}") == 2
+    exported = next(x for x in js.json()["messages"] if x["content"] == "see this")
+    assert exported["attachments"] == on_screen
+    for body in (md.text, js.text):
+        assert "payslip" not in body and "contract" not in body
+    owned = next(x for x in own.json()["messages"] if x["content"] == "see this")
+    assert sorted(owned["attachments"]) == ["contract.docx", "payslip.pdf"]

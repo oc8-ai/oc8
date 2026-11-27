@@ -35,6 +35,7 @@ from oc8 import models as m
 from oc8.approvals import expire_approval
 from oc8.audit import append_event
 from oc8.auth.principal import Principal
+from oc8.chat import tree
 from oc8.chat.audience import session_audience_or_nobody
 from oc8.chat.context.base import viewer_for_member
 from oc8.chat.context.manifest import (
@@ -45,9 +46,12 @@ from oc8.chat.context.manifest import (
     manifest_text,
 )
 from oc8.chat.context.registry import RESOLVERS
+from oc8.chat.digest import build_work_digest
+from oc8.chat.files_kb import attachment_turn_text, drop_chat_kb
 from oc8.chat.modes import (
     ACT,
     ASSISTANT_ONLY_REFUSAL,
+    ENTERED_MODE,
     MODES,
     ChatMode,
     ModeNotAvailable,
@@ -63,11 +67,15 @@ from oc8.chat.questions import (
     questions_to_json,
     render_answers_text,
 )
+from oc8.chat.temporary import TEMPORARY_CHAT_KEY
 from oc8.chat.titles import schedule_auto_title
+from oc8.chat.turn_context import turn_keys
 from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
-from oc8.copilot.redaction import is_secret_request, redact_text
+from oc8.copilot.agent_match import agent_fit_text, matching_agents
+from oc8.copilot.redaction import carries_secret_value, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.knowledge.embedding_policy import strictest
+from oc8.models.knowledge import KB_KIND_SHARED
 from oc8.realtime.bus import get_event_bus
 from oc8.realtime.emit import publish_chat_message_created, publish_chat_session_updated
 from oc8.runtime.clarification import resolve_clarification
@@ -75,20 +83,10 @@ from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.intake import enqueue_run
 from oc8.runtime.person import FOR_PERSON
 from oc8.runtime.states import TERMINAL, RunState
-from oc8.storage import s3
+from oc8.storage.attachments import copy_attachment, delete_attachment_blobs
+from oc8.websearch.service import RUN_CONTEXT_KEY as WEB_SEARCH_CONTEXT_KEY
 
 logger = logging.getLogger(__name__)
-
-#: How many prior turns to fold into the next run's `task` text. A chat is
-#: interactive, not a long autonomous investigation -- this keeps the prompt
-#: bounded without needing a separate summarization step for v1.
-_TRANSCRIPT_TURNS = 20
-
-#: How an oc8 notice turn starts (`send_message(notice=...)`): something oc8
-#: tells the Copilot about this chat -- an agent the person tried to create
-#: from its card was refused -- neither typed by the person nor scheduled by
-#: the Copilot. Stored as a `followup` row (no new role), told apart by this.
-NOTICE_PREFIX: Final = "oc8 notice: "
 
 #: Matches the retired `oc8.copilot.chat._SECRET_REFUSAL` text -- carried over
 #: rather than imported so this module has no dependency on the module Task 5
@@ -99,9 +97,17 @@ _SECRET_REFUSAL = (
 
 
 async def create_session(
-    db: AsyncSession, *, tenant_id: uuid.UUID, agent_id: uuid.UUID, member_id: uuid.UUID
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    agent_id: uuid.UUID,
+    member_id: uuid.UUID,
+    temporary: bool = False,
 ) -> m.ChatSession:
-    session = m.ChatSession(tenant_id=tenant_id, agent_id=agent_id, member_id=member_id)
+    """A new chat; `temporary` for one that is not kept (`chat.temporary`)."""
+    session = m.ChatSession(
+        tenant_id=tenant_id, agent_id=agent_id, member_id=member_id, temporary=temporary
+    )
     db.add(session)
     await db.flush()
     return session
@@ -133,11 +139,13 @@ async def list_sessions(
 
     Ordinary chats only: a Live session (`kind='live'`) is the Live tab's,
     reached through its own route, never a chat in the list nor the one a
-    messenger's next message lands in."""
+    messenger's next message lands in. Nor a temporary chat (`chat.temporary`):
+    it is reached only by its id, from the tab that holds it."""
     stmt = select(m.ChatSession).where(
         m.ChatSession.tenant_id == tenant_id,
         m.ChatSession.member_id == member_id,
         m.ChatSession.kind == "chat",
+        m.ChatSession.temporary.is_(False),
     )
     if agent_id is not None:
         stmt = stmt.where(m.ChatSession.agent_id == agent_id)
@@ -160,7 +168,14 @@ async def rename_session(db: AsyncSession, *, session: m.ChatSession, title: str
     publish_chat_session_updated(db, session=session, audience=audience)
 
 
-async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.ChatSession) -> None:
+async def delete_session(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session: m.ChatSession,
+    actor_id: uuid.UUID | None = None,
+    principal: Principal | None = None,
+) -> None:
     """`ChatMessage` carries no DB-level foreign key to `ChatSession` (this
     codebase's tables generally don't use them) -- its transcript has to be
     removed explicitly or it survives as orphaned rows.
@@ -179,7 +194,16 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     conversation, which is the thing the operator actually asked for. A leaked
     blob is recoverable later from the bucket; a chat that refuses to delete
     is not.
+
+    A temporary chat's runs that have not finished are stopped first, through
+    the same cancel a Stop records (`chat.temporary.stop_chat_runs`): a parked
+    one is woken so its cards expire and the worker ends it, a running one
+    stops at its next step and its reply finds no chat to land in, and its
+    queued messages end as cancelled. `actor_id`/`principal` name who left it
+    (None: the purge).
     """
+    from oc8.chat.temporary import cancel_queued_inputs, stop_chat_runs
+
     # A deleted conversation can no longer receive the responsibilities opened
     # in it: close them (which also disables their follow-ups) in this same
     # transaction, so no follow-up fires into a session that is gone.
@@ -213,6 +237,13 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     ).scalars()
     for offer in list(waiting):
         await expire_approval(db, offer)
+    # Approval and run rows (lock order steps 1-2, `chat.tree`), before the
+    # knowledge rows and the audit lock below.
+    stopped = (
+        await stop_chat_runs(db, session=session, actor_id=actor_id, principal=principal)
+        if session.temporary
+        else []
+    )
     for responsibility in open_responsibilities:
         await close_responsibility(
             db,
@@ -224,6 +255,9 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
             actor_agent_id=None,
             member_subject=member.subject if member is not None else "",
         )
+    # The chat's own knowledge base goes with it: its files must not stay
+    # searchable, or recoverable, once the chat they belong to is gone.
+    await drop_chat_kb(db, session=session)
     message_ids = list(
         (
             await db.execute(
@@ -247,7 +281,7 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     )
     for attachment in attachments:
         try:
-            await s3.delete_object(attachment.bucket_key)
+            await delete_attachment_blobs(attachment)
         except Exception:  # best-effort by design -- see the docstring
             logger.warning(
                 "could not delete attachment blob %s for chat session %s",
@@ -255,6 +289,14 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
                 session.id,
             )
         await db.delete(attachment)
+    # Audit lock, then the session row, before the transcript and the row go:
+    # after the knowledge and file rows above, as `chat.tree`'s lock order has
+    # it. Taken at commit instead, the audit lock would come after the row --
+    # the inverse of every reply, send and branch switch in this chat.
+    # The stopped runs' queued messages first: their input lock (step 5)
+    # takes the audit lock, before the session row (step 6).
+    await cancel_queued_inputs(db, runs=stopped)
+    await tree.lock_session(db, session=session)
     await db.execute(
         delete(m.ChatMessage).where(
             m.ChatMessage.tenant_id == tenant_id, m.ChatMessage.session_id == session.id
@@ -272,29 +314,6 @@ async def list_messages(
         .order_by(m.ChatMessage.id.asc())
     )
     return list((await db.execute(stmt)).scalars())
-
-
-def _speaker(role: str, content: str = "") -> str:
-    if role == "user":
-        return "User"
-    if role == "followup" and content.startswith(NOTICE_PREFIX):
-        return "oc8 (a notice from the system, not typed by the user)"
-    if role == "followup":
-        return "Follow-up (scheduled by you, not typed by the user)"
-    return "You (assistant)"
-
-
-def _build_task_text(history: list[m.ChatMessage], new_message: str, new_role: str = "user") -> str:
-    """The run's `task` text: the whole visible conversation, plain-labelled,
-    ending in the new turn. `run_agent`/`internal_agent.py` know nothing of
-    "chat" -- from their side this is just one more task instruction, so any
-    continuity across turns has to be spelled out here rather than relying
-    on native multi-turn state that does not exist on that path."""
-    lines = []
-    for msg in history[-_TRANSCRIPT_TURNS:]:
-        lines.append(f"{_speaker(msg.role, msg.content)}: {msg.content}")
-    lines.append(f"{_speaker(new_role, new_message)}: {new_message}")
-    return "\n".join(lines)
 
 
 async def _resolve_context_refs(
@@ -342,6 +361,8 @@ async def _resolve_context_refs(
                 m.KnowledgeBase.tenant_id == tenant_id,
                 m.KnowledgeBase.id.in_(wanted),
                 m.KnowledgeBase.deleted_at.is_(None),
+                # A chat's own base is never a `#` reference (spec §5.4).
+                m.KnowledgeBase.kind == KB_KIND_SHARED,
             )
         )
     ).scalars()
@@ -448,7 +469,10 @@ _EXTRA_CONTEXT_KEYS: Final = frozenset({"regenerated"})
 def _build_turn_context(
     *,
     session: m.ChatSession,
-    task_text: str,
+    turn_message: str,
+    turn_text: str,
+    turn_role: str,
+    transcript_until: uuid.UUID | None,
     reply_to_message_id: uuid.UUID,
     image_attachments: list[m.FileAttachment],
     originating_operator: str | None,
@@ -467,8 +491,13 @@ def _build_turn_context(
     """The `AgentRun.context` for the run answering one chat turn.
 
     Shared by every path that starts such a run (a new turn here, a
-    regenerated reply later) so both carry the same keys. `context["task"]`
-    is `task_text` plus the mode directive when a mode is set -- callers that
+    regenerated reply later) so both carry the same keys. The context holds
+    the turn, never the transcript (`chat.turn_context`): `turn_message` is
+    what was said as `turn_role`, `turn_text` that plus what the caller
+    appended, and the run reads the conversation up to `transcript_until`
+    (None: the turn follows nothing) from the tree when it starts.
+    `context["turn_text"]` is `turn_text` plus the manifest text and the mode
+    directive, `context["task"]` that turn's labelled line -- callers that
     need the final text read it back from there.
 
     `manifest` is the turn's pinned context (`chat.context.manifest`): its
@@ -479,9 +508,16 @@ def _build_turn_context(
     if manifest is not None:
         extra_text = manifest_text(manifest, tools=mode is None or mode.allows_tools)
         if extra_text:
-            task_text = task_text + "\n\n" + extra_text
+            turn_text = turn_text + "\n\n" + extra_text
+    if mode is not None:
+        turn_text = turn_text + "\n\n" + mode_directive(mode)
     context: dict[str, object] = {
-        "task": task_text,
+        **turn_keys(
+            turn_role=turn_role,
+            message=turn_message,
+            turn_text=turn_text,
+            transcript_until=transcript_until,
+        ),
         "chat_session_id": str(session.id),
         "reply_to_message_id": str(reply_to_message_id),
     }
@@ -525,6 +561,9 @@ def _build_turn_context(
         # Folded into the pinned definition when the run resolves its version
         # (chat.model_choice.apply_effort_override); every runtime reads it there.
         context["effort_override"] = session.effort
+    if session.temporary:
+        # The runtime writes no memory for it (`agent.control_tools`).
+        context[TEMPORARY_CHAT_KEY] = True
     if extra_context:
         # Everything outside the allow-list is dropped, silently.
         context.update({k: v for k, v in extra_context.items() if k in _EXTRA_CONTEXT_KEYS})
@@ -536,9 +575,9 @@ def _build_turn_context(
         # Two consumers, deliberately: the model is TOLD (the directive below)
         # and the PEP ENFORCES (engine._authorize reads this key back through
         # mode_from_context). Neither is sufficient alone -- a told model can
-        # ignore it, and a silently denied tool wastes a step.
+        # ignore it, and a silently denied tool wastes a step. The directive
+        # itself ends `turn_text` above.
         context["chat_mode"] = mode.key
-        context["task"] = task_text + "\n\n" + mode_directive(mode)
     kb_ids = [ref["id"] for ref in resolved_refs if ref.get("kind") == "knowledge_base"]
     if manifest is not None:
         # A data source attached to this message narrows to the bases it feeds,
@@ -564,8 +603,15 @@ def _title_seed(session: m.ChatSession, history: list[m.ChatMessage], body: str)
     """The text a chat with no name yet is named after: its first user message
     with any words in it (this one, in a new chat), or None when the chat is
     named already -- by the member or by an earlier title -- or is not an
-    ordinary chat. Checked again, atomically, when the title is written."""
-    if session.kind != "chat" or session.title or session.title_source is not None:
+    ordinary chat. A temporary chat is never named: the title would be the one
+    thing of it a model summarised. Checked again, atomically, when the title
+    is written."""
+    if (
+        session.kind != "chat"
+        or session.temporary
+        or session.title
+        or session.title_source is not None
+    ):
         return None
     for text_ in [msg.content for msg in history if msg.role == "user"] + [body]:
         if text_ and text_.strip():
@@ -576,6 +622,61 @@ def _title_seed(session: m.ChatSession, history: list[m.ChatMessage], body: str)
 async def _is_assistant(db: AsyncSession, session: m.ChatSession) -> bool:
     agent = await db.get(m.Agent, session.agent_id)
     return agent is not None and agent.is_tenant_assistant
+
+
+_FIT_REQUEST_LIMIT = 2000
+
+
+async def fitting_agents_for_turn(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    acting_member: m.OrgMember | None,
+    text: str,
+    token_role: str | None,
+    chat_channel: str | None = None,
+    for_person: str | None = None,
+) -> str:
+    """The "agents that fit" block for one Copilot user turn, or "" -- for
+    another agent's chat, no person, no match, or any failure: matching never
+    blocks a turn.
+
+    Only for the chat owner's own turn, so the ranking never reveals what the
+    owner may run to anyone else. Two doors: the web (`acting_member` is the
+    owner, the rule of `_turn_manifest`; `token_role` MUST be the role on that
+    member's live token), and a messenger (`chat_channel` set and `for_person`
+    is the owner's subject, Ruling 58; no token, so authority comes from the
+    member's stored role alone). A follow-up or notice passes neither."""
+    try:
+        if acting_member is not None:
+            if acting_member.id != session.member_id:
+                return ""
+            owner_id = acting_member.id
+        elif chat_channel is not None and for_person is not None:
+            owner = await db.get(m.OrgMember, session.member_id)
+            if owner is None or owner.subject != for_person:
+                return ""
+            owner_id, token_role = owner.id, None
+        else:
+            return ""
+        copilot = await db.get(m.Agent, session.agent_id)
+        if copilot is None or not copilot.is_tenant_assistant:
+            return ""
+        # A savepoint: a failing statement here must not abort the turn's own
+        # transaction, which still has to enqueue the run.
+        async with db.begin_nested():
+            matches = await matching_agents(
+                db,
+                member_id=owner_id,
+                tool_key=None,
+                request=text[:_FIT_REQUEST_LIMIT],
+                copilot=copilot,
+                token_role=token_role,
+            )
+        return agent_fit_text(matches)
+    except Exception:
+        logger.warning("agent match failed; the turn goes on without it", exc_info=True)
+        return ""
 
 
 async def _automatic_mode(
@@ -656,8 +757,18 @@ async def send_message(
     author_member_id: uuid.UUID | None = None,
     acting_member: m.OrgMember | None = None,
     notice: Mapping[str, object] | None = None,
+    edit_of: m.ChatMessage | None = None,
+    web_search: bool = False,
 ) -> tuple[m.ChatMessage, m.AgentRun | None]:
     """Record the user's turn and enqueue the run that answers it.
+
+    `web_search` is the person's "Web" switch for this turn: the run may then
+    search the web (`oc8.websearch`), if the tenant has a provider.
+
+    `edit_of` makes the turn an edit of that earlier user turn (see
+    `edit_message`): it goes beside it in the tree, its transcript is the path
+    up to it, and it keeps that turn's mode and files instead of parsing a
+    command or taking pending uploads.
 
     `operator_role` is the acting token's `role` claim, recorded on the run so
     that code running LATER -- inside the run, with no request and no token --
@@ -716,13 +827,28 @@ async def send_message(
     afterwards (e.g. `api/v1/chat.py`'s `_message_dto`, querying its
     attachments) does not have to know the trap exists.
     """
-    history = await list_messages(db, tenant_id=tenant_id, session_id=session.id)
+    # Read without the session lock, taken only at placement below (see
+    # `chat.tree` on lock order): a reply landing in between is missing from
+    # this turn's transcript, though the turn itself is placed after it.
+    # An edit is told what came before the turn it rewrites, not the branch
+    # the person was looking at.
+    history = (
+        await tree.path_before(db, session=session, message=edit_of)
+        if edit_of is not None
+        else await tree.visible_path(db, session=session)
+    )
+    # Applied to the session only once it is locked (`_place_turn`).
+    sticky_mode: str | None = None
     # One parser for every door (web composer, Telegram free text, anything
     # later): the command is recognised here, not in a UI. `body` is what was
     # actually said -- an unknown command, a path, or a bare "/ask" comes back
     # unchanged with no mode, so a message that legitimately starts with a
     # slash is still sendable.
-    if role == "followup" and notice is not None:
+    if edit_of is not None:
+        # The rewritten turn's mode carries over, whatever the new text says:
+        # it was parsed (and allowed) when the turn was first sent.
+        mode, body = MODES.get(edit_of.mode or ""), message
+    elif role == "followup" and notice is not None:
         # An oc8 notice is ours too, but about what the person is doing in
         # this chat right now: it runs in the chat's sticky mode (Agent mode,
         # for a refused agent card), so the Copilot can propose again.
@@ -750,7 +876,7 @@ async def send_message(
         if chat_channel is None:
             if mode is not None and mode.sticky:
                 # `/agent ...` switches the chat, not just this turn.
-                session.mode = mode.key
+                sticky_mode = mode.key
             elif mode is None and session.mode:
                 # Unknown keys resolve to None: a mode this release does not
                 # know must not narrow anything (same fail-open as
@@ -786,11 +912,31 @@ async def send_message(
         context_refs=resolved_refs,
         author_member_id=author_member_id if role == "user" else None,
     )
+    # Flushed now for its id (the attachments below point at it); placed in
+    # the tree only shortly before the commit -- see `chat.tree`'s locks.
     db.add(user_message)
     await db.flush()
 
     attachments: list[m.FileAttachment] = []
-    if attachment_ids:
+    if edit_of is not None:
+        # Copied, not moved: the old branch keeps its turn's files.
+        originals = list(
+            (
+                await db.execute(
+                    select(m.FileAttachment)
+                    .where(
+                        m.FileAttachment.tenant_id == tenant_id,
+                        m.FileAttachment.owner_type == "chat_message",
+                        m.FileAttachment.owner_id == edit_of.id,
+                    )
+                    .order_by(m.FileAttachment.id.asc())
+                )
+            ).scalars()
+        )
+        attachments = [
+            await copy_attachment(db, original, owner_id=user_message.id) for original in originals
+        ]
+    elif attachment_ids:
         # Scoped to THIS session's own pending uploads (`owner_id ==
         # session.id`), not just to the tenant: tenant + RLS alone would let
         # any id in the tenant be re-pointed onto this caller's message,
@@ -826,21 +972,23 @@ async def send_message(
     # agent's chat is unaffected -- this is a property of the Assistant's
     # structural-change surface, not a general chat restriction.
     agent = await db.get(m.Agent, session.agent_id)
-    if agent is not None and agent.is_tenant_assistant and is_secret_request(message):
+    if agent is not None and agent.is_tenant_assistant and carries_secret_value(message):
         # The already-flushed user turn carries the raw message -- redact it
         # in place before the durable commit below, same as the retired
         # copilot/chat.py redacted before every persistence boundary. Without
         # this, the credential the Assistant just refused would still land in
         # the transcript verbatim.
         user_message.content = redact_text(message)
-        await db.flush()
+        await _place_turn(
+            db, session=session, message=user_message, sticky_mode=sticky_mode, edit_of=edit_of
+        )
         refusal = m.ChatMessage(
             tenant_id=tenant_id,
             session_id=session.id,
             role="assistant",
             content=_SECRET_REFUSAL,
         )
-        db.add(refusal)
+        await tree.append_person_write(db, session=session, message=refusal)
         session.last_message_at = dt.datetime.now(tz=dt.UTC)
         await db.flush()
         for announced in (user_message, refusal):
@@ -862,16 +1010,21 @@ async def send_message(
         )
         return user_message, None
 
-    task_text = _build_task_text(history, body, new_role=role)
-    task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
+    turn_text = body + _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
+    if role == "user" and notice is None:
+        turn_text += await fitting_agents_for_turn(
+            db,
+            session=session,
+            acting_member=acting_member,
+            text=body,
+            token_role=operator_role,
+            chat_channel=chat_channel,
+            for_person=for_person,
+        )
     for att in attachments:
         if att.is_image:
             continue
-        label = f"\n\n[Attached file: {att.filename}]\n"
-        label += (
-            att.extracted_text if att.extracted_text else "(could not read this file's content)"
-        )
-        task_text += label
+        turn_text += attachment_turn_text(att)
 
     acting = await _acting_person(
         db,
@@ -883,7 +1036,12 @@ async def send_message(
     )
     context = _build_turn_context(
         session=session,
-        task_text=task_text,
+        turn_message=body,
+        turn_text=turn_text,
+        turn_role=role,
+        # The end of the transcript read above, not the leaf the turn lands
+        # on: a reply placed in between is missing from it, as it always was.
+        transcript_until=history[-1].id if history else None,
         reply_to_message_id=user_message.id,
         image_attachments=[att for att in attachments if att.is_image],
         originating_operator=originating_operator,
@@ -903,7 +1061,14 @@ async def send_message(
         notice=notice,
     )
     task_text = str(context["task"])
+    if web_search:
+        # Set here, never through `extra_context`: only the person's own switch
+        # on this request turns it on, and no other run inherits it.
+        context[WEB_SEARCH_CONTEXT_KEY] = True
     _apply_acting_person(context, acting)
+    await _place_turn(
+        db, session=session, message=user_message, sticky_mode=sticky_mode, edit_of=edit_of
+    )
 
     # Open the session's Task HERE, on turn one, rather than letting the engine
     # open one implicitly when the run starts.
@@ -983,6 +1148,86 @@ async def send_message(
     return user_message, run
 
 
+async def _place_turn(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    message: m.ChatMessage,
+    sticky_mode: str | None,
+    edit_of: m.ChatMessage | None = None,
+) -> None:
+    """Place a sent turn in the tree -- appended to the leaf, or beside the
+    turn it edits -- which takes the audit lock, then the session row
+    (`chat.tree`), and only then change the session row."""
+    await tree.lock_session(db, session=session)
+    if edit_of is not None:
+        await tree.add_edited_message(db, session=session, message=message, original=edit_of)
+    else:
+        await tree.append_person_write(db, session=session, message=message)
+    if sticky_mode is not None:
+        session.mode = sticky_mode
+        await db.flush()
+
+
+async def edit_message(
+    db: AsyncSession,
+    *,
+    session: m.ChatSession,
+    tenant_id: uuid.UUID,
+    original: m.ChatMessage,
+    content: str,
+    originating_operator: str | None,
+    operator_role: str | None,
+    acting_member: m.OrgMember | None,
+    web_search: bool = False,
+) -> tuple[m.ChatMessage, m.AgentRun | None]:
+    """Rewrite a sent user turn (spec §5.3 "Edit"): a new turn with `content`
+    beside `original` in the tree, which becomes the branch the person reads;
+    the old branch is kept. The turn's mode, `#` references and files carry
+    over, and it is answered exactly like `send_message` answers a turn -- the
+    same manifest, fit block, acting person and secret gate. The caller has
+    checked that `original` is a person's turn and the caller wrote it.
+
+    COMMITS `db` and re-binds the RLS tenant, like `send_message`; the run is
+    None when the Copilot refuses the new text outright."""
+    refs = [
+        {"kind": str(r.get("kind")), "id": str(r.get("id"))}
+        for r in (original.context_refs or [])
+        if isinstance(r, dict)
+    ]
+    return await send_message(
+        db,
+        session=session,
+        tenant_id=tenant_id,
+        message=content,
+        context_refs=refs,
+        originating_operator=originating_operator,
+        operator_role=operator_role,
+        author_member_id=(
+            acting_member.id if acting_member is not None else original.author_member_id
+        ),
+        acting_member=acting_member,
+        edit_of=original,
+        web_search=web_search,
+    )
+
+
+async def lock_regenerate(db: AsyncSession, *, session_id: uuid.UUID) -> None:
+    """Serialise the regenerates of one chat, until commit: a second click
+    waits here, then sees the first one's run (`regenerate_reply` commits).
+
+    An advisory lock of its own, NOT the session row, for the reason
+    `copilot.direct_access._lock_offers` gives: a regenerate embeds the turn
+    and rebuilds its manifest before it places anything, and holding the row
+    (or the audit lock `tree.lock_session` takes first) across those calls
+    would serialise the tenant's audited commits behind the network. Taken
+    before the audit lock, step 3 of `chat.tree`'s order."""
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"regenerate:{session_id}"},
+    )
+
+
 async def regenerate_reply(
     db: AsyncSession,
     *,
@@ -992,8 +1237,12 @@ async def regenerate_reply(
     originating_operator: str | None,
     operator_role: str | None,
     acting_member: m.OrgMember | None = None,
+    web_search: bool = False,
 ) -> m.AgentRun:
     """A second answer to an existing user turn (spec §2.1 "Regenerate").
+
+    `web_search` is the person's "Web" switch as it stands now, like
+    `send_message`'s: it is not carried over from the first answer.
 
     No new user turn and no history rewrite: the transcript is everything
     before `user_message` plus that turn, the new run carries the same
@@ -1006,11 +1255,36 @@ async def regenerate_reply(
     as they stand now, under the member's rights as they stand now. A pin
     removed, or a right lost, since the first answer does not come back.
 
+    Serves the web door only: a messenger turn is never regenerated, so the
+    fit block here is the web owner's (`acting_member`) alone.
+
     COMMITS `db` (via `enqueue_run`) and re-binds the RLS tenant afterwards,
-    like `send_message`.
+    like `send_message`. Takes the session lock itself, just before the
+    enqueue; a caller serialising regenerates holds `lock_regenerate`.
     """
-    history = await list_messages(db, tenant_id=tenant_id, session_id=session.id)
-    before = [msg for msg in history if msg.id < user_message.id]
+    # The new answer is a sibling of the first one: same parent, whatever came
+    # between the turn and that answer (an answered question) included.
+    first_variant_parent = (
+        await db.execute(
+            select(m.ChatMessage.parent_id)
+            .where(
+                m.ChatMessage.tenant_id == tenant_id,
+                m.ChatMessage.session_id == session.id,
+                m.ChatMessage.role == "assistant",
+                m.ChatMessage.reply_to_id == user_message.id,
+            )
+            .order_by(m.ChatMessage.id.asc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    # Its transcript ends where it will hang: at that parent (the turn itself,
+    # or an answer given to the turn's question), told as the newest turn.
+    path = await tree.path_to(
+        db, session=session, message_id=first_variant_parent or user_message.id
+    )
+    if not path:
+        path = [*await tree.path_before(db, session=session, message=user_message), user_message]
+    before, last = path[:-1], path[-1]
     mode = MODES.get(user_message.mode or "")
     refs = [
         {"kind": str(r.get("kind")), "id": str(r.get("id"))}
@@ -1035,8 +1309,16 @@ async def regenerate_reply(
             acting_member=acting_member,
             token_role=operator_role,
         )
-    task_text = _build_task_text(before, user_message.content, new_role="user")
-    task_text += _kb_reference_text(resolved_refs, mode, manifest, restricted=restricted_ids)
+    turn_text = last.content + _kb_reference_text(
+        resolved_refs, mode, manifest, restricted=restricted_ids
+    )
+    turn_text += await fitting_agents_for_turn(
+        db,
+        session=session,
+        acting_member=acting_member,
+        text=user_message.content,
+        token_role=operator_role,
+    )
     attachments = list(
         (
             await db.execute(
@@ -1051,10 +1333,7 @@ async def regenerate_reply(
     for att in attachments:
         if att.is_image:
             continue
-        task_text += f"\n\n[Attached file: {att.filename}]\n"
-        task_text += (
-            att.extracted_text if att.extracted_text else "(could not read this file's content)"
-        )
+        turn_text += attachment_turn_text(att)
     acting = await _acting_person(
         db,
         session=session,
@@ -1065,7 +1344,12 @@ async def regenerate_reply(
     )
     context = _build_turn_context(
         session=session,
-        task_text=task_text,
+        turn_message=last.content,
+        turn_text=turn_text,
+        turn_role=last.role,
+        # The answered turn's parent -- or, when the turn's question was
+        # answered, the turn itself: that answer is told as the newest turn.
+        transcript_until=before[-1].id if before else None,
         reply_to_message_id=user_message.id,
         image_attachments=[att for att in attachments if att.is_image],
         originating_operator=originating_operator,
@@ -1081,7 +1365,15 @@ async def regenerate_reply(
         extra_context={"regenerated": True},
         manifest=manifest,
     )
+    if first_variant_parent is not None:
+        # Set here, not through `extra_context`: its allow-list stays closed.
+        context["regenerate_of"] = str(first_variant_parent)
+    if web_search:
+        context[WEB_SEARCH_CONTEXT_KEY] = True
     _apply_acting_person(context, acting)
+    # Lock late: after the fit block and the manifest (embeddings, network),
+    # shortly before the commit -- audit lock, then the row (`chat.tree`).
+    await tree.lock_session(db, session=session)
     run, _published = await enqueue_run(
         db,
         tenant_id=tenant_id,
@@ -1110,6 +1402,9 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     )
     if session is None:
         return
+    # Audit lock, then the session row, before anything below touches the
+    # row (`chat.tree` on lock order).
+    await tree.lock_session(db, session=session)
     # Redundant since `send_message` opens the task up front, and kept: a run
     # that reached here without one (a session row written before that change,
     # or a caller that enqueued a chat run some other way) still gets its
@@ -1126,13 +1421,17 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             # work silently. last_update_at was already touched by the tool.
             # Its prompt goes too, or every quiet check would pile up an
             # unanswered "Follow-up for ..." line in the history.
-            await db.execute(
-                delete(m.ChatMessage).where(
-                    m.ChatMessage.session_id == session.id,
-                    m.ChatMessage.role == "followup",
-                    m.ChatMessage.run_id == run.id,
+            prompts = (
+                await db.execute(
+                    select(m.ChatMessage.id).where(
+                        m.ChatMessage.session_id == session.id,
+                        m.ChatMessage.role == "followup",
+                        m.ChatMessage.run_id == run.id,
+                    )
                 )
-            )
+            ).scalars()
+            for prompt_id in list(prompts):
+                await tree.remove_message(db, session=session, message_id=prompt_id)
             session.last_message_at = session.last_message_at or dt.datetime.now(tz=dt.UTC)
             return
     rendered_components = (run.context or {}).get("rendered_components", [])
@@ -1161,6 +1460,13 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
     builder_id = uuid_or_none(raw_builder) if raw_builder else None
     if builder_id is not None:
         reply_parts.append({"type": "agent_builder", "proposalId": str(builder_id)})
+    # The web results the answer cites (`web_search`): core's own hits, kept
+    # on the run, shown as the reply's sources of kind `web`.
+    from oc8.agent.control_tools import WEB_SEARCH_HITS_KEY
+    from oc8.websearch.service import cited_sources, with_web_sources
+
+    raw_web_hits = (run.context or {}).get(WEB_SEARCH_HITS_KEY)
+    with_web_sources(reply_parts, cited_sources(raw_web_hits, output or ""))
     if suggestions:
         reply_parts.append({"type": "suggestions", "options": suggestions})
     consumed = {
@@ -1169,6 +1475,7 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
             ("suggestions", raw_suggestions),
             ("parts", raw_parts),
             ("builder_proposal_id", raw_builder),
+            (WEB_SEARCH_HITS_KEY, raw_web_hits),
         )
         if raw is not None
     }
@@ -1177,17 +1484,39 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
         from oc8.runtime.run_context import merge_context
 
         await merge_context(db, run, consumed)
+    restricted = bool((run.context or {}).get("contains_restricted"))
+    work_digest: str | None = None
+    try:
+        work_digest = build_work_digest(
+            (run.context or {}).get("toolCalls") or [], run_id=run.id, restricted=restricted
+        )
+    except Exception:
+        logger.exception("work digest failed for run %s; the reply is recorded without it", run.id)
     reply = m.ChatMessage(
         tenant_id=run.tenant_id,
         session_id=session.id,
         role="assistant",
         content=output or "",
         run_id=run.id,
+        work_digest=work_digest,
+        restricted=restricted,
         parts=reply_parts or None,
         rendered_components=rendered_components,
         reply_to_id=reply_to_id,
     )
-    db.add(reply)
+    # Set by `regenerate_reply`: the parent of the answer this one regenerates.
+    raw_regenerate_of = (run.context or {}).get("regenerate_of")
+    regenerate_of = uuid_or_none(raw_regenerate_of) if raw_regenerate_of else None
+    if regenerate_of is not None:
+        await tree.add_regenerated_reply(
+            db,
+            session=session,
+            message=reply,
+            first_variant_parent_id=regenerate_of,
+            anchor_id=reply_to_id,
+        )
+    else:
+        await tree.append_run_write(db, session=session, message=reply, anchor_id=reply_to_id)
     session.last_message_at = dt.datetime.now(tz=dt.UTC)
     await db.flush()
     await publish_chat_message_created(
@@ -1198,6 +1527,64 @@ async def record_assistant_reply(db: AsyncSession, *, run: m.AgentRun, output: s
         acting_subject=(run.context or {}).get("originating_operator"),
         acting_role=(run.context or {}).get("operator_role"),
     )
+    await _checkpoint_when_long(db, session=session, run=run, reply=reply)
+
+
+async def _checkpoint_when_long(
+    db: AsyncSession, *, session: m.ChatSession, run: m.AgentRun, reply: m.ChatMessage
+) -> None:
+    """Start a background checkpoint once the commit is through, when the
+    replayed path now fills more than `BACKGROUND_RATIO` of the window of
+    the model the run used (spec §5.3). Never fails the reply. Never for a
+    temporary chat: a summary of it is something kept."""
+    from oc8.chat import checkpoint
+    from oc8.realtime.emit import publish_after_commit
+
+    if session.temporary:
+        return
+    try:
+        async with db.begin_nested():
+            path = await tree.path_to(db, session=session, message_id=reply.id)
+            estimate = await checkpoint.replayed_estimate(db, session=session, path=path)
+        window = checkpoint.context_window_of(run.context)
+        if estimate <= checkpoint.BACKGROUND_RATIO * window:
+            return
+        tenant_id, session_id, run_id = session.tenant_id, session.id, run.id
+
+        async def _start() -> None:
+            checkpoint.schedule_checkpoint(
+                tenant_id=tenant_id, session_id=session_id, run_id=run_id
+            )
+
+        publish_after_commit(db, _start)
+    except Exception:
+        logger.warning("chat checkpoint check for run %s failed", run.id, exc_info=True)
+
+
+async def apply_entered_mode(db: AsyncSession, *, run: m.AgentRun) -> None:
+    """Write the mode a run switched its chat into (`ENTERED_MODE`) to the
+    chat, and consume the key. Called by the executor at the end of a leg,
+    after its last model or network call: it takes the tenant's audit lock and
+    then the session row (`chat.tree`), both held until the commit right
+    after. Taken during the leg instead, the row would be held -- ahead of the
+    audit lock the leg's commit takes -- while the model is called."""
+    raw = (run.context or {}).get(ENTERED_MODE)
+    if not raw:
+        return
+    from oc8.runtime.run_context import merge_context
+
+    await merge_context(db, run, {ENTERED_MODE: None})
+    session_raw = (run.context or {}).get("chat_session_id")
+    try:
+        session_id = uuid.UUID(str(session_raw))
+    except ValueError:
+        return
+    session = await get_session(db, tenant_id=run.tenant_id, session_id=session_id)
+    if session is None or MODES.get(str(raw)) is None:
+        return
+    await tree.lock_session(db, session=session)
+    session.mode = str(raw)
+    await db.flush()
 
 
 async def active_runs_for_session(
@@ -1277,7 +1664,7 @@ async def record_answer_turn(
         author_member_id=author_member_id,
         parts=[{"type": "answers", "questions": questions_json, "answers": answer_map}],
     )
-    db.add(message)
+    await tree.append_person_write(db, session=session, message=message)
     session.last_message_at = dt.datetime.now(tz=dt.UTC)
     await db.flush()
     await publish_chat_message_created(

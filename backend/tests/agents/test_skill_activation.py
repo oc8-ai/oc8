@@ -8,6 +8,7 @@ from sqlalchemy import select
 from oc8 import models as m
 from oc8.agent.engine import run_agent
 from oc8.modelrouter import NeutralTool
+from oc8.runtime.approval_resume import Decisions
 from tests.agents.test_skill_invocation import (
     SKILL_DEF,
     _FakeToolset,
@@ -36,20 +37,20 @@ async def test_offer_narrows_to_the_active_skills_tools(
     toolset = _FakeToolset(
         tools=[
             NeutralTool(
-                name="demo-fs", description="required by the skill",
+                name="demo-fs",
+                description="required by the skill",
                 parameters={"type": "object", "properties": {}},
             ),
             NeutralTool(
-                name="other-tool", description="not required by the skill",
+                name="other-tool",
+                description="not required by the skill",
                 parameters={"type": "object", "properties": {}},
             ),
         ]
     )
     async with app_session(tenant) as db:
         agent, _, _ = await _setup(db, tenant)
-        await run_agent(
-            db, agent=agent, task_text="book it", tenant_id=tenant, toolset=toolset
-        )
+        await run_agent(db, agent=agent, task_text="book it", tenant_id=tenant, toolset=toolset)
 
     first = [t.name for t in router.requests[0].tools]
     second = [t.name for t in router.requests[1].tools]
@@ -96,8 +97,13 @@ async def test_a_skill_guardrail_tightens_the_approval_threshold(
     guarded = {
         **SKILL_DEF,
         "guardrails": [
-            {"type": "value_threshold", "action": "send_action", "metric": "value_eur",
-             "gt": 100, "then": "require_approval"}
+            {
+                "type": "value_threshold",
+                "action": "send_action",
+                "metric": "value_eur",
+                "gt": 100,
+                "then": "require_approval",
+            }
         ],
     }
     install(monkeypatch, [call_skill(), call_tool("fs_write", value_eur=500), stop()])
@@ -112,7 +118,8 @@ async def test_a_skill_guardrail_tightens_the_approval_threshold(
     toolset = _FakeToolset(
         tools=[
             NeutralTool(
-                name="fs_write", description="write a file",
+                name="fs_write",
+                description="write a file",
                 parameters={"type": "object", "properties": {}},
             ),
         ]
@@ -127,7 +134,9 @@ async def test_a_skill_guardrail_tightens_the_approval_threshold(
             "tools": {
                 **department.frame["tools"],
                 "coding": {
-                    "enabled": True, "read": True, "modify": True,
+                    "enabled": True,
+                    "read": True,
+                    "modify": True,
                     "approval_eur": None,
                 },
             },
@@ -148,8 +157,13 @@ async def _guarded_run(app_session, monkeypatch, pre_decided):
     guarded = {
         **SKILL_DEF,
         "guardrails": [
-            {"type": "value_threshold", "action": "send_action", "metric": "value_eur",
-             "gt": 100, "then": "require_approval"}
+            {
+                "type": "value_threshold",
+                "action": "send_action",
+                "metric": "value_eur",
+                "gt": 100,
+                "then": "require_approval",
+            }
         ],
     }
     install(monkeypatch, [call_skill(), call_tool("fs_write", value_eur=500), stop()])
@@ -157,7 +171,8 @@ async def _guarded_run(app_session, monkeypatch, pre_decided):
     toolset = _FakeToolset(
         tools=[
             NeutralTool(
-                name="fs_write", description="write a file",
+                name="fs_write",
+                description="write a file",
                 parameters={"type": "object", "properties": {}},
             ),
         ]
@@ -171,14 +186,17 @@ async def _guarded_run(app_session, monkeypatch, pre_decided):
             **department.frame,
             "tools": {
                 **department.frame["tools"],
-                "coding": {"enabled": True, "read": True, "modify": True,
-                           "approval_eur": None},
+                "coding": {"enabled": True, "read": True, "modify": True, "approval_eur": None},
             },
         }
         await db.flush()
         return await run_agent(
-            db, agent=agent, task_text="resume", tenant_id=tenant, toolset=toolset,
-            pre_decided={sig: pre_decided},
+            db,
+            agent=agent,
+            task_text="resume",
+            tenant_id=tenant,
+            toolset=toolset,
+            pre_decided=Decisions.of({sig: pre_decided}),
         ), toolset
 
 

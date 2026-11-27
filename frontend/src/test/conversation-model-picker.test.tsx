@@ -77,6 +77,22 @@ describe("ModelPicker", () => {
       expect(radio.className).toMatch(/\bmin-h-11\b/);
   });
 
+  it("keeps the model label on one line, cut with an ellipsis when it is short of room", () => {
+    // With the artifact panel open the composer narrows, and "Auto · GPT X"
+    // wrapped onto two lines.
+    const { container } = render(<ModelPicker sessionId="s" value={null} />);
+    const root = container.firstElementChild!;
+    expect(root.classList.contains("min-w-0")).toBe(true);
+    const trigger = screen.getByRole("button", { name: /Model: Auto/ });
+    expect(trigger.classList.contains("max-w-full")).toBe(true);
+    expect(trigger.classList.contains("whitespace-nowrap")).toBe(true);
+    for (const text of ["Auto", "· GPT X"]) {
+      const span = screen.getByText(text);
+      expect(span.classList.contains("truncate"), text).toBe(true);
+      expect(span.classList.contains("min-w-0"), text).toBe(true);
+    }
+  });
+
   it("closes on a pointerdown outside and when focus leaves", () => {
     render(
       <div>

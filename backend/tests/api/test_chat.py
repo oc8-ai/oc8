@@ -308,11 +308,18 @@ async def test_get_messages_returns_them_in_order(
                 headers=_headers(tenant),
             )
             session_id = create_r.json()["id"]
-            await c.post(
+            first = await c.post(
                 f"/api/v1/chat/sessions/{session_id}/messages",
                 json={"message": "erstens"},
                 headers=_headers(tenant),
             )
+            # Answered before the second send, which would otherwise be
+            # queued behind the running answer (spec §5.5).
+            async with app_session(tenant) as db:
+                run = await db.get(m.AgentRun, uuid.UUID(first.json()["runId"]))
+                assert run is not None
+                run.state = "done"
+                await db.commit()
             await c.post(
                 f"/api/v1/chat/sessions/{session_id}/messages",
                 json={"message": "zweitens"},
@@ -816,9 +823,7 @@ async def test_delete_session_removes_it_and_its_transcript(
                 headers=_headers(tenant),
             )
 
-            r = await c.delete(
-                f"/api/v1/chat/sessions/{session_id}", headers=_headers(tenant)
-            )
+            r = await c.delete(f"/api/v1/chat/sessions/{session_id}", headers=_headers(tenant))
             assert r.status_code == 204, r.text
 
             list_r = await c.get(
@@ -833,10 +838,14 @@ async def test_delete_session_removes_it_and_its_transcript(
 
     async with app_session(tenant) as db:
         orphans = (
-            await db.execute(
-                select(m.ChatMessage).where(m.ChatMessage.session_id == uuid.UUID(session_id))
+            (
+                await db.execute(
+                    select(m.ChatMessage).where(m.ChatMessage.session_id == uuid.UUID(session_id))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         assert orphans == []
 
 
@@ -893,6 +902,13 @@ async def test_a_second_turn_reuses_the_task_the_first_one_opened(
                     headers=_headers(tenant),
                 )
                 assert r.status_code == 201, r.text
+                # The first turn's answer finishes before the second is sent:
+                # a send while it runs would be queued (spec §5.5).
+                async with app_session(tenant) as db:
+                    run = await db.get(m.AgentRun, uuid.UUID(r.json()["runId"]))
+                    assert run is not None
+                    run.state = "done"
+                    await db.commit()
 
     async with app_session(tenant) as db:
         runs = (
@@ -908,9 +924,7 @@ async def test_a_second_turn_reuses_the_task_the_first_one_opened(
         )
         assert len(runs) == 2
         assert len({r.task_id for r in runs}) == 1, "both turns share one Task"
-        tasks = (
-            (await db.execute(select(m.Task).where(m.Task.tenant_id == tenant))).scalars().all()
-        )
+        tasks = (await db.execute(select(m.Task).where(m.Task.tenant_id == tenant))).scalars().all()
         assert len(tasks) == 1
 
 
@@ -1270,3 +1284,206 @@ async def test_get_session_run_404s_for_a_nonexistent_run_id(
                 headers=_headers(tenant),
             )
             assert get_r.status_code == 404, get_r.text
+
+
+# --- steer or queue (spec §5.5): no parallel turns in an ordinary chat ---
+
+
+async def _open_chat_with_a_running_turn(
+    c: AsyncClient, tenant: uuid.UUID, agent_id: uuid.UUID
+) -> tuple[str, str]:
+    session_id = (
+        await c.post(
+            "/api/v1/chat/sessions", json={"agentId": str(agent_id)}, headers=_headers(tenant)
+        )
+    ).json()["id"]
+    first = await c.post(
+        f"/api/v1/chat/sessions/{session_id}/messages",
+        json={"message": "Erste Frage"},
+        headers=_headers(tenant),
+    )
+    assert first.status_code == 201, first.text
+    return session_id, first.json()["runId"]
+
+
+async def _chat_runs(app_session: AppSessionFactory, tenant: uuid.UUID) -> list[m.AgentRun]:
+    async with app_session(tenant) as db:
+        return list(
+            (
+                await db.execute(
+                    select(m.AgentRun).where(
+                        m.AgentRun.tenant_id == tenant, m.AgentRun.source == "chat"
+                    )
+                )
+            ).scalars()
+        )
+
+
+async def test_plain_send_during_an_active_run_is_queued_not_parallel(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            session_id, run_id = await _open_chat_with_a_running_turn(c, tenant, agent_id)
+            second = await c.post(
+                f"/api/v1/chat/sessions/{session_id}/messages",
+                json={"message": "Zweite Frage"},
+                headers=_headers(tenant),
+            )
+            assert second.status_code == 202, second.text
+            body = second.json()
+            assert body["queued"] is True and body["runId"] == run_id
+            assert body["input"]["text"] == "Zweite Frage"
+            assert body["input"]["delivery"] == "next_turn"
+            assert body["input"]["consumedAt"] is None
+
+            messages = (
+                await c.get(
+                    f"/api/v1/chat/sessions/{session_id}/messages", headers=_headers(tenant)
+                )
+            ).json()
+            assert [msg["content"] for msg in messages] == ["Erste Frage"], "not a turn yet"
+
+    runs = await _chat_runs(app_session, tenant)
+    assert [str(r.id) for r in runs] == [run_id], "exactly one active run"
+    async with app_session(tenant) as db:
+        [row] = list(
+            (
+                await db.execute(select(m.RunInput).where(m.RunInput.run_id == uuid.UUID(run_id)))
+            ).scalars()
+        )
+        assert row.delivery == "next_turn" and row.text == "Zweite Frage"
+
+
+async def test_plain_send_with_attachment_during_an_active_run_is_409(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            session_id, _run_id = await _open_chat_with_a_running_turn(c, tenant, agent_id)
+            for extra in (
+                {"attachmentIds": [str(uuid.uuid4())]},
+                {"contextRefs": [{"kind": "knowledge_base", "id": str(uuid.uuid4())}]},
+            ):
+                r = await c.post(
+                    f"/api/v1/chat/sessions/{session_id}/messages",
+                    json={"message": "Zweite Frage", **extra},
+                    headers=_headers(tenant),
+                )
+                assert r.status_code == 409, r.text
+                assert "An answer is still running" in r.json()["detail"]
+
+    assert len(await _chat_runs(app_session, tenant)) == 1
+    async with app_session(tenant) as db:
+        assert (await db.execute(select(m.RunInput))).scalars().first() is None
+
+
+async def test_live_session_send_is_unchanged(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    from oc8.chat.live import get_or_create_live_session
+
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            # Provisions the caller's member row.
+            await c.post(
+                "/api/v1/chat/sessions", json={"agentId": str(agent_id)}, headers=_headers(tenant)
+            )
+            async with app_session(tenant) as db:
+                member = (
+                    await db.execute(select(m.OrgMember).where(m.OrgMember.subject == "op"))
+                ).scalar_one()
+                live = await get_or_create_live_session(
+                    db, tenant_id=tenant, member_id=member.id, agent_id=agent_id
+                )
+                live_id = str(live.id)
+                await db.commit()
+            for text in ("Erste Frage", "Zweite Frage"):
+                r = await c.post(
+                    f"/api/v1/chat/sessions/{live_id}/messages",
+                    json={"message": text},
+                    headers=_headers(tenant),
+                )
+                assert r.status_code == 201, r.text
+
+    assert len(await _chat_runs(app_session, tenant)) == 2
+
+
+async def test_a_colleague_cannot_queue_into_someone_elses_running_answer(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """A copilot:manage holder may reply in a colleague's Assistant chat, but
+    not while its answer runs: her message could never become the owner's
+    next turn (spec §5.5), and it never starts a parallel one."""
+    tenant = uuid.uuid4()
+    other = {
+        "Authorization": "Bearer "
+        + get_identity_provider().mint(tenant_id=tenant, subject="other-op", role="org_admin")
+    }
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            agent_id = (await c.get("/api/v1/assistant", headers=_headers(tenant))).json()[
+                "agentId"
+            ]
+            session_id, _run_id = await _open_chat_with_a_running_turn(c, tenant, agent_id)
+            r = await c.post(
+                f"/api/v1/chat/sessions/{session_id}/messages",
+                json={"message": "Von mir"},
+                headers=other,
+            )
+            assert r.status_code == 409, r.text
+            assert "An answer is still running" in r.json()["detail"]
+
+    assert len(await _chat_runs(app_session, tenant)) == 1
+    async with app_session(tenant) as db:
+        assert (await db.execute(select(m.RunInput))).scalars().first() is None
+
+
+async def test_a_send_racing_the_end_of_the_running_answer_becomes_an_ordinary_turn(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer ends between the send's read and its input lock: the input
+    is refused as finished, the send looks again, finds nothing running and
+    is an ordinary turn -- never lost, never parallel."""
+    from oc8.api.v1 import chat as chat_api
+    from oc8.runtime.run_inputs import InputRefused
+
+    tenant = uuid.uuid4()
+    agent_id = await _seed_agent(app_session, tenant)
+    attempts: list[uuid.UUID] = []
+
+    async def _ends_first(db: object, *, run: m.AgentRun, **_kw: object) -> m.RunInput:
+        attempts.append(run.id)
+        async with app_session(tenant) as other:
+            ended = await other.get(m.AgentRun, run.id)
+            assert ended is not None
+            ended.state = "done"
+            await other.commit()
+        raise InputRefused(409, "run has already finished", "finished")
+
+    monkeypatch.setattr(chat_api, "add_run_input", _ends_first)
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            session_id, run_id = await _open_chat_with_a_running_turn(c, tenant, agent_id)
+            r = await c.post(
+                f"/api/v1/chat/sessions/{session_id}/messages",
+                json={"message": "Zweite Frage"},
+                headers=_headers(tenant),
+            )
+            assert r.status_code == 201, r.text
+            assert r.json()["content"] == "Zweite Frage"
+
+    assert [str(a) for a in attempts] == [run_id], "asked once, then looked again"
+    runs = await _chat_runs(app_session, tenant)
+    assert sorted(r.state for r in runs) == ["done", "queued"]

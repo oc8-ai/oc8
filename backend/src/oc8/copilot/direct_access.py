@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Mapping
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -22,6 +22,7 @@ from oc8.agent.control_tools import (
 from oc8.agent.harness.stages.b_direct_access import DirectAccessView, offers_direct
 from oc8.approvals import AgentNotOffered, AgentNotRunnable, EffectRefused, raise_approval
 from oc8.audit import append_event
+from oc8.audit.chain import lock_tenant_audit
 from oc8.connections.access import (
     ConnectionRequired,
     ToolAccess,
@@ -157,6 +158,23 @@ def _request_text(purpose: str, request: str) -> str:
     return "\n".join(part for part in (purpose, request) if part)[:_REQUEST_LIMIT]
 
 
+async def _lock_offers(db: AsyncSession, *, session_id: uuid.UUID) -> None:
+    """Serialise the offers and decisions of one conversation, until commit.
+
+    An advisory lock of its own, NOT the chat_session row: an offer is made
+    inside the Copilot's run, whose transaction goes on to call the model and
+    stages audit events that take the tenant's audit lock only at its commit.
+    Holding the session row that long, ahead of the audit lock, would invert
+    the order every chat writer keeps (audit, then row -- `chat.tree`): a send
+    holding the audit lock would wait on the row, and the run's end on the
+    audit lock. Nothing but offers and decisions takes this lock, and a
+    decision takes it BEFORE the audit lock, so it adds no cycle either."""
+    await db.execute(
+        text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))"),
+        {"key": f"direct_access:{session_id}"},
+    )
+
+
 async def _fitting_agents(
     db: AsyncSession,
     *,
@@ -233,9 +251,7 @@ async def execute_direct_access_tool(
         )
     # Serialise the offers of one conversation: two parallel calls must not
     # both find nothing waiting and raise two cards.
-    await db.execute(
-        select(m.ChatSession.id).where(m.ChatSession.id == direct.session_id).with_for_update()
-    )
+    await _lock_offers(db, session_id=direct.session_id)
     if await active_grant(db, session_id=direct.session_id, tool_key=key) is not None:
         return ControlOutcome(
             output=f"Direct access to {key} is already allowed in this conversation; use its tools."
@@ -511,8 +527,20 @@ async def resolve_direct_access_approval(
     grant can no longer be given or the agent no longer be started.
 
     One grant at most: `decide_approval` holds the approval row locked and
-    refuses a second decision, the conversation row is locked here like the
-    offer locks it, and the partial unique index is the last word."""
+    refuses a second decision, the conversation's offers are serialised here
+    as the offer serialises them (`_lock_offers`), and the partial unique
+    index is the last word.
+
+    Locks, in the one order that cannot cycle (`chat.tree` documents it):
+    after the approval row (`decide_approval`), the parked run's agent_run
+    row, then the offer lock, then the tenant's audit lock, then the
+    conversation row (which keeps a concurrent delete of the conversation
+    from slipping in under the grant). The run row comes first because its
+    executor holds it while it parks and takes the audit lock after, and an
+    offering run holds its own row before it asks for the offer lock -- on
+    both decisions, since the answer is written to that row either way.
+    Everything after them up to the caller's commit is database work: no
+    model or network call."""
     payload = approval.payload or {}
     raw_info = payload.get("direct_access")
     info: Mapping[str, Any] = raw_info if isinstance(raw_info, dict) else {}
@@ -520,7 +548,13 @@ async def resolve_direct_access_approval(
     member_id = uuid_or_none(info.get("member_id"))
     key = str(info.get("tool_key") or "")
     chosen: dict[str, str] | None = None
+    run_id = uuid_or_none(payload.get("run_id"))
+    if run_id is not None:
+        await db.execute(select(m.AgentRun.id).where(m.AgentRun.id == run_id).with_for_update())
     if decision == "approve":
+        if session_id is not None:
+            await _lock_offers(db, session_id=session_id)
+        await lock_tenant_audit(db, approval.tenant_id)
         session = (
             await db.execute(
                 select(m.ChatSession).where(m.ChatSession.id == session_id).with_for_update()
@@ -565,7 +599,6 @@ async def resolve_direct_access_approval(
                     "tool_key": key,
                 },
             )
-    run_id = uuid_or_none(payload.get("run_id"))
     run = await db.get(m.AgentRun, run_id) if run_id else None
     if run is None or run.task_id != approval.task_id:
         return None
@@ -589,7 +622,15 @@ async def resolve_direct_access_approval(
 def direct_access_resume_text(task_text: str, entry: Mapping[str, Any]) -> str:
     """The resumed run's task: the original request plus the person's answer
     (§3 step 4/6). Unlike a held write's resume, the run carries on with the
-    request -- that is what the access was asked for."""
+    request -- that is what the access was asked for. A chat turn of the
+    in-process engine keeps its turn and is told the answer alone, after its
+    conversation (`direct_access_resume_note`)."""
+    return f"{task_text}\n\n{direct_access_resume_note(entry)}"
+
+
+def direct_access_resume_note(entry: Mapping[str, Any]) -> str:
+    """The person's answer to a direct-access offer, as the resumed leg is
+    told it."""
     label = one_line(str(entry.get("label") or entry.get("tool_key") or ""), 120)
     key = one_line(str(entry.get("tool_key") or ""), 200)
     chosen = entry.get("chosen_agent")
@@ -611,4 +652,4 @@ def direct_access_resume_text(task_text: str, entry: Mapping[str, Any]) -> str:
             f"[oc8] The person declined direct access to {label} ({key}). Answer without "
             "it, and do not offer it again in this conversation unless they ask."
         )
-    return f"{task_text}\n\n{note}"
+    return note

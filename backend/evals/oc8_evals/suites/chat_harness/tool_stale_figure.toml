@@ -1,0 +1,22 @@
+id = "tool_stale_figure"
+kind = "chat"
+group = "must_call_tool"
+systems = []
+origin = "manual"
+scenario = "chat_must_call_tool"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+And how many tokens have we used now?
+"""
+
+[params]
+agent = "copilot"
+tools = ["budget_overview"]
+stale = [["user", "How many tokens have we used this month?"], ["assistant", "So far this month you have used 12,345 tokens."]]
+forbid = ["12[.,]?345"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

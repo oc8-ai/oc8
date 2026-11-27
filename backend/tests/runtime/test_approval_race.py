@@ -256,3 +256,30 @@ async def test_no_resolved_approvals_never_queries_or_requeues(
 
         assert requeued is False
         assert run.state == RunState.WAITING_FOR_APPROVAL.value
+
+
+async def test_a_decided_card_re_queues_only_on_its_own_decision(
+    app_session: AppSessionFactory,
+) -> None:
+    """An entry names the card it decided (`approval_id`): one that decided
+    an earlier card of the same call does not re-queue a park on another."""
+    tenant = uuid.uuid4()
+    tool, args = "create_record", {"model": "crm.lead"}
+    async with app_session(tenant) as db:
+        entry = {
+            "sig": call_signature(tool, args),
+            "tool": tool,
+            "arguments": args,
+            "decision": "approve",
+            "approval_id": str(uuid.uuid4()),
+        }
+        run = await _parked_run(
+            db,
+            tenant,
+            context={"task": "x", "resolved_tool_approvals": [entry]},
+            current_hold=(tool, args),
+            hold_status="approved",
+        )
+
+        assert await requeue_if_already_decided(db, run=run) is False
+        assert run.state == RunState.WAITING_FOR_APPROVAL.value

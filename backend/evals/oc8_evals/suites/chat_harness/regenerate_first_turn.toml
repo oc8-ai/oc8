@@ -1,0 +1,23 @@
+id = "regenerate_first_turn"
+kind = "chat"
+group = "edit_regenerate"
+systems = []
+origin = "manual"
+scenario = "chat_edit_regenerate"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+(the turn is regenerated)
+"""
+
+[params]
+action = "regenerate"
+seed = [["user", "Reply with the single word ORANGE and nothing else."], ["assistant", "BANANA"]]
+target = 0
+expect = ["ORANGE"]
+forbid = ["BANANA"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

@@ -69,6 +69,7 @@ from oc8.knowledge.vector_indexes.registry import (
 from oc8.knowledge.worker import get_ingestion_queue
 from oc8.modelrouter import EmbeddingUnavailable, get_model_router
 from oc8.modelrouter.router import embedding_local_tag
+from oc8.models.knowledge import CHAT_UPLOAD_CONNECTOR, KB_KIND_SHARED
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     BaseRemovalDTO,
@@ -338,16 +339,26 @@ def _embedding_model_for(requested: str | None, *, require_local: str | None) ->
 async def _live_base(db: DbSession, kb_id: uuid.UUID) -> m.KnowledgeBase:
     """The base, or a 404. A base another tenant owns is invisible under RLS and
     a deleted one is treated the same way: "no such base" and "you may not touch
-    that base" must read identically, or the 404 confirms it exists."""
+    that base" must read identically, or the 404 confirms it exists.
+
+    A chat's own base (spec §5.4) is not one of the organisation's bases: it
+    answers like one that does not exist, on every route that names a base --
+    read, edit, fill, sync into, grant or delete. Its chat deletes it."""
     kb = await db.get(m.KnowledgeBase, kb_id)
-    if kb is None or kb.deleted_at is not None:
+    if kb is None or kb.deleted_at is not None or kb.kind != KB_KIND_SHARED:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "knowledge base not found")
     return kb
 
 
 async def _live_source(db: DbSession, source_id: uuid.UUID, tenant_id: uuid.UUID) -> m.DataSource:
     ds = await db.get(m.DataSource, source_id)
-    if ds is None or ds.tenant_id != tenant_id or ds.deleted_at is not None:
+    if (
+        ds is None
+        or ds.tenant_id != tenant_id
+        or ds.deleted_at is not None
+        # The source feeding a chat's own base goes with that base.
+        or ds.connector_type == CHAT_UPLOAD_CONNECTOR
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
     return ds
 
@@ -393,7 +404,8 @@ async def list_bases(
 ) -> Page[KnowledgeBaseDTO]:
     grants = await _grants_for(db)
     sources = await _linked_sources_for(db)
-    stmt = select(m.KnowledgeBase)
+    # A chat's own base is never listed, archived or not (spec §5.4).
+    stmt = select(m.KnowledgeBase).where(m.KnowledgeBase.kind == KB_KIND_SHARED)
     if not include_archived:
         stmt = stmt.where(m.KnowledgeBase.deleted_at.is_(None))
     stmt = apply_search(
@@ -639,6 +651,7 @@ async def upload_document(
     db: DbSession,
     principal: CurrentPrincipal,
 ) -> KnowledgeBaseDTO:
+    await _live_base(db, kb_id)
     try:
         await ingest_document(
             db,
@@ -677,7 +690,7 @@ async def list_sources(
     # SoftDeleteMixin model is listed.
     include_archived: bool = Query(False, alias="includeArchived"),
 ) -> Page[DataSourceDTO]:
-    stmt = select(m.DataSource)
+    stmt = select(m.DataSource).where(m.DataSource.connector_type != CHAT_UPLOAD_CONNECTOR)
     if not include_archived:
         stmt = stmt.where(m.DataSource.deleted_at.is_(None))
     if connector_type:
@@ -841,7 +854,11 @@ async def preview_source(
     principal: CurrentPrincipal,
 ) -> dict[str, object]:
     ds = await db.get(m.DataSource, source_id)
-    if ds is None or ds.tenant_id != principal.tenant_id:
+    if (
+        ds is None
+        or ds.tenant_id != principal.tenant_id
+        or ds.connector_type == CHAT_UPLOAD_CONNECTOR
+    ):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "source not found")
     try:
         connector = await resolve_connector(
@@ -1216,6 +1233,14 @@ async def get_ingestion_job(
 ) -> IngestionJobDTO:
     job = await db.get(m.IngestionJob, job_id)
     if job is None or job.tenant_id != principal.tenant_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "ingestion job not found")
+    kb = await db.get(m.KnowledgeBase, job.kb_id) if job.kb_id is not None else None
+    source = await db.get(m.DataSource, job.data_source_id)
+    if (kb is not None and kb.kind != KB_KIND_SHARED) or (
+        source is not None and source.connector_type == CHAT_UPLOAD_CONNECTOR
+    ):
+        # A job filling a chat's own base is that chat's business -- told by
+        # its source too, so a job whose base is gone stays hidden as well.
         raise HTTPException(status.HTTP_404_NOT_FOUND, "ingestion job not found")
     return ingestion_job_to_dto(job)
 

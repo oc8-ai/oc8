@@ -5,6 +5,11 @@
 // the throw, not by quietly becoming org_admin. `<DevSignIn>` is the only
 // thing that ever calls `/auth/dev-login` and stores what it gets back.
 
+import { stopSpeech } from "@/components/conversation/voice/speech-player";
+
+import { purgeAppCaches } from "./app-worker";
+import { resetPython } from "./python-reset";
+
 const API_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8099/api/v1";
 const TOKEN_KEY = "oc8-dev-token";
@@ -65,6 +70,9 @@ export function hasCommunitySession(): boolean {
 export async function logoutCommunity(): Promise<void> {
   if (typeof window === "undefined") return;
   tokenStore.clear();
+  resetPython();
+  stopSpeech();
+  purgeAppCaches();
   // /auth/config is unguarded, so this works with the token already gone.
   try {
     const res = await fetch(`${API_URL}/auth/config`);
@@ -118,6 +126,12 @@ export function hasDevSession(): boolean {
 export function logoutDev(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(TOKEN_KEY);
+  // A chat's Python sandbox (with any file it was given), an answer being
+  // read aloud (or kept for the next tap) and the app's cached files go with
+  // the session.
+  resetPython();
+  stopSpeech();
+  purgeAppCaches();
 }
 
 export async function loginDev(opts: {
@@ -597,6 +611,46 @@ export async function uploadChatAttachment(
   });
   if (!res.ok) throw await toError(res);
   return (await res.json()) as FileAttachmentDTO;
+}
+
+/** One dictation (POST /chat/audio/transcribe): the text is for the composer,
+ *  nothing is sent. Multipart like the upload above, so not `api.*`. */
+export async function transcribeChatAudio(
+  sessionId: string,
+  recording: Blob,
+): Promise<{ text: string }> {
+  const token = await getToken();
+  const body = new FormData();
+  const ext = recording.type.includes("mp4")
+    ? "m4a"
+    : recording.type.includes("ogg")
+      ? "ogg"
+      : "webm";
+  body.append("file", recording, `dictation.${ext}`);
+  body.append("session_id", sessionId);
+  const res = await fetch(`${API_URL}/chat/audio/transcribe`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body,
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as { text: string };
+}
+
+/** An answer read aloud (audio/mpeg), fetched with the bearer token: an
+ *  `<audio src>` could not send it. */
+export async function fetchAnswerSpeech(
+  sessionId: string,
+  messageId: string,
+  signal: AbortSignal,
+): Promise<Blob> {
+  const token = await getToken();
+  const res = await fetch(
+    `${API_URL}/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/speech`,
+    { method: "POST", headers: { authorization: `Bearer ${token}` }, signal },
+  );
+  if (!res.ok) throw await toError(res);
+  return res.blob();
 }
 
 // Same shape as uploadChatAttachment above, but for the agent Instructions

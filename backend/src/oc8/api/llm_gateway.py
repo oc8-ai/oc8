@@ -33,6 +33,7 @@ from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.config import get_settings
 from oc8.db.session import tenant_session
 from oc8.metering import check_budget, record_usage
+from oc8.metering.usage import usage_member_id
 from oc8.modelrouter import (
     NeutralMessage,
     NeutralTool,
@@ -45,6 +46,7 @@ from oc8.modelrouter.fallback import limit_reason, stream_completion_with_fallba
 from oc8.modelrouter.http_errors import describe_upstream_error, explain_upstream_error
 from oc8.modelrouter.router import ClassificationViolation, TenantKeyRequired
 from oc8.modelrouter.sampling import resolve_params
+from oc8.modelrouter.speech import NotAChatModel, is_speech_model
 from oc8.modelrouter.types import CompletionResult, Usage
 
 logger = logging.getLogger(__name__)
@@ -75,11 +77,16 @@ class GatewayCaller(BaseModel):
     #: `search_knowledge` lookup through the tool gateway marks it). Every
     #: completion carries it, so the router refuses a cloud model or fallback.
     contains_restricted: bool = False
+    #: The person the run acts for, whose budget line its usage is booked to.
+    #: Resolved with the request's session, before the bill detaches from it.
+    member_id: uuid.UUID | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 
 
-async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
+async def _caller(
+    db: DbSession, principal: CurrentPrincipal, *, bills: bool = True
+) -> GatewayCaller:
     """Resolve the calling agent, or refuse.
 
     Only a `kind=agent` token scoped to a run may use the gateway. An operator
@@ -111,6 +118,9 @@ async def _caller(db: DbSession, principal: CurrentPrincipal) -> GatewayCaller:
         run_id=run_id,
         pinned=await resolve_version(db, run, agent),
         contains_restricted=bool((run.context or {}).get("contains_restricted", False)),
+        # Resolved here, before any bill is detached from the request session;
+        # skipped for a call that bills nothing (the model list).
+        member_id=await usage_member_id(db, run) if bills else None,
     )
 
 
@@ -238,6 +248,7 @@ async def _bill(
     agent_id = caller.agent.id
     department_id = caller.agent.department_id
     tenant_id = caller.tenant_id
+    member_id = caller.member_id
     tokens_in, tokens_out = usage.tokens_in, usage.tokens_out
     cache_read, cache_write = usage.cache_read_tokens, usage.cache_write_tokens
 
@@ -255,6 +266,7 @@ async def _bill(
                 cache_write_tokens=cache_write,
                 agent_id=agent_id,
                 department_id=department_id,
+                member_id=member_id,
             )
 
     task = asyncio.ensure_future(_write())
@@ -290,6 +302,10 @@ async def _prepare(
     pinned_model_id = pinned_model_config_id(caller.pinned)
     model_config = await db.get(m.ModelConfig, pinned_model_id) if pinned_model_id else None
     settings = get_settings()
+    if model_config is not None and is_speech_model(model_config):
+        # Before any stream starts: a 409 the harness can read, not an
+        # in-band error after a 200. The router refuses it too (`NotAChatModel`).
+        raise HTTPException(status.HTTP_409_CONFLICT, _SPEECH_PINNED)
     if model_config is not None:
         provider, model = model_config.provider, model_config.model
     else:
@@ -331,6 +347,8 @@ async def _complete_or_raise(db: DbSession, common: dict[str, Any]) -> Completio
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
     except TenantKeyRequired as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(exc)) from exc
+    except NotAChatModel as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, _SPEECH_PINNED) from exc
     except HTTPException:
         raise
     except Exception as exc:  # upstream failed after the chain was exhausted
@@ -1260,6 +1278,9 @@ async def _responses_sse(
         await _bill(db, caller, request_id=request_id, provider=provider, model=model, usage=usage)
 
 
+_SPEECH_PINNED = "this agent's version runs on a speech model, which cannot answer a chat"
+
+
 @router.get("/v1/models")
 async def list_models(db: DbSession, principal: CurrentPrincipal) -> dict[str, Any]:
     """The models this tenant may use.
@@ -1270,9 +1291,18 @@ async def list_models(db: DbSession, principal: CurrentPrincipal) -> dict[str, A
     """
     from sqlalchemy import select
 
-    caller = await _caller(db, principal)
+    from oc8.modelrouter.speech import chat_capable
+
+    caller = await _caller(db, principal, bills=False)
     rows = (
-        (await db.execute(select(m.ModelConfig).where(m.ModelConfig.tenant_id == caller.tenant_id)))
+        (
+            await db.execute(
+                # A speech model answers no chat, so a harness must not see it.
+                select(m.ModelConfig).where(
+                    m.ModelConfig.tenant_id == caller.tenant_id, chat_capable()
+                )
+            )
+        )
         .scalars()
         .all()
     )

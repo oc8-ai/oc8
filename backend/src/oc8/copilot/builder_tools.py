@@ -34,7 +34,13 @@ from oc8.authz.permissions import DEPARTMENT, VIEW, perm
 from oc8.authz.scope import AgentActor
 from oc8.boards.repo import visible_boards
 from oc8.chat.model_choice import chat_enabled_model_ids
-from oc8.chat.modes import AGENT, mode_directive, mode_from_context, mode_refusal
+from oc8.chat.modes import (
+    AGENT,
+    ENTERED_MODE,
+    mode_directive,
+    mode_from_context,
+    mode_refusal,
+)
 from oc8.connections.usable import department_systems, system_tool_scopes
 from oc8.copilot.builder import (
     create_builder_proposal,
@@ -447,15 +453,18 @@ async def execute_builder_tool(
         return ControlOutcome(output=f"ERROR: {refused}")
 
     if tc.name == ENTER_AGENT_MODE.name:
-        session.mode = AGENT.key
         # This run's next leg (after an ask_user park) reads the mode back
         # through mode_from_context, and its task carries the directive. The
-        # engine switches the rest of THIS leg itself (Ruling A6).
+        # engine switches the rest of THIS leg itself (Ruling A6). The chat
+        # itself is switched at the leg's end (`chat.service.apply_entered_mode`),
+        # not here: locking its row now would hold it, ahead of the tenant's
+        # audit lock, while the model is called for the rest of the leg.
         await merge_context(
             db,
             run,
             {
                 "chat_mode": AGENT.key,
+                ENTERED_MODE: AGENT.key,
                 "task": str(context.get("task", "")) + "\n\n" + mode_directive(AGENT),
             },
         )

@@ -1,0 +1,159 @@
+// A ```mermaid block in an answer draws as a diagram (an <img> of the SVG
+// Mermaid made, in strict mode), only once the block is closed; while it is
+// still being written, or when Mermaid cannot parse it, the source shows.
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mermaid = vi.hoisted(() => ({
+  initialize: vi.fn(),
+  parse: vi.fn(async () => ({ diagramType: "flowchart" })),
+  render: vi.fn(async () => ({
+    svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>A</text></svg>',
+  })),
+}));
+vi.mock("mermaid", () => ({ default: mermaid }));
+
+vi.mock("@/lib/record-links", async (orig) => ({
+  ...(await orig<typeof import("@/lib/record-links")>()),
+  useVerifiedLinks: () => ({ data: undefined }),
+}));
+
+import { ChatMarkdown } from "@/components/chat-markdown";
+import { renderMermaidToSvg } from "@/components/conversation/mermaid-render";
+
+const SOURCE = "graph TD\n  A-->B";
+const CLOSED = "A diagram:\n\n```mermaid\n" + SOURCE + "\n```\n";
+const OPEN = "A diagram:\n\n```mermaid\n" + SOURCE;
+
+beforeEach(() => {
+  mermaid.parse.mockClear();
+  mermaid.render.mockClear();
+});
+
+describe("ChatMarkdown mermaid", () => {
+  it("draws a closed block as an SVG image", async () => {
+    const { container } = render(<ChatMarkdown text={CLOSED} />);
+    const img = await screen.findByRole("img", { name: "Diagram" });
+    expect(img.getAttribute("src")).toMatch(/^data:image\/svg\+xml/);
+    expect(decodeURIComponent(img.getAttribute("src")!)).toContain("<text>A</text>");
+    expect(mermaid.render).toHaveBeenCalledWith(expect.any(String), SOURCE);
+    // Never inline: the SVG is an image, nothing of it joins the page's DOM.
+    expect(container.querySelector("svg text")).toBeNull();
+  });
+
+  it("shows the code of an unclosed block while streaming", async () => {
+    const { container } = render(<ChatMarkdown text={OPEN} streaming />);
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    expect(mermaid.parse).not.toHaveBeenCalled();
+    expect(mermaid.render).not.toHaveBeenCalled();
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(container.textContent).toContain("A-->B");
+  });
+
+  it("draws the block once its closing fence arrives mid-stream", async () => {
+    const { rerender } = render(<ChatMarkdown text={OPEN} streaming />);
+    expect(mermaid.render).not.toHaveBeenCalled();
+    rerender(<ChatMarkdown text={CLOSED + "\nMore words"} streaming />);
+    await screen.findByRole("img", { name: "Diagram" });
+    expect(mermaid.render).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the source and a note when the diagram cannot be parsed", async () => {
+    mermaid.parse.mockRejectedValueOnce(new Error("Parse error on line 1"));
+    const { container } = render(<ChatMarkdown text={CLOSED.replace("A-->B", "A-->")} />);
+    await screen.findByText("Diagram could not be drawn.");
+    expect(container.textContent).toContain("A-->");
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(mermaid.render).not.toHaveBeenCalled();
+  });
+
+  it("switches between the diagram and its source", async () => {
+    const { container } = render(<ChatMarkdown text={CLOSED} />);
+    await screen.findByRole("img", { name: "Diagram" });
+    fireEvent.click(screen.getByRole("button", { name: "Show source" }));
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(container.querySelector("pre")?.textContent).toBe(SOURCE);
+    fireEvent.click(screen.getByRole("button", { name: "Show diagram" }));
+    expect(screen.getByRole("img", { name: "Diagram" })).toBeInTheDocument();
+  });
+
+  it("copies the source", async () => {
+    const writeText = vi.fn(async () => undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    try {
+      render(<ChatMarkdown text={CLOSED} />);
+      await screen.findByRole("img", { name: "Diagram" });
+      fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(SOURCE));
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+
+  it("draws the diagram again when the page switches to dark", async () => {
+    const root = document.documentElement;
+    try {
+      render(<ChatMarkdown text={CLOSED} />);
+      await screen.findByRole("img", { name: "Diagram" });
+      expect(mermaid.render).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        root.classList.add("dark");
+      });
+      await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2));
+      expect(mermaid.initialize).toHaveBeenLastCalledWith(
+        expect.objectContaining({ theme: "dark" }),
+      );
+    } finally {
+      root.classList.remove("dark");
+    }
+  });
+});
+
+describe("renderMermaidToSvg", () => {
+  it("runs Mermaid in strict mode without HTML labels", async () => {
+    const svg = await renderMermaidToSvg("graph LR\n  X-->Y");
+    expect(svg).toContain("<svg");
+    expect(mermaid.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({ securityLevel: "strict", htmlLabels: false, startOnLoad: false }),
+    );
+  });
+
+  it("rejects when the source does not parse", async () => {
+    mermaid.parse.mockRejectedValueOnce(new Error("bad"));
+    await expect(renderMermaidToSvg("nope")).rejects.toThrow("bad");
+  });
+
+  it("gives the SVG its natural size, so a small diagram is not stretched", async () => {
+    // Mermaid writes width="100%": as an <img> that has no natural width, and
+    // a 104 px diagram filled the whole answer.
+    mermaid.render.mockResolvedValueOnce({
+      svg:
+        '<svg id="d" width="100%" xmlns="http://www.w3.org/2000/svg" style="max-width: 104.5px;"' +
+        ' viewBox="-8 -8 104.5 190"><text>A</text><svg width="100%"></svg></svg>',
+    });
+    const svg = await renderMermaidToSvg("graph TD\n  A-->B");
+    expect(svg).toMatch(/^<svg id="d" width="104.5" height="190" xmlns=/);
+    // Only the root element changes.
+    expect(svg).toContain('<svg width="100%"></svg>');
+  });
+
+  it("leaves an SVG without a viewBox as it is", async () => {
+    const svg = await renderMermaidToSvg("graph TD\n  A-->B");
+    expect(svg).toBe('<svg xmlns="http://www.w3.org/2000/svg"><text>A</text></svg>');
+  });
+});
+
+describe("MermaidBlock image", () => {
+  it("shows the diagram at its natural size, scaled down only to fit", async () => {
+    render(<ChatMarkdown text={CLOSED} />);
+    const img = await screen.findByRole("img", { name: "Diagram" });
+    for (const name of ["max-w-full", "h-auto", "w-auto", "mx-auto"]) {
+      expect(img.classList.contains(name), name).toBe(true);
+    }
+    expect(img.classList.contains("w-full")).toBe(false);
+  });
+});

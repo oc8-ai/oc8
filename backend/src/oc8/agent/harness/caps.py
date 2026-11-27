@@ -44,11 +44,14 @@ def resolve_caps(params: Mapping[str, Any] | None) -> ModelCaps:
     if isinstance(raw.get("prompt_caching"), bool):
         caps = replace(caps, prompt_caching=raw["prompt_caching"])
 
-    # Context window
-    window = raw.get("context_window_tokens")
-    # bool is an int subclass; `True` must not read as a 1-token window.
-    if isinstance(window, int) and not isinstance(window, bool) and window > 0:
-        caps = replace(caps, context_window_tokens=window)
+    # Context window: the harness's own key, else the one the model API and
+    # settings page store (`context_window`, see api/v1/catalog.py).
+    for key in ("context_window_tokens", "context_window"):
+        window = raw.get(key)
+        # bool is an int subclass; `True` must not read as a 1-token window.
+        if isinstance(window, int) and not isinstance(window, bool) and window > 0:
+            caps = replace(caps, context_window_tokens=window)
+            break
 
     # Summary model
     summary_model = raw.get("compaction_summary_model")

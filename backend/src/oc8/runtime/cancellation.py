@@ -50,6 +50,7 @@ async def record_operator_cancel(
     actor_id: uuid.UUID | None,
     resource_extra: dict[str, Any] | None = None,
     cancellation_kind: str = "operator_interrupted",
+    actor_type: str = "operator",
 ) -> None:
     """Record the cancel on an UNLOCKED row. NEVER write agent_run here: a
     running executor holds that row's lock for the whole run, so a write would
@@ -57,7 +58,9 @@ async def record_operator_cancel(
     and honors this row -- skipping a queued run before start, or stopping a
     running run at its next step boundary. Idempotent: a second cancel adds no
     row, and the first cancel keeps its kind. `cancellation_kind` names who
-    asked when it was not an operator stopping this one run (`AGENT_ARCHIVED`).
+    asked when it was not an operator stopping this one run (`AGENT_ARCHIVED`);
+    `actor_type` is "system" when no person asked at all (the temporary-chat
+    purge), so the audit names no operator.
     The caller has already refused a terminal run and commits.
 
     A run parked on an approval is the exception: no executor holds it and
@@ -79,7 +82,7 @@ async def record_operator_cancel(
     await append_event(
         db,
         tenant_id=run.tenant_id,
-        actor_type="operator",
+        actor_type=actor_type,
         actor_id=actor_id,
         category="run",
         action="run.cancel",

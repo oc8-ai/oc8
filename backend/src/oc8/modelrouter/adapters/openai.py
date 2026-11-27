@@ -13,11 +13,17 @@ is the one `chatgpt_subscription` already speaks.
 
 from __future__ import annotations
 
+import io
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
+from oc8.modelrouter.adapters._openai_audio import (
+    Transcript,
+    open_speech_stream,
+    post_transcription,
+)
 from oc8.modelrouter.adapters._openai_common import (
     asks_for_responses_api,
     build_payload,
@@ -35,6 +41,7 @@ from oc8.modelrouter.types import CompletionChunk, CompletionRequest, Completion
 
 _API_URL = "https://api.openai.com/v1/chat/completions"
 _RESPONSES_URL = "https://api.openai.com/v1/responses"
+_AUDIO_BASE_URL = "https://api.openai.com/v1"
 
 #: Models that asked for the Responses API to reason next to tools. Per
 #: process: a restart costs one refused call per model, nothing more.
@@ -119,3 +126,22 @@ class OpenAIAdapter:
             _RESPONSES_URL, _responses_payload(req), self._headers()
         ):
             yield chunk
+
+    async def transcribe(
+        self, audio: bytes | io.BytesIO, *, model: str, content_type: str, language: str | None
+    ) -> Transcript:
+        return await post_transcription(
+            _AUDIO_BASE_URL,
+            self._api_key,
+            audio,
+            model=model,
+            content_type=content_type,
+            language=language,
+        )
+
+    async def open_speech(
+        self, text: str, *, model: str, extra: dict[str, Any] | None
+    ) -> AsyncIterator[bytes]:
+        return await open_speech_stream(
+            _AUDIO_BASE_URL, self._api_key, text, model=model, extra=extra
+        )

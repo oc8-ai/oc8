@@ -1,7 +1,8 @@
 import type { EditionServerHooks } from "../edition/contracts";
 
 const HOOK_TIMEOUT_MS = 2000;
-const ORIGIN_PATTERN = /^(https:\/\/[a-z0-9.-]+(:\d{1,5})?|http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?)$/;
+const ORIGIN_PATTERN =
+  /^(https:\/\/[a-z0-9.-]+(:\d{1,5})?|http:\/\/(localhost|127\.0\.0\.1)(:\d{1,5})?)$/;
 
 export function isAllowedAncestor(origin: string): boolean {
   return ORIGIN_PATTERN.test(origin);
@@ -25,8 +26,20 @@ async function resolveOrigins(request: Request, hooks: EditionServerHooks): Prom
 }
 
 /**
+ * What the app's pages may frame. The app frames nothing but sandboxed
+ * artifact previews (srcdoc, which no `frame-src` blocks), so no frame may
+ * load a URL: a preview that navigates itself to another page (to carry
+ * data out in the URL) is stopped before the request is made. `child-src`
+ * keeps workers working -- the push service worker ('self') and, inherited
+ * by a preview, the Run Python worker (blob:).
+ */
+const NESTED_DIRECTIVES = ["frame-src 'none'", "child-src 'self' blob:"];
+const NESTED_NAMES = /^(frame-ancestors|frame-src|child-src)(\s|$)/i;
+
+/**
  * Refuses foreign framing by default (`frame-ancestors 'self'`); an edition can
  * allow further origins through its server hook. Invalid origins are dropped.
+ * Also sets what the page itself may frame (see NESTED_DIRECTIVES).
  */
 export async function withFrameAncestors(
   request: Request,
@@ -41,8 +54,8 @@ export async function withFrameAncestors(
   const kept = (existing ?? "")
     .split(";")
     .map((part) => part.trim())
-    .filter((part) => part && !/^frame-ancestors(\s|$)/i.test(part));
-  headers.set("content-security-policy", [...kept, directive].join("; "));
+    .filter((part) => part && !NESTED_NAMES.test(part));
+  headers.set("content-security-policy", [...kept, directive, ...NESTED_DIRECTIVES].join("; "));
 
   return new Response(response.body, {
     status: response.status,

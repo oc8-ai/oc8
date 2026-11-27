@@ -8,7 +8,7 @@ oc8 Community is licensed under the GNU Lesser General Public License v3.0 or la
 
 ## Result
 
-**No conflicts found.** No production dependency of `backend/` or `frontend/` carries a GPL, AGPL, SSPL, or other strong-copyleft license. All production dependencies are permissive (MIT, BSD, Apache-2.0, ISC, 0BSD, Unlicense, Python-2.0/PSF) or weak/file-level copyleft (LGPL-3.0, MPL-2.0), both of which are compatible with linking into, and distributing alongside, an LGPLv3 work.
+**No conflicts found.** No production dependency of `backend/` or `frontend/` carries a GPL, AGPL, SSPL, or other strong-copyleft license. All production dependencies are permissive (MIT, BSD, Apache-2.0, ISC, 0BSD, Unlicense, Python-2.0/PSF) or weak/file-level copyleft (LGPL-3.0, MPL-2.0, EPL-2.0), all of which are compatible with linking into, and distributing alongside, an LGPLv3 work.
 
 ## Notable findings
 
@@ -16,6 +16,9 @@ oc8 Community is licensed under the GNU Lesser General Public License v3.0 or la
 - **`certifi`, `lightningcss`, `lightningcss-darwin-arm64` — `MPL-2.0`.** Mozilla Public License 2.0 is file-level weak copyleft: it only requires that modifications *to MPL-licensed files themselves* stay under MPL, and explicitly permits combination with other-licensed code in a "Larger Work" (MPL-2.0 §3.3). No dependency here is forked or modified, so this is a non-issue in practice.
 - **`redis` (backend, Python client library) is MIT-licensed.** This is unrelated to the Redis *server's* license (RSALv2/SSPL since Redis 7.4) — oc8 only depends on the client library at import time and talks to a Redis server over the network as a separate, independently-licensed service; the server binary is never bundled or distributed by oc8.
 - **`docker` (backend, Docker Engine API client) is Apache-2.0.** Same distinction as Redis: oc8 talks to the Docker Engine over its API — the Docker Engine itself is not bundled or distributed.
+- **`elkjs` (frontend, a layout engine Mermaid bundles) — `EPL-2.0`.** The Eclipse Public License 2.0 is weak copyleft at the module level, like MPL-2.0: modifications to the EPL-licensed code itself must stay under EPL, while a larger work combining it with other-licensed code may be distributed under its own terms. It ships unmodified, so there is no conflict.
+- **Pyodide (frontend, the in-browser Python runtime) — `MPL-2.0`**, with the CPython build it bundles under `PSF-2.0`. Both are vendored unmodified into `frontend/public/pyodide/` by `frontend/scripts/vendor-pyodide.mjs`; MPL-2.0 is file-level copyleft as for `certifi` above.
+- **`dompurify` (frontend, via Mermaid) — `(MPL-2.0 OR Apache-2.0)`.** Dual-licensed; either licence permits distributing it unmodified with an LGPLv3 work.
 - **No AGPL/SSPL/BUSL/Commons-Clause dependency was found anywhere in either dependency tree** — these are the licenses that would have been the actual red flags. Plain GPL is already rare among widely-used Python/JS libraries, since it does not permit linking into non-GPL works and most library authors choose LGPL/MPL/Apache/MIT instead.
 
 ## Scope note: `capas/*`
@@ -28,6 +31,8 @@ This audit does not cover `capas/*`: each capa carries its own license per its m
 - Frontend: `cd frontend && npx license-checker --production --json` against the resolved `dependencies` graph (`devDependencies` excluded for the same reason).
 - Every reported license string was checked against the [SPDX license list](https://spdx.org/licenses/) and the FSF's [license compatibility guidance](https://www.gnu.org/licenses/license-list.html).
 - Last run: 2026-08-15. Corrected 2026-08-16: this audit's own commit had accidentally dropped `python-docx`, `openpyxl`, and `python-pptx` from `backend/pyproject.toml`'s dependency list (Office document text extraction, used by the Microsoft 365 plugin's connector and MCP tool bridge, both of which import into and run inside the backend process — not out of scope the way `plugins/*`-only dependencies are). Restored, along with their transitive dependencies (`et_xmlfile`, `lxml`, `pillow`, `xlsxwriter`) — all seven are MIT/BSD-family permissive, no conflict with LGPLv3.
+
+- Updated 2026-11-27 for 0.23.0 (chat experience): the packages that `katex`, `mermaid`, `remark-math` and `rehype-katex` bring into `frontend/` were added from the `license` fields of `frontend/package-lock.json` (only the dependency closure of those four that was not already listed; `khroma`, whose lock entry has no `license` field, from its own `license` file: MIT). The vendored Pyodide wheels were added from each wheel's own `METADATA` (`License-Expression`, or `License` and the `License ::` classifiers); the Pyodide lock file carries no licence data. Pyodide and its CPython build are listed under their upstream projects' licences, which the vendored files do not carry.
 
 ## Backend production dependencies (87 packages)
 
@@ -194,3 +199,40 @@ This audit does not cover `capas/*`: each capa carries its own license per its m
 
 **Unlicense** (1): isbot@5.1.39
 
+## Frontend additions in 0.23.0 (173 packages)
+
+**Apache-2.0** (6): @chevrotain/cst-dts-gen@13.2.0, @chevrotain/gast@13.2.0, @chevrotain/regexp-to-ast@13.2.0, @chevrotain/types@13.2.0, @chevrotain/utils@13.2.0, chevrotain@13.2.0
+
+**BSD-2-Clause** (1): entities@8.0.0
+
+**BSD-3-Clause** (5): d3-array@2.12.1, d3-path@1.0.9, d3-sankey@0.12.3, d3-shape@1.3.7, rw@1.3.3
+
+**EPL-2.0** (1): elkjs@0.9.3
+
+**ISC** (31): d3-array@3.2.5, d3-axis@3.0.1, d3-brush@3.0.1, d3-chord@3.0.2, d3-color@3.1.1, d3-contour@4.0.3, d3-delaunay@6.0.6, d3-dispatch@3.0.2, d3-drag@3.0.1, d3-dsv@3.0.2, d3-fetch@3.0.2, d3-force@3.0.1, d3-format@3.1.3, d3-geo@3.1.2, d3-hierarchy@3.1.3, d3-interpolate@3.0.2, d3-polygon@3.0.2, d3-quadtree@3.0.2, d3-random@3.0.2, d3-scale-chromatic@3.1.1, d3-scale@4.0.3, d3-selection@3.0.1, d3-shape@3.2.1, d3-time-format@4.1.1, d3-time@3.1.1, d3-transition@3.0.2, d3-zoom@3.0.1, d3@7.9.2, delaunator@5.1.0, hast-util-from-dom@5.0.1, internmap@1.0.1
+
+**MIT** (127): @antfu/install-pkg@2.1.0, @braintree/sanitize-url@7.1.2, @iconify/types@2.0.0, @iconify/utils@3.1.7, @mermaid-js/parser@2.0.1, @types/d3-axis@3.0.6, @types/d3-brush@3.0.6, @types/d3-chord@3.0.6, @types/d3-contour@3.0.6, @types/d3-delaunay@6.0.4, @types/d3-dispatch@3.0.7, @types/d3-drag@3.0.7, @types/d3-dsv@3.0.7, @types/d3-fetch@3.0.7, @types/d3-force@3.0.10, @types/d3-format@3.0.4, @types/d3-geo@3.1.1, @types/d3-hierarchy@3.1.7, @types/d3-polygon@3.0.2, @types/d3-quadtree@3.0.6, @types/d3-random@3.0.4, @types/d3-scale-chromatic@3.1.0, @types/d3-selection@3.0.13, @types/d3-time-format@4.0.3, @types/d3-transition@3.0.9, @types/d3-zoom@3.0.9, @types/d3@7.4.3, @types/debug@4.1.13, @types/geojson@7946.0.16, @types/hast@3.0.5, @types/katex@0.16.8, @types/mdast@4.0.4, @types/ms@2.1.0, @types/trusted-types@2.0.7, @types/unist@3.0.3, @upsetjs/venn.js@2.0.0, bail@2.0.2, character-entities@2.0.2, comma-separated-tokens@2.0.3, commander@15.1.0, commander@7.2.0, commander@8.3.0, cose-base@1.0.3, cose-base@2.2.0, cytoscape-cose-bilkent@4.1.0, cytoscape-fcose@2.2.0, cytoscape@3.35.0, dagre-d3-es@7.0.14, dayjs@1.11.23, decode-named-character-reference@1.3.0, dequal@2.0.3, devlop@1.1.0, es-toolkit@1.53.2, extend@3.0.2, hachure-fill@0.5.2, hast-util-from-html-isomorphic@2.0.0, hast-util-from-html@2.1.0, hast-util-from-parse5@8.0.4, hast-util-parse-selector@4.0.0, hast-util-to-text@4.0.5, hastscript@9.0.3, iconv-lite@0.6.3, import-meta-resolve@4.2.0, is-plain-obj@4.1.0, katex@0.16.47, katex@0.18.10, khroma@2.1.0, layout-base@1.0.2, layout-base@2.0.1, lodash-es@4.18.1, longest-streak@3.1.0, marked@16.4.2, mdast-util-from-markdown@2.0.3, mdast-util-math@3.0.0, mdast-util-phrasing@4.1.0, mdast-util-to-markdown@2.1.2, mdast-util-to-string@4.0.0, mermaid@12.2.0, micromark-core-commonmark@2.0.3, micromark-extension-math@3.1.0, micromark-factory-destination@2.0.1, micromark-factory-label@2.0.1, micromark-factory-space@2.0.1, micromark-factory-title@2.0.1, micromark-factory-whitespace@2.0.1, micromark-util-character@2.1.1, micromark-util-chunked@2.0.1, micromark-util-classify-character@2.0.1, micromark-util-combine-extensions@2.0.1, micromark-util-decode-numeric-character-reference@2.0.2, micromark-util-decode-string@2.0.1, micromark-util-encode@2.0.1, micromark-util-html-tag-name@2.0.1, micromark-util-normalize-identifier@2.0.1, micromark-util-resolve-all@2.0.1, micromark-util-sanitize-uri@2.0.1, micromark-util-subtokenize@2.1.0, micromark-util-symbol@2.0.1, micromark-util-types@2.0.2, micromark@4.0.2, package-manager-detector@1.9.0, parse5@8.0.1, path-data-parser@0.1.0, points-on-curve@0.2.0, points-on-path@0.2.1, property-information@7.2.0, rehype-katex@7.0.1, remark-math@6.0.0, roughjs@4.6.6, safer-buffer@2.1.2, space-separated-tokens@2.0.2, stylis@4.4.0, tinyexec@1.4.0, trough@2.2.0, ts-dedent@2.3.0, unified@11.0.5, unist-util-is@6.0.1, unist-util-remove-position@5.0.0, unist-util-stringify-position@4.0.0, unist-util-visit-parents@6.0.2, unist-util-visit@5.1.0, uuid@14.0.3, vfile-location@5.0.4, vfile-message@4.0.3, vfile@6.0.3, web-namespaces@2.0.1, zwitch@2.0.4
+
+**(MPL-2.0 OR Apache-2.0)** (1): dompurify@3.5.0
+
+**Unlicense** (1): robust-predicates@3.0.3
+
+## Pyodide runtime vendored into the frontend (Pyodide 0.29.5, 15 components)
+
+Vendored by `frontend/scripts/vendor-pyodide.mjs` into `frontend/public/pyodide/` and served from the oc8 origin (no CDN at runtime); the wheels are `numpy`, `pandas`, `matplotlib` and everything they depend on in the Pyodide lock file.
+
+**MPL-2.0** (1): pyodide@0.29.5 (`pyodide.js`, `pyodide.asm.js`, `pyodide.asm.wasm`)
+
+**PSF-2.0** (1): CPython@3.13.2 (inside `pyodide.asm.wasm`, standard library in `python_stdlib.zip`)
+
+**Apache-2.0 OR BSD-2-Clause** (1): packaging@26.2
+
+**Apache Software License; BSD License** (1): python-dateutil@2.9.0.post0
+
+**BSD License** (5): contourpy@1.3.1, cycler@0.12.1, kiwisolver@1.4.8, numpy@2.2.5, pandas@2.3.3
+
+**MIT** (4): fonttools@4.56.0, pyparsing@3.2.1, pytz@2025.2, six@1.17.0
+
+**MIT-CMU** (1): pillow@11.3.0
+
+**Python Software Foundation License** (1): matplotlib@3.8.4 (the matplotlib licence, PSF-based; its bundled fonts carry their own licence files in the wheel)

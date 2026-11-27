@@ -7,6 +7,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   FolderPlus,
+  MessageCircleDashed,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -38,10 +39,12 @@ import { useConfirm } from "@/hooks/use-confirm";
 import { useIsNarrow } from "@/hooks/use-mobile";
 import { mostRecentSession } from "@/lib/chat-sessions";
 import {
+  exportChat,
   useChatProjects,
   useDeleteProject,
   useSetSessionPinned,
   useSetSessionProject,
+  type ChatExportFormat,
   type ChatProjectDTO,
 } from "@/lib/conversation-api";
 import {
@@ -55,7 +58,7 @@ import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 import { ChatTitleText } from "./chat-title";
-import { useNewChatLabel } from "./new-chat-label";
+import { useNewChatLabel, useTemporaryChatText } from "./new-chat-label";
 
 import { ProjectSheet } from "./project-sheet";
 
@@ -108,6 +111,7 @@ interface RowActions {
   pin: (s: ChatSessionDTO) => void;
   move: (s: ChatSessionDTO, projectId: string | null) => void;
   remove: (s: ChatSessionDTO) => void;
+  exportAs: (s: ChatSessionDTO, format: ChatExportFormat) => void;
 }
 
 const itemClass = "min-h-11 cursor-pointer text-sm sm:min-h-9";
@@ -248,6 +252,13 @@ function Row({
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
+            <DropdownMenuItem className={itemClass} onSelect={() => actions.exportAs(s, "md")}>
+              {t("Export as Markdown", "Als Markdown exportieren")}
+            </DropdownMenuItem>
+            <DropdownMenuItem className={itemClass} onSelect={() => actions.exportAs(s, "json")}>
+              {t("Export as JSON", "Als JSON exportieren")}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               className={cn(itemClass, "text-destructive focus:text-destructive")}
               onSelect={() => actions.remove(s)}
@@ -325,6 +336,8 @@ interface SidebarProps {
   sessionId: string | null;
   /** A chat to open; null starts a new one. */
   onSelect: (id: string | null) => void;
+  /** Start a temporary chat (spec §5.6); without it, none is offered. */
+  onStartTemporary?: () => void;
   collapsed: boolean;
   onToggle: () => void;
 }
@@ -333,11 +346,13 @@ export function CopilotSidebar({
   agentId,
   sessionId,
   onSelect,
+  onStartTemporary,
   collapsed,
   onToggle,
 }: SidebarProps) {
   const t = useT();
   const newChatLabel = useNewChatLabel();
+  const temporaryText = useTemporaryChatText();
   const projectsHeadingId = useId();
   const narrow = useIsNarrow();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -380,6 +395,10 @@ export function CopilotSidebar({
     move: t(
       "The chat was not moved. Try again.",
       "Der Chat wurde nicht verschoben. Versuch es noch einmal.",
+    ),
+    export: t(
+      "The chat was not exported. Try again.",
+      "Der Chat wurde nicht exportiert. Versuch es noch einmal.",
     ),
     deleteProject: t(
       "The project was not deleted. Try again.",
@@ -447,6 +466,10 @@ export function CopilotSidebar({
         { onError: () => setActionError(failed.move) },
       ),
     remove: (s) => void removeSession(s),
+    exportAs: (s, format) => {
+      setActionError(null);
+      exportChat(s.id, format).catch(() => setActionError(failed.export));
+    },
   };
   const shared = { sessionId, onSelect: (id: string) => open(id), actions };
 
@@ -459,6 +482,40 @@ export function CopilotSidebar({
     >
       <Plus aria-hidden />
       {t("New chat", "Neuer Chat")}
+    </Button>
+  );
+
+  function startTemporary() {
+    onStartTemporary?.();
+    setSheetOpen(false);
+  }
+  // A temporary chat (spec §5.6): labelled where the list has room, an icon
+  // with its name and the 24 h note where it is folded away.
+  const temporaryChat = onStartTemporary && (
+    <div className="px-2 pb-1">
+      <Button
+        type="button"
+        variant="ghost"
+        className="h-9 w-full justify-start text-muted-foreground"
+        title={temporaryText.help}
+        onClick={startTemporary}
+      >
+        <MessageCircleDashed aria-hidden />
+        {temporaryText.label}
+      </Button>
+    </div>
+  );
+  const temporaryChatIcon = onStartTemporary && (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="mx-auto shrink-0"
+      aria-label={temporaryText.label}
+      title={temporaryText.help}
+      onClick={startTemporary}
+    >
+      <MessageCircleDashed aria-hidden />
     </Button>
   );
 
@@ -577,6 +634,7 @@ export function CopilotSidebar({
             </SheetDescription>
             <nav aria-label={t("Chats", "Chats")} className="flex min-h-0 flex-1 flex-col pt-10">
               <div className="flex p-2">{newChat}</div>
+              {temporaryChat}
               {list}
             </nav>
           </SheetContent>
@@ -610,6 +668,7 @@ export function CopilotSidebar({
         </Button>
         {!collapsed && newChat}
       </div>
+      {collapsed ? temporaryChatIcon : temporaryChat}
       {!collapsed && list}
       {dialogs}
     </nav>

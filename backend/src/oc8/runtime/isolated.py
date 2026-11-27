@@ -170,6 +170,10 @@ class DockerIsolatedRuntime:
             # leg that text is the approval's focused resume instruction, not the
             # original task.
             ctx["task"] = task_text
+            # That text is already flattened (`chat.turn_context`): a later leg
+            # of this run -- after an answered question or an offer -- must
+            # take it as it is, not prepend the transcript to it a second time.
+            ctx.pop("transcript_until", None)
             if pre_decided:
                 # A resume leg starts a fresh conversation, mirroring the
                 # in-process engine (which simply runs again with the resume

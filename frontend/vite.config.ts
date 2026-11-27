@@ -23,6 +23,13 @@ export default defineConfig({
       },
     },
   },
+  nitro: {
+    routeRules: {
+      // The service worker must be revalidated on every load, or a fixed
+      // worker (or a new cache version) reaches people only by chance.
+      "/sw.js": { headers: { "cache-control": "no-cache" } },
+    },
+  },
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this

@@ -82,3 +82,7 @@ plugins/**/__pycache__/
 # Serena MCP tool local cache/config
 .serena/
 .superpowers/
+
+# Pyodide runtime for "Run Python" in the chat: fetched and checksummed by
+# frontend/scripts/vendor-pyodide.mjs at build time, never committed.
+/frontend/public/pyodide/

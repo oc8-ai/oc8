@@ -331,6 +331,45 @@ async def test_agent_run_evidence_state_is_forced_to_none_on_restore(
     assert rows and all(row.evidence_state == "none" for row in rows)
 
 
+async def test_a_knowledge_chunk_round_trips_and_its_search_column_is_recomputed(
+    db_session: AsyncSession, acme_tenant: uuid.UUID, actor: uuid.UUID
+) -> None:
+    """`kb_chunk.search_tsv` is a generated column: the export leaves it out
+    and the restore lets Postgres compute it again, instead of failing on an
+    INSERT that sets it."""
+    chunk = m.KbChunk(
+        tenant_id=acme_tenant,
+        kb_id=uuid.uuid4(),
+        content="Invoice RE-2026-004711 paid",
+        source_uri="upload://restore.txt",
+        chunk_metadata={},
+    )
+    db_session.add(chunk)
+    await db_session.flush()
+    _, backup = await export_archive(db_session, tenant_id=acme_tenant, passphrase=None)
+    await db_session.execute(delete(m.KbChunk).where(m.KbChunk.id == chunk.id))
+
+    await restore_from_archive(
+        db_session,
+        tenant_id=acme_tenant,
+        archive_bytes=backup,
+        passphrase=None,
+        actor_type="human",
+        actor_id=actor,
+    )
+
+    found = (
+        await db_session.execute(
+            text(
+                "SELECT search_tsv @@ websearch_to_tsquery('simple', 'RE-2026-004711') "
+                "FROM kb_chunk WHERE id = :id"
+            ),
+            {"id": chunk.id},
+        )
+    ).scalar_one()
+    assert found is True
+
+
 async def test_audit_events_survive_a_restore_and_a_new_one_is_appended(
     db_session: AsyncSession, acme_tenant: uuid.UUID, actor: uuid.UUID
 ) -> None:

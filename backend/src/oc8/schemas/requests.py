@@ -42,6 +42,8 @@ def _normalized_address(value: str) -> str:
 
 class CreateChatSessionRequest(CamelModel):
     agent_id: uuid.UUID
+    #: A chat that is not kept (spec §5.6, `oc8.chat.temporary`).
+    temporary: bool = False
 
 
 class ChatContextRefRequest(CamelModel):
@@ -69,6 +71,8 @@ class SendChatMessageRequest(CamelModel):
     context_refs: list[ChatContextRefRequest] = Field(
         default_factory=list, max_length=MAX_MESSAGE_REFS
     )
+    #: The composer's "Web" switch: this turn may search the web.
+    web: bool = False
 
 
 class PinRefsRequest(CamelModel):
@@ -96,6 +100,23 @@ class SetPinnedRequest(CamelModel):
 
 class RenameChatSessionRequest(CamelModel):
     title: str = Field(min_length=1, max_length=200)
+
+
+class EditChatMessageRequest(CamelModel):
+    #: The rewritten turn; same bounds as a sent one.
+    content: str = Field(min_length=1, max_length=20_000)
+    #: The composer's "Web" switch, as for a sent turn.
+    web: bool = False
+
+
+class RegenerateRequest(CamelModel):
+    #: The composer's "Web" switch as it stands now, as for a sent turn.
+    web: bool = False
+
+
+class SetLeafRequest(CamelModel):
+    #: Any message of the chat; the server continues to the newest one below.
+    message_id: uuid.UUID
 
 
 class MessageFeedbackRequest(CamelModel):
@@ -249,6 +270,11 @@ class ModelConfigWrite(CamelModel):
     used_by_copilot: bool | None = None
     #: Whether members may pick this model in a chat. None leaves it unchanged.
     chat_enabled: bool | None = None
+    #: What the model is for: a chat model, or a speech model (dictation /
+    #: reading answers aloud, `oc8.modelrouter.speech`). A speech model is
+    #: never offered to a chat. On create None means "chat"; on update None
+    #: leaves it unchanged.
+    capability: Literal["chat", "speech_to_text", "text_to_speech"] | None = None
     #: Whether this model can think, so a reasoning level is sent to it at all.
     #: On create, None takes the provider's declaration (`ProviderEntry.
     #: supports_reasoning`); on update, None leaves it unchanged.
@@ -400,6 +426,10 @@ class ApprovalDecisionRequest(CamelModel):
     #: On a direct-access offer: run this one of the card's agents instead of
     #: the direct grant. Only `decision="approve"` reads it.
     agent_id: uuid.UUID | None = None
+    #: "Always allow for me": with `decision="approve"` on the person's own
+    #: write-tier card, also let this tool run for them without asking again
+    #: (`approvals.allow_rules`). Refused (400) on any other card.
+    always_allow: bool = False
 
 
 class CreateMcpLoginRequest(CamelModel):
@@ -1104,6 +1134,20 @@ class RunInputRequest(CamelModel):
     """Mirrors `ck_run_input_text` (migration 0112) and MAX_INPUT_CHARS."""
 
     text: str = Field(min_length=1, max_length=4000)
+    #: `steer`: read at the run's next step. `next_turn`: the chat's next turn
+    #: once the run ends (spec §5.5).
+    delivery: Literal["steer", "next_turn"] = "steer"
+    #: The "Web" switch for the turn a `next_turn` input becomes (spec §10);
+    #: ignored for `steer`.
+    web: bool = False
+
+
+class EditRunInputRequest(CamelModel):
+    """A waiting `next_turn` input's new text; same bounds as `RunInputRequest`."""
+
+    text: str = Field(min_length=1, max_length=4000)
+    #: The new "Web" switch; None keeps it.
+    web: bool | None = None
 
 
 class SetAgentToolAccessRequest(CamelModel):

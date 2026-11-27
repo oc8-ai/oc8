@@ -227,7 +227,7 @@ async def test_each_leg_is_told_only_the_answer_that_woke_it(
 
     await _requeue_with(app_session, run_id, _decided_write())
     second = await _resume(run_id)
-    assert "FREIGEGEBEN" in second and "update_record" in second
+    assert "APPROVED" in second and "update_record" in second
     assert OFFER_NOTE not in second
     async with app_session(uuid.UUID(str(ACME_TENANT_ID))) as s:
         run = await s.get(m.AgentRun, run_id)
@@ -246,4 +246,52 @@ async def test_an_offer_answered_after_an_earlier_held_write_wakes_its_leg_with_
     )
     text = await _resume(run_id)
     assert OFFER_NOTE in text
-    assert "FREIGEGEBEN" not in text
+    assert "APPROVED" not in text
+
+
+@pytest.mark.parametrize("status", ["done", "waiting_for_approval"])
+async def test_a_mode_the_leg_entered_reaches_the_chat_at_the_legs_end(
+    app_session: AppSessionFactory, status: str
+) -> None:
+    """`enter_agent_mode` only records the mode on the run: the chat's row is
+    switched by the executor at the end of the leg -- whether it finishes or
+    parks -- under `chat.tree`'s lock order, not during the leg."""
+    from oc8.runtime.run_context import merge_context
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    async with app_session(tenant) as s:
+        agent = m.Agent(tenant_id=tenant, department_id=uuid.uuid4(), name="Copilot")
+        s.add(agent)
+        await s.flush()
+        session = m.ChatSession(tenant_id=tenant, agent_id=agent.id, member_id=uuid.uuid4())
+        s.add(session)
+        await s.flush()
+        session_id = session.id
+        run_id = (
+            await RunRepository(s).create(
+                tenant_id=tenant,
+                agent_id=agent.id,
+                source="chat",
+                context={"task": "build me a checker", "chat_session_id": str(session.id)},
+            )
+        ).id
+    mode_during_leg: list[str | None] = []
+
+    async def entering(db: Any, **kw: Any) -> RunResult:
+        run = await db.get(m.AgentRun, kw["run_id"])
+        await merge_context(db, run, {"entered_mode": "agent"})
+        row = await db.get(m.ChatSession, session_id)
+        mode_during_leg.append(row.mode)
+        return RunResult(task_id=uuid.uuid4(), agent_id=kw["agent"].id, status=status, output="ok")
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(entering),
+    )
+    assert mode_during_leg == [None]
+    async with app_session(tenant) as s:
+        row = await s.get(m.ChatSession, session_id)
+        run = await s.get(m.AgentRun, run_id)
+        assert row is not None and run is not None
+        assert row.mode == "agent"
+        assert run.context.get("entered_mode") is None

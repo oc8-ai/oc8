@@ -12,9 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
+from oc8.agent.preamble import Resume
 from oc8.agents.versioning import resolve_version
 from oc8.approvals.repo import DIRECT_ACCESS_ACTION
 from oc8.authz.pdp import frame_allows_key
+from oc8.chat.digest import build_work_digest
+from oc8.chat.replay import chat_replay_of
+from oc8.chat.temporary import TEMPORARY_CHAT_KEY, is_temporary_run
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
     ActingPerson,
@@ -32,7 +36,7 @@ from oc8.observability import get_tracer, record_run_outcome
 from oc8.realtime.emit import publish_agent_status, record_activity
 from oc8.records.registry import link_scope
 from oc8.records.vetting import vet_answer_links
-from oc8.runtime.adapter import RuntimeAdapter
+from oc8.runtime.adapter import RuntimeAdapter, runs_in_process
 from oc8.runtime.agent_status import (
     RunningGuard,
     expected_status,
@@ -127,17 +131,105 @@ def _chat_run_failed_answer(run_id: uuid.UUID) -> str:
     return f"That didn't work out \u2013 [see the run](oc8://run/{run_id}) for what happened."
 
 
-async def _answer_failed_chat_run(
-    db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
-) -> None:
-    """A chat turn that FAILED without an output of its own still answers: the
-    canned failure line in the transcript, the plain one to a channel sender,
-    and the unread follow-ups told they were not read. No-op for other runs."""
+def _leg_model(result: Any) -> dict[str, Any]:
+    """The window and model a leg ended on, for the run context (the chat
+    checkpoint reads them). Nothing for a runtime that reports neither."""
+    keys: dict[str, Any] = {}
+    window = getattr(result, "context_window_tokens", None)
+    if isinstance(window, int) and window > 0:
+        keys["context_window_tokens"] = window
+    model = getattr(result, "model", None)
+    if isinstance(model, str) and model:
+        keys["model"] = model
+    return keys
+
+
+async def _apply_entered_mode(db: AsyncSession, run: m.AgentRun) -> None:
+    """A chat run that switched its chat into a mode (`enter_agent_mode`)
+    writes it to the chat here, at the leg's end, close to the commit and
+    after the leg's last network call: the session row is locked behind the
+    tenant's audit lock (`chat.tree`), which must not be held while the model
+    is called. No-op for any other run."""
     if run.source != "chat":
         return
+    from oc8.chat.service import apply_entered_mode
+
+    await apply_entered_mode(db, run=run)
+
+
+def _all_legs_calls(
+    earlier: list[dict[str, Any]], leg: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """The `toolCalls` patch a leg's terminal write makes: the earlier legs'
+    calls, then this leg's. A runtime that reports none (the isolated one
+    keeps them on the run's context as it goes) leaves the stored list as
+    it stands."""
+    if not leg:
+        return {}
+    return {"toolCalls": [*earlier, *leg]}
+
+
+async def _resumed_leg_calls(
+    db: AsyncSession,
+    run: m.AgentRun,
+    *,
+    earlier: list[dict[str, Any]],
+    decided: dict[str, str],
+    leg: list[dict[str, Any]],
+    leg_from: int | None,
+) -> list[Any]:
+    """`_merge_leg_calls` for a resumed leg's terminal write.
+
+    A runtime that reports no calls (the isolated one appends them to the
+    run's context as it goes) has this leg's calls only in the stored list,
+    past where the leg began: they are read back fresh and merged as the
+    leg's own, so the leg-start snapshot never overwrites them."""
+    if leg:
+        return _merge_leg_calls(earlier, decided, leg, leg_from=leg_from)
+    stored = await db.scalar(select(m.AgentRun.context["toolCalls"]).where(m.AgentRun.id == run.id))
+    calls = list(stored) if isinstance(stored, list) else []
+    start = leg_from if leg_from is not None else len(earlier)
+    start = min(max(start, 0), len(calls))
+    return _merge_leg_calls(calls[:start], decided, calls[start:])
+
+
+async def answer_failed_chat_end(db: AsyncSession, run: m.AgentRun) -> None:
+    """The transcript side of a chat turn that FAILED without an output of its
+    own: the canned failure line as the run's answer, then its queued
+    (`next_turn`) inputs as the next turn after it (published after commit).
+    For whoever ended the run -- this executor, the reconciler, a reclaim --
+    and only for them: the caller holds `lock_run_inputs` and has made the
+    FAILED transition itself. No-op for other runs."""
+    if run.source != "chat":
+        return
+    from oc8.chat.carry_over import end_queued_inputs
     from oc8.chat.service import record_assistant_reply
 
     await record_assistant_reply(db, run=run, output=_chat_run_failed_answer(run.id))
+    await end_queued_inputs(db, run=run, carry_over=True)
+
+
+async def _answer_failed_chat_run(
+    db: AsyncSession,
+    run: m.AgentRun,
+    channel_replies: list[tuple[uuid.UUID, str, str, str]],
+    *,
+    ended_here: bool,
+) -> None:
+    """A chat turn that FAILED without an output of its own still answers:
+    `answer_failed_chat_end`, the plain line to a channel sender, and the
+    unread follow-ups told they were not read. No-op for other runs. The
+    caller holds `lock_run_inputs`.
+
+    `ended_here` is `run_still_open`, asked under that lock BEFORE the FAILED
+    transition: False when somebody else (the reconciler) ended the run
+    meanwhile -- the transition then leaves their verdict standing, and their
+    end already answered and carried over, so the transcript gets nothing
+    more. The channel sender still hears it: no other end tells them."""
+    if run.source != "chat":
+        return
+    if ended_here:
+        await answer_failed_chat_end(db, run)
     sender = await _current_chat_sender(db, run)
     if sender is not None:
         channel, external_id = sender
@@ -169,13 +261,25 @@ async def _current_chat_sender(db: AsyncSession, run: m.AgentRun) -> tuple[str, 
 _UNREAD_AFTER_FAILURE = "Deine letzte Nachricht kam nicht mehr an – schick sie bitte nochmal."  # noqa: RUF001
 
 
+async def _run_still_open(db: AsyncSession, run: m.AgentRun) -> bool:
+    from oc8.chat.carry_over import run_still_open
+
+    return await run_still_open(db, run_id=run.id)
+
+
+async def _end_queued_inputs(db: AsyncSession, run: m.AgentRun, *, carry_over: bool) -> None:
+    from oc8.chat.carry_over import end_queued_inputs
+
+    await end_queued_inputs(db, run=run, carry_over=carry_over)
+
+
 async def _tell_unread_inputs(
     db: AsyncSession, run: m.AgentRun, channel_replies: list[tuple[uuid.UUID, str, str, str]]
 ) -> None:
     """A failed messenger turn with inputs it never read: say so, once, on the
     run's channel (gated, like every reply). The inputs stay unread."""
     sender = await _current_chat_sender(db, run)
-    if sender is None or not await has_pending_run_inputs(db, run_id=run.id):
+    if sender is None or not await has_pending_run_inputs(db, run_id=run.id, delivery=None):
         return
     channel, external_id = sender
     channel_replies.append((run.tenant_id, channel, external_id, _UNREAD_AFTER_FAILURE))
@@ -346,16 +450,58 @@ async def requeue_if_already_decided(db: AsyncSession, *, run: m.AgentRun) -> bo
             .limit(1)
         )
     ).scalar_one_or_none()
-    if current is None:
+    # A card still pending is decided by nobody yet. Under one approval per
+    # call an identical repeat of a call whose approval was used up parks on
+    # a NEW card with the same signature: matching it against the old entry
+    # would re-queue the run at once, park again, raise another card -- a
+    # loop that also kept an always-allow rule from answering the card.
+    if current is None or current.status == "pending":
         return False
     sig = call_signature(
         str(current.payload.get("tool", "")), current.payload.get("arguments") or {}
     )
-    if not any(e.get("sig") == sig for e in entries):
+
+    def _decides_current(entry: dict[str, Any]) -> bool:
+        # The entry names its card (`approval_id`); one recorded before
+        # entries did is matched by its signature.
+        if entry.get("approval_id"):
+            return entry.get("approval_id") == str(current.id)
+        return entry.get("sig") == sig
+
+    if not any(isinstance(e, dict) and _decides_current(e) for e in entries):
         return False
 
     await RunRepository(db).transition(run, RunState.QUEUED)
     return True
+
+
+async def _auto_decide_by_rules(db: AsyncSession, run: m.AgentRun) -> list[uuid.UUID]:
+    """`approvals.allow_rules.auto_decide_by_rules` on a just-parked run, in a
+    savepoint: whatever goes wrong rolls back to here, the cards stay pending
+    and the park stands. Returns the runs to publish after the commit.
+
+    Only a chat run can hold a person's own card (`direct_access_run`), so
+    every other run parks exactly as before, without a query."""
+    if run.task_id is None or run.source != "chat":
+        return []
+    run_id = run.id
+    resumed: list[uuid.UUID] = []
+    try:
+        from oc8.approvals.allow_rules import auto_decide_by_rules
+
+        # The park's own writes first: the decision re-reads this run row.
+        await db.flush()
+        async with db.begin_nested():
+            resumed = await auto_decide_by_rules(db, run=run)
+    except Exception:
+        logger.warning(
+            "run %s: always-allow rules could not be checked; the run waits", run_id, exc_info=True
+        )
+        resumed = []
+    # A rolled-back savepoint expires what it touched; the park reads the run
+    # again below (requeue_if_already_decided), so read it fresh now.
+    await db.refresh(run)
+    return resumed
 
 
 async def agent_has_own_login_binding(db: AsyncSession, agent: m.Agent) -> bool:
@@ -480,6 +626,7 @@ async def _maybe_wake_parent(
     trigger_id: str | None = None,
     for_person: str | None = None,
     finished_run_id: uuid.UUID | None = None,
+    temporary_chat: bool = False,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -494,6 +641,10 @@ async def _maybe_wake_parent(
     is spec §7 reassignment, with no dedicated mechanism.
     """
     if parent_task_id is None:
+        return None
+    if temporary_chat and chat_session_id and not await _chat_still_there(db, chat_session_id):
+        # The person left the temporary chat (it was deleted and its runs
+        # stopped): nobody is there to continue for.
         return None
     parent = await db.get(m.Task, parent_task_id)
     if parent is None or parent.assigned_agent_id is None:
@@ -593,6 +744,9 @@ async def _maybe_wake_parent(
         # an operator posting in a colleague's session. Never operator_role.
         if originating_operator is not None:
             context["originating_operator"] = originating_operator
+        # A temporary chat's wake-up keeps no notes either (`chat.temporary`).
+        if temporary_chat:
+            context[TEMPORARY_CHAT_KEY] = True
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -600,6 +754,14 @@ async def _maybe_wake_parent(
         source=wake_source,
     )
     return wake.id
+
+
+async def _chat_still_there(db: AsyncSession, chat_session_id: str) -> bool:
+    try:
+        session_id = uuid.UUID(str(chat_session_id))
+    except ValueError:
+        return False
+    return await db.get(m.ChatSession, session_id) is not None
 
 
 class RunDeferred(Exception):
@@ -920,6 +1082,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             if agent is None:
                 error = "agent not found"
                 await merge_context(db, run, {"error": error})
+                # Its next turn could not run either: cancelled, not carried.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -949,6 +1113,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # Compare-and-set, as on the cancel drain below: an archived
                 # agent does not stay "running" once its last run is drained.
                 await settle_agent_status(db, agent, "idle")
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.INTERRUPTED)
                 await record_activity(
                     db,
@@ -968,6 +1133,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # here, not only at the HTTP /run endpoint.
                 error = "agent awaiting hire approval"
                 await merge_context(db, run, {"error": error})
+                # Its next turn would meet the same gate: cancelled.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -998,6 +1165,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # never over a pause: the agent row is not locked, so a hard-stop
                 # may have paused it since the claim read it.
                 await settle_agent_status(db, agent, "idle")
+                # Stop means stop: what was queued for after this run is
+                # cancelled with it.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.INTERRUPTED)
                 logger.info("run %s interrupted before start (cancelled while queued)", run_id)
                 record_run_outcome(RunState.INTERRUPTED.value)
@@ -1013,6 +1183,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     {"cancellation_kind": TENANT_INACTIVE_KIND, "output": TENANT_INACTIVE_OUTPUT},
                 )
                 await settle_agent_status(db, agent, "idle")
+                # Its next turn could not run either: cancelled.
+                await _end_queued_inputs(db, run, carry_over=False)
                 await repo.transition(run, RunState.INTERRUPTED)
                 await record_activity(
                     db,
@@ -1099,7 +1271,15 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 error = mcp_error
                 await merge_context(db, run, {"error": error})
                 await settle_agent_status(db, agent, "idle")
+                # No input arrives until this commits; asked before the
+                # transition, as at every other end.
+                await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                ended_here = await _run_still_open(db, run)
                 await repo.transition(run, RunState.FAILED)
+                if ended_here:
+                    # The chat's answer, then what was queued for after it.
+                    # Its messenger sender is not told here, as before.
+                    await answer_failed_chat_end(db, run)
                 await record_activity(
                     db,
                     tenant_id=tenant_id,
@@ -1140,25 +1320,17 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                     }
                     await merge_context(db, run, stamp)
 
-            task_text = str(run.context.get("task", ""))
             # Raw {bucket_key, content_type} pointers only (Task 6) -- the actual
             # bytes are fetched one layer down, at run-preamble time, so this
             # module (which drives runs generically) never has to import
             # oc8.storage.s3 itself.
             task_images_raw = run.context.get("task_images", [])
             clarifications = run.context.get("clarifications", [])
-            if clarifications:
-                from oc8.runtime.run_inputs import format_clarification_answers
 
-                task_text = (
-                    f"{task_text}\n\nClarifications:\n"
-                    f"{format_clarification_answers(clarifications)}"
-                )
-
-            # Resume after a value-gated tool approval: replace the task with a
-            # focused instruction to perform exactly the approved calls (and skip
-            # the rejected ones), and hand the engine the per-call verdicts so it
-            # executes them instead of suspending again.
+            # Resume after a value-gated tool approval: tell the leg to perform
+            # exactly the approved calls (and skip the rejected ones), and hand
+            # the engine the per-call verdicts so it executes them instead of
+            # suspending again.
             approvals = run.context.get("resolved_tool_approvals", [])
             pre_decided = None
             from oc8.runtime.approval_resume import live_decisions, pre_decided_map
@@ -1175,7 +1347,8 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             resumed_leg = bool(
                 approvals or clarifications or run.context.get("resolved_direct_access")
             )
-            earlier_calls = run.context.get("toolCalls") if resumed_leg else None
+            # Every leg keeps them (`_all_legs_calls`), not only a resumed one.
+            earlier_calls = list(run.context.get("toolCalls") or [])
             # Where this leg's own calls begin in the stored list. Set when
             # the leg first starts and cleared by its final write, so a mark
             # found here was left by an attempt of this leg that never
@@ -1203,15 +1376,79 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
             # leg -- woken by a held write -- is not told it again.
             resolved_access = run.context.get("resolved_direct_access")
             if isinstance(resolved_access, dict):
-                from oc8.copilot.direct_access import direct_access_resume_text
                 from oc8.runtime.run_context import take_direct_access_answer
 
-                task_text = direct_access_resume_text(task_text, resolved_access)
                 await take_direct_access_answer(db, run)
-            elif approvals:
-                from oc8.runtime.approval_resume import resume_instruction
 
-                task_text = resume_instruction(approvals)
+            def _with_clarifications(task_text: str) -> str:
+                """The task with the clarifications answered so far."""
+                if not clarifications:
+                    return task_text
+                from oc8.runtime.run_inputs import format_clarification_answers
+
+                return (
+                    f"{task_text}\n\nClarifications:\n"
+                    f"{format_clarification_answers(clarifications)}"
+                )
+
+            def _with_resume(task_text: str) -> str:
+                """The task as this leg tells it: clarifications answered so
+                far, then the answer that woke it -- a held call's decision
+                in place of the task."""
+                task_text = _with_clarifications(task_text)
+                if isinstance(resolved_access, dict):
+                    from oc8.copilot.direct_access import direct_access_resume_text
+
+                    return direct_access_resume_text(task_text, resolved_access)
+                if approvals:
+                    from oc8.runtime.approval_resume import resume_instruction
+
+                    return resume_instruction(approvals)
+                return task_text
+
+            def _chat_resume(context: dict[str, Any]) -> Resume | None:
+                """A chat turn's leg woken by a decision, as the in-process
+                engine is told it: the conversation and the turn stay, the
+                run's own work so far and the decision follow them. None for
+                any other leg, which keeps today's text."""
+                try:
+                    is_chat_turn = chat_replay_of(context) is not None
+                except (TypeError, ValueError):
+                    is_chat_turn = False
+                if not is_chat_turn:
+                    return None
+                if isinstance(resolved_access, dict):
+                    from oc8.copilot.direct_access import direct_access_resume_note
+
+                    instruction = direct_access_resume_note(resolved_access)
+                elif approvals:
+                    from oc8.runtime.approval_resume import resume_instruction
+
+                    instruction = resume_instruction(approvals)
+                else:
+                    return None
+                digest: str | None = None
+                try:
+                    digest = build_work_digest(
+                        context.get("toolCalls") or [],
+                        run_id=run_id,
+                        restricted=bool(context.get("contains_restricted")),
+                    )
+                except Exception:
+                    # Never fail the turn over its digest.
+                    logger.warning("resume digest for run %s failed", run_id, exc_info=True)
+                return Resume(own_work_digest=digest, instruction=instruction)
+
+            # The run's own task, which is the in-process engine's; another
+            # runtime gets it flattened once the runtime is known, below. A
+            # chat turn's resumed leg keeps its turn (`chat_resume`).
+            chat_resume = _chat_resume(run.context or {})
+            own_task = str(run.context.get("task", ""))
+            task_text = (
+                _with_clarifications(own_task)
+                if chat_resume is not None
+                else _with_resume(own_task)
+            )
 
             # Set by delegate_task (§7) when this run is a delegated sub-task, and by
             # the wake-up when a team lead is re-queued. Absent for an ordinary run.
@@ -1292,6 +1529,20 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 runtime_adapter = runtime or await resolve_runtime(
                     db, tenant_id=tenant_id, agent=agent, runtime_ref=pinned["runtime_ref"]
                 )
+                if not runs_in_process(runtime_adapter):
+                    # A chat run carries its turn, not its transcript: the
+                    # in-process engine reads the conversation itself, every
+                    # other runtime gets it as one text, as it always did.
+                    from oc8.chat.turn_context import flattened_task_text
+
+                    task_text = _with_resume(await flattened_task_text(db, run))
+                # Only the in-process engine reads a conversation, so only it
+                # is told a resume after one; its signature alone takes it.
+                in_process_only: dict[str, Any] = (
+                    {"resume": chat_resume}
+                    if chat_resume is not None and runs_in_process(runtime_adapter)
+                    else {}
+                )
                 # One heartbeat for every runtime, wrapped here rather than
                 # inside each adapter: there are three of them, and a liveness
                 # signal one of them forgets does not read as "unknown", it
@@ -1313,6 +1564,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             str(originating_operator) if originating_operator else None
                         ),
                         task_images_raw=task_images_raw,
+                        **in_process_only,
                     )
                 # One check for every runtime and every destination: the saved
                 # run output, the chat message, messenger doors and a parent's
@@ -1369,6 +1621,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         acting=await _acting_person(db, run),
                         trigger_id=(run.context or {}).get("trigger_id"),
                         for_person=(run.context or {}).get(FOR_PERSON),
+                        temporary_chat=is_temporary_run(run.context),
                         finished_run_id=run.id,
                     )
                     if wake_id is not None:
@@ -1378,6 +1631,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                 # As at every end: no input arrives until this commits.
                 await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                # Asked before the transition, which leaves a run somebody
+                # else ended as they left it: only an end of ours answers.
+                ended_here = await _run_still_open(db, run)
                 await repo.transition(run, RunState.FAILED)
                 await record_activity(
                     db,
@@ -1396,7 +1652,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                 # user's message and nothing after it, on every surface, for
                 # ever. The generic status branch below has always recorded
                 # one; this one now does too.
-                await _answer_failed_chat_run(db, run, channel_replies)
+                await _answer_failed_chat_run(db, run, channel_replies, ended_here=ended_here)
             else:
                 pending_runs.extend(result.pending_runs)
                 if result.status == "waiting_for_input":
@@ -1422,17 +1678,27 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            "toolCalls": (
-                                _merge_leg_calls(
-                                    earlier_calls,
-                                    pre_decided_map(approvals),
-                                    result.tool_calls,
-                                    leg_from=leg_from,
-                                )
+                            # A resumed leg settles its held calls and numbers on from the
+                            # earlier legs (`_merge_leg_calls`); any other leg keeps the
+                            # earlier legs' calls ahead of its own (`_all_legs_calls`).
+                            **(
+                                {
+                                    "toolCalls": await _resumed_leg_calls(
+                                        db,
+                                        run,
+                                        earlier=earlier_calls,
+                                        decided=pre_decided_map(approvals),
+                                        leg=result.tool_calls,
+                                        leg_from=leg_from,
+                                    ),
+                                    "legCallsFrom": None,
+                                }
                                 if resumed_leg
-                                else result.tool_calls
+                                else _all_legs_calls(earlier_calls, result.tool_calls)
                             ),
-                            **({"legCallsFrom": None} if resumed_leg else {}),
+                            "contains_restricted": bool(run.context.get("contains_restricted"))
+                            or result.contains_restricted,
+                            **_leg_model(result),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "pending_question": result.output,
@@ -1466,6 +1732,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         await request_clarification(
                             db, run=run, question=result.output, questions=parked_questions
                         )
+                        await _apply_entered_mode(db, run)
                         from oc8.copilot.followups import load_responsibility_for_run
 
                         # Only the Copilot's own turns (source chat) wait on the
@@ -1537,6 +1804,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 acting=await _acting_person(db, run),
                                 trigger_id=(run.context or {}).get("trigger_id"),
                                 for_person=(run.context or {}).get(FOR_PERSON),
+                                temporary_chat=is_temporary_run(run.context),
                                 finished_run_id=run.id,
                             )
                             if wake_id is not None:
@@ -1548,7 +1816,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                         # As at every end: no input arrives until this commits.
                         await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
+                        ended_here = await _run_still_open(db, run)
                         await repo.transition(run, RunState.FAILED)
+                        await _apply_entered_mode(db, run)
                         await record_activity(
                             db,
                             tenant_id=tenant_id,
@@ -1562,7 +1832,9 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         record_run_outcome(RunState.FAILED.value)
                         # Same gap the crash path had: without this the member's
                         # answer stays the chat's last line for ever.
-                        await _answer_failed_chat_run(db, run, channel_replies)
+                        await _answer_failed_chat_run(
+                            db, run, channel_replies, ended_here=ended_here
+                        )
                 else:
                     run.task_id = result.task_id
                     await merge_context(
@@ -1570,17 +1842,27 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         run,
                         {
                             "output": result.output,
-                            "toolCalls": (
-                                _merge_leg_calls(
-                                    earlier_calls,
-                                    pre_decided_map(approvals),
-                                    result.tool_calls,
-                                    leg_from=leg_from,
-                                )
+                            # A resumed leg settles its held calls and numbers on from the
+                            # earlier legs (`_merge_leg_calls`); any other leg keeps the
+                            # earlier legs' calls ahead of its own (`_all_legs_calls`).
+                            **(
+                                {
+                                    "toolCalls": await _resumed_leg_calls(
+                                        db,
+                                        run,
+                                        earlier=earlier_calls,
+                                        decided=pre_decided_map(approvals),
+                                        leg=result.tool_calls,
+                                        leg_from=leg_from,
+                                    ),
+                                    "legCallsFrom": None,
+                                }
                                 if resumed_leg
-                                else result.tool_calls
+                                else _all_legs_calls(earlier_calls, result.tool_calls)
                             ),
-                            **({"legCallsFrom": None} if resumed_leg else {}),
+                            "contains_restricted": bool(run.context.get("contains_restricted"))
+                            or result.contains_restricted,
+                            **_leg_model(result),
                             "steps": result.steps,
                             "stepTimings": result.step_timings,
                             "rendered_components": result.rendered_components,
@@ -1679,15 +1961,21 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             acting=await _acting_person(db, run),
                             trigger_id=(run.context or {}).get("trigger_id"),
                             for_person=(run.context or {}).get(FOR_PERSON),
+                            temporary_chat=is_temporary_run(run.context),
                             finished_run_id=run.id,
                         )
                         if wake_id is not None:
                             pending_runs.append(wake_id)
                     await sync_run_output(db, tenant_id=tenant_id, run_id=run_id)
                     carry_over = False
+                    # Did THIS executor end the run? False when somebody else
+                    # (the reconciler, a reclaim) ended it while the runtime
+                    # was still working: the transition then leaves their
+                    # verdict standing, and their end already answered the
+                    # chat and carried its inputs over -- nothing more is
+                    # written or sent for this turn.
+                    ended_here = True
                     if new_state in TERMINAL:
-                        from oc8.chat.carry_over import run_still_open
-
                         # No input is written to this run from here until the
                         # end below commits (`add_run_input` asks again under
                         # this lock, taken after the tenant's audit lock --
@@ -1696,18 +1984,29 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                         # Ruling 59: what the person wrote and a DONE run never
                         # read becomes the chat's next turn -- unless somebody
-                        # else ended the run meanwhile. Not for a stopped run
-                        # (stop means stop) nor a failed one (its failure is
-                        # the answer; the inputs stay "not read").
+                        # else ended the run meanwhile. A failed run carries
+                        # over only what was queued for after it (spec §5.5):
+                        # its failure is the answer to what it was steered
+                        # with, those inputs stay "not read". Not for a
+                        # stopped run (stop means stop): its queued inputs
+                        # are cancelled.
+                        ended_here = await _run_still_open(db, run)
                         carry_over = (
-                            new_state is RunState.DONE
+                            new_state in (RunState.DONE, RunState.FAILED)
                             and run.source == "chat"
-                            and await run_still_open(db, run_id=run.id)
+                            and ended_here
                         )
+                        if new_state is RunState.INTERRUPTED:
+                            await _end_queued_inputs(db, run, carry_over=False)
                     await repo.transition(run, new_state)
+                    await _apply_entered_mode(db, run)
                     logger.info("run %s finished in state %s", run_id, new_state.value)
                     record_run_outcome(new_state.value)
-                    if run.source == "chat" and new_state in (RunState.DONE, RunState.FAILED):
+                    if (
+                        run.source == "chat"
+                        and new_state in (RunState.DONE, RunState.FAILED)
+                        and ended_here
+                    ):
                         # A chat turn IS a run (see oc8.chat.service) so it gets the
                         # exact same guardrail/approval suspend-resume for free; this
                         # is the one place that turns its outcome back into the
@@ -1731,25 +2030,51 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             channel_replies.append(
                                 (run.tenant_id, done_channel, done_external_id, result.output)
                             )
+                    elif run.source == "chat" and new_state in (RunState.DONE, RunState.FAILED):
+                        # Ended elsewhere (the reconciler, a reclaim) while the
+                        # runtime worked: that end answered the transcript but
+                        # tells no messenger, so the sender hears it failed
+                        # here, as on the crash path.
+                        failed_sender = await _current_chat_sender(db, run)
+                        if failed_sender is not None:
+                            failed_channel, failed_external_id = failed_sender
+                            channel_replies.append(
+                                (
+                                    run.tenant_id,
+                                    failed_channel,
+                                    failed_external_id,
+                                    _CHAT_RUN_FAILED,
+                                )
+                            )
                     if carry_over:
                         from oc8.chat.carry_over import stage_carried_over_turn
 
                         # After the answer is recorded, in this transaction
                         # (Ruling 61): the turn, its run and the inputs' stamp
                         # commit together; the run is published below.
-                        carried_run = await stage_carried_over_turn(db, run=run)
+                        carried_run = await stage_carried_over_turn(
+                            db,
+                            run=run,
+                            deliveries=(
+                                ("steer", "next_turn")
+                                if new_state is RunState.DONE
+                                else ("next_turn",)
+                            ),
+                        )
                         if carried_run is not None:
                             pending_runs.append(carried_run)
                     if run.source == "chat" and new_state is RunState.FAILED:
                         await _tell_unread_inputs(db, run, channel_replies)
                     if new_state is RunState.WAITING_FOR_APPROVAL:
                         stopped = False
+                        requeued = False
                         # Close the parking race (see requeue_if_already_decided):
                         # an operator may have decided the held call while this run
                         # was still parking. Publish only after the transition
                         # below commits, mirroring the approvals endpoint.
                         if await requeue_if_already_decided(db, run=run):
                             pending_runs.append(run.id)
+                            requeued = True
                             logger.info(
                                 "run %s: decision for the held call arrived while "
                                 "parking, re-queued immediately",
@@ -1765,12 +2090,32 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             pending_runs.append(run.id)
                             stopped = True
                             logger.info("run %s: stopped while parking, re-queued to end", run_id)
+                        # The person's own "always allow" rule answers their
+                        # card now, as they would (approvals.allow_rules). It
+                        # never fails the park: on any error the card stays
+                        # pending and the run waits, as without a rule. Only a
+                        # card still pending: not one already decided, nor a
+                        # stopped run's closed one.
+                        auto_resumed = (
+                            [] if requeued or stopped else await _auto_decide_by_rules(db, run)
+                        )
+                        if auto_resumed:
+                            pending_runs.extend(auto_resumed)
+                            logger.info(
+                                "run %s: an always-allow rule decided the held call, re-queued",
+                                run_id,
+                            )
                         # Same reason as the waiting_for_input park above: the
                         # run is suspended, not finished, so nothing else tells
                         # the Telegram sender that their request is now sitting
                         # in somebody's approval queue. Not a stopped one: its
-                        # card is already closed and it ends on its next start.
-                        held_sender = None if stopped else await _current_chat_sender(db, run)
+                        # card is already closed and it ends on its next start;
+                        # nor a rule-approved call, which is not waiting.
+                        held_sender = (
+                            None
+                            if stopped or requeued or auto_resumed
+                            else await _current_chat_sender(db, run)
+                        )
                         if held_sender is not None:
                             held_channel, held_external_id = held_sender
                             channel_replies.append(
@@ -1852,7 +2197,18 @@ async def recover_reclaimed(message: RunMessage) -> None:
             if agent is not None:
                 agent.status = "idle"
                 await publish_agent_status(agent)
+            # No input arrives until this commits. The run is ours to end:
+            # read `running` under its row lock above.
+            await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
             await repo.transition(run, RunState.FAILED)
+            # The chat's failure answer, then what was queued for after it --
+            # never at the cost of closing the run (rolled back to its
+            # savepoint on failure).
+            try:
+                async with db.begin_nested():
+                    await answer_failed_chat_end(db, run)
+            except Exception:
+                logger.exception("run %s: lease lost, closed without its answer", run_id)
             await record_activity(
                 db,
                 tenant_id=tenant_id,

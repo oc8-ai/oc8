@@ -130,7 +130,10 @@ describe("Live tab", () => {
     expect(onSendOverride({ text: "skip ticket 4", attachmentIds: [], contextRefs: [] })).toBe(
       true,
     );
-    expect(sendInput).toHaveBeenCalledWith("skip ticket 4", expect.anything());
+    expect(sendInput).toHaveBeenCalledWith(
+      { text: "skip ticket 4", delivery: "steer" },
+      expect.anything(),
+    );
     expect(conversationProps.last?.sessionId).toBe("live-1");
     expect(conversationProps.last?.daySeparators).toBe(true);
   });

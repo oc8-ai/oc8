@@ -1,7 +1,7 @@
 // The compact session switcher the dock and the My Work chat widget mount
 // above their `Conversation`. The Copilot page uses the sidebar instead.
 import { useState, type FormEvent } from "react";
-import { ChevronDown, Pencil, Trash2 } from "lucide-react";
+import { ChevronDown, Download, Pencil, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -22,6 +22,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { useConfirm } from "@/hooks/use-confirm";
+import { exportChat, type ChatExportFormat } from "@/lib/conversation-api";
 import { useDeleteChatSession, useRenameChatSession, type ChatSessionDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
 
@@ -90,6 +91,18 @@ export function SessionPicker({
     );
   }
 
+  function handleExport(s: ChatSessionDTO, format: ChatExportFormat) {
+    setDeleteError(null);
+    exportChat(s.id, format).catch(() =>
+      setDeleteError(
+        t(
+          "The chat was not exported. Try again.",
+          "Der Chat wurde nicht exportiert. Versuch es noch einmal.",
+        ),
+      ),
+    );
+  }
+
   async function handleDelete(s: ChatSessionDTO) {
     const label = s.title || untitled;
     setDeleteError(null);
@@ -155,6 +168,20 @@ export function SessionPicker({
               <DropdownMenuItem className="min-h-11 gap-2" onSelect={() => startRename(current)}>
                 <Pencil className="size-3.5" aria-hidden />
                 {t("Rename this chat…", "Diesen Chat umbenennen …")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="min-h-11 gap-2"
+                onSelect={() => handleExport(current, "md")}
+              >
+                <Download className="size-3.5" aria-hidden />
+                {t("Export as Markdown", "Als Markdown exportieren")}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                className="min-h-11 gap-2"
+                onSelect={() => handleExport(current, "json")}
+              >
+                <Download className="size-3.5" aria-hidden />
+                {t("Export as JSON", "Als JSON exportieren")}
               </DropdownMenuItem>
               <DropdownMenuItem
                 className="min-h-11 gap-2 text-destructive focus:text-destructive"

@@ -7,8 +7,17 @@ import uuid
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import CheckConstraint, DateTime, Text, UniqueConstraint, Uuid
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import (
+    CheckConstraint,
+    Computed,
+    DateTime,
+    Index,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import Mapped, mapped_column
 
 from oc8.db.base import Base, TimestampMixin
@@ -20,6 +29,16 @@ from oc8.models._mixins import PkMixin, SoftDeleteMixin, TenantMixin
 #: 768` and the knowledge base was unusable out of the box. Changing the
 #: embedding model means changing this AND re-embedding everything stored.
 EMBED_DIM = 768
+
+#: `KnowledgeBase.kind`: a base the organisation manages and grants ...
+KB_KIND_SHARED = "shared"
+#: ... or the hidden base of ONE chat session, holding its large files (spec
+#: §5.4). Never listed, picked, granted or searched like a shared base; only
+#: the chat it belongs to reaches it (`oc8.chat.files_kb`).
+KB_KIND_CHAT = "chat"
+#: `DataSource.connector_type` of the one source that feeds a chat's base. Not
+#: a connector anyone can sync, and hidden wherever data sources are listed.
+CHAT_UPLOAD_CONNECTOR = "chat_upload"
 
 
 class DataSource(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
@@ -118,6 +137,25 @@ class KnowledgeBase(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin)
     #: Required when ``index_type`` is not ``internal``. Points at a
     #: ``Credential`` whose type matches the capa's ``credential_type``.
     credential_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+    #: `KB_KIND_SHARED` or `KB_KIND_CHAT` (migration 0137).
+    kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default=KB_KIND_SHARED, server_default=KB_KIND_SHARED
+    )
+    #: The chat session a `KB_KIND_CHAT` base belongs to; NULL for a shared one.
+    chat_session_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+
+    __table_args__ = (
+        CheckConstraint("kind IN ('shared','chat')", name="ck_knowledge_base_kind"),
+        # One live base per chat, so two uploads racing to create it end up
+        # sharing one (`chat_kb_for` retries on the conflict).
+        Index(
+            "uq_knowledge_base_chat_session",
+            "tenant_id",
+            "chat_session_id",
+            unique=True,
+            postgresql_where=text("chat_session_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
 
 class KbChunk(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
@@ -135,6 +173,14 @@ class KbChunk(Base, PkMixin, TenantMixin, TimestampMixin, SoftDeleteMixin):
     kb_id: Mapped[uuid.UUID] = mapped_column(Uuid, nullable=False, index=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM))
+    #: Full-text vector of `content` (migration 0143), computed by Postgres and
+    #: never written: retrieval ranks by it next to `embedding`. Deferred, so
+    #: loading a chunk does not carry it along.
+    search_tsv: Mapped[str | None] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('simple', coalesce(content, ''))", persisted=True),
+        deferred=True,
+    )
     source_uri: Mapped[str] = mapped_column(Text, nullable=False)
     chunk_metadata: Mapped[dict[str, Any]] = mapped_column(
         "metadata", JSONB, nullable=False, default=dict

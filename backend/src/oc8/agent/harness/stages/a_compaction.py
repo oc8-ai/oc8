@@ -44,7 +44,10 @@ def prompt_token_fallback(messages: list[NeutralMessage]) -> int:
 
 
 def _prefix_end(messages: list[NeutralMessage]) -> int:
-    for index, message in enumerate(messages):
+    # The last such message: a replayed turn the person began with that very
+    # text must not end the protected prefix early.
+    for index in range(len(messages) - 1, -1, -1):
+        message = messages[index]
         if message.role == "user" and _text(message).startswith("# Run context"):
             return index + 1
     index = 0

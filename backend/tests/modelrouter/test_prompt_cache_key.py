@@ -31,6 +31,36 @@ def test_openai_payload_forwards_prompt_cache_key():
     assert build_payload(req)["prompt_cache_key"] == "run-1"
 
 
+def test_chat_run_uses_session_id_as_prompt_cache_key():
+    from oc8.chat.replay import prompt_cache_key
+
+    session, run = uuid.uuid4(), uuid.uuid4()
+    chat = {"chat_session_id": str(session), "transcript_until": None}
+    assert prompt_cache_key(chat, run) == str(session)
+    assert prompt_cache_key({**chat, "prompt_cache_key": "pinned"}, run) == "pinned"
+
+
+def test_other_runs_keep_run_id():
+    from oc8.chat.replay import prompt_cache_key
+
+    run = uuid.uuid4()
+    assert prompt_cache_key({}, run) == str(run)
+    assert prompt_cache_key(None, run) == str(run)
+    assert prompt_cache_key({"chat_session_id": str(uuid.uuid4())}, run) == str(run)
+    assert prompt_cache_key({}, None) is None
+
+
+def test_a_malformed_chat_context_keeps_the_run_id():
+    from oc8.chat.replay import prompt_cache_key
+
+    run = uuid.uuid4()
+    assert prompt_cache_key({"chat_session_id": "not-a-uuid", "transcript_until": None}, run) == (
+        str(run)
+    )
+    bad_until = {"chat_session_id": str(uuid.uuid4()), "transcript_until": "nope"}
+    assert prompt_cache_key(bad_until, run) == str(run)
+
+
 def test_anthropic_payload_never_carries_the_openai_cache_key():
     """Every run stamps `prompt_cache_key` (an OpenAI field) into `extra`, and
     Anthropic refuses unknown top-level fields with a 400 ("Extra inputs are

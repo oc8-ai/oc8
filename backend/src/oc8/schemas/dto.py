@@ -276,6 +276,21 @@ class ApprovalDTO(CamelModel):
     #: The record produced by the approved call, set once it runs.
     #: NULL until the call has run, and for tools that return no link.
     result_url: str | None = None
+    #: The person's own write-tier card: it may offer "always allow for me"
+    #: (`approvals.allow_rules.rule_eligible`).
+    always_allow_offered: bool = False
+
+
+class ToolAllowRuleDTO(CamelModel):
+    """One of the caller's own "always allow" rules (`approvals.allow_rules`)."""
+
+    id: str
+    agent_id: str
+    agent_name: str
+    #: None for a core tool, and once the connection is gone.
+    connection_name: str | None = None
+    tool_key: str
+    created_at: str
 
 
 class QuestionOptionDTO(CamelModel):
@@ -530,6 +545,8 @@ class ModelDTO(CamelModel):
     used_by_copilot: bool = False
     #: Whether members may pick this model in a chat (`oc8.chat.model_choice`).
     chat_enabled: bool = True
+    #: chat | speech_to_text | text_to_speech (`oc8.modelrouter.speech`).
+    capability: str = "chat"
     #: Whether this model can think; gates the chat's reasoning-level control.
     supports_reasoning: bool = False
     credential_id: str | None = None
@@ -1040,6 +1057,37 @@ class PrincipalUsageDTO(CamelModel):
     department_name: str | None = None
 
 
+class UsageSeriesDTO(CamelModel):
+    """One person's tokens (in + out) per bucket of a `UsageTimeseriesDTO`.
+
+    `key` is the member's uuid, `"none"` for usage no person is attached to
+    (everything recorded before member attribution existed) or `"others"` for
+    the members beyond the top ten, summed. `name` is the display name (kept
+    for a removed member), else the email for a caller holding `member:view`,
+    else None -- the screen then says "Unknown person" rather than printing a
+    raw uuid."""
+
+    key: str
+    member_id: uuid.UUID | None
+    name: str | None
+    total: int
+    #: Aligned index for index with `UsageTimeseriesDTO.buckets`.
+    points: list[int]
+
+
+class UsageTimeseriesDTO(CamelModel):
+    """`GET /usage/timeseries`: token usage per person over a recent range,
+    bucketed on the organisation's clock. `buckets` are the bucket starts with
+    the zone's offset at that instant, so the two 02:00 hours of an autumn
+    clock change stay two distinct labels."""
+
+    range: Literal["24h", "7d", "30d"]
+    bucket: Literal["hour", "day"]
+    timezone: str
+    buckets: list[datetime]
+    series: list[UsageSeriesDTO]
+
+
 class TokenUsageExportRowDTO(CamelModel):
     """One `token_usage_record` row for `GET /usage/export` -- one row per
     metered request, unlike `PrincipalUsageDTO`'s per-day/per-group rollup.
@@ -1052,6 +1100,10 @@ class TokenUsageExportRowDTO(CamelModel):
     agent_name: str | None
     department_id: str | None
     department_name: str | None
+    #: The person the request was spent for; None for usage recorded before
+    #: member attribution existed or made on nobody's behalf.
+    member_id: str | None
+    member_name: str | None
     model: str
     provider: str
     tokens_in: int
@@ -1493,6 +1545,12 @@ class ChatSessionDTO(CamelModel):
     mode: str | None = None
     #: The reasoning level kept on this chat, or None for the default.
     effort: ReasoningLevel | None = None
+    #: The last message of the branch the person reads (spec §5.3); None for
+    #: a chat without a tree.
+    current_leaf_id: str | None = None
+    #: A chat that is not kept (spec §5.6): no feedback, pin, project or
+    #: export, deleted when the person leaves it.
+    temporary: bool = False
 
 
 class BuilderChoiceDTO(CamelModel):
@@ -1701,11 +1759,16 @@ class ChatMessageDTO(CamelModel):
     author_member_id: str | None = None
     author_name: str | None = None
     reply_to_id: str | None = None
+    #: The message this one follows in the tree; None for the first one.
+    parent_id: str | None = None
     #: Typed parts (e.g. `{"type": "answers", "questions": [...], "answers":
     #: {...}}` for an answered question card). Null for plain-text turns.
     parts: list[dict[str, Any]] | None = None
     #: One-click replies from the `suggest_replies` part, derived for convenience.
     suggestions: list[str] = []
+    #: The run read restricted data (`ChatMessage.restricted`). The chat shows
+    #: such an answer's HTML previews without scripts.
+    restricted: bool = False
 
 
 class ReportDTO(CamelModel):
@@ -2370,6 +2433,22 @@ class RunInputDTO(CamelModel):
     created_at: str
     consumed_at: str | None = None
     consumed_step: int | None = None
+    #: `steer` (read at the run's next step) or `next_turn` (queued: becomes
+    #: the chat's next turn when the run ends, spec §5.5).
+    delivery: Literal["steer", "next_turn"] = "steer"
+    #: A `next_turn` input's "Web" switch: the turn it becomes may search the
+    #: web (spec §10). Always false for `steer`.
+    web: bool = False
+
+
+class QueuedTurnDTO(CamelModel):
+    """A chat send while an answer is still running (spec §5.5): not a turn
+    yet, but a `next_turn` input on that run (`run_id`), which becomes the
+    next turn when it ends."""
+
+    queued: Literal[True] = True
+    run_id: str
+    input: RunInputDTO
 
 
 class RunSteeringDTO(CamelModel):

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.engine import CancelCheck, InboxCheck, RunResult, run_agent
+from oc8.agent.preamble import Resume
 
 if TYPE_CHECKING:
     from oc8.runtime.approval_resume import Decisions
@@ -89,6 +90,7 @@ class Oc8AgentRuntime:
         pre_decided: Decisions | None = None,
         originating_operator: str | None = None,
         task_images_raw: list[dict[str, str]] | None = None,
+        resume: Resume | None = None,
     ) -> RunResult:
         return await run_agent(
             db,
@@ -106,7 +108,14 @@ class Oc8AgentRuntime:
             pre_decided=pre_decided,
             originating_operator=originating_operator,
             task_images_raw=task_images_raw,
+            resume=resume,
         )
+
+
+def runs_in_process(adapter: RuntimeAdapter) -> bool:
+    """Whether `adapter` is the in-process engine, the one runtime that reads
+    a chat from the database itself instead of one flattened task text."""
+    return isinstance(adapter, Oc8AgentRuntime)
 
 
 class EchoRuntimeStub:

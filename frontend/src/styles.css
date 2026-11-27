@@ -265,6 +265,11 @@
      (Media queries resolve rem/em against the browser default, not this.) */
   html {
     font-size: 100%;
+    /* What must stay clear at the bottom of the screen: the home indicator
+       (needs viewport-fit=cover) or, on iOS, the on-screen keyboard
+       (--keyboard-inset, hooks/use-keyboard-inset.ts). Bottom-pinned
+       controls such as the chat composer pad by this. */
+    --bottom-inset: max(env(safe-area-inset-bottom, 0px), var(--keyboard-inset, 0px));
   }
 
   @media (min-width: 48rem) and (pointer: fine) {

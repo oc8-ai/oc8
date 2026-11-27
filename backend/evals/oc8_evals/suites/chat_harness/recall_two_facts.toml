@@ -1,0 +1,23 @@
+id = "recall_two_facts"
+kind = "chat"
+group = "recall"
+systems = []
+origin = "manual"
+scenario = "chat_recall"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+context_window_tokens = 8192
+task_text = """
+Who is our contact at the supplier, and when does the framework contract end?
+"""
+
+[params]
+early = ["Our contact at the supplier is Mirela Kovač.", "The framework contract with the supplier ends on 30 September 2027."]
+filler_turns = 40
+checkpoint = "made"
+expect = ["Mirela", "2027"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

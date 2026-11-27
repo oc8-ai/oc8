@@ -1,4 +1,4 @@
-import { Globe, BookOpen } from "lucide-react";
+import { BookOpen, ExternalLink, Globe } from "lucide-react";
 
 import type { ChatSourceDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
@@ -9,6 +9,17 @@ function host(url: string): string {
     return new URL(url).hostname;
   } catch {
     return url;
+  }
+}
+
+/** Only an http(s) address becomes a link; anything else (javascript:,
+ *  data:, a bare word) stays plain text. */
+function isWebLink(url: string): boolean {
+  try {
+    const { protocol } = new URL(url);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
   }
 }
 
@@ -43,14 +54,23 @@ export function Sources({
               <BookOpen className="mt-0.5 size-3.5 shrink-0" aria-hidden />
             )}
             <span className="min-w-0">
-              {/^https?:\/\//.test(s.url) ? (
+              {isWebLink(s.url) ? (
                 <a
                   href={s.url}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-foreground hover:underline"
                 >
-                  {s.title}
+                  {s.title}{" "}
+                  <span className="sr-only">
+                    {t("(opens in a new tab)", "(öffnet in neuem Tab)")}
+                  </span>
+                  {s.kind === "web" && (
+                    <ExternalLink
+                      className="ml-1 inline size-3 align-baseline text-muted-foreground"
+                      aria-hidden
+                    />
+                  )}
                 </a>
               ) : (
                 <span className="text-foreground">{s.title}</span>

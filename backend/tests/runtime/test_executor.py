@@ -85,6 +85,71 @@ async def test_execute_run_marks_done(app_session: AppSessionFactory) -> None:
         assert agent.status == "idle"
 
 
+async def test_contains_restricted_is_merged_into_run_context(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    first_run = await _make_queued_run(app_session, tenant)
+    second_run = await _make_queued_run(app_session, tenant)
+    # A run that already flagged an earlier leg.
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, second_run)
+        assert run is not None
+        run.context = {**run.context, "contains_restricted": True}
+
+    def runner(flag: bool) -> Callable[..., Awaitable[RunResult]]:
+        async def fn(db: Any, **kw: Any) -> RunResult:
+            return RunResult(
+                task_id=uuid.uuid4(),
+                agent_id=kw["agent"].id,
+                status="done",
+                output="ok",
+                contains_restricted=flag,
+            )
+
+        return fn
+
+    for run_id, flag in ((first_run, True), (second_run, False)):
+        await execute_run(
+            RunMessage(
+                run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False
+            ),
+            runtime=_FnRuntime(runner(flag)),
+        )
+    async with app_session(tenant) as s:
+        for run_id in (first_run, second_run):
+            run = await s.get(m.AgentRun, run_id)
+            assert run is not None
+            assert run.context["contains_restricted"] is True
+
+
+async def test_the_legs_window_and_model_are_merged_into_run_context(
+    app_session: AppSessionFactory,
+) -> None:
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id = await _make_queued_run(app_session, tenant)
+
+    async def fn(db: Any, **kw: Any) -> RunResult:
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="ok",
+            context_window_tokens=32_000,
+            model="m-1",
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(fn),
+    )
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["context_window_tokens"] == 32_000
+        assert run.context["model"] == "m-1"
+
+
 async def test_execute_run_marks_failed_on_error(app_session: AppSessionFactory) -> None:
     tenant = uuid.UUID(str(ACME_TENANT_ID))
     run_id = await _make_queued_run(app_session, tenant)
@@ -1731,6 +1796,147 @@ async def test_execute_run_stops_a_running_run_when_its_agent_is_archived_mid_fl
         assert "deleted" in run.context["output"]
 
 
+async def test_a_chat_leg_that_crashes_after_a_restricted_read_records_a_restricted_reply(
+    app_session: AppSessionFactory, redis_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine appends each tool call (with a result preview) to the run's
+    context live, but the restricted flag only reached the context through the
+    RunResult -- which a crashed leg never returns. The failure reply then
+    built its work digest from the live calls as unrestricted, and the next
+    turn replayed the restricted preview to a cloud model."""
+    from oc8.agent.control_tools import SEARCH_KNOWLEDGE
+    from oc8.modelrouter import CompletionResult, ToolCall, Usage, chunk_from_result
+    from oc8.runtime.adapter import Oc8AgentRuntime
+
+    class _Router:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, req: Any) -> CompletionResult:
+            self.calls += 1
+            if self.calls == 1:
+                return CompletionResult(
+                    text="",
+                    tool_calls=[
+                        ToolCall(id="c1", name=SEARCH_KNOWLEDGE.name, arguments={"query": "Gehalt"})
+                    ],
+                    usage=Usage(tokens_in=1, tokens_out=1),
+                    stop_reason="tool_use",
+                    provider=req.provider,
+                    model=req.model,
+                )
+            raise RuntimeError("the model provider hung up")
+
+        async def stream(self, req: Any) -> Any:
+            yield chunk_from_result(await self.complete(req))
+
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: _Router())
+
+    async def nothing_up_front(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "", False
+
+    async def restricted_hit(*a: Any, **kw: Any) -> tuple[str, bool]:
+        return "Gehaltstabelle Vorstand", True
+
+    monkeypatch.setattr("oc8.agent.preamble.retrieve_kb_context", nothing_up_front)
+    monkeypatch.setattr("oc8.agent.control_tools.retrieve_kb_context", restricted_hit)
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id, session_id = await _make_chat_run(
+        app_session, tenant, chat_channel=None, chat_channel_external_id=None
+    )
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        kb = m.KnowledgeBase(tenant_id=tenant, name="HR", embedding_model="nomic-embed-text")
+        s.add(kb)
+        await s.flush()
+        s.add(
+            m.KnowledgeGrant(
+                tenant_id=tenant, kb_id=kb.id, grantee_type="agent", grantee_id=run.agent_id
+            )
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=Oc8AgentRuntime(),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.state == RunState.FAILED.value
+        assert any(c.get("tool") == SEARCH_KNOWLEDGE.name for c in run.context["toolCalls"])
+        assert run.context["contains_restricted"] is True
+        replies = (
+            (
+                await s.execute(
+                    select(m.ChatMessage).where(
+                        m.ChatMessage.session_id == session_id, m.ChatMessage.role == "assistant"
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(replies) == 1
+        assert replies[0].restricted is True
+        assert replies[0].work_digest is not None
+        assert SEARCH_KNOWLEDGE.name in replies[0].work_digest
+        assert "Gehalt" not in replies[0].work_digest
+
+
+async def test_a_resumed_legs_reply_digest_covers_every_legs_calls(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """Each leg's terminal write replaced `toolCalls` with that leg's own
+    calls, so a run resumed after an approval recorded a reply whose work
+    digest knew only the last leg -- the parked leg's calls were gone."""
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id, session_id = await _make_chat_run(
+        app_session, tenant, chat_channel=None, chat_channel_external_id=None
+    )
+    first = {"tool": "crm_search", "arguments": {}, "result": "3 hits", "state": "done"}
+    second = {"tool": "crm_update", "arguments": {}, "result": "saved", "state": "done"}
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        # What the parked first leg left on the run.
+        await append_tool_call(s, run, first)
+
+    async def second_leg(db: Any, **kw: Any) -> RunResult:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await append_tool_call(db, run, second)
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="erledigt",
+            tool_calls=[second],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(second_leg),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert [c["tool"] for c in run.context["toolCalls"]] == ["crm_search", "crm_update"]
+        reply = (
+            await s.execute(
+                select(m.ChatMessage).where(
+                    m.ChatMessage.session_id == session_id, m.ChatMessage.role == "assistant"
+                )
+            )
+        ).scalar_one()
+        assert reply.work_digest is not None
+        assert "crm_search" in reply.work_digest and "crm_update" in reply.work_digest
+
+
 async def test_a_resumed_leg_keeps_the_calls_of_the_leg_before_the_approval(
     app_session: AppSessionFactory,
 ) -> None:
@@ -1935,3 +2141,68 @@ async def test_a_resumed_leg_drops_only_its_dead_attempts_repeats_and_clears_its
         assert run is not None
         assert run.context["toolCalls"] == [read, {**again, "step": 2}, {**replied, "step": 3}]
         assert run.context.get("legCallsFrom") is None
+
+
+async def test_a_resumed_isolated_legs_live_calls_survive_its_final_write(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The isolated runtime reports no calls of its own: it appends them to
+    the run's context as it goes. A resumed leg's final write used to merge
+    the leg-start snapshot with that empty list, wiping the leg's calls --
+    and the reply's work digest with them."""
+    from oc8.runtime.approval_resume import call_signature
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id, session_id = await _make_chat_run(
+        app_session, tenant, chat_channel=None, chat_channel_external_id=None
+    )
+    read = {"tool": "crm_search", "arguments": {}, "state": "done", "step": 1}
+    held = {"tool": "crm_update", "arguments": {"id": 1}, "state": "awaiting_approval", "step": 2}
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **(run.context or {}),
+            "toolCalls": [read, held],
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_signature("crm_update", {"id": 1}),
+                    "tool": "crm_update",
+                    "arguments": {"id": 1},
+                    "decision": "approve",
+                }
+            ],
+        }
+    ran = {"tool": "crm_update", "arguments": {"id": 1}, "state": "done", "step": 1}
+
+    async def isolated_leg(db: Any, **kw: Any) -> RunResult:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await append_tool_call(db, run, ran)
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="erledigt",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(isolated_leg),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["toolCalls"] == [read, {**ran, "step": 2}]
+        reply = (
+            await s.execute(
+                select(m.ChatMessage).where(
+                    m.ChatMessage.session_id == session_id, m.ChatMessage.role == "assistant"
+                )
+            )
+        ).scalar_one()
+        assert reply.work_digest is not None
+        assert "crm_search" in reply.work_digest and "crm_update" in reply.work_digest

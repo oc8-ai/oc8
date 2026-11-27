@@ -56,18 +56,29 @@ export function useDecideDirectAccess() {
       decision,
       reason,
       agentId,
+      alwaysAllow,
     }: {
       approvalId: string;
       decision: "approve" | "reject";
       reason?: string;
       /** Approve by running this offered agent instead of granting direct access. */
       agentId?: string;
+      /** Also let this tool run for the person without asking again. */
+      alwaysAllow?: boolean;
     }) =>
       api.post<Approval>(
         `/chat/direct-access/approvals/${encodeURIComponent(approvalId)}/decision`,
-        { decision, reason: reason ?? "", ...(agentId ? { agentId } : {}) },
+        {
+          decision,
+          reason: reason ?? "",
+          ...(agentId ? { agentId } : {}),
+          ...(alwaysAllow ? { alwaysAllow: true } : {}),
+        },
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ROOT }),
+    onSuccess: (_dto, vars) => {
+      void qc.invalidateQueries({ queryKey: ROOT });
+      if (vars.alwaysAllow) void qc.invalidateQueries({ queryKey: ["tool-allow-rules"] });
+    },
   });
 }
 

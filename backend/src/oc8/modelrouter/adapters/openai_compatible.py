@@ -7,10 +7,17 @@ dedicated adapter per provider."""
 
 from __future__ import annotations
 
+import io
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
+from oc8.modelrouter.adapters._openai_audio import (
+    Transcript,
+    open_speech_stream,
+    post_transcription,
+)
 from oc8.modelrouter.adapters._openai_common import (
     build_payload,
     parse_response,
@@ -83,3 +90,24 @@ class OpenAICompatibleAdapter:
         usage = data.get("usage") or {}
         tokens = int(usage.get("prompt_tokens") or usage.get("total_tokens") or 0)
         return [float(x) for x in vector], tokens
+
+    async def transcribe(
+        self, audio: bytes | io.BytesIO, *, model: str, content_type: str, language: str | None
+    ) -> Transcript:
+        """`POST {base_url}/audio/transcriptions` (`_openai_audio`)."""
+        return await post_transcription(
+            self._base_url,
+            self._api_key,
+            audio,
+            model=model,
+            content_type=content_type,
+            language=language,
+        )
+
+    async def open_speech(
+        self, text: str, *, model: str, extra: dict[str, Any] | None
+    ) -> AsyncIterator[bytes]:
+        """`POST {base_url}/audio/speech`, streamed (`_openai_audio`)."""
+        return await open_speech_stream(
+            self._base_url, self._api_key, text, model=model, extra=extra
+        )

@@ -10,10 +10,11 @@ from collections import defaultdict
 from collections.abc import AsyncIterator, Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy import Select, and_, func, or_, select
+from sqlalchemy import ColumnElement, Select, and_, func, literal_column, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -26,11 +27,19 @@ from oc8.approvals.repo import DEFAULT_LIMIT, visible_approvals
 from oc8.audit.integrity import (
     BATCH as BATCH,  # re-exported: tests monkeypatch this name, same as audit.py
 )
-from oc8.authz.permissions import BUDGET, RUN, VIEW, perm
+from oc8.authz.authority import authority_for_principal
+from oc8.authz.permissions import BUDGET, MEMBER, RUN, VIEW, perm
 from oc8.authz.scope import APPROVAL_VIEW, HumanActor
 from oc8.metering.budget import month_start
 from oc8.metering.pricing import active_price_rows, cost_micros_from_price, price_as_of
-from oc8.schemas.dto import ActivityDTO, ApprovalDTO, PrincipalUsageDTO, TokenUsageExportRowDTO
+from oc8.schemas.dto import (
+    ActivityDTO,
+    ApprovalDTO,
+    PrincipalUsageDTO,
+    TokenUsageExportRowDTO,
+    UsageSeriesDTO,
+    UsageTimeseriesDTO,
+)
 from oc8.triggers.zones import organisation_timezone
 
 router = APIRouter()
@@ -243,6 +252,183 @@ async def usage(
     ]
 
 
+UsageRange = Literal["24h", "7d", "30d"]
+
+#: range -> (bucket unit, number of buckets). The last bucket is the one "now"
+#: falls in, so a range always ends with the hour or day still filling up.
+_USAGE_RANGES: dict[str, tuple[Literal["hour", "day"], int]] = {
+    "24h": ("hour", 24),
+    "7d": ("hour", 168),
+    "30d": ("day", 30),
+}
+
+#: Members with their own series; everyone below them is summed into "others"
+#: so a large organisation still gets a chart a person can read.
+_USAGE_TOP_MEMBERS = 10
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _member_label(*, with_email: bool) -> ColumnElement[str | None]:
+    """A member's name for usage reports: the display name, else -- only for a
+    caller who may see the member list -- the email (people created by SSO or
+    dev login may have no display name yet). `budget:view` alone does not
+    reveal email addresses."""
+    name = func.nullif(m.OrgMember.display_name, "")
+    if not with_email:
+        return name
+    return func.coalesce(name, func.nullif(m.OrgMember.email, ""))
+
+
+async def _may_see_member_emails(
+    request: Request, db: DbSession, principal: CurrentPrincipal
+) -> bool:
+    authority = await authority_for_principal(request, db, principal)
+    return perm(MEMBER, VIEW) in authority.tenant_wide
+
+
+def _usage_buckets(
+    unit: Literal["hour", "day"], count: int, zone: ZoneInfo, now: datetime
+) -> list[datetime]:
+    """Bucket starts on the organisation's clock, oldest first, ending with the
+    bucket that holds `now`.
+
+    The range reaches back `count - 1` units of wall-clock time, so a range
+    across a clock change holds one hourly bucket more or fewer than `count`.
+    Hourly buckets are stepped in UTC, not on the wall clock: the autumn
+    change has two different hours both labelled 02:00, and stepping in real
+    time is what keeps them two buckets (each carrying its own offset)
+    instead of one bucket counted twice or one hour dropped.
+    """
+    local_now = now.astimezone(zone)
+    if unit == "day":
+        today = local_now.date()
+        return [
+            datetime.combine(today - timedelta(days=i), datetime.min.time(), tzinfo=zone)
+            for i in range(count - 1, -1, -1)
+        ]
+    end = local_now.replace(minute=0, second=0, microsecond=0).astimezone(UTC)
+    wall_start = local_now.replace(minute=0, second=0, microsecond=0, tzinfo=None) - timedelta(
+        hours=count - 1
+    )
+    start = wall_start.replace(tzinfo=zone).astimezone(UTC)
+    buckets: list[datetime] = []
+    t = start
+    while t <= end:
+        buckets.append(t.astimezone(zone))
+        t += timedelta(hours=1)
+    return buckets
+
+
+@router.get(
+    "/usage/timeseries",
+    response_model=UsageTimeseriesDTO,
+    dependencies=[Depends(require_permission(perm(BUDGET, VIEW)))],
+)
+async def usage_timeseries(
+    request: Request,
+    db: DbSession,
+    principal: CurrentPrincipal,
+    range_: Annotated[UsageRange, Query(alias="range")] = "7d",
+) -> UsageTimeseriesDTO:
+    """Tokens (in + out) per person over the last 24 hours, 7 days or 30 days,
+    bucketed hourly (24h, 7d) or daily (30d) on the organisation's clock.
+
+    The ten members with the most tokens in the range get a series each, the
+    rest are summed into `others`; usage no person is attached to (history
+    from before member attribution) is the `none` series. A range nobody used
+    still returns its full bucket axis with no series, so the chart draws an
+    empty grid instead of collapsing.
+    """
+    unit, count = _USAGE_RANGES[range_]
+    zone_name = await organisation_timezone(db, principal.tenant_id)
+    zone = ZoneInfo(zone_name)
+    buckets = _usage_buckets(unit, count, zone, _now())
+    rec = m.TokenUsageRecord
+    local_ts = func.timezone(zone_name, rec.ts)
+    local_bucket = func.date_trunc(unit, local_ts)
+    # The zone's offset at the record's instant. An hour bucket shares it with
+    # its records, and it is what tells the two 02:00 hours of an autumn clock
+    # change apart -- the local wall time alone names them identically.
+    offset = local_ts - func.timezone("UTC", rec.ts)
+    group_cols: list[Any] = [rec.member_id, local_bucket]
+    if unit == "hour":
+        group_cols.append(offset)
+    rows = (
+        await db.execute(
+            select(*group_cols, func.sum(rec.tokens_in + rec.tokens_out))
+            # Explicit, not left to RLS alone (same reason as `GET /usage`).
+            .where(rec.tenant_id == principal.tenant_id, rec.ts >= buckets[0])
+            # By position: the zone is a bound parameter, and Postgres does not
+            # treat `timezone($1, ts)` in the SELECT and `timezone($4, ts)` in
+            # the GROUP BY as the same expression.
+            .group_by(*(literal_column(str(i + 1)) for i in range(len(group_cols))))
+        )
+    ).all()
+
+    index: dict[Any, int] = (
+        {b.astimezone(UTC): i for i, b in enumerate(buckets)}
+        if unit == "hour"
+        else {b.date(): i for i, b in enumerate(buckets)}
+    )
+    points: dict[uuid.UUID | None, list[int]] = defaultdict(lambda: [0] * len(buckets))
+    for row in rows:
+        member_id, bucket_start, tokens = row[0], row[1], row[-1]
+        if unit == "hour":
+            key: Any = (bucket_start - row[2]).replace(tzinfo=UTC)
+        else:
+            key = bucket_start.date()
+        # No bucket: a record stamped after the current bucket (clock skew) is dropped.
+        i = index.get(key)
+        if i is not None:
+            points[member_id][i] += int(tokens or 0)
+
+    totals = {member: sum(p) for member, p in points.items() if sum(p) > 0}
+    ranked = sorted(
+        (member for member in totals if member is not None),
+        key=lambda member: (-totals[member], str(member)),
+    )
+    top, rest = ranked[:_USAGE_TOP_MEMBERS], ranked[_USAGE_TOP_MEMBERS:]
+    names: dict[uuid.UUID, str] = {}
+    if top:
+        found = await db.execute(
+            select(
+                m.OrgMember.id,
+                _member_label(with_email=await _may_see_member_emails(request, db, principal)),
+            ).where(m.OrgMember.id.in_(top))
+        )
+        names = {member: name for member, name in found.all() if name}
+
+    series = [
+        UsageSeriesDTO(
+            key=str(member),
+            member_id=member,
+            name=names.get(member),
+            total=totals[member],
+            points=points[member],
+        )
+        for member in top
+    ]
+    if rest:
+        others = [sum(column) for column in zip(*(points[member] for member in rest), strict=True)]
+        series.append(
+            UsageSeriesDTO(
+                key="others", member_id=None, name=None, total=sum(others), points=others
+            )
+        )
+    if None in totals:
+        series.append(
+            UsageSeriesDTO(
+                key="none", member_id=None, name=None, total=totals[None], points=points[None]
+            )
+        )
+    return UsageTimeseriesDTO(
+        range=range_, bucket=unit, timezone=zone_name, buckets=buckets, series=series
+    )
+
+
 async def _usage_group_names(
     db: AsyncSession, *, group_by: str, groups: Iterable[str]
 ) -> dict[str, dict[str, str | None]]:
@@ -277,15 +463,18 @@ async def _usage_group_names(
     }
 
 
-# Column order is stable; column NAMES are the TokenUsageExportRowDTO camelCase
-# aliases (matching the JSONL branch below) so a CSV export and a JSONL export
-# of the same records key identically for a downstream ETL.
+# Column names are stable; new columns may be added. They are the
+# TokenUsageExportRowDTO camelCase aliases (matching the JSONL branch below) so
+# a CSV export and a JSONL export of the same records key identically for a
+# downstream ETL.
 _USAGE_EXPORT_COLUMNS = [
     "ts",
     "agentId",
     "agentName",
     "departmentId",
     "departmentName",
+    "memberId",
+    "memberName",
     "model",
     "provider",
     "tokensIn",
@@ -339,7 +528,9 @@ def _usage_filtered(
 
 @router.get("/usage/export", dependencies=[Depends(require_permission(perm(BUDGET, VIEW)))])
 async def export_usage(
+    request: Request,
     db: DbSession,
+    principal: CurrentPrincipal,
     format: Literal["csv", "jsonl"] = "csv",
     from_: Annotated[str | None, Query(alias="from")] = None,
     to: Annotated[str | None, Query(alias="to")] = None,
@@ -372,9 +563,15 @@ async def export_usage(
     from_ts = _parse_bound(from_, field="from", end_of_day=False)
     to_ts = _parse_bound(to, field="to", end_of_day=True)
     base = _usage_filtered(
-        select(m.TokenUsageRecord, m.Agent.name, m.Department.name)
+        select(
+            m.TokenUsageRecord,
+            m.Agent.name,
+            m.Department.name,
+            _member_label(with_email=await _may_see_member_emails(request, db, principal)),
+        )
         .outerjoin(m.Agent, m.Agent.id == m.TokenUsageRecord.agent_id)
-        .outerjoin(m.Department, m.Department.id == m.TokenUsageRecord.department_id),
+        .outerjoin(m.Department, m.Department.id == m.TokenUsageRecord.department_id)
+        .outerjoin(m.OrgMember, m.OrgMember.id == m.TokenUsageRecord.member_id),
         agent_id=agent_id,
         department_id=department_id,
         model=model,
@@ -424,7 +621,7 @@ async def export_usage(
             ).all()
             if not rows:
                 return
-            for rec, agent_name, department_name in rows:
+            for rec, agent_name, department_name, member_name in rows:
                 # Price at the record's OWN time, not today's -- editing a price
                 # today must not change what a historical record's export shows
                 # (same historical-accuracy contract as GET /usage).
@@ -447,6 +644,8 @@ async def export_usage(
                     agent_name=agent_name,
                     department_id=str(rec.department_id) if rec.department_id else None,
                     department_name=department_name,
+                    member_id=str(rec.member_id) if rec.member_id else None,
+                    member_name=member_name or None,
                     model=rec.model,
                     provider=rec.provider,
                     tokens_in=rec.tokens_in,

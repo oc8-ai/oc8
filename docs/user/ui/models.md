@@ -31,6 +31,16 @@ from the welcome / pilot checklist).
 3. On each [Agent](agents.md), pick the model config.
 4. Prefer cheaper models for pilots; tighten later.
 
+## Speech models
+
+A model of an OpenAI or OpenAI-compatible provider can have the **Capability**
+**Speech to text** (dictation) or **Text to speech** (reading answers aloud)
+instead of **Chat**. A speech model is never offered for chats, agents, the
+Copilot or the auto tiers; the list shows its capability where a chat model
+has its chat switch. Pick it under Settings → **Speech** (see
+[Settings](settings-general.md#speech)). Reading an answer with restricted
+content aloud needs a read-aloud model whose locality is local.
+
 ## Where work goes next
 
 | Goal | Next |

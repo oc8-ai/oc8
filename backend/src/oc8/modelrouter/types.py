@@ -47,6 +47,10 @@ class NeutralMessage:
     #: adapter that produced them; every other adapter ignores the field, so
     #: reasoning is never fed back to a provider that does not require it.
     replay_blocks: list[dict[str, Any]] = field(default_factory=list)
+    #: The prompt up to and including this message is worth a provider cache
+    #: breakpoint (a chat's stable system prefix, its replayed turns). Only the
+    #: Anthropic adapter acts on it; every other adapter ignores the field.
+    cache_breakpoint: bool = False
 
 
 @dataclass

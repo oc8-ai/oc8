@@ -305,12 +305,21 @@ async def test_get_and_delete_agent_instruction_file_for_a_tenant_wide_actor(
 
 
 async def test_upload_truncates_extracted_text_to_the_document_cap(
-    app_session: AppSessionFactory, minio_url: str
+    app_session: AppSessionFactory, minio_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The design doc's Extraction Pipeline applies the SAME 200,000-char cap
     the KB ingest path uses -- truncating, never refusing. Without it a 25 MB
     text-extractable file's whole content is appended verbatim to the run's
     task text, and `trim_to_budget` always keeps the newest message."""
+    queued: list[uuid.UUID] = []
+
+    class _Queue:
+        async def enqueue(self, *, run_id: uuid.UUID, tenant_id: uuid.UUID) -> None:
+            queued.append(run_id)
+
+    # A file this large is also queued for indexing (spec §5.4); kept off the
+    # shared stream, where another test's worker would pick it up.
+    monkeypatch.setattr("oc8.knowledge.worker.get_ingestion_queue", lambda: _Queue())
     tenant = uuid.uuid4()
     _agent_id, session_id = await _seed_agent_and_session(app_session, tenant)
     app = create_app()
@@ -331,3 +340,4 @@ async def test_upload_truncates_extracted_text_to_the_document_cap(
         assert row.extracted_text is not None
         assert len(row.extracted_text) == MAX_DOCUMENT_LENGTH
         assert row.size_bytes == len(oversized)  # the stored blob is untouched
+        assert row.index_status == "queued" and len(queued) == 1

@@ -314,9 +314,12 @@ export function LiveTimeline({
         onSendOverride={(submit) => {
           if (!running || !route) return false;
           setInputError(null);
-          sendInput.mutate(submit.text, {
-            onError: (e) => setInputError(runInputError(e, t)),
-          });
+          sendInput.mutate(
+            { text: submit.text, delivery: "steer" },
+            {
+              onError: (e) => setInputError(runInputError(e, t)),
+            },
+          );
           return true;
         }}
         promptStarters={promptStarters.map((title) => ({ title, subtitle: "" }))}

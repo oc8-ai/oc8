@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     # addresses stay refused whatever is listed.
     outbound_allowed_private: str = ""
 
+    # Web search for every tenant that has not chosen a provider of its own
+    # (oc8.websearch): "searxng" (with web_search_base_url, which may be an
+    # internal cluster address), "brave" or "tavily" (with web_search_api_key).
+    # Empty = no platform default. Never shown to a tenant.
+    web_search_provider: str = ""
+    web_search_base_url: str = ""
+    web_search_api_key: str = ""
+
     # Plugin discovery (§13): directories scanned for plugin folders, each
     # containing a plugin.toml. Comma-separated for multiple roots, like Odoo's
     # addons_path. Operator configuration -- never taken from a request.
@@ -346,6 +354,10 @@ class Settings(BaseSettings):
     s3_secret_key: str = ""
     s3_bucket: str = "oc8-uploads"
     s3_region: str = "us-east-1"
+    #: Most characters one chat file may carry into its chat's own knowledge
+    #: base (spec §5.4), on top of the upload size limit. ~500k tokens, so a
+    #: 300-page PDF fits; `MAX_DOCUMENT_LENGTH` still caps everything else.
+    chat_file_max_chars: int = 2_000_000
 
     log_sql: bool = Field(default=False)
     #: Root log level for every oc8 process. INFO by default because the level

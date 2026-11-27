@@ -14,7 +14,7 @@ from oc8.agent.control_tools import offered_tools
 from oc8.agent.engine import _authorize, run_agent
 from oc8.authz.pdp import Effect
 from oc8.chat.modes import MODES
-from oc8.chat.service import record_assistant_reply
+from oc8.chat.service import apply_entered_mode, record_assistant_reply
 from oc8.copilot.builder_tools import execute_builder_tool
 from oc8.copilot.models import CopilotProposal
 from oc8.edition.tools import clean_parts
@@ -173,11 +173,16 @@ async def test_enter_agent_mode_sticks_and_lists_the_options(
         assert str(office.old_skill_version_id) not in outcome.output
         assert '<builder_options nonce="' in outcome.output, "tenant data is fenced"
         assert "odoo" in outcome.output
-        session = await db.get(m.ChatSession, office.admin.session_id)
-        assert session is not None and session.mode == "agent"
         await db.refresh(run)
         assert run.context["chat_mode"] == "agent"
         assert "[Mode: agent]" in run.context["task"]
+        session = await db.get(m.ChatSession, office.admin.session_id)
+        assert session is not None
+        assert session.mode is None, "the chat's row is not locked during the leg"
+        # The leg's end writes it (the executor, close to its commit).
+        await apply_entered_mode(db, run=run)
+        assert session.mode == "agent"
+        assert run.context.get("entered_mode") is None, "consumed"
 
 
 @pytest.mark.asyncio

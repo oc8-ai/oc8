@@ -7,6 +7,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { api, retryUnlessRefused, uploadChatAttachment, type FileAttachmentDTO } from "@/lib/api";
 import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
+import type { QueuedTurnDTO } from "@/lib/conversation-api";
 import type { LiveReasoning, RunComponentDTO } from "@/lib/hooks";
 
 export type { FileAttachmentDTO } from "@/lib/api";
@@ -21,6 +22,13 @@ export interface ChatSessionDTO {
   // `mostRecentSession` (lib/chat-sessions.ts), not the list's first entry.
   pinned?: boolean;
   projectId?: string | null;
+  // The newest message of the branch the chat shows. Null for a chat without a
+  // message tree (live chats, older rows): the transcript is then linear.
+  currentLeafId?: string | null;
+  // A chat that is not kept (spec §5.6): never in the list, no rating, pin,
+  // project or export, deleted when the person leaves it
+  // (components/conversation/temporary-chat.ts) or after 24 hours.
+  temporary?: boolean;
 }
 
 export interface ChatContextRefDTO {
@@ -48,8 +56,14 @@ export interface ChatMessageDTO {
   authorName: string | null;
   // For an assistant turn: the user turn it answers. Regenerated answers share it.
   replyToId: string | null;
+  // The message this one follows in the tree; siblings are edits or
+  // regenerated answers. Absent or null in a linear chat.
+  parentId?: string | null;
   // C2: one-click replies the model offered with suggest_replies.
   suggestions?: string[];
+  // The run read restricted data: the chat shows this answer's HTML
+  // previews without scripts.
+  restricted?: boolean;
   // Typed parts an edition tool returned (spec §6.2), e.g.
   // {type: "sources", items: ChatSourceDTO[]} -- stored and delivered unchanged.
   parts?: Record<string, unknown>[];
@@ -101,10 +115,18 @@ export function useChatSessions(agentId?: string) {
   });
 }
 
+/** What a new chat is created for: an agent, or an agent and `temporary`
+ *  for a chat that is not kept. */
+export type NewChatSession = string | { agentId: string; temporary?: boolean };
+
 export function useCreateChatSession() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (agentId: string) => api.post<ChatSessionDTO>("/chat/sessions", { agentId }),
+    mutationFn: (target: NewChatSession) =>
+      api.post<ChatSessionDTO>(
+        "/chat/sessions",
+        typeof target === "string" ? { agentId: target } : target,
+      ),
     onSuccess: (session) => {
       qc.invalidateQueries({ queryKey: chatKeys.sessions(session.agentId) });
       qc.invalidateQueries({ queryKey: chatKeys.sessions() });
@@ -138,16 +160,18 @@ function inListOrder(sessions: ChatSessionDTO[]): ChatSessionDTO[] {
 /** A write's reply (the session as the server now has it) written into every
  *  cached session list and the session itself: no refetch of the whole list. */
 export function writeSessionToCache(qc: QueryClient, session: ChatSessionDTO) {
-  const { id, title, lastMessageAt, pinned, projectId } = session;
+  const { id, title, lastMessageAt, pinned, projectId, currentLeafId } = session;
   qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
     prev?.some((s) => s.id === id)
       ? inListOrder(
-          prev.map((s) => (s.id === id ? { ...s, title, lastMessageAt, pinned, projectId } : s)),
+          prev.map((s) =>
+            s.id === id ? { ...s, title, lastMessageAt, pinned, projectId, currentLeafId } : s,
+          ),
         )
       : prev,
   );
   qc.setQueryData<ChatSessionDTO>(["chat", "session", id], (prev) =>
-    prev ? { ...prev, title, lastMessageAt, pinned, projectId } : prev,
+    prev ? { ...prev, title, lastMessageAt, pinned, projectId, currentLeafId } : prev,
   );
 }
 
@@ -160,18 +184,21 @@ export function useRenameChatSession() {
   });
 }
 
+/** A deleted chat out of every cache: the lists, the chat, its messages. */
+export function forgetDeletedSession(qc: QueryClient, sessionId: string) {
+  qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
+    prev?.filter((s) => s.id !== sessionId),
+  );
+  qc.removeQueries({ queryKey: ["chat", "session", sessionId] });
+  qc.removeQueries({ queryKey: chatKeys.messages(sessionId) });
+}
+
 export function useDeleteChatSession() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (sessionId: string) =>
       api.delete<void>(`/chat/sessions/${encodeURIComponent(sessionId)}`),
-    onSuccess: (_void, sessionId) => {
-      qc.setQueriesData<ChatSessionDTO[]>({ queryKey: ["chat", "sessions"] }, (prev) =>
-        prev?.filter((s) => s.id !== sessionId),
-      );
-      qc.removeQueries({ queryKey: ["chat", "session", sessionId] });
-      qc.removeQueries({ queryKey: chatKeys.messages(sessionId) });
-    },
+    onSuccess: (_void, sessionId) => forgetDeletedSession(qc, sessionId),
   });
 }
 
@@ -183,6 +210,12 @@ export function appendMessage(
 ): ChatMessageDTO[] {
   if (prev?.some((m) => m.id === message.id)) return prev;
   return [...(prev ?? []), message];
+}
+
+/** A chat send's answer: the stored message (201), or, while an answer still
+ *  runs, the message queued behind it (202, spec §5.5). */
+export function isQueuedTurn(sent: ChatMessageDTO | QueuedTurnDTO): sent is QueuedTurnDTO {
+  return "queued" in sent && sent.queued === true;
 }
 
 export function useSendChatMessage(sessionId: string) {
@@ -197,12 +230,13 @@ export function useSendChatMessage(sessionId: string) {
       attachmentIds?: string[];
       contextRefs?: { kind: string; id: string }[];
     }) =>
-      api.post<ChatMessageDTO>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
-        message,
-        attachmentIds,
-        contextRefs,
-      }),
+      api.post<ChatMessageDTO | QueuedTurnDTO>(
+        `/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
+        { message, attachmentIds, contextRefs },
+      ),
     onSuccess: (message) => {
+      // Queued behind a running answer (202): no message in the transcript yet.
+      if (isQueuedTurn(message)) return;
       qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
         appendMessage(prev, message),
       );

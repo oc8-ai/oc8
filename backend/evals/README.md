@@ -12,6 +12,9 @@ normal `pytest`; talks to the dev stack.
 
 Reports land in `backend/evals/reports/<label>-<runtime>-<tag>.{json,md}`.
 
+The `chat_harness` suite measures chat turns instead of fixture runs; see
+[docs/developer/chat-harness-evals.md](../../docs/developer/chat-harness-evals.md).
+
 Prerequisites: exactly one tenant (or pass `--tenant <slug>`), a connected MCP
 connection named `odoo` in that tenant (the Odoo dev stack), and — for
 `--runtime isolated` — the runtime provisioner up.
@@ -19,6 +22,9 @@ connection named `odoo` in that tenant (the Odoo dev stack), and — for
 ## Deterministic tests
 
     cd backend && PYTHONPATH=evals uv run pytest evals/tests -q
+
+A smoke subset of `chat_harness` runs with a fake model in the normal suite:
+`uv run pytest tests/evals -q`.
 
 ## Add a task
 

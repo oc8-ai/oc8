@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from oc8.agent.usage_limits import prune_all_usage_counters
+from oc8.chat.temporary import purge_all_temporary_chats
 from oc8.connections.consolidate import consolidate_all_tenants
 from oc8.evidence.sweep import sweep_evidence
 from oc8.knowledge.reconcile import sweep_knowledge_deletions
@@ -78,7 +79,9 @@ async def run_worker_housekeeping() -> None:
        OC8_KNOWLEDGE_RECONCILE_ENABLED; no network IO, no connector calls);
     8. delete issued record links past their TTL;
     9. delete member notifications read more than 90 days ago;
-    10. delete usage-limit counts of windows that are long over.
+    10. delete usage-limit counts of windows that are long over;
+    11. delete temporary chats idle for a day (a tab closed without leaving
+        them); their runs, approvals, audit events and usage records stay.
 
     Only the run queue gets these -- an ingestion job has no containers, no
     agent to free and no evidence on disk. A sandbox runtime syncs its own
@@ -94,6 +97,7 @@ async def run_worker_housekeeping() -> None:
     await _run("prune_expired_links", prune_expired_links)
     await _run("prune_read_notifications", prune_read_notifications)
     await _run("prune_usage_counters", prune_all_usage_counters)
+    await _run("purge_temporary_chats", purge_all_temporary_chats)
 
 
 __all__ = ["run_worker_housekeeping", "run_worker_startup"]

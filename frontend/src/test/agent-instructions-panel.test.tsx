@@ -14,6 +14,8 @@ const {
   listInstructionFilesMock,
   uploadInstructionFileMock,
   deleteFileMock,
+  deleteMock,
+  toastError,
 } = vi.hoisted(() => ({
   getHistory: vi.fn((_url: string) => ({ revisions: [], totalCount: 0, nextBeforeSeq: null })),
   patchInstructions: vi.fn(),
@@ -25,7 +27,14 @@ const {
   listInstructionFilesMock: vi.fn(() => []),
   uploadInstructionFileMock: vi.fn(),
   deleteFileMock: vi.fn(),
+  deleteMock: vi.fn(),
+  toastError: vi.fn(),
 }));
+
+vi.mock("sonner", async (orig) => {
+  const actual = await orig<typeof import("sonner")>();
+  return { ...actual, toast: Object.assign(actual.toast, { error: toastError }) };
+});
 
 vi.mock("@/lib/api", () => ({
   api: {
@@ -37,6 +46,7 @@ vi.mock("@/lib/api", () => ({
       if (url.endsWith("/instructions")) return patchInstructions(body);
       throw new Error(`unexpected PATCH ${url}`);
     },
+    delete: (url: string) => deleteMock(url),
   },
   listInstructionFiles: (agentId: string) => listInstructionFilesMock(agentId),
   uploadInstructionFile: (agentId: string, file: File) => uploadInstructionFileMock(agentId, file),
@@ -56,7 +66,8 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
   return { ...actual, useAssistant: () => assistantMock() };
 });
 
-vi.mock("@/lib/hooks-chat", () => ({
+vi.mock("@/lib/hooks-chat", async (orig) => ({
+  ...(await orig<typeof import("@/lib/hooks-chat")>()),
   useChatSessions: () => sessionsMock(),
   useCreateChatSession: () => ({ mutate: createSessionMock, isPending: false }),
   useChatMessages: () => messagesMock(),
@@ -86,6 +97,9 @@ describe("AgentInstructionsPanel", () => {
     listInstructionFilesMock.mockReturnValue([]);
     uploadInstructionFileMock.mockReset();
     deleteFileMock.mockReset();
+    deleteMock.mockReset();
+    deleteMock.mockResolvedValue(undefined);
+    toastError.mockReset();
   });
 
   it("saves an edited instructions text and disables Save until something changes", async () => {
@@ -531,6 +545,76 @@ describe("AgentInstructionsPanel", () => {
 
       expect(screen.getByText("Handles billing questions end to end.")).toBeInTheDocument();
       expect(screen.queryByText("Two proposals are waiting.")).not.toBeInTheDocument();
+    });
+
+    it("while the copilot still answers (202 queued), withdraws the request instead of waiting on that answer", async () => {
+      assistantMock.mockReturnValue({ data: { agentId: "assistant-1" } });
+      sessionsMock.mockReturnValue({
+        data: [
+          {
+            id: "s1",
+            agentId: "assistant-1",
+            title: "",
+            createdAt: "2026-08-27T00:00:00Z",
+            lastMessageAt: null,
+          },
+        ],
+      });
+      // The dock's answer is still running in the shared Assistant chat: the
+      // send is queued behind it, on the dock's run.
+      sendMessageMock.mockImplementation(
+        (body: { message: string }, opts?: { onSuccess?: (m: unknown) => void }) =>
+          opts?.onSuccess?.({
+            queued: true,
+            runId: "run-dock",
+            input: {
+              id: "q1",
+              text: body.message,
+              authorName: "Me",
+              createdAt: "",
+              consumedAt: null,
+              consumedStep: null,
+              delivery: "next_turn",
+            },
+          }),
+      );
+      let liveMessages: unknown[] = [];
+      messagesMock.mockImplementation(() => ({ data: liveMessages }));
+      const ui = (
+        <AgentInstructionsPanel
+          agentId="agent-1"
+          agentName="Nora"
+          mission="Old mission"
+          mayManage={true}
+        />
+      );
+      const { rerender, qc } = renderWithClient(ui);
+
+      fireEvent.click(screen.getByRole("button", { name: /draft with copilot/i }));
+      fireEvent.change(screen.getByPlaceholderText(/handles first-level it support/i), {
+        target: { value: "Answer billing questions" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /^generate$/i }));
+
+      await waitFor(() => expect(deleteMock).toHaveBeenCalledWith("/runs/run-dock/inputs/q1"));
+      expect(toastError).toHaveBeenCalledWith(
+        "The copilot is still answering. Try again when it's done.",
+      );
+      // Not waiting on the dock's run: its reply is never taken as the draft.
+      liveMessages = [
+        {
+          id: "a9",
+          sessionId: "s1",
+          role: "assistant",
+          content: "The dock's own answer.",
+          runId: "run-dock",
+          renderedComponents: [],
+          createdAt: "2026-08-27T00:00:02Z",
+        },
+      ];
+      rerender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+      expect(screen.queryByText("The dock's own answer.")).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /^generate$/i })).not.toBeDisabled();
     });
 
     it("on a failed generate request, shows an error toast and stops waiting for a reply", async () => {

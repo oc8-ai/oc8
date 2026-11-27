@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { mostRecentSession } from "@/lib/chat-sessions";
 import { Panel } from "@/components/app-shell";
 import { useConfirm } from "@/hooks/use-confirm";
-import { MAX_ATTACHMENT_BYTES } from "@/lib/api";
+import { api, MAX_ATTACHMENT_BYTES } from "@/lib/api";
 import {
   useAgentInstructionFiles,
   useAgentInstructionHistory,
@@ -16,6 +16,7 @@ import {
   type FileAttachmentDTO,
 } from "@/lib/hooks";
 import {
+  isQueuedTurn,
   useChatSessions,
   useCreateChatSession,
   useChatMessages,
@@ -155,6 +156,25 @@ function DraftWithCopilot({
       { message },
       {
         onSuccess: (userMessage) => {
+          if (isQueuedTurn(userMessage)) {
+            // The dock's answer still runs in the shared Assistant chat, so
+            // the request was queued behind it (202): its `runId` is the
+            // dock's run, never ours to wait on. Withdraw it (best effort)
+            // rather than let it become a stray turn later.
+            void api
+              .delete(
+                `/runs/${encodeURIComponent(userMessage.runId)}/inputs/${encodeURIComponent(userMessage.input.id)}`,
+              )
+              .catch(() => undefined);
+            setAwaitingRunId(null);
+            toast.error(
+              t(
+                "The copilot is still answering. Try again when it's done.",
+                "Der Copilot antwortet noch. Versuch es noch einmal, wenn er fertig ist.",
+              ),
+            );
+            return;
+          }
           if (userMessage.runId) {
             setAwaitingRunId(userMessage.runId);
           } else {

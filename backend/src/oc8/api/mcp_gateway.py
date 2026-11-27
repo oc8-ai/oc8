@@ -18,6 +18,7 @@ messages, and this server initiates none.
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -35,12 +36,15 @@ from oc8.agent.claims import claim_record, held_by_run
 from oc8.agent.claims import refusal as claim_refusal
 from oc8.agent.control_tools import (
     ASK_USER,
+    CHAT_FILE_TOOLS,
     CONTROL_TOOL_NAMES,
     DELEGATE_TASK,
     MEMORY_WRITE,
+    READ_CHAT_FILE,
     READ_CONTEXT,
     RENDER_COMPONENT,
     REQUEST_DECISION,
+    SEARCH_CHAT_FILES,
     SEARCH_KNOWLEDGE,
     SEARCH_MEMORY,
     SUGGEST_REPLIES,
@@ -84,6 +88,7 @@ from oc8.agents.versioning import resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession
 from oc8.approvals import publish_created, raise_approval
 from oc8.audit import append_event
+from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
     Decision,
     Effect,
@@ -92,7 +97,9 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.files_kb import chat_has_files
 from oc8.chat.modes import mode_from_context, mode_refusal
+from oc8.chat.temporary import in_temporary_chat
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import (
     McpLaunchEnv,
@@ -111,7 +118,7 @@ from oc8.realtime.emit import note_focus, publish_run_content, record_activity
 from oc8.records.approvals import note_approved_result
 from oc8.records.links import enrich_and_remember, link_context, link_for, related_links
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import claim_approval, live_decisions
+from oc8.runtime.approval_resume import claim_approval, live_decisions, rejection_text
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.run_context import merge_context
 from oc8.skills.runtime import (
@@ -546,10 +553,18 @@ async def _list_tools(
         RENDER_COMPONENT,
         SUGGEST_REPLIES,
     ]
+    # A temporary chat keeps no notes (offered_tools' temporary_chat); the
+    # dispatch refuses the call as well.
+    if await in_temporary_chat(db, run.context):
+        core.remove(MEMORY_WRITE)
     # A read of what the member pinned to this chat turn -- only when the
     # turn's manifest lists something readable (offered_tools' has_context).
     if has_readable_context(run.context):
         core.append(READ_CONTEXT)
+    # The files of the turn's own chat, when it has a base for them
+    # (offered_tools' has_chat_files); who may use them is decided per call.
+    if await chat_has_files(db, run.context):
+        core.extend(CHAT_FILE_TOOLS)
     # Withheld from the tenant Assistant specifically, mirroring
     # control_tools.offered_tools' own reasoning: a park only WORKS if
     # something can answer it, and Telegram free text -- one of the
@@ -707,6 +722,33 @@ def _authorize_unbound(
         connection_key=None,
         chat_mode=mode_from_context(run.context),
         edition_offer=edition,
+    )
+
+
+async def _audit_result(
+    db: DbSession,
+    *,
+    run: m.AgentRun,
+    agent: m.Agent,
+    conn: m.McpConnection,
+    tool: str,
+    ok: bool,
+    started: float | None = None,
+    duration_ms: int = 0,
+) -> None:
+    """The `tool.result` event of a call this gateway dispatched (spec §5.7)."""
+    if started is not None:
+        duration_ms = int((time.monotonic() - started) * 1000)
+    await audit_tool_result(
+        db,
+        tenant_id=run.tenant_id,
+        agent_id=agent.id,
+        tool=tool,
+        link=run_link(run.id, run.context),
+        connection=conn.name,
+        ok=ok,
+        duration_ms=duration_ms,
+        originating_operator=run.context.get("originating_operator"),
     )
 
 
@@ -886,6 +928,8 @@ async def _call_tool(
         RENDER_COMPONENT.name,
         SUGGEST_REPLIES.name,
         READ_CONTEXT.name,
+        SEARCH_CHAT_FILES.name,
+        READ_CHAT_FILE.name,
     ):
         task = await _run_task(
             db, run, no_task="ERROR: this run has no task to attach a decision to"
@@ -1079,7 +1123,7 @@ async def _call_tool(
             approved_call = True
             decision = Decision(Effect.ALLOW, "operator approved")
         elif verdict == "reject":
-            decision = Decision(Effect.DENY, "operator rejected this action")
+            decision = Decision(Effect.DENY, rejection_text(decisions.entry(_call_sig(tc))))
     if (
         decision.effect is Effect.REQUIRE_APPROVAL
         and conn is not None
@@ -1104,7 +1148,7 @@ async def _call_tool(
         actor_id=agent.id,
         category="tool_action",
         action=f"tool.call:{tc.name}",
-        resource={"tool": tc.name, "arguments": tc.arguments},
+        resource={"tool": tc.name, "arguments": tc.arguments, **run_link(run.id, run.context)},
         decision=decision.effect.value,
         reason=decision.reason or None,
         originating_operator=run.context.get("originating_operator"),
@@ -1267,6 +1311,14 @@ async def _call_tool(
                 arguments=tc.arguments,
                 output=replay,
             )
+            await _audit_result(
+                db,
+                run=run,
+                agent=agent,
+                conn=conn,
+                tool=tc.name,
+                ok=not replay.startswith("ERROR:"),
+            )
             await db.commit()
             return _tool_result(replay)
 
@@ -1317,6 +1369,7 @@ async def _call_tool(
 
     focus = describe_focus(tc.name, tc.arguments, focus_spec)
     names_record = describes_a_record(tc.name, tc.arguments, focus_spec)
+    started = time.monotonic()
     try:
         # Resolved inside the guard: minting an OAuth-backed token is now part
         # of this, and a failure there belongs to the model as a tool error --
@@ -1327,9 +1380,15 @@ async def _call_tool(
     except ConnectionRequired as exc:
         # Already recorded on the run for the "connect" call to action; the
         # model gets the reason verbatim (it starts `connection_required:`).
+        await _audit_result(
+            db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
+        )
         await usage_hold.settle(succeeded=False)
         return _tool_result(str(exc), is_error=True)
     except Exception as exc:  # surface to the model, not as a broken server
+        await _audit_result(
+            db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
+        )
         await usage_hold.settle(succeeded=False)
         return _tool_result(f"ERROR: {exc}", is_error=True)
     # The approval is claimed here, just before dispatch -- after every check
@@ -1383,6 +1442,9 @@ async def _call_tool(
             files=RunFiles.of(run),
         )
     except Exception as exc:  # surface to the model, not as a broken server
+        await _audit_result(
+            db, run=run, agent=agent, conn=conn, tool=tc.name, ok=False, started=started
+        )
         # A call that reached the tool counts, even if it failed or timed out:
         # the far system may have acted first. Only a session that never
         # opened gives the count back.
@@ -1390,6 +1452,8 @@ async def _call_tool(
         return _tool_result(f"ERROR: {exc}", is_error=True)
     # Reached the tool: counts, even if the tool reported an error.
     await usage_hold.settle(succeeded=True)
+    duration_ms = int((time.monotonic() - started) * 1000)
+    answered_ok = not output.startswith("ERROR:")
 
     # Now that the call has answered, the record's own name is available -- it is
     # in the RESULT, never in the arguments -- so the card can say WHICH ticket
@@ -1442,6 +1506,9 @@ async def _call_tool(
             arguments=tc.arguments,
             urls=issued,
         )
+    await _audit_result(
+        db, run=run, agent=agent, conn=conn, tool=tc.name, ok=answered_ok, duration_ms=duration_ms
+    )
     await db.commit()
     # Fenced, so what a stranger wrote cannot pass itself off as an instruction
     # from oc8. Only the connection's answer -- never this gateway's own

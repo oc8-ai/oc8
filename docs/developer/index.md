@@ -28,6 +28,7 @@ If you change oc8 **core** (runtime, authz, database), see
 | Packaging and distribution | [Packaging and distribution](packaging-and-distribution.md) |
 | Claude Agent SDK plugins | [Claude plugin capas](claude-plugin-capas.md) |
 | Testing | [Testing capas](testing-plugins.md) |
+| Measuring a model in the chat harness | [Chat harness evals](chat-harness-evals.md) |
 
 ## Exhaustive on-disk reference
 

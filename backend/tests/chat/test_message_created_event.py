@@ -61,17 +61,20 @@ async def test_user_and_assistant_turns_are_announced_to_the_owner_only(
             loaded = await db.get(m.AgentRun, run_id)
             assert loaded is not None
             await record_assistant_reply(db, run=loaded, output="hi")
-            assert not any(c[2]["role"] == "assistant" for c in rec.calls), (
+            assert not any(c[2].get("role") == "assistant" for c in rec.calls), (
                 "published before commit"
             )
         await asyncio.sleep(0.05)
-    roles = [(c[1], c[2]["role"]) for c in rec.calls]
-    assert ("chat.message_created", "user") in roles
-    assert ("chat.message_created", "assistant") in roles
-    for audience, _type, data in rec.calls:
+    # The leaf moving with each turn also announces `chat.session_updated`.
+    created = [c for c in rec.calls if c[1] == "chat.message_created"]
+    roles = [c[2]["role"] for c in created]
+    assert "user" in roles
+    assert "assistant" in roles
+    for audience, _type, _data in rec.calls:
         assert audience == [seat.member_id]
+    for _audience, _type, data in created:
         assert set(data) == {"session_id", "message_id", "role", "run_id"}
-    user_event = next(c for c in rec.calls if c[2]["role"] == "user")
+    user_event = next(c for c in created if c[2]["role"] == "user")
     assert user_event[2]["run_id"] == str(run_id)
 
 

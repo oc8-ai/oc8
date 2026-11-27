@@ -19,6 +19,7 @@ from oc8.api.deps import DbSession, require_departmental, require_permission
 from oc8.api.v1._chat_common import (
     actor_viewer,
     ref_views,
+    refuse_if_temporary,
     session_detail,
     session_owned_by_caller,
 )
@@ -119,6 +120,7 @@ async def put_project(
     session_id: uuid.UUID, body: SetProjectRequest, db: DbSession, actor: _Actor
 ) -> ChatSessionDTO:
     session = await session_owned_by_caller(session_id, db, actor)
+    refuse_if_temporary(session, "be moved to a project")
     if body.project_id is not None:
         await _own_project_or_404(db, actor, body.project_id)
     session.project_id = body.project_id
@@ -130,6 +132,7 @@ async def put_pinned(
     session_id: uuid.UUID, body: SetPinnedRequest, db: DbSession, actor: _Actor
 ) -> ChatSessionDTO:
     session = await session_owned_by_caller(session_id, db, actor)
+    refuse_if_temporary(session, "be pinned")
     session.pinned = body.pinned
     return await _session_reply(db, await actor_viewer(db, actor), session)
 

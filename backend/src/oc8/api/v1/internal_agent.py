@@ -37,6 +37,7 @@ from oc8.agent.control_tools import (
     CONTROL_TOOL_NAMES,
     FIND_TOOLS,
     ControlOutcome,
+    audited_decision,
     execute_control_tool,
     has_readable_context,
     has_released_knowledge,
@@ -117,6 +118,7 @@ from oc8.agents.versioning import pinned_model_config_id, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, unguarded
 from oc8.approvals import publish_created, raise_approval
 from oc8.audit import append_event
+from oc8.audit.tool_calls import audit_tool_result, run_link
 from oc8.authz.pdp import (
     Decision,
     Effect,
@@ -126,7 +128,9 @@ from oc8.authz.pdp import (
     required_right,
 )
 from oc8.capas.discovery import resolve_tool_pack_connection
+from oc8.chat.files_kb import chat_has_files
 from oc8.chat.modes import ChatMode, mode_from_context, mode_refusal
+from oc8.chat.temporary import in_temporary_chat
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, run_mcp_env
@@ -134,6 +138,7 @@ from oc8.connections.tool_denied import record_tool_denied, tool_denied
 from oc8.copilot.door import chat_door, door_of
 from oc8.edition.tools import edition_offer, registered_edition_tool
 from oc8.metering import record_usage
+from oc8.metering.usage import usage_member_id
 from oc8.modelrouter import (
     NeutralMessage,
     NeutralTool,
@@ -170,7 +175,12 @@ from oc8.records.links import (
     related_links,
 )
 from oc8.records.registry import link_scope
-from oc8.runtime.approval_resume import Decisions, claim_approval, live_decisions
+from oc8.runtime.approval_resume import (
+    Decisions,
+    claim_approval,
+    live_decisions,
+    rejection_text,
+)
 from oc8.runtime.cancellation import run_stop
 from oc8.runtime.registry import BUILTIN_ISOLATED_RUNTIME_REF
 from oc8.runtime.run_context import append_tool_call, write_back_context
@@ -581,7 +591,11 @@ async def _answer_withheld_local_calls(
             actor_id=agent.id,
             category="tool_action",
             action=f"tool.call:{call.name}",
-            resource={"tool": call.name, "arguments": call.arguments},
+            resource={
+                "tool": call.name,
+                "arguments": call.arguments,
+                **run_link(run.id, run.context),
+            },
             decision="deny",
             reason=reason,
         )
@@ -938,11 +952,12 @@ def _held_call_verdict(
         # Always the connection's tool, whatever core tool shares its name.
         routed=True,
     )
-    verdict = (decisions if decisions is not None else Decisions(ctx)).get(_call_sig(held))
+    held_decisions = decisions if decisions is not None else Decisions(ctx)
+    verdict = held_decisions.get(_call_sig(held))
     if decision.effect is Effect.DENY:
         return "refuse", decision.reason or "denied", False
     if verdict == "reject":
-        return "refuse", "operator rejected this action", False
+        return "refuse", rejection_text(held_decisions.entry(_call_sig(held))), False
     if decision.effect is Effect.REQUIRE_APPROVAL and verdict != "approve":
         return "park", decision.reason or "", False
     gate = _b_gate(
@@ -1084,7 +1099,7 @@ async def _finish_elicitation(
             actor_id=agent.id,
             category="tool_action",
             action=f"tool.call:{tool}",
-            resource={"tool": tool, "arguments": arguments},
+            resource={"tool": tool, "arguments": arguments, **run_link(run.id, run.context)},
             decision={"run": "allow", "refuse": "deny", "park": "require_approval"}[effect],
             reason=why or None,
             originating_operator=ctx.get("originating_operator"),
@@ -1103,6 +1118,10 @@ async def _finish_elicitation(
         return "waiting_for_approval", why
     refusal = why if effect == "refuse" else None
     dispatched = False
+    #: Answered by the tool or by a replay: only then is there a result to
+    #: audit. A usage refusal never reached the tool.
+    ran = False
+    held_started_at = dt.datetime.now(dt.UTC)
     if conn is None or not tool:
         output = "ERROR: the connection that asked for this answer is no longer available"
     elif refusal is not None:
@@ -1146,6 +1165,7 @@ async def _finish_elicitation(
             else None
         )
         if replayed is not None:
+            ran = True
             output = replayed
         elif held_hold is not None and held_hold.refusal is not None:
             await record_limit_refusal(
@@ -1160,6 +1180,7 @@ async def _finish_elicitation(
             output = held_hold.refusal
         else:
             dispatched = True
+            ran = True
             # Whether the call reached the tool: only one that never did (its
             # environment or session could not be set up) gives its count back.
             held_reached = False
@@ -1273,6 +1294,19 @@ async def _finish_elicitation(
             "state": call_state_for(output, dispatched=dispatched),
         },
     ]
+    if ran:
+        # With the timeline entry, in this /step's transaction.
+        await audit_tool_result(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tool,
+            link=run_link(run.id, run.context),
+            connection=connection_name or None,
+            ok=not output.startswith("ERROR:"),
+            duration_ms=int((dt.datetime.now(dt.UTC) - held_started_at).total_seconds() * 1000),
+            originating_operator=ctx.get("originating_operator"),
+        )
     ctx["transcript"] = transcript
     run.context = ctx
     return None
@@ -1533,10 +1567,18 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         # only runs on a run's FIRST step, so without this every later step of
         # the same run would have to guess -- and it is what forces a restricted
         # run to a local model and keeps it out of the department cache.
-        ctx["contains_restricted"] = preamble.contains_restricted
+        # One-way: a resume leg builds the preamble again on its fresh
+        # transcript, and must not clear what an earlier leg of the run read.
+        ctx["contains_restricted"] = (
+            bool(ctx.get("contains_restricted")) or preamble.contains_restricted
+        )
         ctx["has_knowledge"] = preamble.has_knowledge
         ctx["produces_board"] = preamble.produces_board
+        ctx["has_web_search"] = preamble.has_web_search
         ctx["has_instruction_files"] = preamble.has_instruction_files
+        # Persisted like has_knowledge: the chat's base exists from the first
+        # large upload, before the turn is sent.
+        ctx["has_chat_files"] = await chat_has_files(db, ctx)
         ctx["copilot_permissions"] = sorted(preamble.copilot_permissions)
         ctx["copilot_has_member"] = preamble.copilot_has_member
         # C3 (a later package) reads this back from run.context so the step
@@ -1644,12 +1686,15 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         copilot_permissions=copilot_permissions,
         copilot_has_member=copilot_has_member,
         has_context=has_readable_context(ctx),
+        has_chat_files=bool(ctx.get("has_chat_files", False)),
+        offer_web_search=bool(ctx.get("has_web_search", False)),
         offer_write_output_file=offer_write_output_file,
         offer_run_shell=offer_write_output_file,
         offer_run_program=caps.code_mode,
         chat_mode=mode_from_context(ctx),
         copilot_door=door_of(ctx) if agent.is_tenant_assistant else None,
         edition_tools=edition.neutral_tools(),
+        temporary_chat=await in_temporary_chat(db, ctx),
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.
@@ -1761,6 +1806,15 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             timing=timing,
         )
 
+    # The person this step's usage is booked to, resolved on the first record
+    # of the request and reused for the rest (Cost Center per member).
+    usage_member: list[uuid.UUID | None] = []
+
+    async def _usage_member() -> uuid.UUID | None:
+        if not usage_member:
+            usage_member.append(await usage_member_id(db, run))
+        return usage_member[0]
+
     async def _record(res: Any, req_id: uuid.UUID) -> None:
         await record_usage(
             db,
@@ -1774,6 +1828,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
             cache_write_tokens=res.usage.cache_write_tokens,
             agent_id=agent.id,
             department_id=agent.department_id,
+            member_id=await _usage_member(),
         )
 
     async def _compact() -> None:
@@ -1927,6 +1982,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
                 cache_hit=True,
                 saved_tokens_in=result.usage.tokens_in,
                 saved_tokens_out=result.usage.tokens_out,
+                member_id=await _usage_member(),
             )
         else:
             result, request_id = await _complete_with_overflow_retry(
@@ -2480,6 +2536,11 @@ async def _dispatch_one_tool(
     principal: CurrentPrincipal,
     precomputed: tuple[str, ToolError | None, int] | None = None,
 ) -> ToolResult:
+    """Run one tool call of a /tool or /tools request.
+
+    Its clarification call is billed to a person resolved here, per dispatch
+    and only when that call runs: most dispatches bill nothing, so a lookup
+    for the whole batch up front would cost every batch for the rare one."""
     tc = ToolCall(id=body.id, name=body.name, arguments=body.arguments)
     from oc8.api.mcp_gateway import _connections
 
@@ -2610,7 +2671,7 @@ async def _dispatch_one_tool(
             approved_call = True
             decision = Decision(Effect.ALLOW, "operator approved")
         elif decisions.get(_call_sig(tc)) == "reject":
-            decision = Decision(Effect.DENY, "operator rejected this action")
+            decision = Decision(Effect.DENY, rejection_text(decisions.entry(_call_sig(tc))))
 
     tool_schema = next(
         (
@@ -2647,7 +2708,7 @@ async def _dispatch_one_tool(
                 approved_call = True
                 decision = Decision(Effect.ALLOW, "operator approved")
             elif decisions.get(_call_sig(tc)) == "reject":
-                decision = Decision(Effect.DENY, "operator rejected this action")
+                decision = Decision(Effect.DENY, rejection_text(decisions.entry(_call_sig(tc))))
             else:
                 decision = Decision(Effect.REQUIRE_APPROVAL, gate_verdict.preview)
         elif gate_verdict.effect == "deny":
@@ -2670,6 +2731,21 @@ async def _dispatch_one_tool(
         # once approved.
         decision = Decision(Effect.DENY, usage_limit_reason(full))
 
+    # A reading core tool runs under the frame's routine verdict on a
+    # connection it does not belong to: audited as the ALLOW that applied,
+    # with its result, like the in-process engine (spec §5.7).
+    # The task a core tool runs against; without one, none is dispatched.
+    task = await db.get(m.Task, run.task_id) if run.task_id is not None else None
+    # Only a call this endpoint dispatches to the core tool: never one a route
+    # renamed to a core name (it goes to the connection), never an edition
+    # call, and none without a task to run it against.
+    audited, audit_terms = audited_decision(
+        decision,
+        tc.name,
+        core_call=is_control_call and not is_edition_call and task is not None,
+    )
+    ran_despite_denial = bool(audit_terms)
+
     await append_event(
         db,
         tenant_id=run.tenant_id,
@@ -2680,12 +2756,17 @@ async def _dispatch_one_tool(
         # An edition call keeps its arguments out of the audit; its own
         # `edition_tool.called` event is the record of it.
         resource=(
-            {"tool": tc.name}
+            {"tool": tc.name, **run_link(run.id, run.context), **audit_terms}
             if edition.claims(tc.name)
-            else {"tool": tc.name, "arguments": tc.arguments}
+            else {
+                "tool": tc.name,
+                "arguments": tc.arguments,
+                **run_link(run.id, run.context),
+                **audit_terms,
+            }
         ),
-        decision=decision.effect.value,
-        reason=decision.reason or None,
+        decision=audited.effect.value,
+        reason=audited.reason or None,
         originating_operator=run.context.get("originating_operator"),
     )
 
@@ -2865,6 +2946,7 @@ async def _dispatch_one_tool(
                 cache_write_tokens=clarify_result.usage.cache_write_tokens,
                 agent_id=agent.id,
                 department_id=agent.department_id,
+                member_id=await usage_member_id(db, run),
             )
             reply_text = clarify_result.text or ""
         except Exception:
@@ -2888,8 +2970,8 @@ async def _dispatch_one_tool(
 
     # A core-owned tool goes through the SAME dispatcher as the in-process engine
     # (oc8.agent.control_tools). It returns None for a connection tool, which then
-    # falls through to the MCP server below.
-    task = await db.get(m.Task, run.task_id) if run.task_id is not None else None
+    # falls through to the MCP server below. (`task` is loaded before the
+    # tool.call audit, which needs to know whether a core tool can run.)
     # Tool-call timing, at parity with the in-process engine (agent/engine.py's
     # own `_tool_call_started_at`/`_tool_call_dispatched` pair, same key names
     # and same millisecond unit). Without this the container/isolated runtime
@@ -3400,6 +3482,22 @@ async def _dispatch_one_tool(
         live_call["reason"] = denial_record_reason or (
             tool_error.message if tool_error is not None else None
         )
+    if dispatched and suspend is None and (decision.effect is Effect.ALLOW or ran_despite_denial):
+        # With the timeline entry and before the one commit below, so the call
+        # and its result commit together. A suspended call (asked a question,
+        # parked) has no result yet.
+        await audit_tool_result(
+            db,
+            tenant_id=run.tenant_id,
+            agent_id=agent.id,
+            tool=tc.name,
+            link=run_link(run.id, run.context),
+            connection=None if control is not None or conn is None else conn.name,
+            ok=succeeded,
+            duration_ms=duration_ms,
+            originating_operator=run.context.get("originating_operator"),
+            detail=control.result_detail if control is not None else None,
+        )
     await append_tool_call(db, run, live_call)
     await db.commit()
     await publish_run_tool_call(
@@ -3417,7 +3515,9 @@ async def _dispatch_one_tool(
     if suspend is not None:
         return ToolResult(status=suspend, output=output, spill=spill_payload)
     return ToolResult(
-        status="denied" if decision.effect is Effect.DENY else "ok",
+        # A core read that ran under the routine frame denial ran: "denied"
+        # would make the code-mode SDK raise ToolDenied over its output.
+        status=("denied" if decision.effect is Effect.DENY and not ran_despite_denial else "ok"),
         output=output,
         spill=spill_payload,
     )

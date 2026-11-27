@@ -1,0 +1,24 @@
+id = "edit_drops_later_turns"
+kind = "chat"
+group = "edit_regenerate"
+systems = []
+origin = "manual"
+scenario = "chat_edit_regenerate"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+(the turn is the edited message)
+"""
+
+[params]
+action = "edit"
+seed = [["user", "My cost centre is CC-1180."], ["assistant", "Noted: CC-1180."], ["user", "Change my cost centre to CC-3301."], ["assistant", "Changed: your cost centre is now CC-3301."]]
+target = 2
+content = "Which cost centre did I give you?"
+expect = ["CC-1180"]
+forbid = ["CC-3301"]
+
+[budget]
+max_steps = 12
+max_tokens = 150000

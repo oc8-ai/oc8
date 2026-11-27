@@ -1,6 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   Building2,
   Bell,
@@ -15,15 +16,25 @@ import {
   Trash2,
   Sparkles,
   Users,
+  UserRound,
   Wallet,
 } from "lucide-react";
 import { Panel } from "@/components/app-shell";
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import type { Agent, Department } from "@/lib/mock-data";
 import {
+  bucketFormatters,
   convert,
   currentSpendForLimit,
   formatMoney,
   formatTokens,
+  resolveTimeZone,
   usePricing,
   useLimits,
   FX_USD_EUR,
@@ -33,7 +44,7 @@ import {
   type LimitAction,
 } from "@/lib/costs";
 import { cn } from "@/lib/utils";
-import { useT } from "@/lib/i18n";
+import { useLang, useT } from "@/lib/i18n";
 import {
   useAgents,
   useBudgets,
@@ -42,9 +53,12 @@ import {
   useSecrets,
   useSetBudget,
   useUsage,
+  useUsageTimeseries,
   type BudgetDTO,
   type UsageDTO,
   type UsagePeriod,
+  type UsageRange,
+  type UsageSeriesDTO,
 } from "@/lib/hooks";
 import { useReconciliation, useRefreshReconciliation } from "@/lib/reconciliation-hooks";
 import { downloadUsageExport } from "@/lib/usage-export";
@@ -53,7 +67,7 @@ export const Route = createFileRoute("/costs")({
   component: CostsPage,
 });
 
-type Tab = "overview" | "agents" | "departments" | "limits";
+type Tab = "overview" | "agents" | "departments" | "members" | "limits";
 type Currency = "EUR" | "USD";
 
 // Real per-agent / per-department spend, derived from the platform's metered
@@ -185,6 +199,7 @@ function CostsPage() {
     { id: "overview", label: t("Overview", "Übersicht"), icon: Coins },
     { id: "agents", label: t("By Agent", "Pro Agent"), icon: Users },
     { id: "departments", label: t("By Department", "Pro Abteilung"), icon: Building2 },
+    { id: "members", label: t("Per employee", "Pro Mitarbeiter"), icon: UserRound },
     { id: "limits", label: t("Limits", "Limits"), icon: ShieldAlert },
   ];
 
@@ -343,6 +358,7 @@ function CostsPage() {
       {tab === "departments" && (
         <DeptTab deptRows={deptRows} agentRows={agentRows} currency={currency} />
       )}
+      {tab === "members" && <MembersTab />}
       {tab === "limits" && <LimitsTab currency={currency} />}
     </div>
   );
@@ -752,6 +768,238 @@ export function ReconciliationCard({ currency }: { currency: Currency }) {
           })}
         </div>
       )}
+    </Panel>
+  );
+}
+
+interface SeriesStyle {
+  color: string;
+  fillOpacity: number;
+  /** Set for the dashed rounds; their swatches are drawn as rings. */
+  strokeDasharray?: string;
+}
+
+/** Five palette tokens cover the members (a second round of the same hues is
+ *  dashed and lighter); "others" and "none" are neutral so they never pass
+ *  for a person. */
+function seriesStyle(key: string, memberIndex: number): SeriesStyle {
+  if (key === "others") return { color: "var(--muted-foreground)", fillOpacity: 0.35 };
+  if (key === "none") {
+    return { color: "var(--muted-foreground)", fillOpacity: 0.12, strokeDasharray: "2 2" };
+  }
+  const color = `var(--chart-${(memberIndex % 5) + 1})`;
+  return memberIndex < 5
+    ? { color, fillOpacity: 0.6 }
+    : { color, fillOpacity: 0.25, strokeDasharray: "5 3" };
+}
+
+function SeriesSwatch({ style }: { style: SeriesStyle }) {
+  return (
+    <span
+      className="h-2.5 w-2.5 shrink-0 rounded-full"
+      style={
+        style.strokeDasharray ? { border: `2px solid ${style.color}` } : { background: style.color }
+      }
+    />
+  );
+}
+
+/** Who spent the tokens over time: one stacked area per person (top ten,
+ *  then everyone else, then usage no person is attached to), bucketed in
+ *  the organisation's time zone, plus the range totals per person. */
+export function MembersTab() {
+  const t = useT();
+  const { lang } = useLang();
+  const [range, setRange] = useState<UsageRange>("7d");
+  const { data, isPending, isError } = useUsageTimeseries(range);
+
+  const rangeOptions: { id: UsageRange; label: string }[] = [
+    { id: "24h", label: t("24 h", "24 h") },
+    { id: "7d", label: t("7 days", "7 Tage") },
+    { id: "30d", label: t("30 days", "30 Tage") },
+  ];
+
+  const seriesLabel = (s: UsageSeriesDTO) => {
+    if (s.key === "none") return t("No person", "Ohne Person");
+    if (s.key === "others") return t("Others", "Andere");
+    return s.name || t("Unknown person", "Unbekannte Person");
+  };
+
+  // Recharts data keys stay positional (`s0`, `s1`, ...) so a member uuid
+  // never has to double as a CSS variable or property path.
+  // Members come first in the response, so their position is their index.
+  const series = (data?.series ?? []).map((s, i) => ({
+    dataKey: `s${i}`,
+    label: seriesLabel(s),
+    total: s.total,
+    points: s.points,
+    style: seriesStyle(s.key, i),
+  }));
+  const styleOf = Object.fromEntries(series.map((s) => [s.dataKey, s.style]));
+
+  const chartConfig: ChartConfig = Object.fromEntries(
+    series.map((s) => [s.dataKey, { label: s.label, color: s.style.color }]),
+  );
+
+  const buckets = data?.buckets ?? [];
+  const chartRows = buckets.map((bucket, i) => ({
+    bucket,
+    ...Object.fromEntries(series.map((s) => [s.dataKey, s.points[i] ?? 0])),
+  }));
+
+  const timeZone = data ? resolveTimeZone(data.timezone) : undefined;
+  // Format by the range the data is for: while a new range loads, the
+  // previous chart (and its range) stays up.
+  const formatBucket = data
+    ? bucketFormatters(lang, data.bucket, data.range, timeZone ?? "UTC")
+    : undefined;
+
+  return (
+    <Panel className="overflow-hidden">
+      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-5 py-3">
+        <div>
+          <div className="text-[10px] uppercase tracking-widest text-muted-foreground">
+            {t("Tokens per employee", "Token pro Mitarbeiter")}
+          </div>
+          <div className="font-serif text-base">{t("Usage over time", "Verbrauch über Zeit")}</div>
+          {timeZone && (
+            <div className="mt-0.5 text-[11px] text-muted-foreground">
+              {t("Times in", "Zeiten in")} {timeZone}
+            </div>
+          )}
+        </div>
+        <div className="inline-flex rounded-md border border-border bg-background/40 p-0.5 text-xs">
+          {rangeOptions.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              aria-pressed={range === o.id}
+              onClick={() => setRange(o.id)}
+              className={cn(
+                "rounded px-2.5 py-1 font-medium transition",
+                range === o.id
+                  ? "bg-primary/20 text-primary"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {isPending ? (
+        <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+          {t("Loading…", "Wird geladen…")}
+        </div>
+      ) : isError && !data ? (
+        <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+          {t("Usage could not be loaded.", "Verbrauch konnte nicht geladen werden.")}
+        </div>
+      ) : series.length === 0 || !formatBucket ? (
+        <div className="px-5 py-10 text-center text-sm text-muted-foreground">
+          {t("No token usage in this period.", "Keine Token-Nutzung in diesem Zeitraum.")}
+        </div>
+      ) : (
+        <>
+          <div className="px-5 pt-4">
+            <ChartContainer className="aspect-auto h-72 w-full" config={chartConfig}>
+              <AreaChart data={chartRows}>
+                <CartesianGrid vertical={false} />
+                <XAxis
+                  dataKey="bucket"
+                  tickLine={false}
+                  axisLine={false}
+                  minTickGap={24}
+                  tickFormatter={formatBucket.tick}
+                />
+                <YAxis
+                  tickLine={false}
+                  axisLine={false}
+                  width={48}
+                  tickFormatter={(v: number) => formatTokens(v)}
+                />
+                <ChartTooltip
+                  content={
+                    <ChartTooltipContent
+                      labelFormatter={(_, payload) =>
+                        formatBucket.tooltip(payload?.[0]?.payload?.bucket)
+                      }
+                      formatter={(value, name, item) => (
+                        <div className="flex w-full items-center gap-2">
+                          <SeriesSwatch style={styleOf[String(name)]} />
+                          <span className="flex-1 text-muted-foreground">
+                            {chartConfig[String(name)]?.label ?? name}
+                          </span>
+                          <span className="font-mono font-medium tabular-nums text-foreground">
+                            {formatTokens(Number(value))}
+                          </span>
+                        </div>
+                      )}
+                    />
+                  }
+                />
+                <ChartLegend
+                  content={() => (
+                    <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 pt-3">
+                      {series.map((s) => (
+                        <div key={s.dataKey} className="flex items-center gap-1.5">
+                          <SeriesSwatch style={s.style} />
+                          {s.label}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                />
+                {series.map((s) => (
+                  <Area
+                    key={s.dataKey}
+                    dataKey={s.dataKey}
+                    type="linear"
+                    stackId="usage"
+                    stroke={s.style.color}
+                    strokeDasharray={s.style.strokeDasharray}
+                    fill={s.style.color}
+                    fillOpacity={s.style.fillOpacity}
+                  />
+                ))}
+              </AreaChart>
+            </ChartContainer>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-xs uppercase tracking-wider text-muted-foreground">
+                  <th className="px-5 py-3 font-medium">{t("Person", "Person")}</th>
+                  <th className="px-5 py-3 font-medium text-right">{t("Tokens", "Token")}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {series.map((s) => (
+                  <tr key={s.dataKey} className="border-b border-border/60 last:border-none">
+                    <td className="px-5 py-3">
+                      <div className="flex items-center gap-2">
+                        <SeriesSwatch style={s.style} />
+                        <span className="font-medium">{s.label}</span>
+                      </div>
+                    </td>
+                    <td className="px-5 py-3 text-right font-mono text-xs">
+                      {formatTokens(s.total)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+
+      <p className="border-t border-border px-5 py-3 text-[11px] text-muted-foreground">
+        {t(
+          "Per-person data is recorded from version 0.23.0 on; older usage appears as “No person”.",
+          "Personenbezogene Daten werden ab Version 0.23.0 erfasst; ältere Nutzung erscheint als „Ohne Person“.",
+        )}
+      </p>
     </Panel>
   );
 }

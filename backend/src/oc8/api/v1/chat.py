@@ -4,29 +4,41 @@ exactly as they do to an autonomous run."""
 
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 from sqlalchemy import select
 
 from oc8 import models as m
 from oc8.agent.assistant import get_or_create_assistant
+from oc8.agents.repo import visible_agent
 from oc8.agents.versioning import pinned_model_config_id, pinned_version_no, resolve_version
 from oc8.api.deps import CurrentPrincipal, DbSession, require_departmental, require_permission
 from oc8.api.v1._chat_common import (
     actor_viewer,
     ref_views,
+    refuse_if_temporary,
     session_detail,
     session_dto,
     session_owned_by_caller,
 )
 from oc8.api.v1.run import run_to_dto
+from oc8.api.v1.run_inputs import input_dto
 from oc8.audit import append_event
-from oc8.authz.authority import Authority, authority_for_principal
+from oc8.authz.authority import Authority, authority_for_principal, tenant_wide_read
 from oc8.authz.permissions import AGENT, COPILOT, COPILOT_USE, MANAGE, RUN_START, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.context.base import Viewer
+from oc8.chat.export import (
+    attachment_names,
+    export_filename_stem,
+    export_json,
+    export_markdown,
+)
+from oc8.chat.feedback import answer_model
 from oc8.chat.model_choice import ModelOption, is_allowed_override, model_options
 from oc8.chat.modes import ASSISTANT_ONLY_REFUSAL, MODES, ModeNotAvailable
 from oc8.chat.port import session_access
@@ -38,15 +50,19 @@ from oc8.chat.service import (
     answer_parked_question,
     create_session,
     delete_session,
+    edit_message,
     get_session,
     list_messages,
     list_sessions,
+    lock_regenerate,
     regenerate_reply,
     rename_session,
     send_message,
 )
+from oc8.chat.tree import MessageGone, switch_leaf, visible_path
 from oc8.runtime.clarification import AnswerRefused
 from oc8.runtime.intake import publish_run
+from oc8.runtime.run_inputs import InputRefused, add_run_input, may_steer_run
 from oc8.schemas.base import CamelModel
 from oc8.schemas.dto import (
     ActiveRunDTO,
@@ -56,17 +72,21 @@ from oc8.schemas.dto import (
     ChatModelOptionDTO,
     ChatSessionDTO,
     FileAttachmentDTO,
+    QueuedTurnDTO,
     RunDTO,
 )
 from oc8.schemas.requests import (
     ChatAnswerRequest,
     CreateChatSessionRequest,
+    EditChatMessageRequest,
     MessageFeedbackRequest,
+    RegenerateRequest,
     RenameChatSessionRequest,
     SendChatMessageRequest,
     SetChatEffortRequest,
     SetChatModelRequest,
     SetChatModeRequest,
+    SetLeafRequest,
 )
 
 router = APIRouter()
@@ -143,6 +163,7 @@ async def _message_dto(
         author_member_id=str(msg.author_member_id) if msg.author_member_id else None,
         author_name=author_name,
         reply_to_id=str(msg.reply_to_id) if msg.reply_to_id else None,
+        parent_id=str(msg.parent_id) if msg.parent_id else None,
         parts=msg.parts,
         suggestions=[
             str(o)
@@ -150,6 +171,7 @@ async def _message_dto(
             if isinstance(part, dict) and part.get("type") == "suggestions"
             for o in (part.get("options") or [])
         ],
+        restricted=msg.restricted,
     )
 
 
@@ -217,6 +239,21 @@ async def _assistant_visible(
     return assistant.id == agent_id
 
 
+class WebSearchAvailabilityDTO(CamelModel):
+    available: bool
+
+
+@router.get("/chat/web-search", response_model=WebSearchAvailabilityDTO)
+async def web_search_availability(db: DbSession, actor: _ChatActor) -> WebSearchAvailabilityDTO:
+    """Whether the composer shows its "Web" switch: the tenant (or the
+    platform) has a search provider. Never which one, nor its address."""
+    from oc8.websearch.service import is_available
+
+    return WebSearchAvailabilityDTO(
+        available=await is_available(db, tenant_id=actor.principal.tenant_id)
+    )
+
+
 @router.get("/chat/sessions", response_model=list[ChatSessionDTO])
 async def get_sessions(
     db: DbSession,
@@ -260,6 +297,7 @@ async def create_chat_session(
         tenant_id=actor.principal.tenant_id,
         agent_id=body.agent_id,
         member_id=actor.member.id,
+        temporary=body.temporary,
     )
     await db.commit()
     return session_dto(session)
@@ -273,7 +311,8 @@ async def _owned_session(
     it, with the Assistant's tenant-wide `copilot:manage` carve-out on top."""
     session = await get_session(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
     owned = session is not None and session.member_id == actor.member.id
-    if session is not None and not owned:
+    # A temporary chat is its owner's alone: no oversight carve-out.
+    if session is not None and not owned and not session.temporary:
         authority = await authority_for_principal(request, db, actor.principal)
         owned = await _assistant_visible(
             db,
@@ -326,6 +365,54 @@ async def get_messages(
     return [
         await _message_dto(msg, db, actor.principal.tenant_id, reader=viewer) for msg in messages
     ]
+
+
+@router.get("/chat/sessions/{session_id}/export")
+async def export_chat(
+    request: Request,
+    session_id: uuid.UUID,
+    db: DbSession,
+    actor: _ChatActor,
+    format: Annotated[str, Query(pattern="^(md|json)$")],
+) -> Response:
+    """The chat as a file (spec §5.5): `md` is the conversation on screen,
+    `json` every branch. Same gate as reading the chat, so a reader of a
+    shared chat may export it -- with the same redactions they see on screen
+    (no attachment file names). Names only, never file contents."""
+    session, read_only = await _readable_session(request, session_id, db, actor)
+    refuse_if_temporary(session, "be exported")
+    tenant_id = actor.principal.tenant_id
+    if format == "md":
+        messages = await visible_path(db, session=session)
+    else:
+        messages = await list_messages(db, tenant_id=tenant_id, session_id=session_id)
+    names = await attachment_names(db, tenant_id=tenant_id, message_ids=[x.id for x in messages])
+    if read_only:
+        names = {mid: [_READER_ATTACHMENT_NAME] * len(files) for mid, files in names.items()}
+    stem = export_filename_stem(session.title)
+    if format == "md":
+        # Through the scoped repository: the name is shown only to a caller
+        # who may see the agent. The Assistant, and an agent out of the
+        # caller's scope, read as "Assistant" (`chat.export`).
+        authority = await authority_for_principal(request, db, actor.principal)
+        agent = await visible_agent(
+            db,
+            scope=actor.scope,
+            tenant_wide=tenant_wide_read(authority, perm(AGENT, VIEW)),
+            agent_id=session.agent_id,
+        )
+        body = export_markdown(
+            session, messages, names, agent_name=agent.name if agent is not None else ""
+        )
+        media_type = "text/markdown; charset=utf-8"
+    else:
+        body = json.dumps(export_json(session, messages, names), ensure_ascii=False, indent=2)
+        media_type = "application/json"
+    return Response(
+        content=body,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{stem}.{format}"'},
+    )
 
 
 @router.get("/chat/sessions/{session_id}", response_model=ChatSessionDTO)
@@ -578,6 +665,7 @@ async def rename_chat_session(
     ],
 ) -> ChatSessionDTO:
     session = await _owned_session(request, session_id, db, actor)
+    refuse_if_temporary(session, "be renamed")
     await rename_session(db, session=session, title=body.title)
     await db.commit()
     return session_dto(session)
@@ -594,14 +682,87 @@ async def delete_chat_session(
     ],
 ) -> None:
     session = await _owned_session(request, session_id, db, actor)
-    await delete_session(db, tenant_id=actor.principal.tenant_id, session=session)
+    await delete_session(
+        db,
+        tenant_id=actor.principal.tenant_id,
+        session=session,
+        actor_id=actor.member.id,
+        principal=actor.principal,
+    )
     await db.commit()
+
+
+_STILL_RUNNING_TEXT_ONLY = "An answer is still running — send text only, or wait."
+_STILL_RUNNING_WAIT = "An answer is still running — wait for it to finish."
+
+
+async def _queue_behind_running_answer(
+    db: DbSession,
+    actor: HumanActor,
+    *,
+    session: m.ChatSession,
+    body: SendChatMessageRequest,
+    authority: Authority,
+) -> JSONResponse | None:
+    """No parallel turns in an ordinary chat (spec §5.5): while an answer
+    runs, a plain send is queued on the newest running answer as a
+    `next_turn` input, which becomes the next turn when that run ends. None
+    when nothing runs -- the send is an ordinary turn."""
+    # Asked again when the run ended between the read and the input lock:
+    # its end may have started the carried-over turn, which runs now.
+    for _attempt in range(3):
+        running = await active_runs_for_session(
+            db, tenant_id=actor.principal.tenant_id, session_id=session.id
+        )
+        if not running:
+            return None
+        # A queued input is text only; the turn it becomes has no files or
+        # `#` references (`chat.carry_over`).
+        if body.attachment_ids or body.context_refs:
+            raise HTTPException(status.HTTP_409_CONFLICT, _STILL_RUNNING_TEXT_ONLY)
+        run = running[-1]
+        # Carried over only as the chat owner's own words, in her own run.
+        if session.member_id != actor.member.id or not await may_steer_run(
+            db, run=run, member=actor.member, authority=authority, scope=actor.scope
+        ):
+            raise HTTPException(status.HTTP_409_CONFLICT, _STILL_RUNNING_WAIT)
+        try:
+            # Takes the tenant audit lock, then the run_input lock -- before
+            # the chat_session row `send_message` locks if this falls through
+            # (the global lock order, `chat/tree.py`).
+            # The "Web" switch belongs to the message: the turn it becomes
+            # may search (`chat.carry_over`).
+            row = await add_run_input(
+                db,
+                run=run,
+                member=actor.member,
+                text=body.message,
+                delivery="next_turn",
+                web=body.web,
+            )
+        except InputRefused as exc:
+            if exc.code == "finished":
+                continue
+            raise HTTPException(exc.status_code, exc.message) from exc
+        await db.refresh(row)
+        queued = QueuedTurnDTO(
+            run_id=str(run.id),
+            input=input_dto(row, actor.member.display_name or actor.member.subject),
+        )
+        await db.commit()
+        return JSONResponse(
+            status_code=status.HTTP_202_ACCEPTED,
+            content=queued.model_dump(mode="json", by_alias=True),
+        )
+    # Answers kept ending and starting under this send: never a parallel turn.
+    raise HTTPException(status.HTTP_409_CONFLICT, _STILL_RUNNING_WAIT)
 
 
 @router.post(
     "/chat/sessions/{session_id}/messages",
     response_model=ChatMessageDTO,
     status_code=status.HTTP_201_CREATED,
+    responses={status.HTTP_202_ACCEPTED: {"model": QueuedTurnDTO}},
 )
 async def post_message(
     request: Request,
@@ -612,7 +773,7 @@ async def post_message(
         HumanActor,
         Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE)),
     ],
-) -> ChatMessageDTO:
+) -> ChatMessageDTO | JSONResponse:
     session = await _owned_session(request, session_id, db, actor)
     authority = await authority_for_principal(request, db, actor.principal)
     is_assistant_session = await _assistant_visible(
@@ -627,6 +788,12 @@ async def post_message(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail=f"requires permission: {RUN_START}"
         )
+    if session.kind == "chat":
+        queued = await _queue_behind_running_answer(
+            db, actor, session=session, body=body, authority=authority
+        )
+        if queued is not None:
+            return queued
     try:
         user_message, run = await send_message(
             db,
@@ -645,6 +812,7 @@ async def post_message(
             # The member behind THIS request's token, whose role is the one above:
             # the turn's pinned context is resolved under their rights.
             acting_member=actor.member,
+            web_search=body.web,
         )
     except ModeNotAvailable as exc:
         # Nothing was written: the refusal comes before the turn exists.
@@ -688,17 +856,19 @@ async def regenerate_message(
     message_id: uuid.UUID,
     db: DbSession,
     actor: _ChatActor,
+    body: RegenerateRequest | None = None,
 ) -> ActiveRunDTO:
-    """Answer a user turn again; both answers stay (spec §2.1)."""
+    """Answer a user turn again; both answers stay (spec §2.1). The body is
+    optional: without one, the new answer does not search the web."""
     session = await session_owned_by_caller(session_id, db, actor)
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "user":
         raise HTTPException(status.HTTP_409_CONFLICT, "only a member's turn can be answered again")
     # Serialise concurrent regenerates: the lock is held until `enqueue_run`
-    # commits, so a second click waits and then sees the first one's run.
-    await db.execute(
-        select(m.ChatSession.id).where(m.ChatSession.id == session.id).with_for_update()
-    )
+    # commits, so a second click waits and then sees the first one's run. An
+    # advisory lock, not the session row: `regenerate_reply` embeds the turn
+    # before it takes the audit lock and the row (`chat.tree`).
+    await lock_regenerate(db, session_id=session.id)
     running = await active_runs_for_session(
         db, tenant_id=actor.principal.tenant_id, session_id=session.id
     )
@@ -718,8 +888,90 @@ async def regenerate_message(
         originating_operator=actor.principal.subject,
         operator_role=actor.principal.role,
         acting_member=actor.member,
+        web_search=body is not None and body.web,
     )
     return ActiveRunDTO(run_id=str(run.id), reply_to_id=str(msg.id), state=run.state)
+
+
+def _require_tree(session: m.ChatSession) -> None:
+    """Branches exist only in an ordinary chat (spec §5.3); a Live timeline
+    stays linear."""
+    if session.kind != "chat":
+        raise HTTPException(status.HTTP_409_CONFLICT, "this chat has no branches")
+
+
+@router.post(
+    "/chat/sessions/{session_id}/messages/{message_id}/edit",
+    response_model=ChatMessageDTO,
+    status_code=status.HTTP_201_CREATED,
+)
+async def edit_chat_message(
+    request: Request,
+    session_id: uuid.UUID,
+    message_id: uuid.UUID,
+    body: EditChatMessageRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatMessageDTO:
+    """Rewrite a sent turn as a new branch; the old one stays (spec §5.3).
+    Only a person's own turn: anything else is a 409, someone else's words a
+    403 -- an overseer reaching this chat may not put words in its owner's
+    mouth. A turn with no recorded author counts as the owner's."""
+    session = await _owned_session(request, session_id, db, actor)
+    _require_tree(session)
+    original = await _session_message(db, session=session, message_id=message_id)
+    if original.role != "user":
+        raise HTTPException(status.HTTP_409_CONFLICT, "only a person's turn can be edited")
+    if (original.author_member_id or session.member_id) != actor.member.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "only its author can edit this turn")
+    authority = await authority_for_principal(request, db, actor.principal)
+    is_assistant = await _assistant_visible(
+        db, tenant_id=actor.principal.tenant_id, authority=authority, agent_id=session.agent_id
+    )
+    # The same gate as sending: an edit starts a run.
+    if not is_assistant and RUN_START not in authority.tenant_wide:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, f"requires permission: {RUN_START}")
+    try:
+        user_message, run = await edit_message(
+            db,
+            session=session,
+            tenant_id=actor.principal.tenant_id,
+            original=original,
+            content=body.content,
+            originating_operator=actor.principal.subject,
+            operator_role=actor.principal.role,
+            acting_member=actor.member,
+            web_search=body.web,
+        )
+    except MessageGone:
+        # Removed between loading it above and the edit taking the session
+        # lock: the same answer as a turn that was never there.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "message not found") from None
+    dto = await _message_dto(user_message, db, actor.principal.tenant_id)
+    if run is not None:
+        # Same-response only, as for a sent turn (`post_message`).
+        dto = dto.model_copy(update={"run_id": str(run.id)})
+    return dto
+
+
+@router.put("/chat/sessions/{session_id}/leaf", response_model=ChatSessionDTO)
+async def set_chat_leaf(
+    session_id: uuid.UUID,
+    body: SetLeafRequest,
+    db: DbSession,
+    actor: _ChatActor,
+) -> ChatSessionDTO:
+    """Show another branch: the chat continues from the newest message below
+    the one picked (spec §5.3 "Switch variant"). Owner-only like every other
+    rearrangement of a chat -- it changes what the owner reads and where their
+    next turn goes."""
+    session = await session_owned_by_caller(session_id, db, actor)
+    _require_tree(session)
+    picked = await _session_message(db, session=session, message_id=body.message_id)
+    await switch_leaf(db, session=session, message_id=picked.id)
+    dto = await session_detail(db, viewer=await actor_viewer(db, actor), session=session)
+    await db.commit()
+    return dto
 
 
 @router.post(
@@ -735,9 +987,16 @@ async def message_feedback(
     actor: _ChatActor,
 ) -> None:
     session = await session_owned_by_caller(session_id, db, actor)
+    refuse_if_temporary(session, "be rated")
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "assistant":
         raise HTTPException(status.HTTP_409_CONFLICT, "only an answer can be rated")
+    # The agent and its department name the event's subject, so the audit
+    # read strips a personal agent's note for everyone but its owner (the
+    # actor is the person, not the agent). The model is what the statistics
+    # count per: the one that wrote the rated answer.
+    agent = await db.get(m.Agent, session.agent_id)
+    model = await answer_model(db, session=session, answer=msg, agent=agent)
     await append_event(
         db,
         tenant_id=actor.principal.tenant_id,
@@ -747,8 +1006,13 @@ async def message_feedback(
         action="chat.feedback",
         resource={
             "session_id": str(session.id),
+            # The key `GET /audit?chat_session_id=` reads, as on tool events.
+            "chat_session_id": str(session.id),
             "message_id": str(msg.id),
             "run_id": str(msg.run_id) if msg.run_id else None,
+            "agent_id": str(session.agent_id),
+            "department_id": str(agent.department_id) if agent is not None else None,
+            "model": model,
             "rating": body.rating,
             "note": body.note,
         },

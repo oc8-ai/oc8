@@ -199,6 +199,8 @@ def _no_background_chat_titles(monkeypatch: pytest.MonkeyPatch) -> None:
     model call, a session outliving the test's loop -- so the job is dropped
     unless a test swaps in its own `_spawn` and runs it."""
     monkeypatch.setattr("oc8.chat.titles._spawn", lambda job: None)
+    # The same for a long chat's background checkpoint (`oc8.chat.checkpoint`).
+    monkeypatch.setattr("oc8.chat.checkpoint._spawn", lambda job: None)
 
 
 class _NoRunStateStorage:

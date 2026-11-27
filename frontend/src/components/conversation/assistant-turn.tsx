@@ -21,8 +21,9 @@ import { ToolDeniedNotice } from "@/components/connections/tool-denied-notice";
 import { useMessageFeedback, useTurnRun } from "@/lib/conversation-api";
 import { sourcesOf, type RunActivityDTO } from "@/lib/hooks-chat";
 import { useT } from "@/lib/i18n";
-import { cn } from "@/lib/utils";
 
+import { ActionButton } from "./action-button";
+import { liveArtifactsId } from "./artifacts/context";
 import { isEmptyReply } from "./empty-reply";
 import { Sources } from "./sources";
 import { StepList } from "./step-list";
@@ -32,6 +33,7 @@ import { ThoughtDisclosure, thoughtOf } from "./thought-disclosure";
 import type { AssistantTurnModel } from "./types";
 import { useMinVisible } from "./use-min-visible";
 import { useObjectNavigation } from "./use-object-navigation";
+import { ReadAloudButton } from "./voice/read-aloud-button";
 
 const TERMINAL = new Set(["done", "failed", "interrupted"]);
 /** A run in these states is waiting on a person, not working: the turn shows
@@ -41,33 +43,6 @@ const WAITING_ON_PERSON = new Set(["waiting_for_input", "waiting_for_approval"])
  *  whose first word comes right away does not flash it for a frame. */
 export const PRESENCE_MIN_MS = 400;
 
-function ActionButton({
-  label,
-  onClick,
-  children,
-  pressed,
-}: {
-  label: string;
-  onClick: () => void;
-  children: ReactNode;
-  pressed?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      aria-pressed={pressed}
-      className={cn(
-        "grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        pressed && "text-foreground",
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
 export function AssistantTurn({
   sessionId,
   turn,
@@ -76,8 +51,10 @@ export function AssistantTurn({
   cards,
   footer,
   readOnly = false,
+  noFeedback = false,
   labelsOnly = false,
   onRegenerate,
+  onSelectVariant,
 }: {
   sessionId: string | null;
   turn: AssistantTurnModel;
@@ -86,9 +63,13 @@ export function AssistantTurn({
   cards?: ReactNode;
   footer?: ReactNode;
   readOnly?: boolean;
+  /** No rating: a temporary chat keeps none (the server refuses it). */
+  noFeedback?: boolean;
   /** A colleague's run: steps as labels only (see StepList). */
   labelsOnly?: boolean;
   onRegenerate?: (replyToId: string) => void;
+  /** In a message tree: make this variant the visible branch (PUT …/leaf). */
+  onSelectVariant?: (messageId: string) => void;
 }) {
   const t = useT();
   const total = turn.variants.length + (turn.liveRunId ? 1 : 0);
@@ -97,8 +78,17 @@ export function AssistantTurn({
   // asked for: show it, even if they had paged back to an older one.
   useEffect(() => {
     setPicked(null);
-  }, [total, turn.liveRunId]);
-  const index = picked === null ? total - 1 : Math.min(picked, total - 1);
+  }, [total, turn.liveRunId, turn.selectedId]);
+  // In a tree the visible branch decides which variant shows; a run still
+  // writing a new one is shown until it lands.
+  const treeIndex = turn.selectedId ? turn.variants.findIndex((v) => v.id === turn.selectedId) : -1;
+  const defaultIndex = treeIndex >= 0 && !turn.liveRunId ? treeIndex : total - 1;
+  const index = picked === null ? defaultIndex : Math.min(picked, total - 1);
+  function pick(next: number) {
+    setPicked(next);
+    const variant = turn.variants[next];
+    if (variant && onSelectVariant && turn.selectedId) onSelectVariant(variant.id);
+  }
   const showingLive = !!turn.pending || (turn.liveRunId !== null && index === turn.variants.length);
   const message = showingLive ? null : (turn.variants[index] ?? null);
   const runId = showingLive ? turn.liveRunId : (message?.runId ?? null);
@@ -192,6 +182,9 @@ export function AssistantTurn({
         // Only a saved answer's links are checked and can be clickable: the
         // streamed text, even once its stream ended, waits for the message.
         messageId={message?.id}
+        // A saved answer's artifacts are numbered under its id, a live one's
+        // under its run until it is saved (see useArtifactsPanel).
+        artifactsOf={message ? message.id : runId ? liveArtifactsId(runId) : undefined}
         sources={sources}
         onObjectClick={openObject}
         onCitation={(n) => {
@@ -240,7 +233,7 @@ export function AssistantTurn({
             <span className="inline-flex items-center gap-0.5 text-xs text-muted-foreground">
               <ActionButton
                 label={t("Previous answer", "Vorherige Antwort")}
-                onClick={() => setPicked(Math.max(0, index - 1))}
+                onClick={() => pick(Math.max(0, index - 1))}
               >
                 <ChevronLeft className="size-4" />
               </ActionButton>
@@ -249,7 +242,7 @@ export function AssistantTurn({
               </span>
               <ActionButton
                 label={t("Next answer", "Nächste Antwort")}
-                onClick={() => setPicked(Math.min(total - 1, index + 1))}
+                onClick={() => pick(Math.min(total - 1, index + 1))}
               >
                 <ChevronRight className="size-4" />
               </ActionButton>
@@ -263,6 +256,14 @@ export function AssistantTurn({
               >
                 {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
               </ActionButton>
+              {/* Voice works in a temporary chat too; a shared view has no speech. */}
+              {!readOnly && sessionId && (
+                <ReadAloudButton
+                  sessionId={sessionId}
+                  messageId={message.id}
+                  restricted={message.restricted}
+                />
+              )}
               {!readOnly && turn.replyToId && onRegenerate && (
                 <ActionButton
                   label={t("Regenerate answer", "Antwort neu erzeugen")}
@@ -271,7 +272,7 @@ export function AssistantTurn({
                   <RotateCcw className="size-4" />
                 </ActionButton>
               )}
-              {!readOnly && (
+              {!readOnly && !noFeedback && (
                 <>
                   <ActionButton
                     label={t("Good answer", "Gute Antwort")}

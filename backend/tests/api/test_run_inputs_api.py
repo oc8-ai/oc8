@@ -15,6 +15,7 @@ from oc8.auth import get_identity_provider
 from oc8.main import create_app
 from oc8.runtime.adapter import EchoRuntimeStub
 from oc8.runtime.clarification import SECRET_REFUSAL
+from oc8.runtime.run_inputs import CANCELLED_STEP
 from tests.conftest import AppSessionFactory
 
 pytestmark = pytest.mark.asyncio
@@ -292,13 +293,20 @@ async def test_the_assistants_secret_gate_covers_run_inputs(
             f"/api/v1/runs/{run_id}/inputs", json={"text": "use EU"}, headers=_h(tenant, "alice")
         )
         assert fine.status_code == 201
+        # A word about a credential is not one: the Cost Center counts tokens.
+        mention = await c.post(
+            f"/api/v1/runs/{run_id}/inputs",
+            json={"text": "Wie viele Tokens habe ich verbraucht?"},
+            headers=_h(tenant, "alice"),
+        )
+        assert mention.status_code == 201, mention.text
     async with app_session(tenant) as db:
         texts = (
             (await db.execute(select(m.RunInput.text).where(m.RunInput.run_id == run_id)))
             .scalars()
             .all()
         )
-    assert texts == ["use EU"]
+    assert texts == ["use EU", "Wie viele Tokens habe ich verbraucht?"]
 
 
 async def test_an_ordinary_agents_run_input_is_not_secret_gated(
@@ -314,3 +322,181 @@ async def test_an_ordinary_agents_run_input_is_not_secret_gated(
             headers=_h(tenant, "alice"),
         )
         assert r.status_code == 201
+
+
+# --------------------------------------------- steer or queue (spec §5.5)
+
+
+async def test_next_turn_is_accepted_by_a_runtime_without_inputs(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _echo(*_a: Any, **_kw: Any) -> EchoRuntimeStub:
+        return EchoRuntimeStub()
+
+    monkeypatch.setattr("oc8.runtime.registry.resolve_runtime", _echo)
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        r = await c.post(
+            f"/api/v1/runs/{run_id}/inputs",
+            json={"text": "after this", "delivery": "next_turn"},
+            headers=_h(tenant, "alice"),
+        )
+        assert r.status_code == 201, r.text
+        assert r.json()["delivery"] == "next_turn"
+        steering = (
+            await c.get(f"/api/v1/runs/{run_id}/steering", headers=_h(tenant, "alice"))
+        ).json()
+        assert [(i["text"], i["delivery"]) for i in steering["inputs"]] == [
+            ("after this", "next_turn")
+        ]
+
+
+async def _queue_input(c: AsyncClient, tenant: uuid.UUID, run_id: uuid.UUID, subject: str) -> str:
+    r = await c.post(
+        f"/api/v1/runs/{run_id}/inputs",
+        json={"text": "after this", "delivery": "next_turn"},
+        headers=_h(tenant, subject),
+    )
+    assert r.status_code == 201, r.text
+    return str(r.json()["id"])
+
+
+async def test_edit_and_cancel_a_waiting_input(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        input_id = await _queue_input(c, tenant, run_id, "alice")
+        edited = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}",
+            json={"text": "after this, in German"},
+            headers=_h(tenant, "alice"),
+        )
+        assert edited.status_code == 200, edited.text
+        assert edited.json()["text"] == "after this, in German"
+        assert edited.json()["delivery"] == "next_turn"
+        assert edited.json()["consumedAt"] is None
+        empty = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}",
+            json={"text": " "},
+            headers=_h(tenant, "alice"),
+        )
+        assert empty.status_code == 422
+
+        gone = await c.delete(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}", headers=_h(tenant, "alice")
+        )
+        assert gone.status_code == 204, gone.text
+        unknown = await c.delete(
+            f"/api/v1/runs/{run_id}/inputs/{uuid.uuid4()}", headers=_h(tenant, "alice")
+        )
+        assert unknown.status_code == 404
+    async with app_session(tenant) as db:
+        row = await db.get(m.RunInput, uuid.UUID(input_id))
+        assert row is not None
+        assert row.text == "after this, in German"
+        assert row.consumed_at is not None and row.consumed_step == CANCELLED_STEP
+
+
+async def test_edit_after_delivery_is_409(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        queued = await _queue_input(c, tenant, run_id, "alice")
+        steer = await c.post(
+            f"/api/v1/runs/{run_id}/inputs", json={"text": "now"}, headers=_h(tenant, "alice")
+        )
+        assert steer.status_code == 201 and steer.json()["delivery"] == "steer"
+        steer_id = steer.json()["id"]
+        # A steer input is never edited, delivered or not.
+        r = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{steer_id}",
+            json={"text": "x"},
+            headers=_h(tenant, "alice"),
+        )
+        assert r.status_code == 409 and "already delivered" in r.text
+        cancel = await c.delete(
+            f"/api/v1/runs/{run_id}/inputs/{queued}", headers=_h(tenant, "alice")
+        )
+        assert cancel.status_code == 204
+        for again in (
+            await c.patch(
+                f"/api/v1/runs/{run_id}/inputs/{queued}",
+                json={"text": "x"},
+                headers=_h(tenant, "alice"),
+            ),
+            await c.delete(f"/api/v1/runs/{run_id}/inputs/{queued}", headers=_h(tenant, "alice")),
+        ):
+            assert again.status_code == 409 and "already delivered" in again.text
+
+
+async def test_only_the_author_may_edit(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        input_id = await _queue_input(c, tenant, run_id, "alice")
+        # Another admin does not steer alice's run at all: the run's 404.
+        for r in (
+            await c.patch(
+                f"/api/v1/runs/{run_id}/inputs/{input_id}",
+                json={"text": "mine now"},
+                headers=_h(tenant, "admin2"),
+            ),
+            await c.delete(
+                f"/api/v1/runs/{run_id}/inputs/{input_id}", headers=_h(tenant, "admin2")
+            ),
+        ):
+            assert r.status_code == 404, r.text
+    async with app_session(tenant) as db:
+        row = await db.get(m.RunInput, uuid.UUID(input_id))
+        assert row is not None and row.text == "after this" and row.consumed_at is None
+
+
+async def test_only_the_author_may_edit_her_input_to_a_run_another_may_steer(
+    app_session: AppSessionFactory,
+) -> None:
+    """`edit_queued_input` itself: a second person who may steer the run
+    still cannot touch the first one's waiting words."""
+    from oc8.runtime.run_inputs import InputRefused, add_run_input, edit_queued_input
+
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    async with app_session(tenant) as db:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        alice = m.OrgMember(tenant_id=tenant, subject="alice", subject_uuid=uuid.uuid4())
+        bob = m.OrgMember(tenant_id=tenant, subject="bob", subject_uuid=uuid.uuid4())
+        db.add_all([alice, bob])
+        await db.flush()
+        row = await add_run_input(db, run=run, member=alice, text="after", delivery="next_turn")
+        with pytest.raises(InputRefused) as refused:
+            await edit_queued_input(db, run=run, member=bob, input_id=row.id, text="mine")
+        assert refused.value.status_code == 409
+        assert refused.value.message == "This message was already delivered."
+
+
+async def test_an_edit_tells_other_composers(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    published: list[tuple[uuid.UUID, list[str]]] = []
+
+    async def _publish(tenant_id: uuid.UUID, *, run_id: uuid.UUID, consumed: Any) -> None:
+        published.append((run_id, [str(c.id) for c in consumed]))
+
+    monkeypatch.setattr("oc8.api.v1.run_inputs.publish_inputs_consumed", _publish)
+    tenant = uuid.uuid4()
+    run_id = await _run(app_session, tenant, operator="alice")
+    app = create_app()
+    async with LifespanManager(app), _client(app) as c:
+        input_id = await _queue_input(c, tenant, run_id, "alice")
+        edited = await c.patch(
+            f"/api/v1/runs/{run_id}/inputs/{input_id}",
+            json={"text": "changed"},
+            headers=_h(tenant, "alice"),
+        )
+        assert edited.status_code == 200, edited.text
+    assert published == [(run_id, [input_id])]

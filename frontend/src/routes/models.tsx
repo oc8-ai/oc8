@@ -31,6 +31,7 @@ import {
 import { agents } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import { chatModels, isSpeechModel } from "@/lib/model-capability";
 import { useMay } from "@/lib/governance-hooks";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
@@ -45,6 +46,7 @@ import {
   useReasoningSupport,
   useTestModel,
   useUpdateModel,
+  type ModelCapability,
   type ModelDTO,
   type ModelProviderDTO,
   type ModelWriteBody,
@@ -101,6 +103,20 @@ export const AUTO_PROVIDER = "auto";
 const RAW_PARAMS_UNSUPPORTED_PROVIDERS = new Set(["ollama", SUBSCRIPTION_PROVIDER, AUTO_PROVIDER]);
 export function supportsRawParams(provider: string): boolean {
   return !RAW_PARAMS_UNSUPPORTED_PROVIDERS.has(provider);
+}
+
+// A speech model (spec 2026-11-27 §9) needs OpenAI's audio endpoints: openai,
+// openai_compatible and plugin providers built on that adapter. A denylist of
+// the core built-ins without them, for the same reason as above; the server
+// refuses (422) any other provider that cannot.
+const SPEECH_UNSUPPORTED_PROVIDERS = new Set([
+  "anthropic",
+  "ollama",
+  SUBSCRIPTION_PROVIDER,
+  AUTO_PROVIDER,
+]);
+function supportsSpeech(provider: string): boolean {
+  return !SPEECH_UNSUPPORTED_PROVIDERS.has(provider);
 }
 
 export function isAutoProvider(provider: string): boolean {
@@ -554,6 +570,13 @@ export function ModelsPage() {
                     <td className="px-5 py-4">
                       {isAutoProvider(m.provider) ? (
                         <span className="text-xs text-muted-foreground">—</span>
+                      ) : isSpeechModel(m) ? (
+                        // Never offered in a chat: the capability says what it is for.
+                        <span className="text-xs text-muted-foreground">
+                          {m.capability === "speech_to_text"
+                            ? t("Speech to text", "Sprache zu Text")
+                            : t("Text to speech", "Text zu Sprache")}
+                        </span>
                       ) : (
                         <ChatAvailabilitySwitch model={m} mayManage={mayManage} />
                       )}
@@ -1005,6 +1028,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
   const [locality, setLocality] = useState<"cloud" | "local">(editing?.locality ?? "cloud");
   const [displayName, setDisplayName] = useState(editing?.displayName ?? "");
   const [usedByCopilot, setUsedByCopilot] = useState(editing?.usedByCopilot ?? false);
+  const [capability, setCapability] = useState<ModelCapability>(editing?.capability ?? "chat");
   const [supportsVision, setSupportsVision] = useState(editing?.supportsVision ?? false);
   const [maxTokens, setMaxTokens] = useState(
     editing?.maxTokens != null ? String(editing.maxTokens) : "",
@@ -1042,6 +1066,12 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
 
   const effectiveProvider = provider || providers[0]?.canonical || "";
   const isAuto = isAutoProvider(effectiveProvider);
+  const speechCapable = supportsSpeech(effectiveProvider);
+  // A speech model is never a chat or Copilot model (the server refuses it).
+  const speech = speechCapable && capability !== "chat";
+  const capabilityFields: Partial<ModelWriteBody> = speechCapable
+    ? { capability, ...(speech ? { usedByCopilot: false, chatEnabled: false } : {}) }
+    : {};
   const suggestion = useReasoningSupport(
     editing ? "" : effectiveProvider,
     editing ? "" : modelTag.trim(),
@@ -1050,7 +1080,10 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
   const isPending = createModel.isPending || updateModel.isPending;
   const showPicker =
     !editing && !isAuto && discoveredModels !== null && discoveredModels.length > 0 && !manualMode;
-  const tierTargets = allModels.filter((m) => !isAutoProvider(m.provider) && m.id !== editing?.id);
+  // The auto router routes chats and agents: never to a speech model.
+  const tierTargets = chatModels(allModels).filter(
+    (m) => !isAutoProvider(m.provider) && m.id !== editing?.id,
+  );
 
   const resetDiscovery = () => {
     setDiscoveredModels(null);
@@ -1152,7 +1185,12 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
       try {
         await Promise.all(
           [...selectedModels].map((model) =>
-            createModel.mutateAsync({ provider: effectiveProvider, model, locality }),
+            createModel.mutateAsync({
+              provider: effectiveProvider,
+              model,
+              locality,
+              ...capabilityFields,
+            }),
           ),
         );
         toast.success(
@@ -1196,6 +1234,7 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
       ...(editing ? { maxTokens: parsedMaxTokens ?? 0 } : {}),
       ...(legacyEffort && !effortTouched ? {} : { effort: effort.trim() }),
       extra: pairsToExtra(rawParams) ?? {},
+      ...capabilityFields,
     };
     try {
       if (editing) {
@@ -1281,6 +1320,31 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
               ))}
             </select>
           </label>
+
+          {!isAuto && speechCapable && (
+            <label className="block">
+              <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("Capability", "Fähigkeit")}
+              </span>
+              <select
+                value={capability}
+                onChange={(e) => setCapability(e.target.value as ModelCapability)}
+                className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+              >
+                <option value="chat">{t("Chat", "Chat")}</option>
+                <option value="speech_to_text">{t("Speech to text", "Sprache zu Text")}</option>
+                <option value="text_to_speech">{t("Text to speech", "Text zu Sprache")}</option>
+              </select>
+              {speech && (
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {t(
+                    "Used for dictation or reading answers aloud, never for chats or agents. Pick it under Settings, Speech.",
+                    "Dient dem Diktat oder dem Vorlesen von Antworten, nie Chats oder Agenten. Wähle es unter Einstellungen, Sprache.",
+                  )}
+                </p>
+              )}
+            </label>
+          )}
 
           {isAuto ? (
             <>
@@ -1489,96 +1553,103 @@ function ModelFormDialog({ editing, onClose }: { editing: ModelDTO | null; onClo
                     onChange={setDisplayName}
                   />
 
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={usedByCopilot}
-                      onChange={(e) => setUsedByCopilot(e.target.checked)}
-                    />
-                    {t("Use this model for the Copilot", "Dieses Modell für den Copilot nutzen")}
-                  </label>
-
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={supportsVision}
-                      onChange={(e) => setSupportsVision(e.target.checked)}
-                    />
-                    {t(
-                      "This model can see images (vision)",
-                      "Dieses Modell kann Bilder verarbeiten (Vision)",
-                    )}
-                  </label>
-
-                  <label className="flex items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={canThinkShown}
-                      onChange={(e) => setCanThink(e.target.checked)}
-                    />
-                    <span>
-                      {t("Can think", "Kann nachdenken")}
-                      <span className="block text-[11px] text-muted-foreground">
+                  {!speech && (
+                    <>
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={usedByCopilot}
+                          onChange={(e) => setUsedByCopilot(e.target.checked)}
+                        />
                         {t(
-                          "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider.",
-                          "Zeigt im Chat auf diesem Modell die Denkstufe an und schickt die gewählte Stufe an den Anbieter.",
+                          "Use this model for the Copilot",
+                          "Dieses Modell für den Copilot nutzen",
                         )}
-                      </span>
-                    </span>
-                  </label>
+                      </label>
 
-                  {editing && (
-                    <label className="block">
-                      <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
-                        {t("Max output tokens (optional)", "Max. Output-Tokens (optional)")}
-                      </span>
-                      <input
-                        type="number"
-                        min={1}
-                        placeholder="4096"
-                        value={maxTokens}
-                        onChange={(e) => setMaxTokens(e.target.value)}
-                        className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
-                      />
-                      <p className="mt-1 text-[11px] text-muted-foreground">
+                      <label className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={supportsVision}
+                          onChange={(e) => setSupportsVision(e.target.checked)}
+                        />
                         {t(
-                          "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too.",
-                          "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Server-Standard (4096 oder OC8_DEFAULT_MAX_TOKENS). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget.",
+                          "This model can see images (vision)",
+                          "Dieses Modell kann Bilder verarbeiten (Vision)",
                         )}
-                      </p>
-                    </label>
-                  )}
+                      </label>
 
-                  <div className="block">
-                    <label
-                      htmlFor="model-effort"
-                      className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground"
-                    >
-                      {t("Effort (optional)", "Effort (optional)")}
-                    </label>
-                    <EffortField
-                      key={editing?.id ?? "new"}
-                      id="model-effort"
-                      value={effortTouched ? effort : effort || legacyEffort}
-                      onChange={(v) => {
-                        setEffortTouched(true);
-                        setEffort(v);
-                      }}
-                      hint={
-                        legacyEffort && !effortTouched
-                          ? t("from extra parameters", "aus Extra-Parametern")
-                          : undefined
-                      }
-                      emptyLabel={t("Not set", "Nicht gesetzt")}
-                    />
-                    <p className="mt-1 text-[11px] text-muted-foreground">
-                      {t(
-                        "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed.",
-                        "Wie gründlich dieses Modell nachdenkt, wenn weder der Chat noch der Agent eine Stufe setzt. Ein eigener Wert geht unverändert an den Anbieter.",
+                      <label className="flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={canThinkShown}
+                          onChange={(e) => setCanThink(e.target.checked)}
+                        />
+                        <span>
+                          {t("Can think", "Kann nachdenken")}
+                          <span className="block text-[11px] text-muted-foreground">
+                            {t(
+                              "Shows the reasoning-level control in chats on this model and sends the chosen level to the provider.",
+                              "Zeigt im Chat auf diesem Modell die Denkstufe an und schickt die gewählte Stufe an den Anbieter.",
+                            )}
+                          </span>
+                        </span>
+                      </label>
+
+                      {editing && (
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground">
+                            {t("Max output tokens (optional)", "Max. Output-Tokens (optional)")}
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            placeholder="4096"
+                            value={maxTokens}
+                            onChange={(e) => setMaxTokens(e.target.value)}
+                            className="w-full rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+                          />
+                          <p className="mt-1 text-[11px] text-muted-foreground">
+                            {t(
+                              "How much an agent on this model may write per turn, before oc8 cuts it off. Leave blank for the server default (4096, or OC8_DEFAULT_MAX_TOKENS). Raise this for reasoning-heavy models on large tasks — hidden reasoning tokens count against this budget too.",
+                              "Wie viel ein Agent auf diesem Modell pro Zug schreiben darf, bevor oc8 abschneidet. Leer lassen für den Server-Standard (4096 oder OC8_DEFAULT_MAX_TOKENS). Bei reasoning-lastigen Modellen und großen Aufgaben höher setzen — auch unsichtbare Reasoning-Tokens zählen gegen dieses Budget.",
+                            )}
+                          </p>
+                        </label>
                       )}
-                    </p>
-                  </div>
+
+                      <div className="block">
+                        <label
+                          htmlFor="model-effort"
+                          className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground"
+                        >
+                          {t("Effort (optional)", "Effort (optional)")}
+                        </label>
+                        <EffortField
+                          key={editing?.id ?? "new"}
+                          id="model-effort"
+                          value={effortTouched ? effort : effort || legacyEffort}
+                          onChange={(v) => {
+                            setEffortTouched(true);
+                            setEffort(v);
+                          }}
+                          hint={
+                            legacyEffort && !effortTouched
+                              ? t("from extra parameters", "aus Extra-Parametern")
+                              : undefined
+                          }
+                          emptyLabel={t("Not set", "Nicht gesetzt")}
+                        />
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          {t(
+                            "How hard this model thinks when neither the chat nor the agent sets a level. A custom value is forwarded to the provider as typed.",
+                            "Wie gründlich dieses Modell nachdenkt, wenn weder der Chat noch der Agent eine Stufe setzt. Ein eigener Wert geht unverändert an den Anbieter.",
+                          )}
+                        </p>
+                      </div>
+                    </>
+                  )}
 
                   {supportsRawParams(effectiveProvider) && (
                     <RawParamsEditor pairs={rawParams} onChange={setRawParams} />

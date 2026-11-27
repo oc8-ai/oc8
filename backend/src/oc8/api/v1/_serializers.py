@@ -17,6 +17,7 @@ from oc8.knowledge.browse import BrowseListing
 from oc8.knowledge.chunks import ChunkRow, DocumentSummary
 from oc8.knowledge.retrieval import SimilarChunkRow
 from oc8.modelrouter.registry import canonical_provider
+from oc8.modelrouter.speech import capability_of
 from oc8.models.core import DEPARTMENT_KIND_STANDARD
 from oc8.schemas.dto import (
     ActivityDTO,
@@ -394,6 +395,7 @@ def _chosen_agent(raw: Any) -> DirectAccessChosenAgentDTO | None:
 
 def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) -> ApprovalDTO:
     # Lazy import to avoid cycles: approvals -> records.links -> agent -> approvals
+    from oc8.approvals.allow_rules import rule_eligible
     from oc8.records.links import safe_url
 
     payload: dict[str, Any] = a.payload or {}
@@ -466,6 +468,7 @@ def approval_to_dto(a: m.ApprovalRequest, names: ApprovalNames | None = None) ->
             and (safe := safe_url(x.get("url")))
         ],
         result_url=safe_url(a.result_url),
+        always_allow_offered=a.status == "pending" and rule_eligible(a),
     )
 
 
@@ -618,6 +621,7 @@ def model_to_dto(mc: m.ModelConfig, assigned_to: list[str]) -> ModelDTO:
         used_by_copilot=bool(mc.used_by_copilot),
         # Same INSERT-time default caveat as above; the column defaults to on.
         chat_enabled=mc.chat_enabled is not False,
+        capability=capability_of(mc),
         # Same INSERT-time default caveat; the column defaults to off.
         supports_reasoning=bool(mc.supports_reasoning),
         credential_id=str(mc.credential_id) if mc.credential_id else None,

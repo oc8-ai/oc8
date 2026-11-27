@@ -1,7 +1,15 @@
 // frontend/src/components/conversation/conversation.tsx
 // The one chat (spec §2.1). Every surface mounts this; only spacing differs
 // between "full" (Copilot page, Live tab) and "compact" (dock, My Work).
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, BookOpen, Bot, CornerDownRight, Database, X } from "lucide-react";
 
@@ -13,16 +21,22 @@ import {
   MAX_PINS,
   pinErrorText,
   useAnswerQuestion,
+  useEditMessage,
   useRegenerate,
+  useSetLeaf,
   useRunSteering,
   useSendRunInput,
   useSetChatMode,
   useSetPins,
   useStopRun,
   useTurnRun,
+  runSteeringKey,
+  withRunInput,
   type ChatSessionDetailDTO,
   type ContextItem,
   type LiveRunDTO,
+  type QueuedTurnDTO,
+  type RunSteeringDTO,
 } from "@/lib/conversation-api";
 import { detectCommand, LOCAL_COMMANDS } from "@/lib/chat-commands";
 import { nextStepChips } from "@/lib/chat-suggestions";
@@ -31,18 +45,25 @@ import { mayActOn, useApprovals, useAuth, useBudgetStatus, type Approval } from 
 import {
   appendMessage,
   chatKeys,
+  isQueuedTurn,
   useCreateChatSession,
   useSendChatMessage,
   type ChatMessageDTO,
 } from "@/lib/hooks-chat";
 import { useMay } from "@/lib/governance-hooks";
 import { useLang, useT } from "@/lib/i18n";
+import { resetPython } from "@/lib/python-reset";
 import { useWatchRuns } from "@/lib/live/provider";
 import type { ReasoningLevel } from "@/lib/reasoning-levels";
+import { useWebChoice, useWebSearchAvailable } from "@/lib/web-search";
 import { cn } from "@/lib/utils";
 
 import { SidePanelProvider } from "@/edition/slots";
+import { ArtifactPanel } from "./artifacts/artifact-panel";
+import { ArtifactsContext, useArtifactsPanel, usePanelAsSheet } from "./artifacts/context";
+import { PythonRunContext, usePythonScopeFor } from "./python/run-context";
 import { AssistantTurn } from "./assistant-turn";
+import { TemporaryChatChip } from "./chat-title";
 import { Composer, type ComposerSubmit, type PlusMenuItem } from "./composer";
 import { ContextSearchDialog } from "./context-search";
 import { DataSourceBrowser } from "./data-source-browser";
@@ -52,6 +73,7 @@ import { AgentModeChip } from "./agent-mode-chip";
 import { PinnedBar } from "./pinned-bar";
 import { PromptStarters, type PromptStarter } from "./prompt-starters";
 import { QuestionCard } from "./question-card";
+import { useLeaveTemporaryChat } from "./temporary-chat";
 import { RunInputs, runInputError } from "./run-steering";
 import { SuggestionChips, type ReplyChip } from "./suggestion-chips";
 import type { AssistantTurnModel, ConversationVariant, TurnModel } from "./types";
@@ -156,10 +178,25 @@ interface SendFailure {
 }
 
 /** Why a message did not go out, by the server's answer (Ruling 53). */
+function temporaryGoneText(t: Translate): string {
+  return t("This temporary chat was deleted.", "Dieser temporäre Chat wurde gelöscht.");
+}
+
 function sendErrorText(error: unknown, t: Translate): string {
   const status = error instanceof ApiError ? error.status : null;
   if (status === 403) {
     return t("You may not write to this agent.", "Du darfst diesem Agenten nicht schreiben.");
+  }
+  if (status === 409 && error instanceof ApiError && /still running/.test(error.message)) {
+    return /text only/.test(error.message)
+      ? t(
+          "An answer is still running — send text only, or wait.",
+          "Eine Antwort läuft noch – schick nur Text oder warte.",
+        )
+      : t(
+          "An answer is still running — wait for it to finish.",
+          "Eine Antwort läuft noch – warte, bis sie fertig ist.",
+        );
   }
   if (status === 404) {
     return t(
@@ -236,6 +273,12 @@ export interface ConversationProps {
   /** This is the Copilot's own chat: `/agent` (Agent mode) is offered. It is
    *  the Assistant's alone -- the server refuses it in any other chat. */
   agentMode?: boolean;
+  /** The new chat this starts (no `sessionId` yet) is a temporary one
+   *  (spec §5.6). An open chat says so itself (`temporary` on the session). */
+  temporary?: boolean;
+  /** A temporary chat was deleted because this view left it
+   *  (`useLeaveTemporaryChat`), also after this view unmounted. */
+  onTemporaryLeft?: (sessionId: string) => void;
 }
 
 function TurnSkeletons() {
@@ -265,6 +308,10 @@ function ConversationBody(props: ConversationProps) {
   const { data: me } = useAuth();
   const { lang } = useLang();
   const conv = useConversation(props.sessionId);
+  const artifacts = useArtifactsPanel(props.sessionId, conv.turns);
+  // "Send result to chat" under a Python run goes through `sendText` below.
+  const sendTextRef = useRef<(text: string) => void>(() => undefined);
+  const sendResult = useCallback((text: string) => sendTextRef.current(text), []);
   const [outbox, setOutbox] = useState<Outbox | null>(null);
   // Stored message id -> the outbox id its turn was first shown under.
   const [aliases, setAliases] = useState<Record<string, string>>({});
@@ -374,6 +421,13 @@ function ConversationBody(props: ConversationProps) {
   const createSession = useCreateChatSession();
   const sendMessage = useSendChatMessage(props.sessionId ?? "");
   const regenerate = useRegenerate(props.sessionId);
+  const editMessage = useEditMessage(props.sessionId);
+  // The composer's "Web" switch; it goes with a send, a regenerate and an
+  // edit alike, and only while the tenant has a search provider.
+  const webAvailable = useWebSearchAvailable();
+  const [webChoice, setWebChoice] = useWebChoice();
+  const web = webAvailable && webChoice;
+  const setLeaf = useSetLeaf(props.sessionId);
   const stopRun = useStopRun();
   // Any new row re-checks the bottom; an older page landing on top moves
   // only a reader already there (the anchoring below keeps everyone else).
@@ -419,6 +473,23 @@ function ConversationBody(props: ConversationProps) {
     return () => el.removeEventListener("scroll", onScroll);
   }, [ref]);
   const readOnly = !!conv.session?.readOnly;
+  // Not kept: marked, never rated, and deleted once left (spec §5.6).
+  const temporaryChat = props.sessionId ? !!conv.session?.temporary : !!props.temporary;
+  useLeaveTemporaryChat(props.sessionId, !!conv.session?.temporary, props.onTemporaryLeft);
+  // Left in another browser tab, the temporary chat is gone here too: say
+  // so and start a new chat in its place.
+  const temporaryGone =
+    temporaryChat &&
+    !!props.sessionId &&
+    conv.sessionError instanceof ApiError &&
+    conv.sessionError.status === 404;
+  useEffect(() => {
+    if (!temporaryGone) return;
+    setSendError({ text: temporaryGoneText(t) });
+    keepError.current = true;
+    props.onSessionChange(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per chat gone
+  }, [temporaryGone]);
   // The question the chat's run is parked on (spec §4.1). That run waits for
   // the reader, so it does not make the chat busy: the composer answers it.
   const pending = (!readOnly && conv.session?.pendingQuestion) || null;
@@ -429,6 +500,9 @@ function ConversationBody(props: ConversationProps) {
     if (pending) setQuestionNotice(null);
   }, [pending]);
   const busy = conv.liveRunIds.some((id) => id !== pending?.runId);
+  const python = usePythonScopeFor(conv.turns, readOnly ? null : sendResult, busy);
+  // What Python ran for ends with the chat: another chat, or none.
+  useEffect(() => () => resetPython(), [props.sessionId]);
   // Ruling 52: while the reader's own answer is being written, what they
   // type goes to that run (POST /runs/{id}/inputs). A surface that routes
   // the composer itself (the Live tab, to a timeline run) goes first; its
@@ -438,8 +512,15 @@ function ConversationBody(props: ConversationProps) {
     : null;
   const { data: replySteering } = useRunSteering(replyRunId);
   const sendReplyInput = useSendRunInput(replyRunId);
+  // Ruling R10: while a question is open the composer answers it, even when
+  // another answer of the chat runs -- no steering, no queueing then.
   const steerReply =
-    !!replyRunId && !!replySteering?.mayWrite && replySteering.acceptsInputs && busy;
+    !pending && !!replyRunId && !!replySteering?.mayWrite && replySteering.acceptsInputs && busy;
+  // Spec §5.5: in an ordinary chat a message can also wait for the running
+  // answer and become the next one ("Send after") -- never a parallel turn.
+  // The Live tab keeps its own send.
+  const queueReply =
+    !pending && conv.session?.kind === "chat" && !!replyRunId && !!replySteering?.mayWrite && busy;
   // Ruling 51: a new chat's model is chosen before its first message. The
   // pick is held here and written right after the chat exists, before the
   // first message goes out (one after the other, never racing).
@@ -679,7 +760,8 @@ function ConversationBody(props: ConversationProps) {
 
   function ensureSession(): Promise<string> {
     if (props.sessionId) return Promise.resolve(props.sessionId);
-    creating.current ??= createSession.mutateAsync(props.agentId).then(
+    const target = props.temporary ? { agentId: props.agentId, temporary: true } : props.agentId;
+    creating.current ??= createSession.mutateAsync(target).then(
       (session) => {
         // Seed the new chat's caches so it does not flash skeletons between
         // being created and its first message landing.
@@ -771,13 +853,37 @@ function ConversationBody(props: ConversationProps) {
     }
     if (steerReply && replyRunId) {
       try {
-        await sendReplyInput.mutateAsync(submit.text);
+        await sendReplyInput.mutateAsync({ text: submit.text, delivery: "steer" });
       } catch (error) {
         if (fromComposer) setDraft(submit.text);
         setSendError({ text: runInputError(error, t) });
       }
       return;
     }
+    await sendAsMessage(submit, fromComposer);
+  }
+
+  /** "Send after": waits on the running answer, the next message once it is
+   *  done (spec §5.5). */
+  async function onSendAfter(submit: ComposerSubmit) {
+    followFromHere();
+    setSendError(null);
+    setDraft("");
+    try {
+      await sendReplyInput.mutateAsync({ text: submit.text, delivery: "next_turn", web });
+    } catch (error) {
+      // The answer ended meanwhile: the message simply goes out now.
+      if (error instanceof ApiError && error.status === 409 && /finished/.test(error.message)) {
+        await sendAsMessage(submit, true);
+        return;
+      }
+      setDraft(submit.text);
+      setSendError({ text: runInputError(error, t) });
+    }
+  }
+
+  /** A message to the chat (POST /chat/sessions/{id}/messages). */
+  async function sendAsMessage(submit: ComposerSubmit, fromComposer: boolean) {
     outboxSeq += 1;
     const outboxId = `outbox-${outboxSeq}`;
     setOutbox({
@@ -797,6 +903,7 @@ function ConversationBody(props: ConversationProps) {
           : submit.text,
       attachmentIds: submit.attachmentIds,
       contextRefs: submit.contextRefs.map(({ kind, id }) => ({ kind, id })),
+      ...(web && { web: true }),
     };
     let modelRefused = false;
     let effortRefused = false;
@@ -816,19 +923,33 @@ function ConversationBody(props: ConversationProps) {
         effortRefused = true;
         throw error;
       });
-      let message: ChatMessageDTO;
+      let sent: ChatMessageDTO | QueuedTurnDTO;
       if (sessionId === props.sessionId) {
-        message = await sendMessage.mutateAsync(body);
+        sent = await sendMessage.mutateAsync(body);
       } else {
         // `sendMessage` is bound to the id this render had (none yet).
-        message = await api.post<ChatMessageDTO>(
+        sent = await api.post<ChatMessageDTO | QueuedTurnDTO>(
           `/chat/sessions/${encodeURIComponent(sessionId)}/messages`,
           body,
         );
-        qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
-          appendMessage(prev, message),
-        );
+        const stored = sent;
+        if (!isQueuedTurn(stored)) {
+          qc.setQueryData<ChatMessageDTO[]>(chatKeys.messages(sessionId), (prev) =>
+            appendMessage(prev, stored),
+          );
+        }
       }
+      if (isQueuedTurn(sent)) {
+        // An answer was still running (202): the message waits for it, listed
+        // under the composer, and becomes the next turn once it is done.
+        const { runId, input } = sent;
+        setOutbox((prev) => (prev?.id === outboxId ? null : prev));
+        qc.setQueryData<RunSteeringDTO>(runSteeringKey(runId), (prev) => withRunInput(prev, input));
+        void qc.invalidateQueries({ queryKey: runSteeringKey(runId) });
+        void qc.invalidateQueries({ queryKey: conversationKeys.session(sessionId) });
+        return;
+      }
+      const message = sent;
       setAliases((prev) => ({ ...prev, [message.id]: outboxId }));
       setOutbox((prev) =>
         prev?.id === outboxId
@@ -871,7 +992,7 @@ function ConversationBody(props: ConversationProps) {
       }
       const gone = status === 404 && !!props.sessionId;
       setSendError({
-        text: sendErrorText(error, t),
+        text: gone && temporaryChat ? temporaryGoneText(t) : sendErrorText(error, t),
         // Resending cannot help a refusal or a rejected message. A chat that
         // is gone loses its uploads with it.
         retry:
@@ -949,21 +1070,24 @@ function ConversationBody(props: ConversationProps) {
 
   function onRegenerate(replyToId: string) {
     setSendError(null);
-    regenerate.mutate(replyToId, {
-      onError: (error) =>
-        setSendError({
-          text:
-            error instanceof ApiError && error.status === 409
-              ? t(
-                  "An answer is still being written. Try again once it's done.",
-                  "Es wird noch eine Antwort geschrieben. Versuch es noch einmal, wenn sie fertig ist.",
-                )
-              : t(
-                  "No new answer was started. Try again.",
-                  "Es wurde keine neue Antwort gestartet. Versuch es noch einmal.",
-                ),
-        }),
-    });
+    regenerate.mutate(
+      { messageId: replyToId, web },
+      {
+        onError: (error) =>
+          setSendError({
+            text:
+              error instanceof ApiError && error.status === 409
+                ? t(
+                    "An answer is still being written. Try again once it's done.",
+                    "Es wird noch eine Antwort geschrieben. Versuch es noch einmal, wenn sie fertig ist.",
+                  )
+                : t(
+                    "No new answer was started. Try again.",
+                    "Es wurde keine neue Antwort gestartet. Versuch es noch einmal.",
+                  ),
+          }),
+      },
+    );
   }
 
   /** A local command (/budget) is answered here, never sent as a message. */
@@ -971,20 +1095,54 @@ function ConversationBody(props: ConversationProps) {
     if (key === "budget") setShowBudget(true);
   }
 
+  /** Show another branch; a failure leaves the view where it was. */
+  function onSwitchBranch(messageId: string) {
+    setSendError(null);
+    setLeaf.mutate(messageId, {
+      onError: () =>
+        setSendError({
+          text: t(
+            "The other version was not opened. Try again.",
+            "Die andere Version wurde nicht geöffnet. Versuch es noch einmal.",
+          ),
+        }),
+    });
+  }
+
   function renderTurn(turn: TurnModel) {
+    // A chat with a message tree edits in place and keeps every version; a
+    // linear chat (no leaf) keeps "edit and resend" through the composer.
+    const inTree = !!conv.session?.currentLeafId;
+    const viewerId = me?.memberId ?? null;
     return turn.kind === "user" ? (
       <UserTurn
         turn={turn}
-        viewerMemberId={me?.memberId ?? null}
-        canEdit={!readOnly && turn === lastUser && !busy}
+        viewerMemberId={viewerId}
+        canEdit={
+          inTree
+            ? !readOnly &&
+              !busy &&
+              turn.message.role === "user" &&
+              !!viewerId &&
+              turn.message.authorMemberId === viewerId
+            : !readOnly && turn === lastUser && !busy
+        }
         onEdit={(text) => setDraft(text)}
+        onSave={
+          inTree
+            ? (content) => editMessage.mutateAsync({ messageId: turn.message.id, content, web })
+            : undefined
+        }
+        onSwitch={inTree ? onSwitchBranch : undefined}
       />
     ) : (
       <AssistantTurn
         sessionId={props.sessionId}
         turn={turn}
         readOnly={readOnly}
+        noFeedback={temporaryChat}
         onRegenerate={busy ? undefined : onRegenerate}
+        onSelectVariant={conv.session?.currentLeafId ? onSwitchBranch : undefined}
         {...assistantExtras(turn)}
       />
     );
@@ -1084,9 +1242,13 @@ function ConversationBody(props: ConversationProps) {
     if (busy) return;
     void onSend({ text, attachmentIds: [], contextRefs: [] }, false);
   };
+  sendTextRef.current = sendText;
   const empty =
     typeof props.emptyState === "function" ? props.emptyState(sendText) : props.emptyState;
   const full = props.variant === "full";
+  // An answer's artifact opens beside the chat; a sheet in the compact chat
+  // and on narrow screens.
+  const panelAsSheet = usePanelAsSheet() || !full;
   const questionAbove =
     pending && props.sessionId ? (
       dismissed === pending.clarificationId ? (
@@ -1116,8 +1278,13 @@ function ConversationBody(props: ConversationProps) {
         {questionNotice}
       </p>
     ) : null;
-  return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
+  const chat = (
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      {temporaryChat && (
+        <div className="flex justify-center border-b border-border px-3 py-1.5">
+          <TemporaryChatChip />
+        </div>
+      )}
       <div
         ref={ref}
         data-testid="conversation-scroller"
@@ -1215,7 +1382,10 @@ function ConversationBody(props: ConversationProps) {
         ref={composerArea}
         className={cn(
           "relative mx-auto w-full max-w-[47.5rem]",
-          full ? "px-4 pb-4 md:px-6" : "px-3 pb-3",
+          // Clear of the home indicator and, on iOS, the keyboard.
+          full
+            ? "px-4 pb-[calc(1rem+var(--bottom-inset,0px))] md:px-6"
+            : "px-3 pb-[calc(0.75rem+var(--bottom-inset,0px))]",
         )}
       >
         {!atBottom && (
@@ -1286,12 +1456,14 @@ function ConversationBody(props: ConversationProps) {
           onModelPick={firstMessage ? setHeldModel : undefined}
           effortValue={heldEffort !== undefined ? heldEffort : (conv.session?.effort ?? null)}
           onEffortPick={firstMessage ? setHeldEffort : undefined}
-          sendWhileBusy={steerReply || !!props.sendWhileBusy}
+          web={webAvailable && !readOnly ? { on: webChoice, onChange: setWebChoice } : undefined}
+          sendWhileBusy={steerReply || !!pending || !!props.sendWhileBusy}
+          onSendAfter={queueReply ? (s) => void onSendAfter(s) : undefined}
           agentItems={props.agentItems}
           onAddressAgent={props.onAddressAgent}
           target={
             props.composerTarget ??
-            (steerReply ? (
+            (steerReply && !queueReply ? (
               <span className="inline-flex items-center gap-1">
                 <CornerDownRight className="size-3.5" aria-hidden />
                 {t("Goes to the running answer", "Geht an die laufende Antwort")}
@@ -1325,6 +1497,7 @@ function ConversationBody(props: ConversationProps) {
           disabled={readOnly}
           autoFocus={props.autoFocus}
         />
+        {queueReply && replyRunId && <RunInputs runId={replyRunId} runState="running" queued />}
         {!readOnly && (
           <>
             <DataSourceBrowser
@@ -1349,5 +1522,22 @@ function ConversationBody(props: ConversationProps) {
         )}
       </div>
     </div>
+  );
+  return (
+    <ArtifactsContext.Provider value={artifacts.context}>
+      <PythonRunContext.Provider value={python}>
+        <div className="flex min-h-0 min-w-0 flex-1">
+          {chat}
+          <ArtifactPanel
+            artifact={artifacts.current}
+            versions={artifacts.versions}
+            mode={artifacts.mode}
+            onSelect={artifacts.open}
+            onClose={artifacts.close}
+            asSheet={panelAsSheet}
+          />
+        </div>
+      </PythonRunContext.Provider>
+    </ArtifactsContext.Provider>
   );
 }

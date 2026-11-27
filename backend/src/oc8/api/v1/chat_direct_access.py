@@ -29,6 +29,7 @@ from oc8.approvals import (
     load_direct_access_card,
     member_direct_access_cards,
 )
+from oc8.approvals.allow_rules import NotEligible, create_rule_from_approval, rule_eligible
 from oc8.authz.permissions import AGENT, COPILOT_USE, VIEW, perm
 from oc8.authz.scope import HumanActor
 from oc8.chat.service import get_session
@@ -39,6 +40,8 @@ from oc8.schemas.dto import ApprovalDTO, DirectAccessGrantDTO
 from oc8.schemas.requests import ApprovalDecisionRequest
 
 router = APIRouter()
+
+_NOT_ELIGIBLE = "always allow covers only your own write-tier approval"
 
 _ChatActor = Annotated[
     HumanActor, Depends(require_departmental(perm(AGENT, VIEW), or_tenant_wide=COPILOT_USE))
@@ -94,6 +97,10 @@ async def decide_direct_access(
     approval = await load_direct_access_card(db, approval_id, member_id=actor.member.id)
     if approval is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "approval not found")
+    allow = body.always_allow and body.decision == "approve"
+    if allow and (body.agent_id is not None or not rule_eligible(approval)):
+        # Before deciding: a refused rule must not leave a decision behind.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _NOT_ELIGIBLE)
     try:
         result = await decide_approval(
             db,
@@ -122,6 +129,12 @@ async def decide_direct_access(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except EffectRefused as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if allow:
+        try:
+            # Same transaction as the decision: both stand, or neither.
+            await create_rule_from_approval(db, approval=result.approval, member_id=actor.member.id)
+        except NotEligible as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, _NOT_ELIGIBLE) from exc
     dto = approval_to_dto(result.approval)
     dto.resumed = result.resumed_run_id is not None
     if (

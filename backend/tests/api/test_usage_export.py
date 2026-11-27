@@ -9,6 +9,8 @@ repeat rows forever or skip them. The export cursor must be the composite
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import uuid
 from datetime import UTC, datetime
@@ -259,3 +261,42 @@ async def test_cost_micros_prices_each_row_at_its_own_time_not_todays_rate(
     assert old_row["costMicros"] == expected_old_cost
     assert new_row["costMicros"] == expected_new_cost
     assert old_row["costMicros"] != new_row["costMicros"]
+
+
+async def test_usage_export_includes_member(app_session: AppSessionFactory) -> None:
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as s:
+        member = m.OrgMember(
+            tenant_id=tenant, subject="anna", subject_uuid=uuid.uuid4(), display_name="Anna"
+        )
+        s.add(member)
+        await s.flush()
+        for i, member_id in enumerate([member.id, None]):
+            s.add(
+                m.TokenUsageRecord(
+                    tenant_id=tenant,
+                    request_id=uuid.uuid4(),
+                    model="claude-sonnet-4",
+                    provider="anthropic",
+                    tokens_in=10,
+                    tokens_out=5,
+                    member_id=member_id,
+                    ts=datetime(2026, 1, 1, i, tzinfo=UTC),
+                )
+            )
+        await s.commit()
+    r = await _get(create_app(), "/api/v1/usage/export?format=csv", tenant)
+    assert r.status_code == 200, r.text
+    rows = list(csv.DictReader(io.StringIO(r.text)))
+    header = r.text.splitlines()[0].split(",")
+    assert header.index("memberId") == header.index("departmentName") + 1
+    assert header.index("memberName") == header.index("memberId") + 1
+    assert rows[0]["memberId"] == str(member.id)
+    assert rows[0]["memberName"] == "Anna"
+    assert rows[1]["memberId"] == ""
+    assert rows[1]["memberName"] == ""
+
+    jsonl = await _get(create_app(), "/api/v1/usage/export?format=jsonl", tenant)
+    records = [json.loads(ln) for ln in jsonl.text.splitlines() if ln.strip()]
+    assert records[0]["memberName"] == "Anna"
+    assert records[1]["memberId"] is None

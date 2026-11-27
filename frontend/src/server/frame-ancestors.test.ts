@@ -5,6 +5,8 @@ import { isAllowedAncestor, withFrameAncestors } from "./frame-ancestors";
 
 const request = new Request("https://app.example.com/");
 const csp = (res: Response) => res.headers.get("content-security-policy");
+// What every page may frame: nothing by URL (artifact previews are srcdoc).
+const NESTED = "; frame-src 'none'; child-src 'self' blob:";
 const hooksFor = (origins: readonly string[]): EditionServerHooks => ({
   frameAncestors: async () => origins,
 });
@@ -16,7 +18,7 @@ afterEach(() => {
 describe("withFrameAncestors", () => {
   it("sets frame-ancestors 'self' without hooks", async () => {
     const res = await withFrameAncestors(request, new Response("ok"), {});
-    expect(csp(res)).toBe("frame-ancestors 'self'");
+    expect(csp(res)).toBe("frame-ancestors 'self'" + NESTED);
     expect(await res.text()).toBe("ok");
   });
 
@@ -26,7 +28,7 @@ describe("withFrameAncestors", () => {
       new Response("ok"),
       hooksFor(["https://erp.example.com"]),
     );
-    expect(csp(res)).toBe("frame-ancestors 'self' https://erp.example.com");
+    expect(csp(res)).toBe("frame-ancestors 'self' https://erp.example.com" + NESTED);
   });
 
   it("drops invalid origins", async () => {
@@ -42,7 +44,9 @@ describe("withFrameAncestors", () => {
         "http://localhost:8069",
       ]),
     );
-    expect(csp(res)).toBe("frame-ancestors 'self' https://ok.example.com http://localhost:8069");
+    expect(csp(res)).toBe(
+      "frame-ancestors 'self' https://ok.example.com http://localhost:8069" + NESTED,
+    );
   });
 
   it("falls back to 'self' when the hook throws", async () => {
@@ -51,7 +55,7 @@ describe("withFrameAncestors", () => {
         throw new Error("boom");
       },
     });
-    expect(csp(res)).toBe("frame-ancestors 'self'");
+    expect(csp(res)).toBe("frame-ancestors 'self'" + NESTED);
   });
 
   it("falls back to 'self' when the hook is slower than 2000 ms", async () => {
@@ -61,7 +65,7 @@ describe("withFrameAncestors", () => {
         new Promise((resolve) => setTimeout(() => resolve(["https://late.example.com"]), 5000)),
     });
     await vi.advanceTimersByTimeAsync(2001);
-    expect(csp(await pending)).toBe("frame-ancestors 'self'");
+    expect(csp(await pending)).toBe("frame-ancestors 'self'" + NESTED);
   });
 
   it("keeps an existing CSP and appends the directive", async () => {
@@ -70,7 +74,7 @@ describe("withFrameAncestors", () => {
       new Response("ok", { headers: { "content-security-policy": "script-src 'self'" } }),
       {},
     );
-    expect(csp(res)).toBe("script-src 'self'; frame-ancestors 'self'");
+    expect(csp(res)).toBe("script-src 'self'; frame-ancestors 'self'" + NESTED);
   });
 
   it("replaces an existing frame-ancestors directive", async () => {
@@ -81,7 +85,20 @@ describe("withFrameAncestors", () => {
       }),
       hooksFor(["https://erp.example.com"]),
     );
-    expect(csp(res)).toBe("script-src 'self'; frame-ancestors 'self' https://erp.example.com");
+    expect(csp(res)).toBe(
+      "script-src 'self'; frame-ancestors 'self' https://erp.example.com" + NESTED,
+    );
+  });
+
+  it("replaces frame-src and child-src a response brings", async () => {
+    const res = await withFrameAncestors(
+      request,
+      new Response("ok", {
+        headers: { "content-security-policy": "frame-src *; child-src *; img-src 'self'" },
+      }),
+      {},
+    );
+    expect(csp(res)).toBe("img-src 'self'; frame-ancestors 'self'" + NESTED);
   });
 
   it("keeps status and other headers", async () => {

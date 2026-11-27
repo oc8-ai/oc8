@@ -4,6 +4,7 @@
 import { errorCode } from "@/lib/hire-error";
 import type { ConnectionRequiredInfo, ToolDeniedInfo, ToolNoticeInfo } from "@/lib/connections";
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useMutation,
   useQueries,
@@ -173,6 +174,8 @@ export interface Approval {
   proposalId?: string | null;
   // A Copilot direct-access offer or held write; null/absent for every other kind.
   directAccess?: DirectAccessInfo | null;
+  // The person's own pending write-tier card: it may offer "Always allow for me".
+  alwaysAllowOffered?: boolean;
 }
 
 /** A question an agent parked mid-run. The other half of the workspace queue. */
@@ -328,6 +331,9 @@ export interface ModelDTO {
   // these, the provider does. null/undefined means "none set".
   extra?: Record<string, unknown> | null;
   usedByCopilot: boolean;
+  /** What the model is for (spec 2026-11-27 §9). A speech model is never
+   *  offered to chats (`chatEnabled` false). Absent on an older backend: chat. */
+  capability?: ModelCapability;
   // Whether members may pick this model in a chat. Absent on an older
   // backend, where every model was pickable.
   chatEnabled?: boolean;
@@ -345,6 +351,8 @@ export interface ModelDTO {
   autoPreferenceRouter?: boolean;
   autoPreferenceExamples?: Array<Record<string, unknown>> | null;
 }
+
+export type ModelCapability = "chat" | "speech_to_text" | "text_to_speech";
 
 export interface ModelProviderDTO {
   canonical: string;
@@ -387,6 +395,8 @@ export interface ModelWriteBody {
   extra?: Record<string, unknown>;
   usedByCopilot?: boolean;
   chatEnabled?: boolean;
+  /** Left out on an update, the stored capability is kept. */
+  capability?: ModelCapability;
   supportsVision?: boolean;
   supportsReasoning?: boolean;
   credentialId?: string | null;
@@ -2566,6 +2576,39 @@ export function useUsage(
   });
 }
 
+export type UsageRange = "24h" | "7d" | "30d";
+
+/** One stacked series of GET /usage/timeseries: a member, everyone beyond
+ *  the top ten (`others`), or usage no person is attached to (`none`). */
+export interface UsageSeriesDTO {
+  key: string;
+  memberId: string | null;
+  /** Display name, else the email (only for `member:view` holders); null otherwise. */
+  name: string | null;
+  total: number;
+  /** points[i] belongs to buckets[i]. */
+  points: number[];
+}
+
+export interface UsageTimeseriesDTO {
+  range: UsageRange;
+  bucket: "hour" | "day";
+  /** Organisation time zone the bucket boundaries are cut in. */
+  timezone: string;
+  /** ISO start of each bucket; the count varies across a DST switch. */
+  buckets: string[];
+  series: UsageSeriesDTO[];
+}
+
+export function useUsageTimeseries(range: UsageRange) {
+  return useQuery({
+    queryKey: ["usage-timeseries", range],
+    queryFn: () => api.get<UsageTimeseriesDTO>(`/usage/timeseries?range=${range}`),
+    // Switching the range keeps the previous chart up until the new one lands.
+    placeholderData: keepPreviousData,
+  });
+}
+
 export interface BudgetDTO {
   id: string;
   departmentId: string | null;
@@ -3534,6 +3577,35 @@ export function useRevokeChannelBinding() {
   });
 }
 
+// ---- Always-allowed tools ("always allow for me") ----------------------------
+// The caller's own rules, made on an approval card and revoked on the profile.
+
+export interface ToolAllowRule {
+  id: string;
+  agentId: string;
+  agentName: string;
+  /** null for a core tool, and once the connection is gone. */
+  connectionName: string | null;
+  toolKey: string;
+  createdAt: string;
+}
+
+export function useToolAllowRules() {
+  return useQuery({
+    queryKey: ["tool-allow-rules"],
+    queryFn: () => api.get<ToolAllowRule[]>("/tool-allow-rules"),
+  });
+}
+
+export function useRevokeToolAllowRule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ruleId: string) =>
+      api.delete<void>(`/tool-allow-rules/${encodeURIComponent(ruleId)}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["tool-allow-rules"] }),
+  });
+}
+
 // ---- Secret store (§12.3) ---------------------------------------------------
 // Metadata only. The API has no resolve-over-HTTP endpoint and SecretDTO carries
 // no value field, so a secret's plaintext can never reach the browser — not even
@@ -3794,6 +3866,36 @@ export function useTenantKpis(params?: TenantKPIFilterParams) {
     // 5xx) keeps the default retry-3 behavior.
     retry: (failureCount, error) => {
       if (error instanceof ApiError && error.status === 422) return false;
+      return failureCount < 3;
+    },
+  });
+}
+
+/** One row of `GET /stats/feedback`: answer ratings for one agent and model.
+ *  `model` is null for a rating that predates naming it. Like `GET /kpis`'
+ *  agent rows, a personal agent gets none. */
+export interface FeedbackCount {
+  agentId: string;
+  agentName: string;
+  /** The tenant Assistant (Copilot): shown as "Copilot", not its stored name. */
+  isAssistant: boolean;
+  model: string | null;
+  up: number;
+  down: number;
+}
+
+export type FeedbackCountFilterParams = Omit<TenantKPIFilterParams, "groupBy" | "status">;
+
+/** Answer feedback per agent and model -- same gate and filters as `GET /kpis`. */
+export function useFeedbackCounts(params?: FeedbackCountFilterParams) {
+  return useQuery({
+    queryKey: ["stats", "feedback", params] as const,
+    queryFn: () =>
+      api.get<FeedbackCount[]>(`/stats/feedback${buildQuery(params as Record<string, unknown>)}`),
+    // A 404 is the filter naming an agent or department whose feedback is
+    // not counted -- deterministic, so retrying only delays saying so.
+    retry: (failureCount, error) => {
+      if (error instanceof ApiError && error.status === 404) return false;
       return failureCount < 3;
     },
   });

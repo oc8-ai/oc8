@@ -4,6 +4,15 @@ A task is static data plus the name of a scenario module that owns the four
 lifecycle hooks (setup / expect / forbid / teardown). Everything the agent
 sees is `task_text`; everything the scorer sees comes from the hooks reading
 the target system -- never the transcript.
+
+`kind = "chat"` makes the attempt a chat turn instead of a fixture run: the
+harness opens a member's chat session first (`stack.create_chat_fixture`),
+`setup` seeds it, and `task_text` is sent as the member's next turn -- unless
+the scenario defines the optional `start` hook, which starts the turn itself
+(an edit, a regenerate, a turn that is decided mid-way) and returns its run
+id. For a chat the "target system" is the chat's own state: stored replies,
+checkpoints, approvals, usage rows. `[params]` is free-form data the scenario
+reads from `ctx.task.params`, so one scenario module serves a group of tasks.
 """
 
 from __future__ import annotations
@@ -11,7 +20,7 @@ from __future__ import annotations
 import importlib
 import tomllib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -38,6 +47,11 @@ class Task:
     code_mode: bool
     context_window_tokens: int | None
     skill_definition: dict[str, Any] | None = None
+    #: "run" (a fixture agent's run, the default) or "chat" (a member's chat turn).
+    kind: str = "run"
+    #: Groups the report's rows (e.g. the chat_harness suite's six groups).
+    group: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 class Scenario(Protocol):
@@ -59,10 +73,16 @@ def load_task(path: Path) -> Task:
     frame_tools = {str(k): dict(v.items()) for k, v in raw.get("frame_tools", {}).items()}
     window = raw.get("context_window_tokens")
     context_window_tokens = (
-        int(window) if isinstance(window, int) and not isinstance(window, bool) and window > 0 else None
+        int(window)
+        if isinstance(window, int) and not isinstance(window, bool) and window > 0
+        else None
     )
     skill_raw = raw.get("skill")
     skill_definition = dict(skill_raw) if isinstance(skill_raw, dict) else None
+    kind = str(raw.get("kind", "run"))
+    if kind not in ("run", "chat"):
+        raise ValueError(f"{path.name}: kind must be run|chat, not {kind!r}")
+    params_raw = raw.get("params")
     return Task(
         id=str(raw["id"]),
         systems=tuple(str(s) for s in raw["systems"]),
@@ -78,11 +98,22 @@ def load_task(path: Path) -> Task:
         code_mode=bool(raw.get("code_mode", False)),
         context_window_tokens=context_window_tokens,
         skill_definition=skill_definition,
+        kind=kind,
+        group=str(raw.get("group", "")),
+        params=dict(params_raw) if isinstance(params_raw, dict) else {},
     )
 
 
 def load_suite(root: Path) -> list[Task]:
     return sorted((load_task(p) for p in root.glob("*.toml")), key=lambda t: t.id)
+
+
+def starter(
+    scenario: Scenario,
+) -> Callable[[ScenarioContext, dict[str, Any]], Awaitable[Any]] | None:
+    """A chat scenario's optional `start` hook, or None to send `task_text`."""
+    hook = getattr(scenario, "start", None)
+    return hook if callable(hook) else None
 
 
 def resolve_scenario(name: str) -> Scenario:

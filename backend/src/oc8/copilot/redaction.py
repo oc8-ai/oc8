@@ -1,11 +1,39 @@
-"""One-way credential redaction.
+"""One-way credential detection and redaction.
 
-Originally written for the raw-completion Copilot chat path (retired in
-Task 5 of the unified-assistant plan); `is_secret_request` is now the
-tenant Assistant's pre-model secret gate in `oc8.chat.service.send_message`,
-its one remaining caller. `redact_text`/`redact_value` are kept as
-general-purpose helpers for any future caller that needs to strip
-credential-shaped values before they reach a model or a durable store.
+`carries_secret_value` is the tenant Assistant's pre-model secret gate: chat
+send (`oc8.chat.service`), a queued turn (`oc8.chat.carry_over`), a steering
+input (`oc8.runtime.run_inputs`) and a clarification answer
+(`oc8.runtime.clarification`) -- every door checks what the PERSON wrote --
+and the check on stored configuration (project instructions, builder
+proposals). `redact_text` removes exactly the values the gate refuses, so
+anything the gate would refuse is never redaction-blind (titles, context
+objects, the stored refused turn).
+
+The rule: a credential VALUE is refused, a word about one is not. "How many
+tokens did I use?" is the Cost Center's question, "reset my password" a
+request, "token: 5000 per month" a quota. Five forms count as a value:
+
+1. `key = value` (also `:`, `->`, `=>`, quoted JSON keys, `<key>v</key>`,
+   `--key value`, `--key=value`, curl's `-u user:pass`) under a credential
+   key, compound ones included (`OPENAI_API_KEY`, `client_secret`,
+   `refresh_token`). A strong key (password, secret, API key, credential,
+   ...) refuses any value but a placeholder -- or, for a code counter or
+   switch whose other words are all counter words (`max_password_length =
+   128`), a bare small number or boolean (`_counter`); a weak one (token, auth) only a value
+   that looks like one. An Authorization key refuses any value but a
+   placeholder, after an optional scheme (`Bearer`, `Basic`, ...);
+2. a well-known key shape on its own (`sk-...`, `ghp_...`, a JWT, a PEM
+   private key);
+3. a bare `Bearer <token>` in prose, where the token's shape decides;
+4. a sentence naming the value ("my password is hunter2", "mein Passwort
+   lautet Sommer!");
+5. a password in a URL (`scheme://user:pass@host`).
+
+Linear time on any input: assignments are found by scanning from each
+credential WORD (one alternation, `re.finditer`) with plain index arithmetic,
+never by a regex with an open-ended key in front of a separator; every other
+pattern is a literal anchor followed by single character-class runs. Nothing
+is capped or windowed, so a long key or value is read to its delimiter.
 """
 
 from __future__ import annotations
@@ -14,18 +42,429 @@ import re
 from typing import Any
 
 _SENSITIVE_KEY = re.compile(
-    r"(?:secret|password|credential|token|api[_-]?key|authorization)", re.IGNORECASE
+    r"(?:secret|password|passwort|kennwort|credential|token|api[_-]?key|authorization)",
+    re.IGNORECASE,
 )
-_ASSIGNMENT = re.compile(
-    r"(?i)\b(secret|password|credential|token|api[_-]?key)\b\s*[:=]\s*[^\s,;]+"
+
+#: Where an assignment can be: every word a credential key is built around.
+_CREDENTIAL_WORD = re.compile(
+    r"(?i)password|passwort|kennwort|passwd|passphrase|secret|api[ _-]?key|access[ _-]?key"
+    r"|private[ _-]?key|credential|token|authorization|auth|pwd|pw"
 )
-_BEARER = re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]+")
+#: Characters a key is made of (`DB_PASSWORD`, `x-api-key`, `config.secret`).
+_KEY_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-")
+#: Characters that end a bare value.
+_VALUE_END = frozenset(" \t\r\n,;\"'})]")
+_SEPARATORS = ("=>", "->", ":", "=")
+_QUOTES = "\"'"
+#: How far a `<...>` placeholder may reach; a longer one reads as a value.
+_PLACEHOLDER_SPAN = 128
+
+#: Key words whose value is always a secret: any value but a clear
+#: placeholder counts (`password=gpt-4o`, `secret = manager` are values).
+_STRONG_WORDS = (
+    "password", "passwort", "kennwort", "passwd", "passphrase", "secret", "apikey", "accesskey",
+    "privatekey", "credential",
+)  # fmt: skip
+#: Exact keys that are short spellings of a password.
+_STRONG_KEYS = frozenset({"pw", "pwd"})
+#: Schemes an Authorization value may start with.
+_AUTH_SCHEMES = frozenset({"bearer", "basic", "token", "digest", "negotiate"})
+
+#: Values that stand for no credential under any key: a placeholder or a
+#: reference to where the real one lives. `changeme` is a real default
+#: password, so it is not one of them.
+_PLACEHOLDERS = frozenset(
+    """
+    none null nil empty leer required optional erforderlich n/a na tbd todo unset
+    missing hidden masked redacted see siehe -
+    """.split()
+)
+#: `<your password>` / `[password]` are placeholders: words in brackets, no
+#: digits (`<hunter2>` is a value); `[redacted]` is what `redact_text` wrote.
+_PLACEHOLDER_SHAPE = re.compile(
+    r"^(?:<[A-Za-zÄÖÜäöüß _-]{1,64}>|\[[A-Za-zÄÖÜäöüß _-]{1,64}\]?|\*+|x{3,}|\.{3,}|…)$",
+    re.IGNORECASE,
+)
+#: A reference to where the secret lives, matched case-sensitively so a value
+#: that merely starts with `$` or sits between `%` is not taken for one:
+#: `${OPENAI_API_KEY}`, `$OPENAI_API_KEY` and `%API_KEY%` (upper-case names;
+#: `$Sommer2024` is a value), `{{ secrets.api_key }}` (a dotted name without
+#: digits; `{{ hunter2 }}` is a value).
+_ENV_REFERENCE = re.compile(
+    r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Z_][A-Z0-9_]*|%[A-Z_][A-Z0-9_]*%"
+    r"|\{\{\s*\.?[A-Za-z_]+(?:\.[A-Za-z_]+)*\s*\}\})$"
+)
+#: Words that follow a weak key or a sentence about a credential without being
+#: one: fillers, and what follows "my password" in a request about it ("reset
+#: my password please"). Never consulted for a strong key's assignment.
+_STOP_WORDS = frozenset(
+    """
+    per here below above that this the a an not no yes true false is ist lautet
+    was are set changed expired abgelaufen keins keine nicht das der die ein eine
+    dass for of to in on und and or oder field feld vault please bitte zurück reset
+    policy richtlinie rules regeln manager change ändern vergessen forgot forgotten
+    works funktioniert does did has hat will wird should soll must muss für again
+    wieder now jetzt too auch also still noch length länge handling rotation
+    enabled disabled on off aktiv inaktiv
+    """.split()
+)
+#: A model name is a value of `model`/`token=`-style configuration, not a secret.
+_MODEL_NAME = re.compile(
+    r"(?i)^(?:gpt|o\d|claude|llama|mistral|mixtral|gemini|gemma|qwen|phi|deepseek)[\w.:-]*$"
+)
+_FLAG_TOKEN = re.compile(r"--?[A-Za-z][\w-]*")
+
+#: Well-known credential shapes, refused wherever they stand: a literal
+#: prefix and one unbounded run of token characters.
+_SHAPES = re.compile(
+    r"""(?x)
+      (?<![\w-])sk-(?:ant-)?[A-Za-z0-9_-]{16,}
+    | (?<![\w-])(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}
+    | (?<![\w-])github_pat_\w{20,}
+    | (?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])
+    | (?<![\w-])xox[abposr]-[A-Za-z0-9-]{10,}
+    | (?<![\w-])glpat-[\w-]{20,}
+    | (?<![\w-])AIza[\w-]{35}
+    | (?<![\w-])eyJ[\w-]+\.[\w-]+\.[\w-]+
+    """
+)
+_PEM_BEGIN = re.compile(r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END (?:[A-Z]+ )*PRIVATE KEY-----")
+#: A bare "Bearer <token>" in prose: the token's shape decides (`_bearer_token`).
+_BEARER = re.compile(r"(?i)\bbearer[ \t]+(?P<value>[A-Za-z0-9._~+/=-]+)")
+_PROSE = re.compile(
+    r"""(?ix)
+    \b(?P<key>passwor[dt]s?|kennwort|pw|token|secret|api[\s_-]?key|credential)
+    [ \t]++(?:is|ist|lautet|was|war)\b(?:[ \t]*+:)?[ \t]++
+    (?P<value>[^\s,;]++)
+    """
+)
+#: "my password hunter" -- a possessive straight before the value.
+_POSSESSIVE = re.compile(
+    r"(?ix)\b(?:my|our|mein|meine|unser|unsere)[ \t]++(?P<key>passwor[dt]|kennwort|pw)"
+    r"[ \t]++(?P<value>[^\s,;]++)"
+)
+_XML = re.compile(r"<(?P<key>[A-Za-z][\w.-]*)>(?P<value>[^<\n]+)</(?P=key)>")
+_URL_USERINFO = re.compile(
+    r"(?i)(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*://[^\s/:@]+:(?P<value>[^\s/@]+)@"
+)
+#: curl's `-u user:pass` / `--user user:pass`.
+_USER_FLAG = re.compile(r"""(?<![\w-])(?:-u|--user)[ \t]+["']?[^\s:"']+:(?P<value>[^\s"']+)""")
+
+
+def _key_strength(key: str) -> str | None:
+    """'strong', 'weak', 'authorization' or None (not a credential key)."""
+    flat = re.sub(r"[\s_.-]", "", key.lower())
+    if flat.endswith("authorization"):
+        return "authorization"
+    parts = {part.lower() for part in re.split(r"[\s_.-]+|(?<=[a-z])(?=[A-Z])", key)}
+    if parts & _STRONG_KEYS:
+        return "strong"
+    if any(word in flat for word in _STRONG_WORDS):
+        return "strong"
+    if "token" in flat or "auth" in parts or flat.endswith("auth"):
+        return "weak"
+    return None
+
+
+#: A code identifier: how a variable or setting is named.
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+#: A bare small literal: up to four characters of number, or a boolean.
+_SMALL_LITERAL = re.compile(r"(?i)(?:\d+(?:\.\d+)?|\.\d+|true|false)")
+#: The only other words a counter's or switch's name may hold besides its
+#: strong word. An allowlist: a qualifier naming an account or a system
+#: (`password_admin`, `SECRET_PROD`, `db_password`) is how a short PIN or
+#: password is written, so any other word keeps the value refused.
+_COUNTER_WORDS = frozenset(
+    """
+    count counts length len min max attempts tries retries limit limits enabled
+    disabled required ttl timeout size age days hours minutes seconds expiry
+    expires rounds iterations version policy strength score index num number
+    total
+    """.split()
+)
+#: Prefixes that make a name a switch or a counter, first word only.
+_COUNTER_PREFIXES = frozenset({"is", "has"})
+
+
+def _counter(raw_key: str, value: str, *, quoted: bool) -> bool:
+    """A counter or switch whose code name merely contains a strong word
+    (`max_password_length: 128`, `secret_count = 3`, `SECRET_ENABLED = True`):
+    an identifier whose other words are all `_COUNTER_WORDS` (or an
+    `is_`/`has_` prefix), and a bare number of up to four characters or a
+    boolean. Not a counter: a plain strong key (`password=42`), a qualifier
+    naming an account or system (`password_admin=1234`, `DB_PASSWORD=7`), any
+    other word (`SECRET_FROM_RUN1 = 42`, refused by design), and a quoted or
+    longer value."""
+    value = _trim(value)
+    if quoted or not _IDENTIFIER.fullmatch(raw_key) or not _SMALL_LITERAL.fullmatch(value):
+        return False
+    if (value[0].isdigit() or value[0] == ".") and len(value) > 4:
+        return False
+    parts = [part.lower() for part in re.split(r"_+|(?<=[a-z])(?=[A-Z])", raw_key) if part]
+    strong: set[int] = set()
+    for i, part in enumerate(parts):
+        if part in _STRONG_WORDS or part in _STRONG_KEYS:
+            strong.add(i)
+        elif i and parts[i - 1] + part in _STRONG_WORDS:
+            strong |= {i - 1, i}
+    others = [(i, part) for i, part in enumerate(parts) if i not in strong]
+    return (
+        bool(strong)
+        and bool(others)
+        and all(
+            part in _COUNTER_WORDS or (i == 0 and part in _COUNTER_PREFIXES) for i, part in others
+        )
+    )
+
+
+def _trim(value: str) -> str:
+    return value.strip().rstrip(".!?:…")
+
+
+def _placeholder(value: str) -> bool:
+    value = _trim(value)
+    return (
+        not value
+        or value.lower() in _PLACEHOLDERS
+        or bool(_PLACEHOLDER_SHAPE.match(value))
+        or bool(_ENV_REFERENCE.match(value))
+    )
+
+
+def _quantity(value: str, after: str) -> bool:
+    """ "5000 per month", "8 characters long": a number with a unit."""
+    return bool(re.fullmatch(r"[\d.,]+", value)) and bool(re.match(r"\s+[A-Za-zÄÖÜäöüß]", after))
+
+
+def _weak_value(value: str, *, quoted: bool = False) -> bool:
+    """Whether a weak key's value is a credential, not a placeholder, a word,
+    a number or a model name."""
+    value = _trim(value)
+    if _placeholder(value) or value.lower() in _STOP_WORDS:
+        return False
+    if _SHAPES.fullmatch(value):
+        return True
+    if _MODEL_NAME.match(value) or re.fullmatch(r"[\d.,]+", value):
+        return False
+    return quoted or len(value) >= 6
+
+
+def _skip_blank(text: str, i: int, *, newline: bool = True) -> tuple[int, bool]:
+    """Past spaces and tabs, and at most one newline; whether one was crossed."""
+    n = len(text)
+    while i < n and text[i] in " \t\r":
+        i += 1
+    crossed = False
+    if newline and i < n and text[i] == "\n":
+        crossed = True
+        i += 1
+        while i < n and text[i] in " \t\r":
+            i += 1
+    return i, crossed
+
+
+def _ends_value(text: str, i: int) -> bool:
+    """Whether a value stops at `i`: the end of the text or a delimiter. A
+    reference or bracket glued to more characters (`${x}hunter2`,
+    `<x>hunter2`) is part of a longer, real value and is read bare."""
+    # `<` too: a placeholder inside a tag (`<password><your key></password>`).
+    return i >= len(text) or text[i] in _VALUE_END or text[i] == "<"
+
+
+def _read_value(text: str, i: int) -> tuple[int, int, bool]:
+    """The value starting at `i`: (start, end, quoted). A quoted value runs to
+    its closing quote (or the end of the line), a bare one to a delimiter."""
+    n = len(text)
+    if i < n and text[i] in _QUOTES:
+        # The newline search stops at the closing quote: each character is
+        # read once, and the caller resumes past the value.
+        close = text.find(text[i], i + 1)
+        stop = n if close == -1 else close
+        line_end = text.find("\n", i + 1, stop)
+        return i + 1, stop if line_end == -1 else line_end, True
+    # A template reference (`${VAR}`, `{{ name }}`) or a bracket placeholder
+    # (`<your password>`) is read through its closer so the placeholder check
+    # sees all of it. One glued to more characters (`{{ x }}hunter2`) is part
+    # of a longer, real value: the bare read then starts past the closer, so
+    # the blanks inside it do not cut the value short.
+    resume = i
+    for opener, closer in (("${", "}"), ("{{", "}}"), ("<", ">")):
+        if text.startswith(opener, i):
+            close = text.find(closer, i, min(n, i + _PLACEHOLDER_SPAN))
+            if close != -1 and text.find("\n", i, close) == -1:
+                if _ends_value(text, close + len(closer)):
+                    return i, close + len(closer), True
+                resume = close + len(closer)
+            break
+    end = resume
+    while end < n and text[end] not in _VALUE_END:
+        end += 1
+    return i, end, False
+
+
+def _refused(value: str, strength: str, *, quoted: bool, crossed: bool) -> bool:
+    if strength == "weak":
+        return _weak_value(value, quoted=quoted)
+    if _placeholder(value):
+        return False
+    # A heading ("Password:") followed by a sentence on the next line.
+    return not (crossed and _trim(value).lower() in _STOP_WORDS)
+
+
+def _assignment_spans(text: str) -> list[tuple[int, int]]:
+    """Scan from each credential word: widen it to its key, then read an
+    optional closing quote, blanks, a separator (or a flag's blank), blanks
+    and the value. `done` keeps every character to a bounded number of
+    visits: a word inside a key or value already read is skipped."""
+    spans: list[tuple[int, int]] = []
+    n = len(text)
+    done = 0
+    for word in _CREDENTIAL_WORD.finditer(text):
+        if word.start() < done:
+            continue
+        ks = word.start()
+        while ks > done and text[ks - 1] in _KEY_CHARS:
+            ks -= 1
+        ke = word.end()
+        while ke < n and text[ke] in _KEY_CHARS:
+            ke += 1
+        done = ke
+        raw_key = text[ks:ke]
+        flag = raw_key.startswith("--")
+        strength = _key_strength(raw_key.lstrip("-"))
+        if strength is None:
+            continue
+        i = ke
+        if ks > 0 and text[ks - 1] in _QUOTES and i < n and text[i] == text[ks - 1]:
+            i += 1
+        i, _ = _skip_blank(text, i)
+        separator = next((s for s in _SEPARATORS if text.startswith(s, i)), None)
+        crossed = False
+        if separator is not None:
+            i, crossed = _skip_blank(text, i + len(separator))
+            start, end, quoted = _read_value(text, i)
+        elif flag and ke < i < n and "\n" not in text[ke:i]:
+            # `--key value`: the next token, unless it is the next flag.
+            start, end, quoted = _read_value(text, i)
+            if _FLAG_TOKEN.fullmatch(text[start:end]):
+                continue
+        else:
+            continue
+        if strength == "authorization" and not quoted and text[start:end].lower() in _AUTH_SCHEMES:
+            j, _ = _skip_blank(text, end, newline=False)
+            if not end < j < n:
+                continue  # "Authorization: Bearer" and nothing after it
+            start, end, quoted = _read_value(text, j)
+        value = text[start:end]
+        if not _refused(value, strength, quoted=quoted, crossed=crossed) or (
+            strength == "strong" and _counter(raw_key, value, quoted=quoted)
+        ):
+            done = max(done, end)
+            continue
+        if not quoted and separator is not None and "passphrase" in raw_key.lower():
+            # A passphrase is words with blanks between them: the bare value
+            # runs to the end of its line, not to the first blank.
+            line_end = text.find("\n", end)
+            end = n if line_end == -1 else line_end
+            value = text[start:end].rstrip()
+        done = max(done, end)
+        spans.append((start, end if quoted else start + len(_trim(value))))
+    return spans
+
+
+def _bearer_token(value: str) -> bool:
+    """A bearer token in prose: long with a digit, or dotted like a JWT --
+    never "of bad news" or "bonds"."""
+    value = value.rstrip(".")
+    if len(value) >= 16 and re.search(r"\d", value):
+        return True
+    return bool(re.fullmatch(r"[\w-]+(?:\.[\w-]+)+", value))
+
+
+def _other_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for match in _XML.finditer(text):
+        strength = _key_strength(match.group("key"))
+        value = match.group("value")
+        if strength is None or _placeholder(value):
+            continue
+        if strength == "weak" and not _weak_value(value, quoted=True):
+            continue
+        spans.append(match.span("value"))
+    spans += [match.span() for match in _SHAPES.finditer(text)]
+    # One forward pass for the END lines: a BEGIN reuses the END found for an
+    # earlier one while it lies ahead, and once none is left none is sought.
+    end: re.Match[str] | None = None
+    exhausted = False
+    for begin in _PEM_BEGIN.finditer(text):
+        if not exhausted and (end is None or end.start() < begin.end()):
+            end = _PEM_END.search(text, begin.end())
+            exhausted = end is None
+        spans.append(
+            # No END line: the key runs to the end of the text, all of it.
+            (begin.start(), end.end() if end is not None and not exhausted else len(text))
+        )
+    spans += [m.span("value") for m in _BEARER.finditer(text) if _bearer_token(m.group("value"))]
+    spans += [
+        m.span("value") for m in _URL_USERINFO.finditer(text) if not _placeholder(m.group("value"))
+    ]
+    spans += [
+        m.span("value") for m in _USER_FLAG.finditer(text) if not _placeholder(m.group("value"))
+    ]
+    return spans
+
+
+def _prose_spans(text: str) -> list[tuple[int, int]]:
+    """A sentence is read with the stop words for any key: "the password is
+    required", "my password please". A model name is no exemption for a
+    strong key."""
+    spans = []
+    for pattern in (_PROSE, _POSSESSIVE):
+        for match in pattern.finditer(text):
+            strength = _key_strength(match.group("key")) or "weak"
+            value = _trim(match.group("value"))
+            after = text[match.end() : match.end() + 32]
+            if _placeholder(value) or value.lower() in _STOP_WORDS or _quantity(value, after):
+                continue
+            if strength == "weak" and not _weak_value(value):
+                continue
+            start = match.start("value")
+            spans.append((start, start + len(value)))
+    return spans
+
+
+def secret_value_spans(text: str) -> list[tuple[int, int]]:
+    """Where `text` holds a credential value (module docstring for the forms),
+    as merged, sorted (start, end) spans of the value alone."""
+    spans = [*_assignment_spans(text), *_other_spans(text), *_prose_spans(text)]
+    merged: list[tuple[int, int]] = []
+    for start, end in sorted(span for span in spans if span[1] > span[0]):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def carries_secret_value(text: str) -> bool:
+    """A credential VALUE in the text, not just a word about one. The tenant
+    Assistant never accepts or forwards a credential value, so this is its
+    gate on what a person writes and on stored configuration."""
+    return bool(secret_value_spans(text))
 
 
 def redact_text(value: str) -> str:
-    """Remove common credential-bearing text forms without retaining the value."""
-    value = _ASSIGNMENT.sub(r"\1=[redacted]", value)
-    return _BEARER.sub("Bearer [redacted]", value)
+    """Replace every value `carries_secret_value` finds with `[redacted]`,
+    keeping the words around it (`token=[redacted]`)."""
+    out, last = [], 0
+    for start, end in secret_value_spans(value):
+        out.append(value[last:start])
+        out.append("[redacted]")
+        last = end
+    out.append(value[last:])
+    return "".join(out)
 
 
 def redact_value(value: Any) -> Any:
@@ -40,15 +479,3 @@ def redact_value(value: Any) -> Any:
             for key, item in value.items()
         }
     return value
-
-
-def carries_secret_value(text: str) -> bool:
-    """A credential VALUE in the text (`password=...`, `Bearer ...`), not just a
-    word about one: for stored configuration such as project instructions,
-    where "explain our password policy" is ordinary content."""
-    return bool(_ASSIGNMENT.search(text) or _BEARER.search(text))
-
-
-def is_secret_request(message: str) -> bool:
-    """The tenant Assistant never solicits, accepts, or forwards credential values."""
-    return bool(_SENSITIVE_KEY.search(message))

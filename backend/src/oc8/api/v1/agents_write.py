@@ -75,6 +75,7 @@ from oc8.departments.personal import (
     ensure_personal_capacity,
     withholds_content_from_trail,
 )
+from oc8.modelrouter.speech import is_speech_model
 from oc8.modelrouter.subscription_guard import (
     SubscriptionModelNotManualOnly,
     assert_manual_only_compatible,
@@ -398,6 +399,13 @@ async def create_agent(
             )
         _refuse_unenforceable_thresholds(checked.unenforceable)
         narrowing = checked.narrowing
+
+    if body.model_config_id is not None and is_speech_model(
+        await db.get(m.ModelConfig, body.model_config_id)
+    ):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "a speech model cannot run an agent"
+        )
 
     principal = actor.principal
     gated = await hire_is_gated(db, tenant_id=principal.tenant_id, department=dept)
@@ -905,6 +913,10 @@ async def switch_model(
     mc = await db.get(m.ModelConfig, body.model_config_id)
     if mc is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown model config")
+    if is_speech_model(mc):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "a speech model cannot run an agent"
+        )
     # Unlike triggers.py's create/update guard calls (which must run AFTER
     # their own flush, because they check a Trigger row the request itself
     # just created), this check can safely run BEFORE the mutation below:
@@ -1602,6 +1614,12 @@ async def rollback_agent_version(
         )
 
     restored_model = pinned_model_config_id(payload)
+    if restored_model is not None and is_speech_model(await db.get(m.ModelConfig, restored_model)):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "this version runs on a model that is now a speech model; a speech model "
+            "cannot run an agent",
+        )
     if restored_model != agent.model_config_id:
         try:
             await assert_manual_only_compatible(

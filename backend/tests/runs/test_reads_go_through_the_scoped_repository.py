@@ -121,6 +121,36 @@ ALLOWED: dict[str, str] = {
         "reads attachments of the session or message being sent or copied and the "
         "open runs of one session, for the session's own owner; no cross-person read"
     ),
+    "chat/export.py": (
+        "attachment_names lists the file names of the chat's own uploads (chat_message, "
+        "never a run's files or their text) for GET /chat/sessions/{id}/export, after "
+        "_readable_session; a reader of a shared chat gets them redacted"
+    ),
+    "chat/replay.py": (
+        "the chat replay a run of that chat is built from (agent/preamble.py, chat/"
+        "checkpoint.py): the names of the chat's own uploads and the state of the runs "
+        "its answers name; no human request reaches it"
+    ),
+    "chat/feedback.py": (
+        "answer_model reads only the model name the rated answer's own run ended on, for "
+        "POST /chat/sessions/{id}/messages/{id}/feedback after session_owned_by_caller: the chat's "
+        "owner rating an answer of their own chat; no run content is read"
+    ),
+    "chat/temporary.py": (
+        "stop_chat_runs loads the unfinished runs of one temporary chat to stop them, for "
+        "DELETE /chat/sessions/{id} after _owned_session (the chat's owner only: no "
+        "oversight into a temporary chat) and for the worker's purge; only ids and states "
+        "are read, no run content reaches anyone"
+    ),
+    "chat/checkpoint.py": (
+        "the background checkpoint job loads the one run whose reply it summarises, "
+        "scheduled by chat/service.py for that run's own chat; no human request reaches it"
+    ),
+    "chat/files_kb.py": (
+        "the chat's own uploads: chat_files_on_path for the chat run's own tool "
+        "(search_chat_files), finish_chat_file for the ingestion worker, forget_chat_file "
+        "for DELETE /files/{id} after member_may_open_attachment admitted the chat's owner"
+    ),
     "chat/carry_over.py": (
         "run_still_open reads one run's state under its row lock for the finished "
         "run's own follow-up turn; state only, after the owner's reach was re-checked"

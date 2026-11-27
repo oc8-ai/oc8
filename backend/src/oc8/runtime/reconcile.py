@@ -98,9 +98,7 @@ REASON = (
 )
 
 
-async def close_abandoned_runs(
-    *, now: dt.datetime | None = None
-) -> list[uuid.UUID]:
+async def close_abandoned_runs(*, now: dt.datetime | None = None) -> list[uuid.UUID]:
     """Fail every run whose executor has gone silent. Returns the ids closed.
 
     Never raises: this runs on the worker's own timer, and one bad sweep must
@@ -145,7 +143,22 @@ async def close_abandoned_runs(
                         # Announced once this commits, never for a rolled-back write.
                         agent.status = "idle"
                         publish_after_commit(db, partial(publish_agent_status, agent))
+                    # No input arrives until this commits (the tenant's audit
+                    # lock, then the run's input lock -- after this run's row).
+                    from oc8.runtime.executor import answer_failed_chat_end
+                    from oc8.runtime.run_inputs import lock_run_inputs
+
+                    await lock_run_inputs(db, tenant_id=tenant_id, run_id=run.id)
                     await repo.transition(run, RunState.FAILED)
+                    # A chat turn gets its failure answer, then what was
+                    # queued for after it becomes the next turn (spec §5.5).
+                    # Never at the cost of closing the run: a failure here
+                    # is rolled back to its savepoint.
+                    try:
+                        async with db.begin_nested():
+                            await answer_failed_chat_end(db, run)
+                    except Exception:
+                        logger.exception("reconciler: run %s closed without its answer", run.id)
                     record_run_outcome(RunState.FAILED.value)
                     closed.append(run.id)
         except Exception:
@@ -507,9 +520,7 @@ __all__ = [
 
 
 @contextlib.asynccontextmanager
-async def heartbeat(
-    *, tenant_id: uuid.UUID, run_id: uuid.UUID
-) -> AsyncIterator[None]:
+async def heartbeat(*, tenant_id: uuid.UUID, run_id: uuid.UUID) -> AsyncIterator[None]:
     """Report that this run is still being executed, for as long as it is.
 
     Wrapped around the runtime call rather than left to each adapter: there are

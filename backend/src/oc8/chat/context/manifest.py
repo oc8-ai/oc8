@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from oc8 import models as m
 from oc8.chat.context.base import ContextPage, Viewer
 from oc8.chat.context.registry import RESOLVERS, resolve_ref
+from oc8.models.knowledge import KB_KIND_SHARED
 from oc8.runtime.fencing import fence as shared_fence
 from oc8.runtime.fencing import one_line
 
@@ -98,6 +99,8 @@ async def _bases_fed_by(db: AsyncSession, source: m.DataSource) -> list[str]:
         select(m.KnowledgeBase.id).where(
             m.KnowledgeBase.tenant_id == source.tenant_id,
             m.KnowledgeBase.deleted_at.is_(None),
+            # Releasing a source never releases a chat's own base (spec §5.4).
+            m.KnowledgeBase.kind == KB_KIND_SHARED,
             m.KnowledgeBase.source_ids.contains([str(source.id)]),
         )
     )

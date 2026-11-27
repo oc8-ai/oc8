@@ -333,6 +333,105 @@ services:
 
 Leave the variable unset rather than empty when you do not use it.
 
+## Web search
+
+The Copilot can search the web on a turn where the person switches **Web** on.
+Each organisation can pick its own provider under Settings; to give every
+organisation search without that, set a platform default in `.env`:
+
+| Variable | Meaning |
+| --- | --- |
+| `OC8_WEB_SEARCH_PROVIDER` | `searxng`, `brave` or `tavily`. Unset: no default. |
+| `OC8_WEB_SEARCH_BASE_URL` | SearXNG only: its address, e.g. `http://searxng:8080`. |
+| `OC8_WEB_SEARCH_API_KEY` | Brave or Tavily only: the API key. |
+
+Helm: `oc8.webSearch.provider`, `oc8.webSearch.baseUrl` and `oc8.webSearch.apiKey`
+(the key is kept in the chart's Secret).
+
+Web search is offered only to agents on the in-process and isolated runtimes;
+an agent on an external runtime that reaches oc8 through the MCP gateway (the
+Claude Code, Codex and OpenCode images) is not offered `web_search`.
+
+An organisation's own setting wins over the default, and an organisation can
+switch web search off for itself. The default's address and key are never
+shown to an organisation. The default SearXNG host may be an internal address
+(a container or cluster service); every other address follows the rules in
+*Reaching systems on your own network*: an organisation's own SearXNG on an
+internal host works only once that host is listed in
+`OC8_OUTBOUND_ALLOWED_PRIVATE`.
+
+For a self-hosted SearXNG, its `settings.yml` must allow JSON answers and must
+not rate-limit oc8 (its limiter is meant for browsers; oc8 is one internal
+client making every request):
+
+```yaml
+search:
+  formats: [html, json]
+server:
+  limiter: false
+```
+
+## Running Python in the chat
+
+A Python code block in an answer has a **Run** button. The code runs in the
+person's browser (Pyodide, in a sandboxed frame with no network), never on the
+server. oc8 serves the Pyodide files itself from `/pyodide/`; the browser
+downloads them on the first Run only (about 12 MB for Python, plus about 16 MB
+the first time code imports numpy, pandas or matplotlib).
+
+The files (Pyodide 0.29.5, 18 files, about 28 MB) are **not in git**. The
+frontend image build fetches them from the official Pyodide release on
+cdn.jsdelivr.net and checks each one against the SHA-256 pinned in
+`frontend/scripts/vendor-pyodide.mjs`; `npm run build` and `npm run dev` do the
+same through `prebuild`/`predev`. Files already in `frontend/public/pyodide/`
+are verified and reused, nothing is downloaded then.
+
+**Air-gapped installs:** on a machine with internet access run
+`npm run vendor:pyodide` (or `node scripts/vendor-pyodide.mjs`) in
+`frontend/`, copy the resulting `frontend/public/pyodide/` folder into the
+same place in the build context of the offline machine, and build the image
+there. `node scripts/vendor-pyodide.mjs --check` verifies a copied folder.
+
+**Turning it off:** an admin turning **Run scripts in previews** off hides Run
+as well. To ship an image without Python at all, build it with
+`--build-arg OC8_SKIP_PYODIDE=1` (or set `OC8_SKIP_PYODIDE=1` for
+`npm run build`) and leave the folder out of the build context; Run then says
+"Python is not installed on this server."
+
+To move to another Pyodide release, change the pinned version and SHA-256
+values in the script and run it.
+
+Known limits: the sandbox is tested in Chromium and Firefox; Safari (WebKit)
+is untested, in particular whether a worker started from a `blob:` URL inside
+the sandboxed frame inherits the frame's no-network policy. Memory is the
+browser's: code that allocates without bound can crash the browser tab (it
+cannot reach anything outside it). Each Run starts a fresh Python, so nothing
+from one run (variables, imported modules, mounted files) is left for the
+next.
+
+## Dictation and reading answers aloud
+
+The chat can turn a person's dictation into text and read answers aloud when
+an admin adds speech models (Models: a model with the capability *Speech to
+text* or *Text to speech*) and picks them under Settings → Speech. Only
+OpenAI and OpenAI-compatible providers can serve speech
+(`/audio/transcriptions`, `/audio/speech`). Reading an answer with
+restricted content aloud requires a read-aloud model whose locality is
+*local* (a speech server you run yourself); dictation is the person's own
+words and goes to the dictation model in any chat. Audio is not stored.
+
+Speech cost shows 0 (usage is recorded in platform units -- seconds and
+characters -- not tokens). Spend is bounded per member per day: dictation
+minutes and read-aloud characters, set in Settings → Speech (defaults 60
+minutes and 200 000 characters; 0 switches the feature off for members). The
+dictation allowance bounds upload **bytes** per day (the minutes times
+16 kbit/s); real audio time can exceed it by the ratio of 16 kbit/s to the
+recording's actual bitrate -- about 2.7x for constant low-bitrate Opus, up to
+about 50x for mostly silent recordings (variable bitrate with silence
+suppression). Admins can lower the daily cap or switch dictation off (0). A
+transcription whose reported duration is more than 10x its reservation is
+audited as `chat.audio.allowance_overshoot`. One upload is at most 12 MB.
+
 ## Letting people connect their Microsoft or Google account
 
 On the Connections page each person can connect their own Microsoft or Google
@@ -378,6 +477,65 @@ connections themselves.
   If you upgrade from a release whose MinIO ran as root, the bundled
   `minio-perms` service hands the existing `oc8-miniodata` volume to the MinIO
   user (uid 65532) on the next `up`, so no manual `chown` is needed.
+- **Upgrading to 0.23.0:** deploy or restart the `ingestion-worker` before the
+  API (`backend`). From 0.23.0 a chat's large files are indexed as jobs on the
+  shared ingestion stream, and an older ingestion worker cannot run them.
+  `docker compose up -d --build` replaces both at once; with Helm or any
+  rolling rollout, update the ingestion workers first. Two recording changes
+  come with it: usage of a plugin-provided model (chat titles, chat
+  checkpoints, the LLM gateway) is recorded under the plugin's provider name
+  from 0.23.0, where older rows carry the adapter's name -- a report grouped
+  by provider splits the upgrade month between the two. And a model's context
+  window must be at least 4096 tokens when it is saved; a row saved earlier
+  with a smaller one keeps working as stored (the harness reads it as is), so
+  set it again or clear it to use the default. This release also adds
+  migrations 0136-0148 (chat message trees, chat knowledge bases, chat file
+  index status, chat message digests, chat checkpoints, always-allow tool
+  rules, queued-message delivery, hybrid knowledge search, audit run/chat
+  indexes, token usage per member, an audit index for answer feedback
+  (0146), the Web choice of a queued message (0147, `run_input.web`) and
+  temporary chats (0148, `chat_session.temporary`)). `docker compose up -d --build`
+  applies them through the `migrate` service. Two of them take longer on big
+  instances:
+  - 0143 rewrites `kb_chunk` once (a generated full-text column); expect a few
+    minutes on large knowledge bases. The rewrite holds an exclusive lock on
+    `kb_chunk` for its whole duration, so knowledge search and ingestion wait
+    until it is done: plan it for a quiet moment. It then builds a full-text
+    (GIN) and a vector (HNSW) index on `kb_chunk` concurrently; reads and
+    writes keep going during those two builds, but the migration runs longer.
+  - The HNSW index is only built on pgvector 0.8 or newer (older versions
+    lose rows from a filtered vector search); without it, vector search stays
+    an exact scan, as before. Upgrading the Postgres image does not upgrade
+    the extension in an existing database: run
+    `ALTER EXTENSION vector UPDATE;` in the oc8 database after the image
+    upgrade and before 0143 runs to get the index. If 0143 already ran
+    without it, update the extension and build the index by hand:
+    `CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_kb_chunk_embedding_hnsw ON
+    kb_chunk USING hnsw (embedding vector_cosine_ops);`, then restart the
+    backend processes so retrieval picks up the new pgvector version.
+  - 0144 builds two audit-log expression indexes concurrently (run and chat
+    filters), 0145 one token-usage index, 0146 one audit-log index for
+    answer feedback and 0148 one partial `chat_session` index for temporary
+    chats; writes are not blocked.
+
+  There is no worker-order constraint beyond the ingestion workers first.
+
+  Also new in 0.23.0:
+  - **Web search, Python in the chat, speech:** see *Web search*, *Running
+    Python in the chat* and *Dictation and reading answers aloud* above. The
+    frontend image build now downloads the Pyodide files (or reuses a vendored
+    copy, for air-gapped builds); `OC8_SKIP_PYODIDE=1` builds without them.
+  - **A new response header part:** the app's pages are served with
+    `frame-src 'none'; child-src 'self' blob:` in their Content-Security-Policy
+    (next to `frame-ancestors`): the app frames nothing but sandboxed
+    previews, so no frame may load a URL. An edition or a reverse proxy that
+    frames a URL inside oc8's pages must widen `frame-src` for it.
+  - **Service worker caching:** `/sw.js` now also caches the hashed program
+    files under `/assets/` (never API answers, chats or files) and is served
+    with `Cache-Control: no-cache` so a new worker reaches people at once. A
+    proxy in front must not cache `/sw.js` longer. Signing out clears the
+    cache.
+  - **Helm chart 0.12.0** adds `oc8.webSearch.*`.
 - **The four backend processes** are one image with different commands:
   `backend` (uvicorn), `worker`, `ingestion-worker`, `scheduler`. Scale or
   restart them independently with `docker compose restart <service>`.

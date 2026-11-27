@@ -22,10 +22,13 @@ from oc8.agent.elicitation import ElicitationNeeded
 from oc8.agent.engine import run_agent
 from oc8.agent.harness.calls import call_sig
 from oc8.modelrouter import NeutralTool, ToolCall
+from oc8.runtime.approval_resume import Decisions
 
 pytestmark = pytest.mark.asyncio
 
 HELD = {"model": "sale.order"}
+#: The tenant of the latest `_resume`, to read its audit trail back.
+_LAST: dict[str, uuid.UUID] = {}
 FOCUS = {"entity_field": "model", "id_fields": ["id"], "labels": {"sale.order": "Order"}}
 
 
@@ -79,6 +82,7 @@ async def _resume(
 ) -> tuple[Any, list[Any], dict[str, Any]]:
     _reset(monkeypatch, [_turn("Done.")])
     tenant = uuid.uuid4()
+    _LAST["tenant"] = tenant
     async with app_session(tenant) as db:
         agent, conn = await _fixture(
             db,
@@ -126,7 +130,7 @@ async def _resume(
         db.add(run)
         await db.flush()
         pre = (
-            {call_sig(ToolCall(id="x", name="write_a", arguments=held)): "approve"}
+            Decisions.of({call_sig(ToolCall(id="x", name="write_a", arguments=held)): "approve"})
             if approved_original
             else None
         )
@@ -366,7 +370,7 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
             tenant_id=tenant,
             toolset=toolset,
             run_id=run.id,
-            pre_decided={merged: "approve"},
+            pre_decided=Decisions.of({merged: "approve"}),
         )
         assert third.status == "done", third
         assert toolset.ran == [{"value_eur": 500}]
@@ -383,7 +387,7 @@ async def test_a_held_call_keeps_its_skills_guardrail_and_runs_once_after_approv
             tenant_id=tenant,
             toolset=toolset,
             run_id=run.id,
-            pre_decided={merged: "approve"},
+            pre_decided=Decisions.of({merged: "approve"}),
         )
         assert fourth.status == "done", fourth
         assert toolset.ran == [{"value_eur": 500}], "replayed, not executed again"
@@ -446,3 +450,60 @@ async def test_an_answered_call_over_the_usage_limit_is_refused(
     assert approvals == []
     assert "pending_elicitation" not in ctx
     assert "Daily limit of 0 reached for write_a" in str(result.tool_calls)
+
+
+async def _tool_results(app_session: AppSessionFactory, tenant: uuid.UUID) -> list[Any]:
+    async with app_session(tenant) as db:
+        return list(
+            (
+                await db.execute(
+                    select(m.AuditEvent).where(
+                        m.AuditEvent.tenant_id == tenant,
+                        m.AuditEvent.action == "tool.result:write_a",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+
+async def test_a_held_rerun_refused_by_the_usage_limit_is_not_audited_as_run(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The usage limit refused the held re-run before it went out: no
+    `tool.result` event, and the timeline says denied, not failed."""
+    result, _approvals, _ctx = await _resume(
+        app_session,
+        monkeypatch,
+        answer="ACME",
+        autonomy="autonomous",
+        limits=[{"tools": ["write_a"], "max": 0}],
+    )
+    assert _Server.ran == []
+    (entry,) = [c for c in result.tool_calls if c["tool"] == "write_a"]
+    assert entry["state"] == "denied"
+    assert await _tool_results(app_session, _LAST["tenant"]) == []
+
+
+async def test_a_held_rerun_whose_approval_was_used_elsewhere_is_not_audited_as_run(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A racing request claimed the approval first: the held re-run does not
+    run, so it is neither audited as a result nor shown as dispatched."""
+
+    async def lost(*a: Any, **kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr("oc8.agent.engine.claim_approval", lost)
+    result, _approvals, _ctx = await _resume(
+        app_session,
+        monkeypatch,
+        answer='{"model": "sale.order"}',
+        autonomy="conservative",
+        approved_original=True,
+    )
+    assert _Server.ran == []
+    (entry,) = [c for c in result.tool_calls if c["tool"] == "write_a"]
+    assert entry["state"] == "denied"
+    assert await _tool_results(app_session, _LAST["tenant"]) == []

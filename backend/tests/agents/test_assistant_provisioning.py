@@ -203,11 +203,11 @@ async def test_copilot_mission_suggests_a_dashboard_for_recurring_overviews() ->
     proposal inside it."""
     from oc8.agent.assistant import _MISSION
 
-    assert "Dashboard" in _MISSION
-    assert "wiederkehrende Übersicht" in _MISSION
-    assert "dieselben Zahlen erneut" in _MISSION
-    assert "über Zeit im Blick behalten" in _MISSION
-    assert "in einem Satz an und baust nichts ungefragt" in _MISSION
+    assert "dashboard" in _MISSION
+    assert "recurring overview" in _MISSION
+    assert "the same figures again" in _MISSION
+    assert "over time" in _MISSION
+    assert "offer the dashboard in one sentence and build nothing unasked" in _MISSION
     assert "propose_board" in _MISSION and "propose_agent" in _MISSION
 
 
@@ -216,9 +216,9 @@ async def test_copilot_mission_offers_a_dashboard_before_a_schedule() -> None:
     trigger for an existing agent instead of a dashboard."""
     from oc8.agent.assistant import _MISSION
 
-    assert "ZUERST ein Dashboard" in _MISSION
-    assert "nicht einfach einen Zeitplan" in _MISSION
-    assert "nur vor, wenn die Person das Dashboard ablehnt" in _MISSION
+    assert "propose a dashboard FIRST" in _MISSION
+    assert "simply create a schedule" in _MISSION
+    assert "only if the person declines the dashboard" in _MISSION
     assert "/agent" in _MISSION and "enter_agent_mode" in _MISSION
 
 
@@ -245,7 +245,7 @@ async def test_an_assistant_on_the_previous_mission_gets_the_dashboard_paragraph
     from oc8.agent.assistant import _LEGACY_MISSION_5CA1257, _MISSION
 
     previous = _LEGACY_MISSION_5CA1257
-    assert "propose_board" not in previous and _MISSION.startswith(previous)
+    assert "propose_board" not in previous
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent = await get_or_create_assistant(db, tenant_id=tenant)

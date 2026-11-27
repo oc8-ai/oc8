@@ -20,6 +20,7 @@ export function StreamingText({
   sources,
   onCitation,
   onObjectClick,
+  artifactsOf,
 }: {
   text: string;
   streaming: boolean;
@@ -29,6 +30,8 @@ export function StreamingText({
   sources?: ChatSourceDTO[];
   onCitation?: (n: number) => void;
   onObjectClick?: (href: string) => void;
+  /** See ChatMarkdown. */
+  artifactsOf?: string;
 }) {
   const reducedMotion = usePrefersReducedMotion();
   const shown = useSmoothReveal(text, streaming && !reducedMotion);
@@ -42,6 +45,7 @@ export function StreamingText({
         onObjectClick={onObjectClick}
         streaming={streaming}
         messageId={messageId}
+        artifactsOf={artifactsOf}
       />
     </div>
   );

@@ -18,7 +18,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, LargeBinary, Table
+from sqlalchemy import Column, DateTime, LargeBinary, Table
 from sqlalchemy import Uuid as SqlaUuid
 
 
@@ -61,11 +61,18 @@ def _decode_value(value: Any, column_type: Any) -> Any:
     return value
 
 
+def _data_columns(table: Table) -> list[Column[Any]]:
+    """Every column but the generated ones (`kb_chunk.search_tsv`): Postgres
+    computes those from the row and refuses an INSERT that sets them, so they
+    are neither archived nor restored."""
+    return [col for col in table.columns if col.computed is None]
+
+
 def serialize_row(table: Table, row: Mapping[str, Any]) -> dict[str, Any]:
     """Encode one DB row into JSON-safe values for the archive."""
-    return {col.name: _encode_value(row[col.name], col.type) for col in table.columns}
+    return {col.name: _encode_value(row[col.name], col.type) for col in _data_columns(table)}
 
 
 def deserialize_row(table: Table, data: Mapping[str, Any]) -> dict[str, Any]:
     """Decode one archived row back into native Python/DB-ready values."""
-    return {col.name: _decode_value(data[col.name], col.type) for col in table.columns}
+    return {col.name: _decode_value(data[col.name], col.type) for col in _data_columns(table)}
