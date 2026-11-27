@@ -354,6 +354,9 @@ class WebSearchSettings(CamelModel):
     #: Whether the tenant stored an API key of its own.
     has_key: bool = False
     source: Literal["tenant", "platform"] | None = None
+    #: Whether the operator configured a platform default at all -- what the
+    #: "default" choice falls back to. Nothing more about it.
+    platform_available: bool = False
 
 
 class WebSearchSettingsUpdate(CamelModel):
@@ -371,6 +374,7 @@ async def _web_search_dto(db: DbSession, tenant_id: uuid.UUID) -> WebSearchSetti
 
     setting = await tenant_setting(db, tenant_id=tenant_id)
     source = await effective_source(db, tenant_id=tenant_id)
+    platform = platform_config()
     if setting.provider is not None:
         provider = setting.provider if setting.provider in (*PROVIDERS, "off") else "off"
         return WebSearchSettings(
@@ -378,12 +382,13 @@ async def _web_search_dto(db: DbSession, tenant_id: uuid.UUID) -> WebSearchSetti
             base_url=setting.base_url if provider == "searxng" else None,
             has_key=setting.has_key,
             source="tenant" if source == "tenant" else None,
+            platform_available=platform is not None,
         )
-    platform = platform_config()
     return WebSearchSettings(
         provider=platform.provider if platform is not None else None,
         has_key=setting.has_key,
         source=source,
+        platform_available=platform is not None,
     )
 
 

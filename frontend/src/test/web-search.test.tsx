@@ -133,7 +133,13 @@ beforeEach(() => {
   conv.liveRunIds = [];
   steering.value = undefined;
   availability.available = true;
-  settings = { provider: null, baseUrl: null, hasKey: false, source: null };
+  settings = {
+    provider: null,
+    baseUrl: null,
+    hasKey: false,
+    source: null,
+    platformAvailable: false,
+  };
   may.manage = true;
   conv.session = detail();
   conv.messages = [message("u1", "user"), message("a1", "assistant")];
@@ -367,7 +373,13 @@ describe("the web search setting", () => {
   const save = () => screen.getByRole("button", { name: "Save" });
 
   it("never shows a stored key, and saves a changed form without it", async () => {
-    settings = { provider: "brave", baseUrl: null, hasKey: true, source: "tenant" };
+    settings = {
+      provider: "brave",
+      baseUrl: null,
+      hasKey: true,
+      source: "tenant",
+      platformAvailable: false,
+    };
     const put = vi.spyOn(api, "put").mockImplementation(async () => settings);
     wrap(<WebSearchSetting />);
     const key = await screen.findByLabelText("API key");
@@ -388,7 +400,13 @@ describe("the web search setting", () => {
 
   it("sends a new key once, then shows it as saved", async () => {
     const put = vi.spyOn(api, "put").mockImplementation(async () => {
-      settings = { provider: "tavily", baseUrl: null, hasKey: true, source: "tenant" };
+      settings = {
+        provider: "tavily",
+        baseUrl: null,
+        hasKey: true,
+        source: "tenant",
+        platformAvailable: false,
+      };
       return settings;
     });
     wrap(<WebSearchSetting />);
@@ -446,7 +464,13 @@ describe("the web search setting", () => {
   });
 
   it("shows the platform's search as the platform default, not as an empty SearXNG", async () => {
-    settings = { provider: "searxng", baseUrl: null, hasKey: false, source: "platform" };
+    settings = {
+      provider: "searxng",
+      baseUrl: null,
+      hasKey: false,
+      source: "platform",
+      platformAvailable: true,
+    };
     wrap(<WebSearchSetting />);
     expect(
       await screen.findByText(
@@ -461,10 +485,43 @@ describe("the web search setting", () => {
     expect(save()).toBeDisabled();
   });
 
+  it.each([
+    [true, "Platform default", "Not set up"],
+    [false, "Not set up", "Platform default"],
+  ])(
+    "names the default choice by whether the platform has one (%s)",
+    async (platformAvailable, shown, hidden) => {
+      settings = {
+        provider: "brave",
+        baseUrl: null,
+        hasKey: true,
+        source: "tenant",
+        platformAvailable,
+      };
+      wrap(<WebSearchSetting />);
+      const select = await screen.findByLabelText("Provider");
+      await waitFor(() => expect(select).toHaveValue("brave"));
+      expect(screen.getByRole("option", { name: shown })).toBeInTheDocument();
+      expect(screen.queryByRole("option", { name: hidden })).toBeNull();
+    },
+  );
+
   it("goes back to the platform default with provider: null", async () => {
-    settings = { provider: "brave", baseUrl: null, hasKey: true, source: "tenant" };
+    settings = {
+      provider: "brave",
+      baseUrl: null,
+      hasKey: true,
+      source: "tenant",
+      platformAvailable: true,
+    };
     const put = vi.spyOn(api, "put").mockImplementation(async () => {
-      settings = { provider: "searxng", baseUrl: null, hasKey: false, source: "platform" };
+      settings = {
+        provider: "searxng",
+        baseUrl: null,
+        hasKey: false,
+        source: "platform",
+        platformAvailable: true,
+      };
       return settings;
     });
     wrap(<WebSearchSetting />);
@@ -482,7 +539,13 @@ describe("the web search setting", () => {
   });
 
   it("keeps a tenant's own off as off", async () => {
-    settings = { provider: "off", baseUrl: null, hasKey: false, source: null };
+    settings = {
+      provider: "off",
+      baseUrl: null,
+      hasKey: false,
+      source: null,
+      platformAvailable: false,
+    };
     wrap(<WebSearchSetting />);
     const select = await screen.findByLabelText("Provider");
     await waitFor(() => expect(select).toHaveValue("off"));
@@ -494,6 +557,7 @@ describe("the web search setting", () => {
       baseUrl: "https://a.example",
       hasKey: false,
       source: "tenant",
+      platformAvailable: false,
     };
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -519,7 +583,13 @@ describe("the web search setting", () => {
 
   it("is read-only without settings:manage", async () => {
     may.manage = false;
-    settings = { provider: "brave", baseUrl: null, hasKey: true, source: "tenant" };
+    settings = {
+      provider: "brave",
+      baseUrl: null,
+      hasKey: true,
+      source: "tenant",
+      platformAvailable: false,
+    };
     wrap(<WebSearchSetting />);
     expect(await screen.findByLabelText("API key")).toBeDisabled();
     expect(screen.getByLabelText("Provider")).toBeDisabled();

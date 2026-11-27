@@ -81,7 +81,13 @@ async def test_nothing_configured(app_session: AppSessionFactory, client: AsyncC
     tenant = await _org(app_session)
     got = await client.get("/api/v1/settings/web-search", headers=_headers(tenant))
     assert got.status_code == 200
-    assert got.json() == {"provider": None, "baseUrl": None, "hasKey": False, "source": None}
+    assert got.json() == {
+        "provider": None,
+        "baseUrl": None,
+        "hasKey": False,
+        "source": None,
+        "platformAvailable": False,
+    }
     avail = await client.get("/api/v1/chat/web-search", headers=_headers(tenant))
     assert avail.json() == {"available": False}
 
@@ -101,6 +107,7 @@ async def test_the_platform_default_applies_and_never_shows_its_address_or_key(
         "baseUrl": None,
         "hasKey": False,
         "source": "platform",
+        "platformAvailable": True,
     }
     avail = await client.get("/api/v1/chat/web-search", headers=_headers(tenant))
     assert avail.json() == {"available": True}
@@ -124,7 +131,13 @@ async def test_a_tenant_key_is_stored_as_a_secret_and_never_returned(
     assert code == 200, text
     assert "brv-secret-1" not in text
     got = await client.get("/api/v1/settings/web-search", headers=_headers(tenant))
-    assert got.json() == {"provider": "brave", "baseUrl": None, "hasKey": True, "source": "tenant"}
+    assert got.json() == {
+        "provider": "brave",
+        "baseUrl": None,
+        "hasKey": True,
+        "source": "tenant",
+        "platformAvailable": True,
+    }
     assert "brv-secret-1" not in got.text
     async with app_session(tenant) as db:
         org = await db.get(m.Organization, tenant)
@@ -172,7 +185,31 @@ async def test_a_tenant_key_is_stored_as_a_secret_and_never_returned(
         "baseUrl": "https://search.example.org",
         "hasKey": False,
         "source": "tenant",
+        "platformAvailable": True,
     }
+
+
+@pytest.mark.parametrize("platform", [True, False])
+async def test_platform_available_says_only_whether_there_is_a_default(
+    app_session: AppSessionFactory,
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: bool,
+) -> None:
+    if platform:
+        _platform(monkeypatch)
+    tenant = await _org(app_session)
+    got = await client.get("/api/v1/settings/web-search", headers=_headers(tenant))
+    assert got.json()["platformAvailable"] is platform
+    # The tenant's own provider (or off) does not hide whether a default exists.
+    for body in ({"provider": "brave", "apiKey": "brv-secret-2"}, {"provider": "off"}):
+        code, text = await _put(client, tenant, body)
+        assert code == 200, text
+        got = await client.get("/api/v1/settings/web-search", headers=_headers(tenant))
+        assert got.json()["platformAvailable"] is platform
+        for out in (text, got.text):
+            assert _PLATFORM_URL not in out and "cluster.internal" not in out
+            assert _PLATFORM_KEY not in out and "brv-secret-2" not in out
 
 
 async def test_invalid_choices_are_refused(
@@ -244,7 +281,13 @@ async def test_a_tenant_can_switch_it_off_and_back_to_the_platform(
     code, _ = await _put(client, tenant, {"provider": "off"})
     assert code == 200
     got = await client.get("/api/v1/settings/web-search", headers=_headers(tenant))
-    assert got.json() == {"provider": "off", "baseUrl": None, "hasKey": False, "source": None}
+    assert got.json() == {
+        "provider": "off",
+        "baseUrl": None,
+        "hasKey": False,
+        "source": None,
+        "platformAvailable": True,
+    }
     avail = await client.get("/api/v1/chat/web-search", headers=_headers(tenant))
     assert avail.json() == {"available": False}
     code, _ = await _put(client, tenant, {"provider": None})
@@ -261,7 +304,13 @@ async def test_another_tenants_setting_is_invisible(
     code, _ = await _put(client, first, {"provider": "tavily", "apiKey": "tvly-first"})
     assert code == 200
     got = await client.get("/api/v1/settings/web-search", headers=_headers(second))
-    assert got.json() == {"provider": None, "baseUrl": None, "hasKey": False, "source": None}
+    assert got.json() == {
+        "provider": None,
+        "baseUrl": None,
+        "hasKey": False,
+        "source": None,
+        "platformAvailable": False,
+    }
     avail = await client.get("/api/v1/chat/web-search", headers=_headers(second))
     assert avail.json() == {"available": False}
     async with app_session(second) as db:

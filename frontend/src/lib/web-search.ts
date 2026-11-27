@@ -16,6 +16,8 @@ export interface WebSearchSettingsDTO {
   /** Whether the tenant stored an API key. The key itself never comes back. */
   hasKey: boolean;
   source: "tenant" | "platform" | null;
+  /** Whether the platform has a default to fall back to; nothing else about it. */
+  platformAvailable: boolean;
 }
 
 export interface WebSearchSettingsUpdate {

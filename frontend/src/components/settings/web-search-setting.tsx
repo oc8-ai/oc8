@@ -72,7 +72,8 @@ export function WebSearchSetting() {
   const keySaved = !!data?.hasKey && data.source === "tenant" && data.provider === choice;
   // Any provider without a key drops the stored one (and so does the default).
   const keyDropped = !!data?.hasKey && !keyed;
-  const nothingSetUp = !!data && data.provider === null;
+  // What "default" falls back to, whatever the tenant chose meanwhile.
+  const platformAvailable = data?.platformAvailable === true;
 
   async function save() {
     const key = apiKey.trim();
@@ -133,9 +134,9 @@ export function WebSearchSetting() {
             className={FIELD}
           >
             <option value="default">
-              {nothingSetUp
-                ? t("Not set up", "Nicht eingerichtet")
-                : t("Platform default", "Plattform-Standard")}
+              {platformAvailable
+                ? t("Platform default", "Plattform-Standard")
+                : t("Not set up", "Nicht eingerichtet")}
             </option>
             <option value="off">{t("Off", "Aus")}</option>
             <option value="searxng">SearXNG</option>
