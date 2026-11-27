@@ -209,6 +209,99 @@ async def test_resume_leg_starts_clean_on_the_resume_instruction(
         assert task is not None and task.state == "done"
 
 
+async def test_a_clarification_resume_starts_clean_on_the_answered_task(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run parked on ask_user and woken by the answer must start a fresh
+    conversation from the task text the executor hands over -- the one that
+    carries the answer. Continuing the parked transcript would never show the
+    model the answer: the preamble (built from the task) only runs when the
+    transcript is empty."""
+    tenant = uuid.uuid4()
+    parked = {
+        "task": "plan the launch",
+        "steps": 2,
+        "transcript": [
+            {"role": "user", "content": "plan the launch"},
+            {
+                "role": "assistant", "content": "",
+                "tool_calls": [
+                    {"id": "c1", "name": "ask_user", "arguments": {"question": "Region?"}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "Region?"},
+        ],
+        "clarifications": [{"question": "Region?", "answer": "EU"}],
+        "isolated_result": {"status": "waiting_for_input", "output": "Region?"},
+    }
+    agent_id, run_id = await _agent_and_run(app_session, tenant, context=parked)
+
+    seen: dict[str, Any] = {}
+
+    async def shell() -> None:
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            seen["task"] = run.context.get("task")
+            seen["transcript"] = run.context.get("transcript")
+            seen["steps"] = run.context.get("steps")
+            run.context = {**run.context, "isolated_result": {"status": "done", "output": "ok"}}
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(shell))
+
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        result = await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="plan the launch\n\nClarifications:\nEU",
+            tenant_id=tenant, run_id=run_id,
+        )
+
+    assert seen["task"] == "plan the launch\n\nClarifications:\nEU"
+    assert seen["transcript"] == []
+    assert seen["steps"] == 0
+    assert result.status == "done"
+
+
+async def test_an_elicitation_resume_keeps_the_transcript(
+    app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A connected server's question is answered inside the held call
+    (`_finish_elicitation` finishes that call in the transcript), so that
+    resume keeps the conversation it continues."""
+    tenant = uuid.uuid4()
+    transcript = [{"role": "user", "content": "x"}]
+    ctx = {
+        "task": "verkauf etwas",
+        "steps": 2,
+        "transcript": transcript,
+        "clarifications": [{"question": "Which?", "answer": "A"}],
+        "pending_elicitation": {"tool": "create_record", "connection": "crm", "arguments": {}},
+        "isolated_result": {"status": "waiting_for_input", "output": "Which?"},
+    }
+    agent_id, run_id = await _agent_and_run(app_session, tenant, context=ctx)
+
+    seen: dict[str, Any] = {}
+
+    async def shell() -> None:
+        async with app_session(tenant) as db:
+            run = await db.get(m.AgentRun, run_id)
+            assert run is not None
+            seen["transcript"] = run.context.get("transcript")
+            run.context = {**run.context, "isolated_result": {"status": "done", "output": "ok"}}
+
+    monkeypatch.setattr("oc8.runtime.isolated.get_sandbox_driver", lambda: _FakeDriver(shell))
+
+    async with app_session(tenant) as db:
+        agent = await db.get(m.Agent, agent_id)
+        assert agent is not None
+        await DockerIsolatedRuntime().execute(
+            db, agent=agent, task_text="verkauf etwas", tenant_id=tenant, run_id=run_id
+        )
+
+    assert seen["transcript"] == transcript
+
+
 async def test_first_leg_keeps_the_task_text_and_transcript(
     app_session: AppSessionFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
