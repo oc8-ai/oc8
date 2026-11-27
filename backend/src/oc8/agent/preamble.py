@@ -182,14 +182,17 @@ class Resume:
     instruction: str
 
 
-#: Where a figure has to come from. A budget, a usage figure or a record count
-#: the model remembers from an earlier turn, or makes up, reads exactly like
-#: one it just looked up; said once, in the stable system prefix, so it costs
-#: nothing per turn. The answer itself is never rewritten.
+#: Where a figure has to come from, in a chat. A budget, a usage figure or a
+#: record count the model remembers from an earlier turn, or makes up, reads
+#: exactly like one it just looked up; said once, in the stable system prefix,
+#: so it costs nothing per turn. The answer itself is never rewritten. Only
+#: for chat turns (and the Copilot): a triggered run's figures come with its
+#: task, and an earlier turn is what a chat has and a run does not.
 GROUNDING_RULE = (
     "FIGURES: numbers about budgets, usage, runs and business records must come "
-    "from a tool result of this turn, not from memory or an earlier turn. If you "
-    "did not call a tool for a figure in this turn, say so instead of estimating it."
+    "from this turn -- a tool result, the knowledge context provided, the task "
+    "or the person's own message -- never from memory or what an earlier turn "
+    "recalled. If none of these holds the figure, say so instead of estimating it."
 )
 
 
@@ -556,7 +559,8 @@ async def build_run_preamble(
     # the half that holds without the model's cooperation is the blast-radius
     # limit in agent/blast_radius.py.
     messages.append(NeutralMessage(role="system", content=PROVENANCE_RULE))
-    messages.append(NeutralMessage(role="system", content=GROUNDING_RULE))
+    if agent.is_tenant_assistant or (run is not None and run.source == "chat"):
+        messages.append(NeutralMessage(role="system", content=GROUNDING_RULE))
 
     # Per-turn context: system messages without a replay; with one, part of
     # the final user message, so the system prefix stays stable across turns.

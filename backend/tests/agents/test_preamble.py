@@ -550,27 +550,55 @@ async def test_the_provenance_rule_precedes_anything_a_stranger_wrote(
     assert RULE in systems
 
 
-async def test_figures_must_come_from_a_tool_result_of_this_turn(
-    app_session: AppSessionFactory,
+@pytest.mark.parametrize(("source", "said"), [("chat", True), ("event", False)])
+async def test_a_chat_turn_is_told_where_a_figure_comes_from(
+    app_session: AppSessionFactory, source: str, said: bool
 ) -> None:
     """A budget, a usage figure or a record count the model remembers from an
-    earlier turn, or makes up, reads exactly like one it just looked up. The
-    preamble says once, in the stable system prefix, where a figure has to
-    come from -- and what to say when no tool was called."""
+    earlier turn, or makes up, reads exactly like one it just looked up. A
+    chat's preamble says once, in the stable system prefix, where a figure has
+    to come from -- a tool result, the knowledge context, the task or the
+    person's own message -- and what to say when none holds it. A triggered
+    run has no earlier turn and its figures come with its task: not told."""
     from oc8.agent.preamble import GROUNDING_RULE
     from oc8.agent.provenance import RULE
 
     tenant = uuid.uuid4()
     async with app_session(tenant) as db:
         agent = await _solo_agent(db, tenant)
+        run = m.AgentRun(
+            tenant_id=tenant, agent_id=agent.id, source=source, state="running", context={}
+        )
+        db.add(run)
+        await db.flush()
         pre = await build_run_preamble(
             db, agent=agent, tenant_id=tenant, task_text="Wie viel Budget ist noch übrig?",
-            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40,
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40, run_id=run.id,
         )
     systems = [msg.content for msg in pre.messages if msg.role == "system"]
-    assert systems[systems.index(RULE) + 1] == GROUNDING_RULE
-    for word in ("budget", "usage", "runs", "records", "tool result of this turn", "estimat"):
-        assert word in GROUNDING_RULE.lower()
+    assert (GROUNDING_RULE in systems) is said
+    if said:
+        assert systems[systems.index(RULE) + 1] == GROUNDING_RULE
+    rule = GROUNDING_RULE.lower()
+    for word in ("budget", "tool result", "knowledge context", "the task", "own message"):
+        assert word in rule
+    assert "estimat" in rule and "earlier turn" in rule
+
+
+async def test_the_copilot_is_told_where_a_figure_comes_from(
+    app_session: AppSessionFactory,
+) -> None:
+    from oc8.agent.assistant import get_or_create_assistant
+    from oc8.agent.preamble import GROUNDING_RULE
+
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        pre = await build_run_preamble(
+            db, agent=assistant, tenant_id=tenant, task_text="Budget?",
+            frame={}, model_locality="cloud", caps=ModelCaps(), max_steps=40,
+        )
+    assert GROUNDING_RULE in [msg.content for msg in pre.messages if msg.role == "system"]
 
 
 async def _solo_agent(db: Any, tenant: uuid.UUID) -> m.Agent:
@@ -981,21 +1009,19 @@ async def test_non_chat_preamble_is_unchanged(
         explicit = await build_run_preamble(db, **kwargs, replay=None)
         prompt = system_prompt(agent, caps=ModelCaps(), tenant_name="the organization")
 
-    from oc8.agent.preamble import GROUNDING_RULE
     from oc8.agent.provenance import RULE
 
-    assert [(msg.role, msg.content) for msg in pre.messages[:5]] == [
+    assert [(msg.role, msg.content) for msg in pre.messages[:4]] == [
         ("system", prompt),
         ("system", RULE),
-        ("system", GROUNDING_RULE),
         ("system", "MEMORY-BLOCK"),
         ("system", "KB-BLOCK"),
     ]
-    assert [msg.role for msg in pre.messages[5:]] == ["user", "user"]
-    assert str(pre.messages[5].content).startswith("# Run context\n")
-    assert "- Origin: trigger\n" in str(pre.messages[5].content)
-    assert pre.messages[6].content == "Invoice arrived"
-    assert len(pre.messages) == 7
+    assert [msg.role for msg in pre.messages[4:]] == ["user", "user"]
+    assert str(pre.messages[4].content).startswith("# Run context\n")
+    assert "- Origin: trigger\n" in str(pre.messages[4].content)
+    assert pre.messages[5].content == "Invoice arrived"
+    assert len(pre.messages) == 6
     assert [(msg.role, msg.content) for msg in explicit.messages] == [
         (msg.role, msg.content) for msg in pre.messages
     ]
