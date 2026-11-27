@@ -293,13 +293,20 @@ async def test_the_assistants_secret_gate_covers_run_inputs(
             f"/api/v1/runs/{run_id}/inputs", json={"text": "use EU"}, headers=_h(tenant, "alice")
         )
         assert fine.status_code == 201
+        # A word about a credential is not one: the Cost Center counts tokens.
+        mention = await c.post(
+            f"/api/v1/runs/{run_id}/inputs",
+            json={"text": "Wie viele Tokens habe ich verbraucht?"},
+            headers=_h(tenant, "alice"),
+        )
+        assert mention.status_code == 201, mention.text
     async with app_session(tenant) as db:
         texts = (
             (await db.execute(select(m.RunInput.text).where(m.RunInput.run_id == run_id)))
             .scalars()
             .all()
         )
-    assert texts == ["use EU"]
+    assert texts == ["use EU", "Wie viele Tokens habe ich verbraucht?"]
 
 
 async def test_an_ordinary_agents_run_input_is_not_secret_gated(

@@ -213,7 +213,7 @@ async def _refusal(
     from oc8.authz.permissions import COPILOT, MANAGE, RUN_START, perm
     from oc8.chat.reach import member_can_reach_agent
     from oc8.copilot.followups import live_binding_external_id
-    from oc8.copilot.redaction import is_secret_request
+    from oc8.copilot.redaction import carries_secret_value
     from oc8.tenants.activity import tenant_may_run
 
     ctx = run.context or {}
@@ -235,7 +235,7 @@ async def _refusal(
         return "the agent is gone"
     if not await tenant_may_run(run.tenant_id):
         return "the organisation may not run"
-    if agent.is_tenant_assistant and is_secret_request("\n\n".join(r.text for r in rows)):
+    if agent.is_tenant_assistant and carries_secret_value("\n\n".join(r.text for r in rows)):
         return "the secret gate"
     channel = ctx.get("chat_channel")
     if channel and ctx.get("chat_channel_external_id"):

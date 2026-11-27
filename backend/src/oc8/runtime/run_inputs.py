@@ -34,7 +34,7 @@ from oc8.authz.authority import Authority
 from oc8.authz.permissions import AGENT, MANAGE, RUN_CONTROL, perm
 from oc8.authz.scope import DepartmentScope
 from oc8.chat.reach import reachable_chat_agent
-from oc8.copilot.redaction import is_secret_request
+from oc8.copilot.redaction import carries_secret_value
 from oc8.db.session import tenant_session
 from oc8.runtime.fencing import fence, one_line
 from oc8.runtime.person import Whose, whose_run
@@ -152,7 +152,7 @@ async def _checked_text(db: AsyncSession, *, run: m.AgentRun, text: str) -> str:
         raise InputRefused(422, f"message is longer than {MAX_INPUT_CHARS} characters", "too_long")
     # The tenant Assistant's secret gate, the same rule and sentence as chat
     # send and every answer door: a credential never reaches its model.
-    if is_secret_request(body):
+    if carries_secret_value(body):
         agent = await db.get(m.Agent, run.agent_id)
         if agent is not None and agent.is_tenant_assistant:
             from oc8.runtime.clarification import SECRET_REFUSAL

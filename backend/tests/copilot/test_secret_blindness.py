@@ -4,7 +4,7 @@ Retired 2026-08-31 together with the raw-completion Copilot chat path
 (`oc8.copilot.chat`, deleted in Task 5 of the unified-assistant plan) --
 `oc8.chat.service.send_message` now carries the same pre-model secret gate
 that `respond_to_copilot_message` used to run, reusing the same
-`oc8.copilot.redaction.is_secret_request`/`redact_text` helpers. Scoped to
+`oc8.copilot.redaction.carries_secret_value`/`redact_text` helpers. Scoped to
 the tenant Assistant only; the other two tests below pin the scoping from
 both directions -- an ordinary agent's chat is unaffected by the gate, and
 a benign message to the Assistant itself is NOT refused.
@@ -84,7 +84,7 @@ async def test_assistant_still_enqueues_a_run_for_a_benign_message(
 ) -> None:
     """Pins the gate from the other side: a message to the SAME Assistant
     session that does not look like a credential is not refused. Without
-    this, a broken `is_secret_request` check that always returns True (or an
+    this, a broken `carries_secret_value` check that always returns True (or an
     accidentally-dropped conjunct that made the Assistant refuse
     everything) would still pass the test above and the ordinary-agent test
     below -- neither actually exercises the Assistant's non-refusal path."""
@@ -142,3 +142,68 @@ async def test_an_ordinary_agents_chat_is_not_gated(
 
     assert run is not None
     assert run.source == "chat"
+
+
+#: Words about credentials, not credentials: a token is also what a model's
+#: usage is counted in (Cost Center), and a person may ask about a password.
+_MENTIONS = [
+    "How many tokens did I use this month?",
+    "Wie viele Tokens habe ich verbraucht?",
+    "What is our token budget?",
+    "reset my password please",
+    "Bitte setz mein Passwort zurück.",
+    "Explain our secret handling policy.",
+    "The password is required for every login.",
+]
+#: A credential value the person wrote: refused, as before.
+_VALUES = [
+    "token: abc123def456",
+    "password = hunter2",
+    "Hier ist mein Token: abc123def456",
+    "apiKey=sk-abc123def456",
+    "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.sig",
+    "my password is hunter2",
+    "Mein Token ist abc123def456",
+]
+
+
+def test_a_value_written_as_a_sentence_is_redacted() -> None:
+    from oc8.copilot.redaction import redact_text
+
+    assert redact_text("my password is hunter2, thanks") == "my password is [redacted], thanks"
+
+
+@pytest.mark.parametrize("message", _MENTIONS)
+def test_a_message_that_only_mentions_a_credential_passes_the_gate(message: str) -> None:
+    from oc8.copilot.redaction import carries_secret_value
+
+    assert carries_secret_value(message) is False
+
+
+@pytest.mark.parametrize("message", _VALUES)
+def test_a_message_that_carries_a_credential_value_is_caught(message: str) -> None:
+    from oc8.copilot.redaction import carries_secret_value
+
+    assert carries_secret_value(message) is True
+
+
+@pytest.mark.parametrize(
+    "message", ["How many tokens did I use this month?", "Wie viele Tokens habe ich verbraucht?"]
+)
+async def test_the_assistant_answers_a_question_about_token_usage(
+    app_session: AppSessionFactory, redis_url: str, message: str
+) -> None:
+    """Asking how many tokens were spent is the Cost Center's question, not a
+    credential: the turn is answered, not refused."""
+    tenant = uuid.uuid4()
+    async with app_session(tenant) as db:
+        assistant = await get_or_create_assistant(db, tenant_id=tenant)
+        session = await create_session(
+            db, tenant_id=tenant, agent_id=assistant.id, member_id=uuid.uuid4()
+        )
+        user_message, run = await send_message(
+            db, session=session, tenant_id=tenant, message=message, originating_operator="op"
+        )
+
+    assert run is not None and run.source == "chat"
+    assert user_message.content == message

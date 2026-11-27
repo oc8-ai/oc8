@@ -22,7 +22,7 @@ from oc8.chat.questions import (
     render_answers_text,
     validate_answers,
 )
-from oc8.copilot.redaction import is_secret_request
+from oc8.copilot.redaction import carries_secret_value
 from oc8.models.run import AgentRun, Clarification
 from oc8.runtime.repository import RunRepository
 from oc8.runtime.run_context import merge_context
@@ -76,7 +76,7 @@ async def _refuse_secret_answer(
     and every free-text value; option keys are not free text, since
     `validate_answers` only admits keys the question offered."""
     written = [answer, *(v for v in (answers or {}).values() if isinstance(v, str))]
-    if not is_secret_request(" ".join(written)):
+    if not carries_secret_value(" ".join(written)):
         return
     agent = await db.get(m.Agent, run.agent_id)
     if agent is not None and agent.is_tenant_assistant:

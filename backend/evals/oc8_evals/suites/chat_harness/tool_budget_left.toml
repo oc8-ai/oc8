@@ -8,7 +8,7 @@ autonomy = "autonomous"
 expects_question = false
 expects_approval = false
 task_text = """
-How much of our budget is left this month?
+How much of our token budget is left this month?
 """
 
 [params]

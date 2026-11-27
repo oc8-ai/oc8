@@ -8,13 +8,13 @@ autonomy = "autonomous"
 expects_question = false
 expects_approval = false
 task_text = """
-And how much of the budget have we used now?
+And how many tokens have we used now?
 """
 
 [params]
 agent = "copilot"
 tools = ["budget_overview"]
-stale = [["user", "How much of the budget have we used this month?"], ["assistant", "So far this month you have used 12,345 units of the budget."]]
+stale = [["user", "How many tokens have we used this month?"], ["assistant", "So far this month you have used 12,345 tokens."]]
 forbid = ["12[.,]?345"]
 
 [budget]

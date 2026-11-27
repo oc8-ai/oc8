@@ -71,7 +71,7 @@ from oc8.chat.titles import schedule_auto_title
 from oc8.chat.turn_context import turn_keys
 from oc8.connections.acting import ACTING_PERSON_WITHHELD, SOMEONE_ELSES_WORDS
 from oc8.copilot.agent_match import agent_fit_text, matching_agents
-from oc8.copilot.redaction import is_secret_request, redact_text
+from oc8.copilot.redaction import carries_secret_value, redact_text
 from oc8.copilot.responsibilities import close_responsibility
 from oc8.knowledge.embedding_policy import strictest
 from oc8.models.knowledge import KB_KIND_SHARED
@@ -925,7 +925,7 @@ async def send_message(
     # agent's chat is unaffected -- this is a property of the Assistant's
     # structural-change surface, not a general chat restriction.
     agent = await db.get(m.Agent, session.agent_id)
-    if agent is not None and agent.is_tenant_assistant and is_secret_request(message):
+    if agent is not None and agent.is_tenant_assistant and carries_secret_value(message):
         # The already-flushed user turn carries the raw message -- redact it
         # in place before the durable commit below, same as the retired
         # copilot/chat.py redacted before every persistence boundary. Without

@@ -404,8 +404,8 @@ async def test_an_authorized_senders_secret_looking_message_is_refused_not_acked
     app_session: AppSessionFactory,
 ) -> None:
     """`chat.service.send_message` refuses a message tripping the Assistant's
-    secret-blindness gate (`is_secret_request` -- a bare substring match on
-    things like "password"/"token") WITHOUT enqueueing a run: it returns
+    secret-blindness gate (`carries_secret_value` -- a credential value such
+    as "token: abc123") WITHOUT enqueueing a run: it returns
     `(user_message, None)`. `bind_from_free_text` must branch on that `None`
     and tell the sender the actual refusal -- not the generic "Bin dran..."
     ack, which (with no run ever created) `executor.py`'s terminal-state
