@@ -617,9 +617,9 @@ def _startup_entry(name: str, exc: BaseException) -> dict[str, Any]:
 
 def _reaches(entry: Mapping[str, Any], tc: ToolCall) -> bool:
     """Whether this call reaches for the connection: a tool search naming
-    it, or a call addressed to it (`<connection>.<tool>`)."""
+    it, or a call addressed to it (`<connection>__<tool>`)."""
     from oc8.agent.offering import named_by_find
-    from oc8.agent.tool_routing import SEPARATOR
+    from oc8.agent.tool_routing import addresses_connection
 
     name = str(entry.get("name") or "")
     if not name:
@@ -628,7 +628,7 @@ def _reaches(entry: Mapping[str, Any], tc: ToolCall) -> bool:
         raw = tc.arguments.get("connection")
         connection = str(raw).strip() or None if raw is not None else None
         return bool(named_by_find([entry], str(tc.arguments.get("query", "")), connection))
-    return tc.name.startswith(name + SEPARATOR)
+    return addresses_connection(tc.name, name)
 
 
 async def _ask_when_reached(
