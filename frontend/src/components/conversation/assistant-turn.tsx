@@ -33,6 +33,7 @@ import { ThoughtDisclosure, thoughtOf } from "./thought-disclosure";
 import type { AssistantTurnModel } from "./types";
 import { useMinVisible } from "./use-min-visible";
 import { useObjectNavigation } from "./use-object-navigation";
+import { ReadAloudButton } from "./voice/read-aloud-button";
 
 const TERMINAL = new Set(["done", "failed", "interrupted"]);
 /** A run in these states is waiting on a person, not working: the turn shows
@@ -282,6 +283,14 @@ export function AssistantTurn({
               >
                 {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
               </ActionButton>
+              {/* Voice works in a temporary chat too; a shared view has no speech. */}
+              {!readOnly && sessionId && (
+                <ReadAloudButton
+                  sessionId={sessionId}
+                  messageId={message.id}
+                  restricted={message.restricted}
+                />
+              )}
               {!readOnly && turn.replyToId && onRegenerate && (
                 <ActionButton
                   label={t("Regenerate answer", "Antwort neu erzeugen")}

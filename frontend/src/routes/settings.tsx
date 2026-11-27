@@ -18,6 +18,7 @@ import { BackupPanel } from "@/components/backup-panel";
 import { CredentialPicker } from "@/components/credential-picker";
 import { PersonalDepartmentsAdminPanel } from "@/components/personal-departments-admin";
 import { PreviewScriptsSetting } from "@/components/settings/preview-scripts-setting";
+import { SpeechSetting } from "@/components/settings/speech-setting";
 import { WebSearchSetting } from "@/components/settings/web-search-setting";
 import { OnboardingWizard } from "@/components/onboarding/onboarding-wizard";
 import { TimezoneSelect } from "@/components/timezone-select";
@@ -58,6 +59,7 @@ function SettingsPage() {
         <CopilotSettingsPanel />
         <PreviewScriptsSetting />
         <WebSearchSetting />
+        <SpeechSetting />
         <PersonalDepartmentsAdminPanel />
         <BackupPanel />
         <EditionSettingsSections />

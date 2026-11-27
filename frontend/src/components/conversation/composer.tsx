@@ -6,7 +6,7 @@
 //   above          C2 QuestionCard, C3 PinnedBar
 //   target         C4 "To the running run …"
 //   extraPlusItems C3 data source, knowledge base, oc8 object
-//   trailing       C5 dictation (Enterprise; core ships no mic)
+//   trailing       C5 more trailing buttons (core's mic: voice/dictation-button)
 import {
   useEffect,
   useRef,
@@ -53,6 +53,7 @@ import { ModelPicker } from "./model-picker";
 import { EffortPicker } from "./effort-picker";
 import { PlusMenu, type PlusMenuItem } from "./plus-menu";
 import { WebToggle } from "./web-toggle";
+import { DictationButton } from "./voice/dictation-button";
 
 export type { PlusMenuItem } from "./plus-menu";
 
@@ -106,7 +107,7 @@ export interface ComposerProps {
   above?: ReactNode;
   /** C3: data source, knowledge base, oc8 object. */
   extraPlusItems?: PlusMenuItem[];
-  /** C5: dictation button. */
+  /** C5: more buttons before Send (core's own mic is shown before them). */
   trailing?: ReactNode;
   /** Read-only share: no Stop button, Esc does not stop. */
   disabled?: boolean;
@@ -516,6 +517,25 @@ export function Composer(props: ComposerProps) {
       onSelect: () => p.onSelect(slotProps),
     })),
   ];
+  /** Dictated words go where the caret is, spaced from their neighbours,
+   *  for the person to read over: never sent from here. */
+  function insertDictation(text: string) {
+    const box = textarea.current;
+    const current = box?.value ?? props.draft;
+    const at = Math.min(box?.selectionStart ?? current.length, current.length);
+    const before = current.slice(0, at);
+    const after = current.slice(at);
+    const lead = before && !/\s$/.test(before) ? " " : "";
+    const trail = after && !/^\s/.test(after) ? " " : "";
+    const end = before.length + lead.length + text.length;
+    props.onDraftChange(before + lead + text + trail + after);
+    setCaret(end);
+    setTimeout(() => {
+      textarea.current?.focus();
+      textarea.current?.setSelectionRange(end, end);
+    }, 0);
+  }
+
   const canSend = !!props.draft.trim() && !props.disabled && uploading === 0;
   const chips = attachments.length > 0 || refs.length > 0 || uploading > 0;
 
@@ -653,6 +673,14 @@ export function Composer(props: ComposerProps) {
             <WebToggle on={props.web.on} onChange={props.web.onChange} disabled={props.disabled} />
           )}
           <div className="flex-1" />
+          {!readOnly && (
+            <DictationButton
+              sessionId={props.sessionId}
+              ensureSession={props.ensureSession}
+              onTranscript={insertDictation}
+              className={ICON_BUTTON}
+            />
+          )}
           {props.trailing}
           {!readOnly &&
             composerActions.map(({ id, component: Action }) => (

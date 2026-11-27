@@ -608,6 +608,46 @@ export async function uploadChatAttachment(
   return (await res.json()) as FileAttachmentDTO;
 }
 
+/** One dictation (POST /chat/audio/transcribe): the text is for the composer,
+ *  nothing is sent. Multipart like the upload above, so not `api.*`. */
+export async function transcribeChatAudio(
+  sessionId: string,
+  recording: Blob,
+): Promise<{ text: string }> {
+  const token = await getToken();
+  const body = new FormData();
+  const ext = recording.type.includes("mp4")
+    ? "m4a"
+    : recording.type.includes("ogg")
+      ? "ogg"
+      : "webm";
+  body.append("file", recording, `dictation.${ext}`);
+  body.append("session_id", sessionId);
+  const res = await fetch(`${API_URL}/chat/audio/transcribe`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${token}` },
+    body,
+  });
+  if (!res.ok) throw await toError(res);
+  return (await res.json()) as { text: string };
+}
+
+/** An answer read aloud (audio/mpeg), fetched with the bearer token: an
+ *  `<audio src>` could not send it. */
+export async function fetchAnswerSpeech(
+  sessionId: string,
+  messageId: string,
+  signal: AbortSignal,
+): Promise<Blob> {
+  const token = await getToken();
+  const res = await fetch(
+    `${API_URL}/chat/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/speech`,
+    { method: "POST", headers: { authorization: `Bearer ${token}` }, signal },
+  );
+  if (!res.ok) throw await toError(res);
+  return res.blob();
+}
+
 // Same shape as uploadChatAttachment above, but for the agent Instructions
 // tab's own "Attached files" section (owner_type="agent_instructions" on the
 // backend rather than "chat_message").

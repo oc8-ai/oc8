@@ -331,6 +331,9 @@ export interface ModelDTO {
   // these, the provider does. null/undefined means "none set".
   extra?: Record<string, unknown> | null;
   usedByCopilot: boolean;
+  /** What the model is for (spec 2026-11-27 §9). A speech model is never
+   *  offered to chats (`chatEnabled` false). Absent on an older backend: chat. */
+  capability?: ModelCapability;
   // Whether members may pick this model in a chat. Absent on an older
   // backend, where every model was pickable.
   chatEnabled?: boolean;
@@ -348,6 +351,8 @@ export interface ModelDTO {
   autoPreferenceRouter?: boolean;
   autoPreferenceExamples?: Array<Record<string, unknown>> | null;
 }
+
+export type ModelCapability = "chat" | "speech_to_text" | "text_to_speech";
 
 export interface ModelProviderDTO {
   canonical: string;
@@ -390,6 +395,8 @@ export interface ModelWriteBody {
   extra?: Record<string, unknown>;
   usedByCopilot?: boolean;
   chatEnabled?: boolean;
+  /** Left out on an update, the stored capability is kept. */
+  capability?: ModelCapability;
   supportsVision?: boolean;
   supportsReasoning?: boolean;
   credentialId?: string | null;
