@@ -53,7 +53,7 @@ function download(artifact: Artifact) {
 }
 
 const ICON_BUTTON =
-  "grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
+  "grid size-11 place-items-center rounded-md text-muted-foreground sm:size-9 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50";
 
 function Writing() {
   const t = useT();

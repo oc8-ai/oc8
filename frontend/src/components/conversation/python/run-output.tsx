@@ -21,7 +21,7 @@ import { LIMITS, PythonNotInstalled, resultMessage, type PythonResult } from "./
 import { usePythonScope } from "./run-context";
 
 const BUTTON =
-  "inline-flex min-h-9 items-center gap-1 rounded-md border border-border px-2 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+  "inline-flex min-h-11 items-center gap-1 rounded-md border sm:min-h-9 border-border px-2 text-xs font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
 
 type State =
   | { status: "idle" }

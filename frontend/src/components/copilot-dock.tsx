@@ -443,7 +443,11 @@ function CopilotDockPanel() {
   return (
     <>
       {open && (
-        <div className="fixed bottom-24 right-5 z-50 flex h-[min(72vh,600px)] w-[min(94vw,400px)] flex-col overflow-hidden rounded-2xl border border-border bg-panel shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]">
+        // A phone gets the whole screen (a sheet); from sm up it floats.
+        <div
+          data-testid="copilot-dock-panel"
+          className="fixed inset-0 z-50 flex flex-col overflow-hidden bg-panel pt-[env(safe-area-inset-top)] sm:inset-auto sm:bottom-24 sm:right-5 sm:h-[min(72vh,600px)] sm:w-[min(94vw,400px)] sm:rounded-2xl sm:border sm:border-border sm:pt-0 sm:shadow-[0_30px_80px_-30px_oklch(0_0_0/80%)]"
+        >
           <header className="flex items-center gap-2.5 border-b border-border px-4 py-3">
             <CopilotPersonaHeader variant="dock">
               {assistantAgentId && (
@@ -458,7 +462,7 @@ function CopilotDockPanel() {
                   }}
                   aria-label={de ? "Neuer Chat" : "New chat"}
                   title={de ? "Neuer Chat" : "New chat"}
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                  className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground sm:size-8"
                 >
                   <Plus className="h-4 w-4" />
                 </button>
@@ -469,7 +473,7 @@ function CopilotDockPanel() {
                   onClick={() => activeUiId && startTemporaryChat(activeUiId)}
                   aria-label={temporaryText.label}
                   title={temporaryText.help}
-                  className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                  className="grid size-11 shrink-0 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground sm:size-8"
                 >
                   <MessageCircleDashed className="h-4 w-4" />
                 </button>
@@ -478,7 +482,7 @@ function CopilotDockPanel() {
                 type="button"
                 onClick={() => setOpen(false)}
                 aria-label={de ? "Copilot schließen" : "Close copilot"}
-                className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground"
+                className="grid size-11 place-items-center rounded-md text-muted-foreground transition hover:bg-muted/40 hover:text-foreground sm:size-8"
               >
                 <ChevronDown className="h-4 w-4" />
               </button>
@@ -510,7 +514,7 @@ function CopilotDockPanel() {
                     type="button"
                     onClick={() => setActiveUiId(tab.uiId)}
                     aria-label={de ? `${title} – Tab` : `${title} tab`}
-                    className="max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1"
+                    className="min-h-11 max-w-[120px] overflow-hidden text-ellipsis whitespace-nowrap px-1 py-1 sm:min-h-0"
                   >
                     <ChatTitleText title={title} />
                   </button>
@@ -518,7 +522,7 @@ function CopilotDockPanel() {
                     type="button"
                     onClick={() => closeTab(tab.uiId)}
                     aria-label={de ? `${title} schließen` : `Close ${title}`}
-                    className="grid h-4 w-4 shrink-0 place-items-center opacity-60 hover:opacity-100"
+                    className="grid h-11 w-8 shrink-0 place-items-center opacity-60 hover:opacity-100 sm:size-4"
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -529,7 +533,7 @@ function CopilotDockPanel() {
               type="button"
               onClick={openNewTab}
               aria-label={t("New tab", "Neuer Tab")}
-              className="grid h-6 w-6 shrink-0 place-items-center rounded-md hover:bg-muted/50"
+              className="grid size-11 shrink-0 place-items-center rounded-md hover:bg-muted/50 sm:size-6"
             >
               <Plus className="h-4 w-4" />
             </button>
@@ -611,7 +615,12 @@ function CopilotDockPanel() {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-label={de ? "oc8 Copilot" : "oc8 copilot"}
-        className="group fixed bottom-5 right-5 z-50 grid h-14 w-14 place-items-center rounded-full border border-primary/30 bg-panel shadow-[0_16px_40px_-16px_oklch(0_0_0/90%)] transition hover:scale-105"
+        className={cn(
+          "group fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom,0px))] right-[calc(1.25rem+env(safe-area-inset-right,0px))] z-50 h-14 w-14 place-items-center rounded-full border border-primary/30 bg-panel shadow-[0_16px_40px_-16px_oklch(0_0_0/90%)] transition hover:scale-105",
+          // On a phone the open sheet covers the screen and closes from its
+          // own header; the toggle would sit on the composer's send button.
+          open ? "hidden sm:grid" : "grid",
+        )}
       >
         {open ? (
           <X className="h-5 w-5 text-muted-foreground" />

@@ -75,7 +75,7 @@ export function PlusMenu({
           setActive(0);
           setOpen((v) => !v);
         }}
-        className="grid size-9 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
+        className="grid size-11 place-items-center rounded-md text-muted-foreground sm:size-9 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
       >
         <Plus className="size-4" aria-hidden />
       </button>

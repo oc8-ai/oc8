@@ -1364,7 +1364,10 @@ function ConversationBody(props: ConversationProps) {
         ref={composerArea}
         className={cn(
           "relative mx-auto w-full max-w-[47.5rem]",
-          full ? "px-4 pb-4 md:px-6" : "px-3 pb-3",
+          // Clear of the home indicator and, on iOS, the keyboard.
+          full
+            ? "px-4 pb-[calc(1rem+var(--bottom-inset,0px))] md:px-6"
+            : "px-3 pb-[calc(0.75rem+var(--bottom-inset,0px))]",
         )}
       >
         {!atBottom && (

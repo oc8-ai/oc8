@@ -243,6 +243,32 @@ describe("CopilotDock", () => {
     });
   });
 
+  it("opens as a full-screen sheet on phones and a floating card from sm up", () => {
+    renderDock();
+    openDock();
+    const panel = screen.getByTestId("copilot-dock-panel");
+    // Phone: the whole screen, clear of the notch; the composer inside pads
+    // itself clear of the home indicator and keyboard.
+    expect(panel).toHaveClass("inset-0", "pt-[env(safe-area-inset-top)]");
+    expect(panel).toHaveClass("sm:inset-auto", "sm:bottom-24", "sm:right-5", "sm:rounded-2xl");
+    // The floating toggle would sit on the composer's send button: on a
+    // phone the sheet's own close button takes over.
+    const toggle = screen.getByRole("button", { name: /oc8 copilot/i });
+    expect(toggle).toHaveClass("hidden", "sm:grid");
+    // Header controls are touch-sized below sm.
+    for (const name of [/^new chat$/i, /close copilot/i]) {
+      expect(screen.getByRole("button", { name })).toHaveClass("size-11", "sm:size-8");
+    }
+  });
+
+  it("keeps the closed floating button clear of the home indicator", () => {
+    renderDock();
+    const toggle = screen.getByRole("button", { name: /oc8 copilot/i });
+    expect(toggle).toHaveClass("grid");
+    expect(toggle).not.toHaveClass("hidden");
+    expect(toggle.className).toContain("env(safe-area-inset-bottom");
+  });
+
   it("renders nothing for a caller without copilot:use, and never even calls the chat-pipeline hooks", () => {
     canMock.mockImplementation(() => false);
     renderDock();

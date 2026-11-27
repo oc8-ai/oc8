@@ -179,3 +179,26 @@ describe("AppShell sidebar collapse", () => {
     expect(screen.queryByText("Leitstand")).not.toBeInTheDocument();
   });
 });
+
+describe("AppShell room under the floating Copilot button", () => {
+  beforeEach(() => localStorage.clear());
+
+  // The 1440x900 live check: the button covered the last column of the Cost
+  // Center's "Per employee" table, with no way to scroll it out from under.
+  it("pads the bottom of pages that show the button", () => {
+    routerState.pathname = "/costs";
+    renderShell();
+    const main = screen.getByRole("main");
+    expect(main.className).toContain("pb-[calc(7rem+env(safe-area-inset-bottom,0px))]");
+    expect(main.className).toContain("md:pb-[calc(7rem+env(safe-area-inset-bottom,0px))]");
+  });
+
+  it("leaves the Copilot page and the workspace without it (no button there)", () => {
+    for (const pathname of ["/copilot", "/workspace"]) {
+      routerState.pathname = pathname;
+      const { unmount } = renderShell();
+      expect(screen.getByRole("main").className).not.toContain("pb-[calc(7rem");
+      unmount();
+    }
+  });
+});

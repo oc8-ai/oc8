@@ -628,7 +628,7 @@ export function Composer(props: ComposerProps) {
           onPaste={onPaste}
           className="edition-accent-focus max-h-48 min-h-10 w-full resize-none rounded-md bg-transparent px-1 py-1 text-sm outline-none placeholder:text-muted-foreground"
         />
-        <div className="flex items-center gap-1">
+        <div className="flex min-w-0 items-center gap-1">
           <PlusMenu items={plusItems} disabled={props.disabled || textOnly} />
           {props.showModelPicker && (
             <>

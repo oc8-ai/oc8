@@ -1,0 +1,222 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+
+// Runs the real public/sw.js -- the file the browser registers -- against a
+// fake worker global, so there is no second copy of the cache rules to drift
+// from the shipped one.
+const SOURCE = readFileSync(resolve(process.cwd(), "public/sw.js"), "utf8");
+const ORIGIN = "https://oc8.example.com";
+
+type Listener = (event: Record<string, unknown>) => void;
+
+interface FakeRequest {
+  url: string;
+  method: string;
+  mode: string;
+  headers: Headers;
+}
+
+function request(path: string, init: Partial<Omit<FakeRequest, "url">> = {}): FakeRequest {
+  return {
+    url: path.startsWith("http") ? path : `${ORIGIN}${path}`,
+    method: init.method ?? "GET",
+    mode: init.mode ?? "cors",
+    headers: init.headers ?? new Headers(),
+  };
+}
+
+function fakeCacheStorage(initial: string[] = []) {
+  const stores = new Map<string, Map<string, unknown>>(initial.map((name) => [name, new Map()]));
+  return {
+    stores,
+    keys: vi.fn(async () => [...stores.keys()]),
+    delete: vi.fn(async (name: string) => stores.delete(name)),
+    open: vi.fn(async (name: string) => {
+      if (!stores.has(name)) stores.set(name, new Map());
+      const store = stores.get(name)!;
+      return {
+        match: vi.fn(async (req: FakeRequest) => store.get(req.url)),
+        put: vi.fn(async (req: FakeRequest, res: unknown) => {
+          store.set(req.url, res);
+        }),
+      };
+    }),
+  };
+}
+
+function loadWorker(
+  opts: { caches?: ReturnType<typeof fakeCacheStorage>; clients?: unknown[] } = {},
+) {
+  const listeners = new Map<string, Listener>();
+  const caches = opts.caches ?? fakeCacheStorage();
+  const clientsList = opts.clients ?? [];
+  const self = {
+    location: new URL(`${ORIGIN}/sw.js`),
+    addEventListener: (type: string, fn: Listener) => listeners.set(type, fn),
+    skipWaiting: vi.fn(async () => {}),
+    clients: {
+      matchAll: vi.fn(async () => clientsList),
+      claim: vi.fn(async () => {}),
+      openWindow: vi.fn(async () => {}),
+    },
+    registration: { showNotification: vi.fn(async () => {}) },
+  };
+  const network = vi.fn(async () => ({ ok: true, type: "basic", clone: () => "copy" }));
+  const exports = new Function(
+    "self",
+    "caches",
+    "fetch",
+    `${SOURCE}\n;return { isCacheableRequest, ASSET_CACHE };`,
+  )(self, caches, network) as {
+    isCacheableRequest: (req: FakeRequest, origin: string) => boolean;
+    ASSET_CACHE: string;
+  };
+
+  async function dispatch(type: string, event: Record<string, unknown>) {
+    const pending: Promise<unknown>[] = [];
+    let responded: Promise<unknown> | undefined;
+    listeners.get(type)?.({
+      ...event,
+      waitUntil: (p: Promise<unknown>) => pending.push(p),
+      respondWith: (p: Promise<unknown>) => {
+        responded = Promise.resolve(p);
+      },
+    });
+    await Promise.all(pending);
+    return responded ? await responded : undefined;
+  }
+
+  return { ...exports, listeners, caches, self, network, dispatch };
+}
+
+describe("service worker cache rules", () => {
+  const { isCacheableRequest } = loadWorker();
+  const ok = (req: FakeRequest) => isCacheableRequest(req, ORIGIN);
+
+  it("accepts same-origin GETs of content-hashed build assets", () => {
+    expect(ok(request("/assets/index-BQhdFMY1.js"))).toBe(true);
+    expect(ok(request("/assets/styles-Dq_IR9rO.css"))).toBe(true);
+    expect(ok(request("/assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff"))).toBe(true);
+  });
+
+  it("rejects anything that is not a hashed file under /assets/", () => {
+    expect(ok(request("/assets/logo.png"))).toBe(false);
+    expect(ok(request("/assets/nested/index-BQhdFMY1.js"))).toBe(false);
+    expect(ok(request("/assets/index-BQhdFMY1.js?v=2"))).toBe(false);
+    expect(ok(request("/favicon-192.png"))).toBe(false);
+    expect(ok(request("/sw.js"))).toBe(false);
+    expect(ok(request("/manifest.webmanifest"))).toBe(false);
+  });
+
+  it("never caches the API, model or tool endpoints", () => {
+    expect(ok(request("/api/v1/chat/sessions"))).toBe(false);
+    expect(ok(request("/llm/v1/chat/completions"))).toBe(false);
+    expect(ok(request("/mcp/tools"))).toBe(false);
+    expect(ok(request("/health"))).toBe(false);
+    // A look-alike path must not slip through either.
+    expect(ok(request("/api/assets/index-BQhdFMY1.js"))).toBe(false);
+  });
+
+  it("leaves Pyodide to the HTTP cache", () => {
+    expect(ok(request("/pyodide/pyodide.asm.wasm"))).toBe(false);
+    expect(ok(request("/pyodide/pyodide-lock.json"))).toBe(false);
+  });
+
+  it("rejects navigations, other origins, other methods and authorized requests", () => {
+    expect(ok(request("/assets/index-BQhdFMY1.js", { mode: "navigate" }))).toBe(false);
+    expect(ok(request("https://cdn.example.com/assets/index-BQhdFMY1.js"))).toBe(false);
+    expect(ok(request("/assets/index-BQhdFMY1.js", { method: "POST" }))).toBe(false);
+    expect(
+      ok(
+        request("/assets/index-BQhdFMY1.js", {
+          headers: new Headers({ Authorization: "Bearer secret" }),
+        }),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("service worker fetch handling", () => {
+  it("serves a hashed asset from the network once, then from the cache", async () => {
+    const worker = loadWorker();
+    const req = request("/assets/index-BQhdFMY1.js");
+
+    const first = await worker.dispatch("fetch", { request: req });
+    expect(first).toMatchObject({ ok: true });
+    expect(worker.network).toHaveBeenCalledTimes(1);
+    expect(worker.caches.stores.get(worker.ASSET_CACHE)?.get(req.url)).toBe("copy");
+
+    const second = await worker.dispatch("fetch", { request: req });
+    expect(second).toBe("copy");
+    expect(worker.network).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not answer requests outside the rules, so the browser fetches them as usual", async () => {
+    const worker = loadWorker();
+    const answered = await worker.dispatch("fetch", { request: request("/api/v1/me") });
+    expect(answered).toBeUndefined();
+    expect(worker.network).not.toHaveBeenCalled();
+    expect(worker.caches.open).not.toHaveBeenCalled();
+  });
+
+  it("does not store failed responses", async () => {
+    const worker = loadWorker();
+    worker.network.mockResolvedValueOnce({ ok: false, type: "basic", clone: () => "copy" });
+    await worker.dispatch("fetch", { request: request("/assets/index-BQhdFMY1.js") });
+    expect(worker.caches.stores.get(worker.ASSET_CACHE)?.size ?? 0).toBe(0);
+  });
+});
+
+describe("service worker lifecycle and purge", () => {
+  it("uses a versioned cache name and drops older caches on activate", async () => {
+    const worker = loadWorker({ caches: fakeCacheStorage(["oc8-assets-v0", "something-else"]) });
+    expect(worker.ASSET_CACHE).toMatch(/^oc8-assets-v\d+$/);
+    worker.caches.stores.set(worker.ASSET_CACHE, new Map());
+
+    await worker.dispatch("activate", {});
+
+    expect([...worker.caches.stores.keys()]).toEqual([worker.ASSET_CACHE]);
+    expect(worker.self.clients.claim).toHaveBeenCalled();
+  });
+
+  it("deletes every cache when told to purge", async () => {
+    const worker = loadWorker({ caches: fakeCacheStorage(["oc8-assets-v1", "oc8-assets-v0"]) });
+    await worker.dispatch("message", { data: { type: "purge" } });
+    expect(worker.caches.stores.size).toBe(0);
+  });
+
+  it("ignores other messages", async () => {
+    const worker = loadWorker({ caches: fakeCacheStorage(["oc8-assets-v1"]) });
+    await worker.dispatch("message", { data: { type: "something" } });
+    expect(worker.caches.stores.size).toBe(1);
+  });
+});
+
+describe("service worker push handling (unchanged)", () => {
+  it("still listens for push, notification clicks and subscription rotation", () => {
+    const worker = loadWorker();
+    expect(worker.listeners.has("push")).toBe(true);
+    expect(worker.listeners.has("notificationclick")).toBe(true);
+    expect(worker.listeners.has("pushsubscriptionchange")).toBe(true);
+  });
+
+  it("shows a notification when no tab is focused", async () => {
+    const worker = loadWorker({ clients: [{ focused: false }] });
+    await worker.dispatch("push", {
+      data: { json: () => ({ title: "Approval", body: "Needs you", url: "/approvals" }) },
+    });
+    expect(worker.self.registration.showNotification).toHaveBeenCalledWith("Approval", {
+      body: "Needs you",
+      data: { url: "/approvals" },
+    });
+  });
+
+  it("stays quiet when a tab is focused (the in-app toast covers it)", async () => {
+    const worker = loadWorker({ clients: [{ focused: true }] });
+    await worker.dispatch("push", {
+      data: { json: () => ({ title: "Approval", body: "Needs you", url: "/approvals" }) },
+    });
+    expect(worker.self.registration.showNotification).not.toHaveBeenCalled();
+  });
+});

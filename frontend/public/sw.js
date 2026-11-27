@@ -1,8 +1,71 @@
 // frontend/public/sw.js
 // Plain, unbundled JS -- Vite serves everything under public/ at the root
-// as-is, so this file needs no build step and is fetchable at /sw.js. Its
-// ONLY job is push notifications; it does no offline caching and is not
-// part of a full PWA setup.
+// as-is, so this file needs no build step and is fetchable at /sw.js. It is
+// the one service worker for this origin (one worker per scope), registered
+// at app start (src/lib/app-worker.ts) and reused by the push subscribe
+// (src/lib/push-notifications.ts). It has two jobs:
+//
+// 1. Keep the app shell's static build files so the installed app starts
+//    fast: cache-first for content-hashed files under /assets/ only. A hashed
+//    file never changes under its name, so a cached copy is never stale.
+//    Nothing else is cached -- no API, model or tool responses, no HTML, no
+//    request carrying a token, and not /pyodide/* (left to the HTTP cache).
+//    Signing out posts {type: "purge"}, which deletes every cache.
+// 2. Push notifications (below).
+
+// Bump to drop every older copy on the next activate.
+const ASSET_CACHE = "oc8-assets-v1";
+
+// <name>-<hash>.<ext> directly under /assets/; Vite's hash is 8 url-safe chars.
+const HASHED_ASSET = /^\/assets\/[^/]+-[A-Za-z0-9_-]{8}\.[A-Za-z0-9]+$/;
+
+function isCacheableRequest(request, origin) {
+  if (request.method !== "GET" || request.mode === "navigate") return false;
+  if (request.headers.has("authorization")) return false;
+  let url;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return false;
+  }
+  if (url.origin !== origin || url.search) return false;
+  return HASHED_ASSET.test(url.pathname);
+}
+
+self.addEventListener("install", () => {
+  self.skipWaiting();
+});
+
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    (async () => {
+      const names = await caches.keys();
+      await Promise.all(names.filter((n) => n !== ASSET_CACHE).map((n) => caches.delete(n)));
+      await self.clients.claim();
+    })(),
+  );
+});
+
+self.addEventListener("fetch", (event) => {
+  if (!isCacheableRequest(event.request, self.location.origin)) return;
+  event.respondWith(
+    (async () => {
+      const cache = await caches.open(ASSET_CACHE);
+      const hit = await cache.match(event.request);
+      if (hit) return hit;
+      const response = await fetch(event.request);
+      if (response.ok && response.type === "basic") {
+        await cache.put(event.request, response.clone());
+      }
+      return response;
+    })(),
+  );
+});
+
+self.addEventListener("message", (event) => {
+  if (!event.data || event.data.type !== "purge") return;
+  event.waitUntil(caches.keys().then((names) => Promise.all(names.map((n) => caches.delete(n)))));
+});
 
 // A browser may rotate a push subscription on its own -- key rotation, storage
 // pressure -- with nothing on the server having asked for it. Without this

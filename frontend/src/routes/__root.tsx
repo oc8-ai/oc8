@@ -18,6 +18,8 @@ import { LanguageProvider, useT } from "../lib/i18n";
 import { LiveUpdatesProvider } from "../lib/live/provider";
 import { hasDevSession, hasCommunitySession } from "../lib/api";
 import { DevSignIn } from "../components/dev-sign-in";
+import { registerAppWorker } from "../lib/app-worker";
+import { useKeyboardInset } from "../hooks/use-keyboard-inset";
 
 const AUTH_CONFIG_URL =
   (import.meta.env.VITE_API_URL as string | undefined) ?? "http://localhost:8099/api/v1";
@@ -214,7 +216,18 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   head: () => ({
     meta: [
       { charSet: "utf-8" },
-      { name: "viewport", content: "width=device-width, initial-scale=1" },
+      // viewport-fit=cover: without it env(safe-area-inset-*) is always 0, so
+      // the composer could not keep clear of the iPhone home indicator.
+      // interactive-widget: Android shrinks the layout (and dvh) for the
+      // on-screen keyboard instead of covering the composer with it.
+      {
+        name: "viewport",
+        content:
+          "width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content",
+      },
+      { name: "mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-title", content: "oc8" },
       { title: "oc8 — AI Agent Control Panel" },
       {
         name: "description",
@@ -237,6 +250,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { rel: "icon", href: "/favicon-32x32.png", type: "image/png", sizes: "32x32" },
       { rel: "icon", href: "/favicon-16x16.png", type: "image/png", sizes: "16x16" },
       { rel: "apple-touch-icon", href: "/apple-touch-icon.png", sizes: "180x180" },
+      { rel: "manifest", href: "/manifest.webmanifest" },
     ],
   }),
   shellComponent: RootShell,
@@ -245,11 +259,24 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
   errorComponent: ErrorComponent,
 });
 
+/** Browser chrome in the page's own background (styles.css --background).
+ *  Rendered here, not in `head()`: HeadContent keeps one meta per name, which
+ *  dropped the light half of the pair. */
+export function ThemeColorMeta() {
+  return (
+    <>
+      <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f8fa" />
+      <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#060b14" />
+    </>
+  );
+}
+
 function RootShell({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
       <head>
         <HeadContent />
+        <ThemeColorMeta />
       </head>
       <body>
         {children}
@@ -300,6 +327,11 @@ function RootComponent() {
   }, []);
   // The docking station (`/login`, `/welcome`) is always a dark surface by design.
   const toasterTheme = publicRoute ? "dark" : storedTheme;
+
+  // On every route, signed in or not: the installed app caches its build
+  // files from the first visit. Push reuses this registration later.
+  useEffect(() => registerAppWorker(), []);
+  useKeyboardInset();
 
   return (
     <QueryClientProvider client={queryClient}>

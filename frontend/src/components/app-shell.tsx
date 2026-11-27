@@ -856,7 +856,7 @@ export function AppShell() {
   useEffect(() => listenForPushSubscriptionChanges(), []);
 
   return (
-    <div className="flex min-h-screen w-full bg-background text-foreground">
+    <div className="flex min-h-dvh w-full bg-background text-foreground">
       <aside
         className={cn(
           "hidden md:flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200",
@@ -964,7 +964,7 @@ export function AppShell() {
         </div>
       </aside>
 
-      <div className={cn("flex min-w-0 flex-1 flex-col", pathname === "/copilot" && "h-screen")}>
+      <div className={cn("flex min-w-0 flex-1 flex-col", pathname === "/copilot" && "h-dvh")}>
         <header className="sticky top-0 z-20 flex flex-wrap items-center gap-x-4 gap-y-3 border-b border-border bg-background/85 px-4 py-4 backdrop-blur md:px-8">
           {/* `min-w-[12rem]` (not `min-w-0`) on purpose: `flex-1` alone lets this
               shrink to nothing before the fixed-width controls to its right ever
@@ -1123,6 +1123,12 @@ export function AppShell() {
             // The Copilot page owns its own scrolling: a bounded flex column
             // lets the chat fill the height under the header.
             pathname === "/copilot" ? "flex min-h-0 flex-col" : "px-4 py-6 md:px-8 md:py-8",
+            // Room to scroll the last rows and table columns out from under
+            // the floating Copilot button (56 px at 20 px from the bottom) --
+            // on the pages that show it (the dock condition below).
+            pathname !== "/workspace" &&
+              pathname !== "/copilot" &&
+              "pb-[calc(7rem+env(safe-area-inset-bottom,0px))] md:pb-[calc(7rem+env(safe-area-inset-bottom,0px))]",
           )}
         >
           <EditionBanners />

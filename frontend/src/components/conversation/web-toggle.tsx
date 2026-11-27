@@ -25,7 +25,7 @@ export function WebToggle({
       onClick={() => onChange(!on)}
       title={t("Search the web for this message", "Für diese Nachricht im Web suchen")}
       className={cn(
-        "inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60",
+        "inline-flex h-11 items-center gap-1 rounded-md px-2 text-xs sm:h-9 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60",
         on
           ? "bg-primary/15 text-primary"
           : "text-muted-foreground hover:bg-muted hover:text-foreground",

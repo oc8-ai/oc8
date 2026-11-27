@@ -161,9 +161,10 @@ export function ModelPicker({
         aria-haspopup="true"
         aria-expanded={open}
         aria-label={t(`Model: ${effective}`, `Modell: ${effective}`)}
-        className="inline-flex h-9 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
+        className="inline-flex h-11 min-w-0 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground sm:h-9 hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:opacity-60"
       >
-        {label}
+        {/* A long model name must not push the send button off a phone. */}
+        <span className="max-w-[7rem] truncate sm:max-w-none">{label}</span>
         {isAuto && fallback && <span className="hidden sm:inline">· {fallback.label}</span>}
         <ChevronDown className="size-3.5" aria-hidden />
       </button>

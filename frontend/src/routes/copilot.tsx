@@ -311,7 +311,10 @@ export function CopilotPage({
                       )}
                     </Button>
                   </SheetTrigger>
-                  <SheetContent side="bottom" className="h-[80vh] p-0">
+                  <SheetContent
+                    side="bottom"
+                    className="h-[80dvh] p-0 pb-[env(safe-area-inset-bottom)]"
+                  >
                     <SheetTitle className="sr-only">{t("Work", "Arbeit")}</SheetTitle>
                     <CopilotWorkPanel />
                   </SheetContent>
