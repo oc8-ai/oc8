@@ -237,3 +237,49 @@ async def test_an_approved_change_does_not_publish_an_operators_pending_draft(
         status = await draft_status(db, agent)
         assert status.dirty is True
         assert set(status.changed_fields) == {"mission", "role_title"}
+
+
+async def test_a_change_held_in_a_draft_says_it_still_needs_publishing(
+    app_session, acme_tenant
+) -> None:
+    """The proposal reads "applied", but runs keep the published version until
+    somebody publishes the draft. Without saying so, an operator sees no effect
+    and no reason for it (a guardrail applied from the Copilot, agent still on
+    its old version)."""
+    from oc8.agents.versioning import publish_version
+    from oc8.copilot.models import CopilotProposal
+
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        agent = await _agent(db, acme_tenant)
+        await publish_version(db, agent, note="v1")
+        agent.role_title = "an unfinished edit"
+        await db.flush()
+        proposal = await create_proposal(
+            db,
+            actor,
+            [{"type": "agent.mission.set", "agentId": str(agent.id), "mission": "new"}],
+        )
+        result = await apply_proposal(db, proposal.id, actor)
+        assert result.awaiting_publish == (agent.id,)
+        stored = await db.get(CopilotProposal, proposal.id)
+        assert stored is not None
+        assert stored.result["awaitingPublish"] == [str(agent.id)]
+
+
+async def test_a_change_published_on_its_own_needs_nothing_more(
+    app_session, acme_tenant
+) -> None:
+    from oc8.agents.versioning import publish_version
+
+    actor = _actor(acme_tenant)
+    async with app_session(acme_tenant) as db:
+        agent = await _agent(db, acme_tenant)
+        await publish_version(db, agent, note="v1")
+        proposal = await create_proposal(
+            db,
+            actor,
+            [{"type": "agent.mission.set", "agentId": str(agent.id), "mission": "new"}],
+        )
+        result = await apply_proposal(db, proposal.id, actor)
+        assert result.awaiting_publish == ()

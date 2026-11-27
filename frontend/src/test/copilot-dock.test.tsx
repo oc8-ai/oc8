@@ -379,6 +379,40 @@ describe("CopilotDock", () => {
     expect(screen.getByRole("alert")).toHaveTextContent(/could not be answered/i);
   });
 
+  it("an Apply held in an agent's draft says to publish it", () => {
+    proposalsMock.mockReturnValue({ data: [draft] });
+    applyProposalMock.mockImplementation(
+      (_id: string, options: { onSuccess: (p: unknown) => void }) => {
+        options.onSuccess({
+          ...draft,
+          status: "applied",
+          awaitingPublish: [{ agentId: "a-1", name: "Nora" }],
+        });
+      },
+    );
+    renderDock();
+    openDock();
+    fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
+
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveTextContent(/draft/i);
+    expect(notice).toHaveTextContent(/publish/i);
+    expect(screen.getByRole("link", { name: /nora/i })).toBeInTheDocument();
+  });
+
+  it("an Apply that took effect shows no publish notice", () => {
+    proposalsMock.mockReturnValue({ data: [draft] });
+    applyProposalMock.mockImplementation(
+      (_id: string, options: { onSuccess: (p: unknown) => void }) => {
+        options.onSuccess({ ...draft, status: "applied", awaitingPublish: [] });
+      },
+    );
+    renderDock();
+    openDock();
+    fireEvent.click(screen.getByRole("button", { name: /^apply$/i }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("a failed Reject puts the still-draft card back and says so", () => {
     proposalsMock.mockReturnValue({ data: [draft] });
     rejectProposalMock.mockImplementation((_id: string, options: { onError: () => void }) => {
