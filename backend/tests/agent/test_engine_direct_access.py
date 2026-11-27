@@ -1349,7 +1349,7 @@ async def test_a_department_held_write_that_was_read_runs_once_after_both_approv
         # Nothing ran on the person's approval alone.
         assert [n for n, _s, _e in recorder.windows] == ["get_record"]
         approved = call_sig(ToolCall(id="x", name="update_record", arguments=dict(_ORDER)))
-        assert {sig: e["decision"] for sig, e in pre.items()} == {approved: "approve"}
+        assert pre == {approved: "approve"}
         (entry,) = run.context["resolved_tool_approvals"]
         assert entry["read_before_write_ok"] is True
         leg2 = await run_agent(
