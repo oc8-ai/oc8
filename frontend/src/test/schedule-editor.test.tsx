@@ -5,10 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TriggerDTO } from "@/lib/hooks";
 
 const m = vi.hoisted(() => ({
-  triggers: [] as TriggerDTO[],
+  triggers: [] as TriggerDTO[] | undefined,
   orgTimezone: "Europe/Berlin" as string | undefined,
   create: vi.fn(),
   update: vi.fn(),
+  toastError: vi.fn(),
 }));
 
 vi.mock("@/lib/hooks", () => ({
@@ -19,7 +20,9 @@ vi.mock("@/lib/hooks", () => ({
   useAuth: () => ({ data: { memberId: "me", organisationTimezone: m.orgTimezone } }),
 }));
 
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: (...a: unknown[]) => m.toastError(...a) },
+}));
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, to, hash }: { children: ReactNode; to: string; hash?: string }) => (
@@ -57,6 +60,7 @@ beforeEach(() => {
   m.orgTimezone = "Europe/Berlin";
   m.create.mockReset();
   m.update.mockReset();
+  m.toastError.mockReset();
 });
 
 describe("ScheduleEditor timezone", () => {
@@ -130,5 +134,36 @@ describe("ScheduleEditor timezone", () => {
     render(<ScheduleEditor initial="On-Demand" agentName="Ada" agentId="a1" />);
     fireEvent.click(screen.getByRole("button", { name: "Time scheduled" }));
     expect(screen.queryByRole("link", { name: /set it in settings/i })).toBeNull();
+  });
+});
+
+describe("ScheduleEditor with a schedule that loads after mount", () => {
+  it("shows and saves the trigger's cron, not the agent's free-text value", () => {
+    m.triggers = undefined;
+    const view = render(<ScheduleEditor initial="Weekly schedule" agentName="Ada" agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Time scheduled" }));
+    m.triggers = [saved];
+    view.rerender(<ScheduleEditor initial="Weekly schedule" agentName="Ada" agentId="a1" />);
+    expect(screen.getByLabelText("Frequency")).toHaveValue("weekly");
+    expect(screen.getByText("Every weekday at 7:00 (America/New_York)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    expect(m.update).toHaveBeenCalledWith(
+      expect.objectContaining({ triggerId: "t1", cronExpression: "0 7 * * 1-5" }),
+      expect.anything(),
+    );
+  });
+
+  it("names the server's reason when a save is refused", () => {
+    m.triggers = [saved];
+    m.update.mockImplementation((_vars, opts: { onError: (e: unknown) => void }) =>
+      opts.onError(new Error("Bad Gateway")),
+    );
+    render(<ScheduleEditor initial="" agentName="Ada" agentId="a1" />);
+    fireEvent.click(screen.getByRole("button", { name: "Time scheduled" }));
+    fireEvent.click(screen.getByRole("button", { name: /Save/ }));
+    expect(m.toastError).toHaveBeenCalledWith(
+      "Couldn't update schedule",
+      expect.objectContaining({ description: "Bad Gateway" }),
+    );
   });
 });

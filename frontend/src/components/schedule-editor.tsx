@@ -87,9 +87,12 @@ export function ScheduleEditor({
   }
 
   function save() {
-    const onFailed = () =>
+    // The server's own reason (a 422 for an unreadable cron, a 502 when a
+    // deploy replaced the backend mid-request) is what tells a person whether
+    // to retry or to fix the expression, so it goes into the toast.
+    const onFailed = (error: unknown) =>
       toast.error(t("Couldn't update schedule", "Zeitplan konnte nicht aktualisiert werden"), {
-        description: t("Try again in a moment.", "Bitte versuche es in Kürze erneut."),
+        description: error instanceof Error ? error.message : String(error),
       });
     // Only "custom" mode produces a real cron string (via CronBuilder); the
     // other presets are display-only and never touch the backend.
