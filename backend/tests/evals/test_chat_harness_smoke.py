@@ -13,11 +13,12 @@ would pick them up.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import math
 import re
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from oc8_evals import stack
 from oc8_evals.tasks import load_suite
 
 from oc8 import models as m
+from oc8.config import get_settings
 from oc8.modelrouter import CompletionResult, Usage, chunk_from_result
 from oc8.modelrouter.types import CompletionChunk, CompletionRequest, ToolCall
 from oc8.models.knowledge import EMBED_DIM
@@ -216,3 +218,84 @@ def test_the_suite_has_thirty_cases_in_six_groups() -> None:
         "edit_regenerate",
     }
     assert all(t.kind == "chat" for t in tasks)
+
+
+class _JiraModel(_EchoModel):
+    """Reads ISSUE-1 (again in each resumed leg), then writes its description
+    as asked -- or, once a rejection is in the conversation, as the reason
+    says -- then answers."""
+
+    async def complete(self, req: CompletionRequest) -> CompletionResult:
+        said = "\n".join(_text(msg.content) for msg in req.messages)
+        if "updated ISSUE-1" in said:
+            return self._result("Done.", [])
+        # This leg's own read: a resumed leg is checked afresh (read-before-write).
+        leg = said.split("# Run context", 1)[-1].rsplit("Resuming after a decision", 1)[-1]
+        if 'jira:jira_get_issue"' not in leg:
+            read = ToolCall(id="read-1", name="jira_get_issue", arguments={"issue_key": "ISSUE-1"})
+            return self._result("", [read])
+        version = "2.4" if "rejected" in said.lower() else "2.3"
+        call = ToolCall(
+            id=f"call-{version}",
+            name="jira_update_issue",
+            arguments={"issue_key": "ISSUE-1", "description": f"Fixed in release {version}"},
+        )
+        return self._result("", [call])
+
+
+@pytest.fixture
+def jira_mock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[None]:
+    """The repository's capas (the Jira tool pack's manifest), the mock server
+    importable, a scratch directory for the mock's state file, and a secret
+    store for the department's login."""
+    monkeypatch.setenv("OC8_CAPAS_PATH", str(Path(stack.__file__).parents[3] / "capas"))
+    monkeypatch.setenv("OC8_RUNTIME_SESSION_ROOT", str(tmp_path))
+    # The secret store the department's login keeps its token in (a test key).
+    monkeypatch.setenv("OC8_SECRET_KEK", base64.b64encode(bytes(range(32))).decode())
+    monkeypatch.setattr(stack, "MOCK_PYTHONPATH", str(Path(stack.__file__).parents[1]))
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+async def _enable_jira(app_session: AppSessionFactory, tenant: uuid.UUID) -> None:
+    """As in the dev stack the suite runs against: the Jira plugin is enabled."""
+    async with app_session(tenant) as db:
+        capa = m.Capa(tenant_id=tenant, name="jira_mcp", type="tool_pack")
+        db.add(capa)
+        await db.flush()
+        db.add(
+            m.CapaInstallation(
+                tenant_id=tenant, capa_id=capa.id, status="enabled", granted_permissions=[]
+            )
+        )
+        await db.commit()
+
+
+async def test_a_rejected_write_is_decided_and_the_reason_followed(
+    app_session: AppSessionFactory,
+    redis_url: str,
+    echo: _EchoModel,
+    jira_mock: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = _JiraModel()
+    monkeypatch.setattr("oc8.agent.engine.get_model_router", lambda: model)
+    tenant = uuid.uuid4()
+    model_config_id = await _cloud_model(app_session, tenant)
+    await _enable_jira(app_session, tenant)
+    [task] = [t for t in load_suite(SUITE) if t.id == "reject_use_other_version"]
+
+    attempt = await runner._attempt(
+        tenant,
+        task,
+        1,
+        runtime="inprocess",
+        run_tag=f"smoke-{uuid.uuid4().hex[:6]}",
+        model_config_id=model_config_id,
+        timeout_s=5,
+    )
+
+    assert attempt.error is None, attempt.error
+    failed = [c for c in (*attempt.expect, *attempt.forbid) if not c.ok]
+    assert not failed, (failed, attempt.tool_calls)

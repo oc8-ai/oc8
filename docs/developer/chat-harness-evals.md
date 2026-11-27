@@ -34,8 +34,12 @@ Against the dev stack, with the eval suite mounted:
   turns.
 - Prerequisites: exactly one tenant (or `--tenant <slug>`), an embedding model
   for the knowledge cases (the deployment's `default_embedding_model`), and the
-  Jira tool pack for the rejection cases (its mock MCP server is started from
-  `/app/evals`).
+  Jira plugin enabled in the tenant for the rejection cases. The fixture gives
+  the case's department a Jira connection whose mock MCP server is started
+  from `/app/evals`, and enables an organisation Jira login for that
+  department (placeholder values; the mock reads none of them), the way an
+  admin sets up a real department. A chat run resolves its tool calls through
+  that login, so without it the tool is unavailable to the turn.
 
 The report lands in `backend/evals/reports/<label>-inprocess-<tag>.{json,md}`.
 Per case it lists pass^k, steps, tool calls, tokens, cached tokens (prompt

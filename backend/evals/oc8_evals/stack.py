@@ -15,7 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
 from oc8.agent.mcp_env import resolve_mcp_env
@@ -155,6 +156,10 @@ class ChatFixture:
     #: The model clone the chat runs on (None: the agent's own model).
     model_config_id: uuid.UUID | None = None
     connection_ids: tuple[uuid.UUID, ...] = ()
+    #: The organisation logins enabled for the department, one per system
+    #: that signs in (Jira's `jira_login`): how a real department's agent
+    #: reaches its tools.
+    credential_ids: tuple[uuid.UUID, ...] = ()
 
 
 @dataclass
@@ -468,6 +473,7 @@ async def create_chat_fixture(
         assistant = task.params.get("agent") == "copilot"
         department_id: uuid.UUID | None = None
         connection_ids: list[uuid.UUID] = []
+        credential_ids: list[uuid.UUID] = []
         if assistant:
             agent = await get_or_create_assistant(db, tenant_id=tenant_id)
         else:
@@ -510,6 +516,9 @@ async def create_chat_fixture(
                 db.add(conn)
                 await db.flush()
                 connection_ids.append(conn.id)
+                login = await _department_login(db, tenant_id, dept.id, conn, run_tag)
+                if login is not None:
+                    credential_ids.append(login)
         session = m.ChatSession(
             tenant_id=tenant_id,
             agent_id=agent.id,
@@ -527,7 +536,59 @@ async def create_chat_fixture(
             department_id=department_id,
             model_config_id=clone_id,
             connection_ids=tuple(connection_ids),
+            credential_ids=tuple(credential_ids),
         )
+
+
+#: What the mock login holds: placeholders, never a real account -- the mock
+#: server reads none of them.
+_MOCK_LOGIN_VALUES = {
+    "url": "https://jira.eval.invalid",
+    "username": "eval@example.invalid",
+    "api_token": "eval-mock-placeholder",
+}
+
+
+async def _department_login(
+    db: AsyncSession,
+    tenant_id: uuid.UUID,
+    department_id: uuid.UUID,
+    conn: m.McpConnection,
+    run_tag: str,
+) -> uuid.UUID | None:
+    """An organisation login enabled for the department, as an admin sets one
+    up for a real department: a chat run resolves its tool calls through it
+    (`connections.login.resolve_login`), never through the bare row. None for
+    a system that does not sign in. Refused when the plugin is not enabled
+    in the tenant: a real chat could not reach the tool then either."""
+    from oc8.connections.integrations import integration_enabled, integration_for_connection
+    from oc8.credentials.registry import get_credential_type
+    from oc8.credentials.service import create_credential
+
+    integration = integration_for_connection(conn)
+    if integration is None or integration.credential_type is None:
+        return None
+    if not await integration_enabled(db, integration):
+        raise RuntimeError(
+            f"the {integration.name!r} plugin is not enabled in this tenant; enable it "
+            "(Plugins) so a chat can reach its tools"
+        )
+    cred_type = await get_credential_type(db, tenant_id=tenant_id, name=integration.credential_type)
+    values = {f.key: _MOCK_LOGIN_VALUES.get(f.key, "eval-mock") for f in cred_type.fields}
+    cred = await create_credential(
+        db,
+        tenant_id=tenant_id,
+        name=f"EVAL {run_tag} {conn.name} login",
+        credential_type=integration.credential_type,
+        field_values=values,
+    )
+    db.add(
+        m.CredentialDepartment(
+            tenant_id=tenant_id, credential_id=cred.id, department_id=department_id
+        )
+    )
+    await db.flush()
+    return cred.id
 
 
 async def send_chat_turn(tenant_id: uuid.UUID, fixture: ChatFixture, text: str) -> uuid.UUID:
@@ -563,6 +624,13 @@ async def teardown_chat_fixture(tenant_id: uuid.UUID, fixture: ChatFixture) -> N
             conn = await db.get(m.McpConnection, cid)
             if conn is not None:
                 conn.connected = False
+        for cred_id in fixture.credential_ids:
+            # The login stops serving the department; the row stays evidence.
+            await db.execute(
+                delete(m.CredentialDepartment).where(
+                    m.CredentialDepartment.credential_id == cred_id
+                )
+            )
         if fixture.model_config_id is not None:
             clone = await db.get(m.ModelConfig, fixture.model_config_id)
             if clone is not None:
