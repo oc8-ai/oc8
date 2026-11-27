@@ -27,7 +27,7 @@ Against the dev stack, with the eval suite mounted:
   carries the task's small context window (8192 tokens) so the chat overflows
   and is checkpointed. The copy stops being offered when the attempt ends.
 - `--group recall` (or `knowledge`, `must_call_tool`, `rejection_reason`,
-  `restricted`, `edit_regenerate`) runs one group; `--tasks a,b` runs named
+  `restricted`, `edit_regenerate`, `web`) runs one group; `--tasks a,b` runs named
   cases; `--k 3` repeats each case.
 - `--runtime` is required by the CLI but a chat turn always runs where chats
   run (the in-process engine). The worker must be running: it answers the
@@ -56,6 +56,7 @@ and the failed checks; a second table sums each group.
 | `rejection_reason` | 4 | A write on the Jira mock is rejected with a reason (`autonomy = "conservative"`, so every write asks). The resumed turn must follow it: another version number, a summary prefix, update instead of create, stop. The rejected call must not be raised again. |
 | `restricted` | 4 | A canary string in a restricted knowledge chunk (with and without the department clearing restricted), in a restricted earlier answer, and in a restricted answer inside a chat that gets checkpointed. On a cloud model the canary must appear neither in the answer nor in any checkpoint summary. |
 | `edit_regenerate` | 5 | Edits of the first, a middle and a later turn, and regenerates: what only the old branch or the first answer said must not reach the new answer. |
+| `web` | 3 | Web search against a fake SearXNG (the platform default `docker-compose.evals.yml` points at the eval CLI's port 8790): with Web on the Copilot must search, name the version only the fake's result carries and cite it as a web source; with Web off no query may reach the provider; with restricted material in the run (a local model replaying a restricted answer) none either. |
 
 Checks are deterministic: tool calls on the run, chunk ranks, checkpoint rows,
 approval cards, the Jira mock's state, and regular expressions on the answer

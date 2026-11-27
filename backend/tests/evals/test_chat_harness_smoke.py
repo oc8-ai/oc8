@@ -206,9 +206,9 @@ async def test_a_restricted_answer_that_reached_the_model_fails_the_case(
     assert attempt.policy_violation and not attempt.passed
 
 
-def test_the_suite_has_thirty_cases_in_six_groups() -> None:
+def test_the_suite_has_thirty_three_cases_in_seven_groups() -> None:
     tasks = load_suite(SUITE)
-    assert len(tasks) == 30
+    assert len(tasks) == 33
     assert {t.group for t in tasks} == {
         "recall",
         "knowledge",
@@ -216,6 +216,7 @@ def test_the_suite_has_thirty_cases_in_six_groups() -> None:
         "rejection_reason",
         "restricted",
         "edit_regenerate",
+        "web",
     }
     assert all(t.kind == "chat" for t in tasks)
 

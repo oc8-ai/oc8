@@ -47,13 +47,13 @@ def test_an_unknown_kind_is_refused(tmp_path: Path) -> None:
 
 def test_every_chat_harness_case_resolves_its_scenario() -> None:
     tasks = load_suite(SUITES / "chat_harness")
-    assert len(tasks) == 30
+    assert len(tasks) == 33
     for t in tasks:
         scenario = resolve_scenario(t.scenario)
         for hook in ("setup", "expect", "forbid", "teardown"):
             assert callable(getattr(scenario, hook)), f"{t.id}: scenario lacks {hook}"
     starts = {t.group for t in tasks if starter(resolve_scenario(t.scenario)) is not None}
-    assert starts == {"rejection_reason", "edit_regenerate"}
+    assert starts == {"rejection_reason", "edit_regenerate", "web"}
 
 
 def _attempt(task: str, group: str, *, hit: float, cached: int) -> Attempt:

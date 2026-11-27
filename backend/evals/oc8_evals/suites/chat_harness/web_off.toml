@@ -1,0 +1,20 @@
+id = "web_off"
+kind = "chat"
+group = "web"
+systems = []
+origin = "manual"
+scenario = "chat_web"
+autonomy = "autonomous"
+expects_question = false
+expects_approval = false
+task_text = """
+Which version of the Quillon project was released this week? Look it up on the web.
+"""
+
+[params]
+agent = "copilot"
+web = false
+
+[budget]
+max_steps = 12
+max_tokens = 150000
