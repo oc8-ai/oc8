@@ -1,11 +1,7 @@
-// A ```mermaid block: drawn as a diagram once the block is closed, its
-// source while it is still being written or when Mermaid cannot parse it.
-//
-// Mermaid is its own chunk, fetched the first time a diagram is drawn. It
-// runs with `securityLevel: "strict"` (no click handlers, labels sanitised)
-// and SVG text labels instead of HTML ones, and its SVG is shown as an
-// <img> data URL: nothing of it joins the page's DOM, and an image runs no
-// script and loads nothing.
+// A ```mermaid block: drawn as a diagram once the block is closed (see
+// mermaid-render.ts), its source while it is still being written or when
+// Mermaid cannot parse it. Drawn again in the page's colours when the theme
+// changes.
 
 import { useEffect, useState } from "react";
 import { Check, Code, Copy, Network } from "lucide-react";
@@ -13,54 +9,19 @@ import { Check, Code, Copy, Network } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
-type Mermaid = (typeof import("mermaid"))["default"];
+import { pageIsDark, renderMermaidToSvg, svgDataUrl } from "./mermaid-render";
 
-let loading: Promise<Mermaid> | null = null;
-
-function loadMermaid(): Promise<Mermaid> {
-  loading ??= import("mermaid").then(
-    ({ default: mermaid }) => {
-      return mermaid;
-    },
-    (error: unknown) => {
-      // A failed chunk fetch may succeed on the next diagram.
-      loading = null;
-      throw error;
-    },
-  );
-  return loading;
-}
-
-// Mermaid renders through shared state (a scratch element in the document),
-// so diagrams are drawn one after another.
-let queue: Promise<unknown> = Promise.resolve();
-let drawn = 0;
-
-/** The SVG Mermaid draws for `source`, in the page's light or dark colours
- *  as they are now; rejects when it does not parse. */
-export function renderMermaidToSvg(source: string): Promise<string> {
-  const run = queue.then(async () => {
-    const mermaid = await loadMermaid();
-    const dark =
-      typeof document !== "undefined" && document.documentElement.classList.contains("dark");
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      htmlLabels: false,
-      theme: dark ? "dark" : "default",
-    });
-    // Parse first: a failed render would leave its error diagram behind.
-    await mermaid.parse(source);
-    drawn += 1;
-    const { svg } = await mermaid.render(`oc8-mermaid-${drawn}`, source);
-    return svg;
-  });
-  queue = run.catch(() => undefined);
-  return run;
-}
-
-function svgDataUrl(svg: string): string {
-  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+/** Whether the page shows its dark colours, kept current: the theme toggle
+ *  flips `.dark` on <html> (see routes/__root.tsx). */
+function usePageDark(): boolean {
+  const [dark, setDark] = useState(pageIsDark);
+  useEffect(() => {
+    const sync = () => setDark(pageIsDark());
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  return dark;
 }
 
 const FOCUS =
@@ -73,6 +34,7 @@ export function MermaidBlock({ source, closed }: { source: string; closed: boole
   const [result, setResult] = useState<{ source: string; svg?: string; failed?: boolean }>();
   const [showSource, setShowSource] = useState(false);
   const [copied, setCopied] = useState(false);
+  const dark = usePageDark();
 
   useEffect(() => {
     if (!closed) return;
@@ -88,7 +50,9 @@ export function MermaidBlock({ source, closed }: { source: string; closed: boole
     return () => {
       alive = false;
     };
-  }, [source, closed]);
+    // `dark` is read by renderMermaidToSvg: a new theme draws it again, and
+    // the old drawing stays until the new one is there.
+  }, [source, closed, dark]);
 
   const current = closed && result?.source === source ? result : undefined;
   const svg = current?.svg;

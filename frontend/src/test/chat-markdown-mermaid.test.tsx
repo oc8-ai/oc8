@@ -19,7 +19,7 @@ vi.mock("@/lib/record-links", async (orig) => ({
 }));
 
 import { ChatMarkdown } from "@/components/chat-markdown";
-import { renderMermaidToSvg } from "@/components/conversation/mermaid-block";
+import { renderMermaidToSvg } from "@/components/conversation/mermaid-render";
 
 const SOURCE = "graph TD\n  A-->B";
 const CLOSED = "A diagram:\n\n```mermaid\n" + SOURCE + "\n```\n";
@@ -81,11 +81,35 @@ describe("ChatMarkdown mermaid", () => {
 
   it("copies the source", async () => {
     const writeText = vi.fn(async () => undefined);
+    const original = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
-    render(<ChatMarkdown text={CLOSED} />);
-    await screen.findByRole("img", { name: "Diagram" });
-    fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(SOURCE));
+    try {
+      render(<ChatMarkdown text={CLOSED} />);
+      await screen.findByRole("img", { name: "Diagram" });
+      fireEvent.click(screen.getByRole("button", { name: "Copy code" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(SOURCE));
+    } finally {
+      if (original) Object.defineProperty(navigator, "clipboard", original);
+      else delete (navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+
+  it("draws the diagram again when the page switches to dark", async () => {
+    const root = document.documentElement;
+    try {
+      render(<ChatMarkdown text={CLOSED} />);
+      await screen.findByRole("img", { name: "Diagram" });
+      expect(mermaid.render).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        root.classList.add("dark");
+      });
+      await waitFor(() => expect(mermaid.render).toHaveBeenCalledTimes(2));
+      expect(mermaid.initialize).toHaveBeenLastCalledWith(
+        expect.objectContaining({ theme: "dark" }),
+      );
+    } finally {
+      root.classList.remove("dark");
+    }
   });
 });
 

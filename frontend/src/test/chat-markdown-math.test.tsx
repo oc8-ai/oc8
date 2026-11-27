@@ -111,6 +111,79 @@ describe("ChatMarkdown math", () => {
   });
 });
 
+// LLMs often put TeX on the `$$` lines themselves.
+const ALIGNED = "$$\\begin{aligned}\n a &= b \\\\\n c &= d\n\\end{aligned}$$";
+
+/** One display formula holding the aligned environment, and the words after
+ *  it as prose outside any formula. */
+async function alignedThenProse(container: HTMLElement) {
+  await katexNodes(container);
+  const display = container.querySelector(".katex-display");
+  expect(display?.textContent).toContain("aligned");
+  expect(display?.textContent).not.toContain("More text");
+  const prose = [...container.querySelectorAll("p")].find((p) =>
+    p.textContent?.includes("More text here."),
+  );
+  expect(prose).toBeDefined();
+  expect(prose?.closest(".katex, pre")).toBeNull();
+}
+
+describe("display math with TeX on its $$ lines", () => {
+  it.each([
+    ["a blank line", "\n\n"],
+    ["no blank line", "\n"],
+  ])("ends at its closing $$ (%s after it)", async (_, gap) => {
+    const { container } = render(<ChatMarkdown text={ALIGNED + gap + "More text here."} />);
+    await alignedThenProse(container);
+  });
+
+  it("never swallows what follows while it streams", async () => {
+    const text = "Solve:\n\n" + ALIGNED + "\n\nMore text here.";
+    const { container, rerender } = render(<ChatMarkdown text="" streaming />);
+    for (let k = 1; k <= text.length; k += 1) {
+      rerender(<ChatMarkdown text={text.slice(0, k)} streaming />);
+      for (const formula of container.querySelectorAll(".katex, .math-display, .math-inline")) {
+        expect(formula.textContent).not.toContain("More");
+      }
+    }
+    await alignedThenProse(container);
+    rerender(<ChatMarkdown text={text} />);
+    await alignedThenProse(container);
+  });
+
+  it("shows the formula as math source, not a code block, while open", () => {
+    const { container } = render(<ChatMarkdown text={"$$\\begin{aligned}\n a &= b"} streaming />);
+    noMath(container);
+    expect(container.querySelector("pre")?.textContent).toContain("\\begin{aligned}");
+    expect(screen.queryByRole("button", { name: "Copy code" })).toBeNull();
+  });
+
+  it("shows an open \\[ block as math source while streaming", () => {
+    const { container } = render(<ChatMarkdown text={"Text\n\n\\[\n\\frac{a_1}{b"} streaming />);
+    noMath(container);
+    expect(container.querySelector("pre")?.textContent).toContain("\\frac{a_1}{b");
+  });
+});
+
+describe("a price mid-stream", () => {
+  it("never flashes as a formula when the tail ends at a $", () => {
+    const { container, rerender } = render(<ChatMarkdown text="From $5-$" streaming />);
+    noMath(container);
+    rerender(<ChatMarkdown text="From $5-$10" streaming />);
+    noMath(container);
+    expect(container.textContent).toContain("From $5-$10");
+  });
+
+  it("still renders $x$ once the next character or the end arrives", async () => {
+    const { container, rerender } = render(<ChatMarkdown text="so $x$" streaming />);
+    noMath(container);
+    rerender(<ChatMarkdown text="so $x$." streaming />);
+    await katexNodes(container);
+    const done = render(<ChatMarkdown text="so $x$" />);
+    await katexNodes(done.container);
+  });
+});
+
 describe("markdown-stream and math", () => {
   it("never splits a $$ block at a blank line inside it", () => {
     const text = "Intro\n\n$$\na\n\nb\n$$\n\nAfter";
@@ -119,6 +192,14 @@ describe("markdown-stream and math", () => {
 
   it("does not take a one-line $$x$$ for an opening fence", () => {
     expect(splitBlocks("$$x$$\n\nNext")).toEqual(["$$x$$\n\n", "Next"]);
+  });
+
+  it("keeps a $$ block with TeX on its fence lines together", () => {
+    const text = "$$\\begin{aligned}\na\n\nb\n\\end{aligned}$$\n\nAfter";
+    expect(splitBlocks(text)).toEqual([
+      "$$\\begin{aligned}\na\n\nb\n\\end{aligned}$$\n\n",
+      "After",
+    ]);
   });
 
   it("leaves the inside of an open $$ block alone", () => {

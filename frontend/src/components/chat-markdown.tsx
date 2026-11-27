@@ -164,8 +164,8 @@ const OpenFenceAt = createContext<number | null>(null);
 
 type HastNode = { position?: { start: { offset?: number }; end: { offset?: number } } };
 
-/** A fenced block: a diagram for ```mermaid, a formula's source while KaTeX
- *  loads, else highlighted code. */
+/** A fenced block: a diagram for ```mermaid, a formula's source while it is
+ *  written or KaTeX loads, else highlighted code. */
 function FencedBlock({ node, children }: { node?: HastNode; children?: ReactNode }) {
   const openAt = useContext(OpenFenceAt);
   const { language, code } = codeOf(children);
@@ -180,7 +180,7 @@ function FencedBlock({ node, children }: { node?: HastNode; children?: ReactNode
       openAt < end;
     return <MermaidBlock source={code} closed={!open} />;
   }
-  if (language === "math") {
+  if (language === "math" || language === "math-source") {
     return <pre className="overflow-x-auto px-3 py-2 font-mono text-xs">{children}</pre>;
   }
   return <CodeBlock>{children}</CodeBlock>;
@@ -244,7 +244,8 @@ const BLANK_LINE = /\n[ \t]*\n/;
  *    so does the "$5" in "$5 and **$x$**";
  *  - `\(…\)` is inline math, `\[…\]` display math when it has its lines
  *    to itself, else inline;
- *  - `$$…$$` and `\$` stay as they are.
+ *  - `$$…$$` stays as it is, except that a formula over several lines that
+ *    starts a line gets its `$$` lines to itself; `\$` stays a dollar.
  *  A span that is not closed stays text; none runs past a blank line. */
 function mathInProse(text: string): string {
   let out = "";
@@ -271,9 +272,22 @@ function mathInProse(text: string): string {
     }
     if (ch === "$" && text[i + 1] === "$") {
       const end = text.indexOf("$$", i + 2);
-      const stop = end === -1 ? text.length : end + 2;
-      out += text.slice(i, stop);
-      i = stop;
+      if (end === -1) {
+        out += text.slice(i);
+        break;
+      }
+      const inner = text.slice(i + 2, end);
+      const indent = /(?:^|\n)([ \t]*)$/.exec(out)?.[1];
+      if (indent !== undefined && inner.includes("\n")) {
+        // A display formula with TeX on its `$$` lines: remark-math would take
+        // the opening line's TeX for a fence's info string and find no
+        // closing fence. Each `$$` gets a line of its own.
+        const restOfLine = /^[ \t]*(?:\n|$)/.test(text.slice(end + 2)) ? "" : `\n${indent}`;
+        out += `$$\n${indent}${inner.trim()}\n${indent}$$${restOfLine}`;
+      } else {
+        out += text.slice(i, end + 2);
+      }
+      i = end + 2;
       continue;
     }
     if (ch === "$") {
@@ -325,6 +339,14 @@ function withCitations(text: string, count: number): string {
 /** A block's markdown as it is parsed: math, then citations. */
 function prepare(block: string, count: number): string {
   return withCitations(withMath(block), count);
+}
+
+/** Holds a formula outside code (prepared markdown, where all math is `$$`). */
+function hasMath(markdown: string): boolean {
+  return (
+    markdown.includes("$$") &&
+    markdown.split(CODE).some((part, i) => i % 2 === 0 && part.includes("$$"))
+  );
 }
 
 const REMARK: Options["remarkPlugins"] = [
@@ -569,15 +591,27 @@ export function ChatMarkdown({
   const count = sources.length;
   const blocks = useMemo(() => splitBlocks(text), [text]);
   const last = blocks.length - 1;
-  const done = useMemo(
-    () => blocks.slice(0, -1).map((block) => prepare(block, count)),
-    [blocks, count],
-  );
+  // Finished blocks are prepared once each, not again for every new word.
+  const prepared = useRef<{ count: number; byBlock: Map<string, string> }>({
+    count,
+    byBlock: new Map(),
+  });
+  const done = useMemo(() => {
+    const before = prepared.current.count === count ? prepared.current.byBlock : new Map();
+    const byBlock = new Map<string, string>();
+    const out = blocks.slice(0, -1).map((block) => {
+      const markdown = before.get(block) ?? prepare(block, count);
+      byBlock.set(block, markdown);
+      return markdown;
+    });
+    prepared.current = { count, byBlock };
+    return out;
+  }, [blocks, count]);
   const tail =
     last >= 0 ? prepare(streaming ? stabilizeTail(blocks[last]) : blocks[last], count) : "";
   // A ```mermaid block still being written shows its source, not a diagram.
   const openFenceAt = streaming ? openCodeFenceAt(tail) : null;
-  const math = useKatex(tail.includes("$$") || done.some((block) => block.includes("$$")));
+  const math = useKatex(hasMath(tail) || done.some(hasMath));
   // Where the newest words of the last block start, against what the last
   // commit showed. Read from a ref the effect below writes after commit, so
   // a second render of the same props (StrictMode) gets the same answer.
