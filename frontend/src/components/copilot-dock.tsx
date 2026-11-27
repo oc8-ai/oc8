@@ -24,6 +24,7 @@ import { useChatSessions } from "@/lib/hooks-chat";
 import { useLiveConnectionStatus } from "@/lib/live/provider";
 import { ChatTitleText } from "@/components/conversation/chat-title";
 import { useTemporaryChatText } from "@/components/conversation/new-chat-label";
+import { TemporaryChatLease } from "@/components/conversation/temporary-chat";
 import { SessionPicker } from "@/components/conversation/session-picker";
 
 // Set by DoneStep right before the full-page navigation into "/" that follows
@@ -367,11 +368,17 @@ function CopilotDockPanel() {
   }
 
   function setTabSession(uiId: string, sessionId: string | null) {
-    // A tab back to blank starts an ordinary chat again.
+    // A tab back to blank starts an ordinary chat again; only the chat the
+    // tab itself just created keeps its temporary mark -- another chat put
+    // in its place is that chat, which says itself whether it is temporary.
     setTabs((prev) =>
       prev.map((tab) =>
         tab.uiId === uiId
-          ? { ...tab, sessionId, temporary: sessionId === null ? false : tab.temporary }
+          ? {
+              ...tab,
+              sessionId,
+              temporary: sessionId !== null && tab.sessionId === null && !!tab.temporary,
+            }
           : tab,
       ),
     );
@@ -383,8 +390,18 @@ function CopilotDockPanel() {
     );
   }
 
-  // A temporary chat is deleted once its tab leaves it (another tab, the dock
-  // closed): the tab that held it is blank again.
+  // A tab reopened after a reload learns from the chat itself that it is
+  // temporary.
+  function markTemporary(uiId: string) {
+    setTabs((prev) =>
+      prev.map((tab) => (tab.uiId === uiId && !tab.temporary ? { ...tab, temporary: true } : tab)),
+    );
+  }
+
+  // A temporary chat is deleted once its tab leaves it (the tab closed,
+  // another chat in its place, the dock closed) -- not when another tab is
+  // shown: each tab holds its chat while the dock is open (the leases
+  // below). The tab that held it is blank again.
   function forgetTemporaryChat(sessionId: string) {
     setTabs((prev) =>
       prev.map((tab) =>
@@ -492,6 +509,15 @@ function CopilotDockPanel() {
             </CopilotPersonaHeader>
           </header>
 
+          {tabs.map((tab) => (
+            <TemporaryChatLease
+              key={tab.uiId}
+              sessionId={tab.sessionId}
+              temporary={!!tab.temporary}
+              onLeft={forgetTemporaryChat}
+              onTemporary={() => markTemporary(tab.uiId)}
+            />
+          ))}
           <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-2 py-1">
             {tabs.map((tab) => {
               const session = allSessions?.find((s) => s.id === tab.sessionId);

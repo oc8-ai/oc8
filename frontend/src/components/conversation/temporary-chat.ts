@@ -6,6 +6,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 
 import { api } from "@/lib/api";
+import { useChatSession } from "@/lib/conversation-api";
 import { forgetDeletedSession } from "@/lib/hooks-chat";
 
 // Mounted views of each temporary chat (the dock and the Copilot page can
@@ -56,4 +57,32 @@ export function useLeaveTemporaryChat(
       );
     };
   }, [sessionId, temporary, qc]);
+}
+
+/** Holds `sessionId` for as long as it is mounted, and deletes it once left
+ *  when it is a temporary chat -- known from the chat itself (so a dock tab
+ *  reopened after a reload holds it too) or from `temporary` before the
+ *  chat has loaded. Mount one per place that keeps a chat open: the Copilot
+ *  page, each dock tab while the dock is open. Renders nothing. */
+export function TemporaryChatLease({
+  sessionId,
+  temporary = false,
+  onLeft,
+  onTemporary,
+}: {
+  sessionId: string | null;
+  temporary?: boolean;
+  onLeft?: (sessionId: string) => void;
+  /** The chat turned out to be temporary though `temporary` did not say so. */
+  onTemporary?: () => void;
+}) {
+  const { data: session } = useChatSession(sessionId);
+  const known = !!session?.temporary && session.id === sessionId;
+  const onTemporaryRef = useRef(onTemporary);
+  onTemporaryRef.current = onTemporary;
+  useEffect(() => {
+    if (known && !temporary) onTemporaryRef.current?.();
+  }, [known, temporary]);
+  useLeaveTemporaryChat(sessionId, temporary || known, onLeft);
+  return null;
 }

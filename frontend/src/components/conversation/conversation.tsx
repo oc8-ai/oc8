@@ -178,6 +178,10 @@ interface SendFailure {
 }
 
 /** Why a message did not go out, by the server's answer (Ruling 53). */
+function temporaryGoneText(t: Translate): string {
+  return t("This temporary chat was deleted.", "Dieser temporäre Chat wurde gelöscht.");
+}
+
 function sendErrorText(error: unknown, t: Translate): string {
   const status = error instanceof ApiError ? error.status : null;
   if (status === 403) {
@@ -472,6 +476,20 @@ function ConversationBody(props: ConversationProps) {
   // Not kept: marked, never rated, and deleted once left (spec §5.6).
   const temporaryChat = props.sessionId ? !!conv.session?.temporary : !!props.temporary;
   useLeaveTemporaryChat(props.sessionId, !!conv.session?.temporary, props.onTemporaryLeft);
+  // Left in another browser tab, the temporary chat is gone here too: say
+  // so and start a new chat in its place.
+  const temporaryGone =
+    temporaryChat &&
+    !!props.sessionId &&
+    conv.sessionError instanceof ApiError &&
+    conv.sessionError.status === 404;
+  useEffect(() => {
+    if (!temporaryGone) return;
+    setSendError({ text: temporaryGoneText(t) });
+    keepError.current = true;
+    props.onSessionChange(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per chat gone
+  }, [temporaryGone]);
   // The question the chat's run is parked on (spec §4.1). That run waits for
   // the reader, so it does not make the chat busy: the composer answers it.
   const pending = (!readOnly && conv.session?.pendingQuestion) || null;
@@ -974,7 +992,7 @@ function ConversationBody(props: ConversationProps) {
       }
       const gone = status === 404 && !!props.sessionId;
       setSendError({
-        text: sendErrorText(error, t),
+        text: gone && temporaryChat ? temporaryGoneText(t) : sendErrorText(error, t),
         // Resending cannot help a refusal or a rejected message. A chat that
         // is gone loses its uploads with it.
         retry:

@@ -204,6 +204,7 @@ export function useConversation(sessionId: string | null) {
     messages,
     turns,
     isLoading: messagesQuery.isLoading || sessionQuery.isLoading,
+    sessionError: sessionQuery.error,
     liveRunIds,
     addPendingRun,
   };

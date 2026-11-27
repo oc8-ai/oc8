@@ -8,16 +8,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => ({
   del: vi.fn(),
+  get: vi.fn(),
   create: vi.fn(),
+  conv: { session: undefined as unknown, sessionError: null as unknown },
   feedback: vi.fn(),
 }));
 vi.mock("@/lib/api", async (orig) => {
   const real = await orig<typeof import("@/lib/api")>();
-  return { ...real, api: { ...real.api, delete: m.del } };
+  return { ...real, api: { ...real.api, delete: m.del, get: m.get } };
 });
 vi.mock("@/components/conversation/use-conversation", () => ({
   useConversation: () => ({
-    session: undefined,
+    session: m.conv.session,
+    sessionError: m.conv.sessionError,
     messages: [],
     turns: [],
     isLoading: false,
@@ -56,7 +59,11 @@ vi.mock("@/hooks/use-mobile", () => ({ useIsNarrow: () => false, useIsMobile: ()
 import { Conversation } from "@/components/conversation";
 import { AssistantTurn } from "@/components/conversation/assistant-turn";
 import { CopilotSidebar } from "@/components/conversation/copilot-sidebar";
-import { useLeaveTemporaryChat } from "@/components/conversation/temporary-chat";
+import {
+  TemporaryChatLease,
+  useLeaveTemporaryChat,
+} from "@/components/conversation/temporary-chat";
+import { ApiError } from "@/lib/api";
 import { EditionCompositionProvider } from "@/edition/composition";
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -67,6 +74,10 @@ afterEach(() => {
   vi.useRealTimers();
   m.del.mockReset();
   m.create.mockReset();
+  m.get.mockReset();
+  // A view torn down after the test still deletes its chat.
+  m.del.mockResolvedValue(undefined);
+  m.conv = { session: undefined, sessionError: null };
 });
 
 describe("leaving a temporary chat", () => {
@@ -135,8 +146,10 @@ describe("a new temporary chat", () => {
       />,
       { wrapper },
     );
-    const chip = screen.getByText("Temporary — not saved");
-    expect(chip.closest("[title]")?.getAttribute("title")).toBe(
+    // The 24 h note is reachable by keyboard: focus opens its tooltip.
+    const chip = screen.getByRole("button", { name: /Temporary — not saved/ });
+    act(() => chip.focus());
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "Deleted when you leave it, at the latest after 24 hours.",
     );
     const box = screen.getByRole("textbox", { name: /Message/ });
@@ -213,6 +226,76 @@ describe("the sidebar's new-chat entries", () => {
       "Deleted when you leave it, at the latest after 24 hours.",
     );
     fireEvent.click(entry);
+    expect(onStartTemporary).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the dock's tabs hold their temporary chats", () => {
+  it("keeps a chat while another tab is shown, deletes it when its tab closes", async () => {
+    vi.useFakeTimers();
+    m.del.mockResolvedValue(undefined);
+    m.get.mockResolvedValue({ id: "t5", temporary: true });
+    // Each open tab holds its chat; the shown one also mounts a Conversation.
+    const tab = render(<TemporaryChatLease sessionId="t5" temporary />, { wrapper });
+    const shown = renderHook(() => useLeaveTemporaryChat("t5", true), { wrapper });
+    shown.unmount(); // another tab is shown
+    await act(async () => {
+      vi.runAllTimers();
+    });
+    expect(m.del).not.toHaveBeenCalled();
+    tab.unmount(); // the tab closed, or the dock
+    await act(async () => {
+      vi.runAllTimers();
+    });
+    expect(m.del).toHaveBeenCalledWith("/chat/sessions/t5");
+  });
+
+  it("learns after a reload, from the chat itself, that it is temporary", async () => {
+    m.get.mockResolvedValue({ id: "t6", temporary: true });
+    m.del.mockResolvedValue(undefined);
+    const onTemporary = vi.fn();
+    const { unmount } = render(<TemporaryChatLease sessionId="t6" onTemporary={onTemporary} />, {
+      wrapper,
+    });
+    await waitFor(() => expect(onTemporary).toHaveBeenCalled());
+    unmount();
+    await waitFor(() => expect(m.del).toHaveBeenCalledWith("/chat/sessions/t6"));
+  });
+});
+
+describe("a temporary chat deleted in another browser tab", () => {
+  it("says so and starts a new chat in its place", async () => {
+    m.conv = {
+      session: { id: "t7", temporary: true },
+      sessionError: new ApiError("not found", 404),
+    };
+    const onSessionChange = vi.fn();
+    render(
+      <Conversation agentId="a" sessionId="t7" onSessionChange={onSessionChange} variant="full" />,
+      { wrapper },
+    );
+    expect(await screen.findByText("This temporary chat was deleted.")).toBeInTheDocument();
+    expect(onSessionChange).toHaveBeenCalledWith(null);
+  });
+});
+
+describe("the collapsed sidebar", () => {
+  it("still offers a temporary chat", () => {
+    const onStartTemporary = vi.fn();
+    render(
+      <EditionCompositionProvider extensions={[]}>
+        <CopilotSidebar
+          agentId="x"
+          sessionId={null}
+          onSelect={vi.fn()}
+          onStartTemporary={onStartTemporary}
+          collapsed
+          onToggle={vi.fn()}
+        />
+      </EditionCompositionProvider>,
+      { wrapper },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Temporary chat" }));
     expect(onStartTemporary).toHaveBeenCalledTimes(1);
   });
 });

@@ -474,33 +474,49 @@ export function CopilotSidebar({
   const shared = { sessionId, onSelect: (id: string) => open(id), actions };
 
   const newChat = (
-    <>
+    <Button
+      type="button"
+      variant="outline"
+      className="h-9 flex-1 justify-start"
+      onClick={() => open(null)}
+    >
+      <Plus aria-hidden />
+      {t("New chat", "Neuer Chat")}
+    </Button>
+  );
+
+  function startTemporary() {
+    onStartTemporary?.();
+    setSheetOpen(false);
+  }
+  // A temporary chat (spec §5.6): labelled where the list has room, an icon
+  // with its name and the 24 h note where it is folded away.
+  const temporaryChat = onStartTemporary && (
+    <div className="px-2 pb-1">
       <Button
         type="button"
-        variant="outline"
-        className="h-9 flex-1 justify-start"
-        onClick={() => open(null)}
+        variant="ghost"
+        className="h-9 w-full justify-start text-muted-foreground"
+        title={temporaryText.help}
+        onClick={startTemporary}
       >
-        <Plus aria-hidden />
-        {t("New chat", "Neuer Chat")}
+        <MessageCircleDashed aria-hidden />
+        {temporaryText.label}
       </Button>
-      {onStartTemporary && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="size-9 shrink-0"
-          aria-label={temporaryText.label}
-          title={temporaryText.help}
-          onClick={() => {
-            onStartTemporary();
-            setSheetOpen(false);
-          }}
-        >
-          <MessageCircleDashed aria-hidden />
-        </Button>
-      )}
-    </>
+    </div>
+  );
+  const temporaryChatIcon = onStartTemporary && (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="mx-auto shrink-0"
+      aria-label={temporaryText.label}
+      title={temporaryText.help}
+      onClick={startTemporary}
+    >
+      <MessageCircleDashed aria-hidden />
+    </Button>
   );
 
   const list = (
@@ -617,7 +633,8 @@ export function CopilotSidebar({
               {t("Your chats by date and project", "Deine Chats nach Datum und Projekt")}
             </SheetDescription>
             <nav aria-label={t("Chats", "Chats")} className="flex min-h-0 flex-1 flex-col pt-10">
-              <div className="flex gap-1 p-2">{newChat}</div>
+              <div className="flex p-2">{newChat}</div>
+              {temporaryChat}
               {list}
             </nav>
           </SheetContent>
@@ -651,6 +668,7 @@ export function CopilotSidebar({
         </Button>
         {!collapsed && newChat}
       </div>
+      {collapsed ? temporaryChatIcon : temporaryChat}
       {!collapsed && list}
       {dialogs}
     </nav>
