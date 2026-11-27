@@ -11,7 +11,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from oc8 import models as m
-from oc8.api.deps import CurrentPrincipal, DbSession, require_permission
+from oc8.api.deps import CurrentPrincipal, DbSession, require_permission, unguarded
 from oc8.audit import append_event
 from oc8.authz.permissions import MANAGE, SETTINGS, perm
 from oc8.schemas.base import CamelModel
@@ -32,7 +32,18 @@ async def _organization(db: DbSession, principal: CurrentPrincipal) -> m.Organiz
     return organization
 
 
-@router.get("/settings/previews", response_model=PreviewSettings)
+@router.get(
+    "/settings/previews",
+    response_model=PreviewSettings,
+    dependencies=[
+        Depends(
+            unguarded(
+                "every chat user reads one boolean of their own tenant to know whether "
+                "previews run scripts; it reveals nothing and only ever makes previews stricter"
+            )
+        )
+    ],
+)
 async def get_preview_settings(db: DbSession, principal: CurrentPrincipal) -> PreviewSettings:
     organization = await _organization(db, principal)
     return PreviewSettings(

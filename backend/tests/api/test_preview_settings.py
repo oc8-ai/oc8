@@ -67,3 +67,28 @@ async def test_preview_scripts_default_on_readable_by_members_set_by_admins(
             )
         ).all()
         assert len(events) == 1
+
+
+async def test_preview_scripts_setting_is_per_tenant(app_session: AppSessionFactory) -> None:
+    off, other = uuid.uuid4(), uuid.uuid4()
+    for tenant, settings in ((off, {"preview_scripts": False}), (other, {})):
+        async with app_session(tenant) as s:
+            s.add(
+                m.Organization(
+                    id=tenant,
+                    slug=f"t{tenant.hex[:6]}",
+                    name="T",
+                    tier="standard",
+                    region="eu",
+                    settings=settings,
+                )
+            )
+            await s.flush()
+    app = create_app()
+    async with LifespanManager(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://t") as c:
+            mine = await c.get("/api/v1/settings/previews", headers=_headers(off, "member"))
+            theirs = await c.get("/api/v1/settings/previews", headers=_headers(other, "member"))
+    # One tenant turning scripts off says nothing to, and changes nothing for, another.
+    assert mine.json() == {"runScripts": False}
+    assert theirs.json() == {"runScripts": True}
