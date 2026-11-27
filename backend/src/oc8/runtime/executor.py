@@ -168,6 +168,30 @@ def _all_legs_calls(
     return {"toolCalls": [*earlier, *leg]}
 
 
+async def _resumed_leg_calls(
+    db: AsyncSession,
+    run: m.AgentRun,
+    *,
+    earlier: list[dict[str, Any]],
+    decided: dict[str, str],
+    leg: list[dict[str, Any]],
+    leg_from: int | None,
+) -> list[Any]:
+    """`_merge_leg_calls` for a resumed leg's terminal write.
+
+    A runtime that reports no calls (the isolated one appends them to the
+    run's context as it goes) has this leg's calls only in the stored list,
+    past where the leg began: they are read back fresh and merged as the
+    leg's own, so the leg-start snapshot never overwrites them."""
+    if leg:
+        return _merge_leg_calls(earlier, decided, leg, leg_from=leg_from)
+    stored = await db.scalar(select(m.AgentRun.context["toolCalls"]).where(m.AgentRun.id == run.id))
+    calls = list(stored) if isinstance(stored, list) else []
+    start = leg_from if leg_from is not None else len(earlier)
+    start = min(max(start, 0), len(calls))
+    return _merge_leg_calls(calls[:start], decided, calls[start:])
+
+
 async def answer_failed_chat_end(db: AsyncSession, run: m.AgentRun) -> None:
     """The transcript side of a chat turn that FAILED without an output of its
     own: the canned failure line as the run's answer, then its queued
@@ -1628,10 +1652,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             # earlier legs' calls ahead of its own (`_all_legs_calls`).
                             **(
                                 {
-                                    "toolCalls": _merge_leg_calls(
-                                        earlier_calls,
-                                        pre_decided_map(approvals),
-                                        result.tool_calls,
+                                    "toolCalls": await _resumed_leg_calls(
+                                        db,
+                                        run,
+                                        earlier=earlier_calls,
+                                        decided=pre_decided_map(approvals),
+                                        leg=result.tool_calls,
                                         leg_from=leg_from,
                                     ),
                                     "legCallsFrom": None,
@@ -1789,10 +1815,12 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             # earlier legs' calls ahead of its own (`_all_legs_calls`).
                             **(
                                 {
-                                    "toolCalls": _merge_leg_calls(
-                                        earlier_calls,
-                                        pre_decided_map(approvals),
-                                        result.tool_calls,
+                                    "toolCalls": await _resumed_leg_calls(
+                                        db,
+                                        run,
+                                        earlier=earlier_calls,
+                                        decided=pre_decided_map(approvals),
+                                        leg=result.tool_calls,
                                         leg_from=leg_from,
                                     ),
                                     "legCallsFrom": None,

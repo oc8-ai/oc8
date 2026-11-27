@@ -2141,3 +2141,68 @@ async def test_a_resumed_leg_drops_only_its_dead_attempts_repeats_and_clears_its
         assert run is not None
         assert run.context["toolCalls"] == [read, {**again, "step": 2}, {**replied, "step": 3}]
         assert run.context.get("legCallsFrom") is None
+
+
+async def test_a_resumed_isolated_legs_live_calls_survive_its_final_write(
+    app_session: AppSessionFactory, redis_url: str
+) -> None:
+    """The isolated runtime reports no calls of its own: it appends them to
+    the run's context as it goes. A resumed leg's final write used to merge
+    the leg-start snapshot with that empty list, wiping the leg's calls --
+    and the reply's work digest with them."""
+    from oc8.runtime.approval_resume import call_signature
+
+    tenant = uuid.UUID(str(ACME_TENANT_ID))
+    run_id, session_id = await _make_chat_run(
+        app_session, tenant, chat_channel=None, chat_channel_external_id=None
+    )
+    read = {"tool": "crm_search", "arguments": {}, "state": "done", "step": 1}
+    held = {"tool": "crm_update", "arguments": {"id": 1}, "state": "awaiting_approval", "step": 2}
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        run.context = {
+            **(run.context or {}),
+            "toolCalls": [read, held],
+            "resolved_tool_approvals": [
+                {
+                    "sig": call_signature("crm_update", {"id": 1}),
+                    "tool": "crm_update",
+                    "arguments": {"id": 1},
+                    "decision": "approve",
+                }
+            ],
+        }
+    ran = {"tool": "crm_update", "arguments": {"id": 1}, "state": "done", "step": 1}
+
+    async def isolated_leg(db: Any, **kw: Any) -> RunResult:
+        run = await db.get(m.AgentRun, run_id)
+        assert run is not None
+        await append_tool_call(db, run, ran)
+        return RunResult(
+            task_id=uuid.uuid4(),
+            agent_id=kw["agent"].id,
+            status="done",
+            output="erledigt",
+            tool_calls=[],
+            steps=1,
+        )
+
+    await execute_run(
+        RunMessage(run_id=str(run_id), tenant_id=str(tenant), entry_id="0-0", redelivered=False),
+        runtime=_FnRuntime(isolated_leg),
+    )
+
+    async with app_session(tenant) as s:
+        run = await s.get(m.AgentRun, run_id)
+        assert run is not None
+        assert run.context["toolCalls"] == [read, {**ran, "step": 2}]
+        reply = (
+            await s.execute(
+                select(m.ChatMessage).where(
+                    m.ChatMessage.session_id == session_id, m.ChatMessage.role == "assistant"
+                )
+            )
+        ).scalar_one()
+        assert reply.work_digest is not None
+        assert "crm_search" in reply.work_digest and "crm_update" in reply.work_digest
