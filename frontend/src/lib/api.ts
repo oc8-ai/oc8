@@ -5,6 +5,8 @@
 // the throw, not by quietly becoming org_admin. `<DevSignIn>` is the only
 // thing that ever calls `/auth/dev-login` and stores what it gets back.
 
+import { stopSpeech } from "@/components/conversation/voice/speech-player";
+
 import { purgeAppCaches } from "./app-worker";
 import { resetPython } from "./python-reset";
 
@@ -69,6 +71,7 @@ export async function logoutCommunity(): Promise<void> {
   if (typeof window === "undefined") return;
   tokenStore.clear();
   resetPython();
+  stopSpeech();
   purgeAppCaches();
   // /auth/config is unguarded, so this works with the token already gone.
   try {
@@ -123,9 +126,11 @@ export function hasDevSession(): boolean {
 export function logoutDev(): void {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(TOKEN_KEY);
-  // A chat's Python sandbox (with any file it was given) and the app's
-  // cached files go with the session.
+  // A chat's Python sandbox (with any file it was given), an answer being
+  // read aloud (or kept for the next tap) and the app's cached files go with
+  // the session.
   resetPython();
+  stopSpeech();
   purgeAppCaches();
 }
 

@@ -44,7 +44,7 @@ vi.mock("@/lib/conversation-api", async (orig) => ({
   useMessageFeedback: () => ({ mutate: vi.fn() }),
 }));
 
-import { ApiError } from "@/lib/api";
+import { ApiError, logoutDev } from "@/lib/api";
 import { AssistantTurn } from "@/components/conversation/assistant-turn";
 import { Composer, type ComposerProps } from "@/components/conversation/composer";
 import type { ChatMessageDTO } from "@/lib/hooks-chat";
@@ -84,6 +84,8 @@ class FakeAudio {
   static instances: FakeAudio[] = [];
   /** Rejects the next play of a fetched answer with NotAllowedError. */
   static refuseNext = false;
+  /** The next fetched answer cannot be decoded: `error` fires, then play rejects. */
+  static brokenNext = false;
   src = "";
   paused = true;
   onended: (() => void) | null = null;
@@ -95,6 +97,11 @@ class FakeAudio {
     if (FakeAudio.refuseNext && !this.src.startsWith(SILENT_PREFIX)) {
       FakeAudio.refuseNext = false;
       throw new DOMException("not allowed", "NotAllowedError");
+    }
+    if (FakeAudio.brokenNext && !this.src.startsWith(SILENT_PREFIX)) {
+      FakeAudio.brokenNext = false;
+      this.onerror?.();
+      throw new DOMException("no supported source", "NotSupportedError");
     }
     this.paused = false;
   });
@@ -115,6 +122,7 @@ beforeEach(() => {
   );
   FakeAudio.instances = [];
   FakeAudio.refuseNext = false;
+  FakeAudio.brokenNext = false;
   track.stop.mockReset();
   getUserMedia.mockReset().mockResolvedValue({ getTracks: () => [track] });
   vi.stubGlobal("MediaRecorder", FakeRecorder);
@@ -280,6 +288,23 @@ describe("dictation", () => {
     expect(ensureSession).not.toHaveBeenCalled();
     expect(audioApi.transcribe).not.toHaveBeenCalled();
     expect(box().value).toBe("");
+  });
+
+  it("does not carry a later recording into the chat an earlier dictation made", async () => {
+    // The first dictation in a new chat makes "fresh"; the page stays on a
+    // new chat. A second recording there, and then "fresh" is opened.
+    const ensureSession = vi.fn(async () => "fresh");
+    const view = render(<ComposerHarness sessionId={null} ensureSession={ensureSession} />);
+    await startRecording();
+    stopRecording();
+    await waitFor(() => expect(box().value).toBe("dictated"));
+    fireEvent.click(await micButton());
+    await waitFor(() => expect(FakeRecorder.instances).toHaveLength(2));
+    const second = FakeRecorder.instances[1];
+    view.rerender(<ComposerHarness sessionId="fresh" ensureSession={ensureSession} />);
+    await waitFor(() => expect(second.stop).toHaveBeenCalled());
+    await act(async () => {});
+    expect(audioApi.transcribe).toHaveBeenCalledTimes(1);
   });
 
   it("drops the transcript when the chat switches while it is transcribed", async () => {
@@ -502,6 +527,29 @@ describe("read aloud", () => {
     act(() => element().onerror?.());
     expect(button).toHaveAttribute("aria-pressed", "false");
     expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:speech");
+  });
+
+  it("says so when the fetched audio cannot be decoded", async () => {
+    FakeAudio.brokenNext = true;
+    wrap(<Turn />);
+    const button = await speaker();
+    fireEvent.click(button);
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("The answer could not be read aloud. Try again."),
+    );
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:speech");
+  });
+
+  it("stops and frees the reading on sign-out", async () => {
+    wrap(<Turn />);
+    const button = await speaker();
+    fireEvent.click(button);
+    await waitFor(() => expect(element().src).toBe("blob:speech"));
+    act(() => logoutDev());
+    expect(element().pause).toHaveBeenCalled();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:speech");
+    expect(button).toHaveAttribute("aria-pressed", "false");
   });
 
   it("plays one answer at a time", async () => {

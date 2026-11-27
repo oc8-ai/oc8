@@ -54,6 +54,7 @@ export function DictationButton({
     if (before === sessionId) return;
     if (before === null && (creating.current || sessionId === created.current)) return;
     // Any other change is another chat: stop, and keep nothing for it.
+    created.current = null;
     generation.current += 1;
     cancel();
   }, [sessionId, cancel]);
@@ -103,6 +104,8 @@ export function DictationButton({
   }
 
   async function begin() {
+    // A chat an earlier dictation made is no longer this recording's own.
+    created.current = null;
     try {
       await recorder.start();
     } catch (error) {

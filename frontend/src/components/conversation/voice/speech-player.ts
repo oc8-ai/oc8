@@ -90,6 +90,9 @@ export function playSpeech(
   changed();
 
   // Runs synchronously up to the first await: a kept answer starts in the tap.
+  // `failed`: the element could not play what was fetched. Its `error` stops
+  // the reading before `play()` rejects, which must not pass for a Stop.
+  let failed = false;
   return (async () => {
     try {
       const url = reuse ?? URL.createObjectURL(await load(playback.controller.signal));
@@ -99,7 +102,10 @@ export function playSpeech(
       }
       playback.url = url;
       audio.onended = () => stopSpeech(key);
-      audio.onerror = () => stopSpeech(key);
+      audio.onerror = () => {
+        failed = true;
+        stopSpeech(key);
+      };
       audio.src = url;
       try {
         await audio.play();
@@ -113,13 +119,14 @@ export function playSpeech(
         changed();
         throw new PlaybackBlocked();
       }
+      if (failed) throw new Error("The audio could not be played.");
       if (current !== playback) return;
       playback.phase = "playing";
       changed();
     } catch (error) {
       if (error instanceof PlaybackBlocked) throw error;
-      if (current !== playback) return;
-      stopSpeech(key);
+      if (current !== playback && !failed) return;
+      if (current === playback) stopSpeech(key);
       throw error;
     }
   })();
