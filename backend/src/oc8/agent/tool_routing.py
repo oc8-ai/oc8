@@ -19,8 +19,15 @@ codebase can produce. So:
   mission, skill and plugin says `post_message`, and renaming those wholesale to
   fix a collision that does not exist would break all of them;
 * a name offered by SEVERAL is advertised once per connection as
-  `<connection>.<tool>`, and the bare form is not offered at all. The model
+  `<connection>__<tool>`, and the bare form is not offered at all. The model
   cannot express the ambiguous call, so it cannot make it.
+
+Every advertised name is one every model provider accepts,
+`^[a-zA-Z0-9_-]{1,64}$`: a dot (the separator until 0.22.1) or a space in a
+connection name is refused outright by Anthropic, OpenAI and the gateways in
+front of them. Characters outside that set become `_`, a name past 64 is cut
+and given a short hash, and where two names would still meet the later one
+(in a fixed order) gets a hash too, so no call can reach the neighbour.
 
 The core still names no software. It only knows that connections have names and
 that tools have names.
@@ -28,6 +35,8 @@ that tools have names.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from collections import defaultdict
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
@@ -35,10 +44,18 @@ from typing import Any, Protocol
 
 from oc8.modelrouter.types import NeutralTool
 
-#: Separates a connection from a tool in an advertised name. A dot is safe: MCP
-#: tool names are `[a-zA-Z0-9_-]` by convention, so a dot cannot collide with a
-#: name a server already uses.
-SEPARATOR = "."
+#: Separates a connection from a tool in an advertised name. Not a dot: no
+#: model provider takes one in a tool name.
+SEPARATOR = "__"
+
+#: The dot runs started before 0.22.1 may still call with.
+_LEGACY_SEPARATOR = "."
+
+#: The longest tool name every provider takes (OpenAI's cap; Anthropic's is 128).
+MAX_NAME = 64
+
+_UNSAFE = re.compile(r"[^a-zA-Z0-9_-]")
+_HASH_CHARS = 6
 
 
 @dataclass(frozen=True)
@@ -68,18 +85,71 @@ def build_routes(
         for tool in tools:
             owners[tool].append(connection)
 
-    routes: dict[str, Route] = {}
+    bare: list[Route] = []
+    qualify: list[Route] = []
     for tool, connections in owners.items():
         if len(connections) == 1 and tool not in reserved:
-            routes[tool] = Route(connections[0], tool)
-            continue
-        for connection in connections:
-            routes[qualified(connection, tool)] = Route(connection, tool)
+            bare.append(Route(connections[0], tool))
+        else:
+            qualify.extend(Route(connection, tool) for connection in connections)
+
+    # Bare names first: they are what missions and skills already say. Each
+    # group in a fixed order, so every run advertises the same names.
+    routes: dict[str, Route] = {}
+    for route in sorted(bare, key=_order):
+        _claim(routes, _safe(route.tool, route), route)
+    for route in sorted(qualify, key=_order):
+        _claim(routes, qualified(route.connection, route.tool), route)
     return routes
 
 
+def _order(route: Route) -> tuple[str, str]:
+    return (route.connection, route.tool)
+
+
+def _hash(route: Route, salt: int = 0) -> str:
+    raw = f"{route.connection}\x00{route.tool}\x00{salt}".encode()
+    return hashlib.sha256(raw).hexdigest()[:_HASH_CHARS]
+
+
+def _with_hash(name: str, route: Route, salt: int = 0) -> str:
+    return f"{name[: MAX_NAME - _HASH_CHARS - 1]}_{_hash(route, salt)}"
+
+
+def _safe(name: str, route: Route) -> str:
+    """`name` as a provider takes it, capped at MAX_NAME."""
+    safe = _UNSAFE.sub("_", name) or "_"
+    return safe if len(safe) <= MAX_NAME else _with_hash(safe, route)
+
+
+def _claim(routes: dict[str, Route], name: str, route: Route) -> None:
+    salt = 0
+    while name in routes:
+        salt += 1
+        name = _with_hash(name, route, salt)
+    routes[name] = route
+
+
 def qualified(connection: str, tool: str) -> str:
-    return f"{connection}{SEPARATOR}{tool}"
+    """The advertised name for `tool` of `connection`, before any collision
+    suffix `build_routes` may add."""
+    route = Route(connection, tool)
+    return _safe(f"{_UNSAFE.sub('_', connection)}{SEPARATOR}{tool}", route)
+
+
+def addresses_connection(name: str, connection: str) -> bool:
+    """Whether an advertised (or legacy dotted) name is one of `connection`'s."""
+    return name.startswith(_UNSAFE.sub("_", connection) + SEPARATOR) or name.startswith(
+        connection + _LEGACY_SEPARATOR
+    )
+
+
+def bare_tool(name: str, connection: str) -> str | None:
+    """The connection's own tool name inside a qualified `name`, if it is one."""
+    for prefix in (_UNSAFE.sub("_", connection) + SEPARATOR, connection + _LEGACY_SEPARATOR):
+        if name.startswith(prefix):
+            return name[len(prefix) :]
+    return None
 
 
 def resolve(name: str, routes: dict[str, Route]) -> Route | None:
@@ -92,10 +162,11 @@ def resolve(name: str, routes: dict[str, Route]) -> Route | None:
     route = routes.get(name)
     if route is not None:
         return route
-    if SEPARATOR in name:
-        connection, _, tool = name.partition(SEPARATOR)
-        candidate = routes.get(tool)
-        if candidate is not None and candidate.connection == connection:
+    for candidate in routes.values():
+        if name in (
+            qualified(candidate.connection, candidate.tool),
+            f"{candidate.connection}{_LEGACY_SEPARATOR}{candidate.tool}",
+        ):
             return candidate
     return None
 

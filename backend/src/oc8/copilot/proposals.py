@@ -14,6 +14,7 @@ from oc8.audit import append_event
 from oc8.auth import Principal
 from oc8.authz.scope import scope_for_principal
 from oc8.copilot.capabilities import (
+    AWAITING_PUBLISH_KEY,
     BOARD_OPERATION_TYPES,
     InvalidOperation,
     apply_operation,
@@ -40,6 +41,9 @@ class ProposalNotRejectable(ValueError):
 class ApplyResult:
     proposal_id: uuid.UUID
     status: str
+    #: Agents whose change joined a pending draft: it takes effect only once
+    #: that draft is published (`capabilities._publish_copilot_change`).
+    awaiting_publish: tuple[uuid.UUID, ...] = ()
 
 
 async def create_proposal(
@@ -128,6 +132,7 @@ async def apply_proposal(db: AsyncSession, proposal_id: uuid.UUID, actor: Princi
     except PermissionError:
         actor_member = None
     actor_member_id = actor_member.id if actor_member is not None else None
+    db.info.pop(AWAITING_PUBLISH_KEY, None)
     try:
         for operation in operations:
             created = await apply_operation(
@@ -144,12 +149,19 @@ async def apply_proposal(db: AsyncSession, proposal_id: uuid.UUID, actor: Princi
                     # and the builder do -- or nobody could ever approve it.
                     await create_hire_request(db, agent=agent)
     except InvalidOperation as exc:
+        db.info.pop(AWAITING_PUBLISH_KEY, None)
         proposal.status = "rejected"
         await db.flush()
         raise ProposalRejected() from exc
+    awaiting = tuple(db.info.pop(AWAITING_PUBLISH_KEY, None) or ())
     proposal.status = "applied"
     proposal.applied_by = actor.subject
     proposal.revision += 1
+    if awaiting:
+        proposal.result = {
+            **(proposal.result or {}),
+            "awaitingPublish": [str(agent_id) for agent_id in awaiting],
+        }
     await db.flush()
     await append_event(db, tenant_id=actor.tenant_id, actor_type="operator", actor_id=None,
                        category="copilot", action="proposal.applied",
@@ -163,4 +175,4 @@ async def apply_proposal(db: AsyncSession, proposal_id: uuid.UUID, actor: Princi
                                for operation in operations
                            ],
                        }, principal=actor)
-    return ApplyResult(proposal.id, proposal.status)
+    return ApplyResult(proposal.id, proposal.status, awaiting)

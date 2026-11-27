@@ -77,18 +77,27 @@ export function PendingProposals({ de }: { de: boolean }) {
   // simply vanished while the proposal stayed `draft` — the reader is told
   // nothing and believes a structural change went through that did not.
   const [failed, setFailed] = useState(false);
+  // An Apply that only reached an agent's pending draft. The proposal reads
+  // "applied", yet runs keep the published version: said here, or the change
+  // looks as if it did nothing.
+  const [awaiting, setAwaiting] = useState<{ agentId: string; name: string }[]>([]);
 
   // Same shape the chat send below uses (`sendMessage.mutate({ message }, {
   // onError: ... })`): mark optimistically, undo the mark and show a notice
   // if the server refuses.
-  function answer(id: string, run: (options: { onError: () => void }) => void) {
+  function answer(
+    id: string,
+    run: (options: { onError: () => void; onSuccess: (p: CopilotProposal) => void }) => void,
+  ) {
     setFailed(false);
+    setAwaiting([]);
     setAnswered((ids) => [...ids, id]);
     run({
       onError: () => {
         setAnswered((ids) => ids.filter((answeredId) => answeredId !== id));
         setFailed(true);
       },
+      onSuccess: (proposal) => setAwaiting(proposal?.awaitingPublish ?? []),
     });
   }
 
@@ -98,7 +107,7 @@ export function PendingProposals({ de }: { de: boolean }) {
   // The notice outlives the card on purpose: a 409 means the proposal really
   // is no longer `draft`, so the refetched list drops it — and that is exactly
   // the case where a silently disappearing card would be read as success.
-  if (pending.length === 0 && !failed) return null;
+  if (pending.length === 0 && !failed && awaiting.length === 0) return null;
 
   return (
     <section
@@ -116,6 +125,31 @@ export function PendingProposals({ de }: { de: boolean }) {
         >
           {proposalFailedText(de)}
         </p>
+      )}
+      {awaiting.length > 0 && (
+        <div
+          role="status"
+          className="mb-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px]"
+        >
+          <p>
+            {de
+              ? "Übernommen, aber nur in den Entwurf – die Agenten laufen weiter mit der veröffentlichten Version. Veröffentliche den Entwurf, damit die Änderung wirkt:"
+              : "Applied, but only to the draft – the agents keep running their published version. Publish the draft for the change to take effect:"}
+          </p>
+          <ul className="mt-1 flex flex-wrap gap-2">
+            {awaiting.map((agent) => (
+              <li key={agent.agentId}>
+                <Link
+                  to="/agents/$id"
+                  params={{ id: agent.agentId }}
+                  className="font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  {agent.name}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       <ul className="space-y-2">
         {pending.map((proposal: CopilotProposal) => (

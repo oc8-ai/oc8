@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from oc8.agent.tool_routing import SEPARATOR
+from oc8.agent.tool_routing import bare_tool
 from oc8.modelrouter import NeutralTool
 
 logger = logging.getLogger(__name__)
@@ -122,8 +122,7 @@ def cards_from_offered(
             raw_note = notes_map.get(tool.name)
             if isinstance(raw_note, str):
                 notes = raw_note
-            elif SEPARATOR in tool.name:
-                bare = tool.name.partition(SEPARATOR)[2]
+            elif routed and (bare := bare_tool(tool.name, routed)) is not None:
                 bare_note = notes_map.get(bare)
                 notes = bare_note if isinstance(bare_note, str) else ""
             else:

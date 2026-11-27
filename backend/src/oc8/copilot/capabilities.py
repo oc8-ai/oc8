@@ -671,6 +671,11 @@ async def _has_no_draft(db: AsyncSession, agent: m.Agent) -> bool:
     return not (await draft_status(db, agent)).dirty
 
 
+#: `db.info` key: the agents whose Copilot change joined a pending draft during
+#: the apply under way, so `apply_proposal` can say they still need publishing.
+AWAITING_PUBLISH_KEY = "oc8.copilot.awaiting_publish"
+
+
 async def _publish_copilot_change(
     db: AsyncSession, agent: m.Agent, *, had_no_draft: bool, what: str, publish: bool = True
 ) -> None:
@@ -702,6 +707,9 @@ async def _publish_copilot_change(
             agent.id,
             what,
         )
+        awaiting: list[uuid.UUID] = db.info.setdefault(AWAITING_PUBLISH_KEY, [])
+        if agent.id not in awaiting:
+            awaiting.append(agent.id)
         return
     try:
         await publish_version(db, agent, note=f"Copilot: {what}")

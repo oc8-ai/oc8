@@ -3704,6 +3704,9 @@ export interface CopilotProposal {
   status: string;
   revision: number;
   operations: CopilotOperationRef[];
+  /** Applied, but held in these agents' pending drafts: runs keep the
+   *  published version until somebody publishes the draft. */
+  awaitingPublish?: { agentId: string; name: string }[];
 }
 
 // The tenant's single standing Assistant agent (GET /assistant,
