@@ -78,6 +78,11 @@ def corpus() -> dict[str, str]:
     return docs
 
 
+#: The corpus's embeddings, made once per runner process: every case and
+#: attempt seeds the same 200 texts (only their URIs carry the run's prefix).
+_EMBEDDED: dict[tuple[str, str], Any] = {}
+
+
 def _uri(ctx: ScenarioContext, doc_id: str) -> str:
     return f"eval://{ctx.prefix}/{doc_id}"
 
@@ -102,9 +107,12 @@ async def setup(ctx: ScenarioContext) -> dict[str, Any]:
             )
         )
         for doc_id, content in corpus().items():
-            embedding = await router.embed(
-                content, model=kb.embedding_model, tenant_id=ctx.tenant_id, db=db
-            )
+            key = (kb.embedding_model, content)
+            if key not in _EMBEDDED:
+                _EMBEDDED[key] = await router.embed(
+                    content, model=kb.embedding_model, tenant_id=ctx.tenant_id, db=db
+                )
+            embedding = _EMBEDDED[key]
             db.add(
                 m.KbChunk(
                     tenant_id=ctx.tenant_id,
