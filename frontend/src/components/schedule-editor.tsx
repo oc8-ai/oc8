@@ -2,6 +2,9 @@
 // CronBuilder and saved as the agent's one cron trigger, read in the zone
 // picked here (a new schedule starts in the organisation's; one saved before
 // triggers carried a zone fires in UTC and shows UTC until someone changes it).
+// The card also carries the trigger's task text -- the instruction every
+// scheduled run is handed -- because that is the half of a schedule a person
+// otherwise cannot read: the cron says when, the task text says what.
 import { useEffect, useState } from "react";
 import { Save } from "lucide-react";
 import { toast } from "sonner";
@@ -59,6 +62,15 @@ export function ScheduleEditor({
   const deleteTrigger = useDeleteAgentTrigger();
   const [mode, setMode] = useState<TriggerMode>(() => detectTriggerMode(initial));
   const [value, setValue] = useState<string>(initial);
+  // The task every run of this schedule is handed. Seeded from the saved
+  // trigger, like the cron string below, so a trigger made elsewhere (the
+  // Copilot, the API) shows its real instruction instead of a placeholder.
+  // A new schedule starts on the same placeholder a manual run uses, so a
+  // schedule created here still yields a titled task on the board.
+  const [task, setTask] = useState<string>(
+    cronTrigger?.taskText ?? `Scheduled run for ${agentName}`,
+  );
+  const savedTask = cronTrigger?.taskText;
   const orgTimezone = useOrgTimezone();
   const orgZoneUnset = useOrgTimezoneIsUnset();
   // The zone the schedule is read in: the saved trigger's (none = UTC), or
@@ -72,6 +84,10 @@ export function ScheduleEditor({
       setValue(cronTrigger.cronExpression);
     }
   }, [cronTrigger?.cronExpression]);
+
+  useEffect(() => {
+    if (savedTask !== undefined) setTask(savedTask);
+  }, [savedTask]);
 
   function pickMode(next: TriggerMode) {
     setMode(next);
@@ -117,18 +133,27 @@ export function ScheduleEditor({
       });
     if (cronTrigger) {
       updateTrigger.mutate(
-        { agentId, triggerId: cronTrigger.id, cronExpression: value, timezone },
+        {
+          agentId,
+          triggerId: cronTrigger.id,
+          cronExpression: value,
+          timezone,
+          taskText: task.trim(),
+        },
         { onSuccess: onSaved, onError: onFailed },
       );
     } else {
       createTrigger.mutate(
-        { agentId, cronExpression: value, timezone, taskText: `Scheduled run for ${agentName}` },
+        { agentId, cronExpression: value, timezone, taskText: task.trim() },
         { onSuccess: onSaved, onError: onFailed },
       );
     }
   }
 
   const showTextInput = mode === "schedule" || mode === "custom";
+  // A blank task text would give the run's task row an empty title (the title
+  // is the task text, truncated), so the work disappears from the board.
+  const blankTask = showTextInput && task.trim() === "";
 
   return (
     <div className="mt-4 space-y-3">
@@ -155,6 +180,29 @@ export function ScheduleEditor({
       {showTextInput ? (
         mode === "custom" ? (
           <>
+            <label className="block">
+              <span className="text-[10px] uppercase tracking-widest text-muted-foreground">
+                {t("Task for each run", "Aufgabe für jeden Lauf")}
+              </span>
+              <textarea
+                value={task}
+                onChange={(e) => setTask(e.target.value)}
+                rows={3}
+                placeholder={t(
+                  "What the agent is told to do on every scheduled run — its standing Instructions always apply on top of this.",
+                  "Was dem Agenten bei jedem geplanten Lauf aufgetragen wird — seine dauerhaften Anweisungen gelten zusätzlich.",
+                )}
+                className="mt-1 w-full resize-y rounded-md border border-border bg-background/40 px-3 py-2 text-sm outline-none focus:border-primary/50"
+              />
+              {blankTask && (
+                <p className="mt-1 text-[11px] text-[color:var(--status-warning)]">
+                  {t(
+                    "Without a task, the runs this schedule starts have nothing to work on and no title on the board.",
+                    "Ohne Aufgabe haben die von diesem Zeitplan gestarteten Läufe nichts zu tun und keinen Titel auf der Tafel.",
+                  )}
+                </p>
+              )}
+            </label>
             <CronBuilder
               initial={value}
               onChange={setValue}

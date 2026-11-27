@@ -2930,8 +2930,8 @@ export function useUpdateAgentTrigger() {
       triggerId,
       cronExpression,
       timezone,
-      actsForCreator,
       taskText,
+      actsForCreator,
       enabled,
       eventConfig,
       eventTargetCredentialId,
@@ -2942,9 +2942,12 @@ export function useUpdateAgentTrigger() {
       cronExpression?: string;
       //: A new zone for the schedule; left out keeps the one it has.
       timezone?: string;
+      //: A new task for the runs this trigger starts; left out keeps the one
+      //: it has. Changing it changes what runs, so the trigger's ownership
+      //: moves to whoever saved it (see `_changes_what_runs`).
+      taskText?: string;
       //: Only the trigger's creator may switch this on (webhook/event).
       actsForCreator?: boolean;
-      taskText?: string;
       enabled?: boolean;
       //: A polled event's settings, and the agent's current fixed login to
       //: listen on; a change to either starts from what is there now.
@@ -2955,8 +2958,8 @@ export function useUpdateAgentTrigger() {
       api.patch<TriggerDTO>(`/triggers/${triggerId}`, {
         cronExpression,
         timezone,
-        actsForCreator,
         taskText,
+        actsForCreator,
         enabled,
         eventConfig,
         eventTargetCredentialId,
