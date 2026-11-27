@@ -29,9 +29,6 @@ from oc8.websearch.providers import (
     KEYED_PROVIDERS,
     PROVIDERS,
     ProviderConfig,
-    SearchHit,
-    WebSearchUnavailable,
-    run_search,
 )
 
 #: The key in `organization.settings`.
@@ -203,17 +200,6 @@ async def offered(
 ) -> bool:
     """Whether `web_search` is offered on this run: asked for AND available."""
     return requested(context) and await is_available(db, tenant_id=tenant_id)
-
-
-async def search(
-    db: AsyncSession, *, tenant_id: uuid.UUID, query: str, max_results: int
-) -> list[SearchHit]:
-    """Search the web with the tenant's provider. Raises `WebSearchUnavailable`
-    when there is none, `WebSearchError` when it could not answer."""
-    config = await resolve_config(db, tenant_id=tenant_id)
-    if config is None:
-        raise WebSearchUnavailable("web search is not set up for this organisation")
-    return await run_search(config, query, max_results)
 
 
 #: A citation in an answer, as the chat renders it (`chat-markdown.tsx`):
