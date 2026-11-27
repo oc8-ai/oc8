@@ -130,7 +130,7 @@ from oc8.authz.pdp import (
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.files_kb import chat_has_files
 from oc8.chat.modes import ChatMode, mode_from_context, mode_refusal
-from oc8.chat.temporary import is_temporary_run
+from oc8.chat.temporary import in_temporary_chat
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
 from oc8.connections.runtime_env import McpLaunchEnv, run_mcp_env
@@ -1694,7 +1694,7 @@ async def _step(run_id: uuid.UUID, db: DbSession, run: m.AgentRun) -> StepResult
         chat_mode=mode_from_context(ctx),
         copilot_door=door_of(ctx) if agent.is_tenant_assistant else None,
         edition_tools=edition.neutral_tools(),
-        temporary_chat=is_temporary_run(ctx),
+        temporary_chat=await in_temporary_chat(db, ctx),
     )
     # Code mode (ruling 6): seed the generated SDK once tools are known so
     # every later /step can return it as sdk_py for the shell to write.

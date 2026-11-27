@@ -311,7 +311,8 @@ async def _owned_session(
     it, with the Assistant's tenant-wide `copilot:manage` carve-out on top."""
     session = await get_session(db, tenant_id=actor.principal.tenant_id, session_id=session_id)
     owned = session is not None and session.member_id == actor.member.id
-    if session is not None and not owned:
+    # A temporary chat is its owner's alone: no oversight carve-out.
+    if session is not None and not owned and not session.temporary:
         authority = await authority_for_principal(request, db, actor.principal)
         owned = await _assistant_visible(
             db,
@@ -664,6 +665,7 @@ async def rename_chat_session(
     ],
 ) -> ChatSessionDTO:
     session = await _owned_session(request, session_id, db, actor)
+    refuse_if_temporary(session, "be renamed")
     await rename_session(db, session=session, title=body.title)
     await db.commit()
     return session_dto(session)
@@ -680,7 +682,13 @@ async def delete_chat_session(
     ],
 ) -> None:
     session = await _owned_session(request, session_id, db, actor)
-    await delete_session(db, tenant_id=actor.principal.tenant_id, session=session)
+    await delete_session(
+        db,
+        tenant_id=actor.principal.tenant_id,
+        session=session,
+        actor_id=actor.member.id,
+        principal=actor.principal,
+    )
     await db.commit()
 
 

@@ -468,8 +468,10 @@ class ChatSessionResolver(_Summarized):
         ).scalar_one_or_none()
 
     async def authorize(self, db: AsyncSession, viewer: Viewer, obj: Any) -> bool:
-        # Owner only, with no oversight carve-out (Rulings 8/9).
-        return bool(obj.member_id == viewer.member.id)
+        # Owner only, with no oversight carve-out (Rulings 8/9). Never a
+        # temporary chat (`chat.temporary`): pinned into a kept chat, its
+        # summary would outlive it.
+        return bool(obj.member_id == viewer.member.id and not obj.temporary)
 
     def ref_id(self, obj: Any) -> str:
         return str(obj.id)
@@ -523,6 +525,7 @@ class ChatSessionResolver(_Summarized):
             .where(
                 m.ChatSession.tenant_id == viewer.member.tenant_id,
                 m.ChatSession.member_id == viewer.member.id,
+                m.ChatSession.temporary.is_(False),
                 m.ChatSession.title.icontains(query, autoescape=True),
             )
             .order_by(m.ChatSession.last_message_at.desc().nulls_last())

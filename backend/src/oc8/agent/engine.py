@@ -152,7 +152,7 @@ from oc8.capas.claude_hooks.context import (
 from oc8.capas.discovery import resolve_tool_pack_connection
 from oc8.chat.modes import AGENT, mode_from_context
 from oc8.chat.replay import chat_replay_of, prompt_cache_key
-from oc8.chat.temporary import NO_MEMORY_REFUSAL, is_temporary_run
+from oc8.chat.temporary import NO_MEMORY_REFUSAL, in_temporary_chat
 from oc8.coding.tools import CODING_FRAME_KEY, CODING_TOOL_RIGHTS, Toolset
 from oc8.config import get_settings
 from oc8.connections.access import ConnectionRequired
@@ -1191,6 +1191,11 @@ async def run_agent(
         has_instruction_files = preamble.has_instruction_files
         copilot_permissions = preamble.copilot_permissions
         copilot_has_member = preamble.copilot_has_member
+        # Once per run, from the chat row itself: a delegated sub-run or a
+        # wake-up of a temporary chat keeps no notes either (`chat.temporary`).
+        temporary_chat = await in_temporary_chat(
+            db, run_row.context if run_row is not None else None
+        )
         produces_board = preamble.produces_board
         has_web_search = preamble.has_web_search
         # C3's step stamp uses the SAME resolved timezone as A2's "Now" line
@@ -1359,9 +1364,7 @@ async def run_agent(
                     edition_tools=edition.neutral_tools(),
                     offer_direct_access=direct_run is not None,
                     offer_web_search=has_web_search,
-                    temporary_chat=is_temporary_run(
-                        run_row.context if run_row is not None else None
-                    ),
+                    temporary_chat=temporary_chat,
                 )
 
             # Per-run harness state (spec §3.3): the repeat-call tracker and the
@@ -2890,7 +2893,7 @@ async def run_agent(
                     if (
                         tc.name == auth_tc.name == MEMORY_WRITE.name
                         and decision.effect is not Effect.DENY
-                        and is_temporary_run(run_row.context if run_row is not None else None)
+                        and temporary_chat
                     ):
                         # A temporary chat keeps no notes -- refused here, before
                         # a company write could park the run for an approval.

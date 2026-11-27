@@ -52,7 +52,7 @@ from oc8.authz.permissions import AGENT, APPROVAL, BUDGET, DEPARTMENT, STATISTIC
 from oc8.authz.scope import AgentActor, scope_for_member
 from oc8.capas.discovery import find_plugin
 from oc8.chat.modes import WRITING_CONTROL_TOOLS, ChatMode
-from oc8.chat.temporary import NO_MEMORY_REFUSAL, is_temporary_run
+from oc8.chat.temporary import NO_MEMORY_REFUSAL, TEMPORARY_CHAT_KEY, in_temporary_chat
 from oc8.config import get_settings
 from oc8.connections.causal import causal_ancestors
 from oc8.copilot.notes import member_behind_run_task
@@ -1571,9 +1571,10 @@ DEPTH_LIMIT_REASON = f"delegation depth limit reached (max {MAX_DELEGATION_DEPTH
 
 
 async def _in_temporary_chat(db: AsyncSession, run_id: uuid.UUID) -> bool:
-    """Whether the run answers a temporary chat's turn (`chat.temporary`)."""
+    """Whether the run works for a temporary chat (`chat.temporary`): its
+    own turn, or a delegation or wake-up that came from one."""
     run = await db.get(m.AgentRun, run_id)
-    return run is not None and is_temporary_run(run.context)
+    return run is not None and await in_temporary_chat(db, run.context)
 
 
 def offered_tools(
@@ -1635,7 +1636,7 @@ def offered_tools(
     follow-up has no one to keep personal notes for, so memory_write is not
     offered there. The dispatch refuses it as well.
 
-    `temporary_chat` is `chat.temporary.is_temporary_run(run.context)`: a
+    `temporary_chat` is `chat.temporary.in_temporary_chat(db, run.context)`: a
     temporary chat keeps nothing, so memory_write is not offered to any agent
     there. The dispatch refuses it as well.
 
@@ -2783,7 +2784,15 @@ async def _create_delegation(
             # belongs to the run it was recorded on (_acting_token_role).
             # `for_person` (Ruling 18): whose work a wake-up continues, so a
             # further hop from it stays that person's run, never autonomous.
-            for carried in ("door", "followup", "originating_operator", FOR_PERSON):
+            # `temporary_chat`: a sub-run of a temporary chat keeps no notes
+            # either (also re-derived from chat_session_id, `chat.temporary`).
+            for carried in (
+                "door",
+                "followup",
+                "originating_operator",
+                FOR_PERSON,
+                TEMPORARY_CHAT_KEY,
+            ):
                 if executing_run.context.get(carried) is not None:
                     context[carried] = executing_run.context[carried]
             # The sub-run acts for the same person (connections design): a

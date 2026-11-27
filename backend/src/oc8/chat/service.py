@@ -168,7 +168,14 @@ async def rename_session(db: AsyncSession, *, session: m.ChatSession, title: str
     publish_chat_session_updated(db, session=session, audience=audience)
 
 
-async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.ChatSession) -> None:
+async def delete_session(
+    db: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    session: m.ChatSession,
+    actor_id: uuid.UUID | None = None,
+    principal: Principal | None = None,
+) -> None:
     """`ChatMessage` carries no DB-level foreign key to `ChatSession` (this
     codebase's tables generally don't use them) -- its transcript has to be
     removed explicitly or it survives as orphaned rows.
@@ -187,7 +194,16 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     conversation, which is the thing the operator actually asked for. A leaked
     blob is recoverable later from the bucket; a chat that refuses to delete
     is not.
+
+    A temporary chat's runs that have not finished are stopped first, through
+    the same cancel a Stop records (`chat.temporary.stop_chat_runs`): a parked
+    one is woken so its cards expire and the worker ends it, a running one
+    stops at its next step and its reply finds no chat to land in, and its
+    queued messages end as cancelled. `actor_id`/`principal` name who left it
+    (None: the purge).
     """
+    from oc8.chat.temporary import cancel_queued_inputs, stop_chat_runs
+
     # A deleted conversation can no longer receive the responsibilities opened
     # in it: close them (which also disables their follow-ups) in this same
     # transaction, so no follow-up fires into a session that is gone.
@@ -221,6 +237,13 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     ).scalars()
     for offer in list(waiting):
         await expire_approval(db, offer)
+    # Approval and run rows (lock order steps 1-2, `chat.tree`), before the
+    # knowledge rows and the audit lock below.
+    stopped = (
+        await stop_chat_runs(db, session=session, actor_id=actor_id, principal=principal)
+        if session.temporary
+        else []
+    )
     for responsibility in open_responsibilities:
         await close_responsibility(
             db,
@@ -270,6 +293,9 @@ async def delete_session(db: AsyncSession, *, tenant_id: uuid.UUID, session: m.C
     # after the knowledge and file rows above, as `chat.tree`'s lock order has
     # it. Taken at commit instead, the audit lock would come after the row --
     # the inverse of every reply, send and branch switch in this chat.
+    # The stopped runs' queued messages first: their input lock (step 5)
+    # takes the audit lock, before the session row (step 6).
+    await cancel_queued_inputs(db, runs=stopped)
     await tree.lock_session(db, session=session)
     await db.execute(
         delete(m.ChatMessage).where(

@@ -290,12 +290,14 @@ class FileResolver:
         return paginate(obj.extracted_text or "", page)
 
     async def search(self, db: AsyncSession, viewer: Viewer, query: str, limit: int) -> list[Any]:
-        """Files from the viewer's own chats, newest first."""
+        """Files from the viewer's own kept chats, newest first: never a
+        temporary chat's (`chat.temporary`), which go with that chat."""
         if not self.admits(viewer):
             return []
         sessions = select(m.ChatSession.id).where(
             m.ChatSession.tenant_id == viewer.member.tenant_id,
             m.ChatSession.member_id == viewer.member.id,
+            m.ChatSession.temporary.is_(False),
         )
         messages = select(m.ChatMessage.id).where(m.ChatMessage.session_id.in_(sessions))
         rows = await db.execute(

@@ -125,6 +125,7 @@ async def session_owned_by_caller(
 
 def refuse_if_temporary(session: m.ChatSession, what: str) -> None:
     """409 for what would keep something of a temporary chat (spec §5.6):
-    rating an answer, pinning it, moving it into a project, exporting it."""
+    rating an answer, naming, pinning or exporting it, moving it into a
+    project."""
     if session.temporary:
         raise HTTPException(status.HTTP_409_CONFLICT, f"a temporary chat cannot {what}")

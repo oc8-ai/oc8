@@ -18,6 +18,7 @@ from oc8.approvals.repo import DIRECT_ACCESS_ACTION
 from oc8.authz.pdp import frame_allows_key
 from oc8.chat.digest import build_work_digest
 from oc8.chat.replay import chat_replay_of
+from oc8.chat.temporary import TEMPORARY_CHAT_KEY, is_temporary_run
 from oc8.connections.acting import (
     NO_ACTING_PERSON,
     ActingPerson,
@@ -625,6 +626,7 @@ async def _maybe_wake_parent(
     trigger_id: str | None = None,
     for_person: str | None = None,
     finished_run_id: uuid.UUID | None = None,
+    temporary_chat: bool = False,
 ) -> uuid.UUID | None:
     """Create a follow-up run for the team lead that delegated this sub-run, so
     it can react to the outcome (§7). Returns the new run's id for the caller to
@@ -639,6 +641,10 @@ async def _maybe_wake_parent(
     is spec §7 reassignment, with no dedicated mechanism.
     """
     if parent_task_id is None:
+        return None
+    if temporary_chat and chat_session_id and not await _chat_still_there(db, chat_session_id):
+        # The person left the temporary chat (it was deleted and its runs
+        # stopped): nobody is there to continue for.
         return None
     parent = await db.get(m.Task, parent_task_id)
     if parent is None or parent.assigned_agent_id is None:
@@ -738,6 +744,9 @@ async def _maybe_wake_parent(
         # an operator posting in a colleague's session. Never operator_role.
         if originating_operator is not None:
             context["originating_operator"] = originating_operator
+        # A temporary chat's wake-up keeps no notes either (`chat.temporary`).
+        if temporary_chat:
+            context[TEMPORARY_CHAT_KEY] = True
     wake = await repo.create(
         tenant_id=tenant_id,
         agent_id=parent.assigned_agent_id,
@@ -745,6 +754,14 @@ async def _maybe_wake_parent(
         source=wake_source,
     )
     return wake.id
+
+
+async def _chat_still_there(db: AsyncSession, chat_session_id: str) -> bool:
+    try:
+        session_id = uuid.UUID(str(chat_session_id))
+    except ValueError:
+        return False
+    return await db.get(m.ChatSession, session_id) is not None
 
 
 class RunDeferred(Exception):
@@ -1604,6 +1621,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                         acting=await _acting_person(db, run),
                         trigger_id=(run.context or {}).get("trigger_id"),
                         for_person=(run.context or {}).get(FOR_PERSON),
+                        temporary_chat=is_temporary_run(run.context),
                         finished_run_id=run.id,
                     )
                     if wake_id is not None:
@@ -1786,6 +1804,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                                 acting=await _acting_person(db, run),
                                 trigger_id=(run.context or {}).get("trigger_id"),
                                 for_person=(run.context or {}).get(FOR_PERSON),
+                                temporary_chat=is_temporary_run(run.context),
                                 finished_run_id=run.id,
                             )
                             if wake_id is not None:
@@ -1942,6 +1961,7 @@ async def execute_run(message: RunMessage, *, runtime: RuntimeAdapter | None = N
                             acting=await _acting_person(db, run),
                             trigger_id=(run.context or {}).get("trigger_id"),
                             for_person=(run.context or {}).get(FOR_PERSON),
+                            temporary_chat=is_temporary_run(run.context),
                             finished_run_id=run.id,
                         )
                         if wake_id is not None:

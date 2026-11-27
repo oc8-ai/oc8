@@ -136,6 +136,12 @@ ALLOWED: dict[str, str] = {
         "POST /chat/sessions/{id}/messages/{id}/feedback after session_owned_by_caller: the chat's "
         "owner rating an answer of their own chat; no run content is read"
     ),
+    "chat/temporary.py": (
+        "stop_chat_runs loads the unfinished runs of one temporary chat to stop them, for "
+        "DELETE /chat/sessions/{id} after _owned_session (the chat's owner only: no "
+        "oversight into a temporary chat) and for the worker's purge; only ids and states "
+        "are read, no run content reaches anyone"
+    ),
     "chat/checkpoint.py": (
         "the background checkpoint job loads the one run whose reply it summarises, "
         "scheduled by chat/service.py for that run's own chat; no human request reaches it"
