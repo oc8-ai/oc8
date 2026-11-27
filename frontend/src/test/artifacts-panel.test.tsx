@@ -253,6 +253,27 @@ describe("the panel", () => {
     expect(within(sheet).getByTitle("Clock").getAttribute("sandbox")).toBe("allow-scripts");
   });
 
+  it("keeps the header's actions clear of the sheet's own close button", () => {
+    // At 390 px the sheet's Close (absolute, right-4) sat on top of Download.
+    stubWidth(390);
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Clock" }));
+    const sheet = screen.getByRole("dialog", { name: "Clock" });
+    const header = within(sheet).getByRole("button", {
+      name: "Download clock.html",
+    }).parentElement!;
+    expect(header.classList.contains("pr-12")).toBe(true);
+  });
+
+  it("needs no room for a close button it draws itself beside the chat", () => {
+    render(<Chat turns={[answer(message("m1", page("Clock", "<p>x</p>")))]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open Clock" }));
+    const close = screen.getByRole("button", { name: "Close" });
+    const header = close.parentElement!;
+    expect(header.contains(screen.getByRole("button", { name: "Download clock.html" }))).toBe(true);
+    expect(header.classList.contains("pr-12")).toBe(false);
+  });
+
   it("shows SVG as an image, never inline", () => {
     const svg =
       '```svg\n<svg xmlns="http://www.w3.org/2000/svg"><title>Logo</title><script>alert(1)</script></svg>\n```';

@@ -255,7 +255,14 @@ function PanelBody({
   const Title = asSheet ? SheetTitle : "h2";
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="artifact-panel">
-      <div className="flex items-center gap-1 border-b border-border px-3 py-2">
+      {/* In a sheet, the sheet's own Close sits absolutely at the top right:
+          keep the actions clear of it (pr-12), or it lands on Download. */}
+      <div
+        className={cn(
+          "flex items-center gap-1 border-b border-border px-3 py-2",
+          asSheet && "pr-12",
+        )}
+      >
         <div className="min-w-0 flex-1">
           <Title className="truncate text-sm font-semibold text-foreground">{artifact.title}</Title>
           {asSheet ? (
