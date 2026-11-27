@@ -26,6 +26,7 @@ import pytest
 from oc8_evals import __main__ as runner
 from oc8_evals import model_calls, stack
 from oc8_evals.tasks import load_suite
+from sqlalchemy import func, select
 
 from oc8 import models as m
 from oc8.config import get_settings
@@ -309,3 +310,8 @@ async def test_a_rejected_write_is_decided_and_the_reason_followed(
     assert attempt.error is None, attempt.error
     failed = [c for c in (*attempt.expect, *attempt.forbid) if not c.ok]
     assert not failed, (failed, attempt.tool_calls)
+    # The attempt's own login and model clone are gone again.
+    async with app_session(tenant) as db:
+        logins = await db.scalar(select(func.count()).select_from(m.Credential))
+        models = await db.scalar(select(func.count()).select_from(m.ModelConfig))
+    assert (logins, models) == (0, 1)

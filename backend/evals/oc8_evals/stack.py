@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from oc8 import models as m
@@ -618,23 +618,22 @@ async def send_chat_turn(tenant_id: uuid.UUID, fixture: ChatFixture, text: str) 
 
 async def teardown_chat_fixture(tenant_id: uuid.UUID, fixture: ChatFixture) -> None:
     """Best-effort, like `teardown_fixture`: the chat, its runs and usage stay
-    as evidence; the clone stops being offered and the agent stops."""
+    as evidence; the agent stops. What the attempt set up for itself and
+    nothing else reads -- the model clone and the department's mock login
+    with its secret -- is deleted, so attempts do not pile up rows."""
+    from oc8.credentials.service import delete_credential
+
     async with tenant_session(tenant_id) as db:
         for cid in fixture.connection_ids:
             conn = await db.get(m.McpConnection, cid)
             if conn is not None:
                 conn.connected = False
         for cred_id in fixture.credential_ids:
-            # The login stops serving the department; the row stays evidence.
-            await db.execute(
-                delete(m.CredentialDepartment).where(
-                    m.CredentialDepartment.credential_id == cred_id
-                )
-            )
+            await delete_credential(db, tenant_id=tenant_id, credential_id=cred_id, force=True)
         if fixture.model_config_id is not None:
             clone = await db.get(m.ModelConfig, fixture.model_config_id)
             if clone is not None:
-                clone.chat_enabled = False
+                await db.delete(clone)
         if not fixture.assistant:
             agent = await db.get(m.Agent, fixture.agent_id)
             if agent is not None:
