@@ -172,6 +172,12 @@ _MENTIONS = [
     "Das Passwort ist abgelaufen.",
     "Mein Kennwort funktioniert nicht.",
     "Wie lange ist ein Token gültig?",
+    # clear placeholders under a strong key
+    "password = <your password>",
+    "password: ***",
+    "secret: siehe Vault",
+    "Passwort: erforderlich",
+    "Authorization: required",
 ]
 #: A credential value the person wrote: refused (and redacted).
 _VALUES = [
@@ -222,6 +228,21 @@ _VALUES = [
     "-----BEGIN RSA PRIVATE KEY-----",
     "-----BEGIN PRIVATE KEY-----",
     "connect to postgres://admin:hunter2@db.example.com/app",
+    # a strong key takes no exemption a weak key gets
+    "password=gpt-4o",
+    "password: 12345678",
+    "secret = manager",
+    "password=changeme",
+    "Kennwort: Sommer",
+    # command-line flags
+    "--password=x",
+    "run it with --password hunter2",
+    "--api-key abcd1234efgh",
+    "--token abc123def456ghi",
+    "curl -u admin:hunter2 https://api.example.com",
+    # an Authorization header holds a credential whatever its shape
+    "Authorization: Bearer abc",
+    "Authorization: xyz",
 ]
 
 
