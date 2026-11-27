@@ -3861,6 +3861,28 @@ export function useTenantKpis(params?: TenantKPIFilterParams) {
   });
 }
 
+/** One row of `GET /stats/feedback`: answer ratings for one agent and model.
+ *  `model` is null for a rating that predates naming it. Like `GET /kpis`'
+ *  agent rows, a personal agent gets none. */
+export interface FeedbackCount {
+  agentId: string;
+  agentName: string;
+  model: string | null;
+  up: number;
+  down: number;
+}
+
+export type FeedbackCountFilterParams = Omit<TenantKPIFilterParams, "groupBy" | "status">;
+
+/** Answer feedback per agent and model -- same gate and filters as `GET /kpis`. */
+export function useFeedbackCounts(params?: FeedbackCountFilterParams) {
+  return useQuery({
+    queryKey: ["stats", "feedback", params] as const,
+    queryFn: () =>
+      api.get<FeedbackCount[]>(`/stats/feedback${buildQuery(params as Record<string, unknown>)}`),
+  });
+}
+
 // ---- Widget-based "My Work" dashboard (§ My Work Widget Dashboard plan) ----
 
 export type WidgetType =

@@ -13,6 +13,8 @@ vi.mock("@/lib/hooks", async (importOriginal) => {
     useTenantKpis: (...args: unknown[]) => tenantKpisMock(...args),
     useAgents: (...args: unknown[]) => agentsMock(...args),
     useDepartments: (...args: unknown[]) => departmentsMock(...args),
+    // The feedback table has its own test (statistics-feedback.test.tsx).
+    useFeedbackCounts: () => ({ data: [], isError: false, isPending: false }),
   };
 });
 

@@ -29,3 +29,14 @@ class KPIGroupedResponseDTO(CamelModel):
 # response_model can't express a conditional shape cleanly, so that
 # endpoint's response_model is left unset and it returns a plain dict
 # built from whichever DTO applies.
+
+
+class FeedbackCountDTO(CamelModel):
+    """Answer feedback (thumbs) for one agent and model. `model` is None for
+    a rating written before its event named the model."""
+
+    agent_id: str
+    agent_name: str
+    model: str | None
+    up: int
+    down: int

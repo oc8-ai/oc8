@@ -37,7 +37,12 @@ from oc8.chat.export import (
     export_json,
     export_markdown,
 )
-from oc8.chat.model_choice import ModelOption, is_allowed_override, model_options
+from oc8.chat.model_choice import (
+    ModelOption,
+    is_allowed_override,
+    model_options,
+    session_model_config,
+)
 from oc8.chat.modes import ASSISTANT_ONLY_REFUSAL, MODES, ModeNotAvailable
 from oc8.chat.port import session_access
 from oc8.chat.questions import QuestionError
@@ -78,6 +83,7 @@ from oc8.schemas.requests import (
     CreateChatSessionRequest,
     EditChatMessageRequest,
     MessageFeedbackRequest,
+    RegenerateRequest,
     RenameChatSessionRequest,
     SendChatMessageRequest,
     SetChatEffortRequest,
@@ -233,6 +239,21 @@ async def _assistant_visible(
         return False
     assistant = await get_or_create_assistant(db, tenant_id=tenant_id)
     return assistant.id == agent_id
+
+
+class WebSearchAvailabilityDTO(CamelModel):
+    available: bool
+
+
+@router.get("/chat/web-search", response_model=WebSearchAvailabilityDTO)
+async def web_search_availability(db: DbSession, actor: _ChatActor) -> WebSearchAvailabilityDTO:
+    """Whether the composer shows its "Web" switch: the tenant (or the
+    platform) has a search provider. Never which one, nor its address."""
+    from oc8.websearch.service import is_available
+
+    return WebSearchAvailabilityDTO(
+        available=await is_available(db, tenant_id=actor.principal.tenant_id)
+    )
 
 
 @router.get("/chat/sessions", response_model=list[ChatSessionDTO])
@@ -776,6 +797,7 @@ async def post_message(
             # The member behind THIS request's token, whose role is the one above:
             # the turn's pinned context is resolved under their rights.
             acting_member=actor.member,
+            web_search=body.web,
         )
     except ModeNotAvailable as exc:
         # Nothing was written: the refusal comes before the turn exists.
@@ -819,8 +841,10 @@ async def regenerate_message(
     message_id: uuid.UUID,
     db: DbSession,
     actor: _ChatActor,
+    body: RegenerateRequest | None = None,
 ) -> ActiveRunDTO:
-    """Answer a user turn again; both answers stay (spec §2.1)."""
+    """Answer a user turn again; both answers stay (spec §2.1). The body is
+    optional: without one, the new answer does not search the web."""
     session = await session_owned_by_caller(session_id, db, actor)
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "user":
@@ -849,6 +873,7 @@ async def regenerate_message(
         originating_operator=actor.principal.subject,
         operator_role=actor.principal.role,
         acting_member=actor.member,
+        web_search=body is not None and body.web,
     )
     return ActiveRunDTO(run_id=str(run.id), reply_to_id=str(msg.id), state=run.state)
 
@@ -901,6 +926,7 @@ async def edit_chat_message(
             originating_operator=actor.principal.subject,
             operator_role=actor.principal.role,
             acting_member=actor.member,
+            web_search=body.web,
         )
     except MessageGone:
         # Removed between loading it above and the edit taking the session
@@ -949,6 +975,14 @@ async def message_feedback(
     msg = await _session_message(db, session=session, message_id=message_id)
     if msg.role != "assistant":
         raise HTTPException(status.HTTP_409_CONFLICT, "only an answer can be rated")
+    # The agent and its department name the event's subject, so the audit
+    # read strips a personal agent's note for everyone but its owner (the
+    # actor is the person, not the agent). The model is what the statistics
+    # count per: the chat's model choice, as its own housekeeping resolves it.
+    agent = await db.get(m.Agent, session.agent_id)
+    model: str | None = None
+    if agent is not None:
+        _config, _provider, model = await session_model_config(db, session=session, agent=agent)
     await append_event(
         db,
         tenant_id=actor.principal.tenant_id,
@@ -960,6 +994,9 @@ async def message_feedback(
             "session_id": str(session.id),
             "message_id": str(msg.id),
             "run_id": str(msg.run_id) if msg.run_id else None,
+            "agent_id": str(session.agent_id),
+            "department_id": str(agent.department_id) if agent is not None else None,
+            "model": model,
             "rating": body.rating,
             "note": body.note,
         },
