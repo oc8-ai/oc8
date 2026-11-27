@@ -242,6 +242,13 @@ async def discover_provider_models(
     return ModelDiscoverResponse(models=models)
 
 
+#: The smallest context window a model may be recorded with. A chat
+#: checkpoints at 40 % / 70 % of the window and replays the turns that fit;
+#: below this the system prefix and one turn no longer fit, and every turn of
+#: every chat on the model would checkpoint. 0 or None stays "not recorded".
+MIN_CONTEXT_WINDOW = 4096
+
+
 async def _validated(
     body: ModelConfigWrite, db: DbSession, tenant_id: uuid.UUID
 ) -> tuple[str, str]:
@@ -249,6 +256,12 @@ async def _validated(
     has no db session, so entitlement is decided here, at configuration time: a
     tenant can only name a provider that is built in or comes from a plugin it
     enabled. Unknown and not-entitled deliberately give the same answer."""
+    if body.context_window and body.context_window < MIN_CONTEXT_WINDOW:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            f"context window must be at least {MIN_CONTEXT_WINDOW} tokens to hold a "
+            "chat turn; leave it empty if you do not know it",
+        )
     if body.provider.strip().lower() == AUTO_PROVIDER:
         if body.locality not in ("cloud", "local"):
             raise HTTPException(
